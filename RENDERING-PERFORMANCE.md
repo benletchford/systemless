@@ -260,3 +260,14 @@ includes first-use device initialization, CPU preparation, submission and readba
 It excludes CPU fallback execution, subsequent guest-memory commit and trace I/O.
 Tracing still perturbs scheduling and caches, so these observations do not qualify
 production performance, hardware GPU time, physical pacing or the default rollout.
+
+## Guest architecture
+
+Use `--architecture 68k` or `--architecture ppc` (default) with
+`benchmark-renderers.py`. Schema 5 records and verifies the actual guest
+architecture before accepting observations. Guest records carry that architecture;
+architecture-independent presentation and synthetic kernel records carry null.
+A 68k batch covers UI, drawing, text and sprites; the native QD3D guest workload
+requires PPC. Synthetic 3D kernels still run in both batches and are not evidence
+of a 68k QD3D API. The top-level qualifier runs separate batches for both slices.
+Keep architecture/profile results separate when assessing crossover and tails.

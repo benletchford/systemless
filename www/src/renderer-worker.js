@@ -1,5 +1,5 @@
 // Complete-frame presenter protocol. Guest execution, composition and display
-// demand stay on the execution owner/host. This worker has no Wasm or DOM state.
+// demand stay on the execution owner/host. The wgpu backend owns a separate Wasm instance.
 const RENDER_PROTOCOL = 5;
 const MAX_PIXELS = 16 * 1024 * 1024;
 let identity = null;
@@ -7,6 +7,9 @@ let ownerPort = null;
 let canvas = null;
 let context = null;
 let gpu = null;
+let wgpu = null;
+let painting = false;
+let healthTimer = null;
 let bitmapOutput = false;
 let awaitingBitmap = null;
 let ready = false;
@@ -35,6 +38,8 @@ function fail(error) {
   awaitingBitmap = null;
   context = null;
   gpu?.dispose(); gpu = null;
+  clearInterval(healthTimer); healthTimer = null;
+  wgpu?.dispose(); wgpu?.free(); wgpu = null;
   reply({ type: "error", message: String(error?.message || error) });
 }
 
@@ -75,7 +80,7 @@ function acceptFrame(message) {
     returnBuffers("dropped", pending);
   }
   pending = message;
-  if (scheduled === null && !awaitingBitmap) scheduled = setTimeout(paint, 0);
+  if (scheduled === null && !awaitingBitmap && !painting) scheduled = setTimeout(paint, 0);
 }
 
 function returnBuffers(type, frame, metrics = {}) {
@@ -96,17 +101,27 @@ function returnBuffers(type, frame, metrics = {}) {
     ...metrics, buffer, paletteBuffer, cursorBuffer, detailBuffer }, transfer);
 }
 
-function paint() {
+async function paint() {
   scheduled = null;
-  if (awaitingBitmap) return;
+  if (awaitingBitmap || painting) return;
   const frame = pending;
   pending = null;
   if (failed || !frame) return;
+  painting = true;
   try {
     const start = performance.now();
     if (canvas.width !== frame.width) canvas.width = frame.width;
     if (canvas.height !== frame.height) canvas.height = frame.height;
-    if (gpu) gpu.paint(frame);
+    if (wgpu) {
+      wgpu.paint(frame.width, frame.height, frame.pixels);
+      let timeout;
+      try {
+        await Promise.race([wgpu.completed(), new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("WebGPU frame completion timed out")), 10000);
+        })]);
+      } finally { clearTimeout(timeout); }
+      if (failed) return;
+    } else if (gpu) gpu.paint(frame);
     else {
       const rgba = new Uint8ClampedArray(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
       context.putImageData(new ImageData(rgba, frame.width, frame.height), 0, 0);
@@ -125,11 +140,14 @@ function paint() {
       // host cannot accumulate a queue of transferred GPU images.
       return;
     }
-    // This acknowledges submission, not physical display or GPU completion.
+    // wgpu also waits for GPU completion; neither path acknowledges physical display.
     // Duration uses one worker clock; the sender measures transport round trips.
     returnBuffers("submitted", frame, { renderMs: performance.now() - start });
   } catch (error) {
     fail(error);
+  } finally {
+    painting = false;
+    if (!failed && pending && !awaitingBitmap && scheduled === null) scheduled = setTimeout(paint, 0);
   }
 }
 
@@ -147,7 +165,19 @@ self.onmessage = async ({ data }) => {
       if (bitmapOutput && (data.backend !== "webgl" || typeof canvas?.transferToImageBitmap !== "function")) {
         throw new Error("Bitmap presentation unavailable");
       }
-      if (data.backend === "webgl") {
+      if (data.backend === "wgpu") {
+        if (!data.moduleUrl || !data.wasmUrl) throw new Error("Missing wgpu Wasm assets");
+        const bindings = await import(data.moduleUrl);
+        if (failed) return;
+        await bindings.default({ module_or_path: data.wasmUrl });
+        if (failed) return;
+        const presenter = await bindings.WebGpuPresenter.create(canvas);
+        if (failed) { presenter.dispose(); presenter.free(); return; }
+        wgpu = presenter;
+        healthTimer = setInterval(() => {
+          try { wgpu?.check_health(); } catch (error) { fail(error); }
+        }, 1000);
+      } else if (data.backend === "webgl") {
         const moduleUrl = new URL("./renderer-gpu.js", self.location.href);
         moduleUrl.search = new URL(self.location.href).search;
         const bindings = await import(moduleUrl.href);
@@ -162,7 +192,7 @@ self.onmessage = async ({ data }) => {
         canvas.addEventListener("contextlost", event => { event.preventDefault(); fail("Renderer context lost"); });
       }
       ready = true;
-      reply({ type: "ready", backend: bitmapOutput ? "bitmap-webgl" : gpu ? "offscreen-webgl" : "offscreen-canvas2d", bitmap: bitmapOutput,
+      reply({ type: "ready", backend: wgpu ? "offscreen-wgpu" : bitmapOutput ? "bitmap-webgl" : gpu ? "offscreen-webgl" : "offscreen-canvas2d", bitmap: bitmapOutput,
         kinds: gpu ? ["rgba", "indexed8", "compact"] : ["rgba"] });
       return;
     }
@@ -175,7 +205,7 @@ self.onmessage = async ({ data }) => {
       returnBuffers("submitted", active.frame, { renderMs: active.renderMs });
       if (pending && scheduled === null) scheduled = setTimeout(paint, 0);
     } else if (data.type === "connectOwner") {
-      if (!ready || ownerPort || pending || awaitingBitmap) throw new Error("Renderer owner handoff is not idle");
+      if (!ready || ownerPort || pending || awaitingBitmap || painting) throw new Error("Renderer owner handoff is not idle");
       ownerPort = data.port;
       ownerPort.onmessage = ({ data: frame }) => {
         if (failed || !sameIdentity(frame) || frame.protocolVersion !== RENDER_PROTOCOL) return;
@@ -195,6 +225,8 @@ self.onmessage = async ({ data }) => {
       scheduled = null;
       context = null;
       gpu?.dispose(); gpu = null;
+      clearInterval(healthTimer); healthTimer = null;
+      wgpu?.dispose(); wgpu?.free(); wgpu = null;
       canvas.width = canvas.height = 1;
       reply({ type: "stopped" });
       failed = true;

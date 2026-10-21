@@ -4,11 +4,14 @@ use web_sys::HtmlCanvasElement;
 
 #[wasm_bindgen(inline_js = r#"
 export function createSystemlessRenderer(canvas, generation, owner) {
-  if (new URLSearchParams(location.search).get('renderer') !== 'worker'
+  const renderer = new URLSearchParams(location.search).get('renderer');
+  if (!['worker', 'wgpu'].includes(renderer)
       || typeof canvas.transferControlToOffscreen !== 'function'
       || typeof ResizeObserver !== 'function' || typeof Worker !== 'function') return null;
   const resources = performance.getEntriesByType('resource').map(entry => entry.name);
   const version = resources.find(url => /systemless[^/]*_bg\.wasm(?:\?|$)/.test(url)) || 'development';
+  const wasmModule = resources.find(url => /systemless[^/]*\.js(?:\?|$)/.test(url))
+    || [...(document.scripts || [])].map(script => script.src).find(url => /systemless[^/]*\.js(?:\?|$)/.test(url));
   const moduleUrl = new URL('/renderer-client.js', location.href);
   const workerUrl = new URL('/renderer-worker.js', location.href);
   moduleUrl.searchParams.set('runtime', version);
@@ -29,7 +32,8 @@ export function createSystemlessRenderer(canvas, generation, owner) {
   import(moduleUrl.href).then(({ RendererClient }) => {
     if (handle.disposed || handle.error) return;
     handle.client = new RendererClient(canvas, workerUrl.href, generation, {
-      backend: new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d",
+      backend: renderer === "wgpu" ? "wgpu" : new URLSearchParams(location.search).get("renderer_gpu") === "1" ? "webgl" : "canvas2d",
+      moduleUrl: wasmModule, wasmUrl: version,
       owner, direct: new URLSearchParams(location.search).get("renderer_direct") === "1",
       bitmap: new URLSearchParams(location.search).get("renderer_bitmap") === "1"
     });
@@ -76,7 +80,7 @@ extern "C" {
     pub fn create_renderer(
         canvas: &HtmlCanvasElement,
         generation: u32,
-        owner: &web_sys::Worker,
+        owner: &JsValue,
     ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = paintSystemlessRenderer)]
     pub fn paint_renderer(

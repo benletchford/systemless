@@ -50,6 +50,7 @@
 pub mod api;
 mod error;
 mod fast_hash;
+pub mod gpu_compute;
 pub mod systems;
 
 // Compatibility module paths for existing embedders.

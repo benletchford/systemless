@@ -76,9 +76,12 @@ def teardown_evidence(log):
     return dict(events=events, last_event=events[-1] if events else None, complete=events == expected)
 
 
-def validate_samples(samples, seconds, workload="gpu"):
+def validate_samples(samples, seconds, workload="gpu", architecture=None):
     if workload not in ("gpu", "cpu-baseline"):
         return False
+    if architecture not in (None, "68k", "ppc"):
+        return False
+    required = [True, True, True, architecture != "68k"]
     cpu_only = workload == "cpu-baseline"
     if not isinstance(samples, list) or len(samples) < 2:
         return False
@@ -90,18 +93,20 @@ def validate_samples(samples, seconds, workload="gpu"):
     for index, sample in enumerate(samples):
         if not isinstance(sample, dict) or sample.get("complete") is not (index == len(samples) - 1):
             return False
+        if architecture is not None and sample.get("architecture") != architecture:
+            return False
         if sample.get("workload", "gpu") != workload:
             return False
         elapsed, cycle, calls = sample.get("seconds"), sample.get("cycles"), sample.get("gpu_writebacks")
         if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed)
                 or elapsed < 0 or elapsed < previous_time or type(cycle) is not int or cycle < 0 or cycle < previous_cycle
                 or not isinstance(calls, list) or len(calls) != 4
-                or any(type(v) is not int or (v != 0 if cpu_only else v <= 0 or v < old)
-                       for v, old in zip(calls, previous_calls))):
+                or any(type(v) is not int or (v != 0 if cpu_only or not needed else v <= 0 or v < old)
+                       for v, old, needed in zip(calls, previous_calls, required))):
             return False
         for key, role in [("quickdraw", "QuickDraw compute"), ("qd3d", "QD3D compute")]:
             data = sample.get(key, {})
-            if cpu_only:
+            if cpu_only or (key == "qd3d" and architecture == "68k"):
                 if data is not None:
                     return False
                 continue
@@ -119,12 +124,13 @@ def validate_samples(samples, seconds, workload="gpu"):
                 return False
         previous_time, previous_cycle, previous_calls = elapsed, cycle, calls
     return (samples[-1]["seconds"] >= seconds and samples[-1]["cycles"] > 0
-            and (cpu_only or all(last > first for last, first in zip(samples[-1]["gpu_writebacks"], samples[0]["gpu_writebacks"]))))
+            and (cpu_only or all(last > first if needed else last == first == 0 for last, first, needed in zip(samples[-1]["gpu_writebacks"], samples[0]["gpu_writebacks"], required))))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--architecture", choices=("68k", "ppc"), default="ppc")
     parser.add_argument("--seconds", type=int, default=7200)
     parser.add_argument("--workload", choices=("gpu", "cpu-baseline"), default="gpu")
     parser.add_argument("--profile", choices=("ci-test", "release"), default="ci-test")
@@ -146,7 +152,7 @@ def main():
             digest.update(name.encode() + b"\0" + (root / name).read_bytes() + b"\0")
         return digest.hexdigest()
     initial_digest = source_digest()
-    report = dict(schema_version=4, revision=revision, dirty=git("status", "--porcelain").splitlines(),
+    report = dict(schema_version=5, architecture=args.architecture, revision=revision, dirty=git("status", "--porcelain").splitlines(),
                   source_sha256=initial_digest, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   fixture_sha256=hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest(),
                   host=platform.platform(), machine=platform.machine(), seconds=args.seconds, profile=args.profile, workload=args.workload,
@@ -192,7 +198,8 @@ def main():
         report.update(status="running", command=command)
         save()
         env = dict(os.environ, SYSTEMLESS_REQUIRE_GPU="1", SYSTEMLESS_GPU_COMPUTE_SOAK_SECONDS=str(args.seconds),
-                   SYSTEMLESS_GPU_COMPUTE_SOAK_REPORT=str(output / "resources.jsonl"))
+                   SYSTEMLESS_GPU_COMPUTE_SOAK_REPORT=str(output / "resources.jsonl"),
+                   SYSTEMLESS_GPU_COMPUTE_ARCHITECTURE=args.architecture)
         env.pop("SYSTEMLESS_GPU_COMPUTE_SOAK_CPU_ONLY", None)
         if args.workload == "cpu-baseline":
             env.pop("SYSTEMLESS_REQUIRE_GPU", None)
@@ -220,7 +227,7 @@ def main():
                 time.sleep(1)
         (output / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
         samples = [json.loads(line) for line in (output / "resources.jsonl").read_text().splitlines()] if (output / "resources.jsonl").exists() else []
-        workload_complete = validate_samples(samples, args.seconds, args.workload)
+        workload_complete = validate_samples(samples, args.seconds, args.workload, args.architecture)
         teardown = teardown_evidence((output / "run.log").read_text(errors="replace"))
         memory_report = memory_evidence(memory)
         passed = (process.returncode == 0 and workload_complete and teardown["complete"] and memory_report["complete"]

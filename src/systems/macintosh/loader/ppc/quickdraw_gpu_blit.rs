@@ -229,6 +229,7 @@ pub(super) fn deep_mask_operation(
         }
     };
     Some(crate::quickdraw::gpu::QuickDrawGpuDeepMask {
+        classic_colors: false,
         source_depth,
         destination_depth,
         mask_depth: mask.depth,

@@ -15,7 +15,7 @@ function fixture(search = '?renderer=worker') {
   const context = vm.createContext({ URL, URLSearchParams, document,
     location: { search, href: `https://systemless.test/game${search}` },
     ResizeObserver: class {}, Worker: class {},
-    performance: { now: () => now, getEntriesByType: () => [{ name: 'https://systemless.test/systemless-a_bg.wasm' }] },
+    performance: { now: () => now, getEntriesByType: () => [{ name: 'https://systemless.test/systemless-a_bg.wasm' }, { name: 'https://systemless.test/systemless-a.js' }] },
     setInterval: callback => { timers.set(++id, callback); return id; }, clearInterval: id => timers.delete(id),
     loadRendererModule: url => { imports.push(url); return module; },
   });
@@ -79,4 +79,13 @@ test('GPU presentation requires its additional explicit qualification option', a
   }
   const disabled = fixture('?renderer_gpu=1');
   assert.equal(disabled.handle, null); assert.equal(disabled.imports.length, 0);
+});
+
+
+test('wgpu selection passes the matching Wasm module and binary to the worker', async () => {
+  const f = fixture('?renderer=wgpu'); f.resolve(); await f.settle();
+  const options = f.clients[0].args[3];
+  assert.equal(options.backend, 'wgpu');
+  assert.equal(options.moduleUrl, 'https://systemless.test/systemless-a.js');
+  assert.equal(options.wasmUrl, 'https://systemless.test/systemless-a_bg.wasm');
 });

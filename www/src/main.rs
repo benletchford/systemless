@@ -7,12 +7,18 @@ mod catalogue;
 mod compact_vectors;
 mod components;
 mod emulator;
+#[cfg(target_arch = "wasm32")]
+mod gpu_compute_worker;
+mod gpu_proxy;
+mod gpu_wire;
 mod host_cursor;
 mod indexed_frame;
 mod paths;
 mod presentation;
 mod renderer_bridge;
 mod save_store;
+#[cfg(target_arch = "wasm32")]
+mod wgpu_presenter;
 mod worker_runtime;
 
 use leptos::mount::{mount_to, mount_to_body};

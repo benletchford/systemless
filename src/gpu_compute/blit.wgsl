@@ -139,7 +139,11 @@ fn arithmetic_pixel(s:u32,d:u32) -> u32 {
 @group(0) @binding(8) var<storage,read> deep_mask:array<u32>;
 fn deep_rgb(depth:u32,pixel:u32,clut:u32) -> vec3<u32> {
     if depth==1u {return select(vec3<u32>(0u),vec3<u32>(65535u),pixel==0u);}
-    if depth==16u {return (vec3<u32>((pixel>>10u)&31u,(pixel>>5u)&31u,pixel&31u)*65535u+vec3<u32>(15u))/31u;}
+    if depth==16u {
+        let c=vec3<u32>((pixel>>10u)&31u,(pixel>>5u)&31u,pixel&31u);
+        if (deep_mask[3]&256u)!=0u {return (c<<vec3<u32>(11u))|(c<<vec3<u32>(6u))|(c<<vec3<u32>(1u))|(c>>vec3<u32>(4u));}
+        return (c*65535u+vec3<u32>(15u))/31u;
+    }
     if depth==32u {return vec3<u32>((pixel>>16u)&255u,(pixel>>8u)&255u,pixel&255u)*257u;}
     let base=clut+pixel*3u;return vec3<u32>(deep_mask[base],deep_mask[base+1u],deep_mask[base+2u]);
 }
@@ -148,6 +152,27 @@ fn deep_encode(rgb:vec3<u32>,clut:u32) -> u32 {
     if depth==1u {return select(0u,1u,rgb.x+rgb.y+rgb.z<=98302u);}
     if depth==16u {return ((rgb.x>>11u)<<10u)|((rgb.y>>11u)<<5u)|(rgb.z>>11u);}
     if depth==32u {return ((rgb.x>>8u)<<16u)|((rgb.y>>8u)<<8u)|(rgb.z>>8u);}
+    if (deep_mask[3]&256u)!=0u {
+        // Classic inverse tables pin exact white to the first endpoint even
+        // when the terminal entry duplicates white; exact black prefers last.
+        if all(rgb==vec3<u32>(65535u)) && all(vec3<u32>(deep_mask[clut],deep_mask[clut+1u],deep_mask[clut+2u])==rgb) {return 0u;}
+        let last=deep_mask[5]-1u;
+        let endpoint=clut+last*3u;
+        if all(rgb==vec3<u32>(deep_mask[endpoint],deep_mask[endpoint+1u],deep_mask[endpoint+2u])) {return last;}
+        var best=0u;var best_low=0xffffffffu;var best_high=0xffffffffu;
+        for(var i=0u;i<deep_mask[5];i++) {
+            let base=clut+i*3u;
+            let color=vec3<u32>(deep_mask[base],deep_mask[base+1u],deep_mask[base+2u]);
+            if all(rgb==color) {return i;}
+            let delta=max(rgb,color)-min(rgb,color);
+            let square=delta*delta;
+            let rg=square.x+square.y;
+            let low=rg+square.z;
+            let high=select(0u,1u,rg<square.x)+select(0u,1u,low<rg);
+            if high<best_high || (high==best_high && low<best_low) {best=i;best_low=low;best_high=high;}
+        }
+        return best;
+    }
     let requested_color=vec3<i32>(rgb>>vec3<u32>(11u));
     var best=0u;var best_distance=0xffffffffu;
     for(var i=0u;i<deep_mask[5];i++) {
@@ -160,7 +185,7 @@ fn deep_encode(rgb:vec3<u32>,clut:u32) -> u32 {
 }
 fn deep_boolean(s:u32,d:u32) -> u32 {
     var bits=0xffffffffu;if deep_mask[1]<32u {bits=(1u<<deep_mask[1])-1u;}
-    switch deep_mask[3] {
+    switch (deep_mask[3]&63u) {
         case 1u: {return s|d;}
         case 2u: {return s^d;}
         case 3u: {return (~s)&d&bits;}
@@ -191,7 +216,7 @@ fn deep_boolean(s:u32,d:u32) -> u32 {
         covered=covered && mask_pixel!=0u;
         value=deep_boolean(deep_encode(source_rgb,destination_clut),destination);
     } else {
-        if deep_mask[3]>=1u && deep_mask[3]<=7u {
+        if (deep_mask[3]&63u)>=1u && (deep_mask[3]&63u)<=7u {
             source_rgb=deep_rgb(deep_mask[1],deep_boolean(deep_encode(source_rgb,destination_clut),destination),destination_clut);
         }
         let d=deep_rgb(deep_mask[1],destination,destination_clut);

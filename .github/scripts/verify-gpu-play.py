@@ -45,13 +45,16 @@ def main():
             archive = case / "toolbox-showcase.sit"
             shutil.copy2(fixture, archive)
             captures = case / "play"
+            scenario = json.loads((repo / "tests/play" / script).read_text(encoding="utf-8"))
+            scenario["reference_tolerance"] = 0 if exact else 8
+            scenario_path = case / "scenario.json"
+            scenario_path.write_text(json.dumps(scenario, indent=2) + "\n", encoding="utf-8")
             command = [str(binary), str(archive), "--headless", architecture_flag,
-                       "--play-script", str(repo / "tests/play" / script),
+                       "--play-script", str(scenario_path),
                        "--play-output", str(captures)]
             if gpu:
                 command.append("--gpu")
-                if exact:
-                    command.extend(("--play-reference", str(reference)))
+                command.extend(("--play-reference", str(reference)))
             log_path = case / "run.log"
             with log_path.open("w", encoding="utf-8") as log:
                 result = subprocess.run(command, cwd=repo, stdout=log,
@@ -66,10 +69,11 @@ def main():
             if gpu:
                 missing = [marker for marker in markers if marker not in log]
                 fallbacks = [line for line in log.splitlines()
-                             if line.startswith("[GPU]") and "CPU fallback" in line]
+                             if line.startswith("[GPU]") and any(reason in line
+                                 for reason in ("CPU fallback", "software fallback"))]
                 if missing or fallbacks:
                     raise RuntimeError(f"{label}: missing GPU markers {missing}; fallbacks {fallbacks}")
-                if exact and any(point.get("differing_pixels") != 0
+                if any(point.get("differing_pixels") != 0
                                  for point in report["checkpoints"]):
                     raise RuntimeError(label + " did not match the CPU screenshots")
             else:

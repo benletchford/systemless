@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check native selection without starting a window manager or guest."""
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -52,6 +53,19 @@ class Cases(unittest.TestCase):
                                  "--soak-seconds", "7200"], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn("require --soak-runtime", result.stderr)
+
+    def test_qualifier_timeout_covers_actual_matrix(self):
+        path = Path(__file__).with_name("qualify-renderers.py")
+        spec = importlib.util.spec_from_file_location("qualifier", path)
+        qualifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qualifier)
+        self.assertEqual(qualifier.native_matrix_timeout(SCRIPT, []), 38 * 120 + 60)
+        for selectors, count in (([], 6), (["--runtime", "inline"], 3),
+                                 (["--presenter", "wgpu"], 2),
+                                 (["--runtime", "thread", "--presenter", "software"], 1)):
+            self.assertEqual(qualifier.native_matrix_timeout(
+                SCRIPT, ["--soak-only", "--soak-seconds", "300", *selectors], 300),
+                count * 420 + 60)
 
     def test_limits_and_recovery_constraints(self):
         self.run_cases("--soak-only", "--soak-seconds", "21601", "--runtime", "inline", "--presenter", "wgpu", valid=False)

@@ -1972,6 +1972,10 @@ fn start_render_loop(
             *cb_cell_self.borrow_mut() = None;
             return;
         }
+        if let Err(error) = frame.poll_recovery() {
+            set_status(status, error);
+        }
+        let _ = canvas.set_attribute("data-render-backend", frame.backend_name());
         let debug_enabled = debug_visible.get_untracked();
         let debug_visibility_changed = debug_enabled != previous_debug_enabled;
         previous_debug_enabled = debug_enabled;
@@ -2013,7 +2017,8 @@ fn start_render_loop(
 
         let force_debug_paint = debug_enabled || debug_visibility_changed;
         let painted_frame =
-            should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint);
+            should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint)
+                || frame.needs_snapshot();
         if painted_frame {
             let render_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
             frame.set_cursor_css(&canvas, m.cursor_css());
@@ -2034,12 +2039,12 @@ fn start_render_loop(
             if timing_enabled {
                 timings.paint_ms = perf_now_ms() - paint_start_ms;
             }
-            if !painted_once {
+            if !painted_once && (!frame.asynchronous() || frame.submitted()) {
                 if let Some(callback) = on_first_paint.borrow_mut().take() {
                     callback();
                 }
             }
-            painted_once = true;
+            painted_once = !frame.asynchronous() || frame.submitted();
         }
         let counters = if timing_enabled {
             let counters = m.perf_counters();
@@ -2518,6 +2523,24 @@ async fn boot_catalogue_worker(
         }
     }
     set_js_property(&message, "pluginForks", plugin_forks.as_ref());
+    let search = web_sys::window()
+        .and_then(|window| window.location().search().ok())
+        .unwrap_or_default();
+    if let Some(options) = crate::gpu_proxy::ComputeOptions::from_query(&search) {
+        let compute = Object::new();
+        set_js_property(&compute, "mode", &JsValue::from_str(options.mode));
+        if let Some(ms) = options.timeout_ms {
+            set_js_property(&compute, "timeoutMs", &JsValue::from_f64(ms.into()));
+        }
+        if let Some(ms) = options.inject_failure_after_ms {
+            set_js_property(
+                &compute,
+                "injectFailureAfterMs",
+                &JsValue::from_f64(ms.into()),
+            );
+        }
+        set_js_property(&message, "gpuCompute", compute.as_ref());
+    }
     let on_progress = Closure::wrap(Box::new(move |value: JsValue| {
         if let Some(progress) = value
             .as_string()
@@ -2633,6 +2656,16 @@ async fn boot_catalogue_worker(
             }
             return;
         }
+        if js_string_property(&data, "type").as_deref() == Some("gpuCompute") {
+            // Diagnostics for verification; unavailable compute keeps CPU rendering.
+            if let Some(window) = web_sys::window() {
+                let _ = Reflect::set(&window, &"__systemlessGpuComputeStatus".into(), &data);
+            }
+            if js_string_property(&data, "state").as_deref() != Some("ready") {
+                web_sys::console::warn_2(&"Systemless GPU compute:".into(), &data);
+            }
+            return;
+        }
         if js_string_property(&data, "type").as_deref() == Some("saveFiles") {
             if let Some(version) = js_string_property(&data, "saveFilesVersion")
                 .and_then(|version| version.parse::<u64>().ok())
@@ -2682,6 +2715,13 @@ async fn boot_catalogue_worker(
                         &mut state,
                         WorkerVisualFrame::SoftwareJs(width, height, pixels),
                     );
+                }
+            }
+        }
+        if let Ok(stats) = Reflect::get(&data, &JsValue::from_str("gpuCompute")) {
+            if !stats.is_undefined() {
+                if let Some(window) = web_sys::window() {
+                    let _ = Reflect::set(&window, &"__systemlessGpuCompute".into(), &stats);
                 }
             }
         }

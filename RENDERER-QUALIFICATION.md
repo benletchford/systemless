@@ -57,7 +57,7 @@ for each run. Full benchmark timing boundaries are in
 
 The native-window workflow runs Linux virtual-desktop and macOS desktop checks,
 including a short repeated lifecycle soak. Dispatch it with `soak-seconds` for
-longer runs. The default four-case matrix permits up to 3600 seconds per owner.
+longer runs. The default six-case matrix permits up to 3600 seconds per owner.
 For a genuine multi-hour session, select a single runtime and presenter:
 
 ```sh
@@ -180,3 +180,44 @@ The native matrix injects platform initialization failure after macOS Metal
 layer attachment, both at wgpu startup failure and after a fatal runtime error,
 and verifies software publication, guest continuity and layer cleanup in both
 runtime modes. These synthetic cases do not qualify real driver-reset recovery.
+
+## Architecture-specific qualification
+
+The production completion plan is [GPU-PRODUCTION-PLAN.md](GPU-PRODUCTION-PLAN.md).
+Forced guest writeback tests exercise both the classic 68k and native PPC slices;
+installation/adaptive-selection log messages alone are not dispatch evidence.
+The top-level qualifier also runs the headless guest capture comparisons,
+including a full native 3D CPU/GPU comparison with component tolerance 8.
+
+Compute schema 5 requires the selected architecture in every resource sample.
+Run each architecture separately, keeping their reports distinct:
+
+```sh
+python3 .github/scripts/soak-gpu-compute.py --architecture 68k --seconds 7200 --output /tmp/compute-68k
+python3 .github/scripts/soak-gpu-compute.py --architecture ppc --seconds 7200 --output /tmp/compute-ppc
+```
+
+Both require advancing QuickDraw, masked-raster and deep-mask requests. PPC
+additionally requires QD3D progress and device observations; 68k requires zero
+QD3D requests and a null QD3D device observation. The same teardown and memory
+requirements apply. CI smoke checks cover both slices on all three operating
+systems. The top-level qualifier runs both when compute stress is requested.
+These checks do not qualify physical driver resets or replace the hardware matrix.
+
+## Browser compute qualification
+
+The browser runs the same `src/gpu_compute` kernels in a dedicated WebGPU
+worker (see `www/README.md`). After building the site, run:
+
+```sh
+node www/scripts/verify-gpu-compute-cdp.mjs www/dist
+```
+
+It serves pages with `www/public/_headers` and requires cross-origin
+isolation, then replays the 68k UI, PPC sprite and PPC QD3D play scenarios
+through the production emulation worker on the CPU and with forced GPU
+dispatch. Captures must match (QD3D within eight levels per component), every
+GPU request must succeed, and each scenario must complete its expected request
+kinds. It also runs adaptive dispatch and injects device loss mid-scenario,
+requiring identical captures after CPU fallback. It needs a browser with real
+WebGPU and does not run in CI.

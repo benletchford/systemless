@@ -24,6 +24,23 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_architecture_is_explicit_and_scopes_native_3d(self):
+        data = evidence()
+        self.assertFalse(module.validate_samples(data, 1, architecture="ppc"))
+        for row in data:
+            row["architecture"] = "ppc"
+        self.assertTrue(module.validate_samples(data, 1, architecture="ppc"))
+        self.assertFalse(module.validate_samples(data, 1, architecture="68k"))
+        for row in data:
+            row.update(architecture="68k", qd3d=None)
+            row["gpu_writebacks"][3] = 0
+        self.assertTrue(module.validate_samples(data, 1, architecture="68k"))
+        data[-1]["gpu_writebacks"][3] = 1
+        self.assertFalse(module.validate_samples(data, 1, architecture="68k"))
+        data[-1]["gpu_writebacks"][3] = 0
+        data[-1]["gpu_writebacks"][2] = data[0]["gpu_writebacks"][2]
+        self.assertFalse(module.validate_samples(data, 1, architecture="68k"))
+
     def test_cpu_baseline_is_explicit_and_cannot_qualify_gpu_work(self):
         data = evidence()
         for row in data:

@@ -36,6 +36,20 @@ class EvidenceTests(unittest.TestCase):
     def parse(self, log, samples=100, system="Linux"):
         return benchmark.parse_batch(log, 2, samples, "text", system)
 
+    def test_architecture_must_match_exactly_once(self):
+        log = log_for(observations())
+        for arch in ("68k", "ppc"):
+            with self.assertRaisesRegex(ValueError, "guest architecture"):
+                benchmark.parse_batch(log, 0, 100, "text", "Linux", architecture=arch)
+            tagged = log + "\n[RENDER-ARCHITECTURE] " + arch
+            rows = benchmark.parse_batch(tagged, 0, 100, "text", "Linux", architecture=arch)
+            self.assertTrue(all(row["architecture"] == arch for row in rows if row["case"] == "text"))
+            self.assertTrue(all(row["architecture"] is None for row in rows if row["case"] != "text"))
+            for invalid in (tagged + "\n[RENDER-ARCHITECTURE] " + arch,
+                            tagged.replace("[RENDER-ARCHITECTURE] " + arch, "[RENDER-ARCHITECTURE] wrong")):
+                with self.assertRaisesRegex(ValueError, "guest architecture"):
+                    benchmark.parse_batch(invalid, 0, 100, "text", "Linux", architecture=arch)
+
     def cpu_log(self, values=None, clock="CLOCK_THREAD_CPUTIME_ID"):
         values = list(range(100)) if values is None else values
         return log_for(observations()) + "\n" + "\n".join(

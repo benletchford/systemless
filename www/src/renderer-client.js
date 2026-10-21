@@ -7,7 +7,7 @@ let nextRendererGeneration = 0;
 // canvas is transferred or receives GPU bitmaps. Replacing either presenter
 // preserves held keys, pointer capture, focus and touch-release callbacks.
 export class RendererClient {
-  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d", owner = null, direct = false, bitmap = false } = {}) {
+  constructor(logicalCanvas, workerUrl, generation, { backend = "canvas2d", owner = null, direct = false, bitmap = false, moduleUrl = null, wasmUrl = null } = {}) {
     this.logicalCanvas = logicalCanvas;
     this.bitmapWanted = bitmap && backend === "webgl";
     this.bitmapPresenter = null;
@@ -93,7 +93,7 @@ export class RendererClient {
       this.worker.onmessage = ({ data }) => this.receive(data);
       this.worker.onerror = event => { event.preventDefault(); this.fail(new Error(event.message || "Renderer worker crashed")); };
       this.worker.onmessageerror = () => this.fail(new Error("Unreadable renderer reply"));
-      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen, backend, bitmap: this.bitmapWanted }, [offscreen]);
+      this.worker.postMessage({ ...this.identity, type: "init", canvas: offscreen, backend, moduleUrl, wasmUrl, bitmap: this.bitmapWanted }, [offscreen]);
       this.timer = setInterval(() => this.checkTimeout(), 500);
     } catch (error) {
       this.fail(error);

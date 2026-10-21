@@ -5,6 +5,8 @@ pub struct QuickDrawGpuDeepMask {
     pub destination_depth: u32,
     pub mask_depth: u32,
     pub mode: u32,
+    /// Classic traps use replicated RGB555 and full-precision inverse tables.
+    pub classic_colors: bool,
     pub source_clut: Vec<[u16; 3]>,
     pub destination_clut: Vec<[u16; 3]>,
     pub mask_clut: Vec<[u16; 3]>,
@@ -72,6 +74,9 @@ impl QuickDrawGpuDeepMask {
     }
     #[cfg(test)]
     pub(super) fn reference(&self, source: u32, i: usize) -> u32 {
+        let rgb = |depth, pixel, clut: &[[u16; 3]]| rgb(depth, pixel, clut, self.classic_colors);
+        let encode =
+            |depth, color, clut: &[[u16; 3]]| encode(depth, color, clut, self.classic_colors);
         let destination = self.background[i];
         let s = rgb(self.source_depth, source, &self.source_clut);
         let d = rgb(self.destination_depth, destination, &self.destination_clut);
@@ -111,7 +116,7 @@ impl QuickDrawGpuDeepMask {
     }
 }
 #[cfg(test)]
-fn rgb(depth: u32, pixel: u32, clut: &[[u16; 3]]) -> [u16; 3] {
+fn rgb(depth: u32, pixel: u32, clut: &[[u16; 3]], classic: bool) -> [u16; 3] {
     match depth {
         1 => {
             if pixel == 0 {
@@ -121,15 +126,19 @@ fn rgb(depth: u32, pixel: u32, clut: &[[u16; 3]]) -> [u16; 3] {
             }
         }
         2 | 4 | 8 => clut[pixel as usize],
-        16 => {
-            [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31].map(|v| ((v * 65535 + 15) / 31) as u16)
-        }
+        16 => [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31].map(|v| {
+            if classic {
+                ((v << 11) | (v << 6) | (v << 1) | (v >> 4)) as u16
+            } else {
+                ((v * 65535 + 15) / 31) as u16
+            }
+        }),
         32 => [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255].map(|v| (v * 257) as u16),
         _ => unreachable!(),
     }
 }
 #[cfg(test)]
-fn encode(depth: u32, color: [u16; 3], clut: &[[u16; 3]]) -> u32 {
+fn encode(depth: u32, color: [u16; 3], clut: &[[u16; 3]], classic: bool) -> u32 {
     match depth {
         1 => u32::from(color.iter().map(|v| u32::from(*v)).sum::<u32>() <= 98302),
         16 => {
@@ -141,6 +150,27 @@ fn encode(depth: u32, color: [u16; 3], clut: &[[u16; 3]]) -> u32 {
             u32::from(color[0] >> 8) << 16
                 | u32::from(color[1] >> 8) << 8
                 | u32::from(color[2] >> 8)
+        }
+        _ if classic => {
+            let last = clut.len() - 1;
+            if color == [65535; 3] && clut[0] == [65535; 3] {
+                return 0;
+            }
+            if color == clut[last] {
+                return last as u32;
+            }
+            if let Some(index) = clut.iter().position(|entry| *entry == color) {
+                return index as u32;
+            }
+            clut.iter()
+                .enumerate()
+                .min_by_key(|(_, rgb)| {
+                    (0..3)
+                        .map(|i| (i64::from(color[i]) - i64::from(rgb[i])).pow(2) as u64)
+                        .sum::<u64>()
+                })
+                .unwrap()
+                .0 as u32
         }
         _ => {
             clut.iter()

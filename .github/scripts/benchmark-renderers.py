@@ -23,8 +23,17 @@ KERNEL_CASES = ("3d-kernel-64x48", "3d-kernel-320x240", "3d-kernel-640x480",
                 "3d-sparse-64", "3d-overdraw-8")
 
 
-def parse_batch(log, run, samples, guest_case=None, system=None, thread_cpu=False):
+def parse_batch(log, run, samples, guest_case=None, system=None, thread_cpu=False, architecture=None):
     """Reject incomplete evidence; preserve chronological observations."""
+    if architecture is not None:
+        if architecture not in ("68k", "ppc"):
+            raise ValueError("unknown guest architecture")
+        identities = [line.split("[RENDER-ARCHITECTURE] ", 1)[1].strip()
+                      for line in log.splitlines() if "[RENDER-ARCHITECTURE] " in line]
+        if identities != [architecture]:
+            raise ValueError("missing or mismatched guest architecture")
+        if architecture == "68k" and guest_case == "3d":
+            raise ValueError("QD3D guest workload requires PPC")
     summaries = {}
     for case, backend, count, p50, p95 in SUMMARY.findall(log):
         key = (case, backend)
@@ -81,7 +90,7 @@ def parse_batch(log, run, samples, guest_case=None, system=None, thread_cpu=Fals
         raw[key] = values
     if raw.keys() != summaries.keys():
         raise ValueError("raw observations and summaries differ")
-    guest_cases = (guest_case,) if guest_case else GUEST_CASES
+    guest_cases = (guest_case,) if guest_case else tuple(case for case in GUEST_CASES if architecture != "68k" or case != "3d")
     if set(orders) != set(guest_cases):
         raise ValueError("missing guest pair order")
     expected = {(case, backend): samples for case in guest_cases
@@ -112,6 +121,7 @@ def parse_batch(log, run, samples, guest_case=None, system=None, thread_cpu=Fals
         cpu_values = cpu.get((case, backend))
         cpu_ordered = sorted(cpu_values) if cpu_values is not None else None
         records.append(dict(run=run, case=case, backend=backend, n=count,
+                            architecture=architecture if case in guest_cases else None,
                             first_measured_backend=orders.get(case),
                             p50_us=p50, p95_us=p95,
                             p99_us=ordered[(count * 99 + 99) // 100 - 1] if count >= 100 else None,
@@ -129,6 +139,7 @@ def main():
     repo = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--architecture", choices=("68k", "ppc"), default="ppc")
     parser.add_argument("--samples", type=int, default=15)
     parser.add_argument("--profile", choices=("release", "fast", "ci-test"), default="release")
     parser.add_argument("--runs", type=int, default=3)
@@ -136,12 +147,15 @@ def main():
     parser.add_argument("--reverse-first", action="store_true")
     parser.add_argument("--thread-cpu", action="store_true", help="supplement guest wall timings with current-thread CPU accounting")
     args = parser.parse_args()
+    if args.architecture == "68k" and args.guest_case == "3d":
+        parser.error("--guest-case 3d requires --architecture ppc")
     if args.samples < 3 or args.runs < 1:
         parser.error("use at least three samples and one run")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     environment = dict(os.environ, SYSTEMLESS_REQUIRE_GPU="1",
-                       SYSTEMLESS_BENCH_SAMPLES=str(args.samples))
+                       SYSTEMLESS_BENCH_SAMPLES=str(args.samples),
+                       SYSTEMLESS_BENCH_ARCHITECTURE=args.architecture)
     if args.thread_cpu:
         environment["SYSTEMLESS_BENCH_THREAD_CPU"] = "1"
     else:
@@ -167,7 +181,7 @@ def main():
         text = log.read_text(errors="replace")
         if result.returncode:
             raise RuntimeError(f"benchmark failed; inspect {log}\n{text[-5000:]}")
-        batch = parse_batch(text, run, args.samples, args.guest_case, thread_cpu=args.thread_cpu)
+        batch = parse_batch(text, run, args.samples, args.guest_case, thread_cpu=args.thread_cpu, architecture=args.architecture)
         records.extend(batch)
         for record in batch:
             print(f"run={run} {record['case']} {record['backend']}: "
@@ -181,7 +195,7 @@ def main():
     sources = [name for name in sources if name]
     for name in sorted(sources + ["Cargo.toml", "Cargo.lock"]):
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
-    report = dict(schema_version=4 if args.thread_cpu else 3,
+    report = dict(schema_version=5, architecture=args.architecture,
                   thread_cpu_enabled=args.thread_cpu,
                   thread_cpu_scope="calling guest thread user+kernel CPU including driver work on that thread; encloses wall timer with boundary overhead; excludes hardware GPU time and other worker threads; clock accounting granularity varies" if args.thread_cpu else None,
                   gpu_request_columns=["quickdraw", "glyph_masks", "deep_masks", "3d"],

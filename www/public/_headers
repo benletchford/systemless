@@ -1,0 +1,7 @@
+# Cross-origin isolation enables SharedArrayBuffer for synchronous browser
+# GPU compute. `credentialless` keeps no-cors images (badges) loading without
+# credentials; browsers that do not support it stay unisolated and keep CPU
+# rendering.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: credentialless

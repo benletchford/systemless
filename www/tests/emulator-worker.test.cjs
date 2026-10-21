@@ -29,14 +29,17 @@ function worker(steps = () => 1, frameTicks = 6, cloneTransfers = false, options
     },
   };
   const context = vm.createContext({
-    URL, loadRenderer: options.loadRenderer,
-    self: { location: {href:"https://example.test/emulator-worker.js?runtime=test"}, postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); } },
+    URL, loadRenderer: options.loadRenderer, loadBridge: options.loadBridge, ...options.globals,
+    self: { location: {href:"https://example.test/emulator-worker.js?runtime=test"}, postMessage(message, transfer = []) { messages.push(cloneTransfers ? structuredClone(message, { transfer }) : message); }, ...options.self },
     stub,
     performance: { now: () => now },
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8').replace('await import(url.href)', 'await loadRenderer(url.href)'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/emulator-worker.js'), 'utf8')
+    .replace('await import(url.href)', 'await loadRenderer(url.href)')
+    .replace('await import(bridgeUrl.href)', 'await loadBridge(bridgeUrl.href)'), context);
   vm.runInContext('machine = stub; saveFilesVersion = stub.saveFilesVersion()', context);
   return {
+    context,
     send: (type, fields = {}) => context.self.onmessage({ data: { type, generation: 0, ...fields } }),
     frames,
     messages,
@@ -351,4 +354,74 @@ test('renderer module failure remains a presenter error while guest execution co
   assert.equal(port.closed,true);assert.equal(w.frames.length,1);
   assert.equal(w.messages.find(m=>m.type==='rendererStatus').event,'error');
   assert.equal(w.messages.some(m=>m.type==='error'),false);
+});
+
+function computeWorker(options = {}) {
+  const workers = [];
+  class FakeWorker {
+    constructor(url) { this.url = url; this.posted = []; this.terminated = false; workers.push(this); }
+    postMessage(message, transfer) { this.posted.push({ message, transfer }); }
+    terminate() { this.terminated = true; }
+  }
+  const bridgeUrl = require('node:url').pathToFileURL(path.join(__dirname, '../src/gpu-compute-bridge.js')).href;
+  const w = worker(() => 1, 6, false, {
+    loadBridge: url => { w.bridgeImports.push(url); return import(bridgeUrl); },
+    globals: { Worker: FakeWorker, MessageChannel, SharedArrayBuffer, Int32Array, Uint8Array, Atomics },
+    self: { crossOriginIsolated: options.isolated ?? true, navigator: { gpu: {} } },
+  });
+  w.bridgeImports = [];
+  w.workers = workers;
+  w.start = mode => vm.runInContext(
+    `startGpuCompute(${JSON.stringify({ gpuCompute: { mode, timeoutMs: 250 }, moduleUrl: '/m.js', wasmUrl: '/m.wasm' })})`, w.context);
+  w.computeReady = async () => {
+    const port = workers[0].posted[0].message.port;
+    port.postMessage({ type: 'ready', adapter: 'Test GPU (BrowserWebGpu)' });
+    // Port delivery is asynchronous; wait for the worker's status reply.
+    const deadline = Date.now() + 5000;
+    while (!w.messages.some(m => m.type === 'gpuCompute') && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    port.close();
+  };
+  return w;
+}
+
+test('GPU compute stays off without cross-origin isolation', async () => {
+  const w = computeWorker({ isolated: false });
+  await w.start('adaptive');
+  assert.equal(w.workers.length, 0);
+  assert.deepEqual(w.messages.map(m => [m.type, m.state, m.message]),
+    [['gpuCompute', 'unavailable', 'page is not cross-origin isolated']]);
+  assert.throws(() => w.context.self.systemlessGpuCompute(new Uint8Array(1), 16), /not connected/);
+});
+
+test('GPU compute enables guest dispatch only after the device is ready', async () => {
+  const w = computeWorker();
+  const modes = [];
+  w.override({ setGpuCompute: mode => { modes.push(mode); return true; }, flushSaves: async () => {}, free() {} });
+  await w.start('force');
+  assert.equal(w.workers.length, 1);
+  assert.match(w.workers[0].url, /\/gpu-compute-worker\.js\?runtime=test$/);
+  const init = w.workers[0].posted[0].message;
+  assert.equal(init.type, 'init');
+  assert.equal(init.protocol, 1);
+  assert.ok(init.control instanceof SharedArrayBuffer);
+  assert.deepEqual([init.moduleUrl, init.wasmUrl], ['/m.js', '/m.wasm']);
+  assert.deepEqual(modes, [], 'no guest work is routed before the device exists');
+  await w.computeReady();
+  assert.deepEqual(modes, ['force']);
+  assert.deepEqual(w.messages.map(m => [m.type, m.state, m.adapter]),
+    [['gpuCompute', 'ready', 'Test GPU (BrowserWebGpu)']]);
+  await w.send('shutdown');
+  assert.equal(w.workers[0].terminated, true);
+  assert.throws(() => w.context.self.systemlessGpuCompute(new Uint8Array(1), 16), /not connected/);
+});
+
+test('a runtime without GPU compute support releases the compute worker', async () => {
+  const w = computeWorker();
+  await w.start('adaptive');
+  await w.computeReady();
+  assert.equal(w.workers[0].terminated, true);
+  assert.deepEqual(w.messages.map(m => [m.type, m.state, m.message]),
+    [['gpuCompute', 'failed', 'Runtime does not support GPU compute']]);
 });
