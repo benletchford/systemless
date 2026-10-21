@@ -102,6 +102,6 @@ systemless-catalogue-tools = { path = "tools/catalogue" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser compute workers run the same kernels as the desktop renderer.
-systemless = { path = "..", default-features = false, features = ["wgpu-compute"] }
+systemless = { path = "..", version = "0.98.1", default-features = false, features = ["wgpu-compute"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
 futures-channel = "0.3"
