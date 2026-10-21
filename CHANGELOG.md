@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.99.0](https://github.com/benletchford/systemless/compare/v0.98.1...v0.99.0) (2026-10-21)
+
+
+### Features
+
+* add conservative explicit renderer selection ([824cc15](https://github.com/benletchford/systemless/commit/824cc15e5610e6d2ab0668cf88b4cf289d5f6fa2))
+* expose software presentation for qualification ([ebc767c](https://github.com/benletchford/systemless/commit/ebc767c718a3b41f041f57199b9fa1906d5392d2))
+* **gpu:** add opt-in wgpu desktop presentation ([4797312](https://github.com/benletchford/systemless/commit/4797312295cc4b02c5c80af060afc43b34445338))
+* **gpu:** batch native line pen stamps into row intervals ([a667403](https://github.com/benletchford/systemless/commit/a6674038bb853d5dba13bc464db5db29d20ce20b))
+* **gpu:** blend native deep bitmap masks ([78d6667](https://github.com/benletchford/systemless/commit/78d6667843fa278399a57c23abafaccf1f304737))
+* **gpu:** clip QuickDraw rectangles with region rows ([76fc1d4](https://github.com/benletchford/systemless/commit/76fc1d4d532a0f595526e98ec2773188f8489952))
+* **gpu:** composite classic glyph masks with retained detail ([5356243](https://github.com/benletchford/systemless/commit/5356243d0ebf0b3b1cc88e0d1b0530028e80bb65))
+* **gpu:** composite native styled text with glyph masks ([c165a89](https://github.com/benletchford/systemless/commit/c165a89ccbea8fc0b475fc5e4157e2a73b86b3a0))
+* **gpu:** composite scaled text with repeated transfer coverage ([b00d253](https://github.com/benletchford/systemless/commit/b00d2539e54e8860114cc9c023e9d66f815f4d98))
+* **gpu:** convert direct-color bitmap sources ([946bebb](https://github.com/benletchford/systemless/commit/946bebbb61f78dbbd63bea279ad2fb8626e57519))
+* **gpu:** draw native regions with row intervals ([b666e95](https://github.com/benletchford/systemless/commit/b666e9523ffba7ff0a485efb30d5c10e226d3489))
+* **gpu:** draw quickdraw arcs with coverage masks ([c676ca2](https://github.com/benletchford/systemless/commit/c676ca2fcb81d4b7dd718fb4b69f05acdf565717))
+* **gpu:** rasterize classic QuickDraw rectangles in wgpu ([d0e5308](https://github.com/benletchford/systemless/commit/d0e530841247476b737688f2546b48cfd7f27260))
+* **gpu:** rasterize complex QuickDraw region fills and frames ([9109a19](https://github.com/benletchford/systemless/commit/9109a19937cb43bd1bb2fc34baed926b8b66ae8d))
+* **gpu:** rasterize native PowerPC oval fills and frames ([f83a938](https://github.com/benletchford/systemless/commit/f83a938974a1608c8d931c58d2722701a8bd5536))
+* **gpu:** rasterize native PowerPC rounded rectangles ([4b19018](https://github.com/benletchford/systemless/commit/4b19018b349bcac132752c0d9e4932bb510a4a51))
+* **gpu:** rasterize QuickDraw 3D points and edges in wgpu ([43358c9](https://github.com/benletchford/systemless/commit/43358c9d081a33359ff6c42d59240cf06ba442bc))
+* **gpu:** rasterize QuickDraw 3D triangles with coherent readback ([3b5ab4a](https://github.com/benletchford/systemless/commit/3b5ab4ae7c788674cefb559be9b759d2a0b64ef8))
+* **gpu:** rasterize QuickDraw oval and rounded rectangle spans ([0afe0e4](https://github.com/benletchford/systemless/commit/0afe0e4e41f11a18554666c7a8d3962c86fe4b51))
+* **gpu:** rasterize QuickDraw polygon crossings in wgpu ([9c5585c](https://github.com/benletchford/systemless/commit/9c5585cdfab96b499b9f791a4f01601fdbd141cc))
+* **gpu:** render bitmap copies and indexed scaling ([872fa08](https://github.com/benletchford/systemless/commit/872fa08de894e1b3cf3de1af28480d5bde8a192a))
+* **gpu:** render masked and transparent bitmap transfers ([6ff9d3d](https://github.com/benletchford/systemless/commit/6ff9d3d44869b12d2b322001592fbf2169043e2f))
+* **gpu:** render native arithmetic bitmap transfers ([314fe16](https://github.com/benletchford/systemless/commit/314fe16de36eb0bca6a57e3db1bc333d2e8cc79c))
+* **gpu:** render native bitmap glyph masks through wgpu ([b0b1747](https://github.com/benletchford/systemless/commit/b0b1747e33733e5eab24959276165bae6d671410))
+* **gpu:** render native polygon fills and patterns ([43f6653](https://github.com/benletchford/systemless/commit/43f6653fe8fd28a02f6d40d1254f9781522a1ea6))
+* **gpu:** render native PowerPC rectangle patterns in wgpu ([a5c8e14](https://github.com/benletchford/systemless/commit/a5c8e14601cd605eda8b9e0d328ed2b0ca89e88d))
+* **gpu:** render packed bitmap copies ([e0f79ec](https://github.com/benletchford/systemless/commit/e0f79ecb5f5ac6ae0cee9c2c8d097b08a3f6ab43))
+* **gpu:** render QuickDraw 3D fog in wgpu ([a1faa9e](https://github.com/benletchford/systemless/commit/a1faa9e646616378d1e7a57ccddb7902dae807cf))
+* **gpu:** resolve retained text coverage through wgpu ([1d5f065](https://github.com/benletchford/systemless/commit/1d5f065b7c661bdad6d59f92cf5caf680c51b010))
+* **gpu:** run QuickDraw and QD3D compute on WebGPU and add 68k deep-mask GPU parity ([9e13c43](https://github.com/benletchford/systemless/commit/9e13c43f4d92d2dcbf3c07f8a44a4aac87bc7126))
+* **gpu:** sample native bitmap scaling and color expansion ([82010fe](https://github.com/benletchford/systemless/commit/82010fe276c605fb7f2d51cb3be6bce526792e67))
+* **gpu:** shade directional lights and Phong highlights in wgpu ([c4d880c](https://github.com/benletchford/systemless/commit/c4d880c6c15e4eb777428925818454d0795dafe4))
+* **gpu:** shade QuickDraw 3D ambient lighting in wgpu ([a95bfb1](https://github.com/benletchford/systemless/commit/a95bfb1e231cdb0223184ae75fba61a908bcd74b))
+* **gpu:** shade QuickDraw 3D point and spot lights in wgpu ([b6274b4](https://github.com/benletchford/systemless/commit/b6274b4e4d0dd6c6c5b5ecab818aac307dbc5053))
+* **gpu:** share QuickDraw rendering with native PowerPC solid fills ([6feb556](https://github.com/benletchford/systemless/commit/6feb5569ec532c464b9dcb6f5111f0365f705bc7))
+* **gpu:** support indexed QuickDraw 3D draw contexts ([907870b](https://github.com/benletchford/systemless/commit/907870b98b0b8185241b329b52d5cff4a3779e86))
+* qualify opt-in software recovery for gpu presentation ([11a3ff6](https://github.com/benletchford/systemless/commit/11a3ff63acd1c8ef04b64ef4080f33ef1be2abd0))
+
+
+### Bug Fixes
+
+* bound gpu readback waits and isolate failed cleanup ([1d71235](https://github.com/benletchford/systemless/commit/1d712356c053e05025ef339e00b0aec41567bfa5))
+* **gpu:** avoid dynamic vector stores in Direct3D line shaders ([47e8d0e](https://github.com/benletchford/systemless/commit/47e8d0ea8d55c9b96cc19eaef992d319d1b92313))
+* **gpu:** commit only painted QuickDraw 3D spans ([82c45bf](https://github.com/benletchford/systemless/commit/82c45bf36a67bf86d6ea464c3410c7d5df2356c0))
+* **gpu:** preserve opaque depth writes in mixed-opacity meshes ([f1eb71a](https://github.com/benletchford/systemless/commit/f1eb71a9c84aa72d34617c0ba057d39a4ae0df60))
+* **gpu:** quantize indexed 3d blending between primitives ([f2fb3d1](https://github.com/benletchford/systemless/commit/f2fb3d1e9adb3fdd1e51f34db6a3fb5a068596ce))
+* **gpu:** recover failed devices and fall back without restarting guests ([475fad7](https://github.com/benletchford/systemless/commit/475fad792bb60c3725968d2955f4ad1410955e39))
+* **qd3d:** commit completed frames before guest code resumes ([5334258](https://github.com/benletchford/systemless/commit/5334258544891151c84184641945b17aa83af2ff))
+* **qd3d:** preserve viewport coverage during triangle clipping ([29d4886](https://github.com/benletchford/systemless/commit/29d4886a36acb890d18a1767e20ccb6e8162cce3))
+* render degenerate gpu triangles as shaded edges ([aba035a](https://github.com/benletchford/systemless/commit/aba035a4aebe67a9722b785dd692179498a801a9))
+* **sound:** silence an all-zero first legacy output frame ([bcd0958](https://github.com/benletchford/systemless/commit/bcd0958901ab67f0cae7c96002f8784a22ad2ad0))
+* try software when gpu platform fallback fails ([626ccce](https://github.com/benletchford/systemless/commit/626ccce0520b52dc6d50f0bd2ad5c81611f0e306))
+
+
+### Performance Improvements
+
+* bin gpu 3d primitives into ordered screen tiles ([f9ff15c](https://github.com/benletchford/systemless/commit/f9ff15c3fd0fed320170a20119c55038e45f769f))
+* **gpu:** avoid readback stalls and reuse rendering resources ([5fdc8d1](https://github.com/benletchford/systemless/commit/5fdc8d18b864bf9c4e269a6aecf806ffd7b1050d))
+* **gpu:** reduce retained coverage and completion latency ([317da88](https://github.com/benletchford/systemless/commit/317da88986678c9426a73e5da543e65611855e7f))
+* **gpu:** reuse fenced shared buffers for Metal presentation ([aae360d](https://github.com/benletchford/systemless/commit/aae360d725ad9e23cc465e979a2d6442fedc1375))
+* **launch:** transfer PowerPC images into one-shot runners ([12f292f](https://github.com/benletchford/systemless/commit/12f292f46bc5ce89d588e546abb74e6ea50c9549))
+* **memory:** cache complete PPC instruction-page mappings ([28dffca](https://github.com/benletchford/systemless/commit/28dffcaac3fef67b277ccfac280a3ca3988753e1))
+* **qd3d:** convert texture rows with exact integer colors ([7986d99](https://github.com/benletchford/systemless/commit/7986d995fd6fbc8c3efc184c657d6d545e61f120))
+* **qd3d:** keep textured meshes without UVs on the GPU ([0025a31](https://github.com/benletchford/systemless/commit/0025a311cb574080cbefeda1e37c4c8e650bcd93))
+* **resource:** share native payloads and detached fork snapshots ([2add238](https://github.com/benletchford/systemless/commit/2add238c6b16809762c19abeb118bea2a9b536e6))
+* reuse bounded compute scratch bindings ([e4e590d](https://github.com/benletchford/systemless/commit/e4e590d010b0fbc685a59869ec7a52ef7aa3e9df))
+* skip retired gpu work before preparation ([18e19c7](https://github.com/benletchford/systemless/commit/18e19c771d6d543c547a9686284b1fa829a2a89e))
+
 ## [0.98.1](https://github.com/benletchford/systemless/compare/v0.98.0...v0.98.1) (2026-10-16)
 
 
