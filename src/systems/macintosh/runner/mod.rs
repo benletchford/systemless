@@ -4295,6 +4295,10 @@ impl FixtureRunner {
             addr::SF_SAVE_DISK,
             (-crate::trap::dispatch::BOOT_VOLUME_REF_NUM) as u16,
         );
+        self.bus.write_word(
+            addr::BOOT_DRIVE,
+            crate::trap::dispatch::BOOT_VOLUME_REF_NUM as u16,
+        );
         eprintln!(
             "[INIT] CurDirStore={} SFSaveDisk={}",
             app_dir_id,
@@ -5000,6 +5004,10 @@ impl FixtureRunner {
         self.bus.write_word(
             addr::SF_SAVE_DISK,
             (-crate::trap::dispatch::BOOT_VOLUME_REF_NUM) as u16,
+        );
+        self.bus.write_word(
+            addr::BOOT_DRIVE,
+            crate::trap::dispatch::BOOT_VOLUME_REF_NUM as u16,
         );
 
         let gdh = self.dispatcher.ensure_main_gdevice(&mut self.bus);

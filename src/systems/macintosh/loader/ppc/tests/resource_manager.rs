@@ -362,3 +362,45 @@ fn hle_import_runner_classic_resource_and_print_error_accessors_preserve_signed_
         assert_eq!(printing.toolbox_startup.printing_error, error);
     }
 }
+
+#[test]
+fn hle_import_runner_lm_get_boot_drive_reads_signed_low_memory_word() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetBootDrive"),
+        PpcImportDispatcherTarget::LMGetBootDrive
+    );
+    let pef = synthetic_pef_with_import(b"LMGetBootDrive");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .memory
+        .write_u16_be(crate::memory::globals::addr::BOOT_DRIVE, (-1i16) as u16)
+        .unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+}
+
+#[test]
+fn hle_import_runner_lm_set_boot_drive_writes_low_memory_word() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetBootDrive"),
+        PpcImportDispatcherTarget::LMSetBootDrive
+    );
+    let pef = synthetic_pef_with_import(b"LMSetBootDrive");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = (-3i16) as u16 as u32;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::BOOT_DRIVE),
+        Some((-3i16) as u16)
+    );
+}
