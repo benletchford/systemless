@@ -9,8 +9,10 @@ use crate::gpu_wire::{decode_response, Request, RequestKind, Response};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use systemless::gpu_compute::{quickdraw_prefers_blit, quickdraw_prefers_raster, Qd3dWorkEstimate};
-use systemless::loader::ppc::{PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame};
-use systemless::quickdraw::gpu::{
+use systemless::systems::macintosh::loader::ppc::{
+    PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame,
+};
+use systemless::systems::macintosh::quickdraw::gpu::{
     QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPackedCopy, QuickDrawGpuPixel,
     QuickDrawGpuRenderer,
 };

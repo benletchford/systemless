@@ -2,8 +2,10 @@ use crate::catalogue::LaunchModifier;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::{codecs::png::PngEncoder, ImageEncoder};
 use serde::{Deserialize, Serialize};
-use systemless::runner::{FixtureRunner, MenuBarPolicy, DEFAULT_REALTIME_CPU_MHZ, DEFAULT_VBL_HZ};
-use systemless::sound::OUTPUT_RATE;
+use systemless::systems::macintosh::runner::{
+    FixtureRunner, MenuBarPolicy, DEFAULT_REALTIME_CPU_MHZ, DEFAULT_VBL_HZ,
+};
+use systemless::systems::macintosh::sound::OUTPUT_RATE;
 use systemless::systems::macintosh::{display, game};
 use wasm_bindgen::prelude::*;
 
@@ -805,8 +807,8 @@ struct AudioCheckReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use systemless::cpu::Register;
-    use systemless::memory::MemoryBus;
+    use systemless::systems::macintosh::cpu::Register;
+    use systemless::systems::macintosh::memory::MemoryBus;
 
     fn pixel_wait_test_runner() -> FixtureRunner {
         let mut runner = game::new_runner();

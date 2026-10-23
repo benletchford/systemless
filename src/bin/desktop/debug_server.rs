@@ -1,4 +1,4 @@
-//! Unix JSON-line transport for [`systemless::debug`]. The library module
+//! Unix JSON-line transport for [`systemless::systems::macintosh::debug`]. The library module
 //! documents envelopes and client usage; request types document RPC parameters.
 //! This worker owns socket I/O only. The frontend must pump requests between
 //! runner calls, including while paused or halted.
@@ -12,8 +12,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use systemless::debug::{handle_debug_request, DebugError, DebugReply, DebugRequest};
-use systemless::runner::FixtureRunner;
+use systemless::systems::macintosh::debug::{
+    handle_debug_request, DebugError, DebugReply, DebugRequest,
+};
+use systemless::systems::macintosh::runner::FixtureRunner;
 
 const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 

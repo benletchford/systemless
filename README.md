@@ -476,11 +476,8 @@ launched archive under `.systemless/saves/<archive-name>/`.
 
 ### Macintosh ownership and embedding
 
-The implementation modules in this table live under `systems::macintosh`.
-The former crate-root paths remain deprecated compatibility modules, so existing
-callers can continue using `systemless::runner`, `systemless::game`, and the
-other published module paths while migrating to
-`systemless::systems::macintosh::<module>`. `FixtureRunner` itself remains
+The implementation modules in this table live under `systems::macintosh`; use
+them as `systemless::systems::macintosh::<module>`. `FixtureRunner` itself remains
 available for specialized operations; the session does not yet replace every
 runner method. The CPU engines remain in the separate `m68k` and
 `ppc` crates; their Systemless adapters, memory map, Toolbox services, task

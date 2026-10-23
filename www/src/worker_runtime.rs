@@ -3,7 +3,7 @@ use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 
 use crate::catalogue::{GameArchitecture, LaunchModifier, RuntimePacing};
 use crate::emulator::{Machine, PluginFile};
-use systemless::debug_overlay::DebugOverlayFrameStats;
+use systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats;
 
 #[derive(serde::Deserialize)]
 struct BootConfig {
@@ -56,7 +56,7 @@ impl PluginMetadata {
     fn with_forks(self, data_fork: Vec<u8>, resource_fork: Vec<u8>) -> PluginFile {
         PluginFile {
             mount_path: self.mount_path,
-            file: systemless::runner::VfsFileSnapshot {
+            file: systemless::systems::macintosh::runner::VfsFileSnapshot {
                 path: self.path,
                 data_fork,
                 resource_fork,
@@ -451,7 +451,9 @@ fn gpu_compute_object(stats: &crate::gpu_proxy::ProxyStats) -> Object {
     object
 }
 
-fn q3_gpu_frame_object(frame: systemless::loader::ppc::PpcQ3GpuFrame) -> Object {
+fn q3_gpu_frame_object(
+    frame: systemless::systems::macintosh::loader::ppc::PpcQ3GpuFrame,
+) -> Object {
     let result = Object::new();
     set_number(&result, "width", frame.width as f64);
     set_number(&result, "height", frame.height as f64);
@@ -556,7 +558,7 @@ mod plugin_tests {
     fn plugin_transport_preserves_both_forks_mount_path_and_finder_metadata() {
         let plugin = PluginFile {
             mount_path: "Plug-ins".into(),
-            file: systemless::runner::VfsFileSnapshot {
+            file: systemless::systems::macintosh::runner::VfsFileSnapshot {
                 path: "Original Plugin".into(),
                 data_fork: vec![0, 1, 128, 255],
                 resource_fork: vec![255, 0, 2, 127],
@@ -623,7 +625,7 @@ fn indexed_frame_object(frame: &crate::indexed_frame::IndexedFrame) -> Object {
 }
 
 fn compact_frame_object(
-    frame: &systemless::memory::CompactPresentation,
+    frame: &systemless::systems::macintosh::memory::CompactPresentation,
     output_scale: u32,
 ) -> Object {
     let packet = Object::new();

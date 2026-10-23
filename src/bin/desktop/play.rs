@@ -6,7 +6,7 @@ use super::{
 use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
-use systemless::memory::MemoryBus;
+use systemless::systems::macintosh::memory::MemoryBus;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,8 +165,8 @@ impl Execution<'_> {
         let mut non_silent = 0;
         let mut audio = Vec::new();
         for _ in 0..ticks {
-            let samples = systemless::sound::OUTPUT_RATE as f64
-                / systemless::runner::DEFAULT_VBL_HZ
+            let samples = systemless::systems::macintosh::sound::OUTPUT_RATE as f64
+                / systemless::systems::macintosh::runner::DEFAULT_VBL_HZ
                 + self.remainder;
             self.remainder = samples.fract();
             let work = headless_time::frame(&mut self.runner, samples.floor() as usize);

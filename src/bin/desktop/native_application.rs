@@ -8,7 +8,7 @@ use objc2_app_kit::{
     NSApplication, NSBitmapFormat, NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage,
 };
 use objc2_foundation::{MainThreadMarker, NSSize};
-use systemless::game::{ApplicationIcon, ApplicationIconRepresentation};
+use systemless::systems::macintosh::game::{ApplicationIcon, ApplicationIconRepresentation};
 
 /// Classic icons are visually denser than modern macOS icons. Keep the guest
 /// artwork at 80% of the canvas so it matches neighboring Dock icon footprints.
@@ -111,7 +111,7 @@ fn padded_representation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use systemless::game::ApplicationIconRepresentation;
+    use systemless::systems::macintosh::game::ApplicationIconRepresentation;
 
     #[test]
     fn classic_icon_uses_eighty_percent_of_canvas() {

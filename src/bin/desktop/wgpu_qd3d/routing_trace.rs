@@ -118,7 +118,9 @@ mod tests {
 
     #[test]
     fn records_real_packet_work_and_degenerate_counts() {
-        use systemless::loader::ppc::{PpcQ3GpuDraw, PpcQ3GpuFrame, PpcQ3GpuVertex};
+        use systemless::systems::macintosh::loader::ppc::{
+            PpcQ3GpuDraw, PpcQ3GpuFrame, PpcQ3GpuVertex,
+        };
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("packet.jsonl");
         let trace = RoutingTrace::create(&path).unwrap();

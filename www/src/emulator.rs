@@ -6,15 +6,15 @@ use crate::adaptive_clock::AdaptiveClock;
 use crate::catalogue::{GameArchitecture, LaunchModifier, RuntimePacing};
 use crate::paths::asset_path;
 use crate::save_store::{self, DownloadableSaveFile};
-use systemless::debug_overlay::DebugOverlayFrameStats;
-use systemless::loader::ppc::PpcQ3GpuFrame;
-use systemless::runner::{
+use systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats;
+use systemless::systems::macintosh::loader::ppc::PpcQ3GpuFrame;
+use systemless::systems::macintosh::runner::{
     FixtureRunner, MenuBarPolicy, VfsFileSnapshot, VfsFileStat, VfsFileSummary, DEFAULT_VBL_HZ,
 };
-use systemless::sound::OUTPUT_RATE;
+use systemless::systems::macintosh::sound::OUTPUT_RATE;
+use systemless::systems::macintosh::trap::dispatch::ScreenCopyBitsRect;
+use systemless::systems::macintosh::ui_theme::UiThemeId;
 use systemless::systems::macintosh::{display, game};
-use systemless::trap::dispatch::ScreenCopyBitsRect;
-use systemless::ui_theme::UiThemeId;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -238,16 +238,16 @@ pub struct Machine {
     /// overlays.
     frame_rgba: Vec<u8>,
     indexed_frame: crate::indexed_frame::IndexedFrame,
-    compact_frame: systemless::memory::CompactPresentation,
+    compact_frame: systemless::systems::macintosh::memory::CompactPresentation,
     compact_guest: Vec<u32>,
     compact_overlay: Vec<u32>,
     rendered_packet: bool,
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
-    frame_epoch: Option<systemless::memory::VisibleImageStamp>,
+    frame_epoch: Option<systemless::systems::macintosh::memory::VisibleImageStamp>,
     frame_screen_mode: Option<(u32, u32, u16, u16, u16)>,
-    rendered_epoch: Option<systemless::memory::VisibleImageStamp>,
+    rendered_epoch: Option<systemless::systems::macintosh::memory::VisibleImageStamp>,
     rendered_screen_mode: Option<(u32, u32, u16, u16, u16)>,
     rendered_scale: u32,
     rendered_outline: bool,
@@ -482,7 +482,7 @@ impl Machine {
             last_audio_queue_ms: None,
             frame_rgba: Vec::new(),
             indexed_frame: crate::indexed_frame::IndexedFrame::default(),
-            compact_frame: systemless::memory::CompactPresentation::default(),
+            compact_frame: systemless::systems::macintosh::memory::CompactPresentation::default(),
             compact_guest: Vec::new(),
             compact_overlay: Vec::new(),
             rendered_packet: false,
@@ -952,7 +952,9 @@ impl Machine {
         Some(&self.indexed_frame)
     }
 
-    pub fn render_compact(&mut self) -> Option<&systemless::memory::CompactPresentation> {
+    pub fn render_compact(
+        &mut self,
+    ) -> Option<&systemless::systems::macintosh::memory::CompactPresentation> {
         if !self.runner.bus().has_visible_outline_detail() {
             return None;
         }

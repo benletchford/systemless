@@ -22,7 +22,7 @@ use objc2::ClassType;
 use objc2_app_kit::{NSBitmapImageRep, NSCursor, NSDeviceRGBColorSpace, NSImage};
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSPoint, NSSize};
-use systemless::display::CursorImage;
+use systemless::systems::macintosh::display::CursorImage;
 
 #[cfg(target_os = "windows")]
 #[path = "windows_cursor.rs"]

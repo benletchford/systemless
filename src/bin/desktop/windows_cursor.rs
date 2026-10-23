@@ -2,7 +2,7 @@
 //! the frame boundary. Winit installs a native HCURSOR (CreateIconIndirect),
 //! so moving the pointer does not wait for a Systemless framebuffer present.
 use super::{cursor_rgba, CursorRgba};
-use systemless::display::CursorImage;
+use systemless::systems::macintosh::display::CursorImage;
 
 const BLACK_ARGB: u32 = 0xff00_0000;
 use winit::{event_loop::ActiveEventLoop, window::CustomCursor, window::Window};

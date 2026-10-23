@@ -4,7 +4,7 @@ use std::rc::Rc;
 use winit::window::Window;
 
 struct CompactFrame {
-    image: std::sync::Arc<systemless::memory::CompactPresentation>,
+    image: std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
     crop: (u32, u32, u32, u32),
     output: (u32, u32),
 }
@@ -12,7 +12,7 @@ struct CompactFrame {
 impl CompactFrame {
     fn matches(
         &self,
-        image: &std::sync::Arc<systemless::memory::CompactPresentation>,
+        image: &std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
         crop: (u32, u32, u32, u32),
         output: (u32, u32),
     ) -> bool {
@@ -277,7 +277,7 @@ impl WgpuPresenter {
 
     pub fn present_compact(
         &mut self,
-        image: &std::sync::Arc<systemless::memory::CompactPresentation>,
+        image: &std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
         crop: (u32, u32, u32, u32),
         output: (u32, u32),
     ) -> Result<Option<bool>, Failure> {
@@ -453,7 +453,9 @@ mod tests {
 
     #[test]
     fn unchanged_compact_frames_require_the_same_packet_crop_and_output() {
-        let image = std::sync::Arc::new(systemless::memory::CompactPresentation::default());
+        let image = std::sync::Arc::new(
+            systemless::systems::macintosh::memory::CompactPresentation::default(),
+        );
         let frame = CompactFrame {
             image: image.clone(),
             crop: (0, 0, 640, 480),

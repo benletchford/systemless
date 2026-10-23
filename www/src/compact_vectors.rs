@@ -2,7 +2,7 @@
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use systemless::memory::CompactPresentation;
+    use systemless::systems::macintosh::memory::CompactPresentation;
 
     #[test]
     fn gpu_vectors_match_the_native_compact_resolver() {

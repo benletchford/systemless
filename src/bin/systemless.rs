@@ -117,7 +117,10 @@ mod debug_server {
             ))
         }
 
-        pub fn pump(&mut self, _runner: &mut systemless::runner::FixtureRunner) -> usize {
+        pub fn pump(
+            &mut self,
+            _runner: &mut systemless::systems::macintosh::runner::FixtureRunner,
+        ) -> usize {
             0
         }
     }
@@ -136,12 +139,12 @@ use objc2::{msg_send, runtime::NSObject};
 use objc2_quartz_core::CATransaction;
 use runtime_driver::GuiDriver;
 use systemless::api::{InstructionBudget, VideoFrame};
-use systemless::debug_overlay::DebugOverlayFrameStats;
-use systemless::runner::FixtureRunner;
+use systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats;
+use systemless::systems::macintosh::runner::FixtureRunner;
 use systemless::systems::macintosh::session::{MacintoshInput, MacintoshSession};
+use systemless::systems::macintosh::trap::dispatch::ScreenCopyBitsRect;
+use systemless::systems::macintosh::ui_theme::UiThemeId;
 use systemless::systems::macintosh::{display, game};
-use systemless::trap::dispatch::ScreenCopyBitsRect;
-use systemless::ui_theme::UiThemeId;
 
 #[cfg(not(target_os = "macos"))]
 use softbuffer::Surface;
@@ -199,11 +202,15 @@ impl Drop for FramePhaseTimer {
 /// (800x600 8bpp by default, overridable through `SYSTEMLESS_SCREEN_WIDTH`
 /// and `SYSTEMLESS_SCREEN_HEIGHT`).
 fn initial_screen_width() -> u32 {
-    u32::from(systemless::machine_profile::reference_machine_profile().screen_width)
+    u32::from(
+        systemless::systems::macintosh::machine_profile::reference_machine_profile().screen_width,
+    )
 }
 
 fn initial_screen_height() -> u32 {
-    u32::from(systemless::machine_profile::reference_machine_profile().screen_height)
+    u32::from(
+        systemless::systems::macintosh::machine_profile::reference_machine_profile().screen_height,
+    )
 }
 
 /// Frame duration at 60.15 Hz (Compact Mac VBL rate).
@@ -255,7 +262,9 @@ fn foreground_cpu_batch_instructions(powerpc: bool, instructions_per_tick: u32) 
 /// points in application startup.
 fn configure_realtime_execution_rate(runner: &mut FixtureRunner) -> u32 {
     let instructions =
-        systemless::runner::default_realtime_instructions_per_tick(runner.is_powerpc_app());
+        systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(
+            runner.is_powerpc_app(),
+        );
     runner.set_instructions_per_tick(instructions);
     instructions
 }
@@ -717,7 +726,7 @@ fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
     // A rect learned under a different guest screen size says nothing about
     // where this run's guest draws; sizing the window from it would letterbox
     // the new mode inside the old one.
-    let profile = systemless::machine_profile::reference_machine_profile();
+    let profile = systemless::systems::macintosh::machine_profile::reference_machine_profile();
     cache.version == 2
         && cache.screen_width == profile.screen_width
         && cache.screen_height == profile.screen_height
@@ -961,7 +970,7 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     #[cfg(target_os = "windows")]
-    gpu_frame: std::sync::Arc<systemless::memory::CompactPresentation>,
+    gpu_frame: std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     use_wgpu: bool,
@@ -3171,7 +3180,7 @@ impl ApplicationHandler for App {
                         .expect("serial runtime")
                         .total_instructions
                 );
-                systemless::runner::dump_wait_stats();
+                systemless::systems::macintosh::runner::dump_wait_stats();
                 event_loop.exit();
             }
 
@@ -3674,8 +3683,11 @@ fn bind_headless_debug_server(
         std::process::exit(1);
     });
     #[cfg(all(feature = "debug-server", unix))]
-    systemless::debug::handle_debug_request(runner, systemless::debug::DebugRequest::Pause)
-        .expect("initial debugger pause");
+    systemless::systems::macintosh::debug::handle_debug_request(
+        runner,
+        systemless::systems::macintosh::debug::DebugRequest::Pause,
+    )
+    .expect("initial debugger pause");
     let _ = runner;
     eprintln!("[HEADLESS] Debugger paused at startup; connect and resume to execute");
     Some(server)
@@ -3821,7 +3833,7 @@ fn run_headless(
         save_frame(&frame, session.status().guest_tick, 9999);
     }
     // Measurement-only: prints nothing unless SYSTEMLESS_WAIT_STATS is set.
-    systemless::runner::dump_wait_stats();
+    systemless::systems::macintosh::runner::dump_wait_stats();
     if debug_server.is_some() && session.runner().is_halted() {
         eprintln!(
             "[HEADLESS] Debugger remains available after terminal stop (press Ctrl-C to exit)"
@@ -4410,7 +4422,7 @@ mod tests {
         queued_stereo_bytes: Rc<RefCell<Vec<u8>>>,
     }
 
-    impl systemless::audio::AudioBackend for CountingAudioBackend {
+    impl systemless::systems::macintosh::audio::AudioBackend for CountingAudioBackend {
         fn queue_samples(&mut self, samples: &[u8]) {
             *self.queued_stereo_bytes.borrow_mut() += samples.len() * 2;
         }
@@ -4422,7 +4434,7 @@ mod tests {
         fn stop(&mut self) {}
     }
 
-    impl systemless::audio::AudioBackend for RecordingAudioBackend {
+    impl systemless::systems::macintosh::audio::AudioBackend for RecordingAudioBackend {
         fn queue_samples(&mut self, samples: &[u8]) {
             self.queued_stereo_bytes.borrow_mut().extend(samples);
         }
@@ -4758,7 +4770,7 @@ mod tests {
         let queued = Rc::new(RefCell::new(0usize));
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         runner.set_audio(Box::new(CountingAudioBackend {
             queued_stereo_bytes: queued.clone(),
@@ -4770,7 +4782,7 @@ mod tests {
         let queued = Rc::new(RefCell::new(Vec::new()));
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         runner.set_audio(Box::new(RecordingAudioBackend {
             queued_stereo_bytes: queued.clone(),
@@ -4780,14 +4792,14 @@ mod tests {
 
     #[test]
     fn desktop_detects_clean_guest_exit() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         let mut driver = app.driver.take().unwrap();
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let base = 0x0001_0000u32;
         runner.bus_mut().write_word(base, 0xA9F4); // _ExitToShell
@@ -5008,10 +5020,10 @@ mod tests {
 
     #[test]
     fn service_pending_sound_work_uses_reserved_slice_after_spent_frame_budget() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
-        use systemless::runner::FixtureRunnerConfig;
-        use systemless::sound::{PendingSoundCallback, SndCommand};
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::runner::FixtureRunnerConfig;
+        use systemless::systems::macintosh::sound::{PendingSoundCallback, SndCommand};
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let resume_pc = runner.bus_mut().alloc(16);
@@ -5024,11 +5036,11 @@ mod tests {
         runner
             .dispatcher_mut()
             .queue_sound_callback(PendingSoundCallback::Command {
-                architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
+                architecture: systemless::systems::macintosh::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
                 cmd: SndCommand {
-                    cmd: systemless::sound::cmd::CALLBACK,
+                    cmd: systemless::systems::macintosh::sound::cmd::CALLBACK,
                     param1: 0,
                     param2: 0,
                 },
@@ -5057,10 +5069,10 @@ mod tests {
 
     #[test]
     fn service_pending_sound_work_caps_reserved_slice_per_frame() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
-        use systemless::runner::FixtureRunnerConfig;
-        use systemless::sound::{PendingSoundCallback, SndCommand};
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::runner::FixtureRunnerConfig;
+        use systemless::systems::macintosh::sound::{PendingSoundCallback, SndCommand};
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let resume_pc = runner.bus_mut().alloc(16);
@@ -5073,11 +5085,11 @@ mod tests {
         runner
             .dispatcher_mut()
             .queue_sound_callback(PendingSoundCallback::Command {
-                architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
+                architecture: systemless::systems::macintosh::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
                 cmd: SndCommand {
-                    cmd: systemless::sound::cmd::CALLBACK,
+                    cmd: systemless::systems::macintosh::sound::cmd::CALLBACK,
                     param1: 0,
                     param2: 0,
                 },
@@ -5160,9 +5172,10 @@ mod tests {
             total += samples;
         }
 
-        let expected =
-            (FRAME_DURATION.as_secs_f64() * systemless::sound::OUTPUT_RATE as f64 * 120.0).floor()
-                as usize;
+        let expected = (FRAME_DURATION.as_secs_f64()
+            * systemless::systems::macintosh::sound::OUTPUT_RATE as f64
+            * 120.0)
+            .floor() as usize;
         assert_eq!(total, expected);
         assert!(remainder >= 0.0);
         assert!(remainder < 1.0);
@@ -5189,13 +5202,13 @@ mod tests {
 
     #[test]
     fn step_frame_forces_render_after_same_tick_foreground_progress() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
 
         let now = std::time::Instant::now();
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let pc = runner.bus_mut().alloc(2);
         runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
@@ -5274,13 +5287,13 @@ mod tests {
 
     #[test]
     fn step_frame_drives_click_transitions_when_guest_tick_is_ahead() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
 
         let now = std::time::Instant::now();
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let pc = runner.bus_mut().alloc(2);
         runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
@@ -5336,9 +5349,9 @@ mod tests {
     }
 
     fn check_pending_sound_before_audio_mix(headless: bool) {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
-        use systemless::sound::{
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::sound::{
             DoubleBufferState, PendingDoubleBackCallback, SndChannel, OUTPUT_RATE,
         };
 
@@ -5444,9 +5457,9 @@ mod tests {
     }
 
     fn check_doubleback_between_audio_chunks(headless: bool) {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
-        use systemless::sound::{DoubleBufferState, SndChannel, OUTPUT_RATE};
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::sound::{DoubleBufferState, SndChannel, OUTPUT_RATE};
 
         const REFILL_FRAMES: usize = 64;
 
@@ -5513,7 +5526,7 @@ mod tests {
             waiting_for_callback: false,
             pending_callback_buffers: [false; 2],
         });
-        systemless::trap::TrapDispatcher::load_double_buffer_samples(
+        systemless::systems::macintosh::trap::TrapDispatcher::load_double_buffer_samples(
             runner.bus_mut(),
             &mut chan,
             buf0_ptr,
@@ -5575,8 +5588,8 @@ mod tests {
 
     #[test]
     fn step_frame_mixes_audio_for_actual_guest_tick_advance() {
-        use systemless::cpu::Register;
-        use systemless::memory::MemoryBus;
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
 
         let now = std::time::Instant::now();
         let (mut runner, queued) = gui_runner_with_counting_audio();
@@ -5653,9 +5666,11 @@ mod tests {
     #[test]
     fn gui_foreground_batches_match_guest_architecture_costs() {
         let m68k_instructions_per_tick =
-            systemless::runner::default_realtime_instructions_per_tick(false) as usize;
+            systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(false)
+                as usize;
         let ppc_instructions_per_tick =
-            systemless::runner::default_realtime_instructions_per_tick(true) as usize;
+            systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(true)
+                as usize;
 
         assert!(
             CPU_BATCH_INSTRUCTIONS <= m68k_instructions_per_tick / 32,
@@ -5685,7 +5700,7 @@ mod tests {
         let mut driver = app.driver.take().unwrap();
         driver.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         ));
 
         assert!(
@@ -6054,7 +6069,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn native_menu_viewport_reads_guest_height_without_mutating_it() {
-        use systemless::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
+        use systemless::systems::macintosh::memory::{globals::addr::MBAR_HEIGHT, MemoryBus};
         for enabled in [false, true] {
             let mut app = App::new(PathBuf::from("dummy"), false, enabled, false, 8);
             let mut driver = app.driver.take().unwrap();

@@ -70,8 +70,8 @@ pub fn prepare_for_game(game_path: &Path) -> Result<Option<NativeBundle>, String
         Ok(None) => {}
         Err(error) => eprintln!("[SYSTEMLESS] Could not inspect native bundle cache: {error}"),
     }
-    let mut runner = systemless::game::new_runner();
-    systemless::game::load_game_from_path(&mut runner, game_path)
+    let mut runner = systemless::systems::macintosh::game::new_runner();
+    systemless::systems::macintosh::game::load_game_from_path(&mut runner, game_path)
         .map_err(|error| format!("could not inspect guest application: {error}"))?;
     let Some(app_path) = runner.dispatcher().launched_app_path() else {
         return Ok(None);

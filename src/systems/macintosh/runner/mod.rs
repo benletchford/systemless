@@ -1962,8 +1962,9 @@ impl FixtureRunner {
     /// reset vectors not yet loaded. Guest RAM contains the process trap tables,
     /// exception gateways and other system defaults. Call
     /// [`load_app`](Self::load_app) (or the higher-level
-    /// `systemless::game::load_game`) to populate guest memory and seed the
-    /// run state, then drive the guest with [`run_steps`](Self::run_steps).
+    /// [`game::load_game`](crate::systems::macintosh::game::load_game)) to
+    /// populate guest memory and seed the run state, then drive the guest with
+    /// [`run_steps`](Self::run_steps).
     ///
     /// The runner allocates one contiguous host region of `ram_size` bytes.
     /// [`crate::game::RAM_SIZE`] provides the canonical profile-driven size;
@@ -3712,7 +3713,8 @@ impl FixtureRunner {
     /// returns a [`LoadedApp`] describing the entry-point base address
     /// and per-segment offsets.
     ///
-    /// Lower-level than [`systemless::game::load_game`](crate::game::load_game) —
+    /// Lower-level than
+    /// [`game::load_game`](crate::systems::macintosh::game::load_game) —
     /// that helper auto-detects StuffIt / MacBinary / raw-resource-fork
     /// containers and calls this method internally. Use `load_app`
     /// directly only when you've already parsed the resource fork
@@ -4040,8 +4042,9 @@ impl FixtureRunner {
     /// the A5 World start so `run_steps` lands the guest in a
     /// runnable state. Must be called after [`load_app`](Self::load_app)
     /// and before the first call to [`run_steps`](Self::run_steps);
-    /// the higher-level `systemless::game::load_game` helper invokes it
-    /// automatically.
+    /// the higher-level
+    /// [`game::load_game`](crate::systems::macintosh::game::load_game)
+    /// helper invokes it automatically.
     ///
     /// Without `init_app`, A5-relative startup code (CodeWarrior /
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =

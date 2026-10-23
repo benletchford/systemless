@@ -23,7 +23,7 @@ pub(super) enum RuntimeStatus {
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct PresentationOptions {
-    pub debug: Option<systemless::debug_overlay::DebugOverlayFrameStats>,
+    pub debug: Option<systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats>,
     pub capture_crop: bool,
     pub learning_crop: bool,
     pub render_headroom: Option<Duration>,

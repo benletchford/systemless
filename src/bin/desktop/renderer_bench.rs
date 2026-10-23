@@ -40,8 +40,10 @@ impl GuestArchitecture {
     }
 }
 
-pub(super) fn presentation_fixture(text: bool) -> systemless::memory::CompactPresentation {
-    let mut frame = systemless::memory::CompactPresentation {
+pub(super) fn presentation_fixture(
+    text: bool,
+) -> systemless::systems::macintosh::memory::CompactPresentation {
+    let mut frame = systemless::systems::macintosh::memory::CompactPresentation {
         width: 640,
         height: 480,
         scale: 4,
@@ -172,7 +174,7 @@ fn page(runner: &mut FixtureRunner, number: i16) -> usize {
 fn image(runner: &FixtureRunner) -> Vec<u32> {
     let dispatcher = runner.dispatcher();
     let mut pixels = Vec::new();
-    systemless::display::render_screen_argb_with_gamma(
+    systemless::systems::macintosh::display::render_screen_argb_with_gamma(
         runner.bus(),
         dispatcher.screen_mode,
         &dispatcher.device_clut,
@@ -376,8 +378,10 @@ mod forced_gpu_guest {
         cell::{Cell, RefCell},
         rc::Rc,
     };
-    use systemless::loader::ppc::{PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame};
-    use systemless::quickdraw::gpu::*;
+    use systemless::systems::macintosh::loader::ppc::{
+        PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame,
+    };
+    use systemless::systems::macintosh::quickdraw::gpu::*;
 
     pub(super) type Counts = Rc<[Cell<usize>; 4]>;
 

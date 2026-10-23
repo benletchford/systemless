@@ -518,7 +518,7 @@ fn extract_nested_disk_images(root: &Path) -> Result<usize, String> {
     for image_path in candidates {
         let bytes = std::fs::read(&image_path)
             .map_err(|e| format!("read possible disk image {}: {}", image_path.display(), e))?;
-        let Some(image) = systemless::disk_image::extract_dc42_or_hfs(&bytes)
+        let Some(image) = systemless::systems::macintosh::disk_image::extract_dc42_or_hfs(&bytes)
             .map_err(|e| format!("extract nested disk image {}: {}", image_path.display(), e))?
         else {
             continue;
@@ -555,7 +555,7 @@ fn extract_nested_disk_images(root: &Path) -> Result<usize, String> {
 
 fn materialize_disk_image(
     root: &Path,
-    image: systemless::disk_image::DiskImageContents,
+    image: systemless::systems::macintosh::disk_image::DiskImageContents,
 ) -> Result<(), String> {
     for dir in image.dirs {
         let relative = validated_archive_relative_path(&dir)?;
@@ -622,8 +622,8 @@ fn materialize_disk_image(
 }
 
 fn materialize_loaded_archive(root: &Path, game_path: &Path) -> Result<(), String> {
-    let mut runner = systemless::game::new_runner();
-    systemless::game::load_game_from_path(&mut runner, game_path)
+    let mut runner = systemless::systems::macintosh::game::new_runner();
+    systemless::systems::macintosh::game::load_game_from_path(&mut runner, game_path)
         .map_err(|e| format!("load archive for BasiliskII staging: {}", e))?;
     let snapshots = runner
         .vfs_file_summaries()
@@ -3376,7 +3376,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let image = systemless::disk_image::DiskImageContents {
+        let image = systemless::systems::macintosh::disk_image::DiskImageContents {
             volume_name: "Fixture Disk".to_string(),
             volume_info: Default::default(),
             dirs: vec![
@@ -3384,7 +3384,7 @@ mod tests {
                 "Fixture Disk/Game Folder".to_string(),
             ],
             files: vec![
-                systemless::disk_image::DiskImageFile {
+                systemless::systems::macintosh::disk_image::DiskImageFile {
                     path: "Fixture Disk/Game Folder/Fixture Game".to_string(),
                     data: b"application data".to_vec(),
                     rsrc: b"application resources".to_vec(),
@@ -3392,7 +3392,7 @@ mod tests {
                     creator: *b"TEST",
                     finder_flags: 0x0400,
                 },
-                systemless::disk_image::DiskImageFile {
+                systemless::systems::macintosh::disk_image::DiskImageFile {
                     path: "Fixture Disk/Game Folder/Read Me".to_string(),
                     data: b"instructions".to_vec(),
                     rsrc: Vec::new(),

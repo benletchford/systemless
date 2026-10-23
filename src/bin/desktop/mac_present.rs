@@ -3,7 +3,7 @@ use super::{
     metal_present::MetalPresenter, raster_layout::RasterLayout, software_present::SoftwarePresenter,
 };
 use std::{rc::Rc, sync::Arc};
-use systemless::{display::CursorImage, memory::CompactPresentation};
+use systemless::systems::macintosh::{display::CursorImage, memory::CompactPresentation};
 use winit::window::Window;
 
 pub(super) enum Presenter {

@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSProcessInfo, NSString};
-use systemless::menu_model::{GuestMenu, GuestMenuSnapshot};
+use systemless::systems::macintosh::menu_model::{GuestMenu, GuestMenuSnapshot};
 
 static COMMANDS: OnceLock<Mutex<VecDeque<(i16, i16)>>> = OnceLock::new();
 
@@ -334,7 +334,7 @@ fn new_item(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use systemless::menu_model::GuestMenuItem;
+    use systemless::systems::macintosh::menu_model::GuestMenuItem;
 
     fn apple_menu(about_title: &str) -> GuestMenu {
         GuestMenu {

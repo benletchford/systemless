@@ -32,8 +32,8 @@ pub fn realtime_instructions_per_tick() -> u32 {
     let mhz: f64 = std::env::var("SYSTEMLESS_CPU_MHZ")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(systemless::runner::DEFAULT_REALTIME_CPU_MHZ);
-    (mhz * 1_000_000.0 / systemless::runner::DEFAULT_VBL_HZ).round() as u32
+        .unwrap_or(systemless::systems::macintosh::runner::DEFAULT_REALTIME_CPU_MHZ);
+    (mhz * 1_000_000.0 / systemless::systems::macintosh::runner::DEFAULT_VBL_HZ).round() as u32
 }
 
 pub const STRICT_ORACLE_ENV: &str = "SYSTEMLESS_ORACLE_STRICT";

@@ -181,14 +181,15 @@ pub(super) fn run(
         }
         // Fractional samples carry between frames; do not round away a small
         // amount of audio on every tick.
-        let samples = systemless::sound::OUTPUT_RATE as f64 / systemless::runner::DEFAULT_VBL_HZ
+        let samples = systemless::systems::macintosh::sound::OUTPUT_RATE as f64
+            / systemless::systems::macintosh::runner::DEFAULT_VBL_HZ
             + audio_remainder;
         let whole_samples = samples.floor() as usize;
         audio_remainder = samples - whole_samples as f64;
         let before_tick = runner.guest_tick();
         let work = frame(&mut runner, whole_samples);
         if trace && elapsed.is_multiple_of(60) {
-            use systemless::cpu::Register;
+            use systemless::systems::macintosh::cpu::Register;
             eprintln!(
                 "[HEADLESS-TIME-TRACE] frontend={elapsed} guest={} m68k_pc={:08X} sp={:08X} d0={:08X} tracking={} instructions={}",
                 runner.guest_tick(),
@@ -240,7 +241,7 @@ pub(super) fn run(
     saves.sync_save_files_now(&mut runner);
     save_screenshot(&runner, 9999);
     runner.print_pc_histogram(24);
-    systemless::runner::dump_wait_stats();
+    systemless::systems::macintosh::runner::dump_wait_stats();
     runner.print_opcode_histogram(24);
 }
 
@@ -248,18 +249,19 @@ pub(super) fn run(
 mod tests {
     use super::*;
     use clap::Parser;
-    use systemless::cpu::Register;
-    use systemless::memory::MemoryBus;
+    use systemless::systems::macintosh::cpu::Register;
+    use systemless::systems::macintosh::memory::MemoryBus;
 
     fn modal_runner() -> FixtureRunner {
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         runner.bus_mut().write_word(0x10000, 0xA991);
         runner.cpu_mut().write_reg(Register::PC, 0x10000);
         runner.cpu_mut().write_reg(Register::A7, 0x100000);
-        let mut tracking = systemless::trap::dispatch::DialogTrackingState::default();
+        let mut tracking =
+            systemless::systems::macintosh::trap::dispatch::DialogTrackingState::default();
         tracking.dialog_ptr = 0x200000;
         tracking.bounds = (0, 0, 32, 32);
         tracking.proc_id = 1;
@@ -312,7 +314,7 @@ mod tests {
     fn frontend_frame_keeps_running_guest_within_one_tick() {
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let pc = runner.bus_mut().alloc(2);
         runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
@@ -330,7 +332,7 @@ mod tests {
     #[test]
     #[cfg(feature = "debug")]
     fn debugger_controls_virtual_frames_and_completes_boundary_captures() {
-        use systemless::debug::{
+        use systemless::systems::macintosh::debug::{
             handle_debug_request, CaptureMode, CaptureRequest, ContextSelector, DebugReply,
             DebugRequest, OperationOutcome, OperationState,
         };
@@ -373,7 +375,7 @@ mod tests {
         assert!(matches!(
             handle_debug_request(&mut runner, DebugRequest::GetOperation { id: operation })
                 .unwrap(),
-            DebugReply::Operation(systemless::debug::OperationStatus {
+            DebugReply::Operation(systemless::systems::macintosh::debug::OperationStatus {
                 state: OperationState::Completed {
                     result: OperationOutcome::Captured { .. }
                 },
@@ -386,7 +388,7 @@ mod tests {
     fn realtime_initialization_replaces_the_fixture_rate() {
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let fixture_rate = runner.instructions_per_tick();
         let realtime_rate = configure_realtime_execution_rate(&mut runner);
@@ -406,7 +408,7 @@ mod tests {
     fn foreground_batches_defer_menu_painting_until_frame_presentation() {
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let pc = runner.bus_mut().alloc(8);
         let stack = 0x0008_0000;
@@ -462,7 +464,7 @@ mod tests {
             true,
             false,
             Some(8),
-            systemless::ui_theme::UiThemeId::ClassicSystem7,
+            systemless::systems::macintosh::ui_theme::UiThemeId::ClassicSystem7,
         );
         driver.runner = Some(modal_runner());
         let origin = std::time::Instant::now();
@@ -496,7 +498,7 @@ mod tests {
     fn same_tick_click_preserves_button_down_until_guest_progress() {
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
-            systemless::runner::FixtureRunnerConfig::default(),
+            systemless::systems::macintosh::runner::FixtureRunnerConfig::default(),
         );
         let mut mouse = HostMouseReleaseLatch::default();
         for event in super::super::parse_input_script("0 click 100 200").unwrap() {

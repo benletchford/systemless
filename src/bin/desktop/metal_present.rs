@@ -35,8 +35,8 @@ use objc2_quartz_core::{
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
-use systemless::display::CursorImage;
-use systemless::memory::CompactPresentation;
+use systemless::systems::macintosh::display::CursorImage;
+use systemless::systems::macintosh::memory::CompactPresentation;
 
 // Double buffering prevents the CPU from overwriting the texture used by the
 // in-flight GPU frame without allowing a third drawable to queue and add input
@@ -1918,7 +1918,7 @@ pub(crate) mod tests {
         replace_pending_guest_frame, FrameMetadata, FramePixels, GuestCursorData,
         GuestFrameMailboxState, GuestFrameMetadata, GuestFrameUniforms, RasterLayout,
     };
-    use systemless::display::CursorImage;
+    use systemless::systems::macintosh::display::CursorImage;
 
     /// Exercise the production shader on the GPU, including its final reduction
     /// to drawable pixels. No AppKit window or unlocked desktop is required.
@@ -2030,7 +2030,7 @@ pub(crate) mod tests {
     /// Run `compact_fragment` for `crop` of `frame` into a BGRA drawable, as
     /// the presenter does, and read the drawable back as ARGB words.
     fn render_compact(
-        frame: &systemless::memory::CompactPresentation,
+        frame: &systemless::systems::macintosh::memory::CompactPresentation,
         crop: (u32, u32, u32, u32),
         drawable: (u32, u32),
         measure: Option<&str>,
@@ -2202,7 +2202,7 @@ pub(crate) mod tests {
     }
     #[test]
     fn compact_shader_matches_cpu_coverage_for_crops_and_drawables() {
-        use systemless::memory::CompactPresentation;
+        use systemless::systems::macintosh::memory::CompactPresentation;
         let mut seed = 0x2545_f491u32;
         let mut next = || {
             seed ^= seed << 13;
@@ -2261,7 +2261,7 @@ pub(crate) mod tests {
                     let (ox, oy, dw, dh) =
                         super::integer_aspect_fit((cw, ch), drawable);
                     let mut scaled = Vec::new();
-                    systemless::display::resize_argb_coverage(
+                    systemless::systems::macintosh::display::resize_argb_coverage(
                         &cropped,
                         (cw * scale, ch * scale),
                         (dw, dh),
@@ -2289,7 +2289,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compact_uniforms_reject_crops_outside_the_frame_and_inexact_totals() {
-        use systemless::memory::CompactPresentation;
+        use systemless::systems::macintosh::memory::CompactPresentation;
         let frame = CompactPresentation {
             width: 4,
             height: 3,
@@ -2328,7 +2328,12 @@ pub(crate) mod tests {
                 .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
                 .collect();
             let mut software = Vec::new();
-            systemless::display::resize_argb_coverage(&packed, (8, 8), (width, 3), &mut software);
+            systemless::systems::macintosh::display::resize_argb_coverage(
+                &packed,
+                (8, 8),
+                (width, 3),
+                &mut software,
+            );
             for (gpu, cpu) in result.pixels().zip(software) {
                 let [a, r, g, b] = cpu.to_be_bytes();
                 for (actual, expected) in gpu.0.into_iter().zip([r, g, b, a]) {
@@ -2362,13 +2367,14 @@ pub(crate) mod tests {
         .into_rgba8();
         // Native menus hide the guest's 20-row menu bar. The reported window
         // displays the remaining 800x580 guest area at 960x696 physical pixels.
-        let scale = systemless::display::outline_output_scale((800, 580), (960, 696));
+        let scale =
+            systemless::systems::macintosh::display::outline_output_scale((800, 580), (960, 696));
         let pixels = source
             .pixels()
             .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
             .collect::<Vec<_>>();
         let mut resolved = Vec::new();
-        systemless::display::resize_argb_coverage(
+        systemless::systems::macintosh::display::resize_argb_coverage(
             &pixels,
             source.dimensions(),
             (800 * scale, 600 * scale),

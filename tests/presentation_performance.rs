@@ -1,7 +1,7 @@
 //! Opt-in optimized measurement of a real application's first modal dialog.
 //! Set SYSTEMLESS_PROFILE_ARCHIVE to a locally obtained game archive.
 use std::time::{Duration, Instant};
-use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
+use systemless::systems::macintosh::game::{init_game, load_game, new_runner_with_screen_depth};
 
 #[test]
 #[ignore = "requires a local game archive; prints rendering timing measurements"]
@@ -82,7 +82,7 @@ fn profile_modal_presentation() {
         } else {
             let d = runner.dispatcher();
             let device_gamma = d.device_gamma();
-            systemless::display::render_screen_argb_with_gamma(
+            systemless::systems::macintosh::display::render_screen_argb_with_gamma(
                 runner.bus(),
                 d.screen_mode,
                 &d.device_clut,

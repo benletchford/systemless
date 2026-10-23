@@ -1,7 +1,7 @@
 //! Windows compact-coverage presenter (disable with SYSTEMLESS_D3D11=0).
 //! Device/context access stays on the window thread. A wait worker wakes it
 //! when DXGI is ready, independently of the guest tick and input handling.
-use systemless::memory::CompactPresentation;
+use systemless::systems::macintosh::memory::CompactPresentation;
 #[path = "d3d_wait.rs"]
 mod d3d_wait;
 use d3d_wait::FrameWaiter;
@@ -537,7 +537,12 @@ impl D3dPresenter {
         }
         let (ox, oy, dw, dh) = rect;
         let mut expected = Vec::new();
-        systemless::display::resize_argb_coverage(&full, (sw, sh), (dw, dh), &mut expected);
+        systemless::systems::macintosh::display::resize_argb_coverage(
+            &full,
+            (sw, sh),
+            (dw, dh),
+            &mut expected,
+        );
         for y in 0..desc.Height {
             for x in 0..desc.Width {
                 let wanted = if x >= ox && x < ox + dw && y >= oy && y < oy + dh {
