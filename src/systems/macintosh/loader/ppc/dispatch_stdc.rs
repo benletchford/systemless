@@ -406,54 +406,26 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             Some(PpcImportAction::Return(cpu.gpr[3]))
         }
         PpcImportDispatcherTarget::CopyCStringToPascal => {
-            // CopyCStringToPascal permits src and dst to overlap, including
-            // in-place conversion. Read the C string before writing Str255.
             // void CopyCStringToPascal(const char *src, Str255 dst);
             // CarbonCore/TextUtils.h, "Functions for converting between C
-            // and Pascal Strings" and CopyCStringToPascal declaration.
-            let source = cpu.gpr[3];
-            let destination = cpu.gpr[4];
-            let mut bytes = Vec::new();
-            for offset in 0..u32::from(u8::MAX) {
-                let Some(address) = source.checked_add(offset) else {
-                    return Some(PpcImportAction::ReturnPreserve);
-                };
-                match memory.read_u8(address) {
-                    Some(0) => break,
-                    Some(byte) => bytes.push(byte),
-                    None => return Some(PpcImportAction::ReturnPreserve),
-                }
-            }
-            let length = bytes.len() as u8;
-            if ppc_memory_can_write_bytes(memory, destination, u32::from(length) + 1) {
-                let _ = memory.write_u8(destination, length);
-                let _ = memory.write_bytes(destination + 1, &bytes);
-            }
+            // and Pascal Strings".
+            ppc_copy_c_string_to_pascal(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::C2PStrCpy => {
+            // void c2pstrcpy(Str255 dst, const char *src): the same
+            // conversion with the destination first (CarbonCore/TextUtils.h).
+            ppc_copy_c_string_to_pascal(memory, cpu.gpr[4], cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CopyPascalStringToC => {
-            // CarbonCore/TextUtils.h permits overlapping buffers, including
-            // in-place conversion. Read the complete Pascal string first.
             // void CopyPascalStringToC(ConstStr255Param src, char *dst);
-            let source = cpu.gpr[3];
-            let destination = cpu.gpr[4];
-            let Some(length) = memory.read_u8(source) else {
-                return Some(PpcImportAction::ReturnPreserve);
-            };
-            let mut bytes = Vec::with_capacity(usize::from(length));
-            for offset in 0..u32::from(length) {
-                let Some(address) = source.checked_add(offset + 1) else {
-                    return Some(PpcImportAction::ReturnPreserve);
-                };
-                let Some(byte) = memory.read_u8(address) else {
-                    return Some(PpcImportAction::ReturnPreserve);
-                };
-                bytes.push(byte);
-            }
-            if ppc_memory_can_write_bytes(memory, destination, u32::from(length) + 1) {
-                let _ = memory.write_bytes(destination, &bytes);
-                let _ = memory.write_u8(destination + u32::from(length), 0);
-            }
+            ppc_copy_pascal_string_to_c(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::P2CStrCpy => {
+            // void p2cstrcpy(char *dst, ConstStr255Param src).
+            ppc_copy_pascal_string_to_c(memory, cpu.gpr[4], cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LowerText
@@ -2106,4 +2078,47 @@ pub(super) fn ppc_std_atoi(memory: &mut PpcSectionMem, string: u32) -> u32 {
     }
     let signed = if negative { -value } else { value };
     signed.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32
+}
+
+/// Copy a C string into a Str255. TextUtils.h permits overlapping buffers,
+/// including in-place conversion, so the source is read completely first.
+fn ppc_copy_c_string_to_pascal(memory: &mut PpcSectionMem, source: u32, destination: u32) {
+    let mut bytes = Vec::new();
+    for offset in 0..u32::from(u8::MAX) {
+        let Some(address) = source.checked_add(offset) else {
+            return;
+        };
+        match memory.read_u8(address) {
+            Some(0) => break,
+            Some(byte) => bytes.push(byte),
+            None => return,
+        }
+    }
+    let length = bytes.len() as u8;
+    if ppc_memory_can_write_bytes(memory, destination, u32::from(length) + 1) {
+        let _ = memory.write_u8(destination, length);
+        let _ = memory.write_bytes(destination + 1, &bytes);
+    }
+}
+
+/// Copy a Str255 into a C string, reading the whole Pascal string before
+/// writing so in-place conversion works.
+fn ppc_copy_pascal_string_to_c(memory: &mut PpcSectionMem, source: u32, destination: u32) {
+    let Some(length) = memory.read_u8(source) else {
+        return;
+    };
+    let mut bytes = Vec::with_capacity(usize::from(length));
+    for offset in 0..u32::from(length) {
+        let Some(address) = source.checked_add(offset + 1) else {
+            return;
+        };
+        let Some(byte) = memory.read_u8(address) else {
+            return;
+        };
+        bytes.push(byte);
+    }
+    if ppc_memory_can_write_bytes(memory, destination, u32::from(length) + 1) {
+        let _ = memory.write_bytes(destination, &bytes);
+        let _ = memory.write_u8(destination + u32::from(length), 0);
+    }
 }
