@@ -1354,6 +1354,18 @@ pub(crate) fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
+    // CarbonLib also exports the MathLib (fp.h) entry points with the same
+    // PowerPC floating-point ABI. A CarbonLib symbol that InterfaceLib does
+    // not implement resolves through MathLib when MathLib implements it.
+    if library_name == "CarbonLib"
+        && dispatcher_target_for_import("InterfaceLib", symbol_name)
+            == PpcImportDispatcherTarget::Unsupported
+    {
+        let math = dispatcher_target_for_import("MathLib", symbol_name);
+        if math != PpcImportDispatcherTarget::Unsupported {
+            return math;
+        }
+    }
     // CFM Carbon applications link CarbonLib in place of InterfaceLib for
     // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
     // Carbon Porting Guide (2002), pp. 42–43 and 53–54.

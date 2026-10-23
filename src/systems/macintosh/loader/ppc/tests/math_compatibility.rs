@@ -1132,3 +1132,24 @@ fn native_ppc_x80tod_handles_range_limits_and_specials() {
     assert_eq!(x80tod(0x3c01, 0x8000_0000_0000_0000), f64::MIN_POSITIVE.to_bits());
     assert_eq!(x80tod(0x3c00, 0x8000_0000_0000_0000), 1 << 51);
 }
+
+#[test]
+fn carbonlib_math_exports_resolve_through_mathlib() {
+    for symbol in ["acos", "tan", "atan2", "log", "exp", "fmod", "nan", "num2dec", "dtox80", "modf"] {
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            dispatcher_target_for_import("MathLib", symbol),
+            "{symbol}"
+        );
+        assert_ne!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            PpcImportDispatcherTarget::Unsupported,
+            "{symbol}"
+        );
+    }
+    // Toolbox names keep their InterfaceLib binding.
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewPtr"),
+        dispatcher_target_for_import("InterfaceLib", "NewPtr")
+    );
+}
