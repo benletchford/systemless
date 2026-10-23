@@ -774,6 +774,50 @@ use crate::sound::PendingSoundCallback;
     }
 
     #[test]
+    fn snd_do_command_refuses_buffer_on_full_queue_before_decoding() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let channel = PPC_DATA_BASE + 0x1b00;
+        let cmd_ptr = PPC_DATA_BASE + 0x1c00;
+        let header_ptr = cmd_ptr + 0x20;
+        loaded.memory.add_region(cmd_ptr, vec![0; 0x100]);
+        loaded.memory.write_u16_be(cmd_ptr, crate::sound::cmd::BUFFER).unwrap();
+        loaded.memory.write_u32_be(cmd_ptr + 4, header_ptr).unwrap();
+        // A standard header with four embedded 8-bit samples.
+        loaded.memory.write_u32_be(header_ptr + 4, 4).unwrap();
+        loaded
+            .memory
+            .write_u32_be(header_ptr + 8, 22_050u32 << 16)
+            .unwrap();
+        loaded.sound.manager.register_channel(
+            channel,
+            false,
+            0,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        for _ in 0..128 {
+            assert!(loaded.sound.manager.enqueue_command(
+                channel,
+                crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::NULL,
+                    param1: 0,
+                    param2: 0,
+                },
+            ));
+        }
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = cmd_ptr;
+        loaded.cpu.gpr[5] = 1; // noWait
+        let before = loaded.sound.manager.debug_buffer_cmd_count;
+        assert_eq!(
+            ppc_snd_do_command(&loaded.cpu, &mut loaded.memory, &mut loaded.sound),
+            -203
+        );
+        // The refused command was neither decoded into a buffer nor recorded.
+        assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, before);
+        assert!(loaded.sound.queued_commands.is_empty());
+    }
+
+    #[test]
     fn snd_channel_status_reports_active_native_buffer_then_idle() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
         let channel = PPC_DATA_BASE + 0x1d00;

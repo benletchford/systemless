@@ -1153,6 +1153,15 @@ impl SoundManager {
     }
 
     /// Queue a native command on the canonical process channel FIFO.
+    /// Whether a queued command for this channel would be refused with
+    /// queueFull. A channel that does not exist yet has an empty queue.
+    pub(crate) fn channel_queue_full(&self, guest_ptr: u32) -> bool {
+        self.channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .is_some_and(|channel| channel.queue.len() >= STD_Q_LENGTH)
+    }
+
     pub(crate) fn enqueue_command(&mut self, guest_ptr: u32, command: SndCommand) -> bool {
         self.record_command(command.cmd);
         self.ensure_channel_mut(guest_ptr).enqueue(command)

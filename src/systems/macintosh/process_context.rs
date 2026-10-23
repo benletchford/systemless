@@ -3355,6 +3355,10 @@ impl SharedProcessSoundManager {
         });
     }
 
+    pub(crate) fn channel_queue_full(&self, guest_ptr: u32) -> bool {
+        self.with_mut(|manager| manager.channel_queue_full(guest_ptr))
+    }
+
     pub(crate) fn enqueue_buffer_command_for_architecture(
         &self,
         guest_ptr: u32,

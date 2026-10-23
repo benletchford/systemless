@@ -1139,9 +1139,16 @@ pub(crate) fn ppc_memory_read_bytes(
     addr: u32,
     len: u32,
 ) -> Option<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(usize::try_from(len).ok()?);
-    for offset in 0..len {
-        bytes.push(memory.read_u8(addr.checked_add(offset)?)?);
+    let mut bytes = vec![0; usize::try_from(len).ok()?];
+    // Copy whole spans; sound buffers and pixel rows run to megabytes, and a
+    // per-byte page lookup dominated hosts replaying them on every command.
+    if memory.read_bytes_into(addr, &mut bytes).is_some() {
+        return Some(bytes);
+    }
+    // Ranges the span copier declines (for example, a wrap past the top of
+    // the address space) keep the byte-wise semantics.
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        *byte = memory.read_u8(addr.checked_add(u32::try_from(offset).ok()?)?)?;
     }
     Some(bytes)
 }
