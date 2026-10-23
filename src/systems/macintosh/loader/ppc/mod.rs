@@ -251,6 +251,7 @@ pub(crate) use loaded_app_execution::ppc_random;
 pub mod pef_loader;
 pub(crate) use dispatch_imports::{dispatch_supported_import, PpcDispatchContext};
 pub(crate) use import_targets::dispatcher_target_for_import;
+pub(crate) use dispatch_cfm::ppc_runtime_provides_cfm_library;
 pub use import_targets::PpcImportDispatcherTarget;
 pub(crate) use pef_loader::{
     align_up,
