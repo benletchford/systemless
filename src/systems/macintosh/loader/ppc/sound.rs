@@ -1009,6 +1009,12 @@ pub(crate) fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound
     // `noWait` controls whether the classic implementation may sleep until
     // a FIFO slot opens. The host runner cannot block the guest, so both
     // variants return queueFull when the process-owned FIFO is full.
+    // A full FIFO refuses the command before its sampled-sound header is
+    // decoded. Applications that poll with noWait retry until a slot opens,
+    // and decoding a large buffer for each refused retry is pure host cost.
+    if sound.manager.channel_queue_full(channel) {
+        return -203; // queueFull
+    }
     // soundCmd's header is decoded now, while the guest's pointer is known
     // to be current; the queue installs the voice in order.
     if command.command == crate::sound::cmd::SOUND {
