@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
       - name: Check UI dependency licenses
         if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@v2
