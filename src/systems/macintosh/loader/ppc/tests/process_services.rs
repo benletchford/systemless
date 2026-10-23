@@ -1862,6 +1862,14 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             "FindNextComponent",
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
+        (
+            "GetComponentRefcon",
+            PpcSystemCompatibilityOperation::GetComponentRefcon,
+        ),
+        (
+            "SetComponentRefcon",
+            PpcSystemCompatibilityOperation::SetComponentRefcon,
+        ),
         ("FindWord", PpcSystemCompatibilityOperation::FindWord),
         ("Font2Script", PpcSystemCompatibilityOperation::Font2Script),
         ("FontScript", PpcSystemCompatibilityOperation::FontScript),
@@ -3247,4 +3255,23 @@ fn ppc_debugstr_glue_returns_like_debugstr() {
     loaded.cpu.gpr[3] = 0x1234_5678;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuNoop);
     assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
+fn ppc_component_refcons_of_unregistered_components_read_zero() {
+    let pef = synthetic_pef_with_import(b"GetComponentRefcon");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetComponentRefcon),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0x1234;
+    loaded.cpu.gpr[4] = 200_000;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::SetComponentRefcon),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x1234);
 }

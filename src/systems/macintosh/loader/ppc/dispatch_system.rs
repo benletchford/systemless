@@ -22,6 +22,8 @@ pub enum PpcSystemCompatibilityOperation {
     Dequeue,
     Enqueue,
     FindNextComponent,
+    GetComponentRefcon,
+    SetComponentRefcon,
     FindScriptRun,
     FindWord,
     FindWordBreaks,
@@ -786,8 +788,37 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         | PpcSystemCompatibilityOperation::DiZero => {
             PpcImportAction::Return(ppc_i16_result(crate::disk_init_manager::NO_ERR))
         }
-        PpcSystemCompatibilityOperation::FindNextComponent
-        | PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::FindNextComponent => {
+            if ppc_hle_trace_enabled() {
+                let looking = cpu.gpr[4];
+                let mut field = |offset| {
+                    memory
+                        .read_u32_be(looking.wrapping_add(offset))
+                        .map(|value| String::from_utf8_lossy(&value.to_be_bytes()).into_owned())
+                };
+                eprintln!(
+                    "[PPC-TRACE] FindNextComponent after=${:08X} type={:?} subtype={:?} manufacturer={:?}",
+                    cpu.gpr[3],
+                    field(0),
+                    field(4),
+                    field(8)
+                );
+            }
+            PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::GetComponentRefcon => {
+            // long GetComponentRefcon(Component aComponent). FindNextComponent
+            // registers no components in this runtime, so every reference is
+            // invalid and reads as a zero refcon (Inside Macintosh: More
+            // Macintosh Toolbox, Component Manager).
+            PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::SetComponentRefcon => {
+            // void SetComponentRefcon(Component aComponent, long theRefcon):
+            // an invalid component reference changes nothing.
+            PpcImportAction::ReturnPreserve
+        }
         PpcSystemCompatibilityOperation::CtbGetCtbVersion => PpcImportAction::Return(0x0200),
         PpcSystemCompatibilityOperation::IntlScript
         | PpcSystemCompatibilityOperation::FontScript => {
