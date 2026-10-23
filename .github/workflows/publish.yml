@@ -87,7 +87,7 @@ jobs:
 
       - name: Dry-run package publish
         if: steps.version.outputs.should_release == 'true'
-        run: cargo publish --locked --dry-run
+        run: cargo publish --locked --dry-run -p systemless-ui -p systemless
 
       - name: Validate crates.io token
         if: steps.version.outputs.should_release == 'true'
@@ -104,19 +104,25 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          set +e
-          output=$(cargo publish --locked 2>&1)
-          status=$?
-          set -e
+          # The design-system crate must exist on crates.io before the
+          # application that depends on it; an unchanged version is skipped.
+          publish_crate() {
+            set +e
+            output=$(cargo publish --locked -p "$1" 2>&1)
+            status=$?
+            set -e
 
-          echo "$output"
-          if [ "$status" -eq 0 ]; then
-            exit 0
-          fi
+            echo "$output"
+            if [ "$status" -eq 0 ]; then
+              return 0
+            fi
 
-          if echo "$output" | grep -Eiq 'already uploaded|already exists|previously uploaded|crate version .* is already'; then
-            echo "systemless ${{ steps.version.outputs.version }} is already published; continuing."
-            exit 0
-          fi
+            if echo "$output" | grep -Eiq 'already uploaded|already exists|previously uploaded|crate version .* is already'; then
+              echo "$1 is already published at this version; continuing."
+              return 0
+            fi
 
-          exit "$status"
+            return "$status"
+          }
+          publish_crate systemless-ui
+          publish_crate systemless
