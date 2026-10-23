@@ -1032,18 +1032,23 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                         .flatten()
                 })
                 .collect();
-            let text =
-                crate::systems::macintosh::host_ui::balloon_message_text(&bytes, |kind, id| {
-                    ppc_vfs_resource_index(
-                        vfs_resources,
-                        current_resource_refnum,
-                        u32::from_be_bytes(kind),
-                        id,
-                        false,
-                    )
-                    .map(|index| vfs_resources[index].data.to_vec())
-                });
-            let shown = text.is_some_and(|text| toolbox_startup.host_ui.show_balloon(text, tip));
+            let lookup = |kind: [u8; 4], id: i16| {
+                ppc_vfs_resource_index(
+                    vfs_resources,
+                    current_resource_refnum,
+                    u32::from_be_bytes(kind),
+                    id,
+                    false,
+                )
+                .map(|index| vfs_resources[index].data.to_vec())
+            };
+            let text = crate::systems::macintosh::host_ui::balloon_message_text(&bytes, lookup);
+            let artwork =
+                crate::systems::macintosh::host_ui::balloon_message_picture(&bytes, lookup);
+            let shown = (text.is_some() || artwork.is_some())
+                && toolbox_startup
+                    .host_ui
+                    .show_balloon(text.unwrap_or_default(), artwork, tip);
             Some(PpcImportAction::Return(ppc_i16_result(if shown {
                 PPC_NO_ERR
             } else {

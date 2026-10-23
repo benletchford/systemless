@@ -68,6 +68,8 @@ pub(super) struct GuiState {
     pub notifications: Vec<systemless::systems::macintosh::host_ui::NotificationSnapshot>,
     pub balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
     pub balloon_help: bool,
+    /// `hmnu` help strings by (menu, item), published while Balloon Help is on.
+    pub menu_help: Option<Arc<std::collections::HashMap<(i16, i16), String>>>,
     pub guest_surface: Option<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
     /// Guest-drawn modeless dialogs framed by the host, front to back.
     pub guest_windows: Vec<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,

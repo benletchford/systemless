@@ -16845,26 +16845,29 @@ impl super::TrapDispatcher {
                         } else {
                             Vec::new()
                         };
-                        let wanted = match bytes.get(0..4) {
-                            Some([0, 3, a, b]) => Some((*b"STR#", i16::from_be_bytes([*a, *b]))),
-                            Some([0, 7, a, b]) => Some((*b"STR ", i16::from_be_bytes([*a, *b]))),
-                            _ => None,
-                        };
+                        let wanted =
+                            crate::systems::macintosh::host_ui::balloon_message_resource(&bytes);
                         let loaded = wanted.and_then(|(kind, id)| {
                             let (_, ptr) = self.find_or_load_resource_any(bus, kind, id)?;
                             let size = bus.get_alloc_size(ptr)? as usize;
                             Some((kind, id, bus.read_bytes(ptr, size)))
                         });
+                        let lookup = |kind: [u8; 4], id: i16| {
+                            loaded
+                                .as_ref()
+                                .filter(|(k, i, _)| *k == kind && *i == id)
+                                .map(|(_, _, data)| data.clone())
+                        };
                         let text = crate::systems::macintosh::host_ui::balloon_message_text(
-                            &bytes,
-                            |kind, id| {
-                                loaded
-                                    .as_ref()
-                                    .filter(|(k, i, _)| *k == kind && *i == id)
-                                    .map(|(_, _, data)| data.clone())
-                            },
+                            &bytes, lookup,
                         );
-                        let shown = text.is_some_and(|text| self.host_ui.show_balloon(text, tip));
+                        let artwork = crate::systems::macintosh::host_ui::balloon_message_picture(
+                            &bytes, lookup,
+                        );
+                        let shown = (text.is_some() || artwork.is_some())
+                            && self
+                                .host_ui
+                                .show_balloon(text.unwrap_or_default(), artwork, tip);
                         finish(bus, cpu, 22, if shown { 0 } else { HM_HELP_DISABLED });
                     }
 

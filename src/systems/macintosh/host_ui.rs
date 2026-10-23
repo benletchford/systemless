@@ -71,7 +71,130 @@ pub struct GuestSurfaceSnapshot {
 pub struct BalloonSnapshot {
     pub id: u64,
     pub text: String,
+    /// Picture balloons (khmmPict) carry rendered artwork instead of text.
+    pub artwork: Option<std::sync::Arc<DialogArtwork>>,
     pub tip: (i16, i16),
+}
+
+/// The resource an HMMessageRecord names, if any: `STR#`, `STR `, `TEXT`
+/// or `PICT`, with its ID.
+pub(crate) fn balloon_message_resource(message: &[u8]) -> Option<([u8; 4], i16)> {
+    let kind = i16::from_be_bytes([*message.first()?, *message.get(1)?]);
+    let id = i16::from_be_bytes([*message.get(2)?, *message.get(3)?]);
+    match kind {
+        2 => Some((*b"PICT", id)),
+        3 => Some((*b"STR#", id)),
+        6 => Some((*b"TEXT", id)),
+        7 => Some((*b"STR ", id)),
+        _ => None,
+    }
+}
+
+/// Enabled-state help strings from an `hmnu` resource, keyed by item number
+/// (0 is the menu title). Records are HMStringItem (1), HMStringResItem (3,
+/// `STR#` ID and index) and HMSTRResItem (7); others are skipped by length.
+/// Inside Macintosh: More Macintosh Toolbox (1993), pp. 3-28--3-37.
+pub(crate) fn menu_help_strings(
+    resource: &[u8],
+    strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Vec<(i16, String)> {
+    let word = |offset: usize| {
+        resource
+            .get(offset..offset + 2)
+            .map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]))
+    };
+    let Some(count) = word(10) else {
+        return Vec::new();
+    };
+    let mut offset = 12usize;
+    let mut help = Vec::new();
+    // The first record describes missing items; the title and items follow.
+    for index in -1..i32::from(count.max(0)) {
+        let (Some(length), Some(kind)) = (word(offset), word(offset + 2)) else {
+            break;
+        };
+        let length = usize::try_from(length).unwrap_or(0);
+        if length < 4 || offset + length > resource.len() {
+            break;
+        }
+        let record = &resource[offset + 4..offset + length];
+        let text = match kind {
+            1 => record.first().and_then(|len| {
+                record
+                    .get(1..1 + usize::from(*len))
+                    .map(crate::trap::types::decode_mac_roman)
+            }),
+            3 if record.len() >= 4 => {
+                let mut message = vec![0, 3];
+                message.extend_from_slice(&record[..4]);
+                balloon_message_text(&message, &strings)
+            }
+            7 if record.len() >= 2 => {
+                let mut message = vec![0, 7];
+                message.extend_from_slice(&record[..2]);
+                balloon_message_text(&message, &strings)
+            }
+            _ => None,
+        };
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            if index >= 0 {
+                help.push((index as i16, text));
+            }
+        }
+        offset += length;
+    }
+    help
+}
+
+/// Help strings for every menu in a snapshot, keyed by (menu, item). The
+/// `resource` callback loads `hmnu` (by menu ID) and any `STR#`/`STR `
+/// resources its records name.
+pub(crate) fn guest_menu_help(
+    menus: &crate::systems::macintosh::menu_model::GuestMenuSnapshot,
+    mut resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Vec<((i16, i16), String)> {
+    let mut help = Vec::new();
+    for menu in &menus.menus {
+        let Some(hmnu) = resource(*b"hmnu", menu.id) else {
+            continue;
+        };
+        // Load referenced string resources first; parsing is read-only.
+        let requests = std::cell::RefCell::new(Vec::new());
+        let _ = menu_help_strings(&hmnu, |kind, id| {
+            requests.borrow_mut().push((kind, id));
+            None
+        });
+        let loaded: std::collections::HashMap<_, _> = requests
+            .into_inner()
+            .into_iter()
+            .filter_map(|(kind, id)| resource(kind, id).map(|data| ((kind, id), data)))
+            .collect();
+        for (item, text) in menu_help_strings(&hmnu, |kind, id| loaded.get(&(kind, id)).cloned()) {
+            help.push(((menu.id, item), text));
+        }
+    }
+    help
+}
+
+/// Artwork for a khmmPict balloon, sized from the picture frame.
+pub(crate) fn balloon_message_picture(
+    message: &[u8],
+    resource: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Option<std::sync::Arc<DialogArtwork>> {
+    if message.get(0..2)? != [0, 2] {
+        return None;
+    }
+    let bytes = resource(
+        *b"PICT",
+        i16::from_be_bytes([*message.get(2)?, *message.get(3)?]),
+    )?;
+    let word = |offset: usize| i16::from_be_bytes([bytes[offset], bytes[offset + 1]]);
+    if bytes.len() < 10 {
+        return None;
+    }
+    let width = u16::try_from(word(8).saturating_sub(word(4))).ok()?;
+    let height = u16::try_from(word(6).saturating_sub(word(2))).ok()?;
+    DialogArtwork::picture(&bytes, (width, height)).map(std::sync::Arc::new)
 }
 
 /// Text of an HMMessageRecord: khmmString (1), khmmStringRes (3, `STR#`
@@ -107,6 +230,10 @@ pub(crate) fn balloon_message_text(
                 offset += 1 + usize::from(*list.get(offset)?);
             }
             pstring(list.get(offset..)?)?
+        }
+        6 => {
+            let text = resource(*b"TEXT", word(2)?)?;
+            crate::trap::types::decode_mac_roman(&text).replace('\r', "\n")
         }
         7 => pstring(&resource(*b"STR ", word(2)?)?)?,
         _ => return None,
@@ -417,13 +544,19 @@ impl HostUiState {
     }
 
     /// HMShowBalloon: replaces any balloon already shown.
-    pub fn show_balloon(&mut self, text: String, tip: (i16, i16)) -> bool {
-        if !self.enabled || !self.balloons_enabled {
+    pub fn show_balloon(
+        &mut self,
+        text: String,
+        artwork: Option<std::sync::Arc<DialogArtwork>>,
+        tip: (i16, i16),
+    ) -> bool {
+        if !self.enabled || !self.balloons_enabled || (text.is_empty() && artwork.is_none()) {
             return false;
         }
         self.balloon = Some(BalloonSnapshot {
             id: next_identity(),
             text,
+            artwork,
             tip,
         });
         true
@@ -1536,5 +1669,47 @@ mod dialog_projection_tests {
         assert!(state.project_dialog(parent.clone()).revision > parent.revision);
         state.register_dialog(200);
         assert!(!state.projected_dialogs.contains_key(&second.id));
+    }
+}
+
+#[cfg(test)]
+mod balloon_tests {
+    use super::*;
+
+    fn record(kind: i16, body: &[u8]) -> Vec<u8> {
+        let mut body = body.to_vec();
+        if body.len() % 2 == 1 {
+            body.push(0);
+        }
+        let mut out = ((body.len() + 4) as i16).to_be_bytes().to_vec();
+        out.extend_from_slice(&kind.to_be_bytes());
+        out.extend(body);
+        out
+    }
+
+    #[test]
+    fn hmnu_records_map_items_to_enabled_help_strings() {
+        let mut resource = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
+        resource.extend(record(256, &[])); // missing items
+        resource.extend(record(1, b"\x04Menu")); // title
+        resource.extend(record(1, b"\x0cOpens a file")); // item 1
+        resource.extend(record(3, &[0, 128, 0, 2])); // item 2 from STR#
+        let list = [0u8, 2, 1, b'a', 3, b'S', b'a', b'v'];
+        let help = menu_help_strings(&resource, |kind, id| {
+            (kind == *b"STR#" && id == 128).then(|| list.to_vec())
+        });
+        assert_eq!(
+            help,
+            vec![
+                (0, "Menu".into()),
+                (1, "Opens a file".into()),
+                (2, "Sav".into())
+            ]
+        );
+        assert!(menu_help_strings(&[0, 2], |_, _| None).is_empty());
+        // A truncated record stops parsing without panicking.
+        let mut truncated = resource.clone();
+        truncated.truncate(resource.len() - 3);
+        assert_eq!(menu_help_strings(&truncated, |_, _| None).len(), 2);
     }
 }

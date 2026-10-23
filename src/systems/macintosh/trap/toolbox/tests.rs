@@ -21409,7 +21409,20 @@ fn host_balloon_help_presents_string_and_resource_balloons() {
     bus.write_word(message + 4, 2);
     assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
     assert_eq!(disp.host_ui.balloon().unwrap().text, "Two");
+    // TEXT and PICT resources also present balloons.
+    disp.install_test_resource(&mut bus, *b"TEXT", 201, b"Line one\rLine two");
+    bus.write_word(message, 6);
+    bus.write_word(message + 2, 201);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "Line one\nLine two");
+    let picture = crate::systems::macintosh::host_ui::picture_artwork_tests::picture();
+    disp.install_test_resource(&mut bus, *b"PICT", 202, &picture);
     bus.write_word(message, 2);
+    bus.write_word(message + 2, 202);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    let balloon = disp.host_ui.balloon().unwrap();
+    assert!(balloon.text.is_empty() && balloon.artwork.as_ref().is_some_and(|a| a.is_valid()));
+    bus.write_word(message, 4);
     assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
     assert_eq!(call(&mut disp, &mut bus, 0x0002, &[]), 0);
     assert!(disp.host_ui.balloon().is_none());
