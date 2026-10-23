@@ -397,6 +397,8 @@ pub enum PpcImportDispatcherTarget {
     HMGetBalloons,
     HMIsBalloon,
     HMSetBalloons,
+    HMShowBalloon,
+    HMRemoveBalloon,
     HiliteMenu,
     DrawGrowIcon,
     MenuNoop,
@@ -3112,6 +3114,12 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMSetBalloons" | "hmsetballoons") => {
             PpcImportDispatcherTarget::HMSetBalloons
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMShowBalloon") => {
+            PpcImportDispatcherTarget::HMShowBalloon
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMRemoveBalloon") => {
+            PpcImportDispatcherTarget::HMRemoveBalloon
         }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HiliteMenu" | "hilitemenu") => {
             PpcImportDispatcherTarget::HiliteMenu

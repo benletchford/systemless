@@ -1028,6 +1028,18 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TrackControl => {
+            // An application tracking a projected modeless dialog's control
+            // itself receives the host-committed click as a completed track.
+            if let Some(part) = ppc_take_host_control_click(
+                memory,
+                controls,
+                gworlds,
+                toolbox_startup,
+                cpu.gpr[3],
+                cpu.gpr[4],
+            ) {
+                return Some(PpcImportAction::Return(ppc_i16_result(part)));
+            }
             if toolbox_startup.host_ui.has_range_tracking(cpu.gpr[3]) {
                 let saved = ppc_control_ptr(memory, cpu.gpr[3]).and_then(|control| {
                     Some((
@@ -3822,4 +3834,44 @@ pub(super) fn ppc_draw_control_inner(
         );
     }
     framed
+}
+
+/// Consume a staged host click for TrackControl. `start` packs the local
+/// start point as (v << 16) | h. Returns the control part code.
+fn ppc_take_host_control_click(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    startup: &mut PpcToolboxStartupState,
+    handle: u32,
+    start: u32,
+) -> Option<i16> {
+    let control = ppc_control_ptr(memory, handle)?;
+    let owner = memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)?;
+    if !startup.host_ui.dialog_is_modeless(owner) {
+        return None;
+    }
+    let proc_id = controls
+        .iter()
+        .find(|record| record.handle == handle)?
+        .proc_id;
+    let part = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+        10
+    } else {
+        match proc_id & !8 {
+            0 => 10,
+            1 | 2 => 11,
+            _ => return None,
+        }
+    };
+    let bounds = super::dispatch_dialog::ppc_dialog_global_bounds(memory, gworlds, owner)?;
+    let global = (
+        ((start >> 16) as u16 as i16).saturating_add(bounds.0),
+        (start as u16 as i16).saturating_add(bounds.1),
+    );
+    matches!(
+        startup.host_ui.take_host_click(owner, global, false),
+        Some(crate::systems::macintosh::host_ui::HostClickTarget::Item(_))
+    )
+    .then_some(part)
 }

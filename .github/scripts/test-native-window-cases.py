@@ -25,6 +25,8 @@ class Cases(unittest.TestCase):
                           for runtime in ("inline", "thread") for gpu in (False, True)])
         self.assertEqual(len(self.run_cases("--no-workspace")), 38)
         self.assertFalse(any(case[0] == "workspace" for case in self.run_cases("--recovery-only")))
+        self.assertEqual(self.run_cases("--workspace-only"), [case for case in cases if case[0] == "workspace"])
+        self.run_cases("--workspace-only", "--recovery-only", valid=False)
 
     def test_soak_defaults_to_six_cases(self):
         self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 6)

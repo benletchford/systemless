@@ -1483,6 +1483,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HMGetBalloons
         | PpcImportDispatcherTarget::HMIsBalloon
         | PpcImportDispatcherTarget::HMSetBalloons
+        | PpcImportDispatcherTarget::HMShowBalloon
+        | PpcImportDispatcherTarget::HMRemoveBalloon
         | PpcImportDispatcherTarget::HiliteMenu
         | PpcImportDispatcherTarget::MenuNoop
         | PpcImportDispatcherTarget::MenuKey
@@ -2844,6 +2846,18 @@ pub(crate) fn dispatch_supported_import(
                 }
                 PpcSystemCompatibilityOperation::NmRemove => {
                     toolbox_startup.host_ui.remove_notification(record);
+                }
+                PpcSystemCompatibilityOperation::DiBadMount => {
+                    // Park on the host's bad-disk alert, then keep the result.
+                    if toolbox_startup.host_ui.system_dialog_active() {
+                        if toolbox_startup.host_ui.take_system_answer().is_none() {
+                            return Some(PpcImportAction::Yield(u64::MAX));
+                        }
+                    } else if toolbox_startup.host_ui.begin_system_dialog(
+                        crate::systems::macintosh::host_ui::SystemDialogKind::BadDisk,
+                    ) {
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
                 }
                 _ => {}
             }

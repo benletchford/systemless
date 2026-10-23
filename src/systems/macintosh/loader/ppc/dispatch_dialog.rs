@@ -5821,6 +5821,35 @@ impl PpcLoadedApp {
         self.project_host_dialog(None)
     }
 
+    /// Visible document-style dialogs that keep guest drawing, in guest
+    /// front-to-back order.
+    pub(crate) fn guest_modeless_surfaces(
+        &mut self,
+    ) -> Vec<(
+        usize,
+        crate::systems::macintosh::host_ui::GuestDialogSurface,
+    )> {
+        let modal = self.modal_status().dialog;
+        self.window_list
+            .windows()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, pointer)| Some(*pointer) != modal)
+            .filter_map(|(order, pointer)| {
+                let dialog = ppc_window_proc_id(&mut self.memory, pointer) == 4
+                    && self
+                        .memory
+                        .read_u16_be(pointer + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                        == Some(crate::dialog_manager::DIALOG_WINDOW_KIND);
+                if !dialog {
+                    return None;
+                }
+                self.guest_dialog_surface(pointer)
+                    .map(|surface| (order, surface))
+            })
+            .collect()
+    }
+
     /// Identity, title and content bounds of a guest-rendered modal dialog.
     pub(crate) fn guest_dialog_surface(
         &mut self,

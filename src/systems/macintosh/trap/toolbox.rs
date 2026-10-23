@@ -13047,6 +13047,19 @@ impl super::TrapDispatcher {
                 let selector = bus.read_word(sp);
                 let operation = pack2_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
+                if selector == crate::disk_init_manager::DI_BAD_MOUNT {
+                    // The bad-disk alert is presented by the host; the call
+                    // parks until it is dismissed and keeps its usual result.
+                    if self.host_ui.system_dialog_active() {
+                        if self.host_ui.take_system_answer().is_none() {
+                            return Some(Ok(()));
+                        }
+                    } else if self.host_ui.begin_system_dialog(
+                        crate::systems::macintosh::host_ui::SystemDialogKind::BadDisk,
+                    ) {
+                        return Some(Ok(()));
+                    }
+                }
                 if let Some(evaluation) = crate::disk_init_manager::evaluate_pack2(selector) {
                     if let Some(result) = evaluation.result_word {
                         bus.write_word(sp + evaluation.pop_bytes_68k, result as u16);
@@ -16455,6 +16468,27 @@ impl super::TrapDispatcher {
 
                 if operation.is_some() {
                     let sp = cpu.read_reg(Register::A7);
+                    // With a host UI, explain the empty network in egui while
+                    // the call stays parked; the result is still userCanceledErr.
+                    if self.host_ui.system_dialog_active() {
+                        if self.host_ui.take_system_answer().is_none() {
+                            return Some(Ok(()));
+                        }
+                    } else {
+                        let prompt_ptr = bus.read_long(sp + 22);
+                        let prompt = if prompt_ptr != 0 {
+                            decode_mac_roman(&bus.read_pstring(prompt_ptr))
+                        } else {
+                            String::new()
+                        };
+                        if self.host_ui.begin_system_dialog(
+                            crate::systems::macintosh::host_ui::SystemDialogKind::ProgramLinking {
+                                prompt,
+                            },
+                        ) {
+                            return Some(Ok(()));
+                        }
+                    }
                     let result_sp = sp + 26;
                     cpu.write_reg(Register::A7, result_sp);
                     bus.write_word(result_sp, (-128i16) as u16);
@@ -16612,30 +16646,35 @@ impl super::TrapDispatcher {
                     // No balloon ever up in HLE → noErr per the IM
                     // result table ("No error or the help balloon
                     // was removed").
-                    0x0002 => finish(bus, cpu, 0, 0),
+                    0x0002 => {
+                        self.host_ui.remove_balloon();
+                        finish(bus, cpu, 0, 0)
+                    }
 
                     // FUNCTION HMGetBalloons: Boolean;
-                    // IM:MMTb 3-98. No parameters.
-                    // Help disabled in HLE → FALSE (0).
-                    0x0003 => finish(bus, cpu, 0, 0),
+                    // IM:MMTb 3-98. No parameters. The host UI offers the
+                    // Help menu setting; otherwise help stays disabled.
+                    0x0003 => finish(bus, cpu, 0, i16::from(self.host_ui.balloons_enabled)),
 
                     // FUNCTION HMIsBalloon: Boolean;
                     // IM:MMTb 3-99. No parameters.
                     // No balloon up in HLE → FALSE (0).
-                    0x0007 => finish(
-                        bus,
-                        cpu,
-                        0,
-                        u16::from(crate::menu_manager::evaluate_hm_is_balloon()) as i16,
-                    ),
+                    0x0007 => finish(bus, cpu, 0, i16::from(self.host_ui.balloon().is_some())),
 
                     // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
                     // IM:MMTb 3-107. Pop = 2 (flag).
                     // Accept and ignore — no help to enable/disable.
                     0x0104 => {
-                        let _params = crate::menu_manager::evaluate_hm_set_balloons_parameters(
-                            bus.read_word(sp) as u32,
+                        // A Pascal BOOLEAN occupies the high byte of its word.
+                        let params = crate::menu_manager::evaluate_hm_set_balloons_parameters(
+                            u32::from(bus.read_word(sp) != 0),
                         );
+                        if self.host_ui.enabled {
+                            self.host_ui.balloons_enabled = params.enabled();
+                            if !params.enabled() {
+                                self.host_ui.remove_balloon();
+                            }
+                        }
                         finish(bus, cpu, 2, 0);
                     }
 
@@ -16780,7 +16819,38 @@ impl super::TrapDispatcher {
                     //                        method: Integer): OSErr;
                     // IM:MMTb 3-100. Pop = 22. Help disabled →
                     // hmHelpDisabled.
-                    0x0B01 => finish(bus, cpu, 22, HM_HELP_DISABLED),
+                    0x0B01 => {
+                        // Stack: method, variant, theProc (words), tipProc,
+                        // alternateRect, tip (Point), aHelpMsg (pointer).
+                        let message = bus.read_long(sp + 18);
+                        let tip = (bus.read_word(sp + 14) as i16, bus.read_word(sp + 16) as i16);
+                        let bytes = if message != 0 {
+                            bus.read_bytes(message, 260)
+                        } else {
+                            Vec::new()
+                        };
+                        let wanted = match bytes.get(0..4) {
+                            Some([0, 3, a, b]) => Some((*b"STR#", i16::from_be_bytes([*a, *b]))),
+                            Some([0, 7, a, b]) => Some((*b"STR ", i16::from_be_bytes([*a, *b]))),
+                            _ => None,
+                        };
+                        let loaded = wanted.and_then(|(kind, id)| {
+                            let (_, ptr) = self.find_or_load_resource_any(bus, kind, id)?;
+                            let size = bus.get_alloc_size(ptr)? as usize;
+                            Some((kind, id, bus.read_bytes(ptr, size)))
+                        });
+                        let text = crate::systems::macintosh::host_ui::balloon_message_text(
+                            &bytes,
+                            |kind, id| {
+                                loaded
+                                    .as_ref()
+                                    .filter(|(k, i, _)| *k == kind && *i == id)
+                                    .map(|(_, _, data)| data.clone())
+                            },
+                        );
+                        let shown = text.is_some_and(|text| self.host_ui.show_balloon(text, tip));
+                        finish(bus, cpu, 22, if shown { 0 } else { HM_HELP_DISABLED });
+                    }
 
                     // FUNCTION HMShowMenuBalloon(itemNum,
                     //                            itemMenuID: Integer;

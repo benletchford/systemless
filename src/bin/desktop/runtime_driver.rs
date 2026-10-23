@@ -253,6 +253,10 @@ impl GuiDriver {
             runner.dismiss_host_notification(id);
             return;
         }
+        if let GuiCommand::SetBalloonHelp(enabled) = command {
+            runner.set_balloon_help(enabled);
+            return;
+        }
         if let GuiCommand::Modeless(command) = command {
             use super::runtime_protocol::ModelessCommand;
             match command {
@@ -376,7 +380,8 @@ impl GuiDriver {
             GuiCommand::Modeless(_)
             | GuiCommand::PopupMenu(_)
             | GuiCommand::SystemDialog(_)
-            | GuiCommand::DismissNotification(_) => {}
+            | GuiCommand::DismissNotification(_)
+            | GuiCommand::SetBalloonHelp(_) => {}
             GuiCommand::Menu { menu, item } => {
                 runner.select_guest_menu_item(menu, item);
             }
@@ -433,7 +438,10 @@ impl GuiDriver {
             output.popup_menu = runner.host_popup_menu();
             output.system_dialog = runner.host_system_dialog();
             output.notifications = runner.host_notifications();
+            output.balloon = runner.host_balloon();
+            output.balloon_help = runner.balloon_help_enabled();
             output.guest_surface = runner.guest_modal_surface();
+            output.guest_windows = runner.guest_modeless_surfaces();
             output.stopped = runner.unexpected_stop_reason();
             let dialog = runner.host_file_dialog();
             if output.file_dialog.as_deref() != dialog.as_ref() {
@@ -1129,6 +1137,175 @@ mod snapshot_tests {
         assert_eq!(state.live_dialogs.len(), 1);
         assert_eq!(state.dialog_text_replies.len(), 1);
         assert_eq!(state.dialog_text_replies[0].id, state.live_dialogs[0]);
+    }
+
+    /// Opt-in real-application smoke check. Set SYSTEMLESS_REAL_APPS to a
+    /// colon-separated list of archives. Each runs with the host UI, answering
+    /// any Systemless-owned interface it raises, and is compared with a run
+    /// whose host UI is disabled: the host UI must not introduce a stop.
+    #[test]
+    #[ignore = "requires locally supplied application archives"]
+    fn workspace_real_application_smoke() {
+        use super::super::runtime_protocol::ModelessCommand;
+        use systemless::systems::macintosh::host_ui::{
+            DialogReply, FileDialogAction, FileDialogReply, PopupMenuReply, SystemDialogAnswer,
+            SystemDialogReply,
+        };
+        let Some(list) = std::env::var_os("SYSTEMLESS_REAL_APPS") else {
+            eprintln!("SYSTEMLESS_REAL_APPS is unset; nothing to check");
+            return;
+        };
+        let frames: usize = std::env::var("SYSTEMLESS_REAL_APP_FRAMES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1800);
+        let mut failures = Vec::new();
+        for archive in std::env::split_paths(&list) {
+            let run = |host: bool| {
+                let mut driver = driver();
+                driver.workspace = host;
+                let mut runner = game::new_runner_with_configuration(true, 8);
+                runner.set_host_ui_enabled(host);
+                runner.set_app_start_time(3_000_000_000);
+                let app = match game::load_game_from_path(&mut runner, &archive) {
+                    Ok(app) => app,
+                    Err(error) => return Err(format!("load failed: {error}")),
+                };
+                game::init_game(&mut runner, &app);
+                configure_realtime_execution_rate(&mut runner);
+                driver.runner = Some(runner);
+                let mut state = GuiState::default();
+                let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+                for frame in 0..frames {
+                    super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                    if driver.runner.as_ref().unwrap().is_halted() {
+                        break;
+                    }
+                    // Explore Systemless-owned UI the application exposes:
+                    // About, Open… and Preferences…, when present.
+                    if frame > 0 && frame % 400 == 0 {
+                        let runner = driver.runner.as_mut().unwrap();
+                        let menus = runner.guest_menu_snapshot();
+                        let wanted = ["about", "open", "preferences"][(frame / 400 - 1) % 3];
+                        let choice = menus.menus.iter().find_map(|menu| {
+                            menu.items
+                                .iter()
+                                .find(|item| {
+                                    item.enabled
+                                        && item.submenu_id.is_none()
+                                        && item.text.to_lowercase().starts_with(wanted)
+                                })
+                                .map(|item| (menu.id, item.number))
+                        });
+                        if let Some((menu, item)) = choice {
+                            runner.select_guest_menu_item(menu, item);
+                            *seen
+                                .entry(
+                                    ["menu:about", "menu:open", "menu:preferences"]
+                                        [(frame / 400 - 1) % 3],
+                                )
+                                .or_default() += 1;
+                        }
+                    }
+                    if !host || frame % 15 != 0 {
+                        continue;
+                    }
+                    driver.capture_state(&mut state, true);
+                    // Answer whatever Systemless-owned UI is waiting.
+                    if let Some(dialog) = state.dialog.clone().filter(|d| !d.busy) {
+                        *seen.entry("dialog").or_default() += 1;
+                        if std::env::var_os("SYSTEMLESS_REAL_APP_TRACE").is_some() {
+                            eprintln!(
+                                "[REAL-APP-DIALOG] frame={frame} title={:?} default={} cancel={} items={:?}",
+                                dialog.title,
+                                dialog.default_item,
+                                dialog.cancel_item,
+                                dialog.items.iter().map(|i| (i.number, i.kind, i.enabled, i.text.clone())).collect::<Vec<_>>()
+                            );
+                        }
+                        // Prefer buttons that continue without input, then
+                        // the default and cancel items.
+                        let preferred = dialog.items.iter().find(|i| {
+                            i.kind == 4
+                                && i.enabled
+                                && ["demo", "continue", "skip", "ok", "done"]
+                                    .iter()
+                                    .any(|word| i.text.to_lowercase().starts_with(word))
+                        });
+                        let item = preferred.map(|i| i.number).or_else(|| {
+                            [dialog.default_item, dialog.cancel_item]
+                                .into_iter()
+                                .find(|item| {
+                                    dialog.items.iter().any(|i| i.number == *item && i.enabled)
+                                })
+                        });
+                        if let Some(item) = item {
+                            driver.apply_command(GuiCommand::Dialog(DialogReply {
+                                id: dialog.id,
+                                revision: dialog.revision,
+                                item,
+                            }));
+                        }
+                    }
+                    if let Some(dialog) = state.file_dialog.clone().filter(|d| !d.busy) {
+                        *seen.entry("file").or_default() += 1;
+                        driver.apply_command(GuiCommand::FileDialog(FileDialogReply {
+                            id: dialog.id,
+                            revision: dialog.revision,
+                            action: FileDialogAction::Cancel,
+                        }));
+                    }
+                    if let Some(popup) = state.popup_menu.clone() {
+                        *seen.entry("popup").or_default() += 1;
+                        driver.apply_command(GuiCommand::PopupMenu(PopupMenuReply {
+                            id: popup.id,
+                            choice: None,
+                        }));
+                    }
+                    if let Some(dialog) = state.system_dialog.clone() {
+                        *seen.entry("system").or_default() += 1;
+                        driver.apply_command(GuiCommand::SystemDialog(SystemDialogReply {
+                            id: dialog.id,
+                            answer: SystemDialogAnswer::Cancel,
+                        }));
+                    }
+                    for note in state.notifications.clone() {
+                        *seen.entry("notification").or_default() += 1;
+                        driver.apply_command(GuiCommand::DismissNotification(note.id));
+                    }
+                    if state.guest_surface.is_some() {
+                        *seen.entry("guest-modal").or_default() += 1;
+                    }
+                    if !state.guest_windows.is_empty() {
+                        *seen.entry("guest-window").or_default() += 1;
+                    }
+                    if let Some(window) = state.modeless_dialogs.first().filter(|d| !d.busy) {
+                        *seen.entry("modeless").or_default() += 1;
+                        if window.closable {
+                            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Close {
+                                id: window.id,
+                                revision: window.revision,
+                            }));
+                        }
+                    }
+                }
+                let runner = driver.runner.as_ref().unwrap();
+                Ok((runner.unexpected_stop_reason(), seen))
+            };
+            let name = archive.display().to_string();
+            match (run(false), run(true)) {
+                (Ok((baseline, _)), Ok((hosted, seen))) => {
+                    eprintln!("[REAL-APP] {name}: baseline={baseline:?} hosted={hosted:?} host-ui={seen:?}");
+                    if hosted.is_some() && baseline.is_none() {
+                        failures.push(format!("{name}: host UI stopped the guest: {hosted:?}"));
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("[REAL-APP] {name}: skipped ({error})")
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 
     #[test]

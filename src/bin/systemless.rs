@@ -1353,7 +1353,12 @@ impl App {
             ui.set_popup_menu(self.guest_state.popup_menu.clone());
             ui.set_system_dialog(self.guest_state.system_dialog.clone());
             ui.set_notifications(&self.guest_state.notifications);
+            ui.set_balloon(
+                self.guest_state.balloon.clone(),
+                self.guest_state.balloon_help,
+            );
             ui.set_guest_surface(self.guest_state.guest_surface.clone());
+            ui.set_guest_windows(&self.guest_state.guest_windows);
             ui.set_stopped(self.guest_state.stopped.clone());
             ui.set_file_reply(self.guest_state.file_reply);
         }
@@ -3590,7 +3595,11 @@ impl ApplicationHandler<DesktopEvent> for App {
             let modeless_actions = std::mem::take(&mut ui.modeless_actions);
             let popup_action = ui.popup_action.take();
             let system_action = ui.system_action.take();
+            let balloon_help = ui.balloon_help_action.take();
             let dismissed = std::mem::take(&mut ui.dismissed_notifications);
+            if let Some(enabled) = balloon_help {
+                self.send_command(runtime_protocol::GuiCommand::SetBalloonHelp(enabled));
+            }
             for id in dismissed {
                 self.send_command(runtime_protocol::GuiCommand::DismissNotification(id));
             }

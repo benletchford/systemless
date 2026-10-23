@@ -66,6 +66,54 @@ pub struct GuestSurfaceSnapshot {
     pub bounds: (i16, i16, i16, i16),
 }
 
+/// A Help Manager balloon. `tip` is the hot spot in presented coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BalloonSnapshot {
+    pub id: u64,
+    pub text: String,
+    pub tip: (i16, i16),
+}
+
+/// Text of an HMMessageRecord: khmmString (1), khmmStringRes (3, `STR#`
+/// ID and index) or khmmSTRRes (7, `STR `). Other message kinds are not
+/// presented. Inside Macintosh: More Macintosh Toolbox (1993), pp. 3-127--3-129.
+pub(crate) fn balloon_message_text(
+    message: &[u8],
+    resource: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Option<String> {
+    let word = |offset: usize| {
+        message
+            .get(offset..offset + 2)
+            .map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]))
+    };
+    let pstring = |bytes: &[u8]| -> Option<String> {
+        let length = usize::from(*bytes.first()?);
+        Some(crate::trap::types::decode_mac_roman(
+            bytes.get(1..1 + length)?,
+        ))
+    };
+    let text = match word(0)? {
+        1 => pstring(message.get(2..)?)?,
+        3 => {
+            let list = resource(*b"STR#", word(2)?)?;
+            let index = usize::try_from(word(4)?).ok()?.checked_sub(1)?;
+            let count =
+                usize::try_from(i16::from_be_bytes([*list.first()?, *list.get(1)?])).ok()?;
+            if index >= count {
+                return None;
+            }
+            let mut offset = 2;
+            for _ in 0..index {
+                offset += 1 + usize::from(*list.get(offset)?);
+            }
+            pstring(list.get(offset..)?)?
+        }
+        7 => pstring(&resource(*b"STR ", word(2)?)?)?,
+        _ => return None,
+    };
+    (!text.is_empty()).then_some(text)
+}
+
 /// A Notification Manager alert string, shown once per installed request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationSnapshot {
@@ -82,6 +130,10 @@ pub enum SystemDialogKind {
     PageSetup,
     /// Printing Manager PrJobDialog.
     Print,
+    /// Program Linking PPCBrowser; Systemless has no network ports.
+    ProgramLinking { prompt: String },
+    /// Disk Initialization DIBadMount; Systemless has no physical disks.
+    BadDisk,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +279,9 @@ pub(crate) struct HostUiState {
     host_clicks: std::collections::VecDeque<HostClick>,
     popup: Option<HostPopup>,
     system: Option<(SystemDialogSnapshot, Option<SystemDialogAnswer>)>,
+    /// Classic Balloon Help setting (Help menu "Show Balloons").
+    pub balloons_enabled: bool,
+    balloon: Option<BalloonSnapshot>,
     /// Request record, identity, alert text and whether the user dismissed it.
     notifications: Vec<(u32, u64, String, bool)>,
     artwork: std::cell::RefCell<
@@ -361,6 +416,25 @@ impl HostUiState {
         self.range_tracking.remove(&control);
     }
 
+    /// HMShowBalloon: replaces any balloon already shown.
+    pub fn show_balloon(&mut self, text: String, tip: (i16, i16)) -> bool {
+        if !self.enabled || !self.balloons_enabled {
+            return false;
+        }
+        self.balloon = Some(BalloonSnapshot {
+            id: next_identity(),
+            text,
+            tip,
+        });
+        true
+    }
+    pub fn remove_balloon(&mut self) {
+        self.balloon = None;
+    }
+    pub fn balloon(&self) -> Option<BalloonSnapshot> {
+        self.balloon.clone()
+    }
+
     /// NMInstall with an nmStr alert. Reinstalling the same record replaces it.
     pub fn note_notification(&mut self, record: u32, text: String) {
         if !self.enabled || text.is_empty() {
@@ -432,7 +506,9 @@ impl HostUiState {
             (_, SystemDialogAnswer::Cancel)
                 | (SystemDialogKind::Color { .. }, SystemDialogAnswer::Color(_))
                 | (
-                    SystemDialogKind::PageSetup | SystemDialogKind::Print,
+                    SystemDialogKind::PageSetup
+                        | SystemDialogKind::Print
+                        | SystemDialogKind::BadDisk,
                     SystemDialogAnswer::Confirm,
                 )
         );

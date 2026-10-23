@@ -21295,3 +21295,123 @@ fn host_get_color_parks_and_writes_the_chosen_color() {
         }
     }
 }
+
+#[test]
+fn host_program_linking_and_bad_disk_dialogs_park_and_keep_their_results() {
+    use crate::systems::macintosh::host_ui::{
+        SystemDialogAnswer, SystemDialogKind, SystemDialogReply,
+    };
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.current_trap_word = 0xA82B;
+    let sp = TEST_SP;
+    let prompt = bus.alloc(32);
+    bus.write_pstring(prompt, b"Link to:");
+    bus.write_long(sp + 22, prompt);
+    bus.write_word(sp + 26, 0x55AA);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0D00);
+    disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let dialog = disp.host_ui.system_dialog().unwrap();
+    assert_eq!(
+        dialog.kind,
+        SystemDialogKind::ProgramLinking {
+            prompt: "Link to:".into()
+        }
+    );
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.is_tracking_refire(0xA82B));
+    assert!(!disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Confirm,
+    }));
+    assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Cancel,
+    }));
+    cpu.write_reg(Register::D0, 0x0D00);
+    disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 26);
+    assert_eq!(bus.read_word(sp + 26) as i16, -128);
+
+    // DIBadMount(where, evtMessage): selector 0, 8 argument bytes, INTEGER result.
+    disp.current_trap_word = 0xA9E9;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 10, 0xBEEF);
+    disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let dialog = disp.host_ui.system_dialog().unwrap();
+    assert_eq!(dialog.kind, SystemDialogKind::BadDisk);
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Confirm,
+    }));
+    disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+    assert_eq!(bus.read_word(sp + 10), 0);
+}
+
+#[test]
+fn host_balloon_help_presents_string_and_resource_balloons() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.current_trap_word = 0xA830;
+    let sp = TEST_SP;
+    let mut call = |disp: &mut TrapDispatcher,
+                    bus: &mut MacMemoryBus,
+                    selector: u32,
+                    args: &[(u32, u32, bool)]| {
+        for (offset, value, long) in args {
+            if *long {
+                bus.write_long(sp + offset, *value);
+            } else {
+                bus.write_word(sp + offset, *value as u16);
+            }
+        }
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, selector);
+        disp.dispatch_toolbox(true, 0x030, &mut cpu, bus)
+            .unwrap()
+            .unwrap();
+        bus.read_word(cpu.read_reg(Register::A7)) as i16
+    };
+    // Help starts disabled; showing a balloon then reports hmHelpDisabled.
+    assert_eq!(call(&mut disp, &mut bus, 0x0003, &[]), 0);
+    let message = bus.alloc(260);
+    bus.write_word(message, 1);
+    bus.write_pstring(message + 2, b"Saves the document");
+    let show = [(18, message, true), (14, 40, false), (16, 120, false)];
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
+    // The Help menu (or the application) turns balloons on.
+    assert_eq!(call(&mut disp, &mut bus, 0x0104, &[(0, 0x0100, false)]), 0);
+    assert_eq!(call(&mut disp, &mut bus, 0x0003, &[]), 1);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    let balloon = disp.host_ui.balloon().unwrap();
+    assert_eq!(
+        (balloon.text.as_str(), balloon.tip),
+        ("Saves the document", (40, 120))
+    );
+    assert_eq!(call(&mut disp, &mut bus, 0x0007, &[]), 1);
+    // STR# messages index the list; unknown kinds are not presented.
+    let list = [0u8, 2, 3, b'O', b'n', b'e', 3, b'T', b'w', b'o'];
+    disp.install_test_resource(&mut bus, *b"STR#", 200, &list);
+    bus.write_word(message, 3);
+    bus.write_word(message + 2, 200);
+    bus.write_word(message + 4, 2);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "Two");
+    bus.write_word(message, 2);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
+    assert_eq!(call(&mut disp, &mut bus, 0x0002, &[]), 0);
+    assert!(disp.host_ui.balloon().is_none());
+    assert_eq!(call(&mut disp, &mut bus, 0x0007, &[]), 0);
+}

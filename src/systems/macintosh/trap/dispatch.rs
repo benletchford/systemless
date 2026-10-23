@@ -4294,7 +4294,8 @@ impl TrapDispatcher {
             || (is_region_refire && self.is_region_tracking())
             || (trap_no_autopop == 0xA9D4
                 && self.textedit_states.has_classic_click_tracking())
-            || (matches!(trap_no_autopop, 0xA82E | 0xA8FD) && self.host_ui.system_dialog_active())
+            || (matches!(trap_no_autopop, 0xA82E | 0xA8FD | 0xA82B | 0xA9E9)
+                && self.host_ui.system_dialog_active())
     }
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.

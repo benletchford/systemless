@@ -1442,6 +1442,41 @@ impl super::TrapDispatcher {
         fallback_menu_id
     }
 
+    /// Consume a staged host click delivered to TrackControl. `local` is the
+    /// start point in the owner's local coordinates. Returns the part code.
+    fn take_host_control_click(
+        &mut self,
+        bus: &MacMemoryBus,
+        ctrl_handle: u32,
+        local: (i16, i16),
+    ) -> Option<u16> {
+        let control = Self::control_record_ptr(bus, ctrl_handle);
+        if control == 0 {
+            return None;
+        }
+        let owner = bus.read_long(control + 4);
+        if !self.host_ui.dialog_is_modeless(owner) {
+            return None;
+        }
+        let proc_id = self.control_manager.proc_id(control);
+        let part = if Self::is_popup_menu_proc_id(proc_id) {
+            10
+        } else {
+            match proc_id & !8 {
+                0 => 10,
+                1 | 2 => 11,
+                _ => return None,
+            }
+        };
+        let (top, left, _, _) = Self::dialog_screen_bounds(bus, owner);
+        let global = (local.0.saturating_add(top), local.1.saturating_add(left));
+        matches!(
+            self.host_ui.take_host_click(owner, global, false),
+            Some(crate::systems::macintosh::host_ui::HostClickTarget::Item(_))
+        )
+        .then_some(part)
+    }
+
     pub(crate) fn popup_control_title_width(&self, ctrl_ptr: u32, fallback: i16) -> i16 {
         self.control_manager
             .popup_title_width(ctrl_ptr, fallback)
@@ -3926,6 +3961,18 @@ impl super::TrapDispatcher {
                         self.host_ui.retire_control(ctrl_handle);
                     }
                     bus.write_word(sp + 12, 0);
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+                // An application that tracks a projected modeless dialog's
+                // control itself receives the host-committed click as a
+                // completed track; the host already chose and applied it.
+                if let Some(part) = self.take_host_control_click(
+                    bus,
+                    ctrl_handle,
+                    (bus.read_word(sp + 4) as i16, bus.read_word(sp + 6) as i16),
+                ) {
+                    bus.write_word(sp + 12, part);
                     cpu.write_reg(Register::A7, sp + 12);
                     return Some(Ok(()));
                 }
