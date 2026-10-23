@@ -1,6 +1,6 @@
 //! Guest-visible QuickDraw rasterization, enabled only by --gpu.
 use systemless::gpu_compute::{quickdraw_prefers_blit, quickdraw_prefers_raster, QuickDrawCompute};
-use systemless::quickdraw::gpu::{
+use systemless::systems::macintosh::quickdraw::gpu::{
     QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPackedCopy, QuickDrawGpuPixel,
     QuickDrawGpuRenderer,
 };
@@ -351,7 +351,9 @@ mod tests {
 
     #[test]
     fn gpu_deep_mask_blends_match_cpu_all_depths_boolean_modes_and_coverage() {
-        use systemless::quickdraw::gpu::{QuickDrawGpuBlitClip, QuickDrawGpuDeepMask};
+        use systemless::systems::macintosh::quickdraw::gpu::{
+            QuickDrawGpuBlitClip, QuickDrawGpuDeepMask,
+        };
         fn rgb(depth: u32, pixel: u32, clut: &[[u16; 3]], classic: bool) -> [u16; 3] {
             match depth {
                 1 => {
@@ -620,7 +622,9 @@ mod tests {
 
     #[test]
     fn gpu_arithmetic_bitmap_modes_match_full_precision_cpu_rules() {
-        use systemless::quickdraw::gpu::{QuickDrawGpuArithmetic, QuickDrawGpuBlitClip};
+        use systemless::systems::macintosh::quickdraw::gpu::{
+            QuickDrawGpuArithmetic, QuickDrawGpuBlitClip,
+        };
         fn color(depth: u32, pixel: u32, clut: &[[u16; 3]]) -> [u16; 3] {
             match depth {
                 2 | 4 | 8 => clut[pixel as usize],
@@ -795,7 +799,9 @@ mod tests {
 
     #[test]
     fn gpu_masked_bitmap_cells_apply_source_keys_before_color_conversion() {
-        use systemless::quickdraw::gpu::{QuickDrawGpuBlitClip, QuickDrawGpuDirectColor};
+        use systemless::systems::macintosh::quickdraw::gpu::{
+            QuickDrawGpuBlitClip, QuickDrawGpuDirectColor,
+        };
         let state = match State::new() {
             Ok(state) => state,
             Err(error) => {
@@ -920,11 +926,13 @@ mod tests {
                     columns: (0..256).map(|x| [x, x + 1]).collect(),
                     rows: (0..256).map(|y| [y, y + 1]).collect(),
                     palette: None,
-                    direct: Some(systemless::quickdraw::gpu::QuickDrawGpuDirectColor {
-                        source_depth,
-                        destination_depth,
-                        palette,
-                    }),
+                    direct: Some(
+                        systemless::systems::macintosh::quickdraw::gpu::QuickDrawGpuDirectColor {
+                            source_depth,
+                            destination_depth,
+                            palette,
+                        },
+                    ),
                     clip: None,
                     arithmetic: None,
                     deep_mask: None,
@@ -1060,7 +1068,7 @@ mod tests {
 
     #[test]
     fn gpu_repeated_mask_transfers_preserve_even_xor_paint_coverage() {
-        use systemless::quickdraw::gpu::QuickDrawGpuMask;
+        use systemless::systems::macintosh::quickdraw::gpu::QuickDrawGpuMask;
         let state = match State::new() {
             Ok(state) => state,
             Err(error) => {
@@ -1108,7 +1116,7 @@ mod tests {
 
     #[test]
     fn gpu_glyph_masks_match_thresholds_clips_and_negative_origins() {
-        use systemless::quickdraw::gpu::QuickDrawGpuMask;
+        use systemless::systems::macintosh::quickdraw::gpu::QuickDrawGpuMask;
         let state = match State::new() {
             Ok(state) => state,
             Err(error) => {

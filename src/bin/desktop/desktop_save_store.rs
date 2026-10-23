@@ -5,7 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use systemless::runner::{FixtureRunner, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
+use systemless::systems::macintosh::runner::{
+    FixtureRunner, VfsFileSnapshot, VfsFileStat, VfsFileSummary,
+};
 
 const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
 const METADATA_FILE: &str = "metadata.json";
@@ -481,7 +483,7 @@ fn push_percent_encoded(out: &mut String, byte: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use systemless::runner::{FixtureRunner, FixtureRunnerConfig};
+    use systemless::systems::macintosh::runner::{FixtureRunner, FixtureRunnerConfig};
 
     fn snapshot(path: &str) -> VfsFileSnapshot {
         VfsFileSnapshot {

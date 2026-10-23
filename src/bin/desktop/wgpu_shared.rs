@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Weak,
 };
-use systemless::memory::CompactPresentation;
+use systemless::systems::macintosh::memory::CompactPresentation;
 
 const SLOTS: usize = 3;
 const MAX_PACKET: u64 = 32 * 1024 * 1024;

@@ -19,7 +19,7 @@ pub(super) struct RuntimeConfig {
     pub native_integrations: bool,
     pub addressing_24_bit: bool,
     pub screen_depth: Option<u16>,
-    pub ui_theme: systemless::ui_theme::UiThemeId,
+    pub ui_theme: systemless::systems::macintosh::ui_theme::UiThemeId,
     pub debug_socket: Option<PathBuf>,
 }
 
@@ -292,7 +292,7 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
-    use systemless::memory::MemoryBus;
+    use systemless::systems::macintosh::memory::MemoryBus;
 
     fn config() -> RuntimeConfig {
         RuntimeConfig {
@@ -304,7 +304,7 @@ mod tests {
             native_integrations: false,
             addressing_24_bit: false,
             screen_depth: Some(8),
-            ui_theme: systemless::ui_theme::UiThemeId::ClassicSystem7,
+            ui_theme: systemless::systems::macintosh::ui_theme::UiThemeId::ClassicSystem7,
             debug_socket: None,
         }
     }
@@ -330,7 +330,7 @@ mod tests {
         owner: std::thread::ThreadId,
         dropped: mpsc::Sender<std::thread::ThreadId>,
     }
-    impl systemless::audio::AudioBackend for ThreadCheckedAudio {
+    impl systemless::systems::macintosh::audio::AudioBackend for ThreadCheckedAudio {
         fn queue_samples(&mut self, _: &[u8]) {
             assert_eq!(std::thread::current().id(), self.owner);
         }
@@ -356,10 +356,12 @@ mod tests {
                 let _ = wake.send(());
             },
             move |driver| {
-                use systemless::cpu::Register;
+                use systemless::systems::macintosh::cpu::Register;
                 let thread = std::thread::current().id();
-                let mut runner =
-                    systemless::runner::FixtureRunner::new(8 * 1024 * 1024, Default::default());
+                let mut runner = systemless::systems::macintosh::runner::FixtureRunner::new(
+                    8 * 1024 * 1024,
+                    Default::default(),
+                );
                 runner.bus_mut().write_word(0x10000, 0x60fe); // BRA.S self
                 runner.cpu_mut().write_reg(Register::PC, 0x10000);
                 runner.set_audio(Box::new(ThreadCheckedAudio {
@@ -462,7 +464,7 @@ mod tests {
         dropped: mpsc::Sender<std::thread::ThreadId>,
     }
 
-    impl systemless::audio::AudioBackend for FailingRuntimeAudio {
+    impl systemless::systems::macintosh::audio::AudioBackend for FailingRuntimeAudio {
         fn queue_samples(&mut self, _: &[u8]) {
             assert_eq!(std::thread::current().id(), self.owner);
             panic!("controlled runtime audio failure");
@@ -479,8 +481,8 @@ mod tests {
     #[test]
     fn guest_exit_host_close_and_runtime_failure_flush_saves_before_stopped() {
         use super::super::desktop_save_store::DesktopSaveStore;
-        use systemless::cpu::Register;
-        use systemless::runner::{FixtureRunner, VfsFileSnapshot};
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::runner::{FixtureRunner, VfsFileSnapshot};
 
         for (fail_audio, host_close) in [(false, false), (true, false), (false, true)] {
             let temporary = tempfile::tempdir().unwrap();

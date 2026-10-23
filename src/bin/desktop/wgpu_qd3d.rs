@@ -5,11 +5,11 @@ use systemless::gpu_compute::qd3d_triangle_area as triangle_area;
 use systemless::gpu_compute::{raster_tiles, TRIANGLE_BYTES};
 use systemless::gpu_compute::{Qd3dCompute, Qd3dWorkEstimate};
 #[cfg(test)]
-use systemless::loader::ppc::{
+use systemless::systems::macintosh::loader::ppc::{
     ppc_q3_vector3d_normalized_value, PpcQ3LightKind, PpcQ3RasterVertex,
     PpcQ3SoftwareProjectedPoint, PPC_Q3_ILLUMINATION_TYPE_LAMBERT, PPC_Q3_ILLUMINATION_TYPE_PHONG,
 };
-use systemless::loader::ppc::{
+use systemless::systems::macintosh::loader::ppc::{
     PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame, PpcQ3RasterPrimitive,
 };
 
@@ -206,8 +206,8 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
 mod tests {
     use super::*;
     use ppc::PpcMemory;
-    use systemless::loader::ppc::*;
-    use systemless::memory::GuestAddressSpace;
+    use systemless::systems::macintosh::loader::ppc::*;
+    use systemless::systems::macintosh::memory::GuestAddressSpace;
 
     #[test]
     fn gpu_failed_compute_device_retires_to_cpu_fallback() {

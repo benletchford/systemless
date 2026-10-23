@@ -4,13 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
-use systemless::display::render_screen_with_gamma;
-use systemless::game::{init_game, load_game, new_runner_with_screen_depth};
-use systemless::menu_model::GuestMenuSnapshot;
-use systemless::runner::{
+use systemless::systems::macintosh::display::render_screen_with_gamma;
+use systemless::systems::macintosh::game::{init_game, load_game, new_runner_with_screen_depth};
+use systemless::systems::macintosh::menu_model::GuestMenuSnapshot;
+use systemless::systems::macintosh::runner::{
     FixtureRunner, ResourceManagerSnapshot, TextEditSnapshot, WindowSnapshot,
 };
-use systemless::ui_theme::UiThemeId;
+use systemless::systems::macintosh::ui_theme::UiThemeId;
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
 
@@ -398,7 +398,7 @@ fn prepare_review_presentation(runner: &mut FixtureRunner) {
     let d = runner.dispatcher();
     let mode = d.screen_mode;
     let device_gamma = d.device_gamma();
-    let palette = systemless::display::rgba_palette_from_clut_with_gamma(
+    let palette = systemless::systems::macintosh::display::rgba_palette_from_clut_with_gamma(
         &d.device_clut,
         &device_gamma,
     )
@@ -3297,14 +3297,15 @@ fn capture_outline_font_showcase() {
         if let Some(scale) = scale {
             let mode = runner.dispatcher().screen_mode;
             let device_gamma = runner.dispatcher().device_gamma();
-            let palette = systemless::display::rgba_palette_from_clut_with_gamma(
-                &runner.dispatcher().device_clut,
-                &device_gamma,
-            )
-            .map(|word| {
-                let [r, g, b, _] = word.to_le_bytes();
-                [r, g, b]
-            });
+            let palette =
+                systemless::systems::macintosh::display::rgba_palette_from_clut_with_gamma(
+                    &runner.dispatcher().device_clut,
+                    &device_gamma,
+                )
+                .map(|word| {
+                    let [r, g, b, _] = word.to_le_bytes();
+                    [r, g, b]
+                });
             if scale == 4 {
                 runner.bus_mut().prepare_outline_presentation(mode, palette);
             } else {
@@ -3425,10 +3426,12 @@ fn first_page_outlines_survive_palette_changes() {
         .set_powerpc_screen_depth(if prefer_powerpc() { 16 } else { 8 })
         .unwrap();
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
-    runner.set_menu_bar_policy(systemless::runner::MenuBarPolicy::ForceHidden);
-    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
-        prefer_powerpc(),
-    ));
+    runner.set_menu_bar_policy(systemless::systems::macintosh::runner::MenuBarPolicy::ForceHidden);
+    runner.set_instructions_per_tick(
+        systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(
+            prefer_powerpc(),
+        ),
+    );
     runner.set_app_start_time(3_786_912_000);
     let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
     init_game(&mut runner, &app);
@@ -3473,7 +3476,12 @@ fn first_page_outlines_survive_palette_changes() {
         let len = row_bytes * u32::from(height);
         let scratch = runner.bus_mut().alloc(len);
         runner.bus_mut().block_move(base, scratch, len);
-        systemless::memory::MemoryBus::fill_bytes(runner.bus_mut(), base, len, 0);
+        systemless::systems::macintosh::memory::MemoryBus::fill_bytes(
+            runner.bus_mut(),
+            base,
+            len,
+            0,
+        );
         runner.bus_mut().block_move(scratch, base, len);
         let restored = runner.bus().outline_presentation_rgb().unwrap().2;
         capture(&runner, &format!("{name}-after-copy.png"));
@@ -3557,9 +3565,11 @@ fn textedit_repeated_input_and_selection_complete() {
         .unwrap();
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner.set_menu_bar_visible(true);
-    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
-        prefer_powerpc(),
-    ));
+    runner.set_instructions_per_tick(
+        systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(
+            prefer_powerpc(),
+        ),
+    );
     let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
     init_game(&mut runner, &app);
     prepare_review_presentation(&mut runner);
@@ -3624,9 +3634,11 @@ fn menu_bar_hover_responsiveness_and_performance() {
         .unwrap();
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner.set_menu_bar_visible(true);
-    runner.set_instructions_per_tick(systemless::runner::default_realtime_instructions_per_tick(
-        prefer_powerpc(),
-    ));
+    runner.set_instructions_per_tick(
+        systemless::systems::macintosh::runner::default_realtime_instructions_per_tick(
+            prefer_powerpc(),
+        ),
+    );
     runner.set_app_start_time(3_786_912_000);
     let app = load_game(&mut runner, SHOWCASE_SIT).unwrap();
     init_game(&mut runner, &app);

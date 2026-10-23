@@ -3,7 +3,7 @@
 
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
-use systemless::display::CursorImage;
+use systemless::systems::macintosh::display::CursorImage;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum GuiCommand {
@@ -33,9 +33,9 @@ pub(super) struct GuiState {
     #[cfg(target_os = "macos")]
     pub hidden_menu_height: u32,
     #[cfg(target_os = "macos")]
-    pub identity: Option<Arc<systemless::game::ApplicationIdentity>>,
+    pub identity: Option<Arc<systemless::systems::macintosh::game::ApplicationIdentity>>,
     #[cfg(target_os = "macos")]
-    pub menus: Option<Arc<systemless::menu_model::GuestMenuSnapshot>>,
+    pub menus: Option<Arc<systemless::systems::macintosh::menu_model::GuestMenuSnapshot>>,
 }
 
 #[cfg(test)]

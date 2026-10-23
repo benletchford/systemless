@@ -1,6 +1,6 @@
 //! Resolve sparse retained glyph/QuickDraw coverage directly in the fragment shader.
 use std::sync::Arc;
-use systemless::memory::CompactPresentation;
+use systemless::systems::macintosh::memory::CompactPresentation;
 
 pub(super) struct CompactRenderer {
     pipelines: [Option<wgpu::RenderPipeline>; 8],

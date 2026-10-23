@@ -6,7 +6,7 @@ use std::sync::Arc;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use leptos::prelude::*;
 use leptos::task::{spawn_local, spawn_local_scoped_with_cancellation};
-use systemless::debug_overlay::DebugOverlayFrameStats;
+use systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
@@ -4572,7 +4572,7 @@ fn canvas_cursor_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> f64 {
 fn canvas_output_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> u32 {
     let rect = canvas.get_bounding_client_rect();
     let dpr = web_sys::window().map_or(1.0, |window| window.device_pixel_ratio());
-    systemless::display::outline_output_scale(
+    systemless::systems::macintosh::display::outline_output_scale(
         logical,
         (
             (rect.width() * dpr).ceil() as u32,

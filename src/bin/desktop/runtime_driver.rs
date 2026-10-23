@@ -9,10 +9,10 @@ use super::{
     MIN_RENDER_HEADROOM, RENDER_HEADROOM_MARGIN,
 };
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use systemless::runner::MenuBarPolicy;
 use systemless::systems::macintosh::game;
-use systemless::{runner::FixtureRunner, ui_theme::UiThemeId};
+#[cfg(target_os = "macos")]
+use systemless::systems::macintosh::runner::MenuBarPolicy;
+use systemless::systems::macintosh::{runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
     pub(super) gpu: bool,
@@ -24,11 +24,13 @@ pub(super) struct GuiDriver {
     identity: Option<std::sync::Arc<game::ApplicationIdentity>>,
     display_generation: u64,
     snapshot_screen_mode: Option<(u32, u32, u16, u16, u16)>,
-    compact_cache: systemless::memory::CompactPresentationCache,
-    compact_snapshot: Option<std::sync::Arc<systemless::memory::CompactPresentation>>,
+    compact_cache: systemless::systems::macintosh::memory::CompactPresentationCache,
+    compact_snapshot:
+        Option<std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>>,
     /// Snapshots retired by later frames, kept for reuse once the presenter
     /// and renderer have let go of them.
-    compact_spares: Vec<std::sync::Arc<systemless::memory::CompactPresentation>>,
+    compact_spares:
+        Vec<std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>>,
     pub(super) runner: Option<FixtureRunner>,
     pub(super) debug_server: Option<debug_server::DebugServer>,
     pub(super) save_store: Option<DesktopSaveStore>,
@@ -172,7 +174,7 @@ impl GuiDriver {
         eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
 
         // Initialize audio output.
-        if let Some(audio) = systemless::audio::CpalAudioBackend::new() {
+        if let Some(audio) = systemless::systems::macintosh::audio::CpalAudioBackend::new() {
             runner.set_audio(Box::new(audio));
         } else {
             eprintln!("[SYSTEMLESS] Warning: could not initialize audio output");
@@ -254,14 +256,14 @@ impl GuiDriver {
         output.warp = self.pending_warp;
         #[cfg(target_os = "macos")]
         {
-            use systemless::memory::MemoryBus;
+            use systemless::systems::macintosh::memory::MemoryBus;
             output.dialog_bounds = runner
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus());
             output.hidden_menu_height = if self.native_integrations {
                 runner
                     .bus()
-                    .read_word(systemless::memory::globals::addr::MBAR_HEIGHT)
+                    .read_word(systemless::systems::macintosh::memory::globals::addr::MBAR_HEIGHT)
                     .into()
             } else {
                 0
@@ -304,7 +306,7 @@ impl GuiDriver {
     pub(super) fn capture_frame(
         &mut self,
         output: &mut super::frame_snapshot::GuiFrame,
-        debug: Option<systemless::debug_overlay::DebugOverlayFrameStats>,
+        debug: Option<systemless::systems::macintosh::debug_overlay::DebugOverlayFrameStats>,
         capture_crop: bool,
         learning_crop: bool,
     ) -> bool {
@@ -378,7 +380,7 @@ impl GuiDriver {
         }
         #[cfg(target_os = "macos")]
         {
-            use systemless::memory::MemoryBus;
+            use systemless::systems::macintosh::memory::MemoryBus;
             let dispatcher = runner.dispatcher();
             output.crop = super::frame_snapshot::CropObservations {
                 dialog_bounds: dispatcher.visible_dialog_structure_bounds(runner.bus()),
@@ -396,7 +398,9 @@ impl GuiDriver {
                 hidden_menu_height: if self.native_integrations {
                     runner
                         .bus()
-                        .read_word(systemless::memory::globals::addr::MBAR_HEIGHT)
+                        .read_word(
+                            systemless::systems::macintosh::memory::globals::addr::MBAR_HEIGHT,
+                        )
                         .into()
                 } else {
                     0
@@ -414,9 +418,11 @@ impl GuiDriver {
     /// frees the previous one once presented, and each such free returns
     /// the pages to the system.
     fn next_compact_snapshot(
-        frame: &systemless::memory::CompactPresentation,
-        spares: &mut Vec<std::sync::Arc<systemless::memory::CompactPresentation>>,
-    ) -> std::sync::Arc<systemless::memory::CompactPresentation> {
+        frame: &systemless::systems::macintosh::memory::CompactPresentation,
+        spares: &mut Vec<
+            std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
+        >,
+    ) -> std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation> {
         for index in 0..spares.len() {
             if let Some(spare) = std::sync::Arc::get_mut(&mut spares[index]) {
                 spare.clone_from(frame);
@@ -458,7 +464,7 @@ impl GuiDriver {
         // float truncation), guaranteeing the first frame already has runnable
         // guest work. The half-tick (~8ms) lead is sub-frame and harmless.
         now.checked_sub(std::time::Duration::from_secs_f64(
-            (guest_tick as f64 + 0.5) / systemless::runner::DEFAULT_VBL_HZ,
+            (guest_tick as f64 + 0.5) / systemless::systems::macintosh::runner::DEFAULT_VBL_HZ,
         ))
         .unwrap_or(now)
     }
@@ -467,7 +473,7 @@ impl GuiDriver {
         at.checked_duration_since(origin)
             .unwrap_or_default()
             .as_secs_f64()
-            .mul_add(systemless::runner::DEFAULT_VBL_HZ, 0.0)
+            .mul_add(systemless::systems::macintosh::runner::DEFAULT_VBL_HZ, 0.0)
             .floor() as u32
     }
 
@@ -475,9 +481,10 @@ impl GuiDriver {
         duration: std::time::Duration,
         remainder: &mut f64,
     ) -> usize {
-        let total_samples = duration
-            .as_secs_f64()
-            .mul_add(systemless::sound::OUTPUT_RATE as f64, *remainder);
+        let total_samples = duration.as_secs_f64().mul_add(
+            systemless::systems::macintosh::sound::OUTPUT_RATE as f64,
+            *remainder,
+        );
         let whole_samples = total_samples.floor();
         *remainder = total_samples - whole_samples;
         whole_samples as usize
@@ -562,7 +569,8 @@ impl GuiDriver {
             // catch up, takes too long, falls further behind, repeat.
             self.start_time = Some(
                 now - std::time::Duration::from_secs_f64(
-                    (current_tick + 2) as f64 / systemless::runner::DEFAULT_VBL_HZ,
+                    (current_tick + 2) as f64
+                        / systemless::systems::macintosh::runner::DEFAULT_VBL_HZ,
                 ),
             );
         }
@@ -783,7 +791,7 @@ impl GuiDriver {
 mod snapshot_tests {
     use super::*;
     use crate::frame_snapshot::GuiFrame;
-    use systemless::memory::MemoryBus;
+    use systemless::systems::macintosh::memory::MemoryBus;
 
     fn driver() -> GuiDriver {
         let mut driver = GuiDriver::new(
@@ -807,7 +815,7 @@ mod snapshot_tests {
     #[test]
     fn compact_snapshots_reuse_only_released_spares() {
         use std::sync::Arc;
-        use systemless::memory::CompactPresentation;
+        use systemless::systems::macintosh::memory::CompactPresentation;
         let mut driver = driver();
         let stale = || CompactPresentation {
             width: 9,
@@ -902,8 +910,8 @@ mod snapshot_tests {
         assert_ne!(a.generation, b.generation);
     }
     fn guest_warp(driver: &mut GuiDriver, position: (i16, i16)) {
-        use systemless::cpu::Register;
-        use systemless::memory::globals::addr;
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::globals::addr;
         let runner = driver.runner.as_mut().unwrap();
         runner.bus_mut().write_word(0x10000, 0x21fc); // MOVE.L #point,Mouse.W
         runner.bus_mut().write_long(

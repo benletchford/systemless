@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use js_sys::{Array, Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
-use systemless::runner::VfsFileSnapshot;
+use systemless::systems::macintosh::runner::VfsFileSnapshot;
 use wasm_bindgen::{prelude::Closure, JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{

@@ -4,12 +4,12 @@
 //! never observes guest memory. Struct encodings destructure every field
 //! without `..`: adding a field to a request type fails to compile here
 //! instead of silently dropping data at the worker boundary.
-use systemless::loader::ppc::{
+use systemless::systems::macintosh::loader::ppc::{
     PpcQ3FogStyleData, PpcQ3GpuTexture, PpcQ3LightData, PpcQ3LightKind, PpcQ3LightRecord,
     PpcQ3RasterDraw, PpcQ3RasterFrame, PpcQ3RasterLighting, PpcQ3RasterPrimitive,
     PpcQ3RasterShading, PpcQ3RasterVertex,
 };
-use systemless::quickdraw::gpu::{
+use systemless::systems::macintosh::quickdraw::gpu::{
     QuickDrawGpuArithmetic, QuickDrawGpuBlit, QuickDrawGpuBlitClip, QuickDrawGpuCommand,
     QuickDrawGpuDeepMask, QuickDrawGpuDirectColor, QuickDrawGpuMask, QuickDrawGpuPackedCopy,
     QuickDrawGpuPixel,

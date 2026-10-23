@@ -551,7 +551,7 @@ fn extract_nested_disk_images(root: &Path) -> Result<usize, String> {
         }
         let bytes = std::fs::read(&image_path)
             .map_err(|e| format!("read possible disk image {}: {}", image_path.display(), e))?;
-        let Some(image) = systemless::disk_image::extract_dc42_or_hfs(&bytes)
+        let Some(image) = systemless::systems::macintosh::disk_image::extract_dc42_or_hfs(&bytes)
             .map_err(|e| format!("extract nested disk image {}: {}", image_path.display(), e))?
         else {
             continue;
@@ -588,7 +588,7 @@ fn extract_nested_disk_images(root: &Path) -> Result<usize, String> {
 
 fn materialize_disk_image(
     root: &Path,
-    image: systemless::disk_image::DiskImageContents,
+    image: systemless::systems::macintosh::disk_image::DiskImageContents,
 ) -> Result<(), String> {
     for dir in image.dirs {
         let relative = validated_archive_relative_path(&dir)?;
@@ -655,8 +655,8 @@ fn materialize_disk_image(
 }
 
 fn materialize_loaded_archive(root: &Path, game_path: &Path) -> Result<(), String> {
-    let mut runner = systemless::game::new_runner();
-    systemless::game::load_game_from_path(&mut runner, game_path)
+    let mut runner = systemless::systems::macintosh::game::new_runner();
+    systemless::systems::macintosh::game::load_game_from_path(&mut runner, game_path)
         .map_err(|e| format!("load archive for SheepShaver staging: {}", e))?;
     let snapshots = runner
         .vfs_file_summaries()
