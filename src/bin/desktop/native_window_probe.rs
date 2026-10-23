@@ -49,6 +49,8 @@ struct Probe {
     phase: usize,
     helper: Option<Window>,
     focused: bool,
+    /// Wayland compositors own focus, fullscreen placement and the pointer.
+    wayland: bool,
     lost_focus: bool,
     returned_focus: bool,
     resized: bool,
@@ -91,6 +93,8 @@ pub(super) fn run(event_loop: EventLoop<DesktopEvent>, app: App, report: PathBuf
         phase: 0,
         helper: None,
         focused: false,
+        wayland: std::env::var_os("WAYLAND_DISPLAY").is_some()
+            && std::env::var_os("DISPLAY").is_none(),
         lost_focus: false,
         returned_focus: false,
         resized: false,
@@ -242,6 +246,26 @@ impl Probe {
         });
         std::fs::write(&self.report, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
+    /// Warp the native pointer. Wayland clients cannot warp, so the probe
+    /// delivers the equivalent motion through the winit input adapter.
+    fn move_pointer(&mut self, event_loop: &ActiveEventLoop, window: &Window, point: (f64, f64)) {
+        if self.wayland {
+            self.app.window_event(
+                event_loop,
+                window.id(),
+                WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                },
+            );
+            self.moved = Some(point);
+        } else {
+            window
+                .set_cursor_position(winit::dpi::PhysicalPosition::new(point.0, point.1))
+                .unwrap();
+        }
+    }
+
     fn advance(&mut self, check: &'static str) {
         if !self.checks.contains(&check) {
             self.checks.push(check);
@@ -331,9 +355,7 @@ impl Probe {
                 self.splitter_width = guest.width();
                 self.splitter_mouse = self.app.frame.mouse_position;
                 self.moved = None;
-                window
-                    .set_cursor_position(winit::dpi::PhysicalPosition::new(point.0, point.1))
-                    .unwrap();
+                self.move_pointer(event_loop, window, point);
                 self.splitter_stage = 1;
             }
             1 | 3 => {
@@ -402,9 +424,7 @@ impl Probe {
                 let point = (point.0 - 60. * scale, point.1);
                 self.splitter_point = Some(point);
                 self.moved = None;
-                window
-                    .set_cursor_position(winit::dpi::PhysicalPosition::new(point.0, point.1))
-                    .unwrap();
+                self.move_pointer(event_loop, window, point);
                 self.splitter_frame = frame;
                 self.splitter_move_sent = false;
                 self.splitter_stage = 3;
@@ -568,11 +588,21 @@ impl Probe {
                 window.focus_window();
                 self.advance("guest frames reach real window");
             }
-            1 if self.focused && settled => {
+            1 if (self.focused || self.wayland) && settled => {
                 let _ = window.request_inner_size(target_size);
-                self.advance("initial native focus");
+                self.advance(if self.wayland {
+                    "Wayland compositor owns keyboard focus; not requested"
+                } else {
+                    "initial native focus"
+                });
             }
             2 if self.resized && window.inner_size() == target_size && settled => {
+                if self.wayland {
+                    // Fullscreen placement is compositor policy on Wayland.
+                    self.advance("native resize observed");
+                    self.phase = 5;
+                    return;
+                }
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 self.advance("native resize observed");
             }
@@ -598,6 +628,20 @@ impl Probe {
             }
             5 if window.inner_size() == target_size && settled => {
                 if !self.workspace_splitter(event_loop, &window) {
+                    return;
+                }
+                if self.wayland {
+                    // Clients cannot move focus or warp the pointer on
+                    // Wayland; finish with the captured-release check.
+                    if !self.workspace_hidden_release(event_loop, &window) {
+                        return;
+                    }
+                    self.advance("workspace splitter and hidden-pane release on Wayland");
+                    self.phase = 10;
+                    self.cycles += 1;
+                    self.sample_gpu_resources();
+                    self.app
+                        .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
                     return;
                 }
                 let helper = event_loop
