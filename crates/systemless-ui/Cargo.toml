@@ -1,0 +1,30 @@
+[package]
+name = "systemless-ui"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+description = "A modern egui design system with dockable workspaces and wgpu integration"
+repository = "https://github.com/benletchford/systemless"
+
+[features]
+default = ["gpu"]
+gpu = ["dep:egui-wgpu"]
+desktop = ["gpu", "dep:eframe"]
+
+[dependencies]
+egui = { version = "0.36.2", features = ["default_fonts"] }
+egui_dock = "0.21.1"
+egui_extras = { version = "0.36.2", default-features = false }
+egui-wgpu = { version = "0.36.2", optional = true, default-features = false }
+eframe = { version = "0.36.2", optional = true, default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11", "persistence"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[example]]
+name = "gallery"
+required-features = ["desktop"]
+
+[[example]]
+name = "hello"
+required-features = ["desktop"]

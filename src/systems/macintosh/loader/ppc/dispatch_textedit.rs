@@ -161,6 +161,7 @@ pub(super) fn dispatch_textedit_import(
                     te_handle,
                 );
                 ppc_te_draw(
+                    Some(&toolbox_startup.host_ui),
                     memory,
                     handles,
                     gworlds,
@@ -247,6 +248,7 @@ pub(super) fn dispatch_textedit_import(
                         );
                         if redraw {
                             ppc_te_draw(
+                                Some(&toolbox_startup.host_ui),
                                 memory,
                                 handles,
                                 gworlds,
@@ -394,6 +396,7 @@ pub(super) fn dispatch_textedit_import(
             );
             *last_mem_error = result;
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -446,6 +449,7 @@ pub(super) fn dispatch_textedit_import(
             );
             *last_mem_error = result;
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -475,6 +479,7 @@ pub(super) fn dispatch_textedit_import(
             );
             *last_mem_error = result;
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -565,12 +570,15 @@ pub(super) fn dispatch_textedit_import(
                 let port = memory
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .unwrap_or(current_gworld);
-                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET)
+                    .filter(|_| !toolbox_startup.host_ui.dialog_presented(port))
+                {
                     let background = ppc_port_rgb_colors(memory, port)
                         .map_or(*quickdraw_back_color, |colors| colors.1);
                     ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
                 }
                 ppc_te_draw(
+                    Some(&toolbox_startup.host_ui),
                     memory,
                     handles,
                     gworlds,
@@ -629,6 +637,7 @@ pub(super) fn dispatch_textedit_import(
             // update rectangle. The existing QuickDraw target clips writes to
             // its framebuffer; line layout comes from TECalText/TESetText.
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -682,6 +691,7 @@ pub(super) fn dispatch_textedit_import(
             if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[4]) {
                 let _ = memory.write_u16_be(te_ptr + PPC_TE_JUST_OFFSET, cpu.gpr[3] as u16);
                 ppc_te_draw(
+                    Some(&toolbox_startup.host_ui),
                     memory,
                     handles,
                     gworlds,
@@ -723,7 +733,9 @@ pub(super) fn dispatch_textedit_import(
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
                     .unwrap_or(current_gworld);
-                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET)
+                    .filter(|_| !toolbox_startup.host_ui.dialog_presented(port))
+                {
                     let _ = ppc_paint_rect_bounds(
                         memory,
                         gworlds,
@@ -735,6 +747,7 @@ pub(super) fn dispatch_textedit_import(
                 }
             }
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -811,6 +824,7 @@ pub(super) fn dispatch_textedit_import(
             );
             *last_mem_error = result;
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,
@@ -862,6 +876,7 @@ pub(super) fn dispatch_textedit_import(
             );
             *last_mem_error = result;
             ppc_te_draw(
+                Some(&toolbox_startup.host_ui),
                 memory,
                 handles,
                 gworlds,

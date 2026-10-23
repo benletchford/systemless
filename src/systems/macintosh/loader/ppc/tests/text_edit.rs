@@ -986,6 +986,7 @@ fn te_scroll_erases_the_previous_text_position() {
         PPC_NO_ERR
     );
     ppc_te_draw(
+        None,
         &mut loaded.memory,
         test_handles!(loaded),
         &loaded.gworlds,

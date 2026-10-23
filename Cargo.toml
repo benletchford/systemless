@@ -2,7 +2,7 @@
 name = "systemless"
 version = "0.99.0"
 edition = "2021"
-rust-version = "1.93"
+rust-version = "1.95"
 # Emulator code is GPL-3.0-or-later.
 # Bundled URW, Noto and Coppet font assets are under OFL-1.1.
 license = "GPL-3.0-or-later AND OFL-1.1"
@@ -29,7 +29,7 @@ include = [
 ]
 
 [workspace]
-members = ["www/tools/catalogue", "www"]
+members = ["www/tools/catalogue", "www", "crates/systemless-ui"]
 exclude = ["tests/toolbox-showcase/packer", ".agents/tools/play-oracle"]
 default-members = ["."]
 resolver = "2"
@@ -45,6 +45,9 @@ serde_json = "1"
 ttf-parser = "0.25.1"
 skrifa = "0.43.2"
 zeno = "0.3.3"
+
+systemless-ui = { version = "0.1.0", path = "crates/systemless-ui", optional = true }
+egui-winit = { version = "0.36.2", optional = true, default-features = false, features = ["accesskit", "clipboard", "wayland", "x11"] }
 
 # Windowing (optional, for graphical runner)
 winit = { version = "0.30", optional = true }
@@ -70,6 +73,8 @@ pollster = { version = "0.4", optional = true }
 [features]
 default = ["gui", "jit"]
 gui = [
+    "dep:systemless-ui",
+    "dep:egui-winit",
     "winit",
     "wgpu-compute",
     "wgpu/parking_lot",

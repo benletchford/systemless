@@ -124,6 +124,229 @@ pub(super) struct PpcWindowDispatchContext<'a> {
     pub(super) last_resource_error: &'a mut i16,
 }
 
+impl PpcLoadedApp {
+    pub(crate) fn activate_host_modeless_dialog(&mut self, id: u64, revision: u64) -> bool {
+        let Some(pointer) = self.toolbox_startup.host_ui.dialog_pointer(id) else {
+            return false;
+        };
+        if !self.toolbox_startup.host_ui.dialog_is_modeless(pointer) {
+            return false;
+        }
+        let Some(view) = self.project_host_modeless_dialog_for_activation(pointer) else {
+            return false;
+        };
+        if view.busy || view.revision != revision {
+            return false;
+        }
+        self.select_host_modeless_window_for_click(pointer);
+        true
+    }
+
+    /// See the classic adapter: raw clicks over a projected modeless dialog
+    /// have no visible guest target.
+    pub(crate) fn host_modeless_dialog_at(&mut self, v: i16, h: i16) -> bool {
+        let menu_bar_height = self
+            .memory
+            .read_u16_be(crate::memory::globals::addr::MBAR_HEIGHT)
+            .unwrap_or(0) as i16;
+        let (part, window) = ppc_find_window_at_point(
+            &mut self.memory,
+            &self.gworlds,
+            &self.window_list,
+            v,
+            h,
+            menu_bar_height,
+        );
+        part >= 3 && window != 0 && self.toolbox_startup.host_ui.dialog_is_modeless(window)
+    }
+
+    /// Select only when a guest click would: the window is inactive or
+    /// visually obscured. BringToFront alone never fabricates activation.
+    pub(super) fn select_host_modeless_window_for_click(&mut self, pointer: u32) {
+        let active = ppc_active_visible_process_window(&mut self.memory, &self.window_list);
+        let front = ppc_front_visible_process_window(&mut self.memory, &self.window_list);
+        if active != Some(pointer) || front != Some(pointer) {
+            self.select_host_modeless_window(pointer);
+        }
+    }
+
+    fn select_host_modeless_window(&mut self, pointer: u32) {
+        let mut heap_cursor = self.heap_cursor();
+        let heap_limit = self.heap_limit();
+        let mut last_mem_error = self.last_mem_error();
+        let mut handles = self.handles();
+        let tick_count = self.current_tick();
+        let current_gworld = self.current_gworld.shared_handle();
+        let current_gdevice = self.current_gdevice.shared_handle();
+        let screen_clut = self.screen_clut.shared_handle();
+        let color_manager_clut = self.color_manager_clut.shared_handle();
+        let event_queue = self.event_queue.shared_handle();
+        let shared_manager = self.process_memory_manager.0.clone();
+        let mut manager = shared_manager.borrow_mut();
+        event_queue.with_mut(|event_queue| {
+            current_gworld.with_mut(|current_gworld| {
+                current_gdevice.with_mut(|current_gdevice| {
+                    screen_clut.with_mut(|screen_clut| {
+                        color_manager_clut.with_mut(|color_manager_clut| {
+                            ppc_select_window(
+                                pointer,
+                                PpcSelectWindowContext {
+                                    memory: &mut self.memory,
+                                    process_memory_manager: manager.native_mut(),
+                                    gworlds: &mut self.gworlds,
+                                    window_list: &self.window_list,
+                                    heap_cursor: &mut heap_cursor,
+                                    heap_limit,
+                                    last_mem_error: &mut last_mem_error,
+                                    handles: &mut handles,
+                                    current_gworld,
+                                    current_gdevice,
+                                    quickdraw_fore_color: &mut self.quickdraw_fore_color,
+                                    quickdraw_back_color: &mut self.quickdraw_back_color,
+                                    screen_clut,
+                                    color_manager_clut,
+                                    toolbox_startup: &mut self.toolbox_startup,
+                                    event_queue,
+                                    tick_count,
+                                },
+                            );
+                        });
+                    });
+                });
+            });
+        });
+    }
+}
+
+struct PpcSelectWindowContext<'a> {
+    memory: &'a mut PpcSectionMem,
+    process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    gworlds: &'a mut Vec<PpcGWorldRecord>,
+    window_list: &'a SharedProcessWindowList,
+    heap_cursor: &'a mut u32,
+    heap_limit: u32,
+    last_mem_error: &'a mut i16,
+    handles: &'a mut Vec<PpcHandleRecord>,
+    current_gworld: &'a mut u32,
+    current_gdevice: &'a mut u32,
+    quickdraw_fore_color: &'a mut PpcRgbColor,
+    quickdraw_back_color: &'a mut PpcRgbColor,
+    screen_clut: &'a mut [[u16; 3]; 256],
+    color_manager_clut: &'a mut [[u16; 3]; 256],
+    toolbox_startup: &'a mut PpcToolboxStartupState,
+    event_queue: &'a mut EventQueue,
+    tick_count: u32,
+}
+
+pub(super) fn ppc_active_visible_process_window(
+    memory: &mut PpcSectionMem,
+    windows: &SharedProcessWindowList,
+) -> Option<u32> {
+    windows
+        .windows()
+        .into_iter()
+        .find(|pointer| {
+            ppc_window_is_visible(memory, *pointer)
+                && memory
+                    .read_u8(*pointer + PPC_CWINDOW_HILITED_OFFSET)
+                    .unwrap_or(0)
+                    != 0
+        })
+        .or_else(|| ppc_front_visible_process_window(memory, windows))
+}
+
+fn ppc_select_window(window: u32, context: PpcSelectWindowContext<'_>) {
+    let PpcSelectWindowContext {
+        memory,
+        process_memory_manager,
+        gworlds,
+        window_list,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        current_gworld,
+        current_gdevice,
+        quickdraw_fore_color,
+        quickdraw_back_color,
+        screen_clut,
+        color_manager_clut,
+        toolbox_startup,
+        event_queue,
+        tick_count,
+    } = context;
+    let previous_front = ppc_front_visible_process_window(memory, window_list);
+    let previous_active = ppc_active_visible_process_window(memory, window_list);
+    let target_visible = ppc_window_is_visible(memory, window);
+    ppc_reorder_window(gworlds, window_list, window, 0, true);
+    ppc_recalculate_window_vis_regions(
+        process_memory_manager,
+        memory,
+        window_list,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+    );
+    if previous_front != Some(window) {
+        ppc_transition_front_window_chrome(
+            memory,
+            gworlds,
+            window_list,
+            previous_front,
+            toolbox_startup.host_menu_bar_hidden,
+            Some(&toolbox_startup.host_ui),
+        );
+    }
+    if target_visible && ppc_window_proc_id(memory, window) != 1 {
+        if let Some(active) =
+            previous_active.filter(|active| Some(*active) != previous_front && *active != window)
+        {
+            let _ = ppc_set_window_hilited(memory, active, false);
+            ppc_redraw_visible_window_frame(
+                memory,
+                gworlds,
+                window_list,
+                active,
+                toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
+            );
+        }
+    }
+    *current_gworld = window;
+    *current_gdevice = ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+    ppc_register_gdevice(toolbox_startup, *current_gdevice);
+    ppc_restore_port_colors(
+        memory,
+        *current_gworld,
+        quickdraw_fore_color,
+        quickdraw_back_color,
+    );
+    let _ = ppc_set_window_hilited(memory, *current_gworld, true);
+    if ppc_front_visible_process_window(memory, window_list) != previous_front {
+        let _ = ppc_activate_front_window_palette(
+            memory,
+            gworlds,
+            *current_gdevice,
+            screen_clut,
+            color_manager_clut,
+            toolbox_startup,
+        );
+    }
+    let next_active = if target_visible {
+        Some(window)
+    } else {
+        previous_active
+    };
+    ppc_enqueue_window_activation_transition(
+        memory,
+        event_queue,
+        previous_active,
+        next_active,
+        tick_count,
+    );
+}
+
 pub(super) fn dispatch_window_import(
     context: PpcWindowDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
@@ -418,6 +641,7 @@ pub(super) fn dispatch_window_import(
                 window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             if window != 0 {
                 ppc_recalculate_window_vis_regions(
@@ -477,6 +701,7 @@ pub(super) fn dispatch_window_import(
                 current_resource_refnum,
                 last_resource_error,
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             if window != 0 {
                 ppc_recalculate_window_vis_regions(
@@ -669,6 +894,7 @@ pub(super) fn dispatch_window_import(
                         event_queue,
                         tick_count,
                         input,
+                        Some(&toolbox_startup.host_ui),
                     );
                 }
             }
@@ -712,6 +938,7 @@ pub(super) fn dispatch_window_import(
                         event_queue,
                         tick_count,
                         input,
+                        Some(&toolbox_startup.host_ui),
                     );
                     ppc_transition_front_window_chrome(
                         memory,
@@ -719,6 +946,7 @@ pub(super) fn dispatch_window_import(
                         window_list,
                         previous_front,
                         toolbox_startup.host_menu_bar_hidden,
+                        Some(&toolbox_startup.host_ui),
                     );
                     let next_front = ppc_front_visible_process_window(memory, window_list);
                     if bring_to_front && next_front == Some(window) {
@@ -753,6 +981,9 @@ pub(super) fn dispatch_window_import(
                 let window = params.window_ptr();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let was_visible = ppc_window_is_visible(memory, window);
+                if !was_visible {
+                    ppc_prepare_host_dialog_show(memory, gworlds, toolbox_startup, window);
+                }
                 let _ = ppc_set_window_visible(memory, window, true);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
@@ -769,6 +1000,7 @@ pub(super) fn dispatch_window_import(
                     window_list,
                     previous_front,
                     toolbox_startup.host_menu_bar_hidden,
+                    Some(&toolbox_startup.host_ui),
                 );
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
@@ -799,6 +1031,7 @@ pub(super) fn dispatch_window_import(
                             window_list,
                             window,
                             toolbox_startup.host_menu_bar_hidden,
+                            Some(&toolbox_startup.host_ui),
                         );
                     }
                     ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
@@ -813,6 +1046,9 @@ pub(super) fn dispatch_window_import(
                         toolbox_startup,
                     );
                 }
+                if !was_visible {
+                    ppc_finish_host_dialog_show(memory, toolbox_startup, window);
+                }
                 if ppc_gworld_trace_enabled() {
                     eprintln!(
                         "[PPC-GWORLD-TRACE] ShowWindow window=${:08X} current=${:08X}",
@@ -826,7 +1062,9 @@ pub(super) fn dispatch_window_import(
             if let Some(params) = crate::window_manager::evaluate_hide_window_parameters(cpu.gpr[3]) {
                 let window = params.window_ptr();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
-                let exposed = ppc_window_is_visible(memory, window)
+                let host_owned = toolbox_startup.host_ui.dialog_presented(window);
+                toolbox_startup.host_ui.invalidate_dialog_presentation(window);
+                let exposed = (ppc_window_is_visible(memory, window) && !host_owned)
                     .then(|| {
                         memory
                             .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
@@ -858,6 +1096,7 @@ pub(super) fn dispatch_window_import(
                     window_list,
                     previous_front,
                     toolbox_startup.host_menu_bar_hidden,
+                    Some(&toolbox_startup.host_ui),
                 );
                 ppc_restore_window_removal_exposure(
                     memory,
@@ -868,6 +1107,7 @@ pub(super) fn dispatch_window_import(
                     event_queue,
                     tick_count,
                     input,
+                    Some(&toolbox_startup.host_ui),
                 );
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
@@ -894,7 +1134,14 @@ pub(super) fn dispatch_window_import(
                 let visible = params.show();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let was_visible = ppc_window_is_visible(memory, window);
-                let exposed = (was_visible && !visible)
+                if visible && !was_visible {
+                    ppc_prepare_host_dialog_show(memory, gworlds, toolbox_startup, window);
+                }
+                if !visible {
+                    toolbox_startup.host_ui.invalidate_dialog_presentation(window);
+                }
+                let exposed = (was_visible && !visible
+                    && !toolbox_startup.host_ui.dialog_presented(window))
                     .then(|| {
                         memory
                             .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
@@ -917,6 +1164,7 @@ pub(super) fn dispatch_window_import(
                     window_list,
                     previous_front,
                     toolbox_startup.host_menu_bar_hidden,
+                    Some(&toolbox_startup.host_ui),
                 );
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
@@ -935,6 +1183,7 @@ pub(super) fn dispatch_window_import(
                     event_queue,
                     tick_count,
                     input,
+                    Some(&toolbox_startup.host_ui),
                 );
                 if visible && !was_visible {
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
@@ -944,6 +1193,7 @@ pub(super) fn dispatch_window_import(
                             window_list,
                             window,
                             toolbox_startup.host_menu_bar_hidden,
+                            Some(&toolbox_startup.host_ui),
                         );
                     }
                 }
@@ -956,6 +1206,9 @@ pub(super) fn dispatch_window_import(
                         color_manager_clut,
                         toolbox_startup,
                     );
+                }
+                if visible && !was_visible {
+                    ppc_finish_host_dialog_show(memory, toolbox_startup, window);
                 }
                 if ppc_gworld_trace_enabled() {
                     eprintln!(
@@ -1061,6 +1314,7 @@ pub(super) fn dispatch_window_import(
                 heap_limit,
                 last_mem_error,
                 handles,
+                Some(&toolbox_startup.host_ui),
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -1104,49 +1358,32 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SelectWindow => {
-            if let Some(params) = crate::window_manager::evaluate_select_window_parameters(cpu.gpr[3]) {
+            if let Some(params) =
+                crate::window_manager::evaluate_select_window_parameters(cpu.gpr[3])
+            {
                 let window = params.window_ptr();
-                let previous_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_reorder_window(gworlds, window_list, window, 0, true);
-                ppc_recalculate_window_vis_regions(
-                    process_memory_manager,
-                    memory,
-                    window_list,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                );
-                if previous_front != Some(window) {
-                    ppc_transition_front_window_chrome(
+                ppc_select_window(
+                    window,
+                    PpcSelectWindowContext {
                         memory,
+                        process_memory_manager,
                         gworlds,
                         window_list,
-                        previous_front,
-                        toolbox_startup.host_menu_bar_hidden,
-                    );
-                }
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-                let _ = ppc_set_window_hilited(memory, *current_gworld, true);
-                if ppc_front_visible_process_window(memory, window_list) != previous_front {
-                    let _ = ppc_activate_front_window_palette(
-                        memory,
-                        gworlds,
-                        *current_gdevice,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        current_gworld: &mut *current_gworld,
+                        current_gdevice: &mut *current_gdevice,
+                        quickdraw_fore_color,
+                        quickdraw_back_color,
                         screen_clut,
                         color_manager_clut,
                         toolbox_startup,
-                    );
-                }
+                        event_queue,
+                        tick_count,
+                    },
+                );
             }
             if ppc_gworld_trace_enabled() {
                 eprintln!(
@@ -1380,6 +1617,7 @@ pub(super) fn dispatch_window_import(
                         window_list,
                         window,
                         toolbox_startup.host_menu_bar_hidden,
+                        Some(&toolbox_startup.host_ui),
                     );
                     if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
                         ppc_union_window_update_rect(memory, window, content);
@@ -2019,7 +2257,7 @@ pub(super) fn ppc_new_cwindow_with_storage(
     ppc_reorder_window(gworlds, window_list, port, behind, false);
     window_list.set_window_class(port, crate::window_manager::window_class_for_legacy_proc(proc_id));
     if visible && proc_id == 1 {
-        ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
+        ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false, None);
     }
     if ppc_gworld_trace_enabled() {
         eprintln!(
@@ -2197,7 +2435,13 @@ pub(super) fn ppc_draw_existing_window_frame(
     window_list: &SharedProcessWindowList,
     window: u32,
     host_menu_bar_hidden: bool,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
+    // Initial window construction precedes host ownership and passes None.
+    // Existing windows always carry the execution owner's presentation state.
+    if host_ui.is_some_and(|ui| ui.dialog_presented(window)) {
+        return;
+    }
     let Some((top, left, bottom, right)) = ppc_read_rect(memory, window.wrapping_add(16)) else {
         return;
     };
@@ -2295,9 +2539,17 @@ pub(super) fn ppc_redraw_visible_window_frame(
     window_list: &SharedProcessWindowList,
     window: u32,
     host_menu_bar_hidden: bool,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
     if ppc_window_is_visible(memory, window) {
-        ppc_draw_existing_window_frame(memory, gworlds, window_list, window, host_menu_bar_hidden);
+        ppc_draw_existing_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+            host_ui,
+        );
     }
 }
 
@@ -2492,6 +2744,7 @@ pub(super) fn ppc_repaint_window_geometry_transition(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     when: u32,
     input: PpcInputSnapshot,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
     if !was_visible {
         return;
@@ -2499,16 +2752,32 @@ pub(super) fn ppc_repaint_window_geometry_transition(
     let Some(exposed) = ppc_union_bounds(previous_structure, next_structure) else {
         return;
     };
-    ppc_restore_window_removal_exposure(
-        memory,
-        gworlds,
-        window_list,
-        Some(exposed),
-        host_menu_bar_hidden,
-        event_queue,
-        when,
-        input,
-    );
+    if host_ui.is_some_and(|ui| ui.dialog_presented(window)) {
+        ppc_update_exposed_windows(
+            memory,
+            gworlds,
+            window_list,
+            exposed,
+            host_menu_bar_hidden,
+            event_queue,
+            when,
+            input,
+            host_ui,
+            false,
+        );
+    } else {
+        ppc_restore_window_removal_exposure(
+            memory,
+            gworlds,
+            window_list,
+            Some(exposed),
+            host_menu_bar_hidden,
+            event_queue,
+            when,
+            input,
+            host_ui,
+        );
+    }
     // Keep the moved/resized window's update region explicit even if its new
     // structure only touches the transition's edge. EndUpdate clears it
     // after the guest's updateEvt redraws the visible content.
@@ -2524,6 +2793,7 @@ pub(super) fn ppc_restore_window_removal_exposure(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     when: u32,
     input: PpcInputSnapshot,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
     let Some(exposed) = exposed.filter(|rect| rect.0 < rect.2 && rect.1 < rect.3) else {
         return;
@@ -2579,6 +2849,32 @@ pub(super) fn ppc_restore_window_removal_exposure(
         }
     }
 
+    ppc_update_exposed_windows(
+        memory,
+        gworlds,
+        window_list,
+        exposed,
+        host_menu_bar_hidden,
+        event_queue,
+        when,
+        input,
+        host_ui,
+        true,
+    );
+}
+
+fn ppc_update_exposed_windows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    exposed: (i16, i16, i16, i16),
+    host_menu_bar_hidden: bool,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
+    draw_frames: bool,
+) {
     // Repaint every remaining visible window whose structure intersects the
     // exposed area. The update events let guest code redraw only its visible
     // content, while redrawing the WDEF here restores title bars and frames.
@@ -2597,7 +2893,16 @@ pub(super) fn ppc_restore_window_removal_exposure(
         if !intersects {
             continue;
         }
-        ppc_redraw_visible_window_frame(memory, gworlds, window_list, window, host_menu_bar_hidden);
+        if draw_frames {
+            ppc_redraw_visible_window_frame(
+                memory,
+                gworlds,
+                window_list,
+                window,
+                host_menu_bar_hidden,
+                host_ui,
+            );
+        }
         ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
         ppc_enqueue_window_update_event(event_queue, window, when, input);
     }
@@ -2630,6 +2935,7 @@ pub(super) fn ppc_transition_front_window_chrome(
     window_list: &SharedProcessWindowList,
     previous_front: Option<u32>,
     host_menu_bar_hidden: bool,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
     let next_front = ppc_front_visible_process_window(memory, window_list);
     if previous_front == next_front {
@@ -2646,12 +2952,20 @@ pub(super) fn ppc_transition_front_window_chrome(
                 window_list,
                 previous,
                 host_menu_bar_hidden,
+                host_ui,
             );
         }
     }
     if let Some(next) = next_front {
         let _ = ppc_set_window_hilited(memory, next, true);
-        ppc_redraw_visible_window_frame(memory, gworlds, window_list, next, host_menu_bar_hidden);
+        ppc_redraw_visible_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            next,
+            host_menu_bar_hidden,
+            host_ui,
+        );
     }
 }
 
@@ -2810,6 +3124,7 @@ pub(super) fn ppc_get_new_cwindow(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     host_menu_bar_hidden: bool,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) -> u32 {
     let params = crate::window_manager::evaluate_get_new_window_parameters(
         cpu.gpr[3] as u16 as i16,
@@ -2866,6 +3181,7 @@ pub(super) fn ppc_get_new_cwindow(
         window_list,
         current_gdevice,
         host_menu_bar_hidden,
+        host_ui,
     );
     if window == 0 {
         *last_resource_error = PPC_PARAM_ERR;
@@ -3089,6 +3405,7 @@ pub(super) fn ppc_paint_one(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) {
     if window == 0 {
         ppc_paint_behind(
@@ -3173,6 +3490,11 @@ pub(super) fn ppc_paint_one(
     .is_none()
     {
         *last_mem_error = PPC_PARAM_ERR;
+        return;
+    }
+
+    if host_ui.is_some_and(|ui| ui.dialog_presented(window)) {
+        *last_mem_error = PPC_NO_ERR;
         return;
     }
 
@@ -3869,6 +4191,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             if window != 0 {
                 ppc_recalculate_window_vis_regions(
@@ -3953,6 +4276,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             if window == 0 {
                 return Some(PpcImportAction::Return(ppc_i16_result(*last_mem_error)));
@@ -4049,6 +4373,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 event_queue,
                 when,
                 input,
+                Some(&toolbox_startup.host_ui),
             );
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
@@ -4105,6 +4430,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             *last_resource_error = if window == 0 {
                 PPC_PARAM_ERR
@@ -4184,6 +4510,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         window_list,
                         params.window_ptr(),
                         toolbox_startup.host_menu_bar_hidden,
+                        Some(&toolbox_startup.host_ui),
                     );
                 }
             }
@@ -4194,10 +4521,11 @@ pub(super) fn ppc_dispatch_legacy_window(
                 return Some(PpcImportAction::ReturnPreserve);
             };
             let window = params.window_ptr();
+            let host_owned = ppc_retire_host_dialog(toolbox_startup, window);
             toolbox_startup.windows_without_updates.remove(&window);
             let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
-            let exposed = was_visible
+            let exposed = (was_visible && !host_owned)
                 .then(|| {
                     memory
                         .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
@@ -4246,8 +4574,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                 memory,
                 gworlds,
                 window_list,
-                previous_front,
+                previous_front.filter(|previous| !host_owned || *previous != window),
                 toolbox_startup.host_menu_bar_hidden,
+                Some(&toolbox_startup.host_ui),
             );
             ppc_restore_window_removal_exposure(
                 memory,
@@ -4258,6 +4587,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 event_queue,
                 when,
                 input,
+                Some(&toolbox_startup.host_ui),
             );
             if let Some(pixmap_handle) = disposed_pixmap_handle {
                 toolbox_startup
@@ -4321,6 +4651,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     window_list,
                     params.window_ptr(),
                     toolbox_startup.host_menu_bar_hidden,
+                    Some(&toolbox_startup.host_ui),
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -4470,6 +4801,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         event_queue,
                         when,
                         input,
+                        Some(&toolbox_startup.host_ui),
                     );
                     ppc_transition_front_window_chrome(
                         memory,
@@ -4477,6 +4809,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         window_list,
                         previous_front,
                         toolbox_startup.host_menu_bar_hidden,
+                        Some(&toolbox_startup.host_ui),
                     );
                     let next_front = ppc_front_visible_process_window(memory, window_list);
                     if params.front() && next_front == Some(window) {
@@ -5195,6 +5528,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     event_queue,
                     when,
                     input,
+                    Some(&toolbox_startup.host_ui),
                 );
             }
             if output != 0 {
@@ -5281,6 +5615,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                             event_queue,
                             when,
                             input,
+                            Some(&toolbox_startup.host_ui),
                         );
                         PPC_NO_ERR
                     } else {
@@ -6035,6 +6370,7 @@ pub(super) fn ppc_new_window_from_cpu(
     window_list: &SharedProcessWindowList,
     current_gdevice: u32,
     host_menu_bar_hidden: bool,
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
 ) -> u32 {
     let previous_front = ppc_front_visible_window(memory, gworlds);
     let window = ppc_new_cwindow(
@@ -6103,9 +6439,17 @@ pub(super) fn ppc_new_window_from_cpu(
         window_list,
         previous_front,
         host_menu_bar_hidden,
+        host_ui,
     );
     if cpu.gpr[6] != 0 && ppc_front_visible_process_window(memory, window_list) != Some(window) {
-        ppc_draw_existing_window_frame(memory, gworlds, window_list, window, host_menu_bar_hidden);
+        ppc_draw_existing_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            window,
+            host_menu_bar_hidden,
+            host_ui,
+        );
     }
     *last_mem_error = PPC_NO_ERR;
     window
@@ -6242,6 +6586,8 @@ pub(super) fn ppc_close_window(
         return;
     };
     let window = params.window_ptr();
+    let host_owned = ppc_retire_host_dialog(toolbox_startup, window);
+
     // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-105.
     event_queue.retain(|event| !(matches!(event.what, 6 | 8) && event.message == window));
     for pending in [0x0A64, 0x0A68] {
@@ -6251,7 +6597,7 @@ pub(super) fn ppc_close_window(
     }
     let previous_front = ppc_front_visible_process_window(memory, window_list);
     let was_visible = ppc_window_is_visible(memory, window);
-    let exposed = was_visible
+    let exposed = (was_visible && !host_owned)
         .then(|| {
             memory
                 .read_u32_be(window.wrapping_add(PPC_CWINDOW_STRUCTURE_RGN_OFFSET))
@@ -6285,12 +6631,15 @@ pub(super) fn ppc_close_window(
             last_mem_error,
             handles,
         );
+        // Host-owned dialogs have no frame in the guest framebuffer. Do not
+        // redraw the removed frame during the activation transition.
         ppc_transition_front_window_chrome(
             memory,
             gworlds,
             window_list,
-            previous_front,
+            previous_front.filter(|previous| !host_owned || *previous != window),
             toolbox_startup.host_menu_bar_hidden,
+            Some(&toolbox_startup.host_ui),
         );
         if *current_gworld == window {
             *current_gworld =
@@ -6310,6 +6659,7 @@ pub(super) fn ppc_close_window(
             event_queue,
             tick_count,
             input,
+            Some(&toolbox_startup.host_ui),
         );
         if let Some(pixmap_handle) = closed_pixmap_handle {
             toolbox_startup
@@ -6765,6 +7115,7 @@ pub(super) fn ppc_dispatch_drag_window(
                     event_queue,
                     when,
                     input,
+                    Some(&startup.host_ui),
                 );
                 ppc_transition_front_window_chrome(
                     memory,
@@ -6772,6 +7123,7 @@ pub(super) fn ppc_dispatch_drag_window(
                     window_list,
                     previous_front,
                     startup.host_menu_bar_hidden,
+                    Some(&startup.host_ui),
                 );
                 *current_gworld = call.window;
             }
@@ -7145,6 +7497,19 @@ pub(super) fn ppc_dispatch_track_go_away(
         return PpcImportAction::Return(0);
     };
     let call = ppc_go_away_call(cpu);
+    // A host close intent was delivered as this click; its release is already
+    // queued, so accept it without live button tracking or close-box feedback.
+    if startup.go_away_tracking.is_none()
+        && startup
+            .host_ui
+            .take_host_click(params.window_ptr(), params.start_point(), true)
+            .is_some()
+    {
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        return PpcImportAction::Return(1);
+    }
     if let Some(state) = startup.go_away_tracking.as_ref() {
         if state.call != call {
             return PpcImportAction::Return(0);

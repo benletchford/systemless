@@ -704,6 +704,7 @@ impl super::TrapDispatcher {
         match notification_manager::evaluate_nm_remove(nm_rec, q_type, &self.notification_requests)
         {
             Ok(action) => {
+                self.host_ui.remove_notification(nm_rec);
                 self.notification_requests.remove(action.queue_index);
                 bus.write_long(
                     action.clear_link_ptr + notification_manager::Q_LINK_OFFSET,
@@ -775,6 +776,16 @@ impl super::TrapDispatcher {
             nm_resp,
         ) {
             Ok(action) => {
+                let text_ptr = bus.read_long(nm_rec + notification_manager::NM_STR_OFFSET);
+                if text_ptr != 0
+                    && !matches!(
+                        action,
+                        notification_manager::NmInstallAction::AlreadyPresent
+                    )
+                {
+                    let text = crate::trap::types::decode_mac_roman(&bus.read_pstring(text_ptr));
+                    self.host_ui.note_notification(nm_rec, text);
+                }
                 match action {
                     notification_manager::NmInstallAction::AlreadyPresent => {}
                     notification_manager::NmInstallAction::AutoRemoved => {

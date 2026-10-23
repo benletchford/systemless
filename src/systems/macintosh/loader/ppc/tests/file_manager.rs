@@ -2474,113 +2474,146 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
 
     #[test]
     fn hle_import_runner_custom_get_file_excludes_true_filter_results_and_resumes_caller() {
-        let pef = synthetic_pef_with_import(b"CustomGetFile");
-        let mut loaded = load_pef_application(&pef).unwrap();
-        let callback = PPC_DATA_BASE + 0x2000;
-        let reply = PPC_DATA_BASE + 0x2100;
-        loaded.memory.add_region(callback, vec![0; 12]);
-        loaded.memory.add_region(reply, vec![0xaa; 88]);
-        loaded.memory.write_u32_be(callback, 0x8863_001e).unwrap(); // lbz r3, ioFlAttrib(r3)
-        loaded.memory.write_u32_be(callback + 4, 0x6863_0010).unwrap(); // xori r3, r3, folder bit
-        loaded.memory.write_u32_be(callback + 8, 0x4e80_0020).unwrap(); // blr
-        loaded.vfs_directories.push(PpcVfsDirectory {
-            dir_id: 42,
-            parent_dir_id: PPC_ROOT_DIR_ID,
-            path: "Visible Folder".to_string(),
-            creator: PPC_DIRECTORY_CREATOR,
-            file_type: PPC_DIRECTORY_FILE_TYPE,
-            finder_flags: 0,
-            dirty: false,
-        });
-        loaded.vfs_directories.push(PpcVfsDirectory {
-            dir_id: 43,
-            parent_dir_id: 42,
-            path: "Visible Folder/Nested Folder".to_string(),
-            creator: PPC_DIRECTORY_CREATOR,
-            file_type: PPC_DIRECTORY_FILE_TYPE,
-            finder_flags: 0,
-            dirty: false,
-        });
-        loaded.push_test_vfs_file(PpcVfsFileRecord {
-            path: "Hidden File".to_string(),
-            data: b"hidden".to_vec().into(),
-            creator: 0,
-            file_type: u32::from_be_bytes(*b"TEXT"),
-            finder_flags: 0,
-            dirty: false,
-        });
-        loaded.push_test_vfs_file(PpcVfsFileRecord {
-            path: "Visible Folder/Hidden Nested File".to_string(),
-            data: b"hidden in folder".to_vec().into(),
-            creator: 0,
-            file_type: u32::from_be_bytes(*b"TEXT"),
-            finder_flags: 0,
-            dirty: false,
-        });
-        loaded.cpu.gpr[3] = callback;
-        loaded.cpu.gpr[4] = u32::MAX; // all types before the callback filters them
-        loaded.cpu.gpr[5] = 0;
-        loaded.cpu.gpr[6] = reply;
+        for host_ui in [false, true] {
+            let pef = synthetic_pef_with_import(b"CustomGetFile");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.toolbox_startup.host_ui.enabled = host_ui;
+            let callback = PPC_DATA_BASE + 0x2000;
+            let reply = PPC_DATA_BASE + 0x2100;
+            loaded.memory.add_region(callback, vec![0; 12]);
+            loaded.memory.add_region(reply, vec![0xaa; 88]);
+            loaded.memory.write_u32_be(callback, 0x8863_001e).unwrap(); // lbz r3, ioFlAttrib(r3)
+            loaded
+                .memory
+                .write_u32_be(callback + 4, 0x6863_0010)
+                .unwrap(); // xori r3, r3, folder bit
+            loaded
+                .memory
+                .write_u32_be(callback + 8, 0x4e80_0020)
+                .unwrap(); // blr
+            loaded.vfs_directories.push(PpcVfsDirectory {
+                dir_id: 42,
+                parent_dir_id: PPC_ROOT_DIR_ID,
+                path: "Visible Folder".to_string(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded.vfs_directories.push(PpcVfsDirectory {
+                dir_id: 43,
+                parent_dir_id: 42,
+                path: "Visible Folder/Nested Folder".to_string(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: "Hidden File".to_string(),
+                data: b"hidden".to_vec().into(),
+                creator: 0,
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: "Visible Folder/Hidden Nested File".to_string(),
+                data: b"hidden in folder".to_vec().into(),
+                creator: 0,
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded.cpu.gpr[3] = callback;
+            loaded.cpu.gpr[4] = u32::MAX; // all types before the callback filters them
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = reply;
 
-        let probe = loaded.run_with_hle_imports(1024);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let tracking = loaded
-            .toolbox_startup
-            .standard_file_get_tracking
-            .as_ref()
-            .expect("CustomGetFile must remain open after the filter callback");
-        assert!(tracking.entries.iter().any(|entry| entry.is_directory));
-        assert!(tracking.entries.iter().all(|entry| entry.is_directory));
-        assert_eq!(loaded.cpu.lr, tracking.call.return_address);
-        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+            let probe = loaded.run_with_hle_imports(1024);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            let tracking = loaded
+                .toolbox_startup
+                .standard_file_get_tracking
+                .as_ref()
+                .expect("CustomGetFile must remain open after the filter callback");
+            assert!(tracking.entries.iter().any(|entry| entry.is_directory));
+            assert!(tracking.entries.iter().all(|entry| entry.is_directory));
+            assert_eq!(loaded.cpu.lr, tracking.call.return_address);
+            assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
 
-        let bounds = tracking.bounds;
-        let folder_index = tracking
-            .entries
-            .iter()
-            .position(|entry| entry.dir_id == 42)
-            .expect("fixture folder is visible after filtering");
-        loaded
-            .toolbox_startup
-            .standard_file_get_tracking
-            .as_mut()
-            .unwrap()
-            .selected = folder_index;
-        loaded.set_event_queue([PpcQueuedEvent {
-            what: 1,
-            message: 0,
-            when: 0,
-            where_v: bounds.0
-                + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
-            where_h: bounds.1
-                + (PPC_STANDARD_FILE_GET_OPEN_RECT.1 + PPC_STANDARD_FILE_GET_OPEN_RECT.3) / 2,
-            modifiers: 0,
-        }]);
-        let probe = loaded.run_with_hle_imports(1024);
-        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let tracking = loaded
-            .toolbox_startup
-            .standard_file_get_tracking
-            .as_ref()
-            .expect("CustomGetFile must remain open after filtering the next folder");
-        assert_eq!(tracking.current_dir_id, 42);
-        assert_eq!(tracking.entries.len(), 1);
-        assert!(tracking.entries[0].is_directory);
-        assert_eq!(tracking.entries[0].name, b"Nested Folder");
-        assert_eq!(loaded.cpu.lr, tracking.call.return_address);
+            let bounds = tracking.bounds;
+            let folder_index = tracking
+                .entries
+                .iter()
+                .position(|entry| entry.dir_id == 42)
+                .expect("fixture folder is visible after filtering");
+            loaded
+                .toolbox_startup
+                .standard_file_get_tracking
+                .as_mut()
+                .unwrap()
+                .selected = folder_index;
+            if host_ui {
+                let snapshot = loaded.host_file_dialog().unwrap();
+                assert!(loaded.reply_host_file_dialog(
+                    crate::systems::macintosh::host_ui::FileDialogReply {
+                        id: snapshot.id,
+                        revision: snapshot.revision,
+                        action: crate::systems::macintosh::host_ui::FileDialogAction::Open(
+                            folder_index
+                        )
+                    }
+                ));
+            } else {
+                loaded.set_event_queue([PpcQueuedEvent {
+                    what: 1,
+                    message: 0,
+                    when: 0,
+                    where_v: bounds.0
+                        + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
+                    where_h: bounds.1
+                        + (PPC_STANDARD_FILE_GET_OPEN_RECT.1 + PPC_STANDARD_FILE_GET_OPEN_RECT.3) / 2,
+                    modifiers: 0,
+                }]);
+            }
+            let probe = loaded.run_with_hle_imports(1024);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            let tracking = loaded
+                .toolbox_startup
+                .standard_file_get_tracking
+                .as_ref()
+                .expect("CustomGetFile must remain open after filtering the next folder");
+            assert_eq!(tracking.current_dir_id, 42);
+            assert_eq!(tracking.entries.len(), 1);
+            assert!(tracking.entries[0].is_directory);
+            assert_eq!(tracking.entries[0].name, b"Nested Folder");
+            assert_eq!(loaded.cpu.lr, tracking.call.return_address);
 
-        loaded.set_event_queue([PpcQueuedEvent {
-            what: 3,
-            message: u32::from(PPC_KEY_ESCAPE) << 8,
-            when: 0,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        }]);
-        let probe = loaded.run_with_hle_imports(1024);
-        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
-        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_none());
-        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+            if host_ui {
+                let snapshot = loaded.host_file_dialog().unwrap();
+                assert!(loaded.reply_host_file_dialog(
+                    crate::systems::macintosh::host_ui::FileDialogReply {
+                        id: snapshot.id,
+                        revision: snapshot.revision,
+                        action: crate::systems::macintosh::host_ui::FileDialogAction::Cancel
+                    }
+                ));
+            } else {
+                loaded.set_event_queue([PpcQueuedEvent {
+                    what: 3,
+                    message: u32::from(PPC_KEY_ESCAPE) << 8,
+                    when: 0,
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers: 0,
+                }]);
+            }
+            let probe = loaded.run_with_hle_imports(1024);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert!(loaded.toolbox_startup.standard_file_get_tracking.is_none());
+            assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        }
     }
 
     #[test]
@@ -2980,6 +3013,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     #[test]
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
+            entries: Vec::new(),
             call: PpcStandardFileCall {
                 mode: PpcStandardFileMode::PutModern,
                 reply: 0,
@@ -10902,5 +10936,111 @@ fn hierarchical_create_resolves_registered_working_directory_and_preserves_exclu
         run_test_import(&mut loaded, PpcImportDispatcherTarget::HCreate);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DIR_NF_ERR));
         assert_eq!(loaded.vfs_files.len(), count);
+    }
+}
+
+#[test]
+fn custom_file_filter_can_open_nested_picker_and_resume_parent() {
+    for invalid_child in [false, true] {
+        use crate::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+        let pef = synthetic_pef_with_import(b"CustomGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_ui.enabled = true;
+        let callback = PPC_DATA_BASE + 0x6000;
+        let parent_reply = callback + 0x100;
+        let child_reply = callback + 0x200;
+        loaded.memory.add_region(callback, vec![0xaa; 0x300]);
+        loaded.memory.write_u32_be(callback, 0x4800_0000).unwrap(); // b .
+        loaded
+            .memory
+            .write_u32_be(callback + 4, 0x4e80_0020)
+            .unwrap(); // blr
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Nested filter fixture".into(),
+            data: b"test".to_vec().into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = u32::MAX;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = parent_reply;
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let parent_cpu = loaded.cpu.clone();
+        let filtering = loaded
+            .toolbox_startup
+            .standard_file_get_filtering
+            .as_ref()
+            .unwrap()
+            .clone();
+        let parent = loaded.host_file_dialog().unwrap();
+        assert!(parent.busy);
+        // Enter the same import from inside the guest callback, with no child filter.
+        loaded.cpu.pc = filtering.import_pc;
+        loaded.cpu.lr = filtering.tracking.call.return_address;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = if invalid_child { 1 } else { u32::MAX };
+        loaded.cpu.gpr[5] = if invalid_child { 0xffff_fff0 } else { 0 };
+        loaded.cpu.gpr[6] = child_reply;
+        if invalid_child {
+            assert!(matches!(
+                loaded.run_with_hle_imports(64).result,
+                PpcRunResult::Halted { .. }
+            ));
+        } else {
+            assert!(matches!(
+                loaded.run_with_hle_imports(64).result,
+                PpcRunResult::CycleLimit { .. }
+            ));
+            let child = loaded.host_file_dialog().unwrap();
+            assert_ne!(child.id, parent.id);
+            assert!(!child.busy);
+            assert!(!loaded.reply_host_file_dialog(FileDialogReply {
+                id: parent.id,
+                revision: parent.revision,
+                action: FileDialogAction::Cancel
+            }));
+            assert!(loaded.reply_host_file_dialog(FileDialogReply {
+                id: child.id,
+                revision: child.revision,
+                action: FileDialogAction::Cancel
+            }));
+            assert!(matches!(
+                loaded.run_with_hle_imports(64).result,
+                PpcRunResult::Halted { .. }
+            ));
+        }
+        assert_eq!(loaded.memory.read_u8(child_reply), Some(0));
+        assert_eq!(loaded.memory.read_u8(parent_reply), Some(0xaa));
+        assert_eq!(loaded.host_file_dialog().unwrap().id, parent.id);
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_get_filtering.as_ref(),
+            Some(&filtering)
+        );
+        assert!(loaded.toolbox_startup.suspended_file_filters.is_empty());
+        loaded.cpu = parent_cpu;
+        loaded.memory.write_u32_be(callback, 0x3860_0000).unwrap(); // li r3, 0: include
+        assert!(matches!(
+            loaded.run_with_hle_imports(1024).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let resumed = loaded.host_file_dialog().unwrap();
+        assert_eq!(resumed.id, parent.id);
+        assert!(!resumed.busy);
+        assert!(loaded.reply_host_file_dialog(FileDialogReply {
+            id: resumed.id,
+            revision: resumed.revision,
+            action: FileDialogAction::Cancel
+        }));
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u8(parent_reply), Some(0));
     }
 }

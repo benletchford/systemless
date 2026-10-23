@@ -99,6 +99,8 @@ mod runtime_mailbox;
 mod runtime_owner;
 #[path = "desktop/runtime_protocol.rs"]
 mod runtime_protocol;
+#[path = "desktop/workspace_ui.rs"]
+mod workspace_ui;
 
 #[cfg(all(feature = "debug-server", unix))]
 #[path = "desktop/debug_server.rs"]
@@ -285,23 +287,34 @@ struct Cli {
     #[arg(value_name = "GAME")]
     game: PathBuf,
 
-    /// Use wgpu for desktop presentation, drawing, text, and supported 3D rendering
+    /// Use wgpu for guest drawing, text and supported 3D rendering (and for
+    /// guest-only presentation)
     #[arg(long, conflicts_with = "renderer")]
     gpu: bool,
 
-    /// Select renderer; auto currently uses the qualified platform default
+    /// Select renderer; auto uses wgpu composition in the workspace and the
+    /// qualified platform default in the guest-only window. Platform and
+    /// software select the guest-only window.
     #[arg(long, value_enum, default_value = "auto")]
     renderer: renderer_selection::Renderer,
 
-    /// Desktop presenter after wgpu failure; requires --gpu or --renderer=wgpu
+    /// Guest-only presenter after wgpu failure; requires --gpu or --renderer=wgpu
     #[arg(long, value_enum)]
     gpu_fallback: Option<renderer_selection::GpuFallback>,
+
+    /// Use the egui workspace (the default desktop UI; retained for compatibility)
+    #[arg(long, conflicts_with_all = ["headless", "guest_only"])]
+    workspace: bool,
+
+    /// Use the legacy guest-only window instead of the egui workspace
+    #[arg(long, conflicts_with = "headless")]
+    guest_only: bool,
 
     /// Run without opening a window
     #[arg(long)]
     headless: bool,
 
-    /// Disable host-native desktop integrations
+    /// Disable host-native integrations in the legacy guest-only window
     #[arg(long)]
     no_native_integrations: bool,
 
@@ -380,7 +393,7 @@ struct Cli {
     #[arg(long, value_name = "BITS", value_parser = parse_screen_depth)]
     screen_depth: Option<u16>,
 
-    /// Override automatic window sizing with an integer physical-pixel scale
+    /// Override legacy guest-only window sizing with an integer physical-pixel scale
     #[arg(long, value_name = "N", value_parser = parse_display_scale)]
     display_scale: Option<u32>,
 
@@ -414,6 +427,19 @@ struct Cli {
     /// runs start paused until the client resumes or steps execution.
     #[arg(long, value_name = "PATH")]
     debug_socket: Option<PathBuf>,
+}
+
+impl Cli {
+    /// Platform and software renderers cannot host egui composition, so they
+    /// select the guest-only window.
+    fn workspace_enabled(&self) -> bool {
+        !self.headless
+            && (self.workspace || !self.guest_only)
+            && !matches!(
+                self.renderer,
+                renderer_selection::Renderer::Platform | renderer_selection::Renderer::Software
+            )
+    }
 }
 
 fn parse_screen_depth(value: &str) -> Result<u16, String> {
@@ -947,7 +973,19 @@ struct PendingGpuFrame {
     guest_tick: u32,
 }
 
+#[derive(Debug)]
+enum DesktopEvent {
+    Wake,
+    Accessibility(egui_winit::accesskit_winit::Event),
+}
+impl From<egui_winit::accesskit_winit::Event> for DesktopEvent {
+    fn from(event: egui_winit::accesskit_winit::Event) -> Self {
+        Self::Accessibility(event)
+    }
+}
+
 struct App {
+    ui_event_proxy: Option<winit::event_loop::EventLoopProxy<DesktopEvent>>,
     driver: Option<GuiDriver>,
     owner: Option<runtime_owner::RuntimeOwner>,
     #[cfg(target_os = "macos")]
@@ -955,7 +993,7 @@ struct App {
     #[cfg(target_os = "macos")]
     native_startup_fallback: Option<(
         runtime_owner::RuntimeConfig,
-        winit::event_loop::EventLoopProxy<()>,
+        winit::event_loop::EventLoopProxy<DesktopEvent>,
     )>,
     closing: bool,
     runtime_error: Option<String>,
@@ -968,7 +1006,7 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu: Option<d3d_present::D3dPresenter>,
     #[cfg(target_os = "windows")]
-    gpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
+    gpu_wake: Option<winit::event_loop::EventLoopProxy<DesktopEvent>>,
     #[cfg(target_os = "windows")]
     gpu_frame: std::sync::Arc<systemless::systems::macintosh::memory::CompactPresentation>,
     #[cfg(target_os = "windows")]
@@ -977,8 +1015,9 @@ struct App {
     use_software: bool,
     gpu_fallback: renderer_selection::GpuFallback,
     wgpu_recovery: renderer_recovery::Recovery,
-    wgpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
+    wgpu_wake: Option<winit::event_loop::EventLoopProxy<DesktopEvent>>,
     wgpu_display: Option<winit::event_loop::OwnedDisplayHandle>,
+    workspace: bool,
     wgpu: Option<wgpu_present::WgpuPresenter>,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
@@ -1034,6 +1073,8 @@ struct App {
     game_path: PathBuf,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
+    /// Latest routed guest coordinates, including input ahead of owner snapshots.
+    last_guest_pointer: Option<(i16, i16)>,
     /// Guest displacement used when the window system cannot warp its pointer.
     mouse_guest_offset: (i16, i16),
     /// Current game screen dimensions (tracks screen_mode changes)
@@ -1130,6 +1171,7 @@ impl App {
             );
         }
         Self {
+            ui_event_proxy: None,
             driver: (!threaded).then(|| {
                 GuiDriver::new(
                     game_path.clone(),
@@ -1168,6 +1210,7 @@ impl App {
             wgpu_recovery: Default::default(),
             wgpu_wake: None,
             wgpu_display: None,
+            workspace: false,
             wgpu: None,
             surface: None,
             #[cfg(not(target_os = "macos"))]
@@ -1209,6 +1252,7 @@ impl App {
             scaled_frame: Vec::new(),
             game_path,
             mouse_physical: (0.0, 0.0),
+            last_guest_pointer: None,
             mouse_guest_offset: (0, 0),
             current_screen_width: initial_screen_width(),
             current_screen_height: initial_screen_height(),
@@ -1238,31 +1282,81 @@ impl App {
         }
     }
 
-    fn show_runtime_error(&self) {
+    fn show_runtime_error(&mut self) {
+        if let (Some(ui), Some(error)) = (
+            self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()),
+            self.runtime_error.clone(),
+        ) {
+            ui.show_error(error);
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
         if let (Some(window), Some(error)) = (self.window.as_ref(), self.runtime_error.as_ref()) {
             window.set_title(&format!("Systemless runtime stopped: {error}"));
         }
     }
 
     fn send_command(&mut self, command: runtime_protocol::GuiCommand) {
+        use runtime_protocol::GuiCommand;
         if self.closing {
             return;
         }
-        if let Some(owner) = self.owner.as_ref() {
-            if let Err(error) = owner.mailbox.send(command) {
-                if matches!(error, runtime_mailbox::CommandError::Full(_)) {
-                    self.runtime_error = Some("Input queue is full; the runtime is stopping to preserve accepted input and saves.".into());
-                    owner.mailbox.request_shutdown();
-                    eprintln!("[SYSTEMLESS] {}", self.runtime_error.as_ref().unwrap());
-                    self.show_runtime_error();
+        let pointer = match &command {
+            GuiCommand::MouseMove { v, h }
+            | GuiCommand::MouseDown { v, h }
+            | GuiCommand::MouseUp { v, h } => Some((*v, *h)),
+            _ => None,
+        };
+        let accepted = if let Some(owner) = self.owner.as_ref() {
+            match owner.mailbox.send(command) {
+                Ok(()) => true,
+                Err(error) => {
+                    if matches!(error, runtime_mailbox::CommandError::Full(_)) {
+                        self.runtime_error = Some("Input queue is full; the runtime is stopping to preserve accepted input and saves.".into());
+                        owner.mailbox.request_shutdown();
+                        eprintln!("[SYSTEMLESS] {}", self.runtime_error.as_ref().unwrap());
+                        self.show_runtime_error();
+                    }
+                    false
                 }
             }
         } else if let Some(driver) = self.driver.as_mut() {
             driver.apply_command(command);
+            true
+        } else {
+            false
+        };
+        if accepted {
+            if let Some(pointer) = pointer {
+                self.last_guest_pointer = Some(pointer);
+            }
         }
     }
 
     fn sync_native_state(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
+            ui.menus = self.guest_state.menus.clone();
+            ui.set_modality(self.guest_state.modality);
+            ui.set_dialog(
+                self.guest_state.dialog.clone(),
+                &self.guest_state.live_dialogs,
+            );
+            ui.set_modeless_dialogs(
+                &self.guest_state.modeless_dialogs,
+                &self.guest_state.live_dialogs,
+            );
+            for reply in &self.guest_state.dialog_text_replies {
+                ui.set_dialog_text_reply(Some(reply));
+            }
+            ui.set_file_dialog(self.guest_state.file_dialog.clone());
+            ui.set_popup_menu(self.guest_state.popup_menu.clone());
+            ui.set_system_dialog(self.guest_state.system_dialog.clone());
+            ui.set_notifications(&self.guest_state.notifications);
+            ui.set_guest_surface(self.guest_state.guest_surface.clone());
+            ui.set_stopped(self.guest_state.stopped.clone());
+            ui.set_file_reply(self.guest_state.file_reply);
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.sync_host_cursor(event_loop);
 
@@ -1288,7 +1382,10 @@ impl App {
                     // Automatic sizing owns only the initial geometry. Keep
                     // the user's window through guest mode changes and fit
                     // the new framebuffer into it during presentation.
-                    if let Some(scale) = window_guest_resize_scale(window, self.display_scale) {
+                    if let Some(scale) = (!self.workspace)
+                        .then(|| window_guest_resize_scale(window, self.display_scale))
+                        .flatten()
+                    {
                         let _ =
                             window.request_inner_size(guest_scaled_physical_size(sw, sh, scale));
                     }
@@ -1372,7 +1469,7 @@ impl App {
                         .expect("native bootstrap fallback");
                     config.native_preflight = false;
                     match runtime_owner::RuntimeOwner::spawn(config, move || {
-                        let _ = proxy.send_event(());
+                        let _ = proxy.send_event(DesktopEvent::Wake);
                     }) {
                         Ok(owner) => {
                             native_termination::activate(owner.mailbox.clone());
@@ -1427,9 +1524,30 @@ impl App {
             event_loop.set_control_flow(ControlFlow::WaitUntil(at));
             return;
         }
-        event_loop.set_control_flow(ControlFlow::Wait);
+        if let Some(ui) = self.wgpu.as_ref().and_then(|g| g.workspace.as_ref()) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(ui.repaint_at));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
     }
 
+    fn prepare_exit(&mut self) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        if let Some(ui) = self.wgpu.as_ref().and_then(|gpu| gpu.workspace.as_ref()) {
+            if let Err(error) = ui.save() {
+                eprintln!("[UI] Could not save workspace: {error}");
+            }
+        }
+        if let Some(driver) = self.driver.as_mut() {
+            driver.sync_save_files(true);
+        }
+        if let Some(owner) = self.owner.as_ref() {
+            owner.mailbox.request_shutdown();
+        }
+    }
     fn init_game(&mut self) {
         self.driver.as_mut().expect("serial runtime").init_game();
         self.driver
@@ -1442,6 +1560,14 @@ impl App {
 
     /// Convert physical window coordinates to Mac screen coordinates.
     fn physical_to_mac(&self, px: f64, py: f64) -> (i16, i16) {
+        if let (Some(ui), Some(window)) = (
+            self.wgpu.as_ref().and_then(|g| g.workspace.as_ref()),
+            self.window.as_ref(),
+        ) {
+            return ui
+                .map_pointer(px, py, window.scale_factor())
+                .unwrap_or((0, 0));
+        }
         let sw = self.current_screen_width;
         let sh = self.current_screen_height;
         let size = self
@@ -1484,14 +1610,57 @@ impl App {
     }
 
     fn host_mouse_to_mac(&self, px: f64, py: f64) -> (i16, i16) {
-        let (v, h) = self.physical_to_mac(px, py);
+        let mapped = if self.workspace {
+            let mapped = self
+                .wgpu
+                .as_ref()
+                .and_then(|gpu| gpu.workspace.as_ref())
+                .zip(self.window.as_ref())
+                .and_then(|(ui, window)| ui.map_pointer(px, py, window.scale_factor()));
+            // A held gesture can outlive its visible pane or GPU context.
+            // Owner snapshots may still be behind accepted pointer commands.
+            let Some(mapped) = mapped else {
+                return self.last_guest_pointer.unwrap_or(self.frame.mouse_position);
+            };
+            mapped
+        } else {
+            self.physical_to_mac(px, py)
+        };
         (
-            v.saturating_add(self.mouse_guest_offset.0),
-            h.saturating_add(self.mouse_guest_offset.1),
+            mapped.0.saturating_add(self.mouse_guest_offset.0),
+            mapped.1.saturating_add(self.mouse_guest_offset.1),
         )
     }
 
     fn sync_guest_cursor_warp(&mut self) {
+        if self.workspace {
+            if let Some(warp) = self.guest_state.warp.take() {
+                self.last_guest_pointer = Some(warp.position);
+                if let (Some(ui), Some(window)) = (
+                    self.wgpu.as_ref().and_then(|g| g.workspace.as_ref()),
+                    self.window.as_ref(),
+                ) {
+                    if let Some((x, y)) = ui.guest_to_physical(
+                        warp.position.0,
+                        warp.position.1,
+                        window.scale_factor(),
+                    ) {
+                        if window
+                            .set_cursor_position(winit::dpi::PhysicalPosition::new(x, y))
+                            .is_ok()
+                        {
+                            self.mouse_physical = (x, y);
+                            self.mouse_guest_offset = (0, 0);
+                        }
+                    }
+                }
+                self.send_command(runtime_protocol::GuiCommand::AcknowledgeWarp {
+                    generation: self.guest_state.generation,
+                    serial: warp.serial,
+                });
+            }
+            return;
+        }
         let Some(warp) = self.guest_state.warp else {
             return;
         };
@@ -1692,6 +1861,15 @@ impl App {
         if size.width == 0 || size.height == 0 {
             return;
         }
+        if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
+            let (_, _, w, h, _) = self.frame.screen.screen_mode;
+            ui.inspection = workspace_ui::Inspection {
+                sequence: self.frame.sequence,
+                tick: self.frame.guest_tick,
+                screen: (w as u32, h as u32),
+                retained: self.frame.retained.is_some(),
+            };
+        }
         let frame = &self.frame;
         let presented_tick = frame.guest_tick;
         let (_, _, scrn_right, scrn_bottom, _) = frame.screen.screen_mode;
@@ -1716,7 +1894,7 @@ impl App {
 
         let screen_mode = frame.screen.screen_mode;
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        let cursor = if self.host_cursor.enabled() {
+        let cursor = if self.host_cursor.enabled() && !self.workspace {
             None
         } else {
             frame.cursor.clone()
@@ -2984,6 +3162,9 @@ impl App {
     /// Keep the host pointer in step with the guest cursor image, visibility,
     /// and the window's guest-to-screen scale.
     fn sync_host_cursor(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.workspace {
+            return;
+        }
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -3034,17 +3215,34 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
-        if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
-            self.present_frame(std::time::Instant::now());
-        }
-        // Upload the latest prepared image. Do not execute the guest, change
-        // its clock, or redo CPU composition on this display readiness wake.
-        #[cfg(target_os = "windows")]
-        self.retry_gpu_present();
+impl ApplicationHandler<DesktopEvent> for App {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // OS termination can bypass CloseRequested (including macOS Quit).
+        self.prepare_exit();
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: DesktopEvent) {
+        match event {
+            DesktopEvent::Wake => {
+                if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
+                    self.present_frame(std::time::Instant::now());
+                }
+                // Upload the latest prepared image. Do not execute the guest,
+                // change its clock, or redo CPU composition on this wake.
+                #[cfg(target_os = "windows")]
+                self.retry_gpu_present();
+            }
+            DesktopEvent::Accessibility(event) => {
+                if let Some(window) = self.window.as_ref().filter(|w| w.id() == event.window_id) {
+                    if let Some(ui) = self.wgpu.as_mut().and_then(|gpu| gpu.workspace.as_mut()) {
+                        if ui.accessibility_event(event.window_event) {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             #[cfg(target_os = "macos")]
@@ -3093,6 +3291,16 @@ impl ApplicationHandler for App {
                 },
                 |scale| guest_scaled_physical_size(initial_size.0, initial_size.1, scale),
             );
+            let initial_window_size = if self.workspace {
+                automatic_window_size(
+                    1100,
+                    760,
+                    monitor.as_ref().map(|m| m.size()),
+                    monitor.as_ref().map_or(1., |m| m.scale_factor()),
+                )
+            } else {
+                initial_window_size
+            };
             let window_attrs = Window::default_attributes()
                 .with_title(window_title)
                 .with_visible(false)
@@ -3107,7 +3315,7 @@ impl ApplicationHandler for App {
             );
             // The window manager may choose a different monitor from the
             // primary one. Resolve its actual DPI before showing the window.
-            if self.display_scale.is_none() {
+            if self.display_scale.is_none() && !self.workspace {
                 let bounds = window_monitor_bounds(&window);
                 let target = automatic_window_size(
                     initial_size.0,
@@ -3138,9 +3346,11 @@ impl ApplicationHandler for App {
             if self.start_fullscreen {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
             }
-            window.set_visible(true);
+            if !self.workspace {
+                window.set_visible(true);
+            }
 
-            self.window = Some(window);
+            self.window = Some(window.clone());
             self.wgpu_display = Some(event_loop.owned_display_handle());
             if self.use_wgpu {
                 match self.create_wgpu_presenter() {
@@ -3150,29 +3360,84 @@ impl ApplicationHandler for App {
             } else if let Err(error) = self.create_platform_presenter() {
                 self.stop_renderer(format!("Cannot create platform presenter: {error}"));
             }
+            if self.workspace {
+                if let Some(gpu) = self.wgpu.as_mut() {
+                    gpu.enable_workspace();
+                    let ui = gpu.workspace.as_mut().unwrap();
+                    // AccessKit must be initialized before the window is shown.
+                    ui.init_accessibility(
+                        event_loop,
+                        &window,
+                        self.ui_event_proxy.as_ref().unwrap().clone(),
+                    );
+                    window.set_visible(true);
+                    let path = DesktopSaveStore::root_for_game_path(&self.game_path)
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .unwrap()
+                        .join("workspace.json");
+                    ui.configure_storage(path, &window);
+                    window.set_cursor_visible(true);
+                } else {
+                    // Without wgpu there is no workspace; surface the error.
+                    window.set_visible(true);
+                }
+            }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            self.mouse_physical = (position.x, position.y);
+        }
+        if let (Some(ui), Some(window)) = (
+            self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()),
+            self.window.as_ref(),
+        ) {
+            let guest = ui.event(window, &event);
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::KeyboardInput { .. }
+            ) && !guest
+            {
+                return;
+            }
+        }
+        if matches!(event, WindowEvent::Focused(false)) {
+            if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
+                let (mouse, keys) = ui.release_input();
+                if mouse {
+                    let (v, h) =
+                        self.host_mouse_to_mac(self.mouse_physical.0, self.mouse_physical.1);
+                    self.send_command(runtime_protocol::GuiCommand::MouseUp { v, h });
+                }
+                for physical in keys {
+                    let key = keycode_to_mac(&physical);
+                    if key != 0xff {
+                        self.send_command(runtime_protocol::GuiCommand::KeyUp {
+                            key,
+                            character: 0,
+                        });
+                    }
+                }
+            }
+        }
         match event {
             WindowEvent::CloseRequested => {
+                self.prepare_exit();
                 if self.owner.is_none() && self.driver.is_none() {
                     event_loop.exit();
                     return;
                 }
-                if let Some(owner) = self.owner.as_ref() {
-                    self.closing = true;
-                    owner.mailbox.request_shutdown();
+                if self.owner.is_some() {
                     if let Some(window) = self.window.as_ref() {
                         window.set_visible(false);
                     }
                     self.poll_owner(event_loop);
                     return;
                 }
-                self.driver
-                    .as_mut()
-                    .expect("serial runtime")
-                    .sync_save_files(true);
                 eprintln!(
                     "[SYSTEMLESS] Window closed. Total instructions: {}",
                     self.driver
@@ -3187,7 +3452,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorEntered { .. } => {
                 #[cfg(target_os = "macos")]
                 {
-                    self.host_cursor.set_pointer_inside(true);
+                    self.host_cursor.set_pointer_inside(!self.workspace);
                     self.host_cursor.reassert();
                 }
             }
@@ -3199,7 +3464,7 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 #[cfg(target_os = "macos")]
                 {
-                    self.host_cursor.set_pointer_inside(true);
+                    self.host_cursor.set_pointer_inside(!self.workspace);
                     self.host_cursor.reassert();
                 }
                 self.force_next_render = true;
@@ -3283,6 +3548,21 @@ impl ApplicationHandler for App {
                 }
             }
 
+            WindowEvent::RedrawRequested if self.workspace => {
+                if self.frame.sequence != 0
+                    && self
+                        .wgpu
+                        .as_ref()
+                        .and_then(|gpu| gpu.workspace.as_ref())
+                        .is_some_and(|ui| !ui.has_guest_texture())
+                {
+                    self.present_frame(std::time::Instant::now());
+                    return;
+                }
+                if let Some(Err(error)) = self.wgpu.as_mut().map(|gpu| gpu.redraw_workspace()) {
+                    self.recover_wgpu(error);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = self.wgpu.as_mut() {
                     gpu.invalidate();
@@ -3300,6 +3580,52 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
             self.present_frame(std::time::Instant::now());
+        }
+        if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
+            let actions = std::mem::take(&mut ui.menu_actions);
+            let file_actions = std::mem::take(&mut ui.file_actions);
+            let dialog_actions = std::mem::take(&mut ui.dialog_actions);
+            let text_actions = std::mem::take(&mut ui.dialog_text_actions);
+            let control_actions = std::mem::take(&mut ui.dialog_control_actions);
+            let modeless_actions = std::mem::take(&mut ui.modeless_actions);
+            let popup_action = ui.popup_action.take();
+            let system_action = ui.system_action.take();
+            let dismissed = std::mem::take(&mut ui.dismissed_notifications);
+            for id in dismissed {
+                self.send_command(runtime_protocol::GuiCommand::DismissNotification(id));
+            }
+            if let Some(reply) = popup_action {
+                self.send_command(runtime_protocol::GuiCommand::PopupMenu(reply));
+            }
+            if let Some(reply) = system_action {
+                self.send_command(runtime_protocol::GuiCommand::SystemDialog(reply));
+            }
+            for command in modeless_actions {
+                self.send_command(runtime_protocol::GuiCommand::Modeless(command));
+            }
+            for reply in text_actions {
+                self.send_command(runtime_protocol::GuiCommand::DialogText(reply));
+            }
+            for reply in control_actions {
+                self.send_command(runtime_protocol::GuiCommand::DialogControl(reply));
+            }
+            for reply in dialog_actions {
+                self.send_command(runtime_protocol::GuiCommand::Dialog(reply));
+            }
+            for reply in file_actions {
+                self.send_command(runtime_protocol::GuiCommand::FileDialog(reply));
+            }
+            for (menu, item) in actions {
+                self.send_command(runtime_protocol::GuiCommand::Menu { menu, item });
+            }
+        }
+        if let (Some(ui), Some(window)) = (
+            self.wgpu.as_ref().and_then(|g| g.workspace.as_ref()),
+            self.window.as_ref(),
+        ) {
+            if std::time::Instant::now() >= ui.repaint_at {
+                window.request_redraw();
+            }
         }
         if self.owner.is_none() && self.driver.is_none() {
             self.show_runtime_error();
@@ -3494,8 +3820,12 @@ fn run_gui(
     use_wgpu: bool,
     use_software: bool,
     gpu_fallback: renderer_selection::GpuFallback,
+    workspace: bool,
 ) {
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let native_integrations = native_integrations && !workspace;
+    let event_loop = EventLoop::<DesktopEvent>::with_user_event()
+        .build()
+        .expect("Failed to create event loop");
     eprintln!(
         "[SYSTEMLESS] GUI arrow keys: {}",
         if arrows_as_numpad {
@@ -3529,6 +3859,7 @@ fn run_gui(
         ui_theme,
         debug_socket: debug_socket.clone(),
         gpu: use_wgpu,
+        workspace,
     };
     let mut app = App::new_with_display_scale(
         game_path,
@@ -3541,12 +3872,16 @@ fn run_gui(
         fullscreen,
         threaded,
     );
-    app.use_wgpu = use_wgpu;
+    // The workspace always composes through wgpu; guest compute follows use_wgpu.
+    app.use_wgpu = use_wgpu || workspace;
     app.use_software = use_software;
     app.gpu_fallback = gpu_fallback;
     app.wgpu_wake = Some(event_loop.create_proxy());
+    app.workspace = workspace;
+    app.ui_event_proxy = Some(event_loop.create_proxy());
     if let Some(driver) = app.driver.as_mut() {
         driver.gpu = use_wgpu;
+        driver.workspace = workspace;
     }
     #[cfg(target_os = "windows")]
     {
@@ -3559,7 +3894,7 @@ fn run_gui(
             app.native_startup_fallback = Some((config.clone(), proxy.clone()));
         }
         match runtime_owner::RuntimeOwner::spawn(config, move || {
-            let _ = proxy.send_event(());
+            let _ = proxy.send_event(DesktopEvent::Wake);
         }) {
             Ok(owner) => {
                 #[cfg(target_os = "macos")]
@@ -3855,6 +4190,18 @@ impl Cli {
                 "--gpu-fallback requires --gpu or --renderer=wgpu",
             ));
         }
+        if self.workspace
+            && matches!(
+                self.renderer,
+                renderer_selection::Renderer::Platform | renderer_selection::Renderer::Software
+            )
+        {
+            return Err(<Self as clap::CommandFactory>::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--workspace composes through wgpu; --renderer=platform and \
+                 --renderer=software select the guest-only window",
+            ));
+        }
         Ok(self)
     }
 }
@@ -3874,10 +4221,11 @@ fn main() {
         eprintln!("[SYSTEMLESS] Classic 68K slice preferred when available");
     }
     let use_wgpu = cli.renderer.uses_wgpu(cli.gpu);
+    let workspace = cli.workspace_enabled();
     eprintln!(
         "[SYSTEMLESS] Renderer requested={:?}, selected={}",
         cli.renderer,
-        if use_wgpu {
+        if use_wgpu || workspace {
             "wgpu"
         } else if cli.renderer == renderer_selection::Renderer::Software {
             "software"
@@ -3886,7 +4234,7 @@ fn main() {
         }
     );
     let game_path = cli.game;
-    let native_integrations = !cli.no_native_integrations;
+    let native_integrations = !cli.no_native_integrations && !workspace;
     let arrows_as_numpad = if cli.literal_arrows {
         false
     } else if cli.arrows_as_numpad {
@@ -4006,6 +4354,7 @@ fn main() {
             use_wgpu,
             cli.renderer == renderer_selection::Renderer::Software,
             cli.gpu_fallback.unwrap_or_default(),
+            workspace,
         );
     }
 }
@@ -4447,6 +4796,102 @@ mod tests {
     }
 
     #[test]
+    fn workspace_is_the_desktop_default_with_a_legacy_opt_out() {
+        for options in [
+            vec![],
+            vec!["--workspace"],
+            vec!["--gpu"],
+            vec!["--renderer=wgpu"],
+            vec!["--renderer=auto"],
+            vec!["--no-native-integrations"],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["systemless"]
+                    .into_iter()
+                    .chain(options)
+                    .chain(["game.sit"]),
+            )
+            .unwrap();
+            assert!(cli.workspace_enabled());
+        }
+        for options in [
+            vec!["--guest-only"],
+            vec!["--guest-only", "--gpu"],
+            vec!["--headless"],
+            vec!["--headless", "--gpu"],
+            // Platform and software presenters cannot host egui composition.
+            vec!["--renderer=platform"],
+            vec!["--renderer=software"],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["systemless"]
+                    .into_iter()
+                    .chain(options)
+                    .chain(["game.sit"]),
+            )
+            .unwrap();
+            assert!(!cli.workspace_enabled());
+        }
+        for options in [
+            ["--workspace", "--headless"],
+            ["--workspace", "--guest-only"],
+            ["--guest-only", "--headless"],
+        ] {
+            assert!(Cli::try_parse_from(
+                ["systemless"]
+                    .into_iter()
+                    .chain(options)
+                    .chain(["game.sit"]),
+            )
+            .is_err());
+        }
+        for renderer in ["--renderer=platform", "--renderer=software"] {
+            let cli =
+                Cli::try_parse_from(["systemless", "--workspace", renderer, "game.sit"]).unwrap();
+            assert!(
+                cli.validate_renderer().is_err(),
+                "{renderer} cannot compose a workspace"
+            );
+        }
+    }
+
+    #[test]
+    fn os_exit_without_a_window_close_flushes_both_guest_forks() {
+        use systemless::systems::macintosh::runner::VfsFileSnapshot;
+        let temporary = tempfile::tempdir().unwrap();
+        let archive = temporary.path().join("Game.sit");
+        let mut app = App::new(archive.clone(), false, false, false, 8);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        let store = DesktopSaveStore::for_loaded_archive(&archive, &mut runner);
+        let original = VfsFileSnapshot {
+            path: "Game/Preferences/Exit Test".into(),
+            data_fork: vec![0, 1, 255, 3],
+            resource_fork: vec![4, 0, 6, 255],
+            file_type: u32::from_be_bytes(*b"pref"),
+            creator: u32::from_be_bytes(*b"TEST"),
+            finder_flags: 0x4000,
+            created_date: 123,
+            modified_date: 456,
+        };
+        runner.import_vfs_file(&original);
+        let driver = app.driver.as_mut().unwrap();
+        driver.runner = Some(runner);
+        driver.save_store = Some(store);
+        app.prepare_exit();
+        app.prepare_exit();
+        let mut reader = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        let mut store = DesktopSaveStore::for_loaded_archive(&archive, &mut reader);
+        let saved = store.load_saved_files();
+        assert_eq!(saved.len(), 1);
+        let saved = &saved[0];
+        assert_eq!(saved.path, original.path);
+        assert_eq!(saved.data_fork, original.data_fork);
+        assert_eq!(saved.resource_fork, original.resource_fork);
+        assert_eq!(saved.file_type, original.file_type);
+        assert_eq!(saved.creator, original.creator);
+        assert_eq!(saved.finder_flags, original.finder_flags);
+    }
+    #[test]
     fn threaded_window_state_does_not_construct_a_guest_driver() {
         let app = App::new_with_display_scale(
             PathBuf::from("missing-archive"),
@@ -4788,6 +5233,38 @@ mod tests {
             queued_stereo_bytes: queued.clone(),
         }));
         (runner, queued)
+    }
+
+    #[test]
+    fn unavailable_workspace_preserves_latest_guest_pointer_for_release() {
+        use runtime_protocol::GuiCommand;
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
+        app.workspace = true;
+        app.frame.mouse_position = (42, 73);
+        // No rendered pane exists yet: preserve the guest snapshot, including
+        // signed coordinates, without adding a stale legacy warp offset.
+        app.mouse_guest_offset = (i16::MAX, i16::MIN);
+        assert_eq!(app.host_mouse_to_mac(500., 300.), (42, 73));
+        app.send_command(GuiCommand::MouseDown { v: -12, h: 175 });
+        app.send_command(GuiCommand::MouseMove { v: 210, h: -32 });
+        assert_eq!(app.frame.mouse_position, (42, 73));
+        let (v, h) = app.host_mouse_to_mac(900., 600.);
+        assert_eq!(
+            (v, h),
+            (210, -32),
+            "newer input must beat an older snapshot"
+        );
+        app.send_command(GuiCommand::MouseUp { v, h });
+        assert_eq!(app.last_guest_pointer, Some((210, -32)));
+        app.guest_state.warp = Some(runtime_protocol::CursorWarp {
+            serial: 1,
+            position: (i16::MIN, i16::MAX),
+        });
+        app.sync_guest_cursor_warp();
+        assert_eq!(app.host_mouse_to_mac(0., 0.), (i16::MIN, i16::MAX));
+        app.closing = true;
+        app.send_command(GuiCommand::MouseMove { v: 0, h: 0 });
+        assert_eq!(app.last_guest_pointer, Some((i16::MIN, i16::MAX)));
     }
 
     #[test]

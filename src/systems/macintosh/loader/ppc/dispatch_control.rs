@@ -60,6 +60,7 @@ pub(super) fn dispatch_control_import(
                     vfs_resources,
                     current_resource_refnum,
                     window,
+                    toolbox_startup,
                 );
             } else {
                 let _ = ppc_draw_window_controls(
@@ -125,7 +126,7 @@ pub(super) fn dispatch_control_import(
                 if !is_popup {
                     ppc_clamp_control_value(memory, control);
                 }
-                let _ = ppc_draw_control(
+                let _ = ppc_draw_host_control(
                     memory,
                     handles,
                     controls,
@@ -133,6 +134,7 @@ pub(super) fn dispatch_control_import(
                     vfs_resources,
                     current_resource_refnum,
                     control_handle,
+                    &toolbox_startup.host_ui,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -148,7 +150,7 @@ pub(super) fn dispatch_control_import(
                 let _ = memory.write_u8(control + 17, cpu.gpr[4] as u8);
                 let owner = memory.read_u32_be(control + 4).unwrap_or(0);
                 let dialog = if owner != 0 { owner } else { current_gworld };
-                if !ppc_draw_control(
+                if !ppc_draw_host_control(
                     memory,
                     handles,
                     controls,
@@ -156,7 +158,8 @@ pub(super) fn dispatch_control_import(
                     vfs_resources,
                     current_resource_refnum,
                     control_handle,
-                ) {
+                    &toolbox_startup.host_ui,
+) {
                     let _ = ppc_draw_dialog(
                         memory,
                         handles,
@@ -166,6 +169,7 @@ pub(super) fn dispatch_control_import(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        toolbox_startup,
                     );
                 }
             }
@@ -489,7 +493,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 handle,
             );
             if handle != 0 && cpu.gpr[6] != 0 {
-                let _ = ppc_draw_control(
+                let _ = ppc_draw_host_control(
                     memory,
                     handles,
                     controls,
@@ -497,6 +501,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                     vfs_resources,
                     current_resource_refnum,
                     handle,
+                    &toolbox_startup.host_ui,
                 );
             }
             Some(PpcImportAction::Return(handle))
@@ -565,7 +570,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 handle,
             );
             if handle != 0 && bytes[10] != 0 {
-                let _ = ppc_draw_control(
+                let _ = ppc_draw_host_control(
                     memory,
                     handles,
                     controls,
@@ -573,6 +578,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                     vfs_resources,
                     current_resource_refnum,
                     handle,
+                    &toolbox_startup.host_ui,
                 );
             }
             Some(PpcImportAction::Return(handle))
@@ -808,6 +814,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcLegacyControlOperation::DisposeControl => {
+            toolbox_startup.host_ui.retire_control(cpu.gpr[3]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -825,6 +832,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyControlOperation::KillControls => {
+            toolbox_startup.host_ui.clear_range_tracking(cpu.gpr[3]);
             let owner = cpu.gpr[3];
             let control_handles = ppc_window_control_handles(memory, owner);
             let mut allocator = PpcProcessAllocatorView {
@@ -904,7 +912,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 };
                 let _ = memory.write_u16_be(control.wrapping_add(offset), value as u16);
                 ppc_clamp_control_value(memory, control);
-                let _ = ppc_draw_control(
+                let _ = ppc_draw_host_control(
                     memory,
                     handles,
                     controls,
@@ -912,6 +920,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                     vfs_resources,
                     current_resource_refnum,
                     cpu.gpr[3],
+                    &toolbox_startup.host_ui,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -937,7 +946,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                     if visible { 0xff } else { 0 },
                 );
                 if visible {
-                    let _ = ppc_draw_control(
+                    let _ = ppc_draw_host_control(
                         memory,
                         handles,
                         controls,
@@ -945,6 +954,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         vfs_resources,
                         current_resource_refnum,
                         cpu.gpr[3],
+                        &toolbox_startup.host_ui,
                     );
                 }
             }
@@ -980,7 +990,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         )
                     };
                     if result.is_some() {
-                        let _ = ppc_draw_control(
+                        let _ = ppc_draw_host_control(
                             memory,
                             handles,
                             controls,
@@ -988,6 +998,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                             vfs_resources,
                             current_resource_refnum,
                             cpu.gpr[3],
+                            &toolbox_startup.host_ui,
                         );
                     }
                 }
@@ -1017,6 +1028,39 @@ pub(super) fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
         PpcLegacyControlOperation::TrackControl => {
+            if toolbox_startup.host_ui.has_range_tracking(cpu.gpr[3]) {
+                let saved = ppc_control_ptr(memory, cpu.gpr[3]).and_then(|control| {
+                    Some((
+                        control,
+                        memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)?,
+                        memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)? as i16,
+                        memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET)? as i16,
+                        memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET)? as i16,
+                    ))
+                });
+                if let Some((control, owner, value, min, max)) = saved {
+                    let completed = toolbox_startup
+                        .host_ui
+                        .take_range_tracking(owner, cpu.gpr[3], value, min, max);
+                    let standard = controls
+                        .iter()
+                        .any(|record| record.handle == cpu.gpr[3] && record.proc_id == 16);
+                    if completed
+                        && standard
+                        && ppc_window_is_visible(memory, owner)
+                        && memory.read_u8(control + PPC_CONTROL_VISIBLE_OFFSET) != Some(0)
+                        && memory
+                            .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+                            .unwrap_or(255)
+                            < 254
+                    {
+                        return Some(PpcImportAction::Return(129));
+                    }
+                } else {
+                    toolbox_startup.host_ui.retire_control(cpu.gpr[3]);
+                }
+                return Some(PpcImportAction::Return(0));
+            }
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
             // -1 selects contrlAction; a second -1 invokes the popup CDEF.
             let action_proc = if cpu.gpr[5] == u32::MAX {
@@ -1123,7 +1167,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             )
         }
         PpcLegacyControlOperation::DrawOneControl => {
-            let _ = ppc_draw_control(
+            let _ = ppc_draw_host_control(
                 memory,
                 handles,
                 controls,
@@ -1131,6 +1175,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 vfs_resources,
                 current_resource_refnum,
                 cpu.gpr[3],
+                &toolbox_startup.host_ui,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -1345,7 +1390,7 @@ pub(super) fn ppc_dispatch_legacy_control(
         }
         PpcLegacyControlOperation::DrawControlInCurrentPort => {
             let control = cpu.gpr[3];
-            let _ = ppc_draw_control(
+            let _ = ppc_draw_host_control(
                 memory,
                 handles,
                 controls,
@@ -1353,6 +1398,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 vfs_resources,
                 current_resource_refnum,
                 control,
+                &toolbox_startup.host_ui,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -1611,9 +1657,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
-        PpcLegacyControlOperation::SendControlMessage => {
-            Some(PpcImportAction::Return(0))
-        }
+        PpcLegacyControlOperation::SendControlMessage => Some(PpcImportAction::Return(0)),
         PpcLegacyControlOperation::ScrollControlValues => {
             let control_handle = cpu.gpr[3];
             let delta_x = cpu.gpr[4] as i16;
@@ -1630,7 +1674,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         new_val as u16,
                     );
                     ppc_clamp_control_value(memory, control);
-                    let _ = ppc_draw_control(
+                    let _ = ppc_draw_host_control(
                         memory,
                         handles,
                         controls,
@@ -1638,6 +1682,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         vfs_resources,
                         current_resource_refnum,
                         control_handle,
+                        &toolbox_startup.host_ui,
                     );
                 }
                 PPC_NO_ERR
@@ -2243,10 +2288,11 @@ pub(super) fn ppc_get_control_property(
     creator: u32,
     tag: u32,
 ) -> Option<&ProcessControlProperty> {
-    controls
-        .iter()
-        .find(|r| r.handle == control)
-        .and_then(|r| r.properties.iter().find(|p| p.creator == creator && p.tag == tag))
+    controls.iter().find(|r| r.handle == control).and_then(|r| {
+        r.properties
+            .iter()
+            .find(|p| p.creator == creator && p.tag == tag)
+    })
 }
 
 pub(super) fn ppc_remove_control_property(
@@ -2592,11 +2638,9 @@ pub(super) fn ppc_cycle_keyboard_focus(
     if window_controls.is_empty() {
         return PPC_NO_ERR;
     }
-    let current_index = window_controls.iter().position(|handle| {
-        controls
-            .iter()
-            .any(|r| r.handle == *handle && r.has_focus)
-    });
+    let current_index = window_controls
+        .iter()
+        .position(|handle| controls.iter().any(|r| r.handle == *handle && r.has_focus));
     let next_index = match current_index {
         Some(idx) => {
             if advance {
@@ -2876,6 +2920,37 @@ pub(super) fn ppc_popup_control_display_title(
     prefix
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_host_control(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+    host_ui: &crate::systems::macintosh::host_ui::HostUiState,
+) -> bool {
+    let owner = ppc_control_ptr(memory, handle)
+        .and_then(|p| memory.read_u32_be(p + PPC_CONTROL_OWNER_OFFSET))
+        .unwrap_or(0);
+    let standard = controls
+        .iter()
+        .find(|r| r.handle == handle)
+        .is_none_or(|r| matches!(r.proc_id & 0x0fff, 0..=2));
+    if standard && host_ui.dialog_presented(owner) {
+        return true;
+    }
+    ppc_draw_control(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        vfs_resources,
+        current_resource_refnum,
+        handle,
+    )
+}
 pub(super) fn ppc_draw_control(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],

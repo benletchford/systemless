@@ -27,7 +27,7 @@ jobs:
 
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          rust-version: "1.93"
+          rust-version: "1.95"
           command: check licenses
 
   oracle-tools:

@@ -2,6 +2,9 @@
 
 use super::theme::*;
 use super::*;
+use crate::systems::macintosh::host_ui::{
+    FileDialogAction, FileDialogEntry, FileDialogKind, FileDialogReply, FileDialogSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PpcStandardFileMode {
@@ -61,6 +64,7 @@ pub(super) struct PpcStandardFileFilteringState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PpcStandardFilePutTrackingState {
+    pub(super) entries: Vec<PpcStandardFileEntry>,
     pub(super) call: PpcStandardFileCall,
     pub(super) vref: i16,
     pub(super) dir_id: u32,
@@ -71,6 +75,12 @@ pub(super) struct PpcStandardFilePutTrackingState {
     pub(super) bounds: (i16, i16, i16, i16),
     pub(super) front_buffer: PpcFrontBuffer,
     pub(super) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SuspendedFileFilter {
+    filtering: PpcStandardFileFilteringState,
+    ui: crate::systems::macintosh::host_ui::SuspendedFileUi,
 }
 
 pub(super) struct PpcStandardFileDispatchContext<'a> {
@@ -343,7 +353,7 @@ pub(super) fn ppc_restore_saved_detail<T>(
     }
 }
 
-fn ppc_standard_file_save_pixels(
+pub(super) fn ppc_standard_file_save_pixels(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     bounds: (i16, i16, i16, i16),
@@ -368,7 +378,7 @@ fn ppc_standard_file_save_pixels(
     saved
 }
 
-fn ppc_standard_file_restore_pixels(
+pub(super) fn ppc_standard_file_restore_pixels(
     memory: &mut PpcSectionMem,
     pixels: &crate::memory::SavedPixels<(i32, i32, u16)>,
     front: PpcFrontBuffer,
@@ -586,17 +596,9 @@ fn ppc_standard_file_begin_filtering(
     if tracking.filter.is_none() {
         return Err(tracking);
     }
-    let filter_pb = process_memory_manager.new_native_ptr(
-        memory,
-        PPC_STANDARD_FILE_FILTER_PB_SIZE,
-        true,
-    );
-    ppc_apply_process_native_allocator(
-        process_memory_manager,
-        memory,
-        heap_cursor,
-        last_mem_error,
-    );
+    let filter_pb =
+        process_memory_manager.new_native_ptr(memory, PPC_STANDARD_FILE_FILTER_PB_SIZE, true);
+    ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
     if filter_pb == 0 {
         return Err(tracking);
     }
@@ -1016,7 +1018,7 @@ fn ppc_standard_file_write_get_reply(
     mode: PpcStandardFileMode,
     reply: u32,
     entry: &PpcStandardFileEntry,
-    legacy_wd_ref: i16,
+    reply_ref_num: i16,
 ) {
     if reply == 0 {
         return;
@@ -1028,13 +1030,7 @@ fn ppc_standard_file_write_get_reply(
             }
             let _ = memory.write_u8(reply + 1, 0);
             let _ = memory.write_u32_be(reply + 2, entry.file_type);
-            let _ = ppc_write_fsspec(
-                memory,
-                reply + 6,
-                PPC_BOOT_VOLUME_REF_NUM,
-                entry.dir_id,
-                &entry.name,
-            );
+            let _ = ppc_write_fsspec(memory, reply + 6, reply_ref_num, entry.dir_id, &entry.name);
             let _ = memory.write_u16_be(reply + 76, 0);
             let _ = memory.write_u16_be(reply + 78, entry.finder_flags);
             let _ = memory.write_u8(reply + 80, 0);
@@ -1048,7 +1044,7 @@ fn ppc_standard_file_write_get_reply(
             }
             let _ = memory.write_u8(reply + 1, 0);
             let _ = memory.write_u32_be(reply + 2, entry.file_type);
-            let _ = memory.write_u16_be(reply + 6, legacy_wd_ref as u16);
+            let _ = memory.write_u16_be(reply + 6, reply_ref_num as u16);
             let _ = memory.write_u16_be(reply + 8, 0);
             let _ = ppc_write_pstring_bytes(memory, reply + 10, &entry.name);
         }
@@ -1101,28 +1097,38 @@ fn ppc_standard_file_finish_get(
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
     tracking: PpcStandardFileGetTrackingState,
+    vfs_directories: &[PpcVfsDirectory],
     vfs_volumes: &[PpcVfsVolumeRecord],
     working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
     next_working_directory_ref_num: &mut i16,
     accepted: bool,
 ) -> PpcImportAction {
-    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    startup.host_ui.finish();
+    if !startup.host_ui.enabled {
+        ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    }
     if accepted
         && tracking
             .entries
             .get(tracking.selected)
             .is_some_and(|entry| !entry.is_directory)
     {
+        let volume_ref = ppc_host_directory_volume(
+            vfs_directories,
+            vfs_volumes,
+            tracking.entries[tracking.selected].dir_id,
+        )
+        .map_or(PPC_BOOT_VOLUME_REF_NUM, |v| v.ref_num);
         let legacy_wd_ref = if tracking.call.mode == PpcStandardFileMode::GetLegacy {
             ppc_standard_file_working_directory_ref(
-                PPC_BOOT_VOLUME_REF_NUM,
+                volume_ref,
                 tracking.entries.get(tracking.selected).unwrap().dir_id,
                 vfs_volumes,
                 working_directories,
                 next_working_directory_ref_num,
             )
         } else {
-            PPC_BOOT_VOLUME_REF_NUM
+            volume_ref
         };
         ppc_standard_file_write_get_reply(
             memory,
@@ -1151,8 +1157,16 @@ fn ppc_standard_file_finish_put(
     next_working_directory_ref_num: &mut i16,
     accepted: bool,
 ) -> PpcImportAction {
-    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
-    if accepted && !tracking.name.is_empty() {
+    startup.host_ui.finish();
+    if !startup.host_ui.enabled {
+        ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    }
+    let mut tracking = tracking;
+    let volume = ppc_host_directory_volume(vfs_directories, vfs_volumes, tracking.dir_id);
+    if let Some(volume) = volume {
+        tracking.vref = volume.ref_num;
+    }
+    if accepted && !tracking.name.is_empty() && volume.is_none_or(|v| v.attributes & 0x8080 == 0) {
         let replacing = ppc_fsspec_target_exists(
             vfs_directories,
             vfs_files,
@@ -1247,19 +1261,58 @@ fn ppc_standard_file_get_service(
             memory,
             startup,
             tracking,
+            vfs_directories,
             vfs_volumes,
             working_directories,
             next_working_directory_ref_num,
             false,
         );
     }
-    let event = event_queue
-        .iter()
-        .position(|event| matches!(event.what, 1 | 3 | 5))
-        .and_then(|index| event_queue.remove(index));
     let previous_dir_id = tracking.current_dir_id;
     let previous_selection = tracking.selected;
     let mut open = false;
+    match startup.host_ui.take() {
+        Some(FileDialogAction::Cancel) => {
+            return ppc_standard_file_finish_get(
+                memory,
+                startup,
+                tracking,
+                vfs_directories,
+                vfs_volumes,
+                working_directories,
+                next_working_directory_ref_num,
+                false,
+            )
+        }
+        Some(FileDialogAction::Open(index)) if index < tracking.entries.len() => {
+            tracking.selected = index;
+            open = true;
+        }
+        Some(action @ (FileDialogAction::Parent | FileDialogAction::Desktop)) => {
+            tracking.current_dir_id = if action == FileDialogAction::Parent {
+                ppc_host_parent_directory(vfs_directories, tracking.current_dir_id)
+            } else {
+                PPC_ROOT_DIR_ID
+            };
+            tracking.entries = ppc_standard_file_get_entries(
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                tracking.current_dir_id,
+                tracking.file_types.as_deref(),
+            );
+            tracking.selected = 0;
+        }
+        _ => {}
+    }
+    let event = if startup.host_ui.enabled {
+        None
+    } else {
+        event_queue
+            .iter()
+            .position(|event| matches!(event.what, 1 | 3 | 5))
+            .and_then(|index| event_queue.remove(index))
+    };
     if let Some(event) = event {
         if event.what == 1 {
             let local = (
@@ -1271,6 +1324,7 @@ fn ppc_standard_file_get_service(
                     memory,
                     startup,
                     tracking,
+                    vfs_directories,
                     vfs_volumes,
                     working_directories,
                     next_working_directory_ref_num,
@@ -1330,6 +1384,7 @@ fn ppc_standard_file_get_service(
                     memory,
                     startup,
                     tracking,
+                    vfs_directories,
                     vfs_volumes,
                     working_directories,
                     next_working_directory_ref_num,
@@ -1359,6 +1414,7 @@ fn ppc_standard_file_get_service(
                     memory,
                     startup,
                     tracking,
+                    vfs_directories,
                     vfs_volumes,
                     working_directories,
                     next_working_directory_ref_num,
@@ -1384,7 +1440,9 @@ fn ppc_standard_file_get_service(
         };
     }
     if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection {
-        ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+        if !startup.host_ui.enabled {
+            ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+        }
     }
     startup.standard_file_get_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
@@ -1438,7 +1496,9 @@ fn ppc_standard_file_get_start(
             // The callback returned through the import stub; resume the
             // modal call with its original caller as the link register.
             cpu.lr = tracking.call.return_address;
-            ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+            if !startup.host_ui.enabled {
+                ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+            }
             startup.standard_file_get_tracking = Some(tracking);
             return PpcImportAction::Yield(u64::MAX);
         }
@@ -1449,11 +1509,14 @@ fn ppc_standard_file_get_start(
             last_mem_error,
             filtering.filter_pb,
         );
-        ppc_standard_file_restore_pixels(
-            memory,
-            &filtering.tracking.saved_pixels,
-            filtering.tracking.front_buffer,
-        );
+        startup.host_ui.finish();
+        if !startup.host_ui.enabled {
+            ppc_standard_file_restore_pixels(
+                memory,
+                &filtering.tracking.saved_pixels,
+                filtering.tracking.front_buffer,
+            );
+        }
         ppc_standard_file_write_cancel_reply(
             memory,
             filtering.tracking.call.mode,
@@ -1532,6 +1595,8 @@ fn ppc_standard_file_get_start(
             include_directories: operation == PpcStandardFileOperation::CustomGetFile
                 && num_types == -1,
         });
+    startup.pending_native_menu_selection.take();
+    startup.host_ui.begin();
     let tracking = PpcStandardFileGetTrackingState {
         call: ppc_standard_file_call(mode, cpu),
         entries,
@@ -1555,7 +1620,9 @@ fn ppc_standard_file_get_start(
         Ok(action) => return action,
         Err(tracking) => tracking,
     };
-    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    if !startup.host_ui.enabled {
+        ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    }
     startup.standard_file_get_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
 }
@@ -1566,6 +1633,9 @@ fn ppc_standard_file_put_start(
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
     default_dir_id: u32,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
     gworlds: &[PpcGWorldRecord],
     mode: PpcStandardFileMode,
     prompt_ptr: u32,
@@ -1598,7 +1668,16 @@ fn ppc_standard_file_put_start(
         PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
         requested_origin,
     );
+    startup.pending_native_menu_selection.take();
+    startup.host_ui.begin();
     let tracking = PpcStandardFilePutTrackingState {
+        entries: ppc_standard_file_get_entries(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            default_dir_id,
+            None,
+        ),
         call: ppc_standard_file_call(mode, cpu),
         vref: PPC_BOOT_VOLUME_REF_NUM,
         dir_id: default_dir_id,
@@ -1610,13 +1689,77 @@ fn ppc_standard_file_put_start(
         front_buffer,
         saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
     };
-    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+    if !startup.host_ui.enabled {
+        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+    }
     startup.standard_file_put_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
 }
 
 #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn ppc_dispatch_standard_file(
+    operation: PpcStandardFileOperation,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    gworlds: &[PpcGWorldRecord],
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &ProcessVfsFileRecords,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    event_queue: &mut EventQueue,
+) -> PpcImportAction {
+    // A filter callback may call Standard File again before returning to its
+    // import stub. Keep its parameter block and host identity alive independently.
+    if startup
+        .standard_file_get_filtering
+        .as_ref()
+        .is_some_and(|filtering| filtering.import_pc != cpu.pc || cpu.lr != cpu.pc)
+    {
+        let filtering = startup.standard_file_get_filtering.take().unwrap();
+        let ui = startup.host_ui.suspend_file();
+        startup
+            .suspended_file_filters
+            .push(SuspendedFileFilter { filtering, ui });
+    }
+    let action = ppc_dispatch_standard_file_inner(
+        operation,
+        cpu,
+        memory,
+        startup,
+        process_memory_manager,
+        heap_cursor,
+        last_mem_error,
+        gworlds,
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        vfs_volumes,
+        default_dir_id,
+        working_directories,
+        next_working_directory_ref_num,
+        event_queue,
+    );
+    if startup.standard_file_get_filtering.is_none()
+        && startup.standard_file_get_tracking.is_none()
+        && startup.standard_file_put_tracking.is_none()
+    {
+        if let Some(parent) = startup.suspended_file_filters.pop() {
+            startup.standard_file_get_filtering = Some(parent.filtering);
+            startup.host_ui.resume_file(parent.ui);
+        }
+    }
+    action
+}
+
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
+fn ppc_dispatch_standard_file_inner(
     operation: PpcStandardFileOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -1675,11 +1818,58 @@ fn ppc_dispatch_standard_file(
                         false,
                     );
                 }
-                let event = event_queue
-                    .iter()
-                    .position(|event| matches!(event.what, 1 | 3 | 5))
-                    .and_then(|index| event_queue.remove(index));
+                let previous_dir_id = tracking.dir_id;
                 let mut accept = false;
+                match startup.host_ui.take() {
+                    Some(FileDialogAction::Cancel) => {
+                        return ppc_standard_file_finish_put(
+                            memory,
+                            startup,
+                            tracking,
+                            vfs_directories,
+                            vfs_files,
+                            vfs_resource_files,
+                            vfs_volumes,
+                            working_directories,
+                            next_working_directory_ref_num,
+                            false,
+                        )
+                    }
+                    Some(FileDialogAction::Save(name)) => {
+                        tracking.name =
+                            encode_mac_roman_lossy(&name).into_iter().take(63).collect();
+                        accept = true;
+                    }
+                    Some(FileDialogAction::Open(index)) => {
+                        if let Some(entry) = tracking.entries.get(index).filter(|e| e.is_directory)
+                        {
+                            tracking.dir_id = entry.dir_id;
+                        }
+                    }
+                    Some(FileDialogAction::Parent) => {
+                        tracking.dir_id =
+                            ppc_host_parent_directory(vfs_directories, tracking.dir_id)
+                    }
+                    Some(FileDialogAction::Desktop) => tracking.dir_id = PPC_ROOT_DIR_ID,
+                    _ => {}
+                }
+                if tracking.dir_id != previous_dir_id {
+                    tracking.entries = ppc_standard_file_get_entries(
+                        vfs_directories,
+                        vfs_files,
+                        vfs_resource_files,
+                        tracking.dir_id,
+                        None,
+                    );
+                }
+                let event = if startup.host_ui.enabled {
+                    None
+                } else {
+                    event_queue
+                        .iter()
+                        .position(|event| matches!(event.what, 1 | 3 | 5))
+                        .and_then(|index| event_queue.remove(index))
+                };
                 if let Some(event) = event {
                     if event.what == 1 {
                         let local = (
@@ -1756,7 +1946,9 @@ fn ppc_dispatch_standard_file(
                         true,
                     );
                 }
-                ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                if !startup.host_ui.enabled {
+                    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                }
                 startup.standard_file_put_tracking = Some(tracking);
                 PpcImportAction::Yield(u64::MAX)
             } else {
@@ -1766,6 +1958,9 @@ fn ppc_dispatch_standard_file(
                     memory,
                     startup,
                     default_dir_id,
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
                     gworlds,
                     mode,
                     prompt_ptr,
@@ -1773,5 +1968,111 @@ fn ppc_dispatch_standard_file(
                 )
             }
         }
+    }
+}
+
+fn ppc_host_parent_directory(directories: &[PpcVfsDirectory], id: u32) -> u32 {
+    directories
+        .iter()
+        .find(|d| d.dir_id == id)
+        .map(|d| d.parent_dir_id)
+        .filter(|id| *id >= PPC_ROOT_DIR_ID)
+        .unwrap_or(PPC_ROOT_DIR_ID)
+}
+
+fn ppc_host_directory_volume<'a>(
+    directories: &[PpcVfsDirectory],
+    volumes: &'a [PpcVfsVolumeRecord],
+    mut id: u32,
+) -> Option<&'a PpcVfsVolumeRecord> {
+    for _ in 0..=directories.len() {
+        if let Some(volume) = volumes.iter().find(|v| v.root_dir_id == id) {
+            return Some(volume);
+        }
+        let parent = ppc_host_parent_directory(directories, id);
+        if parent == id {
+            break;
+        }
+        id = parent;
+    }
+    None
+}
+
+impl PpcLoadedApp {
+    pub(crate) fn host_file_dialog(&self) -> Option<FileDialogSnapshot> {
+        let (id, revision) = self.toolbox_startup.host_ui.identity()?;
+        let (kind, prompt, name, directory_id, entries) =
+            if let Some(t) = &self.toolbox_startup.standard_file_get_tracking {
+                (
+                    FileDialogKind::Open,
+                    "Open a file".to_owned(),
+                    String::new(),
+                    t.current_dir_id,
+                    t.entries.clone(),
+                )
+            } else if let Some(filtering) = &self.toolbox_startup.standard_file_get_filtering {
+                (
+                    FileDialogKind::Open,
+                    "Open a file".to_owned(),
+                    String::new(),
+                    filtering.tracking.current_dir_id,
+                    Vec::new(),
+                )
+            } else if let Some(t) = &self.toolbox_startup.standard_file_put_tracking {
+                (
+                    FileDialogKind::Save,
+                    decode_mac_roman(&t.prompt),
+                    decode_mac_roman(&t.name),
+                    t.dir_id,
+                    t.entries.clone(),
+                )
+            } else {
+                return None;
+            };
+        let volume =
+            ppc_host_directory_volume(&self.vfs_directories, &self.vfs_volumes, directory_id);
+        let directory = ppc_directory_path_for_id(&self.vfs_directories, directory_id)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("Desktop")
+            .to_owned();
+        Some(FileDialogSnapshot {
+            id,
+            revision,
+            kind,
+            prompt,
+            directory,
+            entries: entries
+                .iter()
+                .map(|e| FileDialogEntry {
+                    name: decode_mac_roman(&e.name),
+                    directory: e.is_directory,
+                })
+                .collect(),
+            name,
+            writable: volume.is_none_or(|v| v.attributes & 0x8080 == 0),
+            busy: self.toolbox_startup.standard_file_get_filtering.is_some(),
+        })
+    }
+
+    pub(crate) fn reply_host_file_dialog(&mut self, reply: FileDialogReply) -> bool {
+        let Some(snapshot) = self.host_file_dialog() else {
+            return false;
+        };
+        let valid = match &reply.action {
+            FileDialogAction::Open(index) => snapshot
+                .entries
+                .get(*index)
+                .is_some_and(|e| snapshot.kind == FileDialogKind::Open || e.directory),
+            FileDialogAction::Save(name) => {
+                snapshot.kind == FileDialogKind::Save
+                    && snapshot.writable
+                    && !name.trim().is_empty()
+                    && name.len() <= 4096
+                    && !name.contains([':', '/'])
+                    && !name.chars().any(char::is_control)
+            }
+            _ => true,
+        };
+        valid && !snapshot.busy && self.toolbox_startup.host_ui.reply(reply)
     }
 }

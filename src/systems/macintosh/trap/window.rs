@@ -673,6 +673,13 @@ impl super::TrapDispatcher {
         if previous == next {
             return;
         }
+        if self.host_ui.dialog_presented(window) {
+            let behind = self.visible_windows_behind(bus, window);
+            for exposed in Self::rect_difference_parts(previous, next) {
+                self.invalidate_exposed_windows(bus, &behind, Some(exposed));
+            }
+            return;
+        }
         // SizeWindow preserves the window's position and redraws its frame;
         // the Window Manager also updates windows uncovered by geometry changes.
         // Inside Macintosh Volume I (1985), I-278 and I-287--I-293.
@@ -749,6 +756,7 @@ impl super::TrapDispatcher {
         if let Some(previous) = old_structure {
             self.repaint_resize_exposure(bus, window, previous, global_structure);
         }
+        self.refresh_host_dialog_geometry(bus, window);
     }
 
     fn rect_difference_bbox(
@@ -1430,6 +1438,9 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         rect: (i16, i16, i16, i16),
     ) {
+        if self.host_ui.dialog_presented(window_ptr) {
+            return;
+        }
         let Some(local_rect) = self
             .window_content_rect(bus, window_ptr)
             .and_then(|content| Self::rect_intersection(content, rect))
@@ -1942,8 +1953,13 @@ impl super::TrapDispatcher {
     pub(super) fn toggle_standard_go_away_highlight(
         &self,
         bus: &mut MacMemoryBus,
+        window: u32,
         rect: (i16, i16, i16, i16),
     ) {
+        // Host-owned dialogs have no guest chrome to invert.
+        if self.host_ui.dialog_presented(window) {
+            return;
+        }
         // The standard WDEF toggles the close box with an XOR mask. Expanding
         // by one feeds the exact glyph bounds through invert_button_rect,
         // whose edge inset is otherwise intended for dialog buttons.
@@ -2089,6 +2105,16 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn refresh_host_dialog_geometry(&mut self, bus: &MacMemoryBus, window: u32) {
+        if self.host_ui.dialog_presented(window) {
+            // EgUI owns the dialog pixels. Refresh saved-under coordinates and
+            // modal hit-test bounds without copying the guest background.
+            self.window_saved_under_pixels.remove(&window);
+            self.save_window_under_pixels(bus, window);
+            self.prepare_host_dialog_show(bus, window);
+        }
+    }
+
     pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2102,8 +2128,10 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let host_owned = self.host_ui.dialog_presented(the_window);
         let old_port_rect = self.window_global_port_rect(bus, the_window);
-        let old_visible = self.window_visible(bus, the_window)
+        let old_visible = self
+            .window_visible(bus, the_window)
             .then(|| self.snapshot_window_visibility(bus, the_window));
         let old_structure = if self.window_visible(bus, the_window) {
             self.window_structure_rect(bus, the_window)
@@ -2114,19 +2142,23 @@ impl super::TrapDispatcher {
             .window_content_rect(bus, the_window)
             .unwrap_or_else(|| self.window_port_rect(bus, the_window));
         let old_update_rect = self.window_update_rect(bus, the_window);
-        let moved_pixels = old_structure.and_then(|rect| self.save_screen_rect_pixels(bus, rect));
+        let moved_pixels = if host_owned {
+            None
+        } else {
+            old_structure.and_then(|rect| self.save_screen_rect_pixels(bus, rect))
+        };
         // A dialog's saved background belongs to screen coordinates, not
         // to its movable contents. Expose a visible front dialog's old
         // background before capturing its destination. A hidden dialog
         // has not covered anything, so only recapture its destination.
         // MoveWindow: Inside Macintosh Volume I, I-287..I-289;
         // CloseDialog: Macintosh Toolbox Essentials 1992, pp. 6-119..6-120.
-        let moved_dialog_background = if old_structure.is_none() || self.front_window == the_window
-        {
-            self.dialog_saved_pixels.remove(&the_window)
-        } else {
-            None
-        };
+        let moved_dialog_background =
+            if !host_owned && (old_structure.is_none() || self.front_window == the_window) {
+                self.dialog_saved_pixels.remove(&the_window)
+            } else {
+                None
+            };
         if old_structure.is_some() {
             if let Some(background) = moved_dialog_background.as_ref() {
                 self.restore_dialog_pixels(bus, old_port_rect, background);
@@ -2222,7 +2254,7 @@ impl super::TrapDispatcher {
             self.window_bounds = (v_global, h_global, v_global + port_h, h_global + port_w);
         }
 
-        if moved_dialog_background.is_none() {
+        if !host_owned && moved_dialog_background.is_none() {
             if let Some(old_structure) = old_structure {
                 // PaintBehind clips the desktop to windows' structure regions
                 // and clears PaintWhite, preserving exposed application pixels
@@ -2289,6 +2321,7 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        self.refresh_host_dialog_geometry(bus, the_window);
     }
 
     /// Align a window's selected local rectangle to the standard four-pixel
@@ -2325,6 +2358,15 @@ impl super::TrapDispatcher {
             global_port.0,
             front,
         );
+    }
+
+    /// Projected modeless dialogs keep their guest geometry, but their guest
+    /// pixels are the saved background. Raw guest-pane clicks there have no
+    /// visible target and must not reach the hidden window.
+    pub(crate) fn host_modeless_dialog_at(&self, bus: &MacMemoryBus, v: i16, h: i16) -> bool {
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let (part, window) = self.find_window_at_point(bus, v, h, menu_bar_height);
+        part >= 3 && window != 0 && self.host_ui.dialog_is_modeless(window)
     }
 
     fn find_window_at_point(
@@ -2906,6 +2948,19 @@ impl super::TrapDispatcher {
         self.sync_window_list_links(bus);
     }
 
+    /// Reconcile the adapter cache after another CPU adapter selected a window.
+    /// BringToFront can change stacking without changing the active window.
+    pub(crate) fn refresh_host_active_window(&mut self, bus: &MacMemoryBus) {
+        let active = self.window_list.windows().into_iter().find(|pointer| {
+            self.window_visible(bus, *pointer)
+                && bus.read_byte(*pointer + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET) != 0
+        });
+        if let Some(active) = active.filter(|active| *active != self.front_window) {
+            self.front_window = active;
+            self.sync_cached_front_window_render_state(bus);
+        }
+    }
+
     /// Shared activation sequence for SelectWindow ($A91F) and
     /// MoveWindow(front=TRUE) ($A91B). Per IM:I I-286/I-287:
     ///   1. Unhilite the currently-active window + queue a deactivate
@@ -3184,6 +3239,9 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
+        self.host_ui.retire_dialog(window_ptr);
+        self.host_dialog_backgrounds.remove(&window_ptr);
+        self.dialog_modal_entered.remove(&window_ptr);
         self.drag_manager.with_mut(|manager| manager.remove_window(window_ptr));
         self.window_list.remove_window(window_ptr);
         self.sync_window_list_links(bus);
@@ -3268,7 +3326,9 @@ impl super::TrapDispatcher {
             return;
         }
 
-        if !self.restore_window_under_pixels(bus, window_ptr) {
+        if self.host_ui.dialog_presented(window_ptr) {
+            self.window_saved_under_pixels.remove(&window_ptr);
+        } else if !self.restore_window_under_pixels(bus, window_ptr) {
             if let Some((top, left, bottom, right)) = self.window_structure_rect(bus, window_ptr) {
                 self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
             }
@@ -3846,7 +3906,10 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         visible: bool,
     ) {
-        if !visible || !self.window_original_pixmaps.contains_key(&window_ptr) {
+        if !visible
+            || self.host_ui.dialog_presented(window_ptr)
+            || !self.window_original_pixmaps.contains_key(&window_ptr)
+        {
             return;
         }
 
@@ -3923,7 +3986,7 @@ impl super::TrapDispatcher {
             RegionBooleanOp::Difference,
         );
         if let Some(exposed) = Self::region_handle_rect(bus, old_visible) {
-            if erase_content {
+            if erase_content && !self.host_ui.dialog_presented(window) {
                 let old_port = *self.current_port;
                 let old_gdevice = *self.current_gdevice;
                 let old_clip = bus.read_long(window + 28);
@@ -4533,6 +4596,9 @@ impl super::TrapDispatcher {
                     // The Window Manager derives its content region from the
                     // current port rectangle when revealing it (IM:I I-284, I-289).
                     self.resync_window_geometry_from_port_rect(bus, the_window);
+                    if !was_visible {
+                        self.prepare_host_dialog_show(bus, the_window);
+                    }
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
@@ -4575,6 +4641,9 @@ impl super::TrapDispatcher {
                         } else {
                             self.draw_single_window_chrome_inline(bus, the_window, hilited);
                         }
+                    }
+                    if !was_visible {
+                        self.finish_host_dialog_show(bus, the_window);
                     }
                     self.capture_gui_frame(bus, &format!("show_window_{:08X}", the_window));
                 }
@@ -4634,6 +4703,8 @@ impl super::TrapDispatcher {
                         }
                     }
                     let was_visible = self.window_visible(bus, the_window);
+                    let host_owned = self.host_ui.dialog_presented(the_window);
+                    self.host_ui.invalidate_dialog_presentation(the_window);
                     if !was_visible {
                         bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
                         self.set_window_vis_from_content(bus, the_window, false);
@@ -4678,7 +4749,9 @@ impl super::TrapDispatcher {
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
                     self.set_window_vis_from_content(bus, the_window, false);
                     self.clear_queued_update_events(the_window);
-                    if !self.restore_window_under_pixels(bus, the_window) {
+                    if host_owned {
+                        self.window_saved_under_pixels.remove(&the_window);
+                    } else if !self.restore_window_under_pixels(bus, the_window) {
                         // Restore the exposed structure area from the desktop
                         // background. A full Window Manager would also repaint
                         // uncovered windows behind; this keeps desktop exposure
@@ -5029,6 +5102,7 @@ impl super::TrapDispatcher {
                     if let Some(previous) = old_structure {
                         self.repaint_resize_exposure(bus, the_window, previous, global_structure);
                     }
+                    self.refresh_host_dialog_geometry(bus, the_window);
 
                     // Paint newly exposed content through QuickDraw so the
                     // port's background pattern and palette are respected.
@@ -5274,7 +5348,11 @@ impl super::TrapDispatcher {
                     let inside = Self::point_in_rect(mouse.0, mouse.1, tracking.hit_rect);
                     if self.window_tracking_button_down(bus) {
                         if inside != tracking.highlighted {
-                            self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+                            self.toggle_standard_go_away_highlight(
+                                bus,
+                                tracking.window_ptr,
+                                tracking.highlight_rect,
+                            );
                             tracking.highlighted = inside;
                         }
                         cpu.write_reg(Register::A7, tracking.stack_ptr);
@@ -5283,7 +5361,11 @@ impl super::TrapDispatcher {
                     }
 
                     if tracking.highlighted {
-                        self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+                        self.toggle_standard_go_away_highlight(
+                            bus,
+                            tracking.window_ptr,
+                            tracking.highlight_rect,
+                        );
                     }
                     // Mouse-up belongs to TrackGoAway's private loop rather
                     // than the application's next Event Manager call.
@@ -5300,6 +5382,20 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp + 4);
                 let initial_point = (bus.read_word(sp) as i16, bus.read_word(sp + 2) as i16);
+                // A host close intent was delivered as this click; its release
+                // is already queued, so accept it without live button tracking.
+                if self
+                    .host_ui
+                    .take_host_click(the_window, initial_point, true)
+                    .is_some()
+                {
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    bus.write_word(sp + 8, 0x0100);
+                    cpu.write_reg(Register::A7, sp + 8);
+                    return Some(Ok(()));
+                }
                 let Some((hit_rect, highlight_rect)) = self.standard_go_away_rects(bus, the_window)
                 else {
                     bus.write_word(sp + 8, 0);
@@ -5318,7 +5414,7 @@ impl super::TrapDispatcher {
                 let mouse = self.window_tracking_mouse_pos(bus);
                 let highlighted = Self::point_in_rect(mouse.0, mouse.1, hit_rect);
                 if highlighted {
-                    self.toggle_standard_go_away_highlight(bus, highlight_rect);
+                    self.toggle_standard_go_away_highlight(bus, the_window, highlight_rect);
                 }
                 self.go_away_tracking = Some(super::dispatch::GoAwayTrackingState {
                     window_ptr: the_window,
@@ -5493,6 +5589,13 @@ impl super::TrapDispatcher {
                     let was_visible = self.window_visible(bus, the_window);
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
+                        self.host_ui.invalidate_dialog_presentation(the_window);
+                        if self.host_ui.dialog_presented(the_window) {
+                            self.window_saved_under_pixels.remove(&the_window);
+                        }
+                    }
+                    if show_flag && !was_visible {
+                        self.prepare_host_dialog_show(bus, the_window);
                     }
                     let exposed_rect = (!show_flag && was_visible)
                         .then(|| self.window_structure_rect(bus, the_window))
@@ -5533,6 +5636,9 @@ impl super::TrapDispatcher {
                     } else {
                         self.clear_queued_update_events(the_window);
                         self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
+                    }
+                    if show_flag && !was_visible {
+                        self.finish_host_dialog_show(bus, the_window);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);

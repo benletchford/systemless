@@ -10154,3 +10154,60 @@ fn status_gamma_rejects_invalid_driver_and_output_without_overwriting_output() {
         assert_eq!(bus.read_word(pb + 16), (-50i16) as u16);
     }
 }
+
+#[test]
+fn nminstall_alert_strings_reach_the_host_until_dismissed_or_removed() {
+    // Inside Macintosh Volume VI (1991), pp. 24-6 to 24-11: nmStr names an
+    // alert shown once; the request stays queued until NMRemove.
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    dispatcher.host_ui.enabled = true;
+    let nm_rec = bus.alloc(36);
+    let text = bus.alloc(32);
+    bus.write_pstring(text, b"Download complete");
+    bus.write_word(nm_rec + 4, 8);
+    bus.write_long(nm_rec + 24, text);
+    cpu.write_reg(Register::A0, nm_rec);
+    dispatcher
+        .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let shown = dispatcher.host_ui.notifications();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].text, "Download complete");
+    assert!(dispatcher.host_ui.dismiss_notification(shown[0].id));
+    assert!(!dispatcher.host_ui.dismiss_notification(shown[0].id));
+    assert!(dispatcher.host_ui.notifications().is_empty());
+    assert_eq!(
+        dispatcher.notification_requests,
+        vec![nm_rec],
+        "still queued"
+    );
+    // A request without nmStr posts no alert; NMRemove withdraws one.
+    let silent = bus.alloc(36);
+    bus.write_word(silent + 4, 8);
+    cpu.write_reg(Register::A0, silent);
+    dispatcher
+        .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(dispatcher.host_ui.notifications().is_empty());
+    cpu.write_reg(Register::A0, nm_rec);
+    dispatcher
+        .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    dispatcher
+        .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        dispatcher.host_ui.notifications().len(),
+        1,
+        "reinstall shows again"
+    );
+    dispatcher
+        .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(dispatcher.host_ui.notifications().is_empty());
+}

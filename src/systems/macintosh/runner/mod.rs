@@ -2273,6 +2273,26 @@ impl FixtureRunner {
         Instant::now()
     }
 
+    /// A user-facing explanation for a halt other than ExitToShell.
+    pub fn unexpected_stop_reason(&self) -> Option<String> {
+        if !self.halted || self.halted_by_exit_to_shell() {
+            return None;
+        }
+        let code = self
+            .bus
+            .read_word(crate::memory::globals::addr::DS_ERR_CODE) as i16;
+        Some(match self.halted_trap {
+            Some(0xA9C9) => format!("The application reported system error {code}."),
+            Some(trap) => {
+                format!("The application stopped at an unsupported Toolbox call (${trap:04X}).")
+            }
+            None => match self.halted_pc {
+                Some(pc) => format!("The application stopped unexpectedly at ${pc:08X}."),
+                None => "The application stopped unexpectedly.".into(),
+            },
+        })
+    }
+
     pub fn halted_trap(&self) -> Option<u16> {
         self.halted_trap
     }
@@ -3021,6 +3041,496 @@ impl FixtureRunner {
         }
     }
 
+    /// Present Systemless-supplied Macintosh dialogs through the host UI.
+    /// Set before running the guest; changing this during a modal call is unsupported.
+    pub fn set_host_ui_enabled(&mut self, enabled: bool) {
+        self.dispatcher.host_ui.enabled = enabled;
+        if let Some(app) = self.native.application_mut() {
+            app.toolbox_startup.host_ui.enabled = enabled;
+        }
+    }
+
+    fn modal_statuses(
+        &mut self,
+    ) -> (
+        crate::systems::macintosh::host_ui::ModalStatus,
+        crate::systems::macintosh::host_ui::ModalStatus,
+    ) {
+        let classic = self.dispatcher.modal_status(&self.bus);
+        let native = self
+            .native
+            .application_mut()
+            .map(|app| app.modal_status())
+            .unwrap_or_default();
+        (classic, native)
+    }
+
+    fn host_dialog_is_native(&mut self) -> bool {
+        let (classic, native) = self.modal_statuses();
+        native.dialog.is_some()
+            && (classic.dialog.is_none() || native.dialog_order > classic.dialog_order)
+    }
+
+    fn host_file_dialog_is_native(&mut self) -> bool {
+        let (classic, native) = self.modal_statuses();
+        native.file && (!classic.file || native.file_order > classic.file_order)
+    }
+
+    /// Input ownership follows blocking-call order, including Mixed Mode calls.
+    /// A modal with no host adapter keeps guest input while blocking host menus.
+    /// Entering modality also expires any staged host menu command.
+    pub fn ui_modality(&mut self) -> crate::systems::macintosh::host_ui::UiModality {
+        use crate::systems::macintosh::host_ui::{UiModality, UiOwner};
+        let (classic, native) = self.modal_statuses();
+        let dialog = classic.dialog.is_some() || native.dialog.is_some();
+        let file = classic.file || native.file;
+        let dialog_order = [classic, native]
+            .iter()
+            .filter(|s| s.dialog.is_some())
+            .map(|s| s.dialog_order)
+            .max()
+            .unwrap_or(0);
+        let file_order = [classic, native]
+            .iter()
+            .filter(|s| s.file)
+            .map(|s| s.file_order)
+            .max()
+            .unwrap_or(0);
+        if self.host_system_dialog().is_some() {
+            self.dispatcher.cancel_host_menu_selection();
+            return UiModality {
+                owner: UiOwner::SystemDialog,
+                menus_blocked: true,
+            };
+        }
+        if self.host_popup_menu().is_some() {
+            self.dispatcher.cancel_host_menu_selection();
+            return UiModality {
+                owner: UiOwner::PopupMenu,
+                menus_blocked: true,
+            };
+        }
+        let owner = if file && (!dialog || file_order > dialog_order) {
+            if self.host_file_dialog().is_some() {
+                UiOwner::FileDialog
+            } else {
+                UiOwner::Guest
+            }
+        } else if dialog && self.host_dialog().is_some() {
+            UiOwner::Dialog
+        } else {
+            UiOwner::Guest
+        };
+        if dialog || file {
+            self.dispatcher.cancel_host_menu_selection();
+        }
+        UiModality {
+            owner,
+            menus_blocked: dialog || file,
+        }
+    }
+
+    /// The PopUpMenuSelect call currently waiting for a host choice, with its
+    /// anchor in presented-canvas coordinates.
+    pub fn host_popup_menu(
+        &mut self,
+    ) -> Option<crate::systems::macintosh::host_ui::PopupMenuSnapshot> {
+        self.dispatcher.expire_orphaned_host_popup();
+        let mut popup = self
+            .native
+            .application()
+            .and_then(|app| app.host_popup_menu())
+            .or_else(|| self.dispatcher.host_ui.popup_snapshot())?;
+        let (offset_v, offset_h) = self.ppc_viewport_offset();
+        popup.anchor = (
+            popup.anchor.0.saturating_add(offset_v),
+            popup.anchor.1.saturating_add(offset_h),
+        );
+        Some(popup)
+    }
+
+    /// The guest-rendered modal dialog that currently owns input, if any.
+    pub fn guest_modal_surface(
+        &mut self,
+    ) -> Option<crate::systems::macintosh::host_ui::GuestSurfaceSnapshot> {
+        let modality = self.ui_modality();
+        if modality.owner != crate::systems::macintosh::host_ui::UiOwner::Guest
+            || !modality.menus_blocked
+        {
+            return None;
+        }
+        let (classic, native) = self.modal_statuses();
+        let native_front = native.dialog.is_some()
+            && (classic.dialog.is_none() || native.dialog_order > classic.dialog_order);
+        let (id, title, bounds) = if native_front {
+            let dialog = native.dialog?;
+            self.native
+                .application_mut()?
+                .guest_dialog_surface(dialog)?
+        } else {
+            self.dispatcher
+                .guest_dialog_surface(&self.bus, classic.dialog?)?
+        };
+        let (v, h) = self.ppc_viewport_offset();
+        Some(crate::systems::macintosh::host_ui::GuestSurfaceSnapshot {
+            id,
+            title,
+            bounds: (
+                bounds.0.saturating_add(v),
+                bounds.1.saturating_add(h),
+                bounds.2.saturating_add(v),
+                bounds.3.saturating_add(h),
+            ),
+        })
+    }
+
+    /// Notification Manager alerts awaiting acknowledgement.
+    pub fn host_notifications(
+        &self,
+    ) -> Vec<crate::systems::macintosh::host_ui::NotificationSnapshot> {
+        let mut notifications = self.dispatcher.host_ui.notifications();
+        if let Some(app) = self.native.application() {
+            notifications.extend(app.toolbox_startup.host_ui.notifications());
+        }
+        notifications
+    }
+
+    pub fn dismiss_host_notification(&mut self, id: u64) -> bool {
+        self.dispatcher.host_ui.dismiss_notification(id)
+            || self
+                .native
+                .application_mut()
+                .is_some_and(|app| app.toolbox_startup.host_ui.dismiss_notification(id))
+    }
+
+    /// A Color Picker or Printing Manager call waiting for a host answer.
+    pub fn host_system_dialog(
+        &self,
+    ) -> Option<crate::systems::macintosh::host_ui::SystemDialogSnapshot> {
+        self.native
+            .application()
+            .and_then(|app| app.toolbox_startup.host_ui.system_dialog())
+            .or_else(|| self.dispatcher.host_ui.system_dialog())
+    }
+
+    pub fn reply_host_system_dialog(
+        &mut self,
+        reply: crate::systems::macintosh::host_ui::SystemDialogReply,
+    ) -> bool {
+        if self.guest_work_is_suspended() {
+            return false;
+        }
+        let accepted = self
+            .native
+            .application_mut()
+            .is_some_and(|app| app.toolbox_startup.host_ui.reply_system_dialog(reply))
+            || self.dispatcher.host_ui.reply_system_dialog(reply);
+        if accepted {
+            self.wake_pending_wait_next_event_if_input_available();
+            self.wake_foreground_after_input();
+        }
+        accepted
+    }
+
+    pub fn reply_host_popup_menu(
+        &mut self,
+        reply: crate::systems::macintosh::host_ui::PopupMenuReply,
+    ) -> bool {
+        if self.guest_work_is_suspended() {
+            return false;
+        }
+        let accepted = self
+            .native
+            .application_mut()
+            .is_some_and(|app| app.reply_host_popup_menu(reply))
+            || self.dispatcher.reply_host_popup_menu(&self.bus, reply);
+        if accepted {
+            self.wake_pending_wait_next_event_if_input_available();
+            self.wake_foreground_after_input();
+        }
+        accepted
+    }
+
+    pub fn host_file_dialog(
+        &mut self,
+    ) -> Option<crate::systems::macintosh::host_ui::FileDialogSnapshot> {
+        if self.host_file_dialog_is_native() {
+            self.native
+                .application_mut()
+                .and_then(|app| app.host_file_dialog())
+        } else {
+            self.dispatcher.host_file_dialog()
+        }
+    }
+
+    pub fn reply_host_file_dialog(
+        &mut self,
+        reply: crate::systems::macintosh::host_ui::FileDialogReply,
+    ) -> bool {
+        if self.guest_work_is_suspended()
+            || self.ui_modality().owner != crate::systems::macintosh::host_ui::UiOwner::FileDialog
+            || self.host_file_dialog().is_none_or(|d| d.id != reply.id)
+        {
+            return false;
+        }
+        let accepted = if !self.host_file_dialog_is_native() {
+            self.dispatcher.reply_host_file_dialog(reply)
+        } else {
+            self.native
+                .application_mut()
+                .is_some_and(|app| app.reply_host_file_dialog(reply))
+        };
+        if accepted {
+            self.wake_foreground_after_input();
+        }
+        accepted
+    }
+
+    pub fn host_dialog(&mut self) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        if self.host_dialog_is_native() {
+            self.native
+                .application_mut()
+                .and_then(|app| app.host_dialog())
+        } else {
+            self.dispatcher.host_dialog(&mut self.bus)
+        }
+    }
+
+    /// Owned modeless inventory in guest front-to-back order. Blocking calls
+    /// publish through `host_dialog`; other visible standard dialogs retain
+    /// independent identities, with `busy` set while a modal owns events.
+    pub fn host_modeless_dialogs(
+        &mut self,
+    ) -> Vec<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        self.dispatcher.refresh_host_active_window(&self.bus);
+        let (classic, native) = self.modal_statuses();
+        let blocked =
+            classic.dialog.is_some() || native.dialog.is_some() || classic.file || native.file;
+        let mut windows = self
+            .dispatcher
+            .host_modeless_dialogs(&mut self.bus, blocked);
+        if let Some(app) = self.native.application_mut() {
+            windows.extend(app.host_modeless_dialogs(blocked));
+        }
+        windows.sort_by_key(|(order, _)| *order);
+        windows.into_iter().map(|(_, snapshot)| snapshot).collect()
+    }
+    /// Select a projected modeless window through its guest Window Manager.
+    /// Takes opaque identity/revision; blocked event loops wake normally.
+    pub fn activate_host_modeless_dialog(&mut self, id: u64, revision: u64) -> bool {
+        if self.guest_work_is_suspended() {
+            return false;
+        }
+        self.dispatcher.refresh_host_active_window(&self.bus);
+        let (classic, native) = self.modal_statuses();
+        if classic.dialog.is_some() || native.dialog.is_some() || classic.file || native.file {
+            return false;
+        }
+        let accepted = self
+            .dispatcher
+            .activate_host_modeless_dialog(&mut self.bus, id, revision)
+            || self
+                .native
+                .application_mut()
+                .is_some_and(|app| app.activate_host_modeless_dialog(id, revision));
+        if accepted {
+            self.wake_pending_wait_next_event_if_input_available();
+            self.wake_foreground_after_input();
+        }
+        accepted
+    }
+
+    fn host_modeless_blocked(&mut self) -> bool {
+        if self.guest_work_is_suspended() {
+            return true;
+        }
+        self.dispatcher.refresh_host_active_window(&self.bus);
+        let (classic, native) = self.modal_statuses();
+        classic.dialog.is_some() || native.dialog.is_some() || classic.file || native.file
+    }
+
+    fn post_host_click(&mut self, (v, h): (i16, i16)) {
+        let (offset_v, offset_h) = self.ppc_viewport_offset();
+        let (v, h) = (v.saturating_add(offset_v), h.saturating_add(offset_h));
+        self.push_mouse_down(v, h);
+        self.push_mouse_up(v, h);
+    }
+
+    /// Deliver a modeless item through the application's event loop. The
+    /// window is selected first when inactive or obscured; DialogSelect then
+    /// reports the item without repeating host-completed tracking.
+    pub fn reply_host_modeless_dialog(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> bool {
+        if self.host_modeless_blocked() {
+            return false;
+        }
+        let point = self
+            .dispatcher
+            .reply_host_modeless_dialog(&mut self.bus, reply)
+            .or_else(|| {
+                self.native
+                    .application_mut()
+                    .and_then(|app| app.reply_host_modeless_dialog(reply))
+            });
+        point
+            .inspect(|point| self.post_host_click(*point))
+            .is_some()
+    }
+
+    /// Commit a popup or range value, then deliver its item as above.
+    pub fn reply_host_modeless_dialog_control(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> bool {
+        if self.host_modeless_blocked() {
+            return false;
+        }
+        let point = self
+            .dispatcher
+            .reply_host_modeless_dialog_control(&mut self.bus, reply)
+            .or_else(|| {
+                self.native
+                    .application_mut()
+                    .and_then(|app| app.reply_host_modeless_dialog_control(reply))
+            });
+        point
+            .inspect(|point| self.post_host_click(*point))
+            .is_some()
+    }
+
+    /// Update a modeless dialog's TextEdit item in place, then report the edit
+    /// item through DialogSelect as a keystroke would, without retyping text.
+    pub fn reply_host_modeless_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        if self.host_modeless_blocked() {
+            return false;
+        }
+        let staged = self
+            .dispatcher
+            .reply_host_modeless_dialog_text(&mut self.bus, reply)
+            .or_else(|| {
+                self.native
+                    .application_mut()
+                    .and_then(|app| app.reply_host_modeless_dialog_text(reply))
+            });
+        match staged {
+            Some(point) => {
+                if let Some(point) = point {
+                    self.post_host_click(point);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Deliver a close-box click; the application's TrackGoAway accepts it
+    /// and the application decides whether to hide, close or keep the window.
+    pub fn close_host_modeless_dialog(&mut self, id: u64, revision: u64) -> bool {
+        if self.host_modeless_blocked() {
+            return false;
+        }
+        let point = self
+            .dispatcher
+            .host_modeless_close_position(&mut self.bus, id, revision)
+            .or_else(|| {
+                self.native
+                    .application_mut()
+                    .and_then(|app| app.host_modeless_close_position(id, revision))
+            });
+        point
+            .inspect(|point| self.post_host_click(*point))
+            .is_some()
+    }
+
+    /// Whether a presented-canvas point lands on a projected modeless dialog
+    /// in guest stacking order. Frontends drop raw guest presses there.
+    pub fn host_modeless_dialog_at(&mut self, v: i16, h: i16) -> bool {
+        let (v, h) = self.canonical_mouse_position(v, h);
+        self.dispatcher.host_modeless_dialog_at(&self.bus, v, h)
+            || self
+                .native
+                .application_mut()
+                .is_some_and(|app| app.host_modeless_dialog_at(v, h))
+    }
+
+    /// Includes obscured and temporarily guest-rendered dialogs. Opaque IDs
+    /// retire with the guest window; no guest addresses cross this boundary.
+    pub fn host_dialog_ids(&mut self) -> Vec<u64> {
+        let mut ids = self.dispatcher.host_ui.live_dialog_ids();
+        if let Some(app) = self.native.application_mut() {
+            ids.extend(app.host_dialog_ids());
+        }
+        ids.sort_unstable();
+        ids
+    }
+
+    pub fn reply_host_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        if self.guest_work_is_suspended()
+            || self.ui_modality().owner != crate::systems::macintosh::host_ui::UiOwner::Dialog
+        {
+            return false;
+        }
+        if !self.host_dialog_is_native() {
+            self.dispatcher.reply_host_dialog_text(&mut self.bus, reply)
+        } else {
+            self.native
+                .application_mut()
+                .is_some_and(|app| app.reply_host_dialog_text(reply))
+        }
+    }
+
+    pub fn reply_host_dialog_control(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> Option<(i16, i16)> {
+        if self.guest_work_is_suspended()
+            || self.ui_modality().owner != crate::systems::macintosh::host_ui::UiOwner::Dialog
+        {
+            return None;
+        }
+        let (v, h) = if !self.host_dialog_is_native() {
+            self.dispatcher
+                .reply_host_dialog_control(&mut self.bus, reply)
+        } else {
+            self.native
+                .application_mut()
+                .and_then(|app| app.reply_host_dialog_control(reply))
+        }?;
+        let (offset_v, offset_h) = self.ppc_viewport_offset();
+        Some((v.saturating_add(offset_v), h.saturating_add(offset_h)))
+    }
+
+    pub fn host_dialog_item_position(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> Option<(i16, i16)> {
+        if self.guest_work_is_suspended()
+            || self.ui_modality().owner != crate::systems::macintosh::host_ui::UiOwner::Dialog
+        {
+            return None;
+        }
+        let (v, h) = if !self.host_dialog_is_native() {
+            self.dispatcher
+                .host_dialog_item_position(&mut self.bus, reply)
+        } else {
+            self.native
+                .application_mut()
+                .and_then(|app| app.host_dialog_item_position(reply))
+        }?;
+        // The mouse API accepts presented-canvas coordinates, including the
+        // native viewport's matte. Backend dialog rectangles are canonical.
+        let (offset_v, offset_h) = self.ppc_viewport_offset();
+        Some((v.saturating_add(offset_v), h.saturating_add(offset_h)))
+    }
+
     /// Inspect caller-created TextEdit records and the process's private scrap.
     #[doc(hidden)]
     pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
@@ -3124,7 +3634,7 @@ impl FixtureRunner {
     /// mouseDown -> FindWindow -> MenuSelect path.  Returns false if the menu
     /// or item is no longer present, enabled, and selectable.
     pub fn select_guest_menu_item(&mut self, menu_id: i16, item_number: i16) -> bool {
-        if self.guest_work_is_suspended() {
+        if self.guest_work_is_suspended() || self.ui_modality().menus_blocked {
             return false;
         }
         // Host input is an ABI boundary too: a guest store to `$016A` made
@@ -3821,6 +4331,7 @@ impl FixtureRunner {
         let file_system = self.process_context.detached_vfs_snapshot();
 
         let mut replacement = FixtureRunner::new_with_file_system(ram_size, config, file_system);
+        replacement.dispatcher.host_ui.enabled = self.dispatcher.host_ui.enabled;
         replacement.dispatcher.menu_bar_policy = menu_bar_policy;
         replacement.dispatcher.menu_bar_hidden = menu_bar_hidden;
         replacement.dispatcher.initial_kiosk_guest_hide_observed =
@@ -7874,6 +8385,7 @@ impl FixtureRunner {
             return (0, !self.halted);
         }
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
+        ppc_app.toolbox_startup.host_ui.enabled = self.dispatcher.host_ui.enabled;
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
         let remaining_cycles =
@@ -9090,6 +9602,14 @@ impl FixtureRunner {
             mouse_v,
             mouse_h,
         }
+    }
+
+    /// Map Macintosh global coordinates to the presented canvas, which may
+    /// include a centered native-viewport matte.
+    #[doc(hidden)]
+    pub fn presented_mouse_position(&self, v: i16, h: i16) -> (i16, i16) {
+        let (offset_v, offset_h) = self.ppc_viewport_offset();
+        (v.saturating_add(offset_v), h.saturating_add(offset_h))
     }
 
     fn canonical_mouse_position(&self, v: i16, h: i16) -> (i16, i16) {
