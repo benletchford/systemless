@@ -1866,3 +1866,19 @@ fn nameless_disk_find_uses_container_name_to_find_loaded_fragment() {
     assert_eq!(memory.read_u32_be(0x6004), Some(0x1234));
     assert_eq!(connections.len(), 1);
 }
+
+#[test]
+fn code_fragment_manager_namespace_exports_the_fragment_loaders() {
+    for library in ["CodeFragmentMgr", "CarbonCore.vlib", "InterfaceLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetDiskFragment"),
+            PpcImportDispatcherTarget::GetDiskFragment,
+            "{library}"
+        );
+        assert_eq!(
+            dispatcher_target_for_import(library, "GetMemFragment"),
+            PpcImportDispatcherTarget::GetMemFragment,
+            "{library}"
+        );
+    }
+}

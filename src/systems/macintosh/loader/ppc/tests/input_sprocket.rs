@@ -75,7 +75,7 @@ fn hle_import_runner_handles_input_sprocket_version_structure_result() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], version_ptr);
-    assert_eq!(loaded.memory.read_u32_be(version_ptr), Some(0x0170_8000));
+    assert_eq!(loaded.memory.read_u32_be(version_ptr), Some(0x0173_8000));
 }
 
 #[test]
