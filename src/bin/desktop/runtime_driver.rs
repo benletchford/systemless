@@ -10,7 +10,6 @@ use super::{
 };
 use std::path::PathBuf;
 use systemless::systems::macintosh::game;
-#[cfg(target_os = "macos")]
 use systemless::systems::macintosh::runner::MenuBarPolicy;
 use systemless::systems::macintosh::{runner::FixtureRunner, ui_theme::UiThemeId};
 
