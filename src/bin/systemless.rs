@@ -388,6 +388,10 @@ struct Cli {
     #[arg(long)]
     reset_preferences: bool,
 
+    /// Print a JSON report of PowerPC imports the runtime cannot satisfy, then exit
+    #[arg(long)]
+    ppc_import_audit: bool,
+
     /// Guest chrome theme
     #[arg(
         long,
@@ -3859,6 +3863,40 @@ impl Cli {
     }
 }
 
+fn run_ppc_import_audit(game_path: &std::path::Path) {
+    use game::ppc_import_audit::audit_ppc_imports_from_path;
+
+    if !game_path.exists() {
+        eprintln!("Error: Game file not found: {}", game_path.display());
+        std::process::exit(1);
+    }
+    let report = audit_ppc_imports_from_path(game_path);
+    if let Some(error) = &report.load_error {
+        eprintln!("[PPC-AUDIT] load error: {error}");
+    }
+    let gaps = report.gaps();
+    eprintln!(
+        "[PPC-AUDIT] {} PowerPC fragment(s), {} distinct gap(s)",
+        report.fragments.len(),
+        gaps.len()
+    );
+    for gap in &gaps {
+        eprintln!(
+            "[PPC-AUDIT] {} {}:{}",
+            gap.status.as_str(),
+            gap.library,
+            gap.symbol
+        );
+    }
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => println!("{json}"),
+        Err(error) => {
+            eprintln!("Error: cannot encode PowerPC import audit: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse()
         .validate_renderer()
@@ -3894,6 +3932,11 @@ fn main() {
     } else {
         DEFAULT_GUI_ARROWS_AS_NUMPAD
     };
+
+    if cli.ppc_import_audit {
+        run_ppc_import_audit(&game_path);
+        return;
+    }
 
     if let Some(script) = cli.play_script.as_deref() {
         let output = cli
