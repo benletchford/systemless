@@ -3120,7 +3120,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawGrowIcon" | "drawgrowicon") => {
             PpcImportDispatcherTarget::DrawGrowIcon
         }
-        ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr") => {
+        // debugstr is the lowercase C-string glue for DebugStr; with no
+        // low-level debugger installed both spellings return to the caller.
+        ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr" | "debugstr") => {
             PpcImportDispatcherTarget::MenuNoop
         }
         ("InterfaceLib", "LocalToGlobal") => PpcImportDispatcherTarget::LocalToGlobal,

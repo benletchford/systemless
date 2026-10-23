@@ -3232,3 +3232,19 @@ fn ppc_character_byte_type_character_type_and_keytrans_compatibility() {
     );
     assert_eq!(loaded.cpu.gpr[3], u32::from(b'n'));
 }
+
+#[test]
+fn ppc_debugstr_glue_returns_like_debugstr() {
+    for symbol in ["DebugStr", "debugstr"] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::MenuNoop,
+            "{symbol}"
+        );
+    }
+    let pef = synthetic_pef_with_import(b"debugstr");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuNoop);
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
