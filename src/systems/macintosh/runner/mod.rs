@@ -3191,6 +3191,68 @@ impl FixtureRunner {
         })
     }
 
+    /// Guest-drawn modeless dialogs, framed by the host in guest order. Call
+    /// after `host_modeless_dialogs` so projected dialogs are excluded.
+    pub fn guest_modeless_surfaces(
+        &mut self,
+    ) -> Vec<crate::systems::macintosh::host_ui::GuestSurfaceSnapshot> {
+        let mut surfaces = self.dispatcher.guest_modeless_surfaces(&self.bus);
+        if let Some(app) = self.native.application_mut() {
+            surfaces.extend(app.guest_modeless_surfaces());
+        }
+        surfaces.sort_by_key(|(order, _)| *order);
+        let (v, h) = self.ppc_viewport_offset();
+        surfaces
+            .into_iter()
+            .map(|(_, (id, title, bounds))| {
+                crate::systems::macintosh::host_ui::GuestSurfaceSnapshot {
+                    id,
+                    title,
+                    bounds: (
+                        bounds.0.saturating_add(v),
+                        bounds.1.saturating_add(h),
+                        bounds.2.saturating_add(v),
+                        bounds.3.saturating_add(h),
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    /// The Help menu's "Show Balloons" setting, shared by both CPU backends.
+    pub fn set_balloon_help(&mut self, enabled: bool) {
+        self.dispatcher.host_ui.balloons_enabled = enabled;
+        if !enabled {
+            self.dispatcher.host_ui.remove_balloon();
+        }
+        if let Some(app) = self.native.application_mut() {
+            app.toolbox_startup.help_balloons_enabled = enabled;
+            app.toolbox_startup.host_ui.balloons_enabled = enabled;
+            if !enabled {
+                app.toolbox_startup.host_ui.remove_balloon();
+            }
+        }
+    }
+
+    pub fn balloon_help_enabled(&self) -> bool {
+        self.native
+            .application()
+            .map_or(self.dispatcher.host_ui.balloons_enabled, |app| {
+                app.toolbox_startup.host_ui.balloons_enabled
+            })
+    }
+
+    /// The balloon currently shown, with its tip in presented coordinates.
+    pub fn host_balloon(&self) -> Option<crate::systems::macintosh::host_ui::BalloonSnapshot> {
+        let mut balloon = self
+            .native
+            .application()
+            .and_then(|app| app.toolbox_startup.host_ui.balloon())
+            .or_else(|| self.dispatcher.host_ui.balloon())?;
+        balloon.tip = self.presented_mouse_position(balloon.tip.0, balloon.tip.1);
+        Some(balloon)
+    }
+
     /// Notification Manager alerts awaiting acknowledgement.
     pub fn host_notifications(
         &self,

@@ -94,3 +94,49 @@ jobs:
           name: native-window-${{ matrix.os }}
           path: native-window-results/
           if-no-files-found: warn
+
+  # The egui workspace on the remaining native window systems.
+  workspace:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: wayland
+            os: ubuntu-latest
+    name: workspace (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Wayland compositor
+        if: matrix.name == 'wayland'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config weston libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build optimized native probe
+        run: cargo build --locked --profile ci-test --bin systemless --features test-support
+      - name: Run Windows workspace checks
+        if: matrix.name == 'windows'
+        shell: bash
+        run: |
+          cp target/ci-test/systemless.exe target/ci-test/systemless
+          python .github/scripts/verify-native-window.py --workspace-only
+      - name: Run Wayland workspace checks
+        if: matrix.name == 'wayland'
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wayland-ci --width=1600 --height=1200 &
+          for attempt in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wayland-ci" ] && break; sleep 0.2; done
+          env -u DISPLAY WAYLAND_DISPLAY=wayland-ci python3 .github/scripts/verify-native-window.py --workspace-only
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-workspace-${{ matrix.name }}
+          path: native-window-results/
+          if-no-files-found: warn

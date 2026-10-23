@@ -20,6 +20,7 @@ pub(super) enum GuiCommand {
     PopupMenu(systemless::systems::macintosh::host_ui::PopupMenuReply),
     SystemDialog(systemless::systems::macintosh::host_ui::SystemDialogReply),
     DismissNotification(u64),
+    SetBalloonHelp(bool),
     AcknowledgeWarp { generation: u64, serial: u64 },
 }
 
@@ -65,7 +66,11 @@ pub(super) struct GuiState {
     pub popup_menu: Option<systemless::systems::macintosh::host_ui::PopupMenuSnapshot>,
     pub system_dialog: Option<systemless::systems::macintosh::host_ui::SystemDialogSnapshot>,
     pub notifications: Vec<systemless::systems::macintosh::host_ui::NotificationSnapshot>,
+    pub balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
+    pub balloon_help: bool,
     pub guest_surface: Option<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
+    /// Guest-drawn modeless dialogs framed by the host, front to back.
+    pub guest_windows: Vec<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
     /// Set once when the guest halts for any reason other than ExitToShell.
     pub stopped: Option<String>,
     pub menus: Option<Arc<systemless::systems::macintosh::menu_model::GuestMenuSnapshot>>,

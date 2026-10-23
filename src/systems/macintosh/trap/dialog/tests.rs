@@ -24337,6 +24337,203 @@ fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_
         .is_none());
 }
 
+#[test]
+fn guest_drawn_modeless_dialogs_are_reported_for_host_framing() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    // A user item keeps guest drawing; a standard button is projected.
+    for (bounds, kind) in [((80, 90, 200, 330), 0u8), ((120, 140, 240, 380), 4u8)] {
+        let ditl = build_test_ditl_items(&[(kind, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    let projected = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(projected.len(), 1);
+    let surfaces = disp.guest_modeless_surfaces(&bus);
+    assert_eq!(surfaces.len(), 1, "only the guest-drawn dialog is framed");
+    let (_, (id, _, bounds)) = &surfaces[0];
+    assert_eq!(Some(*id), disp.host_ui.dialog_identity(dialogs[0]));
+    assert_eq!(*bounds, (80, 90, 200, 330));
+    // Hiding the window removes its frame.
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[0]);
+    disp.dispatch_window(true, 0x116, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.guest_modeless_surfaces(&bus).is_empty());
+}
+
+#[test]
+fn host_modeless_click_completes_an_application_track_control() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let ditl = build_test_ditl_items(&[
+        (4, (60, 100, 80, 170), b"OK"),
+        (5, (20, 20, 36, 200), b"Wrap"),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let dialog = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    )
+    .1;
+    for (item, part) in [(1i16, 10u16), (2, 11)] {
+        let view = disp.host_modeless_dialogs(&mut bus, false)[0].1.clone();
+        let point = disp
+            .reply_host_modeless_dialog(
+                &mut bus,
+                &DialogReply {
+                    id: view.id,
+                    revision: view.revision,
+                    item,
+                },
+            )
+            .unwrap();
+        let handle = disp.dialog_control_handle_for_item(dialog, item).unwrap();
+        // The application converts the event point to local coordinates.
+        let local = (point.0 - 80, point.1 - 90);
+        let track = |disp: &mut TrapDispatcher, cpu: &mut MockCpu, bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, local.0 as u16);
+            bus.write_word(TEST_SP + 6, local.1 as u16);
+            bus.write_long(TEST_SP + 8, handle);
+            bus.write_word(TEST_SP + 12, 0xBEEF);
+            disp.dispatch_control(true, 0x168, cpu, bus)
+                .unwrap()
+                .unwrap();
+            (cpu.read_reg(Register::A7), bus.read_word(TEST_SP + 12))
+        };
+        assert_eq!(track(&mut disp, &mut cpu, &mut bus), (TEST_SP + 12, part));
+        assert!(
+            disp.control_tracking.is_none(),
+            "no live tracking with the button up"
+        );
+        // The staged click is consumed; DialogSelect no longer sees it.
+        assert!(disp.host_ui.take_host_click(dialog, point, false).is_none());
+    }
+}
+
+#[test]
+fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    for bounds in [
+        (60, 60, 180, 300),
+        (100, 120, 220, 360),
+        (140, 180, 260, 420),
+    ] {
+        let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 3);
+    let background = bus.read_bytes(screen, 640 * 480);
+    let mut window_trap = |disp: &mut TrapDispatcher,
+                           bus: &mut MacMemoryBus,
+                           trap: u16,
+                           args: &[u16],
+                           window: u32| {
+        cpu.write_reg(Register::A7, TEST_SP);
+        for (index, word) in args.iter().enumerate() {
+            bus.write_word(TEST_SP + index as u32 * 2, *word);
+        }
+        bus.write_long(TEST_SP + args.len() as u32 * 2, window);
+        disp.dispatch_window(true, trap, &mut cpu, bus)
+            .unwrap()
+            .unwrap();
+        // Projection runs as the desktop publishes each frame.
+        disp.host_modeless_dialogs(bus, false)
+    };
+    // Every stacking order, hide/show and selection keeps the guest
+    // framebuffer free of host-owned dialog pixels.
+    for order in [[0usize, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]] {
+        for index in order {
+            window_trap(&mut disp, &mut bus, 0x11F, &[], dialogs[index]); // SelectWindow
+            assert_eq!(bus.read_bytes(screen, 640 * 480), background, "{order:?}");
+        }
+        let views = disp.host_modeless_dialogs(&mut bus, false);
+        assert_eq!(
+            views
+                .iter()
+                .map(|(_, v)| disp.host_ui.dialog_pointer(v.id).unwrap())
+                .collect::<Vec<_>>(),
+            order.iter().rev().map(|i| dialogs[*i]).collect::<Vec<_>>(),
+            "inventory follows guest front-to-back order"
+        );
+    }
+    window_trap(&mut disp, &mut bus, 0x116, &[], dialogs[1]); // HideWindow
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 2);
+    window_trap(&mut disp, &mut bus, 0x115, &[], dialogs[1]); // ShowWindow
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 3);
+    assert_eq!(bus.read_bytes(screen, 640 * 480), background);
+
+    // MoveWindow and SizeWindow keep the identity; clicks target the new geometry.
+    let id = disp.host_ui.dialog_identity(dialogs[0]).unwrap();
+    window_trap(&mut disp, &mut bus, 0x11B, &[0xff00, 200, 30], dialogs[0]); // MoveWindow(h=30, v=200, front)
+    window_trap(&mut disp, &mut bus, 0x11D, &[0xff00, 150, 260], dialogs[0]); // SizeWindow(w=260, h=150)
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    let view = views
+        .iter()
+        .map(|(_, v)| v)
+        .find(|v| v.id == id)
+        .unwrap()
+        .clone();
+    assert_eq!(view.size, (260, 150));
+    let point = disp
+        .reply_host_modeless_dialog(
+            &mut bus,
+            &DialogReply {
+                id,
+                revision: view.revision,
+                item: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(point, (200 + 70, 30 + 135));
+    assert_eq!(bus.read_bytes(screen, 640 * 480), background);
+}
+
 
     #[test]
     fn dialog_application_cdef_drawing_preserves_underlying_content() {
@@ -24394,6 +24591,7 @@ fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_
             }
         }
     }
+
 
 
     #[test]
@@ -24485,6 +24683,7 @@ fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_
     }
 
 
+
     #[test]
     fn dialog_redraw_preserves_setctitle_for_standard_controls() {
         fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
@@ -24539,6 +24738,7 @@ fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_
     }
 
 
+
         fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
             let (mut disp, mut cpu, mut bus) = setup();
             let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
@@ -24577,3 +24777,43 @@ fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_
                 .unwrap();
             bus.read_bytes(screen, 640 * 480)
         }
+
+        fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
+            let ditl = build_test_ditl_item(item_type, (20, 20, 42, 160), initial);
+            let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+            let (_, dialog) = call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                (80, 90, 160, 280),
+                true,
+                4,
+                0xFFFF_FFFF,
+                items,
+            );
+            if let Some(title) = replacement {
+                let control = TrapDispatcher::dialog_item_handle(&bus, dialog, 1);
+                let text = bus.alloc(256);
+                bus.write_pstring(text, title);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, text);
+                bus.write_long(TEST_SP + 4, control);
+                disp.dispatch_control(true, 0x15F, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            // Isolate DrawDialog's rendering from the earlier Control
+            // Manager paint. Both paths must redraw the new title on a
+            // fresh surface, regardless of their previous chrome pixels.
+            bus.write_bytes(screen, &vec![0; 640 * 480]);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, dialog);
+            disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            bus.read_bytes(screen, 640 * 480)
+        }
+

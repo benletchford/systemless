@@ -75,11 +75,18 @@ pub struct WorkspaceUi {
     color_draft: egui::Color32,
     pub system_action: Option<systemless::systems::macintosh::host_ui::SystemDialogReply>,
     notifications: Vec<systemless::systems::macintosh::host_ui::NotificationSnapshot>,
+    balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
+    balloon_help: bool,
+    pub balloon_help_action: Option<bool>,
     pub dismissed_notifications: Vec<u64>,
     hidden_notifications: std::collections::HashSet<u64>,
     stopped: Option<String>,
     guest_surface: Option<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
     lifted: Option<LiftedSurface>,
+    /// Guest-drawn modeless dialogs framed in egui windows, with retained geometry.
+    guest_windows: Vec<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
+    guest_window_states: std::collections::HashMap<u64, systemless_ui::window::WindowState>,
+    lifted_windows: Vec<LiftedSurface>,
     /// Identities already answered; hidden until the runtime retires them.
     answered: std::collections::HashSet<u64>,
     artwork_textures: std::collections::HashMap<i16, ArtworkTexture>,
@@ -414,6 +421,19 @@ impl WorkspaceUi {
                     ui.weak("Systemless has no printer. The application keeps its own page settings.");
                     "OK"
                 }
+                SystemDialogKind::ProgramLinking { prompt } => {
+                    ui.heading(if prompt.is_empty() { "Program Linking" } else { prompt });
+                    ui.add_space(8.);
+                    ui.label("No other computers or programs are available.");
+                    ui.weak("Systemless does not provide AppleTalk program linking.");
+                    "OK"
+                }
+                SystemDialogKind::BadDisk => {
+                    ui.heading("This disk is unreadable");
+                    ui.add_space(8.);
+                    ui.label("Systemless uses virtual volumes and cannot initialize disks.");
+                    "Eject"
+                }
                 SystemDialogKind::Print => {
                     ui.heading("Print");
                     ui.add_space(8.);
@@ -432,10 +452,16 @@ impl WorkspaceUi {
                             let [r, g, b, _] = self.color_draft.to_array();
                             SystemDialogAnswer::Color([r, g, b].map(|c| u16::from(c) * 0x101))
                         }
+                        // Nothing to choose without a network: dismissing cancels.
+                        SystemDialogKind::ProgramLinking { .. } => SystemDialogAnswer::Cancel,
                         _ => SystemDialogAnswer::Confirm,
                     });
                 }
-                if button(ui, &self.theme, "Cancel", ButtonStyle::Secondary).clicked() {
+                let informational = matches!(
+                    dialog.kind,
+                    SystemDialogKind::ProgramLinking { .. } | SystemDialogKind::BadDisk
+                );
+                if !informational && button(ui, &self.theme, "Cancel", ButtonStyle::Secondary).clicked() {
                     answer = Some(SystemDialogAnswer::Cancel);
                 }
             });
@@ -451,6 +477,41 @@ impl WorkspaceUi {
             });
             context.request_repaint();
         }
+    }
+
+    pub fn set_balloon(
+        &mut self,
+        balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
+        enabled: bool,
+    ) {
+        if self.balloon != balloon || self.balloon_help != enabled {
+            self.balloon = balloon;
+            self.balloon_help = enabled;
+            self.context.request_repaint();
+        }
+    }
+
+    /// A Help Manager balloon beside its guest hot spot.
+    fn show_balloon(&mut self, context: &egui::Context) {
+        let Some(balloon) = self.balloon.clone() else {
+            return;
+        };
+        let Some(tip) = self.guest_to_points(balloon.tip.0, balloon.tip.1) else {
+            return;
+        };
+        egui::Area::new(egui::Id::new(("balloon", balloon.id)))
+            .order(egui::Order::Tooltip)
+            .interactable(false)
+            .fixed_pos(tip + egui::vec2(12., 12.))
+            .constrain(true)
+            .show(context, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(10.)
+                    .show(ui, |ui| {
+                        ui.set_max_width(280.);
+                        ui.label(&balloon.text);
+                    });
+            });
     }
 
     pub fn set_notifications(
@@ -491,6 +552,89 @@ impl WorkspaceUi {
             }
             self.guest_surface = surface;
             self.context.request_repaint();
+        }
+    }
+
+    pub fn set_guest_windows(
+        &mut self,
+        windows: &[systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot],
+    ) {
+        if self.guest_windows != windows {
+            let old_front = self.guest_windows.first().map(|w| w.id);
+            self.guest_windows = windows.to_vec();
+            self.guest_window_states
+                .retain(|id, _| windows.iter().any(|w| w.id == *id));
+            // Guest activation raises the window it selected.
+            if let Some(front) = windows.first().filter(|w| Some(w.id) != old_front) {
+                self.guest_window_states
+                    .entry(front.id)
+                    .or_default()
+                    .request_front();
+            }
+            self.context.request_repaint();
+        }
+    }
+
+    /// Frame guest-drawn modeless dialogs in independent egui windows. Input
+    /// over their pixels maps back to guest space, so the application's own
+    /// event loop selects, tracks and closes them as usual.
+    fn show_guest_windows(
+        &mut self,
+        context: &egui::Context,
+        texture: Option<(egui::TextureId, egui::Vec2)>,
+    ) {
+        let (Some((texture, _)), Some(pane)) = (texture, self.guest_rect) else {
+            return;
+        };
+        let (left, top, width, height) = self.crop;
+        if width == 0 || height == 0 || !pane.is_positive() {
+            return;
+        }
+        let zoom = (pane.width() / width as f32).max(0.25);
+        let blocked =
+            self.has_host_modal() || self.preferences || self.about || self.error.is_some();
+        for (index, surface) in self.guest_windows.clone().iter().enumerate().rev() {
+            let (t, l, b, r) = surface.bounds;
+            let size = egui::vec2((r - l) as f32, (b - t) as f32) * zoom;
+            let uv = egui::Rect::from_min_max(
+                egui::pos2(
+                    (l as f32 - left as f32) / width as f32,
+                    (t as f32 - top as f32) / height as f32,
+                ),
+                egui::pos2(
+                    (r as f32 - left as f32) / width as f32,
+                    (b as f32 - top as f32) / height as f32,
+                ),
+            );
+            let state = self.guest_window_states.entry(surface.id).or_default();
+            let response = systemless_ui::window::show(
+                context,
+                egui::Id::new(("guest-window", surface.id)),
+                if surface.title.is_empty() {
+                    "Dialog"
+                } else {
+                    &surface.title
+                },
+                state,
+                systemless_ui::window::WindowOptions {
+                    initial_rect: egui::Rect::from_min_size(
+                        pane.left_top() + egui::vec2(24., 24.) * (index as f32 + 1.),
+                        size + egui::vec2(24., 48.),
+                    ),
+                    enabled: !blocked,
+                    resizable: false,
+                    closable: false,
+                },
+                |ui| {
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                    ui.painter().image(texture, rect, uv, egui::Color32::WHITE);
+                    rect
+                },
+            );
+            if let Some(rect) = response.inner {
+                self.lifted_windows
+                    .push((rect, surface.bounds, response.response.layer_id));
+            }
         }
     }
 
@@ -744,11 +888,17 @@ impl WorkspaceUi {
             system_action: None,
             answered: Default::default(),
             notifications: Vec::new(),
+            balloon: None,
+            balloon_help: false,
+            balloon_help_action: None,
             dismissed_notifications: Vec::new(),
             hidden_notifications: Default::default(),
             stopped: None,
             guest_surface: None,
             lifted: None,
+            guest_windows: Vec::new(),
+            guest_window_states: Default::default(),
+            lifted_windows: Vec::new(),
             artwork_textures: Default::default(),
             dialog_text_actions: Vec::new(),
             dialog_control_actions: Vec::new(),
@@ -905,10 +1055,23 @@ impl WorkspaceUi {
             && !self.about
             && self.error.is_none()
     }
+    /// The lifted guest surface under a workspace point. A lifted modal
+    /// claims the whole window: elsewhere its backdrop blocks guest input.
+    fn lifted_at(&self, pos: egui::Pos2) -> Option<Option<LiftedSurface>> {
+        let hit = |surface: &LiftedSurface| {
+            surface.0.contains(pos) && self.context.layer_id_at(pos) == Some(surface.2)
+        };
+        if let Some(modal) = self.lifted {
+            return Some(hit(&modal).then_some(modal));
+        }
+        self.lifted_windows
+            .iter()
+            .find(|surface| hit(surface))
+            .map(|surface| Some(*surface))
+    }
     fn pointer_over_guest(&self) -> bool {
-        if let Some((rect, _, layer)) = self.lifted {
-            return rect.contains(self.pointer)
-                && self.context.layer_id_at(self.pointer) == Some(layer);
+        if let Some(surface) = self.lifted_at(self.pointer) {
+            return surface.is_some();
         }
         self.guest_rect.is_some_and(|r| r.contains(self.pointer))
             && self.context.layer_id_at(self.pointer) == self.guest_layer
@@ -967,7 +1130,13 @@ impl WorkspaceUi {
         if !self.guest_focused || !self.guest_input_available() {
             return None;
         }
-        if let Some((rect, (t, l, b, r), _)) = self.lifted {
+        let containing = self.lifted.or_else(|| {
+            self.lifted_windows
+                .iter()
+                .find(|(_, (t, l, b, r), _)| (*t..*b).contains(&v) && (*l..*r).contains(&h))
+                .copied()
+        });
+        if let Some((rect, (t, l, b, r), _)) = containing {
             let x = ((h as f64 - l as f64).clamp(0., (r - l - 1).max(0) as f64) + 0.5)
                 / (r - l).max(1) as f64;
             let y = ((v as f64 - t as f64).clamp(0., (b - t - 1).max(0) as f64) + 0.5)
@@ -1039,7 +1208,12 @@ impl WorkspaceUi {
         self.context.request_repaint();
     }
     pub fn map_pointer(&self, px: f64, py: f64, scale: f64) -> Option<(i16, i16)> {
-        if let Some((rect, (t, l, b, r), _)) = self.lifted {
+        let pos = egui::pos2((px / scale) as f32, (py / scale) as f32);
+        let surface = match self.lifted_at(pos) {
+            Some(surface) => surface.or(self.lifted),
+            None => None,
+        };
+        if let Some((rect, (t, l, b, r), _)) = surface {
             if !rect.is_positive() {
                 return None;
             }
@@ -1116,6 +1290,7 @@ impl WorkspaceUi {
         self.guest_rect = None;
         self.guest_layer = None;
         self.lifted = None;
+        self.lifted_windows.clear();
         self.pane_layers.clear();
         self.guest_hovered = false;
         let context = self.context.clone();
@@ -1159,6 +1334,16 @@ impl WorkspaceUi {
                             ui.close();
                         }
                     });
+                    ui.menu_button("Help", |ui| {
+                        let mut enabled = self.balloon_help;
+                        let label = if enabled { "Hide Balloons" } else { "Show Balloons" };
+                        if ui.button(label).clicked() {
+                            enabled = !enabled;
+                            self.balloon_help = enabled;
+                            self.balloon_help_action = Some(enabled);
+                            ui.close();
+                        }
+                    });
                 });
             });
             egui::CentralPanel::default().show(ui, |ui| {
@@ -1176,11 +1361,13 @@ impl WorkspaceUi {
                     },
                 );
             });
+            self.show_guest_windows(ui.ctx(), texture);
             self.show_guest_surface(ui.ctx(), texture);
             self.show_modeless(ui.ctx());
             self.show_popup_menu(ui.ctx());
             self.show_system_dialog(ui.ctx());
             self.show_notifications(ui.ctx());
+            self.show_balloon(ui.ctx());
             if let Some(dialog) = self.dialog.clone().filter(|_| self.modality.owner == UiOwner::Dialog) {
                 let buttons: Vec<_> = dialog.items.iter().filter(|i| i.kind == 4).map(|i| i.number).collect();
                 let response = systemless_ui::dialog::show_modal(
@@ -3672,6 +3859,58 @@ mod tests {
                 frame(&mut ui, Vec::new());
                 assert!(ui.dismissed_notifications.is_empty(), "dismissed once");
 
+                // Program linking and bad-disk alerts are informational.
+                for (id, kind, answer) in [
+                    (
+                        20u64,
+                        SystemDialogKind::ProgramLinking {
+                            prompt: String::new(),
+                        },
+                        SystemDialogAnswer::Cancel,
+                    ),
+                    (21, SystemDialogKind::BadDisk, SystemDialogAnswer::Confirm),
+                ] {
+                    ui.set_system_dialog(Some(SystemDialogSnapshot { id, kind }));
+                    frame(&mut ui, Vec::new());
+                    frame(&mut ui, vec![key(egui::Key::Enter)]);
+                    assert_eq!(
+                        ui.system_action.take(),
+                        Some(SystemDialogReply { id, answer })
+                    );
+                }
+                ui.set_system_dialog(None);
+
+                // Balloon Help shows the guest's balloon beside its hot spot.
+                ui.crop = (0, 0, 640, 480);
+                let _guest = ui.target(&device, (640, 480));
+                ui.set_balloon(
+                    Some(systemless::systems::macintosh::host_ui::BalloonSnapshot {
+                        id: 30,
+                        text: "Saves the current document.".into(),
+                        tip: (100, 200),
+                    }),
+                    true,
+                );
+                frame(&mut ui, Vec::new());
+                frame(&mut ui, Vec::new());
+                let balloon = ui
+                    .context
+                    .memory(|m| m.area_rect(egui::Id::new(("balloon", 30u64))))
+                    .unwrap();
+                let tip = ui.guest_to_points(100, 200).unwrap();
+                assert!((balloon.left_top() - tip - egui::vec2(12., 12.)).length() < 1.);
+                if let Some(directory) = std::env::var_os("SYSTEMLESS_UI_CAPTURE_DIR") {
+                    image::save_buffer(
+                        std::path::PathBuf::from(directory).join(format!("balloon-{scale}x.png")),
+                        &readback(&device, &queue, &target, size),
+                        size[0],
+                        size[1],
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
+                }
+                ui.set_balloon(None, true);
+
                 // An unexpected guest stop is reported once.
                 ui.set_stopped(Some("The application reported system error 25.".into()));
                 assert!(ui.error.as_deref().unwrap().contains("system error 25"));
@@ -3836,6 +4075,42 @@ mod tests {
                 ui.set_guest_surface(None);
                 frame(&mut ui);
                 assert!(ui.lifted.is_none());
+
+                // Guest-drawn modeless dialogs are framed in movable windows.
+                ui.set_modality(UiModality::default());
+                ui.set_guest_windows(&[GuestSurfaceSnapshot {
+                    id: 9,
+                    title: "Palette".into(),
+                    bounds: (300, 40, 380, 200),
+                }]);
+                for _ in 0..3 {
+                    frame(&mut ui);
+                }
+                let (rect, bounds, _) = ui.lifted_windows[0];
+                assert_eq!(bounds, (300, 40, 380, 200));
+                ui.pointer = rect.center();
+                assert!(ui.pointer_over_guest());
+                let corner = ui
+                    .map_pointer(
+                        rect.left() as f64 * scale as f64,
+                        rect.top() as f64 * scale as f64,
+                        scale as f64,
+                    )
+                    .unwrap();
+                assert_eq!(corner, (300, 40));
+                // Cursor warps into the framed region land on the frame.
+                ui.guest_focused = true;
+                let (x, y) = ui.guest_to_physical(340, 120, scale as f64).unwrap();
+                assert!(rect.contains(egui::pos2(
+                    (x / scale as f64) as f32,
+                    (y / scale as f64) as f32
+                )));
+                // The window's title bar is host chrome, not guest input.
+                ui.pointer = egui::pos2(rect.center().x, rect.top() - 12.);
+                assert!(!ui.pointer_over_guest());
+                ui.set_guest_windows(&[]);
+                frame(&mut ui);
+                assert!(ui.lifted_windows.is_empty() && ui.guest_window_states.is_empty());
             }
         });
     }

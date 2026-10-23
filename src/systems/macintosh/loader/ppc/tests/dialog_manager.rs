@@ -8994,6 +8994,159 @@ fn guest_dialog_surface_powerpc_reports_guest_rendered_bounds_until_projection()
     );
 }
 
+#[test]
+fn host_modeless_click_completes_a_powerpc_application_track_control() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, dialog, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(60, 20, 80, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    let view = loaded.host_modeless_dialogs(false)[0].1.clone();
+    let point = loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    let handles = loaded.handles();
+    let handle =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap()[0].handle;
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let local = ((point.0 - bounds.0) as u16 as u32) << 16 | (point.1 - bounds.1) as u16 as u32;
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = local;
+    loaded.cpu.gpr[5] = 0;
+    loaded.set_input_snapshot(PpcInputSnapshot::default());
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as u16, 10);
+    assert!(loaded
+        .toolbox_startup
+        .host_ui
+        .take_host_click(dialog, point, false)
+        .is_none());
+}
+
+#[test]
+fn projected_modeless_dialogs_powerpc_survive_guest_move_resize_and_arbitrary_stacking() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, first, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(60, 20, 80, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    let mut dialogs = vec![first];
+    for _ in 0..2 {
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = u32::MAX;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        dialogs.push(loaded.cpu.gpr[3]);
+    }
+    assert_eq!(loaded.host_modeless_dialogs(false).len(), 3);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let len = front.row_bytes * front.height;
+    let background = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap();
+    let call = |loaded: &mut PpcLoadedApp, target, window: u32, args: [u32; 3]| {
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = args[0];
+        loaded.cpu.gpr[5] = args[1];
+        loaded.cpu.gpr[6] = args[2];
+        run_test_import(loaded, target);
+        loaded.host_modeless_dialogs(false)
+    };
+    for order in [[0usize, 1, 2], [2, 0, 1], [1, 2, 0]] {
+        for index in order {
+            call(
+                &mut loaded,
+                PpcImportDispatcherTarget::SelectWindow,
+                dialogs[index],
+                [0; 3],
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap(),
+                background,
+                "{order:?}"
+            );
+        }
+        let views = loaded.host_modeless_dialogs(false);
+        let pointers: Vec<_> = views
+            .iter()
+            .map(|(_, v)| loaded.toolbox_startup.host_ui.dialog_pointer(v.id).unwrap())
+            .collect();
+        assert_eq!(
+            pointers,
+            order.iter().rev().map(|i| dialogs[*i]).collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::HideWindow,
+            dialogs[1],
+            [0; 3]
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ShowWindow,
+            dialogs[1],
+            [0; 3]
+        )
+        .len(),
+        3
+    );
+    let id = loaded
+        .toolbox_startup
+        .host_ui
+        .dialog_identity(dialogs[0])
+        .unwrap();
+    call(
+        &mut loaded,
+        PpcImportDispatcherTarget::MoveWindow,
+        dialogs[0],
+        [30, 200, 1],
+    );
+    let views = call(
+        &mut loaded,
+        PpcImportDispatcherTarget::SizeWindow,
+        dialogs[0],
+        [260, 150, 1],
+    );
+    let view = views
+        .iter()
+        .map(|(_, v)| v)
+        .find(|v| v.id == id)
+        .unwrap()
+        .clone();
+    assert_eq!(view.size, (260, 150));
+    let point = loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialogs[0]).unwrap();
+    assert_eq!((bounds.0, bounds.1), (200, 30));
+    assert_eq!(point, (200 + 70, 30 + 55));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap(),
+        background
+    );
+}
+
 
 #[test]
 fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose() {
@@ -9099,6 +9252,7 @@ fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose()
         .iter()
         .any(|record| record.handle == owned));
 }
+
 
 
 #[test]
@@ -9263,4 +9417,5 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
         }
     }
 }
+
 

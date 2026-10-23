@@ -17968,6 +17968,32 @@ impl super::TrapDispatcher {
         self.project_host_dialog(bus, None)
     }
 
+    /// Visible document-style dialogs that keep guest drawing (custom
+    /// controls, user items), in guest front-to-back order.
+    pub(crate) fn guest_modeless_surfaces(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Vec<(
+        usize,
+        crate::systems::macintosh::host_ui::GuestDialogSurface,
+    )> {
+        let modal = self.modal_status(bus).dialog;
+        self.window_list
+            .windows()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, pointer)| {
+                Some(*pointer) != modal
+                    && self.dialog_items.contains_key(pointer)
+                    && self.dialog_window_proc_id(bus, *pointer) == 4
+            })
+            .filter_map(|(order, pointer)| {
+                self.guest_dialog_surface(bus, pointer)
+                    .map(|surface| (order, surface))
+            })
+            .collect()
+    }
+
     /// Identity, title and content bounds of a guest-rendered modal dialog.
     pub(crate) fn guest_dialog_surface(
         &self,

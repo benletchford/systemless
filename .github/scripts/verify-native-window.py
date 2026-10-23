@@ -24,6 +24,8 @@ parser.add_argument("--runtime", choices=("all", "inline", "thread"), default="a
 parser.add_argument("--presenter", choices=("all", "platform", "wgpu", "software"), default="all")
 parser.add_argument("--dry-run", action="store_true", help="validate duration and list cases without starting a desktop")
 parser.add_argument("--no-workspace", action="store_true", help="skip the egui workspace cases")
+parser.add_argument("--workspace-only", action="store_true",
+                    help="run only the egui workspace cases, e.g. on Windows or Wayland")
 args = parser.parse_args()
 if not 0 <= args.soak_seconds <= 21600:
     parser.error("--soak-seconds must be 0..21600")
@@ -57,6 +59,10 @@ if args.soak_only:
              and (args.presenter == "all" or (case[3] or ("wgpu" if case[1] else "platform")) == args.presenter)]
 # The egui workspace is the default desktop; renderer, fault and soak cases
 # qualify the guest-only presenters. Workspace cases run after them.
+if args.workspace_only:
+    if args.no_workspace or args.recovery_only or args.soak_only:
+        parser.error("--workspace-only cannot be combined with other case selections")
+    cases = []
 workspace_cases = [] if (args.no_workspace or args.recovery_only or args.soak_only) else [
     (backend, gpu) for backend in ("inline", "thread") for gpu in (False, True)]
 if args.dry_run:
@@ -174,7 +180,8 @@ for backend, gpu in workspace_cases:
                     process.kill()
                     process.wait()
                     raise subprocess.TimeoutExpired(command, 120)
-                if os.sys.platform.startswith("linux"):
+                # Client-window captures use X11; Wayland has no external window ids.
+                if os.sys.platform.startswith("linux") and not os.environ.get("WAYLAND_DISPLAY"):
                     try:
                         current = json.loads(report.read_text())
                     except (FileNotFoundError, json.JSONDecodeError):

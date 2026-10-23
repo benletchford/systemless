@@ -10417,3 +10417,39 @@ fn host_popup_menu_select_powerpc_parks_without_drawing_and_returns_the_host_cho
         );
     }
 }
+
+#[test]
+fn host_balloon_help_powerpc_presents_string_balloons() {
+    let pef = synthetic_pef_with_import(b"HMShowBalloon");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.toolbox_startup.host_ui.enabled = true;
+    let message = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(message, vec![0; 260]);
+    loaded.memory.write_u16_be(message, 1).unwrap();
+    for (index, byte) in [5u8, b'C', b'l', b'o', b's', b'e'].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u8(message + 2 + index as u32, byte)
+            .unwrap();
+    }
+    let show = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = message;
+        loaded.cpu.gpr[4] = (30u32 << 16) | 60;
+        run_test_import(loaded, PpcImportDispatcherTarget::HMShowBalloon);
+        loaded.cpu.gpr[3] as u16 as i16
+    };
+    assert_eq!(show(&mut loaded), -850, "help starts disabled");
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMSetBalloons);
+    assert_eq!(show(&mut loaded), 0);
+    let balloon = loaded.toolbox_startup.host_ui.balloon().unwrap();
+    assert_eq!((balloon.text.as_str(), balloon.tip), ("Close", (30, 60)));
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMIsBalloon);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMRemoveBalloon);
+    assert!(loaded.toolbox_startup.host_ui.balloon().is_none());
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HMShowBalloon"),
+        PpcImportDispatcherTarget::HMShowBalloon
+    );
+}
