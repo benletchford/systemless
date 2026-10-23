@@ -162,7 +162,7 @@ fn textures_modulate_the_fragment_color_with_nearest_sampling() {
 }
 
 #[test]
-fn incomplete_mipmapped_texture_disables_texturing() {
+fn mipmap_incomplete_texture_samples_its_base_level() {
     let (mut ctx, mut fb) = context();
     let mut calls = ortho();
     calls.extend([
@@ -172,14 +172,16 @@ fn incomplete_mipmapped_texture_disables_texturing() {
             internal: RGB,
             width: 2,
             height: 2,
-            pixels: Some(Rc::new(vec![[0.0; 4]; 4])),
+            pixels: Some(Rc::new(vec![[1.0, 0.0, 1.0, 1.0]; 4])),
         },
         GlCall::Enable(TEXTURE_2D, true),
-        GlCall::Color([0.0, 1.0, 0.0, 1.0]),
+        GlCall::Color([1.0, 1.0, 1.0, 1.0]),
     ]);
     calls.extend(quad(0.0, 0.0, 8.0, 8.0, 0.0));
     run(&mut ctx, &mut fb, calls);
-    assert_eq!(pixel(&fb, 4, 4), [0, 255, 0, 255]);
+    // The default NEAREST_MIPMAP_LINEAR filter with only level 0 specified
+    // still textures from the base level.
+    assert_eq!(pixel(&fb, 4, 4), [255, 0, 255, 255]);
 }
 
 #[test]

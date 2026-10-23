@@ -466,6 +466,29 @@ impl Texture {
         true
     }
 
+    /// The minification filter used for sampling, or `None` when the texture
+    /// has no base image. A texture whose mipmap chain is incomplete samples
+    /// its base level with the non-mipmapped form of its filter rather than
+    /// disabling texturing as OpenGL 1.2.1 section 3.8.9 requires: Mac OS 9
+    /// titles set filters on the default texture object and upload only
+    /// level 0 to their own objects, which rendered on the classic Mac
+    /// OpenGL renderers.
+    pub fn effective_min_filter(&self) -> Option<u32> {
+        let Some(Some(image)) = self.levels.get(self.base_level as usize) else {
+            return None;
+        };
+        if image.width == 0 || image.height == 0 {
+            return None;
+        }
+        if self.is_complete() {
+            return Some(self.min_filter);
+        }
+        Some(match self.min_filter {
+            LINEAR_MIPMAP_NEAREST | LINEAR_MIPMAP_LINEAR => LINEAR,
+            _ => NEAREST,
+        })
+    }
+
     pub fn base_size(&self) -> (u32, u32) {
         match self.levels.get(self.base_level as usize) {
             Some(Some(image)) => (image.width, image.height),
@@ -486,13 +509,11 @@ impl Texture {
 
     /// Sample at (s, t) with level-of-detail `lambda` (log2 of the texel
     /// footprint at the base level).
-    pub fn sample(&self, s: f32, t: f32, lambda: f32) -> [f32; 4] {
+    pub fn sample(&self, s: f32, t: f32, lambda: f32, min_filter: u32) -> [f32; 4] {
         let lambda = lambda.clamp(self.min_lod, self.max_lod);
         let magnify_threshold = if self.mag_filter == LINEAR
-            && matches!(
-                self.min_filter,
-                NEAREST_MIPMAP_NEAREST | NEAREST_MIPMAP_LINEAR
-            ) {
+            && matches!(min_filter, NEAREST_MIPMAP_NEAREST | NEAREST_MIPMAP_LINEAR)
+        {
             0.5
         } else {
             0.0
@@ -501,7 +522,7 @@ impl Texture {
         if lambda <= magnify_threshold {
             return self.sample_level(base, s, t, self.mag_filter == LINEAR);
         }
-        match self.min_filter {
+        match min_filter {
             NEAREST => self.sample_level(base, s, t, false),
             LINEAR => self.sample_level(base, s, t, true),
             NEAREST_MIPMAP_NEAREST | LINEAR_MIPMAP_NEAREST => {
@@ -511,11 +532,11 @@ impl Texture {
                 } else {
                     (base + (lambda + 0.5).ceil() as usize - 1).min(last)
                 };
-                self.sample_level(level, s, t, self.min_filter == LINEAR_MIPMAP_NEAREST)
+                self.sample_level(level, s, t, min_filter == LINEAR_MIPMAP_NEAREST)
             }
             _ => {
                 let last = self.last_level();
-                let linear = self.min_filter == LINEAR_MIPMAP_LINEAR;
+                let linear = min_filter == LINEAR_MIPMAP_LINEAR;
                 let floor = lambda.floor();
                 let level0 = (base + floor as usize).min(last);
                 let level1 = (level0 + 1).min(last);
@@ -648,16 +669,22 @@ mod tests {
             Some(vec![[0.5, 0.0, 0.0, 0.25]]),
         );
         assert!(texture.is_complete());
-        let texel = texture.sample(0.5, 0.5, 0.0);
+        let texel = texture.sample(0.5, 0.5, 0.0, texture.min_filter);
         assert!((texel[1] - 0.5).abs() < 0.01 && (texel[3] - 0.25).abs() < 0.01);
     }
 
     #[test]
     fn mipmapped_texture_requires_every_level() {
         let mut texture = Texture::default();
+        assert_eq!(texture.effective_min_filter(), None);
         texture.specify_level(0, RGBA, BaseFormat::Rgba, 2, 2, None);
         assert!(!texture.is_complete());
+        // The incomplete chain falls back to sampling the base level.
+        assert_eq!(texture.effective_min_filter(), Some(NEAREST));
+        texture.min_filter = LINEAR_MIPMAP_LINEAR;
+        assert_eq!(texture.effective_min_filter(), Some(LINEAR));
         texture.specify_level(1, RGBA, BaseFormat::Rgba, 1, 1, None);
         assert!(texture.is_complete());
+        assert_eq!(texture.effective_min_filter(), Some(LINEAR_MIPMAP_LINEAR));
     }
 }

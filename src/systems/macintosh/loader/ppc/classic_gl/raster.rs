@@ -31,6 +31,7 @@ pub struct RasterTarget<'a> {
 
 struct ActiveUnit<'a> {
     texture: &'a Texture,
+    min_filter: u32,
     env: TexEnv,
     width: f32,
     height: f32,
@@ -41,22 +42,21 @@ fn active_units(state: &ContextState) -> Vec<(usize, ActiveUnit<'_>)> {
         .filter(|&unit| state.raster.units[unit].enabled_2d)
         .filter_map(|unit| {
             let texture = state.bound_texture(unit);
-            if !texture.is_complete() {
+            let Some(min_filter) = texture.effective_min_filter() else {
                 if super::gl_trace_enabled() {
                     eprintln!(
-                        "[GL] unit {unit} texture {} is incomplete (min filter 0x{:04X}, {} levels); texturing disabled",
-                        state.raster.units[unit].binding_2d,
-                        texture.min_filter,
-                        texture.levels.len()
+                        "[GL] unit {unit} texture {} has no base image; texturing disabled",
+                        state.raster.units[unit].binding_2d
                     );
                 }
                 return None;
-            }
+            };
             let (width, height) = texture.base_size();
             Some((
                 unit,
                 ActiveUnit {
                     texture,
+                    min_filter,
                     env: state.raster.units[unit].env,
                     width: width as f32,
                     height: height as f32,
@@ -290,7 +290,9 @@ fn process_fragment(
     let mut color = primary;
     for (unit, active) in units {
         let [s, t] = fragment.texcoords[*unit];
-        let texel = active.texture.sample(s, t, fragment.lambda[*unit]);
+        let texel = active
+            .texture
+            .sample(s, t, fragment.lambda[*unit], active.min_filter);
         color = apply_env(
             &active.env,
             active.texture.base_format,
