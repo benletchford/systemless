@@ -321,6 +321,7 @@ impl PpcLoadedApp {
         let mut glm_callbacks = self.glm_callbacks;
         let mut glm_callback_stack = std::mem::take(&mut self.glm_callback_stack);
         let mut glm_allocations = std::mem::take(&mut self.glm_allocations);
+        let mut rave = std::mem::take(&mut self.rave);
         let mut glm_page_free_all_queue = std::mem::take(&mut self.glm_page_free_all_queue);
         let mut glm_error = self.glm_error;
         let timer_tasks = std::mem::take(&mut self.timer_tasks);
@@ -628,6 +629,24 @@ impl PpcLoadedApp {
                 }
                 if index == PPC_STD_FILTER_IMPORT_INDEX {
                     return PpcImportAction::Return(ppc_standard_filter_proc(cpu, memory));
+                }
+                if let Some(method) = super::rave::ppc_rave_method_for_import_index(index) {
+                    let Some(native_heap) = process_memory_manager.native_heap_state() else {
+                        return PpcImportAction::Halt;
+                    };
+                    let mut heap_cursor = native_heap.heap_cursor;
+                    let mut last_mem_error = native_heap.last_mem_error;
+                    let mut allocate = |memory: &mut Mem, size: u32| {
+                        let pointer = process_memory_manager.new_native_ptr(memory, size, true);
+                        ppc_apply_process_native_allocator(
+                            process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                        );
+                        pointer
+                    };
+                    return super::rave::ppc_rave_method(method, cpu, memory, &mut rave, &mut allocate);
                 }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
@@ -1610,6 +1629,18 @@ impl PpcLoadedApp {
                         _ => glm_error = 1, // GLM_INVALID_ENUM
                     }
                     Some(PpcImportAction::ReturnPreserve)
+                } else if let PpcImportDispatcherTarget::Rave(function) = binding.dispatcher_target {
+                    let mut allocate = |memory: &mut Mem, size: u32| {
+                        let pointer = process_memory_manager.new_native_ptr(memory, size, true);
+                        ppc_apply_process_native_allocator(
+                            process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                        );
+                        pointer
+                    };
+                    Some(super::rave::ppc_rave_function(function, cpu, memory, &mut rave, &mut allocate))
                 } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmGetInteger {
                     // glm.h: GLint glmGetInteger(GLenum param). GLM requests
                     // come from the process heap; GLM_PAGE_SIZE reports 4 KiB
@@ -2397,6 +2428,7 @@ impl PpcLoadedApp {
         self.glm_callbacks = glm_callbacks;
         self.glm_callback_stack = glm_callback_stack;
         self.glm_allocations = glm_allocations;
+        self.rave = rave;
         self.glm_page_free_all_queue = glm_page_free_all_queue;
         self.glm_error = glm_error;
         self.timer_tasks = timer_tasks;

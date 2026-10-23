@@ -1346,6 +1346,7 @@ pub enum PpcImportDispatcherTarget {
     Gl(super::classic_gl::functions::GlFunction),
     Glu(super::classic_gl::glu::GluFunction),
     GlmGetInteger,
+    Rave(super::PpcRaveFunction),
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -2248,6 +2249,14 @@ pub(crate) fn dispatcher_target_for_import(
         }
         (library_name, "QAEngineGestalt") if is_quickdraw_3d_accelerator_library(library_name) => {
             PpcImportDispatcherTarget::QAEngineGestalt
+        }
+        (library_name, symbol)
+            if is_quickdraw_3d_accelerator_library(library_name)
+                && super::PpcRaveFunction::from_name(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::Rave(
+                super::PpcRaveFunction::from_name(symbol).expect("checked"),
+            )
         }
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
