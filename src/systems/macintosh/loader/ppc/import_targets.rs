@@ -899,6 +899,8 @@ pub enum PpcImportDispatcherTarget {
     StdTime,
     P2CStr,
     C2PStr,
+    P2CStrCpy,
+    C2PStrCpy,
     CopyCStringToPascal,
     CopyPascalStringToC,
     CfStringMakeConstantString,
@@ -4328,6 +4330,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "BitTst") => PpcImportDispatcherTarget::BitTst,
         ("InterfaceLib" | "CarbonLib", "p2cstr" | "P2CStr") => PpcImportDispatcherTarget::P2CStr,
         ("InterfaceLib" | "CarbonLib", "c2pstr" | "C2PStr") => PpcImportDispatcherTarget::C2PStr,
+        ("InterfaceLib" | "CarbonLib", "p2cstrcpy") => PpcImportDispatcherTarget::P2CStrCpy,
+        ("InterfaceLib" | "CarbonLib", "c2pstrcpy") => PpcImportDispatcherTarget::C2PStrCpy,
         ("InterfaceLib" | "CarbonLib", "CopyCStringToPascal") => {
             PpcImportDispatcherTarget::CopyCStringToPascal
         }

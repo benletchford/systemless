@@ -1840,3 +1840,37 @@ fn theme_pen_rejects_invalid_or_unimplemented_brushes_without_mutation() {
         assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, pattern);
     }
 }
+
+#[test]
+fn carbon_p2cstrcpy_and_c2pstrcpy_take_the_destination_first() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "p2cstrcpy"),
+        PpcImportDispatcherTarget::P2CStrCpy
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "c2pstrcpy"),
+        PpcImportDispatcherTarget::C2PStrCpy
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"p2cstrcpy")).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 64]);
+
+    // In-place p2cstrcpy(dst, src), as applications call it.
+    loaded.memory.write_bytes(base, b"\x03Oni").unwrap();
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = base;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::P2CStrCpy);
+    assert_eq!(
+        (0..4).map(|i| loaded.memory.read_u8(base + i)).collect::<Option<Vec<_>>>(),
+        Some(b"Oni\0".to_vec())
+    );
+
+    // c2pstrcpy(dst, src) converts it back into a separate Str255.
+    loaded.cpu.gpr[3] = base + 32;
+    loaded.cpu.gpr[4] = base;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::C2PStrCpy);
+    assert_eq!(
+        (0..4).map(|i| loaded.memory.read_u8(base + 32 + i)).collect::<Option<Vec<_>>>(),
+        Some(b"\x03Oni".to_vec())
+    );
+}
