@@ -3580,11 +3580,11 @@ enum ExecutableKind {
 }
 
 #[derive(Clone, Debug)]
-struct PpcDiagnosticVfs {
+pub(super) struct PpcDiagnosticVfs {
     volumes: Vec<PpcVfsVolumeRecord>,
     directories: Vec<PpcVfsDirectory>,
-    files: Vec<PpcVfsFileRecord>,
-    resource_files: Vec<PpcVfsResourceFileRecord>,
+    pub(super) files: Vec<PpcVfsFileRecord>,
+    pub(super) resource_files: Vec<PpcVfsResourceFileRecord>,
     resources: Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
     next_dir_id: u32,
@@ -3612,7 +3612,7 @@ fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmL
     discover_ppc_cfm_library_fragments_with_locations(ppc_vfs).0
 }
 
-fn discover_ppc_cfm_library_fragments_with_locations(
+pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
     ppc_vfs: &PpcDiagnosticVfs,
 ) -> (Vec<PpcCfmLibraryFragment>, Vec<crate::loader::ppc::PpcDiskLibraryFragment>) {
     let mut resource_files: Vec<_> = ppc_vfs.resource_files.iter().collect();
@@ -3720,7 +3720,7 @@ fn discover_ppc_cfm_library_fragments_with_locations(
     (fragments, disk_libraries)
 }
 
-fn vfs_path_sort_key(path: &str) -> (String, String) {
+pub(super) fn vfs_path_sort_key(path: &str) -> (String, String) {
     (path.to_ascii_lowercase(), path.to_string())
 }
 
@@ -3780,7 +3780,7 @@ fn classify_executable_with_preference(
     None
 }
 
-fn ppc_diagnostic_vfs(
+pub(super) fn ppc_diagnostic_vfs(
     runner: &mut FixtureRunner,
     app_resource_path: Option<&str>,
 ) -> PpcDiagnosticVfs {

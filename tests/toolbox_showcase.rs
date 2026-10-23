@@ -3725,3 +3725,26 @@ fn menu_bar_hover_responsiveness_and_performance() {
     });
     assert!(!runner.is_ui_tracking_active());
 }
+
+#[test]
+fn showcase_powerpc_imports_are_fully_supported() {
+    use systemless::systems::macintosh::game::ppc_import_audit::audit_ppc_imports_from_path;
+
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit");
+    let report = audit_ppc_imports_from_path(&path);
+    assert_eq!(report.load_error, None);
+    let application = report
+        .fragments
+        .iter()
+        .find(|fragment| fragment.usage == "application")
+        .expect("showcase carries a PowerPC application fragment");
+    assert!(application.parsed);
+    assert!(!application.imports.is_empty());
+    let gaps: Vec<_> = report
+        .gaps()
+        .iter()
+        .map(|gap| format!("{}:{}", gap.library, gap.symbol))
+        .collect();
+    assert!(gaps.is_empty(), "showcase PowerPC import gaps: {gaps:?}");
+}
