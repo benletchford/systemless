@@ -16,7 +16,15 @@ class Cases(unittest.TestCase):
         return json.loads(result.stdout) if valid else None
 
     def test_normal_matrix_is_complete(self):
-        self.assertEqual(len(self.run_cases()), 38)
+        self.assertEqual(len(self.run_cases()), 42)
+
+    def test_workspace_cases_cover_both_runtimes_and_guest_rendering_modes(self):
+        cases = self.run_cases()
+        self.assertEqual([case for case in cases if case[0] == "workspace"],
+                         [["workspace", runtime, gpu]
+                          for runtime in ("inline", "thread") for gpu in (False, True)])
+        self.assertEqual(len(self.run_cases("--no-workspace")), 38)
+        self.assertFalse(any(case[0] == "workspace" for case in self.run_cases("--recovery-only")))
 
     def test_soak_defaults_to_six_cases(self):
         self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 6)
@@ -59,7 +67,7 @@ class Cases(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("qualifier", path)
         qualifier = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(qualifier)
-        self.assertEqual(qualifier.native_matrix_timeout(SCRIPT, []), 38 * 120 + 60)
+        self.assertEqual(qualifier.native_matrix_timeout(SCRIPT, []), 42 * 120 + 60)
         for selectors, count in (([], 6), (["--runtime", "inline"], 3),
                                  (["--presenter", "wgpu"], 2),
                                  (["--runtime", "thread", "--presenter", "software"], 1)):
