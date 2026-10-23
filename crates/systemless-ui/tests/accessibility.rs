@@ -126,3 +126,90 @@ fn accessible_range_commits_exact_values_and_respects_disabled_state() {
     );
     output.textures_delta.clear();
 }
+
+#[test]
+fn accessible_popup_menu_and_window_expose_rows_and_accept_clicks() {
+    use egui::accesskit::{Action, ActionRequest, Role, TreeId};
+    use systemless_ui::{menu, window};
+    let context = egui::Context::default();
+    context.enable_accesskit();
+    let mut locked = menu::Item::new(3u8, "Locked");
+    locked.enabled = false;
+    let mut checked = menu::Item::new(2u8, "Veteran");
+    checked.checked = true;
+    checked.help = Some("Experienced crew".into());
+    let rows = vec![menu::Item::new(1u8, "Scout"), checked, locked];
+    let mut state = window::WindowState::default();
+    let mut draw = |events| {
+        let mut chosen = None;
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800., 600.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                window::show(
+                    ui.ctx(),
+                    egui::Id::new("palette"),
+                    "Find",
+                    &mut state,
+                    window::WindowOptions {
+                        initial_rect: egui::Rect::from_min_size(
+                            egui::pos2(400., 300.),
+                            egui::vec2(240., 160.),
+                        ),
+                        enabled: true,
+                        resizable: true,
+                        closable: true,
+                    },
+                    |ui| ui.label("Search the document"),
+                );
+                chosen = menu::popup(
+                    ui.ctx(),
+                    egui::Id::new("menu"),
+                    egui::pos2(100., 100.),
+                    0,
+                    &rows,
+                )
+                .chosen;
+            },
+        );
+        output.textures_delta.clear();
+        (output, chosen)
+    };
+    draw(vec![]);
+    let (output, _) = draw(vec![]);
+    let update = output.platform_output.accesskit_update.unwrap();
+    let find = |name: &str| {
+        update
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .or(node.value())
+                    .is_some_and(|text| text.ends_with(name))
+            })
+            .cloned()
+    };
+    let scout = find("Scout").expect("menu rows are accessible");
+    assert_eq!(scout.1.role(), Role::Button);
+    assert!(scout.1.supports_action(Action::Click));
+    assert!(find("Veteran").is_some(), "checked rows keep their names");
+    assert!(find("Locked").is_some_and(|(_, node)| node.is_disabled()));
+    assert!(
+        find("Search the document").is_some(),
+        "window content is exposed"
+    );
+    assert!(find("Find").is_some(), "window title is exposed");
+    let (_, chosen) = draw(vec![egui::Event::AccessKitActionRequest(ActionRequest {
+        action: Action::Click,
+        target_node: scout.0,
+        target_tree: TreeId::ROOT,
+        data: None,
+    })]);
+    assert_eq!(chosen, Some(1));
+}
