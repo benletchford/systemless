@@ -5671,6 +5671,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FindNextComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::FindNextComponent,
         ),
+        ("InterfaceLib", "GetComponentRefcon") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetComponentRefcon,
+        ),
+        ("InterfaceLib", "SetComponentRefcon") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::SetComponentRefcon,
+        ),
         ("InterfaceLib" | "CarbonLib", "FindScriptRun") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::FindScriptRun,
