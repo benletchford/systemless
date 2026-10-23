@@ -42,6 +42,14 @@ fn active_units(state: &ContextState) -> Vec<(usize, ActiveUnit<'_>)> {
         .filter_map(|unit| {
             let texture = state.bound_texture(unit);
             if !texture.is_complete() {
+                if super::gl_trace_enabled() {
+                    eprintln!(
+                        "[GL] unit {unit} texture {} is incomplete (min filter 0x{:04X}, {} levels); texturing disabled",
+                        state.raster.units[unit].binding_2d,
+                        texture.min_filter,
+                        texture.levels.len()
+                    );
+                }
                 return None;
             }
             let (width, height) = texture.base_size();

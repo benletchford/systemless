@@ -1498,8 +1498,34 @@ fn pack_pixels(
     memory.write_bytes(pointer, &buffer).is_some()
 }
 
+pub(crate) fn gl_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_GL_TRACE").is_some())
+}
+
 /// Execute one `OpenGLLibrary` entry point for the current context.
 pub fn call(
+    ctx: &mut GlContext,
+    framebuffer: Option<&mut ClassicGlFramebuffer>,
+    function: GlFunction,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> GlResult {
+    if !gl_trace_enabled() {
+        return call_untraced(ctx, framebuffer, function, cpu, memory);
+    }
+    let error_before = ctx.state.error;
+    let result = call_untraced(ctx, framebuffer, function, cpu, memory);
+    if error_before == NO_ERROR && ctx.state.error != NO_ERROR {
+        eprintln!(
+            "[GL] {function:?} raised 0x{:04X} r3=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
+            ctx.state.error, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]
+        );
+    }
+    result
+}
+
+fn call_untraced(
     ctx: &mut GlContext,
     mut framebuffer: Option<&mut ClassicGlFramebuffer>,
     function: GlFunction,
@@ -2118,6 +2144,12 @@ fn decode_named(
                 || !valid_texture_size(width as u32, height as u32, level as usize)
             {
                 return Call(GlCall::Error(INVALID_VALUE));
+            }
+            if gl_trace_enabled() {
+                eprintln!(
+                    "[GL] glTexImage2D level={level} internal=0x{internal:04X} {width}x{height} format=0x{format:04X} type=0x{kind:04X} pixels=${pointer:08X} texture={}",
+                    ctx.state.raster.units[ctx.state.raster.active_unit].binding_2d
+                );
             }
             match unpack_image(
                 ctx,
