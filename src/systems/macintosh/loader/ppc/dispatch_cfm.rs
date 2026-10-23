@@ -797,6 +797,13 @@ pub(super) fn ppc_cfm_main_stub_addr(connection_id: u32) -> u32 {
     PPC_CFM_MAIN_STUB_BASE + (connection_id.saturating_sub(1) * 4)
 }
 
+/// True when the runtime itself supplies the named CFM library: an explicit
+/// HLE namespace, or CarbonLib, whose exports bind through the InterfaceLib
+/// alias and which Gestalt reports as installed.
+pub(crate) fn ppc_runtime_provides_cfm_library(library_name: &str) -> bool {
+    ppc_is_explicit_hle_cfm_library(library_name) || library_name.eq_ignore_ascii_case("CarbonLib")
+}
+
 pub(super) fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
     // CFM's synthetic fallback is reserved for compatibility namespaces
     // implemented by the HLE dispatcher. A missing arbitrary library must

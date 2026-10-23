@@ -2978,7 +2978,7 @@ fn load_powerpc_executable(
         )
     })?;
     let (library_fragments, disk_libraries) =
-        discover_ppc_cfm_library_fragments_with_locations(&ppc_vfs);
+        discover_ppc_cfm_library_fragments_with_locations(&ppc_vfs, Some(&executable.name));
     let fragment_name = runner
         .dispatcher()
         .vfs_rsrc
@@ -3609,11 +3609,45 @@ struct PpcCfmLibraryCandidate {
 /// advertised flat data-fork range before handing bytes to the PEF loader.
 #[cfg(test)]
 fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmLibraryFragment> {
-    discover_ppc_cfm_library_fragments_with_locations(ppc_vfs).0
+    discover_ppc_cfm_library_fragments_with_locations(ppc_vfs, None).0
 }
 
+/// True when `path` lies in the folder that contains `application_path`.
+fn vfs_path_shares_parent(path: &str, application_path: Option<&str>) -> bool {
+    let parent = |path: &str| {
+        crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path)
+            .rsplit_once('/')
+            .map_or(String::new(), |(parent, _)| parent.to_ascii_lowercase())
+    };
+    application_path.is_some_and(|application| parent(path) == parent(application))
+}
+
+/// True when a library file supplies a library the runtime provides and lies
+/// outside the application's folder, so CFM would bind the installed system
+/// copy instead of it.
+pub(super) fn ppc_cfrg_is_runtime_library_installer(
+    cfrg: &crate::loader::cfrg::CfrgResource,
+    path: &str,
+    application_path: Option<&str>,
+) -> bool {
+    cfrg.fragments.iter().any(|fragment| {
+        fragment.usage == USAGE_LIB
+            && crate::loader::ppc::ppc_runtime_provides_cfm_library(&fragment.name)
+    }) && !vfs_path_shares_parent(path, application_path)
+}
+
+/// Discover CFM libraries, given the launching application's VFS path.
+///
+/// Archives commonly ship libraries meant to be dragged into the Extensions
+/// folder next to the application, so libraries anywhere on the volume stay
+/// available. A file that supplies a library the runtime itself provides
+/// (CarbonLib, InterfaceLib, ...) is a system-component installer instead:
+/// CFM finds the installed system copy in the Extensions folder before it,
+/// so such a file only shadows the runtime from the application's own folder,
+/// which CFM searches first.
 pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
     ppc_vfs: &PpcDiagnosticVfs,
+    application_path: Option<&str>,
 ) -> (Vec<PpcCfmLibraryFragment>, Vec<crate::loader::ppc::PpcDiskLibraryFragment>) {
     let mut resource_files: Vec<_> = ppc_vfs.resource_files.iter().collect();
     resource_files.sort_by_key(|file| vfs_path_sort_key(&file.path));
@@ -3642,6 +3676,9 @@ pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
         let Some(cfrg) = parse_cfrg_resource(&cfrg_resource.data) else {
             continue;
         };
+        if ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application_path) {
+            continue;
+        }
 
         for (fragment_index, fragment) in cfrg.fragments.into_iter().enumerate() {
             if fragment.architecture != ARCH_POWERPC
@@ -6428,6 +6465,78 @@ mod tests {
                 bytes: pef,
             }]
         );
+    }
+
+    fn library_vfs(libraries: &[(&str, &[u8])]) -> (PpcDiagnosticVfs, Vec<u8>) {
+        let pef = make_minimal_pef(*b"pwpc");
+        let mut files = Vec::new();
+        let mut resource_files = Vec::new();
+        for (path, name) in libraries {
+            let cfrg =
+                make_library_cfrg(ARCH_POWERPC, USAGE_LIB, LOCATION_ON_DISK_FLAT, 0, WHOLE_FORK, name);
+            files.push(PpcVfsFileRecord {
+                path: path.to_string(),
+                data: (pef.clone()).into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
+            resource_files.push(PpcVfsResourceFileRecord {
+                path: path.to_string(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                resource_len: 0,
+                raw_data: Some(make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg).into()),
+                map_attrs: 0,
+                dirty: false,
+            });
+        }
+        let vfs = PpcDiagnosticVfs {
+            volumes: Vec::new(),
+            directories: Vec::new(),
+            files,
+            resource_files,
+            resources: Vec::new(),
+            default_dir_id: 0,
+            next_dir_id: 1,
+        };
+        (vfs, pef)
+    }
+
+    fn discovered_names(vfs: &PpcDiagnosticVfs, application: Option<&str>) -> Vec<String> {
+        discover_ppc_cfm_library_fragments_with_locations(vfs, application)
+            .0
+            .into_iter()
+            .map(|fragment| fragment.name)
+            .collect()
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_keeps_runtime_library_installers_out_of_other_folders() {
+        // A CarbonLib copy in an "Items for Extensions folder" directory is an
+        // installer for the system copy the runtime already provides, while an
+        // ordinary loose library stays available from any folder.
+        let (vfs, _) = library_vfs(&[
+            ("Disk/Items for Extensions folder/CarbonLib", b"CarbonLib"),
+            ("Disk/Items for Extensions folder/Game Engine", b"GameEngineLib"),
+        ]);
+        assert_eq!(
+            discovered_names(&vfs, Some("Disk/Game ƒ/Game")),
+            vec!["GameEngineLib".to_string()]
+        );
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_lets_application_folder_libraries_shadow_the_runtime() {
+        // CFM searches the application's folder before the Extensions folder.
+        let (vfs, _) = library_vfs(&[("Disk/Game ƒ/Display Library", b"DisplayLib")]);
+        assert_eq!(
+            discovered_names(&vfs, Some("Disk/Game ƒ/Game")),
+            vec!["DisplayLib".to_string()]
+        );
+        assert!(discovered_names(&vfs, Some("Disk/Other/Game")).is_empty());
     }
 
     #[test]

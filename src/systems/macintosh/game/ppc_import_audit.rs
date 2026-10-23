@@ -7,7 +7,7 @@
 
 use super::launch::{
     discover_ppc_cfm_library_fragments_with_locations, load_game_from_path, new_runner,
-    ppc_diagnostic_vfs, vfs_path_sort_key,
+    ppc_cfrg_is_runtime_library_installer, ppc_diagnostic_vfs, vfs_path_sort_key,
 };
 use crate::loader::cfrg::{parse_cfrg_resource, ARCH_POWERPC, USAGE_APP, USAGE_DROP_IN, USAGE_LIB};
 use crate::loader::pef::{data_fork_is_pef, parse_pef_header};
@@ -72,10 +72,12 @@ impl PpcImportAuditReport {
 pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditReport {
     let mut runner = new_runner();
     let load_error = load_game_from_path(&mut runner, path).err();
+    let application = runner.dispatcher().launched_app_path().map(str::to_string);
     let vfs = ppc_diagnostic_vfs(&mut runner, None);
 
     let mut bundled = PpcBundledLibraryExports::default();
-    for library in discover_ppc_cfm_library_fragments_with_locations(&vfs).0 {
+    for library in discover_ppc_cfm_library_fragments_with_locations(&vfs, application.as_deref()).0
+    {
         if !is_native_replacement_library(&library.name) {
             bundled.insert(&library.name, &library.bytes);
         }
@@ -94,6 +96,12 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
         else {
             continue;
         };
+        // Launch skips system-component installers; so does the audit.
+        if ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application.as_deref())
+        {
+            registered_paths.push(resource_file.path.to_ascii_lowercase());
+            continue;
+        }
         let Some(data_file) = vfs
             .files
             .iter()
