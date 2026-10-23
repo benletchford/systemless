@@ -353,6 +353,7 @@ pub enum PpcMathCompatibilityOperation {
     Nan,
     Num2Dec,
     Str2Dec,
+    X80ToD,
 }
 
 pub(super) fn ppc_dispatch_math_compatibility(
@@ -400,6 +401,21 @@ pub(super) fn ppc_dispatch_math_compatibility(
                     );
                     let _ = memory.write_u64_be(destination + 2, extended.significand);
                 }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::X80ToD => {
+            // MathLib `double x80tod(const extended80 *x80)` (fp.h) narrows
+            // the 10-byte 68K extended interchange format to a double. The
+            // conversion rounds like an IEEE 754 narrowing operation under
+            // the default round-to-nearest mode, producing subnormals and
+            // signed zero on underflow.
+            let source = cpu.gpr[3];
+            if let (Some(sign_exponent), Some(significand)) = (
+                memory.read_u16_be(source),
+                memory.read_u64_be(source.wrapping_add(2)),
+            ) {
+                cpu.fpr[1] = ppc_x80_to_f64_bits(sign_exponent, significand);
             }
             PpcImportAction::ReturnPreserve
         }
@@ -506,5 +522,73 @@ pub(super) fn ppc_dispatch_math_compatibility(
             PpcImportAction::Return(0)
         }
         PpcMathCompatibilityOperation::FeTestExcept => PpcImportAction::Return(0),
+    }
+}
+
+/// Narrow an 80-bit extended value to IEEE double bits, rounding to nearest
+/// with ties to even. The explicit integer bit is honoured, so unnormal and
+/// pseudo-denormal encodings convert by value.
+pub(crate) fn ppc_x80_to_f64_bits(sign_exponent: u16, significand: u64) -> u64 {
+    let sign = u64::from(sign_exponent >> 15) << 63;
+    let exponent = sign_exponent & 0x7fff;
+    if exponent == 0x7fff {
+        let fraction = significand & !(1 << 63);
+        return if fraction == 0 {
+            sign | 0x7ff0_0000_0000_0000
+        } else {
+            // Keep the payload's high bits and force a quiet NaN.
+            sign | 0x7ff8_0000_0000_0000 | (fraction >> 11)
+        };
+    }
+    if significand == 0 {
+        return sign;
+    }
+    let shift = significand.leading_zeros();
+    let normalized = significand << shift;
+    // Unbiased exponent of the leading one bit; extended denormals use the
+    // minimum exponent of 1 - 16383.
+    let leading = i32::from(exponent.max(1)) - 16383 - shift as i32;
+    let biased = leading + 1023;
+    if biased >= 0x7ff {
+        return sign | 0x7ff0_0000_0000_0000;
+    }
+    // Discarded low bits below the 53-bit (or subnormal) mantissa.
+    let drop = if biased >= 1 {
+        11
+    } else {
+        11 + (1 - biased) as u32
+    };
+    if drop > 64 {
+        return sign;
+    }
+    let (kept, remainder, half) = if drop == 64 {
+        (0, normalized, 1u64 << 63)
+    } else {
+        (
+            normalized >> drop,
+            normalized & ((1u64 << drop) - 1),
+            1u64 << (drop - 1),
+        )
+    };
+    let rounded = if remainder > half || (remainder == half && kept & 1 == 1) {
+        kept + 1
+    } else {
+        kept
+    };
+    if biased >= 1 {
+        // A carry out of the 53-bit mantissa bumps the exponent and may
+        // overflow to infinity.
+        let (mantissa, biased) = if rounded == 1 << 53 {
+            (rounded >> 1, biased + 1)
+        } else {
+            (rounded, biased)
+        };
+        if biased >= 0x7ff {
+            return sign | 0x7ff0_0000_0000_0000;
+        }
+        sign | (biased as u64) << 52 | (mantissa & 0x000f_ffff_ffff_ffff)
+    } else {
+        // Subnormal; a carry into bit 52 yields the smallest normal.
+        sign | rounded
     }
 }

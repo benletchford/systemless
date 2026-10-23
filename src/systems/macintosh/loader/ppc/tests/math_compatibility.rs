@@ -148,6 +148,7 @@ fn native_ppc_math_compatibility_maps_each_export_to_a_typed_operation() {
         ("nan", PpcMathCompatibilityOperation::Nan),
         ("num2dec", PpcMathCompatibilityOperation::Num2Dec),
         ("str2dec", PpcMathCompatibilityOperation::Str2Dec),
+        ("x80tod", PpcMathCompatibilityOperation::X80ToD),
     ] {
         assert_eq!(
             dispatcher_target_for_import("MathLib", symbol),
@@ -1078,4 +1079,56 @@ fn carbon_and_mathlib_rounding_imports_preserve_native_floating_point_abi() {
             assert!(f64::from_bits(loaded.cpu.fpr[1]).is_nan());
         }
     }
+}
+
+fn x80tod(sign_exponent: u16, significand: u64) -> u64 {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x1000, vec![0; 16]);
+    memory.write_u16_be(0x1000, sign_exponent).unwrap();
+    memory.write_u64_be(0x1002, significand).unwrap();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x1000;
+    assert_eq!(
+        ppc_dispatch_math_compatibility(math_operation("x80tod"), &mut cpu, &mut memory),
+        PpcImportAction::ReturnPreserve,
+    );
+    cpu.fpr[1]
+}
+
+#[test]
+fn native_ppc_x80tod_rounds_to_nearest_even() {
+    // 1.5 and -2.0 are exact.
+    assert_eq!(x80tod(0x3fff, 0xC000_0000_0000_0000), 1.5f64.to_bits());
+    assert_eq!(x80tod(0xc000, 0x8000_0000_0000_0000), (-2.0f64).to_bits());
+    // 1 + 2^-53 is a tie and rounds to even (1.0); one more ulp rounds up.
+    assert_eq!(x80tod(0x3fff, 0x8000_0000_0000_0400), 1.0f64.to_bits());
+    assert_eq!(x80tod(0x3fff, 0x8000_0000_0000_0401), (1.0 + f64::EPSILON).to_bits());
+    // (1 + 2^-52) + 2^-53 is a tie with an odd mantissa and rounds up.
+    assert_eq!(
+        x80tod(0x3fff, 0x8000_0000_0000_0C00),
+        (1.0 + 2.0 * f64::EPSILON).to_bits()
+    );
+    // All ones rounds up into the next binade.
+    assert_eq!(x80tod(0x3fff, u64::MAX), 2.0f64.to_bits());
+    // Unnormal encodings convert by value.
+    assert_eq!(x80tod(0x4000, 0x4000_0000_0000_0000), 1.0f64.to_bits());
+}
+
+#[test]
+fn native_ppc_x80tod_handles_range_limits_and_specials() {
+    assert_eq!(x80tod(0x0000, 0), 0);
+    assert_eq!(x80tod(0x8000, 0), (-0.0f64).to_bits());
+    assert_eq!(x80tod(0x7fff, 0x8000_0000_0000_0000), f64::INFINITY.to_bits());
+    assert_eq!(x80tod(0xffff, 0x8000_0000_0000_0000), f64::NEG_INFINITY.to_bits());
+    assert!(f64::from_bits(x80tod(0x7fff, 0xC000_0000_0000_0000)).is_nan());
+    // Overflow beyond f64::MAX and below the smallest subnormal.
+    assert_eq!(x80tod(0x43ff, 0x8000_0000_0000_0000), f64::INFINITY.to_bits());
+    assert_eq!(x80tod(0x3bcb, 0x8000_0000_0000_0000), 0);
+    // 2^-1074 is the smallest subnormal; 2^-1075 is a tie that rounds to 0.
+    assert_eq!(x80tod(0x3bcd, 0x8000_0000_0000_0000), 1);
+    assert_eq!(x80tod(0x3bcc, 0x8000_0000_0000_0000), 0);
+    assert_eq!(x80tod(0x3bcc, 0x8000_0000_0000_0001), 1);
+    // 2^-1022 is the smallest normal; 2^-1023 is subnormal.
+    assert_eq!(x80tod(0x3c01, 0x8000_0000_0000_0000), f64::MIN_POSITIVE.to_bits());
+    assert_eq!(x80tod(0x3c00, 0x8000_0000_0000_0000), 1 << 51);
 }
