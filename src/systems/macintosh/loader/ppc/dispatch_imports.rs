@@ -3040,6 +3040,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetHWCfgFlags
         | PpcImportDispatcherTarget::LMSetROMMapInsert
         | PpcImportDispatcherTarget::LMGetSysMap
+        | PpcImportDispatcherTarget::LMGetBootDrive
+        | PpcImportDispatcherTarget::LMSetBootDrive
         | PpcImportDispatcherTarget::LMGetCurApRefNum
         | PpcImportDispatcherTarget::GetVCBQHdr
         | PpcImportDispatcherTarget::GetDrvQHdr

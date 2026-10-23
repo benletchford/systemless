@@ -129,6 +129,20 @@ pub(super) fn dispatch_low_memory_import(
             // refnum 0 as its system/application fallback map.
             Some(PpcImportAction::Return(ppc_i16_result(0)))
         }
+        PpcImportDispatcherTarget::LMGetBootDrive => {
+            // LowMem.h: LMGetBootDrive returns the SInt16 BootDrive word at
+            // $0210, the reference number of the startup volume.
+            Some(PpcImportAction::Return(ppc_i16_result(
+                memory
+                    .read_u16_be(crate::memory::globals::addr::BOOT_DRIVE)
+                    .unwrap_or(0) as i16,
+            )))
+        }
+        PpcImportDispatcherTarget::LMSetBootDrive => Some(
+            memory
+                .write_u16_be(crate::memory::globals::addr::BOOT_DRIVE, cpu.gpr[3] as u16)
+                .map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve),
+        ),
         PpcImportDispatcherTarget::LMGetCurApRefNum => {
             // Inside Macintosh Volume II (1985), II-58: CurApRefNum is the
             // reference number of the current application's resource file.

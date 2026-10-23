@@ -121,6 +121,11 @@ fn init_app_seeds_current_application_fcb_low_memory_state() {
         "CurApRefNum should be the app resource fork access path"
     );
     assert_eq!(
+        runner.bus.read_word(addr::BOOT_DRIVE) as i16,
+        crate::trap::dispatch::BOOT_VOLUME_REF_NUM,
+        "BootDrive should name the startup volume"
+    );
+    assert_eq!(
         runner.bus.read_word(addr::FS_FCB_LEN),
         HFS_FCB_SIZE,
         "System 7 FCB size should be exposed for direct low-memory readers"

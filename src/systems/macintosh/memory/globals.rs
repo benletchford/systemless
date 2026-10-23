@@ -65,6 +65,9 @@ pub mod addr {
     /// VIA registers through this global. Inside Macintosh III-39.
     pub const VIA_BASE: u32 = 0x01D4;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
+    /// BootDrive: reference number of the startup volume (word).
+    /// Universal Interfaces 3.4.1, LowMem.h: LMGetBootDrive reads SInt16 at $0210.
+    pub const BOOT_DRIVE: u32 = 0x0210;
     /// KbdType: physical keyboard type (byte), distinct from the Gestalt enum.
     /// Universal Interfaces 3.4.1, Events.h: LMGetKbdType reads UInt8 at $021E.
     pub const KBD_TYPE: u32 = 0x021E;
