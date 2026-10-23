@@ -240,6 +240,7 @@ pub mod graphics;
 mod classic_gl_agl;
 pub(crate) use classic_gl_agl::{ppc_agl_read_pixel_format_request, PpcAglState};
 mod classic_gl_framebuffer;
+pub mod classic_gl;
 pub mod gworlds;
 pub mod import_audit;
 pub mod import_targets;

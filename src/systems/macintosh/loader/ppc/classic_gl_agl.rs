@@ -4,6 +4,7 @@
 //! AGL/agl.h (Mac OS X 10.2.8 SDK). Capability selection happens separately.
 //! <https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.2.8.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers/agl.h>
 
+use super::classic_gl::GlContext;
 use super::classic_gl_framebuffer::{ClassicGlColorBuffer, ClassicGlFramebuffer};
 use super::{PpcFrontBuffer, PpcSectionMem};
 use ppc::PpcMemory;
@@ -11,10 +12,91 @@ use ppc::PpcMemory;
 const MAX_ATTRIBUTE_WORDS: u32 = 64;
 const FIRST_AGL_OBJECT: u32 = 0x0500_0000;
 pub const AGL_BAD_ATTRIBUTE: u32 = 10000;
+pub const AGL_BAD_PROPERTY: u32 = 10001;
 pub const AGL_BAD_PIXELFMT: u32 = 10002;
+pub const AGL_BAD_RENDINFO: u32 = 10003;
+pub const AGL_BAD_CONTEXT: u32 = 10004;
+pub const AGL_BAD_DRAWABLE: u32 = 10005;
 pub const AGL_BAD_GDEV: u32 = 10006;
 pub const AGL_BAD_VALUE: u32 = 10008;
+pub const AGL_BAD_MATCH: u32 = 10009;
+pub const AGL_BAD_ENUM: u32 = 10010;
+pub const AGL_BAD_FULLSCREEN: u32 = 10012;
 pub const AGL_BAD_POINTER: u32 = 10014;
+/// Renderer ID reported for the Systemless OpenGL renderer. The value is in
+/// the Apple renderer-ID space next to AGL_RENDERER_GENERIC_ID (0x00020200).
+pub const AGL_RENDERER_SYSTEMLESS_ID: i32 = 0x0002_0F00;
+pub const AGL_RENDERER_GENERIC_ID: i32 = 0x0002_0200;
+/// AGL interface version implemented (agl.h defines AGL_VERSION_2_0).
+pub const AGL_VERSION: (i32, i32) = (2, 0);
+const AGL_SINGLEBUFFER_BIT: i32 = 0x4;
+const AGL_DOUBLEBUFFER_BIT: i32 = 0x8;
+const AGL_MONOSCOPIC_BIT: i32 = 0x1;
+const AGL_0_BIT: i32 = 0x1;
+const AGL_8_BIT: i32 = 0x80;
+const AGL_16_BIT: i32 = 0x400;
+const AGL_24_BIT: i32 = 0x800;
+const AGL_RGB555_BIT: i32 = 0x200;
+const AGL_ARGB1555_BIT: i32 = 0x400;
+const AGL_RGB888_BIT: i32 = 0x4000;
+const AGL_ARGB8888_BIT: i32 = 0x8000;
+/// Opaque AGLRendererInfo handle for the single renderer.
+pub const AGL_RENDERER_INFO_HANDLE: u32 = FIRST_AGL_OBJECT - 0x100;
+
+/// AGL 2.0 entry points beyond pixel formats, contexts, drawables and swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PpcAglFunction {
+    QueryRendererInfo,
+    NextRendererInfo,
+    DestroyRendererInfo,
+    DescribeRenderer,
+    NextPixelFormat,
+    DevicesOfPixelFormat,
+    GetVersion,
+    Configure,
+    Enable,
+    Disable,
+    IsEnabled,
+    SetInteger,
+    GetInteger,
+    ErrorString,
+    ResetLibrary,
+    UseFont,
+    SetFullScreen,
+    SetOffScreen,
+    CopyContext,
+    SetVirtualScreen,
+    GetVirtualScreen,
+}
+
+impl PpcAglFunction {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "aglQueryRendererInfo" => Self::QueryRendererInfo,
+            "aglNextRendererInfo" => Self::NextRendererInfo,
+            "aglDestroyRendererInfo" => Self::DestroyRendererInfo,
+            "aglDescribeRenderer" => Self::DescribeRenderer,
+            "aglNextPixelFormat" => Self::NextPixelFormat,
+            "aglDevicesOfPixelFormat" => Self::DevicesOfPixelFormat,
+            "aglGetVersion" => Self::GetVersion,
+            "aglConfigure" => Self::Configure,
+            "aglEnable" => Self::Enable,
+            "aglDisable" => Self::Disable,
+            "aglIsEnabled" => Self::IsEnabled,
+            "aglSetInteger" => Self::SetInteger,
+            "aglGetInteger" => Self::GetInteger,
+            "aglErrorString" => Self::ErrorString,
+            "aglResetLibrary" => Self::ResetLibrary,
+            "aglUseFont" => Self::UseFont,
+            "aglSetFullScreen" => Self::SetFullScreen,
+            "aglSetOffScreen" => Self::SetOffScreen,
+            "aglCopyContext" => Self::CopyContext,
+            "aglSetVirtualScreen" => Self::SetVirtualScreen,
+            "aglGetVirtualScreen" => Self::GetVirtualScreen,
+            _ => return None,
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PpcAglPixelFormatRequest {
@@ -64,7 +146,15 @@ pub struct PpcAglContext {
     pub handle: u32,
     pub format: PpcAglPixelFormatRequest,
     pub drawable: u32,
+    pub fullscreen: bool,
+    /// Client memory attached by aglSetOffScreen.
+    pub offscreen: Option<PpcFrontBuffer>,
     pub framebuffer: Option<ClassicGlFramebuffer>,
+    pub gl: Box<GlContext>,
+    /// aglEnable/aglDisable options (AGL_SWAP_RECT, AGL_RASTERIZATION, ...).
+    pub enables: std::collections::BTreeSet<u32>,
+    /// aglSetInteger values, up to four integers per option.
+    pub integers: std::collections::BTreeMap<u32, [i32; 4]>,
 }
 
 impl Default for PpcAglState {
@@ -116,14 +206,16 @@ impl PpcAglState {
             2 | 3 | 7 | 14..=17 => 0,
             4 => 1, // AGL_RGBA
             5 => i32::from(request.double_buffered),
-            6 | 53 | 73 => 0,  // stereo, offscreen, accelerated
+            6 | 53 => 0,       // stereo, offscreen
             8..=11 => 8,       // RGBA8 color storage
             12 => 24,          // depth storage
             13 => 8,           // stencil storage
             50 => 32,          // AGL_PIXEL_SIZE
             54 => 1,           // fullscreen capable
-            70 => 0x0002_0200, // AGL_RENDERER_GENERIC_ID
-            76 => 0,           // backing store not selected by the software surface
+            70 => AGL_RENDERER_SYSTEMLESS_ID,
+            71 | 72 | 73 | 75 | 83 => 1, // single, no-recovery, accelerated, robust, compliant
+            76 => 0,           // backing store not selected
+            78 => 1,           // AGL_MP_SAFE
             80 => 1,           // AGL_WINDOW
             _ => return None,
         })
@@ -151,11 +243,17 @@ impl PpcAglState {
             return 0;
         };
         self.next_handle = next;
+        let gl = Box::new(GlContext::new(format.double_buffered));
         self.contexts.push(PpcAglContext {
             handle,
             format,
             drawable: 0,
+            fullscreen: false,
+            offscreen: None,
             framebuffer: None,
+            gl,
+            enables: [220].into_iter().collect(), // AGL_RASTERIZATION
+            integers: Default::default(),
         });
         handle
     }
@@ -210,10 +308,12 @@ impl PpcAglState {
         };
         if drawable == 0 {
             context.drawable = 0;
+            context.fullscreen = false;
+            context.offscreen = None;
             context.framebuffer = None;
             return true;
         }
-        let Some(surface) = surface.filter(|surface| surface.depth == 16) else {
+        let Some(surface) = surface.filter(|surface| ppc_agl_surface_supported(surface)) else {
             return false;
         };
         let Some(framebuffer) = ClassicGlFramebuffer::new(
@@ -224,6 +324,55 @@ impl PpcAglState {
             return false;
         };
         context.drawable = drawable;
+        context.fullscreen = false;
+        context.offscreen = None;
+        context.gl.attach_drawable(surface.width, surface.height);
+        context.framebuffer = Some(framebuffer);
+        true
+    }
+
+    /// aglSetFullScreen: attach the context to the whole main screen.
+    pub fn set_full_screen(&mut self, handle: u32, screen: Option<PpcFrontBuffer>) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        let Some(surface) = screen.filter(|surface| ppc_agl_surface_supported(surface)) else {
+            return false;
+        };
+        let Some(framebuffer) = ClassicGlFramebuffer::new(
+            surface.width,
+            surface.height,
+            context.format.double_buffered,
+        ) else {
+            return false;
+        };
+        context.drawable = 0;
+        context.fullscreen = true;
+        context.offscreen = None;
+        context.gl.attach_drawable(surface.width, surface.height);
+        context.framebuffer = Some(framebuffer);
+        true
+    }
+
+    /// aglSetOffScreen: render into client memory described by `surface`.
+    pub fn set_off_screen(&mut self, handle: u32, surface: PpcFrontBuffer) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        if !ppc_agl_surface_supported(&surface) {
+            return false;
+        }
+        let Some(framebuffer) = ClassicGlFramebuffer::new(
+            surface.width,
+            surface.height,
+            context.format.double_buffered,
+        ) else {
+            return false;
+        };
+        context.drawable = 0;
+        context.fullscreen = false;
+        context.offscreen = Some(surface);
+        context.gl.attach_drawable(surface.width, surface.height);
         context.framebuffer = Some(framebuffer);
         true
     }
@@ -235,7 +384,7 @@ impl PpcAglState {
         if context.drawable == 0 {
             return true;
         }
-        let Some(surface) = surface.filter(|surface| surface.depth == 16) else {
+        let Some(surface) = surface.filter(|surface| ppc_agl_surface_supported(surface)) else {
             return false;
         };
         let resize = context.framebuffer.as_ref().is_none_or(|framebuffer| {
@@ -271,7 +420,7 @@ impl PpcAglState {
         } else {
             ClassicGlColorBuffer::Front
         };
-        if !framebuffer.present_rgb555(buffer, memory, surface) {
+        if !framebuffer.present(buffer, memory, surface) {
             return false;
         }
         if context.format.double_buffered {
@@ -280,17 +429,59 @@ impl PpcAglState {
             true
         }
     }
+
+    /// Present a single-buffered context's front buffer (glFlush/glFinish).
+    pub fn flush(&mut self, handle: u32, memory: &mut PpcSectionMem, surface: PpcFrontBuffer) -> bool {
+        let Some(context) = self.context_mut(handle) else {
+            return false;
+        };
+        if context.format.double_buffered {
+            return true;
+        }
+        let Some(framebuffer) = context.framebuffer.as_ref() else {
+            return false;
+        };
+        framebuffer.present(ClassicGlColorBuffer::Front, memory, surface)
+    }
+
+    pub fn current_mut(&mut self) -> Option<&mut PpcAglContext> {
+        let handle = self.current_context;
+        self.context_mut(handle)
+    }
+
+    /// aglDescribeRenderer for the single Systemless renderer.
+    pub fn describe_renderer(&self, property: i32) -> Option<i32> {
+        Some(match property {
+            70 => AGL_RENDERER_SYSTEMLESS_ID,
+            53 => 0,                       // AGL_OFFSCREEN
+            54 | 71 | 72 | 73 | 75 => 1,   // fullscreen, single, no recovery, accelerated, robust
+            76 => 0,                       // AGL_BACKING_STORE
+            78 | 80 | 81 | 83 => 1,        // MP safe, window, multiscreen, compliant
+            100 => AGL_MONOSCOPIC_BIT | AGL_SINGLEBUFFER_BIT | AGL_DOUBLEBUFFER_BIT,
+            101 | 102 => 0,                // min and max level
+            103 => AGL_RGB555_BIT | AGL_ARGB1555_BIT | AGL_RGB888_BIT | AGL_ARGB8888_BIT,
+            104 => 0,                      // no accumulation buffers
+            105 => AGL_0_BIT | AGL_16_BIT | AGL_24_BIT,
+            106 => AGL_0_BIT | AGL_8_BIT,
+            107 => 0,
+            120 => 32 * 1024 * 1024,       // AGL_VIDEO_MEMORY
+            121 => 32 * 1024 * 1024,       // AGL_TEXTURE_MEMORY
+            _ => return None,
+        })
+    }
+}
+
+/// Drawables are 16-bit (RGB555) or 32-bit (xRGB8888) direct-color pixmaps;
+/// classic Mac OS OpenGL does not render to indexed screens.
+fn ppc_agl_surface_supported(surface: &PpcFrontBuffer) -> bool {
+    matches!(surface.depth, 16 | 32)
 }
 
 fn ppc_agl_software_format_matches(request: &PpcAglPixelFormatRequest) -> bool {
-    // AGL_ACCELERATED asks for hardware rendering. The guest-backed software
-    // surface must never be advertised as a hardware renderer.
-    if !request.rgba
-        || request.accelerated
-        || request.stereo
-        || request.offscreen
-        || request.backing_store
-    {
+    // The Systemless renderer executes the OpenGL 1.2 command set natively
+    // rather than as emulated guest code, so it satisfies AGL_ACCELERATED
+    // requests; stereo, off-screen and backing-store formats are not offered.
+    if !request.rgba || request.stereo || request.offscreen || request.backing_store {
         return false;
     }
     for (requested, available) in [
@@ -312,7 +503,7 @@ fn ppc_agl_software_format_matches(request: &PpcAglPixelFormatRequest) -> bool {
         .iter()
         .all(|&(attribute, value)| match attribute {
             3 | 14..=17 | 55..=57 => value == 0,
-            70 => value == 0x0002_0200, // AGL_RENDERER_GENERIC_ID
+            70 => value == AGL_RENDERER_SYSTEMLESS_ID || value == AGL_RENDERER_GENERIC_ID,
             2 => value == 0,            // AGL_BUFFER_SIZE is for color-index formats
             _ => false,
         })
@@ -441,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn software_format_selection_tracks_opaque_lifetime_and_declines_acceleration() {
+    fn format_selection_tracks_opaque_lifetime_and_offers_acceleration() {
         let mut state = PpcAglState::default();
         let request = PpcAglPixelFormatRequest {
             rgba: true,
@@ -457,13 +648,18 @@ mod tests {
         assert!(state.pixel_format(handle).is_none());
         let accelerated = PpcAglPixelFormatRequest {
             accelerated: true,
+            ..request.clone()
+        };
+        assert_ne!(state.choose_pixel_format(accelerated), 0);
+        let stereo = PpcAglPixelFormatRequest {
+            stereo: true,
             ..request
         };
-        assert_eq!(state.choose_pixel_format(accelerated), 0);
+        assert_eq!(state.choose_pixel_format(stereo), 0);
     }
 
     #[test]
-    fn description_reports_actual_software_format_properties() {
+    fn description_reports_actual_renderer_format_properties() {
         let mut state = PpcAglState::default();
         let handle = state.choose_pixel_format(PpcAglPixelFormatRequest {
             rgba: true,
@@ -472,7 +668,8 @@ mod tests {
         });
         assert_eq!(state.describe_pixel_format(handle, 5), Some(1));
         assert_eq!(state.describe_pixel_format(handle, 12), Some(24));
-        assert_eq!(state.describe_pixel_format(handle, 73), Some(0));
+        assert_eq!(state.describe_pixel_format(handle, 73), Some(1));
+        assert_eq!(state.describe_pixel_format(handle, 70), Some(AGL_RENDERER_SYSTEMLESS_ID));
         assert_eq!(state.describe_pixel_format(handle, 999), None);
         state.destroy_pixel_format(handle);
         assert_eq!(state.describe_pixel_format(handle, 5), None);
@@ -512,5 +709,78 @@ mod tests {
         assert_eq!(memory.read_u16_be(0x1000), Some(0x7c00));
         assert!(agl.destroy_context(context));
         assert_eq!(agl.current_context(), 0);
+    }
+
+    #[test]
+    fn opengl_library_exports_map_to_gl_agl_and_glu_targets() {
+        use super::super::classic_gl::functions::GlFunction;
+        use super::super::{dispatcher_target_for_import, PpcImportDispatcherTarget};
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "glVertex3f"),
+            PpcImportDispatcherTarget::Gl(GlFunction::from_name("glVertex3f").unwrap())
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "aglQueryRendererInfo"),
+            PpcImportDispatcherTarget::Agl(PpcAglFunction::QueryRendererInfo)
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLUtility", "gluPerspective"),
+            PpcImportDispatcherTarget::Glu(super::super::classic_gl::glu::GluFunction::Perspective)
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLMemory", "glmGetInteger"),
+            PpcImportDispatcherTarget::GlmGetInteger
+        );
+        assert_eq!(
+            dispatcher_target_for_import("OpenGLLibrary", "glNotAFunction"),
+            PpcImportDispatcherTarget::Unsupported
+        );
+    }
+
+    #[test]
+    fn renderer_description_matches_the_offered_formats() {
+        let state = PpcAglState::default();
+        assert_eq!(state.describe_renderer(73), Some(1));
+        assert_eq!(state.describe_renderer(70), Some(AGL_RENDERER_SYSTEMLESS_ID));
+        assert_eq!(state.describe_renderer(100), Some(0xD));
+        assert_eq!(state.describe_renderer(105), Some(AGL_0_BIT | AGL_16_BIT | AGL_24_BIT));
+        assert_eq!(state.describe_renderer(999), None);
+    }
+
+    #[test]
+    fn gl_commands_render_into_the_context_and_swap_to_32_bit_pixels() {
+        use super::super::classic_gl::{call, functions::GlFunction};
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            accelerated: true,
+            ..Default::default()
+        });
+        let context = agl.create_context(format, 0);
+        let surface = PpcFrontBuffer {
+            base_addr: 0x1000,
+            row_bytes: 8,
+            width: 2,
+            height: 1,
+            depth: 32,
+        };
+        assert!(agl.set_drawable(context, 0x2000, Some(surface)));
+        assert!(agl.set_current_context(context));
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 8]);
+        let mut cpu = ppc::PpcCpu::new();
+        cpu.fpr[1] = 1.0f64.to_bits();
+        cpu.fpr[4] = 1.0f64.to_bits();
+        let gl = agl.current_mut().unwrap();
+        let framebuffer = gl.framebuffer.as_mut();
+        call(&mut gl.gl, framebuffer, GlFunction::from_name("glClearColor").unwrap(), &cpu, &mut memory);
+        cpu.gpr[3] = super::super::classic_gl::consts::COLOR_BUFFER_BIT;
+        let gl = agl.current_mut().unwrap();
+        let framebuffer = gl.framebuffer.as_mut();
+        call(&mut gl.gl, framebuffer, GlFunction::from_name("glClear").unwrap(), &cpu, &mut memory);
+        assert!(agl.swap_buffers(context, &mut memory, surface));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0x00FF_0000));
+        assert_eq!(memory.read_u32_be(0x1004), Some(0x00FF_0000));
     }
 }

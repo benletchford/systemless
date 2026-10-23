@@ -3143,8 +3143,55 @@ pub(crate) fn dispatch_supported_import(
             ppc_agl_update_context(cpu, memory, agl, gworlds, window_list),
         ))),
         PpcImportDispatcherTarget::AglSwapBuffers => {
-            ppc_agl_swap_buffers(cpu, memory, agl, gworlds, window_list)
-                .then_some(PpcImportAction::ReturnPreserve)
+            if !ppc_agl_swap_buffers(cpu, memory, agl, gworlds, window_list) {
+                agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::Agl(function) => Some(ppc_agl_function(
+            function,
+            cpu,
+            memory,
+            agl,
+            gworlds,
+            window_list,
+        )),
+        PpcImportDispatcherTarget::Gl(function) => {
+            use super::classic_gl::functions::{GlFunction, GlNamed};
+            let handle = agl.current_context();
+            let result = match agl.context_mut(handle) {
+                Some(context) => {
+                    let framebuffer = context.framebuffer.as_mut();
+                    super::classic_gl::call(&mut context.gl, framebuffer, function, cpu, memory)
+                }
+                None => super::classic_gl::GlResult::Void,
+            };
+            if matches!(function, GlFunction::Named(GlNamed::Flush | GlNamed::Finish)) {
+                if let Some(surface) = agl
+                    .context(handle)
+                    .and_then(|context| ppc_agl_context_surface(memory, gworlds, window_list, context))
+                {
+                    agl.flush(handle, memory, surface);
+                }
+            }
+            Some(match result {
+                super::classic_gl::GlResult::Void => PpcImportAction::ReturnPreserve,
+                super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
+            })
+        }
+        PpcImportDispatcherTarget::Glu(function) => {
+            let handle = agl.current_context();
+            let result = match agl.context_mut(handle) {
+                Some(context) => {
+                    let framebuffer = context.framebuffer.as_mut();
+                    super::classic_gl::glu::call(&mut context.gl, framebuffer, function, cpu, memory)
+                }
+                None => super::classic_gl::GlResult::Value(0),
+            };
+            Some(match result {
+                super::classic_gl::GlResult::Void => PpcImportAction::ReturnPreserve,
+                super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
+            })
         }
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
@@ -3155,7 +3202,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GlmRealloc
         | PpcImportDispatcherTarget::GlmFree
         | PpcImportDispatcherTarget::GlmPageFreeAll
-        | PpcImportDispatcherTarget::GlmGetError => {
+        | PpcImportDispatcherTarget::GlmGetError
+        | PpcImportDispatcherTarget::GlmGetInteger => {
             unreachable!("OpenGL memory imports return through the fast dispatcher")
         }
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
@@ -3251,7 +3299,262 @@ fn ppc_agl_window_surface(
     {
         return None;
     }
-    ppc_live_front_buffer_for_gworld(memory, gworlds, drawable)
+    // A window port's pixmap is the screen, with bounds offset by the
+    // window's global position. The drawable is the port rectangle within
+    // it, clipped to the pixmap. Imaging With QuickDraw (1994), pp. 2-38--2-40.
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, drawable)?;
+    let (top, left, bottom, right) = ppc_read_rect(memory, drawable.checked_add(16)?)?;
+    let frame = surface.front_buffer;
+    let bytes_per_pixel = frame.depth / 8;
+    let x0 = (i32::from(left) - i32::from(surface.left)).clamp(0, frame.width as i32) as u32;
+    let y0 = (i32::from(top) - i32::from(surface.top)).clamp(0, frame.height as i32) as u32;
+    let x1 = (i32::from(right) - i32::from(surface.left)).clamp(0, frame.width as i32) as u32;
+    let y1 = (i32::from(bottom) - i32::from(surface.top)).clamp(0, frame.height as i32) as u32;
+    if x1 <= x0 || y1 <= y0 || bytes_per_pixel == 0 {
+        return None;
+    }
+    Some(PpcFrontBuffer {
+        base_addr: frame
+            .base_addr
+            .checked_add(y0.checked_mul(frame.row_bytes)?)?
+            .checked_add(x0.checked_mul(bytes_per_pixel)?)?,
+        row_bytes: frame.row_bytes,
+        width: x1 - x0,
+        height: y1 - y0,
+        depth: frame.depth,
+    })
+}
+
+/// The pixels an AGL context presents to: its window, the main screen for a
+/// full-screen context, or the client memory of an off-screen context.
+fn ppc_agl_context_surface(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    context: &classic_gl_agl::PpcAglContext,
+) -> Option<PpcFrontBuffer> {
+    if let Some(surface) = context.offscreen {
+        return Some(surface);
+    }
+    if context.fullscreen {
+        return ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+    }
+    ppc_agl_window_surface(memory, gworlds, window_list, context.drawable)
+}
+
+fn ppc_agl_function(
+    function: classic_gl_agl::PpcAglFunction,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+) -> PpcImportAction {
+    use classic_gl_agl::PpcAglFunction as F;
+    // Signatures: Apple AGL/agl.h (Mac OS X 10.2.8 SDK), AGL 2.0.
+    let boolean = |value: bool| PpcImportAction::Return(u32::from(value));
+    match function {
+        F::QueryRendererInfo => {
+            let count = cpu.gpr[4] as i32;
+            if count < 0 || (count > 0 && cpu.gpr[3] == 0) {
+                agl.set_error(classic_gl_agl::AGL_BAD_GDEV);
+                return PpcImportAction::Return(0);
+            }
+            PpcImportAction::Return(classic_gl_agl::AGL_RENDERER_INFO_HANDLE)
+        }
+        F::NextRendererInfo | F::NextPixelFormat => PpcImportAction::Return(0),
+        F::DestroyRendererInfo => PpcImportAction::ReturnPreserve,
+        F::DescribeRenderer => {
+            if cpu.gpr[3] != classic_gl_agl::AGL_RENDERER_INFO_HANDLE {
+                agl.set_error(classic_gl_agl::AGL_BAD_RENDINFO);
+                return boolean(false);
+            }
+            let Some(value) = agl.describe_renderer(cpu.gpr[4] as i32) else {
+                agl.set_error(classic_gl_agl::AGL_BAD_PROPERTY);
+                return boolean(false);
+            };
+            if cpu.gpr[5] == 0 || memory.write_u32_be(cpu.gpr[5], value as u32).is_none() {
+                agl.set_error(classic_gl_agl::AGL_BAD_POINTER);
+                return boolean(false);
+            }
+            boolean(true)
+        }
+        F::DevicesOfPixelFormat => {
+            // AGLDevice *aglDevicesOfPixelFormat(AGLPixelFormat, GLint *ndevs):
+            // the single renderer drives the main screen device.
+            if agl.pixel_format(cpu.gpr[3]).is_none() {
+                agl.set_error(classic_gl_agl::AGL_BAD_PIXELFMT);
+                return PpcImportAction::Return(0);
+            }
+            let list = super::classic_gl::GL_STRING_AREA + 0x4F0;
+            let written = memory.write_u32_be(list, PPC_MAIN_GDEVICE).is_some()
+                && (cpu.gpr[4] == 0 || memory.write_u32_be(cpu.gpr[4], 1).is_some());
+            PpcImportAction::Return(if written { list } else { 0 })
+        }
+        F::GetVersion => {
+            let (major, minor) = classic_gl_agl::AGL_VERSION;
+            if cpu.gpr[3] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[3], major as u32);
+            }
+            if cpu.gpr[4] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[4], minor as u32);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        F::Configure => {
+            // AGL_FORMAT_CACHE_SIZE, AGL_CLEAR_FORMAT_CACHE, AGL_RETAIN_RENDERERS.
+            let known = matches!(cpu.gpr[3], 501..=503);
+            if !known {
+                agl.set_error(classic_gl_agl::AGL_BAD_ENUM);
+            }
+            boolean(known)
+        }
+        F::Enable | F::Disable | F::IsEnabled => {
+            let pname = cpu.gpr[4];
+            let Some(context) = agl.context_mut(cpu.gpr[3]) else {
+                agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+                return boolean(false);
+            };
+            if !matches!(pname, 200 | 202 | 203 | 210 | 220 | 230 | 254 | 255) {
+                agl.set_error(classic_gl_agl::AGL_BAD_ENUM);
+                return boolean(false);
+            }
+            match function {
+                F::Enable => {
+                    context.enables.insert(pname);
+                    boolean(true)
+                }
+                F::Disable => {
+                    context.enables.remove(&pname);
+                    boolean(true)
+                }
+                _ => boolean(context.enables.contains(&pname)),
+            }
+        }
+        F::SetInteger | F::GetInteger => {
+            let (handle, pname, pointer) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            let count = match pname {
+                200 | 202 => 4,      // AGL_SWAP_RECT, AGL_BUFFER_RECT
+                212 => 4,            // AGL_COLORMAP_ENTRY
+                203 | 222 | 231..=236 | 501 => 1,
+                _ => {
+                    agl.set_error(classic_gl_agl::AGL_BAD_ENUM);
+                    return boolean(false);
+                }
+            };
+            let Some(context) = agl.context_mut(handle) else {
+                agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+                return boolean(false);
+            };
+            if pointer == 0 {
+                agl.set_error(classic_gl_agl::AGL_BAD_POINTER);
+                return boolean(false);
+            }
+            if function == F::SetInteger {
+                let mut values = [0; 4];
+                for (index, value) in values.iter_mut().enumerate().take(count) {
+                    *value = memory.read_u32_be(pointer + index as u32 * 4).unwrap_or(0) as i32;
+                }
+                context.integers.insert(pname, values);
+            } else {
+                let values = context.integers.get(&pname).copied().unwrap_or_default();
+                for (index, value) in values.iter().enumerate().take(count) {
+                    let _ = memory.write_u32_be(pointer + index as u32 * 4, *value as u32);
+                }
+            }
+            boolean(true)
+        }
+        F::ErrorString => {
+            let text = match cpu.gpr[3] {
+                0 => "no error",
+                10000 => "invalid pixel format attribute",
+                10001 => "invalid renderer property",
+                10002 => "invalid pixel format",
+                10003 => "invalid renderer info",
+                10004 => "invalid context",
+                10005 => "invalid drawable",
+                10006 => "invalid graphics device",
+                10007 => "invalid context state",
+                10008 => "invalid numerical value",
+                10009 => "invalid share context",
+                10010 => "invalid enumerant",
+                10011 => "invalid offscreen drawable",
+                10012 => "invalid fullscreen drawable",
+                10013 => "invalid window",
+                10014 => "invalid pointer",
+                10015 => "invalid code module",
+                10016 => "memory allocation failure",
+                _ => return PpcImportAction::Return(0),
+            };
+            let address = super::classic_gl::GL_STRING_AREA + 0x380;
+            let mut bytes = text.as_bytes().to_vec();
+            bytes.push(0);
+            PpcImportAction::Return(if memory.write_bytes(address, &bytes).is_some() { address } else { 0 })
+        }
+        F::ResetLibrary => {
+            *agl = PpcAglState::default();
+            PpcImportAction::ReturnPreserve
+        }
+        F::UseFont => {
+            // Bitmap font display lists need glBitmap support; report the
+            // documented failure rather than empty lists.
+            agl.set_error(classic_gl_agl::AGL_BAD_VALUE);
+            boolean(false)
+        }
+        F::SetFullScreen => {
+            let screen = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+            let (width, height) = (cpu.gpr[4], cpu.gpr[5]);
+            let fits = screen.is_some_and(|screen| {
+                (width == 0 || width == screen.width) && (height == 0 || height == screen.height)
+            });
+            if !fits || !agl.set_full_screen(cpu.gpr[3], screen) {
+                agl.set_error(classic_gl_agl::AGL_BAD_FULLSCREEN);
+                return boolean(false);
+            }
+            boolean(true)
+        }
+        F::SetOffScreen => {
+            let (handle, width, height, row_bytes, base) =
+                (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]);
+            let pixel_bits = agl
+                .context(handle)
+                .and_then(|context| context.format.pixel_bits)
+                .unwrap_or(32);
+            let surface = PpcFrontBuffer {
+                base_addr: base,
+                row_bytes,
+                width,
+                height,
+                depth: if pixel_bits <= 16 { 16 } else { 32 },
+            };
+            let ok = base != 0
+                && row_bytes >= width.saturating_mul(surface.depth / 8)
+                && agl.set_off_screen(handle, surface);
+            if !ok {
+                agl.set_error(classic_gl_agl::AGL_BAD_VALUE);
+            }
+            boolean(ok)
+        }
+        F::CopyContext => {
+            let (source, destination) = (cpu.gpr[3], cpu.gpr[4]);
+            let Some(raster) = agl.context(source).map(|context| context.gl.state.raster.clone()) else {
+                agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+                return boolean(false);
+            };
+            match agl.context_mut(destination) {
+                Some(context) => {
+                    context.gl.state.raster = raster;
+                    boolean(true)
+                }
+                None => {
+                    agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+                    boolean(false)
+                }
+            }
+        }
+        F::SetVirtualScreen => boolean(cpu.gpr[4] == 0),
+        F::GetVirtualScreen => PpcImportAction::Return(0),
+    }
 }
 
 fn ppc_agl_set_drawable(
@@ -3298,8 +3601,7 @@ fn ppc_agl_swap_buffers(
     let Some(context) = agl.context(cpu.gpr[3]) else {
         return false;
     };
-    let Some(surface) = ppc_agl_window_surface(memory, gworlds, window_list, context.drawable)
-    else {
+    let Some(surface) = ppc_agl_context_surface(memory, gworlds, window_list, context) else {
         return false;
     };
     agl.swap_buffers(cpu.gpr[3], memory, surface)
@@ -3382,11 +3684,11 @@ mod agl_choose_tests {
         assert_eq!(agl.get_error(), classic_gl_agl::AGL_BAD_VALUE);
         assert_eq!(agl.get_error(), 0);
 
-        // A valid request for an unavailable accelerated format is a clean
+        // A valid request for an unavailable stereo format is a clean
         // no-match, distinct from malformed guest inputs.
         memory.add_region(
             0x2000,
-            [4u32, 73, 0]
+            [4u32, 6, 0]
                 .iter()
                 .flat_map(|word| word.to_be_bytes())
                 .collect(),
@@ -3442,7 +3744,27 @@ mod agl_choose_tests {
         let windows = SharedProcessWindowList::from_value(vec![port]);
         let mut memory = PpcSectionMem::new();
         memory.add_region(0x1000, vec![0; 2]);
-        assert!(ppc_agl_window_surface(&mut memory, &[world], &windows, port).is_some());
+        // A CGrafPort: portPixMap handle at +2, the color-port flags in the
+        // portVersion word at +6, and portRect at +16. The PixMap describes
+        // the one-pixel 16-bit window.
+        let handle = 0x3000u32;
+        let mut grafport = vec![0u8; 0x6C];
+        grafport[2..6].copy_from_slice(&handle.to_be_bytes());
+        grafport[6..8].copy_from_slice(&0xC000u16.to_be_bytes());
+        grafport[20..24].copy_from_slice(&[0, 1, 0, 1]);
+        memory.add_region(port, grafport);
+        let mut pixmap_bytes = vec![0u8; 0x80];
+        pixmap_bytes[0..4].copy_from_slice(&handle.wrapping_add(0x10).to_be_bytes());
+        let record = &mut pixmap_bytes[0x10..];
+        record[0..4].copy_from_slice(&0x1000u32.to_be_bytes());
+        record[4..6].copy_from_slice(&0x8002u16.to_be_bytes());
+        record[10..14].copy_from_slice(&[0, 1, 0, 1]);
+        record[32..34].copy_from_slice(&16u16.to_be_bytes());
+        memory.add_region(handle, pixmap_bytes);
+        assert_eq!(
+            ppc_agl_window_surface(&mut memory, &[world], &windows, port).map(|s| (s.base_addr, s.width, s.height)),
+            Some((0x1000, 1, 1))
+        );
         assert!(
             ppc_agl_window_surface(&mut memory, &[world], &windows, PPC_DSP_BACK_GWORLD,).is_none()
         );

@@ -1342,6 +1342,10 @@ pub enum PpcImportDispatcherTarget {
     AglGetDrawable,
     AglUpdateContext,
     AglSwapBuffers,
+    Agl(super::classic_gl_agl::PpcAglFunction),
+    Gl(super::classic_gl::functions::GlFunction),
+    Glu(super::classic_gl::glu::GluFunction),
+    GlmGetInteger,
     ReturnError(i16),
     ReturnNoErr,
     ReturnOne,
@@ -6400,6 +6404,24 @@ pub(crate) fn dispatcher_target_for_import(
         ("OpenGLLibrary", "aglGetDrawable") => PpcImportDispatcherTarget::AglGetDrawable,
         ("OpenGLLibrary", "aglUpdateContext") => PpcImportDispatcherTarget::AglUpdateContext,
         ("OpenGLLibrary", "aglSwapBuffers") => PpcImportDispatcherTarget::AglSwapBuffers,
+        ("OpenGLMemory", "glmGetInteger") => PpcImportDispatcherTarget::GlmGetInteger,
+        ("OpenGLLibrary", symbol) if super::classic_gl_agl::PpcAglFunction::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::Agl(
+                super::classic_gl_agl::PpcAglFunction::from_name(symbol).expect("checked"),
+            )
+        }
+        ("OpenGLLibrary", symbol) if super::classic_gl::functions::GlFunction::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::Gl(
+                super::classic_gl::functions::GlFunction::from_name(symbol).expect("checked"),
+            )
+        }
+        ("OpenGLUtility" | "OpenGLUtilityLib", symbol)
+            if super::classic_gl::glu::GluFunction::from_name(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::Glu(
+                super::classic_gl::glu::GluFunction::from_name(symbol).expect("checked"),
+            )
+        }
         _ => PpcImportDispatcherTarget::Unsupported,
     }
 }
