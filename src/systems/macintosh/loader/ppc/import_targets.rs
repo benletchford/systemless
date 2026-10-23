@@ -1362,20 +1362,11 @@ pub(crate) fn dispatcher_target_for_import(
     // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
     // Carbon Porting Guide (2002), pp. 42–43 and 53–54.
     let library_name = match (library_name, symbol_name) {
-        ("Apple;Carbon;Multimedia", "NewQTCallBackUPP" | "DisposeQTCallBackUPP" | "NewCallBack" | "DisposeCallBack"
-            | "CancelCallBack" | "CallMeWhen" | "GetCallBackType" | "GetCallBackTimeBase" | "GetMovieTimeBase") => "QuickTimeLib",
-        // Carbon's Multimedia CFM namespace exposes the same movie toolbox
-        // entry points as QuickTimeLib. Bind only the operations implemented
-        // below so other weak imports retain their unresolved state.
-        (
-            "Apple;Carbon;Multimedia",
-            "GetMovieBox" | "DisposeMovie" | "SetMovieBox" | "EnterMovies" | "SetMovieGWorld"
-            | "StopMovie" | "GetMoviesError" | "MoviesTask" | "StartMovie" | "IsMovieDone"
-            | "MCDoAction" | "GoToBeginningOfMovie" | "GetMovieTimeScale"
-            | "GetMovieDuration" | "LoadMovieIntoRam" | "CloseMovieFile"
-            | "NewMovieFromFile" | "NewMovieController" | "OpenMovieFile"
-            | "BeginFullScreen" | "EndFullScreen",
-        ) => "QuickTimeLib",
+        // Carbon's Multimedia CFM namespace exports the Movie Toolbox entry
+        // points under the same names and PowerPC signatures as QuickTimeLib.
+        // Symbols QuickTimeLib does not implement still resolve to
+        // Unsupported, so weak imports keep their unresolved state.
+        ("Apple;Carbon;Multimedia", _) => "QuickTimeLib",
         // CarbonLib exports these C math symbols with the same PowerPC
         // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics
         // (1994), pp. 6-10--6-11 (sqrt), 10-17--10-19 (pow),
