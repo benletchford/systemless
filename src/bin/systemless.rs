@@ -1337,6 +1337,7 @@ impl App {
     fn sync_native_state(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
             ui.menus = self.guest_state.menus.clone();
+            ui.menu_help = self.guest_state.menu_help.clone();
             ui.set_modality(self.guest_state.modality);
             ui.set_dialog(
                 self.guest_state.dialog.clone(),

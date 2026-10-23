@@ -405,8 +405,19 @@ impl GuiDriver {
         }
         if native_models && self.workspace {
             let menus = runner.guest_menu_snapshot();
-            if output.menus.as_ref().is_none_or(|old| **old != menus) {
+            let changed = output.menus.as_ref().is_none_or(|old| **old != menus);
+            if changed {
                 output.menus = Some(std::sync::Arc::new(menus));
+            }
+            // Menu balloons load `hmnu` resources only when help is shown,
+            // and again only when the menus change.
+            let help = runner.balloon_help_enabled();
+            if help && (changed || output.menu_help.is_none()) {
+                output.menu_help = Some(std::sync::Arc::new(
+                    runner.guest_menu_help().into_iter().collect(),
+                ));
+            } else if !help {
+                output.menu_help = None;
             }
         }
         if self.workspace {

@@ -3235,6 +3235,31 @@ impl FixtureRunner {
             })
     }
 
+    /// `hmnu` help strings for the current menus, keyed by (menu, item).
+    pub fn guest_menu_help(&mut self) -> Vec<((i16, i16), String)> {
+        let menus = self.guest_menu_snapshot();
+        if let Some(app) = self.native.application_mut() {
+            let current = app.current_resource_refnum();
+            let resources = &app.vfs_resources;
+            return crate::systems::macintosh::host_ui::guest_menu_help(&menus, |kind, id| {
+                crate::systems::macintosh::loader::ppc::ppc_vfs_resource_index(
+                    resources,
+                    current,
+                    u32::from_be_bytes(kind),
+                    id,
+                    false,
+                )
+                .map(|index| resources[index].data.to_vec())
+            });
+        }
+        let (dispatcher, bus) = (&mut self.dispatcher, &mut self.bus);
+        crate::systems::macintosh::host_ui::guest_menu_help(&menus, |kind, id| {
+            let (_, ptr) = dispatcher.find_or_load_resource_any(bus, kind, id)?;
+            let size = bus.get_alloc_size(ptr)? as usize;
+            Some(bus.read_bytes(ptr, size))
+        })
+    }
+
     /// The balloon currently shown, with its tip in presented coordinates.
     pub fn host_balloon(&self) -> Option<crate::systems::macintosh::host_ui::BalloonSnapshot> {
         let mut balloon = self

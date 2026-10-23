@@ -10,6 +10,8 @@ pub struct Item<Id> {
     pub enabled: bool,
     pub checked: bool,
     pub shortcut: Option<String>,
+    /// Hover help, such as a classic help balloon for the row.
+    pub help: Option<String>,
     pub separator: bool,
     /// A non-empty list makes this row open a submenu.
     pub children: Vec<Item<Id>>,
@@ -23,6 +25,7 @@ impl<Id> Item<Id> {
             enabled: true,
             checked: false,
             shortcut: None,
+            help: None,
             separator: false,
             children: Vec::new(),
         }
@@ -65,7 +68,11 @@ pub fn items<Id: Copy>(ui: &mut egui::Ui, items: &[Item<Id>]) -> Option<Id> {
             if let Some(shortcut) = &item.shortcut {
                 button = button.shortcut_text(shortcut);
             }
-            if ui.add(button).clicked() {
+            let mut response = ui.add(button);
+            if let Some(help) = &item.help {
+                response = response.on_hover_text(help);
+            }
+            if response.clicked() {
                 chosen = Some(item.id);
                 ui.close();
             }

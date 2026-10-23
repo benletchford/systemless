@@ -76,6 +76,8 @@ pub struct WorkspaceUi {
     pub system_action: Option<systemless::systems::macintosh::host_ui::SystemDialogReply>,
     notifications: Vec<systemless::systems::macintosh::host_ui::NotificationSnapshot>,
     balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
+    balloon_texture: Option<ArtworkTexture>,
+    pub menu_help: Option<std::sync::Arc<std::collections::HashMap<(i16, i16), String>>>,
     balloon_help: bool,
     pub balloon_help_action: Option<bool>,
     pub dismissed_notifications: Vec<u64>,
@@ -485,6 +487,21 @@ impl WorkspaceUi {
         enabled: bool,
     ) {
         if self.balloon != balloon || self.balloon_help != enabled {
+            let artwork = balloon
+                .as_ref()
+                .and_then(|b| b.artwork.clone())
+                .filter(|image| image.is_valid());
+            self.balloon_texture = artwork.map(|image| ArtworkTexture {
+                texture: self.context.load_texture(
+                    "balloon-art",
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width as usize, image.height as usize],
+                        &image.rgba,
+                    ),
+                    egui::TextureOptions::NEAREST,
+                ),
+                source: image,
+            });
             self.balloon = balloon;
             self.balloon_help = enabled;
             self.context.request_repaint();
@@ -509,7 +526,14 @@ impl WorkspaceUi {
                     .inner_margin(10.)
                     .show(ui, |ui| {
                         ui.set_max_width(280.);
-                        ui.label(&balloon.text);
+                        if let Some(art) = &self.balloon_texture {
+                            let size =
+                                egui::vec2(art.source.width as f32, art.source.height as f32);
+                            ui.image((art.texture.id(), size));
+                        }
+                        if !balloon.text.is_empty() {
+                            ui.label(&balloon.text);
+                        }
                     });
             });
     }
@@ -755,7 +779,14 @@ impl WorkspaceUi {
         let rows = self
             .menus
             .as_deref()
-            .map(|menus| menu_rows(menus, popup.menu, &mut Vec::new()))
+            .map(|menus| {
+                menu_rows(
+                    menus,
+                    self.menu_help.as_deref(),
+                    popup.menu,
+                    &mut Vec::new(),
+                )
+            })
             .unwrap_or_default();
         // A menu missing from the published list cannot be shown; dismiss it
         // rather than leave the guest call parked behind an invisible popup.
@@ -889,6 +920,8 @@ impl WorkspaceUi {
             answered: Default::default(),
             notifications: Vec::new(),
             balloon: None,
+            balloon_texture: None,
+            menu_help: None,
             balloon_help: false,
             balloon_help_action: None,
             dismissed_notifications: Vec::new(),
@@ -1312,7 +1345,7 @@ impl WorkspaceUi {
                         {
                             ui.add_enabled_ui(menu.enabled && !self.modality.menus_blocked, |ui| {
                                 ui.menu_button(&menu.title, |ui| {
-                                    let rows = menu_rows(menus, menu.id, &mut Vec::new());
+                                    let rows = menu_rows(menus, self.menu_help.as_deref(), menu.id, &mut Vec::new());
                                     if let Some(choice) = systemless_ui::menu::items(ui, &rows) {
                                         self.menu_actions.push(choice);
                                     }
@@ -3887,6 +3920,7 @@ mod tests {
                     Some(systemless::systems::macintosh::host_ui::BalloonSnapshot {
                         id: 30,
                         text: "Saves the current document.".into(),
+                        artwork: None,
                         tip: (100, 200),
                     }),
                     true,
@@ -4168,6 +4202,7 @@ struct SavedWorkspace {
 /// Hierarchical cycles and excessive nesting are cut off.
 fn menu_rows(
     snapshot: &systemless::systems::macintosh::menu_model::GuestMenuSnapshot,
+    help: Option<&std::collections::HashMap<(i16, i16), String>>,
     id: i16,
     ancestors: &mut Vec<i16>,
 ) -> Vec<systemless_ui::menu::Item<(i16, i16)>> {
@@ -4189,8 +4224,9 @@ fn menu_rows(
             row.enabled = menu.enabled && item.enabled;
             row.checked = item.checked;
             row.shortcut = item.key_equivalent.map(|key| format!("⌘{key}"));
+            row.help = help.and_then(|help| help.get(&(id, item.number)).cloned());
             if let Some(submenu) = item.submenu_id {
-                row.children = menu_rows(snapshot, submenu, ancestors);
+                row.children = menu_rows(snapshot, help, submenu, ancestors);
             }
             row
         })
