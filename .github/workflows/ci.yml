@@ -201,8 +201,10 @@ jobs:
           rm metadata.json
 
       # Catch packaging/metadata problems before a release ever runs.
-      - name: Package and verify crate
-        run: cargo package --locked
+      # The desktop binary depends on the workspace design-system crate;
+      # package both so the dependency resolves without a registry release.
+      - name: Package and verify crates
+        run: cargo package --locked -p systemless-ui -p systemless
 
       - name: Check crates.io upload size
         run: |
