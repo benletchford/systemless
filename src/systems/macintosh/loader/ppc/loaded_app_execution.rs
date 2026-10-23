@@ -1610,6 +1610,26 @@ impl PpcLoadedApp {
                         _ => glm_error = 1, // GLM_INVALID_ENUM
                     }
                     Some(PpcImportAction::ReturnPreserve)
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmGetInteger {
+                    // glm.h: GLint glmGetInteger(GLenum param). GLM requests
+                    // come from the process heap; GLM_PAGE_SIZE reports 4 KiB
+                    // and page counts express the live total in those units.
+                    let current: u32 = glm_allocations
+                        .values()
+                        .fold(0u32, |sum, (_, size)| sum.saturating_add(*size));
+                    let value = match cpu.gpr[3] {
+                        1 => 4096,                       // GLM_PAGE_SIZE
+                        2 => current.div_ceil(4096),     // GLM_NUMBER_PAGES
+                        3 => current,                    // GLM_CURRENT_MEMORY
+                        4 => process_memory_manager
+                            .native_allocation_limit(native_heap.heap_limit)
+                            .saturating_sub(PPC_HEAP_BASE), // GLM_MAXIMUM_MEMORY
+                        _ => {
+                            glm_error = 1; // GLM_INVALID_ENUM
+                            0
+                        }
+                    };
+                    Some(PpcImportAction::Return(value))
                 } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmGetError {
                     let error = glm_error;
                     glm_error = 0;

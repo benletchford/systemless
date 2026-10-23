@@ -228,6 +228,77 @@ impl ClassicGlFramebuffer {
         true
     }
 
+    /// Mutable views of one color buffer with the shared depth and stencil
+    /// planes, for the rasterizer.
+    pub fn raster_target(
+        &mut self,
+        buffer: ClassicGlColorBuffer,
+    ) -> Option<super::classic_gl::RasterTarget<'_>> {
+        let (width, height) = (self.width, self.height);
+        let color = match buffer {
+            ClassicGlColorBuffer::Front => &mut self.front,
+            ClassicGlColorBuffer::Back => self.back.as_mut()?,
+        };
+        Some(super::classic_gl::RasterTarget {
+            width,
+            height,
+            color,
+            depth: &mut self.depth,
+            stencil: &mut self.stencil,
+        })
+    }
+
+    /// Presents a completed color buffer to a 16-bit RGB555 or 32-bit
+    /// xRGB8888 QuickDraw surface of the same size.
+    pub fn present(
+        &self,
+        buffer: ClassicGlColorBuffer,
+        memory: &mut PpcSectionMem,
+        surface: PpcFrontBuffer,
+    ) -> bool {
+        match surface.depth {
+            16 => self.present_rgb555(buffer, memory, surface),
+            32 => self.present_xrgb8888(buffer, memory, surface),
+            _ => false,
+        }
+    }
+
+    fn present_xrgb8888(
+        &self,
+        buffer: ClassicGlColorBuffer,
+        memory: &mut PpcSectionMem,
+        surface: PpcFrontBuffer,
+    ) -> bool {
+        if usize::try_from(surface.width).ok() != Some(self.width)
+            || usize::try_from(surface.height).ok() != Some(self.height)
+            || surface.row_bytes < surface.width.saturating_mul(4)
+        {
+            return false;
+        }
+        let Some(pixels) = self.color(buffer) else {
+            return false;
+        };
+        let mut row = vec![0; self.width * 4];
+        for guest_y in 0..self.height {
+            let source_y = self.height - guest_y - 1;
+            for x in 0..self.width {
+                let [r, g, b, _] = pixels[source_y * self.width + x];
+                row[x * 4..x * 4 + 4].copy_from_slice(&[0, r, g, b]);
+            }
+            let Some(address) = u32::try_from(guest_y)
+                .ok()
+                .and_then(|y| y.checked_mul(surface.row_bytes))
+                .and_then(|offset| surface.base_addr.checked_add(offset))
+            else {
+                return false;
+            };
+            if memory.write_bytes(address, &row).is_none() {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn swap(&mut self) -> bool {
         let Some(back) = self.back.as_mut() else {
             return false;
