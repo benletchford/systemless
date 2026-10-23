@@ -295,6 +295,7 @@ pub(super) fn dispatch_dialog_import(
                 last_resource_error,
                 param_text,
                 params,
+                toolbox_startup,
             );
             if dialog != 0 {
                 *current_gworld = dialog;
@@ -317,6 +318,7 @@ pub(super) fn dispatch_dialog_import(
                 gworlds,
                 window_list,
                 *current_gdevice,
+                toolbox_startup,
             );
             let dialog = if dialog != 0
                 && !ppc_initialize_dialog_items(
@@ -363,6 +365,7 @@ pub(super) fn dispatch_dialog_import(
                 gworlds,
                 window_list,
                 *current_gdevice,
+                toolbox_startup,
             );
             let dialog = if dialog != 0
                 && !ppc_initialize_dialog_items(
@@ -1027,6 +1030,7 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 dialog,
+                toolbox_startup,
             );
             Some(match (bounds, items) {
                 (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
@@ -1065,7 +1069,15 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                toolbox_startup,
+                window_list,
             );
+            if matches!(
+                &pass,
+                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+            ) {
+                toolbox_startup.guest_modal_dialog = None;
+            }
             Some(match pass {
                 PpcModalDialogPass::Done(action) => action,
                 PpcModalDialogPass::CallFilter(launch) => {
@@ -1160,6 +1172,7 @@ pub(super) fn dispatch_dialog_import(
                     params.alert_id(),
                     false,
                     param_text,
+                    toolbox_startup,
                 );
                 if created == 0 {
                     return Some(PpcImportAction::Return(ppc_i16_result(-1)));
@@ -1175,6 +1188,7 @@ pub(super) fn dispatch_dialog_import(
                     vfs_resources,
                     current_resource_refnum,
                     created,
+                    toolbox_startup,
                 );
                 dialog = Some(created);
             }
@@ -1206,7 +1220,15 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                toolbox_startup,
+                window_list,
             );
+            if matches!(
+                &pass,
+                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+            ) {
+                toolbox_startup.guest_modal_dialog = None;
+            }
             caller_registers.restore(cpu);
             let action = match pass {
                 PpcModalDialogPass::Done(action) => action,
@@ -1335,6 +1357,7 @@ pub(super) fn dispatch_dialog_import(
                     params.alert_id(),
                     true,
                     param_text,
+                    toolbox_startup,
                 );
                 if created == 0 {
                     return Some(PpcImportAction::Return(ppc_i16_result(*last_resource_error)));
@@ -1350,6 +1373,7 @@ pub(super) fn dispatch_dialog_import(
                     vfs_resources,
                     current_resource_refnum,
                     created,
+                    toolbox_startup,
                 );
                 dialog = Some(created);
             }
@@ -1387,7 +1411,15 @@ pub(super) fn dispatch_dialog_import(
                 vfs_resources,
                 current_resource_refnum,
                 filter_result,
+                toolbox_startup,
+                window_list,
             );
+            if matches!(
+                &pass,
+                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+            ) {
+                toolbox_startup.guest_modal_dialog = None;
+            }
             caller_registers.restore(cpu);
             let action = match pass {
                 PpcModalDialogPass::Done(action) => action,
@@ -1481,6 +1513,7 @@ pub(super) fn dispatch_dialog_import(
                 last_resource_error,
                 param_text,
                 tick_count,
+                toolbox_startup,
             ))
         }
         _ => None,
@@ -1734,6 +1767,7 @@ fn ppc_dispatch_dialog_compatibility(
     last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
     tick_count: u32,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match operation {
@@ -1789,6 +1823,30 @@ fn ppc_dispatch_dialog_compatibility(
             let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
                 return PpcImportAction::Return(0);
             };
+            // A host-committed item arrives as its staged click. Report it
+            // without TEClick or control tracking, which the host already did.
+            if event.what == crate::dialog_manager::EVENT_MOUSE_DOWN
+                && event.where_v >= bounds.0
+                && event.where_v < bounds.2
+                && event.where_h >= bounds.1
+                && event.where_h < bounds.3
+            {
+                if let Some(crate::systems::macintosh::host_ui::HostClickTarget::Item(item)) =
+                    toolbox_startup.host_ui.take_host_click(
+                        dialog,
+                        (event.where_v, event.where_h),
+                        false,
+                    )
+                {
+                    if params.has_dialog_out() {
+                        let _ = memory.write_u32_be(params.dialog_out_ptr(), dialog);
+                    }
+                    if params.has_item_hit_out() {
+                        let _ = memory.write_u16_be(params.item_hit_ptr(), item as u16);
+                    }
+                    return PpcImportAction::Return(1);
+                }
+            }
             let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
                 return PpcImportAction::Return(0);
             };
@@ -1847,6 +1905,7 @@ fn ppc_dispatch_dialog_compatibility(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        toolbox_startup,
                     );
                     ppc_begin_dialog_callbacks(
                         cpu,
@@ -2136,6 +2195,7 @@ fn ppc_dispatch_dialog_compatibility(
                 vfs_resources,
                 current_resource_refnum,
                 dialog,
+                toolbox_startup,
             );
             match (bounds, items) {
                 (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
@@ -2298,6 +2358,7 @@ fn ppc_dispatch_dialog_compatibility(
                 params.alert_type(),
                 true,
                 param_text,
+                toolbox_startup,
             );
             if created == 0 {
                 return PpcImportAction::Return(ppc_i16_result(*last_resource_error));
@@ -2994,6 +3055,7 @@ fn ppc_new_alert_dialog(
     alert_id: i16,
     standard: bool,
     param_text: &SharedProcessDialogText,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> u32 {
     let (bounds, ditl_bytes, default_item, cancel_item, position, proc_id) = if standard {
         match ppc_standard_alert_template(cpu, memory) {
@@ -3118,6 +3180,7 @@ fn ppc_new_alert_dialog(
         gworlds,
         window_list,
         current_gdevice,
+        toolbox_startup,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
     let dialog = if dialog != 0
@@ -3186,6 +3249,7 @@ fn ppc_get_new_dialog(
     last_resource_error: &mut i16,
     param_text: &SharedProcessDialogText,
     params: GetNewDialogParameters,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> u32 {
     let dialog_id = params.dialog_id();
     let Some(dlog_index) = ppc_vfs_resource_index(
@@ -3278,6 +3342,7 @@ fn ppc_get_new_dialog(
         gworlds,
         window_list,
         current_gdevice,
+        toolbox_startup,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
     // Item styles require a matching dialog color table. The style table
@@ -3349,6 +3414,7 @@ fn ppc_new_dialog(
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
     current_gdevice: u32,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> u32 {
     let requested_storage = cpu.gpr[3];
     let bounds_ptr = cpu.gpr[4];
@@ -3406,6 +3472,27 @@ fn ppc_new_dialog(
         return 0;
     }
 
+    let capture_background = toolbox_startup.host_ui.enabled
+        && matches!(params.proc_id(), 1..=5)
+        && ppc_handle_bytes(memory, handles, params.items())
+            .and_then(|bytes| ppc_parse_dialog_items(&bytes))
+            .is_some_and(|items| !items.is_empty() && items.iter().all(|item| matches!(item.item_type & 0x7f, 4..=7 | 8 | 16 | 32 | 64)));
+    let backing = if capture_background {
+        ppc_read_rect(memory, params.bounds_ptr()).and_then(|bounds| {
+            let front = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
+            Some(PpcHostDialogBacking {
+                front,
+                bounds: ppc_window_structure_bounds(params.proc_id(), bounds),
+                pixels: ppc_standard_file_save_pixels(
+                    memory,
+                    front,
+                    ppc_window_structure_bounds(params.proc_id(), bounds),
+                ),
+            })
+        })
+    } else {
+        None
+    };
     let mut window_cpu = cpu.clone();
     window_cpu.gpr[3] = storage;
     window_cpu.gpr[4] = params.bounds_ptr();
@@ -3501,6 +3588,10 @@ fn ppc_new_dialog(
         DIALOG_DEFAULT_MODAL_EVENT_MASK,
     );
 
+    toolbox_startup.host_ui.register_dialog(dialog);
+    if let Some(backing) = backing {
+        toolbox_startup.host_dialog_backings.insert(dialog, backing);
+    }
     // Macintosh Toolbox Essentials (1992), pp. 6-115--6-118: NewDialog's
     // first eight parameters construct its window; the ninth installs the
     // caller-owned DITL handle in the DialogRecord, whose editing state starts
@@ -4675,19 +4766,32 @@ pub(super) fn ppc_draw_dialog_text(
         if baseline >= rect.2 {
             break;
         }
-        let _ = ppc_with_unclipped_screen_port(memory, |memory| ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            (rect.1, baseline),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            color,
-            None,
-            line,
-        ));
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+            ppc_draw_text_bytes(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                (rect.1, baseline),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+                PPC_QD_TEXT_MODE_SRC_OR,
+                color,
+                None,
+                line,
+            )
+        });
     }
+}
+
+fn ppc_host_dialog_item_kind(
+    controls: &[PpcControlRecord],
+    item: &PpcDialogItemView,
+) -> Option<u8> {
+    let proc = controls
+        .iter()
+        .find(|control| control.handle == item.handle)
+        .map(|control| control.proc_id & 0x0fff);
+    crate::systems::macintosh::host_ui::standard_dialog_item_kind(item.item_type, proc)
 }
 
 fn ppc_dialog_item_title(
@@ -4698,7 +4802,7 @@ fn ppc_dialog_item_title(
     let base_type = dialog_item_base_type(item.item_type);
     if matches!(
         base_type,
-        DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO
+        DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO | DIALOG_ITEM_RESOURCE_CONTROL
     ) {
         return memory
             .read_u32_be(item.handle)
@@ -4719,7 +4823,11 @@ pub(super) fn ppc_draw_dialog(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     dialog: u32,
+    toolbox_startup: &PpcToolboxStartupState,
 ) -> bool {
+    if toolbox_startup.host_ui.dialog_presented(dialog) {
+        return true;
+    }
     ppc_draw_dialog_items(
         memory,
         handles,
@@ -5024,21 +5132,27 @@ fn ppc_dialog_item_at_global_point(
     // coordinates, so the global point is rebased before asking the CDEF.
     // FindDialogItem already passes an empty origin and therefore stays local.
     let (local_v, local_h) = global_to_dialog_local_point(bounds, where_v, where_h);
-    let hit_idx = find_dialog_item_hit(
-        items.iter().map(|item| (item.rect, item.item_type)),
-        local_v,
-        local_h,
-        true,
-        |index| {
-            let item = &items[index];
-            if item.handle != 0 && controls.iter().any(|record| record.handle == item.handle) {
-                ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
-                    .is_some_and(|part| part != 0)
-            } else {
-                true
-            }
-        },
-    )?;
+    let candidate_rects: Vec<_> = items
+        .iter()
+        .map(|item| {
+            let rect = controls
+                .iter()
+                .find(|record| record.handle == item.handle)
+                .and_then(|_| ppc_control_ptr(memory, item.handle))
+                .and_then(|pointer| ppc_read_rect(memory, pointer + PPC_CONTROL_RECT_OFFSET))
+                .unwrap_or(item.rect);
+            (rect, item.item_type)
+        })
+        .collect();
+    let hit_idx = find_dialog_item_hit(candidate_rects, local_v, local_h, true, |index| {
+        let item = &items[index];
+        if item.handle != 0 && controls.iter().any(|record| record.handle == item.handle) {
+            ppc_control_part_at_point(memory, controls, item.handle, local_v, local_h)
+                .is_some_and(|part| part != 0)
+        } else {
+            true
+        }
+    })?;
     u16::try_from(hit_idx + 1).ok()
 }
 
@@ -5183,6 +5297,17 @@ impl PpcCallerRegisters {
         cpu.pc = self.pc;
         cpu.alignment_policy = self.alignment_policy;
     }
+}
+
+fn ppc_host_modal_filter_supported(memory: &mut PpcSectionMem, filter: u32) -> bool {
+    if filter == 0 {
+        return true;
+    }
+    let Some(target) = ppc_resolve_callback_target(memory, filter, 0, None) else {
+        return false;
+    };
+    let entry = PPC_IMPORT_TRAP_BASE + PPC_STD_FILTER_IMPORT_INDEX * 4;
+    target.entry == entry && memory.read_u32_be(entry) == Some(BLR)
 }
 
 /// Prepare a call of the application's ModalDialog filter for `event`. The
@@ -5364,6 +5489,8 @@ fn ppc_modal_dialog(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     filter_result: Option<PpcModalFilterResult>,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    window_list: &SharedProcessWindowList,
 ) -> PpcModalDialogPass {
     use PpcModalDialogPass::Done;
     if filter_result.is_none() {
@@ -5371,6 +5498,11 @@ fn ppc_modal_dialog(
             return Done(action);
         }
     }
+    // Keep the admitted view while a yielded callback continuation resumes.
+    // Clearing it before the early return above would hide the host dialog
+    // between steps of the built-in standard filter.
+    toolbox_startup.host_active_dialog = None;
+    toolbox_startup.host_active_dialog_filter = 0;
     let filter_proc = cpu.gpr[3];
     let item_hit_ptr = cpu.gpr[4];
     let can_write = ppc_memory_can_write_bytes(memory, item_hit_ptr, 2);
@@ -5416,6 +5548,42 @@ fn ppc_modal_dialog(
     let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
         return Done(PpcImportAction::ReturnPreserve);
     };
+    if toolbox_startup.guest_modal_dialog != Some(dialog) {
+        toolbox_startup.host_ui.clear_range_tracking(dialog);
+    }
+    toolbox_startup.guest_modal_dialog = Some(dialog);
+    toolbox_startup.host_ui.note_dialog_modal(dialog);
+    toolbox_startup.pending_native_menu_selection.take();
+    let host_eligible = ppc_host_modal_filter_supported(memory, params.filter_proc())
+        && matches!(ppc_window_proc_id(memory, dialog), 1..=5)
+        && !items.is_empty()
+        && items
+            .iter()
+            .all(|item| ppc_host_dialog_item_kind(controls, item).is_some());
+    if host_eligible {
+        toolbox_startup.host_active_dialog = Some(dialog);
+        toolbox_startup.host_active_dialog_filter = params.filter_proc();
+    } else if toolbox_startup.host_ui.unpresent_dialog(dialog) {
+        ppc_redraw_visible_window_frame(
+            memory,
+            gworlds,
+            window_list,
+            dialog,
+            toolbox_startup.host_menu_bar_hidden,
+            Some(&toolbox_startup.host_ui),
+        );
+        let _ = ppc_draw_dialog(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            screen_clut,
+            vfs_resources,
+            current_resource_refnum,
+            dialog,
+            toolbox_startup,
+        );
+    }
     *current_gworld = dialog;
     *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
     let event = match event {
@@ -5489,6 +5657,7 @@ fn ppc_modal_dialog(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        toolbox_startup,
                     );
                 }
                 let te_handle = memory
@@ -5507,6 +5676,7 @@ fn ppc_modal_dialog(
                 None
             } else {
                 if item.is_resource_control()
+                    && !toolbox_startup.host_ui.dialog_presented(dialog)
                     && ppc_track_dialog_popup(
                         memory,
                         controls,
@@ -5527,6 +5697,7 @@ fn ppc_modal_dialog(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        toolbox_startup,
                     );
                 }
                 Some(hit)
@@ -5602,8 +5773,10 @@ fn ppc_modal_dialog(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
+                        toolbox_startup,
                     );
                     ppc_te_draw(
+                        Some(&toolbox_startup.host_ui),
                         memory,
                         handles,
                         gworlds,
@@ -5628,6 +5801,7 @@ fn ppc_modal_dialog(
                 vfs_resources,
                 current_resource_refnum,
                 dialog,
+                toolbox_startup,
             );
             return Done(ppc_begin_dialog_callbacks(
                 cpu,
@@ -5642,6 +5816,7 @@ fn ppc_modal_dialog(
         _ => None,
     };
     if let Some(hit) = hit {
+        toolbox_startup.host_active_dialog = None;
         let _ = memory.write_u16_be(params.item_hit_ptr(), hit);
         if ppc_hle_trace_enabled() {
             eprintln!(
@@ -5665,5 +5840,852 @@ fn ppc_modal_dialog(
         // event selects an enabled item; returning item 0 makes guest code
         // spin and advances its state contrary to the Toolbox contract.
         Done(PpcImportAction::Yield(u64::MAX))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcHostDialogBacking {
+    pub(super) front: PpcFrontBuffer,
+    pub(super) bounds: (i16, i16, i16, i16),
+    pub(super) pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
+}
+
+pub(super) fn ppc_retire_host_dialog(state: &mut PpcToolboxStartupState, dialog: u32) -> bool {
+    let owned = state.host_ui.dialog_presented(dialog);
+    state.host_ui.retire_dialog(dialog);
+    state.host_dialog_backings.remove(&dialog);
+    if state.host_active_dialog == Some(dialog) {
+        state.host_active_dialog = None;
+    }
+    owned
+}
+
+pub(super) fn ppc_prepare_host_dialog_show(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    state: &mut PpcToolboxStartupState,
+    dialog: u32,
+) {
+    if state.host_ui.dialog_identity(dialog).is_none()
+        || !state.host_dialog_backings.contains_key(&dialog)
+    {
+        return;
+    }
+    if let (Some(front), Some(bounds)) = (
+        ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD),
+        ppc_dialog_global_bounds(memory, gworlds, dialog),
+    ) {
+        let bounds = ppc_window_structure_bounds(ppc_window_proc_id(memory, dialog), bounds);
+        let pixels = ppc_standard_file_save_pixels(memory, front, bounds);
+        state.host_dialog_backings.insert(
+            dialog,
+            PpcHostDialogBacking {
+                front,
+                bounds,
+                pixels,
+            },
+        );
+        state.host_ui.invalidate_dialog_presentation(dialog);
+    }
+}
+
+pub(super) fn ppc_finish_host_dialog_show(
+    memory: &mut PpcSectionMem,
+    state: &PpcToolboxStartupState,
+    dialog: u32,
+) {
+    if state.host_ui.dialog_presented(dialog) {
+        if let Some(backing) = state.host_dialog_backings.get(&dialog) {
+            ppc_standard_file_restore_pixels(memory, &backing.pixels, backing.front);
+        }
+    }
+}
+
+impl PpcLoadedApp {
+    pub(crate) fn host_dialog_ids(&self) -> Vec<u64> {
+        self.toolbox_startup.host_ui.live_dialog_ids()
+    }
+
+    pub(crate) fn modal_status(&mut self) -> crate::systems::macintosh::host_ui::ModalStatus {
+        let front = ppc_front_visible_process_window(&mut self.memory, &self.window_list);
+        let retained = front.filter(|p| {
+            (self
+                .memory
+                .read_u16_be(p.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+                == Some(2)
+                && self.toolbox_startup.host_ui.was_dialog_modal(*p)
+                && matches!(ppc_window_proc_id(&mut self.memory, *p), 1..=3 | 5))
+                || self
+                    .toolbox_startup
+                    .window_modality
+                    .get(p)
+                    .is_some_and(|(kind, _)| matches!(kind, 1 | 2))
+        });
+        let callback = self
+            .dialog_callback_stack
+            .iter()
+            .rev()
+            .find(|state| {
+                state.modal_filter.is_some()
+                    || state.completion == PpcDialogCallbackCompletion::Yield
+            })
+            .map(|state| state.dialog);
+        let dialog = self
+            .toolbox_startup
+            .guest_modal_dialog
+            .or(retained)
+            .or(callback);
+        crate::systems::macintosh::host_ui::ModalStatus {
+            dialog,
+            dialog_order: dialog.map_or(0, |p| self.toolbox_startup.host_ui.dialog_order(p)),
+            file: self.toolbox_startup.standard_file_get_tracking.is_some()
+                || self.toolbox_startup.standard_file_get_filtering.is_some()
+                || self.toolbox_startup.standard_file_put_tracking.is_some(),
+            file_order: self.toolbox_startup.host_ui.file_order(),
+        }
+    }
+
+    fn resume_guest_dialog(&mut self, dialog: u32, handles: &[PpcHandleRecord]) {
+        if !self.toolbox_startup.host_ui.unpresent_dialog(dialog) {
+            return;
+        }
+        ppc_redraw_visible_window_frame(
+            &mut self.memory,
+            &self.gworlds,
+            &self.window_list,
+            dialog,
+            self.toolbox_startup.host_menu_bar_hidden,
+            Some(&self.toolbox_startup.host_ui),
+        );
+        let controls = self.controls.with_ref(|controls| controls.to_vec());
+        let resource = self.current_resource_refnum();
+        let _ = ppc_draw_dialog(
+            &mut self.memory,
+            handles,
+            &controls,
+            &self.gworlds,
+            &self.screen_clut,
+            &self.process_file_system.vfs_resources,
+            resource,
+            dialog,
+            &self.toolbox_startup,
+        );
+    }
+
+    fn host_dialog_artwork(
+        &mut self,
+        dialog: u32,
+        number: i16,
+        item: &PpcDialogItemView,
+        handles: &[PpcHandleRecord],
+    ) -> Option<std::sync::Arc<crate::systems::macintosh::host_ui::DialogArtwork>> {
+        if item.item_type & 0x7f == 64 {
+            let size = (
+                u16::try_from(i32::from(item.rect.3) - i32::from(item.rect.1)).ok()?,
+                u16::try_from(i32::from(item.rect.2) - i32::from(item.rect.0)).ok()?,
+            );
+            let bytes = ppc_handle_bytes(&mut self.memory, handles, item.handle)?;
+            return self
+                .toolbox_startup
+                .host_ui
+                .project_picture(dialog, number, &bytes, size);
+        }
+        if item.item_type & 0x7f != 32 {
+            return None;
+        }
+        let resource = item.resource_id()?;
+        if let Some(index) = ppc_vfs_resource_index(
+            &self.vfs_resources,
+            self.current_resource_refnum(),
+            u32::from_be_bytes(*b"cicn"),
+            resource,
+            false,
+        ) {
+            let record = &self.vfs_resources[index];
+            let handle = record.handle;
+            let fallback = record.data.to_vec();
+            let bytes = ppc_handle_bytes(&mut self.memory, handles, handle)
+                .filter(|b| !b.is_empty())
+                .unwrap_or(fallback);
+            if let Some(image) = self
+                .toolbox_startup
+                .host_ui
+                .project_icon(dialog, number, &bytes, true)
+            {
+                return Some(image);
+            }
+        }
+        let Some(bytes) = ppc_handle_bytes(&mut self.memory, handles, item.handle) else {
+            return self
+                .toolbox_startup
+                .host_ui
+                .project_alert_icon(dialog, number, resource);
+        };
+        self.toolbox_startup
+            .host_ui
+            .project_icon(dialog, number, &bytes, false)
+    }
+
+    fn host_dialog_range(
+        &mut self,
+        item: &PpcDialogItemView,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogRange> {
+        if self
+            .controls
+            .with_ref(|records| ppc_host_dialog_item_kind(records, item))
+            != Some(17)
+        {
+            return None;
+        }
+        let control = ppc_control_ptr(&mut self.memory, item.handle)?;
+        let min = self.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET)? as i16;
+        let max = self.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET)? as i16;
+        let value = self
+            .memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)? as i16;
+        (min <= value && value <= max)
+            .then_some(crate::systems::macintosh::host_ui::DialogRange { min, max })
+    }
+
+    fn host_dialog_choices(
+        &mut self,
+        item: &PpcDialogItemView,
+        handles: &[PpcHandleRecord],
+    ) -> Option<Vec<crate::systems::macintosh::host_ui::DialogChoice>> {
+        let kind = self
+            .controls
+            .with_ref(|records| ppc_host_dialog_item_kind(records, item))?;
+        if kind != 7 {
+            return Some(Vec::new());
+        }
+        let control = ppc_control_ptr(&mut self.memory, item.handle)?;
+        let data_handle = self.memory.read_u32_be(control + PPC_CONTROL_DATA_OFFSET)?;
+        let data = ppc_control_ptr(&mut self.memory, data_handle)?;
+        let menu = self.memory.read_u32_be(data)?;
+        let bytes = ppc_menu_handle_bytes(&mut self.memory, handles, menu)?;
+        if bytes.get(6..10)? != [0, 0, 0, 0] {
+            return None;
+        }
+        let (_, flags, items) = ppc_decode_menu_items(&bytes)?;
+        if items.is_empty() || items.len() > 512 || items.iter().any(|item| item.command == 0x1b) {
+            return None;
+        }
+        Some(
+            items
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, item)| crate::systems::macintosh::host_ui::DialogChoice {
+                        value: (index + 1) as i16,
+                        text: decode_mac_roman(&item.text),
+                        enabled: flags & 1 != 0 && item.enabled && item.text != b"-",
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    pub(crate) fn reply_host_dialog_control(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> Option<(i16, i16)> {
+        let position = self.host_dialog_item_position(&reply.dialog)?;
+        let snapshot = self.host_dialog()?;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.number == reply.dialog.item && matches!(item.kind, 7 | 17))?;
+        let valid = if item.kind == 17 {
+            item.range
+                .is_some_and(|range| range.min <= reply.value && reply.value <= range.max)
+        } else {
+            item.choices
+                .iter()
+                .any(|choice| choice.value == reply.value && choice.enabled)
+        };
+        if item.value != reply.expected || !valid {
+            return None;
+        }
+        let dialog = self.toolbox_startup.host_active_dialog?;
+        let handles = self.handles();
+        let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
+        let handle = items.get((reply.dialog.item - 1) as usize)?.handle;
+        let control = self.memory.read_u32_be(handle)?;
+        self.memory
+            .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, reply.value as u16)?;
+        if let Some(range) = item.range {
+            self.toolbox_startup.host_ui.stage_range_tracking(
+                dialog,
+                handle,
+                reply.value,
+                range.min,
+                range.max,
+            );
+        }
+        self.toolbox_startup
+            .host_ui
+            .invalidate_dialog_snapshot(dialog);
+        Some(position)
+    }
+
+    pub(crate) fn host_dialog(
+        &mut self,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        self.project_host_dialog(None)
+    }
+
+    /// Identity, title and content bounds of a guest-rendered modal dialog.
+    pub(crate) fn guest_dialog_surface(
+        &mut self,
+        dialog: u32,
+    ) -> Option<crate::systems::macintosh::host_ui::GuestDialogSurface> {
+        let id = self.toolbox_startup.host_ui.dialog_identity(dialog)?;
+        if self.toolbox_startup.host_ui.dialog_presented(dialog)
+            || !ppc_window_is_visible(&mut self.memory, dialog)
+        {
+            return None;
+        }
+        let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
+        let title = self
+            .memory
+            .read_u32_be(dialog + 134)
+            .and_then(|h| self.memory.read_u32_be(h))
+            .and_then(|p| ppc_read_pstring_bytes(&mut self.memory, p))
+            .unwrap_or_default();
+        (bounds.2 > bounds.0 && bounds.3 > bounds.1).then(|| (id, decode_mac_roman(&title), bounds))
+    }
+
+    pub(super) fn project_host_modeless_dialog_for_activation(
+        &mut self,
+        pointer: u32,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        self.project_host_dialog(Some((pointer, false)))
+    }
+
+    pub(crate) fn host_modeless_dialogs(
+        &mut self,
+        blocked: bool,
+    ) -> Vec<(usize, crate::systems::macintosh::host_ui::DialogSnapshot)> {
+        self.window_list
+            .windows()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, pointer)| {
+                self.project_host_dialog(Some((pointer, blocked)))
+                    .map(|snapshot| (order, snapshot))
+            })
+            .collect()
+    }
+    fn project_host_dialog(
+        &mut self,
+        modeless: Option<(u32, bool)>,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        use crate::systems::macintosh::host_ui::{DialogItemSnapshot, DialogSnapshot};
+        let (dialog, busy) = if let Some((pointer, blocked)) = modeless {
+            let eligible = ppc_window_proc_id(&mut self.memory, pointer) == 4
+                && self.memory.read_u16_be(pointer + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                    == Some(crate::dialog_manager::DIALOG_WINDOW_KIND);
+            if !eligible && self.toolbox_startup.host_ui.dialog_is_modeless(pointer) {
+                let handles = self.handles();
+                self.resume_guest_dialog(pointer, &handles);
+            }
+            if !eligible
+                || self.toolbox_startup.guest_modal_dialog == Some(pointer)
+                || self
+                    .dialog_callback_stack
+                    .iter()
+                    .any(|call| call.dialog == pointer)
+            {
+                return None;
+            }
+            let status = self.modal_status();
+            if status.dialog == Some(pointer) {
+                if self.toolbox_startup.host_ui.dialog_is_modeless(pointer) {
+                    let handles = self.handles();
+                    self.resume_guest_dialog(pointer, &handles);
+                }
+                return None;
+            }
+            let busy = blocked || status.dialog.is_some() || status.file;
+            if busy && !self.toolbox_startup.host_ui.dialog_presented(pointer) {
+                return None;
+            }
+            (pointer, busy)
+        } else if let Some(dialog) = self.toolbox_startup.host_active_dialog {
+            if !ppc_host_modal_filter_supported(
+                &mut self.memory,
+                self.toolbox_startup.host_active_dialog_filter,
+            ) {
+                let handles = self.handles();
+                self.resume_guest_dialog(dialog, &handles);
+                return None;
+            }
+
+            (dialog, false)
+        } else {
+            // A completed itemHit leaves the dialog visible while application
+            // code handles it. Keep its host view, but accept no further input
+            // until the guest starts the next ModalDialog invocation.
+            if self.toolbox_startup.guest_modal_dialog.is_some() {
+                return None;
+            }
+            let dialog = ppc_front_visible_process_window(&mut self.memory, &self.window_list)?;
+            if !self.toolbox_startup.host_ui.dialog_presented(dialog) {
+                return None;
+            }
+            if self.toolbox_startup.host_ui.dialog_is_modeless(dialog) {
+                return None;
+            }
+            if !matches!(ppc_window_proc_id(&mut self.memory, dialog), 1..=3 | 5) {
+                let handles = self.handles();
+                self.resume_guest_dialog(dialog, &handles);
+                return None;
+            }
+            (dialog, true)
+        };
+        let id = self.toolbox_startup.host_ui.dialog_identity(dialog)?;
+        if !ppc_window_is_visible(&mut self.memory, dialog) {
+            return None;
+        }
+        let handles = self.handles();
+        let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
+        let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
+        if self.controls.with_ref(|controls| {
+            items
+                .iter()
+                .any(|item| ppc_host_dialog_item_kind(controls, item).is_none())
+        }) {
+            self.resume_guest_dialog(dialog, &handles);
+            return None;
+        }
+        let mut projected = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let control = (matches!(item.item_type & 0x7f, 4..=7))
+                .then(|| self.memory.read_u32_be(item.handle))
+                .flatten()
+                .filter(|p| *p != 0);
+            let rect = control
+                .and_then(|p| ppc_read_rect(&mut self.memory, p + PPC_CONTROL_RECT_OFFSET))
+                .unwrap_or(item.rect);
+            if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, rect) {
+                continue;
+            }
+            if control
+                .is_some_and(|p| self.memory.read_u8(p + PPC_CONTROL_VISIBLE_OFFSET) == Some(0))
+            {
+                continue;
+            }
+            let range = self.host_dialog_range(item);
+            if self
+                .controls
+                .with_ref(|records| ppc_host_dialog_item_kind(records, item))
+                == Some(17)
+                && range.is_none()
+            {
+                self.resume_guest_dialog(dialog, &handles);
+                return None;
+            }
+            let Some(choices) = self.host_dialog_choices(item, &handles) else {
+                self.resume_guest_dialog(dialog, &handles);
+                return None;
+            };
+            let artwork = self.host_dialog_artwork(dialog, (index + 1) as i16, item, &handles);
+            if matches!(item.item_type & 0x7f, 32 | 64) && artwork.is_none() {
+                self.resume_guest_dialog(dialog, &handles);
+                return None;
+            }
+            let text = if matches!(item.item_type & 0x7f, 32 | 64) {
+                Vec::new()
+            } else {
+                ppc_dialog_item_title(&mut self.memory, &handles, item)
+            };
+            let text = if item.item_type & 0x7f == 8 {
+                ppc_apply_param_text(&text, &self.param_text.snapshot()).into_owned()
+            } else {
+                text
+            };
+            projected.push(DialogItemSnapshot {
+                range,
+                choices,
+                number: (index + 1) as i16,
+                artwork,
+                kind: self
+                    .controls
+                    .with_ref(|controls| ppc_host_dialog_item_kind(controls, item))
+                    .unwrap(),
+                enabled: item.is_enabled()
+                    && self.controls.with_ref(|records| {
+                        records
+                            .iter()
+                            .find(|r| r.handle == item.handle)
+                            .is_none_or(|r| r.active)
+                    })
+                    && control.is_none_or(|p| {
+                        self.memory.read_u8(p + PPC_CONTROL_HILITE_OFFSET) != Some(255)
+                    }),
+                rect,
+                text: decode_mac_roman(&text).replace('\r', "\n"),
+                selection: (item.item_type & 0x7f == 16)
+                    .then(|| {
+                        let active = self
+                            .memory
+                            .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                            .unwrap_or(u16::MAX) as usize
+                            == index;
+                        let te = self
+                            .memory
+                            .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                            .and_then(|h| ppc_te_record_ptr(&mut self.memory, h));
+                        if let Some(te) = te.filter(|_| active) {
+                            Some((
+                                self.memory
+                                    .read_u16_be(te + PPC_TE_SEL_START_OFFSET)
+                                    .unwrap_or(0),
+                                self.memory
+                                    .read_u16_be(te + PPC_TE_SEL_END_OFFSET)
+                                    .unwrap_or(0),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten(),
+                value: control
+                    .and_then(|p| self.memory.read_u16_be(p + PPC_CONTROL_VALUE_OFFSET))
+                    .unwrap_or(0) as i16,
+            });
+        }
+        if projected.is_empty() {
+            self.resume_guest_dialog(dialog, &handles);
+            return None;
+        }
+        let title = self
+            .memory
+            .read_u32_be(dialog + 134)
+            .and_then(|h| self.memory.read_u32_be(h))
+            .and_then(|p| ppc_read_pstring_bytes(&mut self.memory, p))
+            .unwrap_or_default();
+        let cancel = self
+            .memory
+            .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
+            .map(|n| n as i16);
+        let snapshot = DialogSnapshot {
+            movable: matches!(ppc_window_proc_id(&mut self.memory, dialog), 4 | 5),
+            closable: modeless.is_some()
+                && self
+                    .memory
+                    .read_u8(dialog.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
+                    .is_some_and(|flag| flag != 0),
+            id,
+            revision: 0,
+            title: decode_mac_roman(&title),
+            size: (
+                (bounds.3 as i32 - bounds.1 as i32).clamp(0, u16::MAX as i32) as u16,
+                (bounds.2 as i32 - bounds.0 as i32).clamp(0, u16::MAX as i32) as u16,
+            ),
+            items: projected,
+            edit_item: self
+                .memory
+                .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                .map(|i| (i as i16).saturating_add(1))
+                .unwrap_or(0),
+            default_item: self
+                .memory
+                .read_u16_be(dialog + DIALOG_DEFAULT_ITEM_OFFSET)
+                .unwrap_or(1) as i16,
+            cancel_item: ppc_dialog_cancel_item(&mut self.memory, &handles, &items, cancel)
+                .unwrap_or(0) as i16,
+            busy,
+        };
+        let front = ppc_front_buffer_for_gworld(&self.gworlds, PPC_MAIN_GWORLD)?;
+        let structure =
+            ppc_window_structure_bounds(ppc_window_proc_id(&mut self.memory, dialog), bounds);
+        if self.toolbox_startup.host_ui.dialog_presented(dialog)
+            && self
+                .toolbox_startup
+                .host_dialog_backings
+                .get(&dialog)
+                .is_some_and(|backing| backing.front != front || backing.bounds != structure)
+        {
+            ppc_prepare_host_dialog_show(
+                &mut self.memory,
+                &self.gworlds,
+                &mut self.toolbox_startup,
+                dialog,
+            );
+        }
+        let backing = self.toolbox_startup.host_dialog_backings.get(&dialog)?;
+        if ppc_front_buffer_for_gworld(&self.gworlds, PPC_MAIN_GWORLD) != Some(backing.front) {
+            return None;
+        }
+        let restore = if modeless.is_some() {
+            self.toolbox_startup.host_ui.present_modeless_dialog(dialog)
+        } else {
+            self.toolbox_startup.host_ui.present_dialog(dialog)
+        };
+        if restore {
+            ppc_standard_file_restore_pixels(&mut self.memory, &backing.pixels, backing.front);
+        }
+        Some(self.toolbox_startup.host_ui.project_dialog(snapshot))
+    }
+    pub(crate) fn reply_host_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        let Some(snapshot) = self.host_dialog() else {
+            return false;
+        };
+        let Some(dialog) = self.toolbox_startup.host_active_dialog else {
+            return false;
+        };
+        self.apply_host_dialog_text(dialog, snapshot, reply)
+    }
+
+    fn apply_host_dialog_text(
+        &mut self,
+        dialog: u32,
+        snapshot: crate::systems::macintosh::host_ui::DialogSnapshot,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        if snapshot.id != reply.id
+            || snapshot.revision != reply.revision
+            || snapshot.busy
+            || !snapshot.items.iter().any(|i| {
+                i.number == reply.item && i.kind == 16 && i.enabled && i.text == reply.expected
+            })
+            || reply.text.chars().count() > i16::MAX as usize
+        {
+            return false;
+        }
+        let text = encode_mac_roman_lossy(&reply.text.replace('\n', "\r"));
+        let start = reply
+            .selection
+            .0
+            .min(reply.selection.1)
+            .min(text.len() as u16);
+        let end = reply
+            .selection
+            .0
+            .max(reply.selection.1)
+            .min(text.len() as u16);
+        let tick = self.current_tick();
+        let mut cursor = self.heap_cursor();
+        let limit = self.heap_limit();
+        let mut error = self.last_mem_error();
+        let mut handles = self.handles();
+        let shared_manager = self.process_memory_manager.0.clone();
+        let mut manager = shared_manager.borrow_mut();
+        let mut allocator = PpcProcessAllocatorView {
+            memory_manager: &mut manager,
+        };
+        ppc_select_dialog_item_text(
+            Some(&mut allocator),
+            None,
+            &mut self.memory,
+            &mut cursor,
+            limit,
+            &mut error,
+            &mut handles,
+            SelectDialogItemTextParameters::new(
+                dialog,
+                reply.item as usize,
+                start as i16,
+                end as i16,
+            ),
+            tick,
+            self.quickdraw_text_mode,
+            self.quickdraw_text_size,
+            self.quickdraw_fore_color,
+        );
+        let Some(te_handle) = self.memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET) else {
+            return false;
+        };
+        if self.memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+            != Some((reply.item - 1) as u16)
+        {
+            return false;
+        }
+        if ppc_te_set_text(
+            Some(&mut allocator),
+            &mut self.memory,
+            &mut cursor,
+            limit,
+            &mut error,
+            &mut handles,
+            te_handle,
+            &text,
+        ) != PPC_NO_ERR
+        {
+            return false;
+        }
+        let Some(te) = ppc_te_record_ptr(&mut self.memory, te_handle) else {
+            return false;
+        };
+        let _ = self
+            .memory
+            .write_u16_be(te + PPC_TE_SEL_START_OFFSET, start);
+        let _ = self.memory.write_u16_be(te + PPC_TE_SEL_END_OFFSET, end);
+        true
+    }
+
+    pub(crate) fn host_dialog_item_position(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> Option<(i16, i16)> {
+        let snapshot = self.host_dialog()?;
+        if snapshot.busy || (snapshot.id, snapshot.revision) != (reply.id, reply.revision) {
+            return None;
+        }
+        let item = snapshot
+            .items
+            .iter()
+            .find(|i| i.number == reply.item && i.enabled && matches!(i.kind, 4..=7 | 17 | 32 | 64))?;
+        let dialog = self.toolbox_startup.host_active_dialog?;
+        let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
+        let (t, l, b, r) = item.rect;
+        if b <= t || r <= l {
+            return None;
+        }
+        Some((
+            (bounds.0 as i32 + (t as i32 + b as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+            (bounds.1 as i32 + (l as i32 + r as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+        ))
+    }
+
+    /// Validate a frontend command against the live modeless projection.
+    fn host_modeless_target(
+        &mut self,
+        id: u64,
+        revision: u64,
+    ) -> Option<crate::systems::macintosh::host_ui::ModelessTarget> {
+        let pointer = self.toolbox_startup.host_ui.dialog_pointer(id)?;
+        if !self.toolbox_startup.host_ui.dialog_is_modeless(pointer) {
+            return None;
+        }
+        let view = self.project_host_dialog(Some((pointer, false)))?;
+        (!view.busy && view.revision == revision).then_some((pointer, view))
+    }
+
+    /// Returns where to post a staged click for a modeless item. DialogSelect
+    /// then reports the item without tracking controls or moving the caret.
+    pub(crate) fn reply_host_modeless_dialog(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) = self.host_modeless_target(reply.id, reply.revision)?;
+        self.stage_host_modeless_item(dialog, &view, reply.item, false)
+    }
+
+    fn stage_host_modeless_item(
+        &mut self,
+        dialog: u32,
+        view: &crate::systems::macintosh::host_ui::DialogSnapshot,
+        number: i16,
+        edit: bool,
+    ) -> Option<(i16, i16)> {
+        let item = view.items.iter().find(|item| {
+            item.number == number
+                && item.enabled
+                && (matches!(item.kind, 4..=7 | 17 | 32 | 64) || (edit && item.kind == 16))
+        })?;
+        let (t, l, b, r) = item.rect;
+        if b <= t || r <= l {
+            return None;
+        }
+        let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
+        let point = (
+            (bounds.0 as i32 + (t as i32 + b as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+            (bounds.1 as i32 + (l as i32 + r as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+        );
+        self.select_host_modeless_window_for_click(dialog);
+        self.toolbox_startup.host_ui.stage_host_click(
+            dialog,
+            point,
+            crate::systems::macintosh::host_ui::HostClickTarget::Item(number),
+        );
+        Some(point)
+    }
+
+    pub(crate) fn reply_host_modeless_dialog_control(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) = self.host_modeless_target(reply.dialog.id, reply.dialog.revision)?;
+        let item = view.items.iter().find(|item| {
+            item.number == reply.dialog.item && item.enabled && matches!(item.kind, 7 | 17)
+        })?;
+        let valid = if item.kind == 17 {
+            item.range
+                .is_some_and(|range| range.min <= reply.value && reply.value <= range.max)
+        } else {
+            item.choices
+                .iter()
+                .any(|choice| choice.value == reply.value && choice.enabled)
+        };
+        if item.value != reply.expected || !valid {
+            return None;
+        }
+        let range = item.range;
+        let handles = self.handles();
+        let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
+        let handle = items.get((reply.dialog.item - 1) as usize)?.handle;
+        let control = self.memory.read_u32_be(handle).filter(|p| *p != 0)?;
+        let point = self.stage_host_modeless_item(dialog, &view, reply.dialog.item, false)?;
+        self.memory
+            .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, reply.value as u16)?;
+        if let Some(range) = range {
+            self.toolbox_startup.host_ui.stage_range_tracking(
+                dialog,
+                handle,
+                reply.value,
+                range.min,
+                range.max,
+            );
+        }
+        self.toolbox_startup
+            .host_ui
+            .invalidate_dialog_snapshot(dialog);
+        Some(point)
+    }
+
+    pub(crate) fn reply_host_modeless_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> Option<Option<(i16, i16)>> {
+        let (dialog, view) = self.host_modeless_target(reply.id, reply.revision)?;
+        if !self.apply_host_dialog_text(dialog, view.clone(), reply) {
+            return None;
+        }
+        self.toolbox_startup
+            .host_ui
+            .invalidate_dialog_snapshot(dialog);
+        // As on 68K, report the committed edit as DialogSelect's edit item.
+        Some(self.stage_host_modeless_item(dialog, &view, reply.item, true))
+    }
+
+    /// Returns where to post a staged go-away click; TrackGoAway accepts it
+    /// without live button tracking and the application decides the outcome.
+    pub(crate) fn host_modeless_close_position(
+        &mut self,
+        id: u64,
+        revision: u64,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) = self.host_modeless_target(id, revision)?;
+        if !view.closable {
+            return None;
+        }
+        let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
+        let point = (bounds.0.saturating_sub(10), bounds.1.saturating_add(12));
+        self.select_host_modeless_window_for_click(dialog);
+        self.toolbox_startup.host_ui.stage_host_click(
+            dialog,
+            point,
+            crate::systems::macintosh::host_ui::HostClickTarget::GoAway,
+        );
+        Some(point)
     }
 }

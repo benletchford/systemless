@@ -5832,7 +5832,7 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         hilited: bool,
     ) {
-        if window_ptr == 0 {
+        if window_ptr == 0 || self.host_ui.dialog_presented(window_ptr) {
             return;
         }
         if bus.read_byte(window_ptr + 110u32) == 0 {
@@ -6296,7 +6296,10 @@ impl super::TrapDispatcher {
         // accumulates in the framebuffer. ModalDialog re-snapshots the final
         // state and sets rendered_pixels_final=true before we begin restoring.
         if let Some(ref tracking) = self.dialog_tracking {
-            if !tracking.game_managed && tracking.rendered_pixels_final {
+            if !tracking.game_managed
+                && tracking.rendered_pixels_final
+                && !self.host_ui.dialog_presented(tracking.dialog_ptr)
+            {
                 // Blit the pre-rendered dialog snapshot (includes pictures)
                 self.restore_dialog_content_pixels(bus, tracking.bounds, &tracking.rendered_pixels);
 
@@ -6430,7 +6433,11 @@ impl super::TrapDispatcher {
             .as_ref()
             .filter(|tracking| tracking.highlighted)
         {
-            self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+            self.toggle_standard_go_away_highlight(
+                bus,
+                tracking.window_ptr,
+                tracking.highlight_rect,
+            );
         }
         if let Some((rect, pattern)) = self.region_tracking.as_ref().and_then(|tracking| {
             tracking

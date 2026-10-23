@@ -67,6 +67,7 @@ fn raster_upload<'a>(pixels: &'a [u32], _bytes: &'a mut Vec<u8>) -> &'a [u8] {
 }
 
 pub struct WgpuPresenter {
+    pub workspace: Option<super::workspace_ui::WorkspaceUi>,
     // Drop the surface before its owning window; raw handles never escape this owner.
     surface: wgpu::Surface<'static>,
     _window: Rc<Window>,
@@ -141,7 +142,7 @@ impl WgpuPresenter {
     pub fn new(
         window: Rc<Window>,
         display: winit::event_loop::OwnedDisplayHandle,
-        wake: Option<winit::event_loop::EventLoopProxy<()>>,
+        wake: Option<winit::event_loop::EventLoopProxy<super::DesktopEvent>>,
     ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display.clone()),
@@ -193,6 +194,7 @@ impl WgpuPresenter {
         Ok(Self {
             health,
             next_health_poll: std::cell::Cell::new(std::time::Instant::now()),
+            workspace: None,
             last_compact: None,
             raster_geometry: None,
             compact,
@@ -233,6 +235,56 @@ impl WgpuPresenter {
         self.health.check()
     }
 
+    /// Guest output renders into the workspace's offscreen texture.
+    fn use_workspace_targets(&mut self) {
+        self.pipeline = pipeline(&self.device, wgpu::TextureFormat::Rgba8Unorm);
+        self.compact = super::wgpu_compact::CompactRenderer::new(
+            &self.device,
+            &self.queue,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+    }
+
+    pub fn enable_workspace(&mut self) {
+        self.workspace = Some(super::workspace_ui::WorkspaceUi::new(
+            &self._window,
+            &self.device,
+            self.config.format,
+        ));
+        self.use_workspace_targets();
+    }
+
+    /// Move an existing workspace onto this (recreated) device, keeping its
+    /// layout, editor drafts, window geometry and accessibility state.
+    pub fn adopt_workspace(&mut self, mut workspace: super::workspace_ui::WorkspaceUi) {
+        self.use_workspace_targets();
+        workspace.recreate_gpu(&self._window, &self.device, self.config.format);
+        self.workspace = Some(workspace);
+    }
+
+    pub fn take_workspace(&mut self) -> Option<super::workspace_ui::WorkspaceUi> {
+        self.workspace.take()
+    }
+
+    pub fn redraw_workspace(&mut self) -> Result<bool, Failure> {
+        if self.workspace.is_none() {
+            return Ok(false);
+        }
+        let size = self._window.inner_size();
+        let Some(frame) = self.acquire((size.width, size.height))? else {
+            return Ok(false);
+        };
+        self.workspace.as_mut().unwrap().draw(
+            &self._window,
+            &self.device,
+            &self.queue,
+            &frame.texture.create_view(&Default::default()),
+        );
+        self.check_health()?;
+        self.queue.present(frame);
+        Ok(true)
+    }
+
     fn acquire(&mut self, output: (u32, u32)) -> Result<Option<wgpu::SurfaceTexture>, Failure> {
         self.check_health()?;
         if output.0 == 0 || output.1 == 0 {
@@ -262,6 +314,8 @@ impl WgpuPresenter {
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                // The application recreates the presenter and moves the
+                // workspace across; see `App::recover_wgpu`.
                 return Err(Failure::lost("wgpu surface lost"));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -284,14 +338,19 @@ impl WgpuPresenter {
         self.check_health()?;
         // Immutable packets may be reused for idle frontend frames. A host
         // expose/resize or a raster overlay invalidates this successful frame.
-        if self
-            .last_compact
-            .as_ref()
-            .is_some_and(|last| last.matches(image, crop, output))
+        if self.workspace.is_none()
+            && self
+                .last_compact
+                .as_ref()
+                .is_some_and(|last| last.matches(image, crop, output))
         {
             return Ok(Some(true));
         }
-        let viewport = super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1);
+        let viewport = if self.workspace.is_some() {
+            (0, 0, crop.2, crop.3)
+        } else {
+            super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1)
+        };
         if !self
             .compact
             .prepare(image, crop, viewport, &self.device.limits())
@@ -301,14 +360,22 @@ impl WgpuPresenter {
         let Some(frame) = self.acquire(output)? else {
             return Ok(Some(false));
         };
-        self.compact.encode(
-            &self.device,
-            &self.queue,
-            image,
-            crop,
-            viewport,
-            &frame.texture.create_view(&Default::default()),
-        );
+        let target = if let Some(ui) = self.workspace.as_mut() {
+            ui.crop = crop;
+            ui.target(&self.device, (crop.2, crop.3))
+        } else {
+            frame.texture.create_view(&Default::default())
+        };
+        self.compact
+            .encode(&self.device, &self.queue, image, crop, viewport, &target);
+        if let Some(ui) = self.workspace.as_mut() {
+            ui.draw(
+                &self._window,
+                &self.device,
+                &self.queue,
+                &frame.texture.create_view(&Default::default()),
+            );
+        }
         self.check_health()?;
         self.queue.present(frame);
         self.check_health()?;
@@ -397,7 +464,11 @@ impl WgpuPresenter {
             },
             image.size(),
         );
-        let rect = super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1);
+        let rect = if self.workspace.is_some() {
+            (0, 0, crop.2, crop.3)
+        } else {
+            super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1)
+        };
         let words = [
             crop.0, crop.1, crop.2, crop.3, rect.0, rect.1, rect.2, rect.3,
         ];
@@ -406,7 +477,12 @@ impl WgpuPresenter {
                 .write_buffer(&self.geometry, 0, super::wgpu_buffers::word_bytes(&words));
             self.raster_geometry = Some(words);
         }
-        let view = frame.texture.create_view(&Default::default());
+        let view = if let Some(ui) = self.workspace.as_mut() {
+            ui.crop = crop;
+            ui.target(&self.device, (crop.2, crop.3))
+        } else {
+            frame.texture.create_view(&Default::default())
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -438,6 +514,14 @@ impl WgpuPresenter {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
+        if let Some(ui) = self.workspace.as_mut() {
+            ui.draw(
+                &self._window,
+                &self.device,
+                &self.queue,
+                &frame.texture.create_view(&Default::default()),
+            );
+        }
         self.check_health()?;
         self.queue.present(frame);
         self.check_health()?;

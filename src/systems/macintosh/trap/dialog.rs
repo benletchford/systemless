@@ -2,7 +2,7 @@
 
 use super::dispatch::{
     selector_operation_route, DialogItem, DialogPopupDraw, DialogPopupTrackingState,
-    DialogTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
+    DialogTrackingState, HostDialogBackground, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
     RetainedModalDialogClickState, SelectorOperationRoute,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
@@ -3035,7 +3035,7 @@ impl super::TrapDispatcher {
         let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
         let view_rect = Self::te_read_rect(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET);
         let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
-        if !Self::port_has_drawable_bitmap(bus, te_port) {
+        if self.host_ui.dialog_presented(te_port) || !Self::port_has_drawable_bitmap(bus, te_port) {
             return;
         }
         // Theme overlays use screen coordinates; TERec geometry is port-local.
@@ -4099,6 +4099,8 @@ impl super::TrapDispatcher {
         let rendered_pixels = self.save_dialog_pixels(bus, bounds);
         bus.write_word(sp + 6, 0);
         self.dialog_modal_entered.insert(dialog_ptr);
+        self.host_ui.note_dialog_modal(dialog_ptr);
+        self.cancel_host_menu_selection();
         self.dialog_tracking = Some(DialogTrackingState {
             dialog_ptr,
             bounds,
@@ -4848,13 +4850,18 @@ impl super::TrapDispatcher {
 
         let (updated, insertion_point) =
             Self::textedit_key_result(&existing, sel_start, sel_end, key);
-        let clamped_insertion = insertion_point.min(u16::MAX as usize) as u16;
+        // TextEdit uses signed 16-bit lengths and selection offsets. Refuse
+        // an insertion beyond its limit without truncating existing contents.
+        if updated.len() > i16::MAX as usize {
+            return false;
+        }
+        let clamped_insertion = insertion_point as u16;
         item.text = decode_mac_roman(&updated);
         item.sel_start = clamped_insertion as i16;
         item.sel_end = clamped_insertion as i16;
 
         if item_handle != 0 {
-            let len = updated.len().min(255);
+            let len = updated.len();
             let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
             if data_ptr != 0 && len > 0 {
                 bus.write_bytes(data_ptr, &updated[..len]);
@@ -4863,8 +4870,12 @@ impl super::TrapDispatcher {
 
         if te_ptr != 0 {
             self.te_set_text_contents(bus, text_handle, &updated);
-            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, clamped_insertion);
-            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, clamped_insertion);
+            // Recalculating line starts can relocate the TextEdit record.
+            let te_ptr = Self::te_record_ptr(bus, text_handle);
+            if te_ptr != 0 {
+                bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, clamped_insertion);
+                bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, clamped_insertion);
+            }
         }
 
         true
@@ -4977,7 +4988,7 @@ impl super::TrapDispatcher {
     }
 
     fn redraw_dialog_text_item(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32, item_no: i16) {
-        if !self.window_visible(bus, dialog_ptr) {
+        if self.host_ui.dialog_presented(dialog_ptr) || !self.window_visible(bus, dialog_ptr) {
             return;
         }
         let vis_handle = bus.read_long(dialog_ptr + 24);
@@ -5044,7 +5055,9 @@ impl super::TrapDispatcher {
                 &item.text
             };
             let bytes = encode_mac_roman_lossy(text);
-            let len = bytes.len().min(255);
+            // The item handle stores TextEdit bytes, not a Pascal Str255.
+            // Only GetDialogItemText's caller-supplied result has that limit.
+            let len = bytes.len().min(i16::MAX as usize);
             let item_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
             if item_handle != 0 {
                 let data_ptr = Self::ensure_text_handle_size(bus, item_handle, len);
@@ -5305,6 +5318,7 @@ impl super::TrapDispatcher {
         );
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
+        self.host_ui.register_dialog(dlg_ptr);
         self.dialog_items.insert(dlg_ptr, items.clone());
         if let Some((index, item)) = items.iter().enumerate().find(|(_, item)| {
             dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
@@ -5323,6 +5337,7 @@ impl super::TrapDispatcher {
         // other ports keep this snapshot current until disposal.
         // Inside Macintosh Volume I, I-412, I-425.
         self.ensure_dialog_background_saved(bus, dlg_ptr, bounds);
+        self.capture_host_dialog_background(bus, dlg_ptr);
 
         if visible {
             // NewDialog/GetNewDialog create and display visible dialogs
@@ -5549,6 +5564,20 @@ impl super::TrapDispatcher {
         if screen_rect.0 >= screen_rect.2 || screen_rect.1 >= screen_rect.3 {
             return;
         }
+        if !self.dialog_items.contains_key(&drawing_port) {
+            let screen = self.get_screen_params();
+            for saved in self.host_dialog_backgrounds.values_mut() {
+                if saved.screen == screen {
+                    Self::refresh_saved_pixel_buffer_after_screen_draw(
+                        bus,
+                        screen,
+                        saved.bounds,
+                        screen_rect,
+                        &mut saved.pixels,
+                    );
+                }
+            }
+        }
         let mut dialogs: Vec<(u32, (i16, i16, i16, i16))> = self
             .dialog_visible_snapshots
             .iter()
@@ -5585,7 +5614,6 @@ impl super::TrapDispatcher {
             );
         }
     }
-
     fn refresh_single_dialog_saved_pixels_after_screen_draw(
         &mut self,
         bus: &MacMemoryBus,
@@ -6353,6 +6381,9 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
     ) {
+        if self.host_ui.dialog_presented(dialog_ptr) {
+            return;
+        }
         // DrawDialog renders through the dialog window's port, so QuickDraw
         // clips every item to that port's visRgn. HLE dialog primitives write
         // directly to the framebuffer; bail out when the Window Manager has
@@ -6535,6 +6566,9 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
     ) {
+        if self.host_ui.dialog_presented(dialog_ptr) {
+            return;
+        }
         if dialog_ptr != 0 {
             let vis = bus.read_long(dialog_ptr + 24);
             if vis != 0 && Self::region_handle_rect(bus, vis).is_none() {
@@ -6953,6 +6987,9 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         only_item: Option<i16>,
     ) {
+        if self.host_ui.dialog_presented(dialog_ptr) {
+            return;
+        }
         let (top, left, _bottom, _right) = bounds;
         // Apply default chrome after restoring guest-owned pixels and
         // redrawing live standard controls so retained composition cannot
@@ -7226,6 +7263,9 @@ impl super::TrapDispatcher {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return;
         };
+        if self.host_ui.dialog_presented(tracking.dialog_ptr) {
+            return;
+        }
         if tracking.game_managed || !tracking.rendered_pixels_final {
             return;
         }
@@ -7265,6 +7305,10 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         tracking: &DialogTrackingState,
     ) {
+        if self.host_ui.dialog_presented(tracking.dialog_ptr) {
+            self.dialog_visible_snapshots.remove(&tracking.dialog_ptr);
+            return;
+        }
         let pixels = if tracking.rendered_pixels.is_empty() {
             self.save_dialog_pixels(bus, tracking.bounds)
         } else {
@@ -8423,6 +8467,7 @@ impl super::TrapDispatcher {
         is_default: bool,
         highlighted: bool,
     ) {
+        if self.dialog_tracking.as_ref().is_some_and(|t| self.host_ui.dialog_presented(t.dialog_ptr)) { return; }
         let (top, left, bottom, right) = rect;
         if self.draw_theme_push_button_chrome(
             bus,
@@ -8454,6 +8499,9 @@ impl super::TrapDispatcher {
             if control_ptr != 0 {
                 bus.write_byte(control_ptr + 17, 0);
             }
+        }
+        if self.host_ui.dialog_presented(dialog_ptr) {
+            return;
         }
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
         self.draw_button_with_enabled(bus, top, left, bottom, right, &item.text, is_default, true);
@@ -9778,6 +9826,9 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return;
         }
+        let host_presented = self.host_ui.dialog_presented(dialog_ptr);
+        self.host_ui.retire_dialog(dialog_ptr);
+        self.host_dialog_backgrounds.remove(&dialog_ptr);
         let retained_modal_is_logical_front = self.dialog_modal_entered.contains(&dialog_ptr)
             && self
                 .window_stack
@@ -9813,7 +9864,7 @@ impl super::TrapDispatcher {
         let mut restored_stale_saved_under = false;
         let mut restored_saved_under_rect = None;
 
-        if was_front && was_visible && !initial_draw_deferred {
+        if was_front && was_visible && !initial_draw_deferred && !host_presented {
             if let Some(saved) = self.dialog_saved_pixels.remove(&dialog_ptr) {
                 restored_stale_saved_under = self.saved_pixels_are_mostly_logical_white(&saved);
                 self.restore_dialog_pixels(bus, dialog_record_bounds, &saved);
@@ -10463,6 +10514,9 @@ impl super::TrapDispatcher {
         dialog_ptr: u32,
         item_no: i16,
     ) -> bool {
+        if self.host_ui.dialog_presented(dialog_ptr) {
+            return false;
+        }
         let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_no) else {
             return false;
         };
@@ -10480,8 +10534,25 @@ impl super::TrapDispatcher {
             return false;
         };
 
-        let dropdown_rect = self.popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
-        let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
+        let host = self.host_ui.enabled && self.dialog_tracking.is_some();
+        let (dropdown_rect, saved_pixels) = if host {
+            // Guest-rendered dialogs still present their popup menu on the host.
+            let (top, left, _, _) = Self::dialog_screen_bounds(bus, dialog_ptr);
+            let title = self.popup_control_title_width(ctrl_ptr, 0);
+            self.host_ui.begin_popup(
+                menu_id,
+                bus.read_word(ctrl_ptr + 18) as i16,
+                (
+                    top.saturating_add(bus.read_word(ctrl_ptr + 8) as i16),
+                    left.saturating_add(bus.read_word(ctrl_ptr + 10) as i16)
+                        .saturating_add(title),
+                ),
+            );
+            ((0, 0, 0, 0), Default::default())
+        } else {
+            let rect = self.popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
+            (rect, self.save_dropdown_pixels(bus, rect))
+        };
         if let Some(tracking) = self.dialog_tracking.as_mut() {
             tracking.active_popup = Some(DialogPopupTrackingState {
                 item_no,
@@ -10495,7 +10566,9 @@ impl super::TrapDispatcher {
         } else {
             return false;
         }
-        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+        if !host {
+            self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+        }
         true
     }
 
@@ -10529,7 +10602,23 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if self.input_state.mouse_button_pressed() {
+        if self.host_ui.popup_active() {
+            let Some(result) = self.host_ui.take_popup_result() else {
+                return;
+            };
+            if let Some(popup) = self
+                .dialog_tracking
+                .as_mut()
+                .and_then(|tracking| tracking.active_popup.as_mut())
+            {
+                let menu_id = self.menus.get(popup.active_menu).map_or(0, |menu| menu.id);
+                popup.highlighted_item = if result >> 16 == menu_id as u16 as u32 {
+                    (result & 0xffff) as i16
+                } else {
+                    0
+                };
+            }
+        } else if self.input_state.mouse_button_pressed() {
             let (mv, mh) = self.input_state.mouse_position();
             let new_item = self.dialog_popup_item_at_point(bus, mh, mv);
             let old_item = self
@@ -10970,7 +11059,14 @@ impl super::TrapDispatcher {
                         .is_some()
                         .then(|| self.copy_dialog_item_color_table_resource(bus, items_id))
                         .flatten();
-                    // Honor the DLOG resource's visible flag per IM:I I-424.
+                    // Honor the DLOG resource's visible, goAwayFlag and refCon
+                    // fields per IM:I I-424 and MTE 1992 p. 6-153.
+                    let go_away = dlog_len > 12 && bus.read_byte(dlog_data + 12) != 0;
+                    let ref_con = if dlog_len >= 18 {
+                        bus.read_long(dlog_data + 14)
+                    } else {
+                        0
+                    };
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
                         cpu,
@@ -10979,8 +11075,8 @@ impl super::TrapDispatcher {
                         &title,
                         visible,
                         proc_id,
-                        false,
-                        0,
+                        go_away,
+                        ref_con,
                         items_handle,
                         items,
                         dialog_color_table,
@@ -11344,7 +11440,38 @@ impl super::TrapDispatcher {
                 let mut trace_detail = String::from("outcome=no_dialog_target");
 
                 let target_dialog = self.dialog_from_window_event(what, message);
-                if let Some(dialog_ptr) = target_dialog {
+                // A host-committed item arrives as its staged click. Report it
+                // without re-tracking controls or moving the TextEdit caret.
+                let host_item = target_dialog
+                    .filter(|_| what == crate::dialog_manager::EVENT_MOUSE_DOWN)
+                    .filter(|dialog| {
+                        rect_contains_point(
+                            Self::dialog_screen_bounds(bus, *dialog),
+                            where_v,
+                            where_h,
+                        )
+                    })
+                    .and_then(|dialog| {
+                        match self
+                            .host_ui
+                            .take_host_click(dialog, (where_v, where_h), false)
+                        {
+                            Some(crate::systems::macintosh::host_ui::HostClickTarget::Item(
+                                item,
+                            )) => Some((dialog, item)),
+                            _ => None,
+                        }
+                    });
+                if let Some((dialog_ptr, item)) = host_item {
+                    if params.has_dialog_out() {
+                        bus.write_long(params.dialog_out_ptr(), dialog_ptr);
+                    }
+                    if params.has_item_hit_out() {
+                        bus.write_word(params.item_hit_ptr(), item as u16);
+                    }
+                    trace_detail = format!("item_hit={item} outcome=host_item");
+                    result = true;
+                } else if let Some(dialog_ptr) = target_dialog {
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
                     trace_detail = format!(
                         "bounds=({},{},{},{}) outcome=no_item",
@@ -12175,6 +12302,10 @@ impl super::TrapDispatcher {
                 {
                     self.dialog_tracking = self.suspended_modal_dialogs.pop();
                 }
+                if let Some(dialog) = self.dialog_tracking.as_ref().map(|tracking| tracking.dialog_ptr) {
+                    self.host_ui.note_dialog_modal(dialog);
+                    self.cancel_host_menu_selection();
+                }
                 // Check if draw procs need to finish before entering event loop.
                 if let Some(ref tracking) = self.dialog_tracking {
                     if !tracking.draw_procs_done {
@@ -12595,7 +12726,9 @@ impl super::TrapDispatcher {
                                     .filter(|t| t.rendered_pixels_final)
                                     .map(|t| t.rendered_pixels.clone())
                                     .unwrap_or_default();
-                                if !previous_rendered.is_empty() {
+                                if !previous_rendered.is_empty()
+                                    && !self.host_ui.dialog_presented(dialog_ptr)
+                                {
                                     self.restore_dialog_pixels(bus, bounds, &previous_rendered);
                                 }
                                 if let Some(ref t) = self.dialog_tracking {
@@ -12627,7 +12760,31 @@ impl super::TrapDispatcher {
                                 let items_clone: Vec<DialogItem> = self
                                     .dialog_tracking
                                     .as_ref()
-                                    .map(|t| t.items.clone())
+                                    .map(|tracking| {
+                                        tracking
+                                            .items
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(i, item)| {
+                                                let mut item = item.clone();
+                                                if is_dialog_item_control(item.item_type) {
+                                                    if let Some(pointer) = self
+                                                        .dialog_control_handle_for_item(dialog_ptr, (i + 1) as i16)
+                                                        .map(|handle| bus.read_long(handle))
+                                                        .filter(|pointer| *pointer != 0)
+                                                    {
+                                                        item.rect = (
+                                                            bus.read_word(pointer + 8) as i16,
+                                                            bus.read_word(pointer + 10) as i16,
+                                                            bus.read_word(pointer + 12) as i16,
+                                                            bus.read_word(pointer + 14) as i16,
+                                                        );
+                                                    }
+                                                }
+                                                item
+                                            })
+                                            .collect()
+                                    })
                                     .unwrap_or_default();
                                 let mut hit = self.dialog_item_hit_test(
                                     bus,
@@ -13490,7 +13647,10 @@ impl super::TrapDispatcher {
                         }
                         let has_draw_procs = !draw_proc_queue.is_empty();
 
+                        self.host_ui.clear_range_tracking(dialog_ptr);
                         self.dialog_modal_entered.insert(dialog_ptr);
+                        self.host_ui.note_dialog_modal(dialog_ptr);
+                        self.cancel_host_menu_selection();
                         self.dialog_tracking = Some(super::dispatch::DialogTrackingState {
                             dialog_ptr,
                             bounds,
@@ -17541,3 +17701,956 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+
+impl super::TrapDispatcher {
+    fn capture_host_dialog_background(&mut self, bus: &MacMemoryBus, dialog: u32) {
+        if self.host_ui.dialog_identity(dialog).is_none()
+            || !matches!(self.dialog_window_proc_id(bus, dialog), 4 | 5)
+        {
+            return;
+        }
+        let content = Self::dialog_screen_bounds(bus, dialog);
+        let bounds = self.window_structure_global_rect_for_proc(
+            bus,
+            content,
+            self.dialog_window_proc_id(bus, dialog),
+        );
+        let pixels = self.save_dialog_pixels(bus, bounds);
+        self.host_dialog_backgrounds.insert(
+            dialog,
+            HostDialogBackground {
+                bounds,
+                screen: self.get_screen_params(),
+                pixels,
+            },
+        );
+    }
+    pub(super) fn prepare_host_dialog_show(&mut self, bus: &MacMemoryBus, dialog: u32) {
+        if self.host_ui.dialog_identity(dialog).is_none()
+            || !self.dialog_items.contains_key(&dialog)
+        {
+            return;
+        }
+        self.capture_host_dialog_background(bus, dialog);
+        let bounds = Self::dialog_screen_bounds(bus, dialog);
+        let saved = self.save_dialog_pixels(bus, bounds);
+        self.dialog_saved_pixels.insert(dialog, saved.clone());
+        if let Some(call) = self
+            .dialog_tracking
+            .as_mut()
+            .filter(|call| call.dialog_ptr == dialog)
+        {
+            call.bounds = bounds;
+            call.saved_pixels = saved.clone();
+        }
+        for call in self
+            .suspended_modal_dialogs
+            .iter_mut()
+            .filter(|call| call.dialog_ptr == dialog)
+        {
+            call.bounds = bounds;
+            call.saved_pixels = saved.clone();
+        }
+        self.dialog_visible_snapshots.remove(&dialog);
+        self.host_ui.invalidate_dialog_presentation(dialog);
+    }
+
+    pub(super) fn finish_host_dialog_show(&self, bus: &mut MacMemoryBus, dialog: u32) {
+        if self.host_ui.dialog_presented(dialog) {
+            if let Some(saved) = self.dialog_saved_pixels.get(&dialog) {
+                self.restore_dialog_pixels(bus, Self::dialog_screen_bounds(bus, dialog), saved);
+            }
+        }
+    }
+
+    fn host_dialog_artwork(
+        &self,
+        bus: &MacMemoryBus,
+        dialog: u32,
+        number: i16,
+        item: &DialogItem,
+    ) -> Option<std::sync::Arc<crate::systems::macintosh::host_ui::DialogArtwork>> {
+        if item.item_type & 0x7f == 64 {
+            let size = (
+                u16::try_from(i32::from(item.rect.3) - i32::from(item.rect.1)).ok()?,
+                u16::try_from(i32::from(item.rect.2) - i32::from(item.rect.0)).ok()?,
+            );
+            let handle = Self::dialog_item_handle(bus, dialog, number);
+            let bytes = Self::text_item_bytes_from_handle_if_present(bus, handle)?;
+            return self.host_ui.project_picture(dialog, number, &bytes, size);
+        }
+        if item.item_type & 0x7f != 32 {
+            return None;
+        }
+        for file in self.resource_search_order() {
+            let pointer = self
+                .resources
+                .as_ref()
+                .and_then(|r| r.files.get(&file))
+                .and_then(|f| f.loaded.get(&(*b"cicn", item.resource_id)))
+                .copied()
+                .filter(|p| *p != 0);
+            let data = pointer
+                .and_then(|p| {
+                    bus.get_alloc_size(p)
+                        .map(|length| bus.read_bytes(p, length as usize))
+                })
+                .or_else(|| {
+                    self.resource_backing_data
+                        .get(&(file, *b"cicn", item.resource_id))
+                        .cloned()
+                });
+            if let Some(data) = data {
+                if let Some(image) = self.host_ui.project_icon(dialog, number, &data, true) {
+                    return Some(image);
+                }
+                break;
+            }
+        }
+        let handle = Self::dialog_item_handle(bus, dialog, number);
+        let pointer = (handle != 0)
+            .then(|| bus.read_long(handle))
+            .filter(|p| *p != 0);
+        let Some(pointer) = pointer else {
+            return self
+                .host_ui
+                .project_alert_icon(dialog, number, item.resource_id);
+        };
+        let length = bus.get_alloc_size(pointer)?;
+        if length < 128 {
+            return None;
+        }
+        self.host_ui
+            .project_icon(dialog, number, &bus.read_bytes(pointer, 128), false)
+    }
+
+    fn host_dialog_item_kind(
+        &self,
+        bus: &MacMemoryBus,
+        dialog: u32,
+        number: i16,
+        kind: u8,
+    ) -> Option<u8> {
+        let proc = self
+            .dialog_control_handle_for_item(dialog, number)
+            .map(|handle| bus.read_long(handle))
+            .filter(|ptr| *ptr != 0)
+            .map(|ptr| self.control_manager.proc_id(ptr));
+        crate::systems::macintosh::host_ui::standard_dialog_item_kind(kind, proc)
+    }
+
+    fn host_dialog_range(
+        &self,
+        bus: &MacMemoryBus,
+        dialog: u32,
+        item: i16,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogRange> {
+        let handle = self.dialog_control_handle_for_item(dialog, item)?;
+        let control = bus.read_long(handle);
+        if control == 0 || self.control_manager.proc_id(control) != 16 {
+            return None;
+        }
+        let min = bus.read_word(control + 20) as i16;
+        let max = bus.read_word(control + 22) as i16;
+        let value = bus.read_word(control + 18) as i16;
+        (min <= value && value <= max)
+            .then_some(crate::systems::macintosh::host_ui::DialogRange { min, max })
+    }
+
+    fn host_dialog_choices(
+        &self,
+        bus: &MacMemoryBus,
+        dialog: u32,
+        number: i16,
+        kind: u8,
+    ) -> Option<Vec<crate::systems::macintosh::host_ui::DialogChoice>> {
+        if self.host_dialog_item_kind(bus, dialog, number, kind)? != 7 {
+            return Some(Vec::new());
+        }
+        let handle = self.dialog_control_handle_for_item(dialog, number)?;
+        let control = bus.read_long(handle);
+        let menu_id = self.popup_control_menu_id(bus, control, bus.read_word(control + 20) as i16);
+        let mut menu = self
+            .menus
+            .iter()
+            .rev()
+            .find(|menu| menu.id == menu_id)?
+            .clone();
+        super::menu::refresh_menu_from_memory(bus, &mut menu);
+        let data = bus.read_long(menu.handle);
+        if data == 0
+            || bus.read_long(data + 6) != 0
+            || menu.items.is_empty()
+            || menu.items.len() > 512
+            || menu.items.iter().any(|item| item.key_equiv == 0x1b)
+        {
+            return None;
+        }
+        Some(
+            menu.items
+                .iter()
+                .enumerate()
+                .map(
+                    |(index, item)| crate::systems::macintosh::host_ui::DialogChoice {
+                        value: (index + 1) as i16,
+                        text: item.text.clone(),
+                        enabled: menu.enabled && item.enabled && item.text != "-",
+                    },
+                )
+                .collect(),
+        )
+    }
+
+    pub(crate) fn reply_host_dialog_control(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> Option<(i16, i16)> {
+        let position = self.host_dialog_item_position(bus, &reply.dialog)?;
+        let snapshot = self.host_dialog(bus)?;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.number == reply.dialog.item && matches!(item.kind, 7 | 17))?;
+        let valid = if item.kind == 17 {
+            item.range
+                .is_some_and(|range| range.min <= reply.value && reply.value <= range.max)
+        } else {
+            item.choices
+                .iter()
+                .any(|choice| choice.value == reply.value && choice.enabled)
+        };
+        if item.value != reply.expected || !valid {
+            return None;
+        }
+        let dialog = self.dialog_tracking.as_ref()?.dialog_ptr;
+        let handle = self.dialog_control_handle_for_item(dialog, reply.dialog.item)?;
+        let control = bus.read_long(handle);
+        if control == 0 {
+            return None;
+        }
+        bus.write_word(control + 18, reply.value as u16);
+        self.dialog_control_values
+            .insert((dialog, reply.dialog.item), reply.value);
+        if let Some(range) = item.range {
+            self.host_ui
+                .stage_range_tracking(dialog, handle, reply.value, range.min, range.max);
+        }
+        self.host_ui.invalidate_dialog_snapshot(dialog);
+        Some(position)
+    }
+
+    fn host_dialog_filter_supported(&self, bus: &MacMemoryBus, filter: u32) -> bool {
+        if filter == 0 {
+            return true;
+        }
+        // GetStdFilterProc's owned shim always declines the event, leaving
+        // the ordinary ModalDialog default handling in charge. Do not trust
+        // the identity alone: applications can patch its guest code.
+        filter == self.dialog_std_filter_proc
+            && bus.read_long(filter + 2) == filter + 6
+            && [
+                (0, 0x4ef9),
+                (6, 0x7000),
+                (8, 0x426f),
+                (10, 0x0010),
+                (12, 0x4e74),
+                (14, 0x000c),
+            ]
+            .iter()
+            .all(|(offset, word)| bus.read_word(filter + offset) == *word)
+    }
+    pub(crate) fn host_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        self.project_host_dialog(bus, None)
+    }
+
+    /// Identity, title and content bounds of a guest-rendered modal dialog.
+    pub(crate) fn guest_dialog_surface(
+        &self,
+        bus: &MacMemoryBus,
+        dialog: u32,
+    ) -> Option<crate::systems::macintosh::host_ui::GuestDialogSurface> {
+        let id = self.host_ui.dialog_identity(dialog)?;
+        if self.host_ui.dialog_presented(dialog) || !self.window_visible(bus, dialog) {
+            return None;
+        }
+        let tracking = self
+            .dialog_tracking
+            .as_ref()
+            .filter(|tracking| tracking.dialog_ptr == dialog);
+        let bounds = tracking.map_or_else(|| Self::dialog_screen_bounds(bus, dialog), |t| t.bounds);
+        let title = if bus.read_long(dialog + 134) != 0 {
+            Self::dialog_window_title(bus, dialog)
+        } else {
+            tracking.map(|t| t.title.clone()).unwrap_or_default()
+        };
+        (bounds.2 > bounds.0 && bounds.3 > bounds.1).then_some((id, title, bounds))
+    }
+
+    pub(crate) fn activate_host_modeless_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        id: u64,
+        revision: u64,
+    ) -> bool {
+        let Some(pointer) = self.host_ui.dialog_pointer(id) else {
+            return false;
+        };
+        if !self.host_ui.dialog_is_modeless(pointer) {
+            return false;
+        }
+        self.refresh_host_active_window(bus);
+        let Some(view) = self.project_host_dialog(bus, Some((pointer, false))) else {
+            return false;
+        };
+        if view.busy || view.revision != revision {
+            return false;
+        }
+        self.activate_host_modeless_target(bus, pointer);
+        true
+    }
+
+    pub(crate) fn host_modeless_dialogs(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        blocked: bool,
+    ) -> Vec<(usize, crate::systems::macintosh::host_ui::DialogSnapshot)> {
+        self.window_list
+            .windows()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(order, pointer)| {
+                self.project_host_dialog(bus, Some((pointer, blocked)))
+                    .map(|snapshot| (order, snapshot))
+            })
+            .collect()
+    }
+    fn project_host_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        modeless: Option<(u32, bool)>,
+    ) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
+        use crate::systems::macintosh::host_ui::{DialogItemSnapshot, DialogSnapshot};
+        let status = self.modal_status(bus);
+        let modeless_busy =
+            status.dialog.is_some() || status.file || modeless.is_some_and(|(_, blocked)| blocked);
+        let tracking = self.dialog_tracking.as_ref().filter(|_| modeless.is_none());
+        let dialog = if let Some((pointer, _)) = modeless {
+            let eligible = self.dialog_window_proc_id(bus, pointer) == 4
+                && self.dialog_items.contains_key(&pointer)
+                && bus.read_word(pointer + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET)
+                    == crate::dialog_manager::DIALOG_WINDOW_KIND;
+            if !eligible {
+                if self.host_ui.dialog_is_modeless(pointer) {
+                    self.host_ui.unpresent_dialog(pointer);
+                    self.redraw_dialog_window_contents(bus, pointer);
+                }
+                return None;
+            }
+            if self
+                .dialog_tracking
+                .as_ref()
+                .is_some_and(|call| call.dialog_ptr == pointer)
+                || self
+                    .suspended_modal_dialogs
+                    .iter()
+                    .any(|call| call.dialog_ptr == pointer)
+            {
+                return None;
+            }
+            if modeless_busy && !self.host_ui.dialog_presented(pointer) {
+                return None;
+            }
+            pointer
+        } else if let Some(tracking) = tracking {
+            tracking.dialog_ptr
+        } else {
+            let dialog = self.front_dialog_ptr()?;
+            if !self.host_ui.dialog_presented(dialog) {
+                return None;
+            }
+            if self.host_ui.dialog_is_modeless(dialog) {
+                return None;
+            }
+            if !self.window_visible(bus, dialog) {
+                return None;
+            }
+            if self.front_retained_modal_dialog(bus).is_none() {
+                self.host_ui.unpresent_dialog(dialog);
+                self.redraw_dialog_window_contents(bus, dialog);
+                return None;
+            }
+            // Retention is presentation only, never a new ModalDialog call.
+            // Suspended calls still belong to their guest callback stack.
+            if self
+                .suspended_modal_dialogs
+                .iter()
+                .any(|call| call.dialog_ptr == dialog)
+            {
+                return None;
+            }
+            dialog
+        };
+        if !self.window_visible(bus, dialog) {
+            return None;
+        }
+        let id = self.host_ui.dialog_identity(dialog)?;
+        let items = self
+            .dialog_items
+            .get(&dialog)
+            .or_else(|| tracking.map(|call| &call.items))?;
+        let bounds = tracking.map_or_else(
+            || Self::dialog_screen_bounds(bus, dialog),
+            |call| call.bounds,
+        );
+        let proc_id = tracking.map_or_else(
+            || self.dialog_window_proc_id(bus, dialog),
+            |call| call.proc_id,
+        );
+        let title = if bus.read_long(dialog + 134) != 0 {
+            Self::dialog_window_title(bus, dialog)
+        } else {
+            tracking.map(|call| call.title.clone()).unwrap_or_default()
+        };
+        let (edit_item, default_item) = tracking
+            .map(|call| (call.edit_item, call.default_item))
+            .unwrap_or_else(|| {
+                let (_, edit, default) = Self::dialog_edit_state(bus, dialog, items);
+                (edit, default)
+            });
+        let cancel_item = tracking.map(|call| call.cancel_item).unwrap_or_else(|| {
+            let configured = self.dialog_cancel_items.get(&dialog).copied().or_else(|| {
+                (bus.get_alloc_size(dialog).unwrap_or(0)
+                    >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2)
+                    .then(|| {
+                        bus.read_word(dialog + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET)
+                            as i16
+                    })
+                    .filter(|item| *item != 0)
+            });
+            crate::dialog_manager::evaluate_modal_dialog_cancel_item(
+                configured,
+                items.iter().map(|item| (item.item_type, &item.text)),
+            )
+            .item_number()
+        });
+        // Custom controls and application filters retain guest callbacks and presentation.
+        if tracking.is_some_and(|call| !self.host_dialog_filter_supported(bus, call.filter_proc))
+            || !matches!(proc_id, 1..=5)
+            || items.is_empty()
+            || items.iter().enumerate().any(|(i, item)| {
+                self.host_dialog_item_kind(bus, dialog, (i + 1) as i16, item.item_type)
+                    .is_none()
+                    || (self.host_dialog_item_kind(bus, dialog, (i + 1) as i16, item.item_type)
+                        == Some(17)
+                        && self
+                            .host_dialog_range(bus, dialog, (i + 1) as i16)
+                            .is_none())
+                    || self
+                        .host_dialog_choices(bus, dialog, (i + 1) as i16, item.item_type)
+                        .is_none()
+            })
+        {
+            if self.host_ui.unpresent_dialog(dialog) {
+                self.redraw_dialog_window_contents(bus, dialog);
+            }
+            return None;
+        }
+        let artwork: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| self.host_dialog_artwork(bus, dialog, (i + 1) as i16, item))
+            .collect();
+        if items
+            .iter()
+            .zip(&artwork)
+            .any(|(item, image)| matches!(item.item_type & 0x7f, 32 | 64) && image.is_none())
+        {
+            if self.host_ui.unpresent_dialog(dialog) {
+                self.redraw_dialog_window_contents(bus, dialog);
+            }
+            return None;
+        }
+        let snapshot = DialogSnapshot {
+            movable: matches!(proc_id, 4 | 5),
+            closable: modeless.is_some()
+                && bus.read_byte(dialog + crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET) != 0,
+            id,
+            revision: 0,
+            title,
+            size: (
+                (bounds.3 as i32 - bounds.1 as i32).clamp(0, u16::MAX as i32) as u16,
+                (bounds.2 as i32 - bounds.0 as i32).clamp(0, u16::MAX as i32) as u16,
+            ),
+            edit_item,
+            default_item,
+            cancel_item,
+            busy: if modeless.is_some() {
+                modeless_busy
+            } else {
+                tracking.is_none_or(|call| {
+                    call.flash_remaining > 0
+                        || call.active_button.is_some()
+                        || !call.draw_procs_done
+                })
+            },
+            items: items
+                .iter()
+                .enumerate()
+                .filter(|(i, item)| {
+                    let rect = self
+                        .dialog_control_handle_for_item(dialog, (*i + 1) as i16)
+                        .map(|handle| bus.read_long(handle))
+                        .filter(|p| *p != 0)
+                        .map(|p| {
+                            (
+                                bus.read_word(p + 8) as i16,
+                                bus.read_word(p + 10) as i16,
+                                bus.read_word(p + 12) as i16,
+                                bus.read_word(p + 14) as i16,
+                            )
+                        })
+                        .unwrap_or(item.rect);
+                    crate::dialog_manager::dialog_item_intersects_bounds(bounds, rect)
+                        && self.dialog_control_visible(bus, dialog, (*i + 1) as i16)
+                })
+                .map(|(i, item)| {
+                    let number = (i + 1) as i16;
+                    let control = self
+                        .dialog_control_handle_for_item(dialog, number)
+                        .map(|h| bus.read_long(h))
+                        .filter(|p| *p != 0 && p.checked_add(24).is_some());
+                    DialogItemSnapshot {
+                        range: self.host_dialog_range(bus, dialog, number),
+                        choices: self
+                            .host_dialog_choices(bus, dialog, number, item.item_type)
+                            .unwrap_or_default(),
+                        number,
+                        artwork: artwork[i].clone(),
+                        kind: self
+                            .host_dialog_item_kind(bus, dialog, number, item.item_type)
+                            .unwrap(),
+                        enabled: item.item_type & 0x80 == 0
+                            && !self.dialog_control_inactive(bus, dialog, number)
+                            && control.is_none_or(|p| {
+                                self.control_manager.with_ref(|records| {
+                                    records
+                                        .iter()
+                                        .find(|r| r.pointer == p)
+                                        .is_none_or(|r| r.active)
+                                })
+                            }),
+                        rect: control
+                            .map(|p| {
+                                (
+                                    bus.read_word(p + 8) as i16,
+                                    bus.read_word(p + 10) as i16,
+                                    bus.read_word(p + 12) as i16,
+                                    bus.read_word(p + 14) as i16,
+                                )
+                            })
+                            .unwrap_or(item.rect),
+                        text: if item.item_type & 0x7f == 8 {
+                            self.apply_param_text(&item.text).replace('\r', "\n")
+                        } else if item.item_type & 0x7f == 16 {
+                            Self::text_item_string_from_handle_if_present(
+                                bus,
+                                Self::dialog_item_handle(bus, dialog, number),
+                            )
+                            .unwrap_or_else(|| item.text.clone())
+                            .replace('\r', "\n")
+                        } else {
+                            control
+                                .map(|p| decode_mac_roman(&Self::control_title_bytes(bus, p)))
+                                .unwrap_or_else(|| item.text.clone())
+                        },
+                        selection: (item.item_type & 0x7f == 16).then(|| {
+                            let handle = bus.read_long(
+                                dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                            );
+                            let te = Self::te_record_ptr(bus, handle);
+                            if number == edit_item && te != 0 {
+                                (
+                                    bus.read_word(te + Self::TE_SEL_START_OFFSET),
+                                    bus.read_word(te + Self::TE_SEL_END_OFFSET),
+                                )
+                            } else {
+                                (item.sel_start.max(0) as u16, item.sel_end.max(0) as u16)
+                            }
+                        }),
+                        value: control
+                            .map(|p| bus.read_word(p + 18) as i16)
+                            .unwrap_or_else(|| {
+                                self.dialog_control_values
+                                    .get(&(dialog, number))
+                                    .copied()
+                                    .unwrap_or(0)
+                            }),
+                    }
+                })
+                .collect(),
+        };
+        if snapshot.items.is_empty() {
+            if self.host_ui.unpresent_dialog(dialog) {
+                self.redraw_dialog_window_contents(bus, dialog);
+            }
+            return None;
+        }
+        let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
+        if self
+            .host_dialog_backgrounds
+            .get(&dialog)
+            .is_some_and(|saved| {
+                saved.bounds != structure || saved.screen != self.get_screen_params()
+            })
+        {
+            if self.host_ui.dialog_presented(dialog) {
+                let pixels = self.save_dialog_pixels(bus, structure);
+                self.host_dialog_backgrounds.insert(
+                    dialog,
+                    HostDialogBackground {
+                        bounds: structure,
+                        screen: self.get_screen_params(),
+                        pixels,
+                    },
+                );
+            } else {
+                // Before admission, the destination still contains guest chrome.
+                // Keep the Window Manager's moved save-under instead of
+                // capturing the dialog as its own background.
+                self.host_dialog_backgrounds.remove(&dialog);
+            }
+            self.host_ui.invalidate_dialog_presentation(dialog);
+        }
+        let restore = if modeless.is_some() {
+            self.host_ui.present_modeless_dialog(dialog)
+        } else {
+            self.host_ui.present_dialog(dialog)
+        };
+        if restore {
+            if let Some(background) = self.host_dialog_backgrounds.get(&dialog) {
+                self.restore_dialog_pixels(bus, background.bounds, &background.pixels);
+            } else {
+                let saved = self
+                    .dialog_saved_pixels
+                    .get(&dialog)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        tracking
+                            .map(|call| call.saved_pixels.clone())
+                            .unwrap_or_default()
+                    });
+                self.restore_dialog_pixels(bus, bounds, &saved);
+            }
+            self.dialog_visible_snapshots.remove(&dialog);
+        }
+        Some(self.host_ui.project_dialog(snapshot))
+    }
+    pub(crate) fn reply_host_dialog_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        let Some(snapshot) = self.host_dialog(bus) else {
+            return false;
+        };
+        let Some(dialog) = self.dialog_tracking.as_ref().map(|t| t.dialog_ptr) else {
+            return false;
+        };
+        self.apply_host_dialog_text(bus, dialog, snapshot, reply)
+    }
+
+    fn apply_host_dialog_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog: u32,
+        snapshot: crate::systems::macintosh::host_ui::DialogSnapshot,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        if snapshot.id != reply.id
+            || snapshot.revision != reply.revision
+            || snapshot.busy
+            || !snapshot.items.iter().any(|i| {
+                i.number == reply.item && i.kind == 16 && i.enabled && i.text == reply.expected
+            })
+            || reply.text.chars().count() > i16::MAX as usize
+        {
+            return false;
+        }
+        let text = encode_mac_roman_lossy(&reply.text.replace('\n', "\r"));
+        let selection = (
+            reply.selection.0.min(text.len() as u16),
+            reply.selection.1.min(text.len() as u16),
+        );
+        let selection = (selection.0.min(selection.1), selection.0.max(selection.1));
+        let item_handle = Self::dialog_item_handle(bus, dialog, reply.item);
+        let te_handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te = Self::te_record_ptr(bus, te_handle);
+        if item_handle == 0 || te == 0 {
+            return false;
+        }
+        let rect = snapshot
+            .items
+            .iter()
+            .find(|i| i.number == reply.item)
+            .unwrap()
+            .rect;
+        if bus.read_long(te + Self::TE_HTEXT_OFFSET) == 0 {
+            self.initialize_te_record(bus, te_handle, rect, rect);
+        }
+        let htext = bus.read_long(te + Self::TE_HTEXT_OFFSET);
+        if htext == 0 {
+            return false;
+        }
+        Self::te_write_rect_words(bus, te + Self::TE_DEST_RECT_OFFSET, rect);
+        Self::te_write_rect_words(bus, te + Self::TE_VIEW_RECT_OFFSET, rect);
+        bus.write_long(te + Self::TE_IN_PORT_OFFSET, dialog);
+        // Allocate replacements without releasing either old buffer. A failed
+        // reservation must leave both the DITL handle and TextEdit intact.
+        let mut replacements = Vec::new();
+        for handle in [item_handle, htext] {
+            if replacements.iter().any(|(h, _, _)| *h == handle) {
+                continue;
+            }
+            let pointer = if text.is_empty() {
+                0
+            } else {
+                bus.alloc(text.len() as u32)
+            };
+            if !text.is_empty() && pointer == 0 {
+                for (_, _, pointer) in replacements {
+                    if pointer != 0 {
+                        bus.free(pointer);
+                    }
+                }
+                return false;
+            }
+            replacements.push((handle, bus.read_long(handle), pointer));
+        }
+        for (handle, old, pointer) in replacements {
+            if !text.is_empty() {
+                bus.write_bytes(pointer, &text);
+            }
+            bus.write_long(handle, pointer);
+            if old != 0 {
+                bus.free(old);
+            }
+        }
+        self.te_set_text_contents(bus, te_handle, &text);
+        let te = Self::te_record_ptr(bus, te_handle);
+        bus.write_word(te + Self::TE_SEL_START_OFFSET, selection.0);
+        bus.write_word(te + Self::TE_SEL_END_OFFSET, selection.1);
+        bus.write_word(te + Self::TE_ACTIVE_OFFSET, 1);
+        bus.write_long(te + Self::TE_CARET_TIME_OFFSET, self.current_tick());
+        bus.write_word(te + Self::TE_CARET_STATE_OFFSET, 0);
+        bus.write_word(
+            dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+            (reply.item - 1) as u16,
+        );
+        let normalized = decode_mac_roman(&text);
+        if let Some(items) = self.dialog_items.get_mut(&dialog) {
+            if let Some(item) = items.get_mut((reply.item - 1) as usize) {
+                item.set_text(&normalized);
+                item.sel_start = selection.0 as i16;
+                item.sel_end = selection.1 as i16;
+            }
+        }
+        if let Some(tracking) = self
+            .dialog_tracking
+            .as_mut()
+            .filter(|tracking| tracking.dialog_ptr == dialog)
+        {
+            tracking.edit_item = reply.item;
+            tracking.edit_text = normalized.clone();
+            if let Some(item) = tracking.items.get_mut((reply.item - 1) as usize) {
+                item.set_text(&normalized);
+                item.sel_start = selection.0 as i16;
+                item.sel_end = selection.1 as i16;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn host_dialog_item_position(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> Option<(i16, i16)> {
+        let snapshot = self.host_dialog(bus)?;
+        if snapshot.busy || (snapshot.id, snapshot.revision) != (reply.id, reply.revision) {
+            return None;
+        }
+        let item = snapshot.items.iter().find(|item| {
+            item.number == reply.item && item.enabled && matches!(item.kind, 4..=7 | 16 | 17 | 32 | 64)
+        })?;
+        let tracking = self.dialog_tracking.as_ref()?;
+        let (t, l, b, r) = item.rect;
+        if b <= t || r <= l {
+            return None;
+        }
+        Some((
+            (tracking.bounds.0 as i32 + (t as i32 + b as i32) / 2)
+                .clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+            (tracking.bounds.1 as i32 + (l as i32 + r as i32) / 2)
+                .clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        ))
+    }
+
+    /// Validate a frontend command against the live modeless projection.
+    fn host_modeless_target(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        id: u64,
+        revision: u64,
+    ) -> Option<crate::systems::macintosh::host_ui::ModelessTarget> {
+        let pointer = self.host_ui.dialog_pointer(id)?;
+        if !self.host_ui.dialog_is_modeless(pointer) {
+            return None;
+        }
+        self.refresh_host_active_window(bus);
+        let view = self.project_host_dialog(bus, Some((pointer, false)))?;
+        (!view.busy && view.revision == revision).then_some((pointer, view))
+    }
+
+    /// Activation precedes every action, as a guest click on an inactive
+    /// window would first select it. Already-active windows are not reselected.
+    fn activate_host_modeless_target(&mut self, bus: &mut MacMemoryBus, pointer: u32) {
+        let visible_front = self
+            .window_list
+            .windows()
+            .into_iter()
+            .find(|window| self.window_visible(bus, *window));
+        if self.front_window != pointer
+            || visible_front != Some(pointer)
+            || bus.read_byte(pointer + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET) == 0
+        {
+            self.activate_as_front_window(bus, pointer);
+        }
+    }
+
+    /// Returns where to post a staged click for a modeless item. DialogSelect
+    /// then reports the item without tracking controls or moving the caret.
+    pub(crate) fn reply_host_modeless_dialog(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) = self.host_modeless_target(bus, reply.id, reply.revision)?;
+        self.stage_host_modeless_item(bus, dialog, &view, reply.item, false)
+    }
+
+    fn stage_host_modeless_item(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog: u32,
+        view: &crate::systems::macintosh::host_ui::DialogSnapshot,
+        number: i16,
+        edit: bool,
+    ) -> Option<(i16, i16)> {
+        let item = view.items.iter().find(|item| {
+            item.number == number
+                && item.enabled
+                && (matches!(item.kind, 4..=7 | 17 | 32 | 64) || (edit && item.kind == 16))
+        })?;
+        let (t, l, b, r) = item.rect;
+        if b <= t || r <= l {
+            return None;
+        }
+        let bounds = Self::dialog_screen_bounds(bus, dialog);
+        let point = (
+            (bounds.0 as i32 + (t as i32 + b as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+            (bounds.1 as i32 + (l as i32 + r as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
+                as i16,
+        );
+        self.activate_host_modeless_target(bus, dialog);
+        self.host_ui.stage_host_click(
+            dialog,
+            point,
+            crate::systems::macintosh::host_ui::HostClickTarget::Item(number),
+        );
+        Some(point)
+    }
+
+    pub(crate) fn reply_host_modeless_dialog_control(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogControlReply,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) =
+            self.host_modeless_target(bus, reply.dialog.id, reply.dialog.revision)?;
+        let item = view.items.iter().find(|item| {
+            item.number == reply.dialog.item && item.enabled && matches!(item.kind, 7 | 17)
+        })?;
+        let valid = if item.kind == 17 {
+            item.range
+                .is_some_and(|range| range.min <= reply.value && reply.value <= range.max)
+        } else {
+            item.choices
+                .iter()
+                .any(|choice| choice.value == reply.value && choice.enabled)
+        };
+        if item.value != reply.expected || !valid {
+            return None;
+        }
+        let range = item.range;
+        let handle = self.dialog_control_handle_for_item(dialog, reply.dialog.item)?;
+        let control = bus.read_long(handle);
+        if control == 0 {
+            return None;
+        }
+        let point = self.stage_host_modeless_item(bus, dialog, &view, reply.dialog.item, false)?;
+        bus.write_word(control + 18, reply.value as u16);
+        self.dialog_control_values
+            .insert((dialog, reply.dialog.item), reply.value);
+        if let Some(range) = range {
+            self.host_ui
+                .stage_range_tracking(dialog, handle, reply.value, range.min, range.max);
+        }
+        self.host_ui.invalidate_dialog_snapshot(dialog);
+        Some(point)
+    }
+
+    pub(crate) fn reply_host_modeless_dialog_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> Option<Option<(i16, i16)>> {
+        let (dialog, view) = self.host_modeless_target(bus, reply.id, reply.revision)?;
+        if !self.apply_host_dialog_text(bus, dialog, view.clone(), reply) {
+            return None;
+        }
+        self.host_ui.invalidate_dialog_snapshot(dialog);
+        // DialogSelect reports the edit item for each keystroke; deliver the
+        // committed edit the same way so applications observe the change.
+        Some(self.stage_host_modeless_item(bus, dialog, &view, reply.item, true))
+    }
+
+    /// Returns where to post a staged go-away click. TrackGoAway accepts it
+    /// without requiring the button to remain down; the application still
+    /// decides whether and how to close the window.
+    pub(crate) fn host_modeless_close_position(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        id: u64,
+        revision: u64,
+    ) -> Option<(i16, i16)> {
+        let (dialog, view) = self.host_modeless_target(bus, id, revision)?;
+        if !view.closable {
+            return None;
+        }
+        let bounds = Self::dialog_screen_bounds(bus, dialog);
+        let point = (bounds.0.saturating_sub(10), bounds.1.saturating_add(12));
+        self.activate_host_modeless_target(bus, dialog);
+        self.host_ui.stage_host_click(
+            dialog,
+            point,
+            crate::systems::macintosh::host_ui::HostClickTarget::GoAway,
+        );
+        Some(point)
+    }
+}

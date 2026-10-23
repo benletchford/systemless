@@ -846,6 +846,14 @@ pub struct DialogUserItemTrackingState {
     pub rect: (i16, i16, i16, i16),
 }
 
+/// Full chrome background for host-presented document-style dialogs.
+#[derive(Clone, Debug)]
+pub(crate) struct HostDialogBackground {
+    pub bounds: (i16, i16, i16, i16),
+    pub screen: (u32, u32, i16, i16, u16),
+    pub pixels: SavedPixels,
+}
+
 /// Rendered pixels for a dialog window after ModalDialog has returned
 /// an item hit but before the app disposes the dialog.
 #[derive(Clone, Debug)]
@@ -2250,6 +2258,7 @@ pub struct TrapDispatcher {
     pub(crate) suspended_modal_dialogs: Vec<DialogTrackingState>,
     /// Active Standard File Package save dialog tracking state.
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
+    pub(crate) host_ui: crate::systems::macintosh::host_ui::HostUiState,
     /// Active Standard File Package open dialog tracking state.
     pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
     /// The screen mark taken when a Standard File dialog was last drawn. An
@@ -2285,6 +2294,7 @@ pub struct TrapDispatcher {
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
     pub(crate) dialog_saved_pixels: FastHashMap<u32, SavedPixels>,
+    pub(crate) host_dialog_backgrounds: FastHashMap<u32, HostDialogBackground>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
@@ -4115,6 +4125,7 @@ impl TrapDispatcher {
             dialog_tracking: None,
             suspended_modal_dialogs: Vec::new(),
             standard_file_put_tracking: None,
+            host_ui: Default::default(),
             standard_file_drawn: None,
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
@@ -4127,6 +4138,7 @@ impl TrapDispatcher {
             dialog_cancel_items: HashMap::default(),
             dialog_filter_result_addr: 0,
             dialog_saved_pixels: HashMap::default(),
+            host_dialog_backgrounds: HashMap::default(),
             dialog_visible_snapshots: HashMap::default(),
             dialog_modal_entered: std::collections::HashSet::default(),
             dialog_cdef_draw_pending_snapshot: HashSet::default(),
@@ -4176,6 +4188,30 @@ impl TrapDispatcher {
     /// Whether MenuSelect is actively tracking the mouse.
     pub fn is_menu_tracking(&self) -> bool {
         self.menu_tracking.is_some()
+    }
+
+    pub(crate) fn modal_status(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> crate::systems::macintosh::host_ui::ModalStatus {
+        let retained = (self.front_window != 0
+            && self.dialog_modal_entered.contains(&self.front_window)
+            && self.window_visible(bus, self.front_window)
+            && matches!(self.window_proc_ids.get(&self.front_window), Some(1..=3 | 5)))
+        .then_some(self.front_window);
+        let dialog = self
+            .dialog_tracking
+            .as_ref()
+            .map(|t| t.dialog_ptr)
+            .or(retained)
+            .or_else(|| self.suspended_modal_dialogs.last().map(|t| t.dialog_ptr));
+        crate::systems::macintosh::host_ui::ModalStatus {
+            dialog,
+            dialog_order: dialog.map_or(0, |p| self.host_ui.dialog_order(p)),
+            file: self.standard_file_get_tracking.is_some()
+                || self.standard_file_put_tracking.is_some(),
+            file_order: self.host_ui.file_order(),
+        }
     }
 
     /// Whether ModalDialog is actively tracking user input.
@@ -4279,6 +4315,7 @@ impl TrapDispatcher {
             || (is_region_refire && self.is_region_tracking())
             || (trap_no_autopop == 0xA9D4
                 && self.textedit_states.has_classic_click_tracking())
+            || (matches!(trap_no_autopop, 0xA82E | 0xA8FD) && self.host_ui.system_dialog_active())
     }
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.

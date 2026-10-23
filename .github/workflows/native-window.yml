@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/bin/**'
+      - 'crates/systemless-ui/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/native-window.yml'
@@ -52,7 +53,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-apps x11-utils imagemagick libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Validate lifecycle case selection

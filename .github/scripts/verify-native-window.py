@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run both runtime modes and presenters against an actual window server.
+"""Run both runtime modes, the egui workspace and the guest-only presenters against an actual window server.
 
 Linux needs a window manager (CI uses Xvfb + Openbox). macOS uses the hosted
 runner's desktop. Local runs need an unlocked desktop for drawable/focus
@@ -23,6 +23,7 @@ parser.add_argument("--soak-only", action="store_true",
 parser.add_argument("--runtime", choices=("all", "inline", "thread"), default="all")
 parser.add_argument("--presenter", choices=("all", "platform", "wgpu", "software"), default="all")
 parser.add_argument("--dry-run", action="store_true", help="validate duration and list cases without starting a desktop")
+parser.add_argument("--no-workspace", action="store_true", help="skip the egui workspace cases")
 args = parser.parse_args()
 if not 0 <= args.soak_seconds <= 21600:
     parser.error("--soak-seconds must be 0..21600")
@@ -54,8 +55,12 @@ if args.soak_only:
     cases = [case for case in cases
              if (args.runtime == "all" or case[0] == args.runtime)
              and (args.presenter == "all" or (case[3] or ("wgpu" if case[1] else "platform")) == args.presenter)]
+# The egui workspace is the default desktop; renderer, fault and soak cases
+# qualify the guest-only presenters. Workspace cases run after them.
+workspace_cases = [] if (args.no_workspace or args.recovery_only or args.soak_only) else [
+    (backend, gpu) for backend in ("inline", "thread") for gpu in (False, True)]
 if args.dry_run:
-    print(json.dumps(cases))
+    print(json.dumps(cases + [["workspace", *case] for case in workspace_cases]))
     raise SystemExit(0)
 output.mkdir(parents=True, exist_ok=True)
 for backend, gpu, fault, renderer, fallback in cases:
@@ -80,7 +85,7 @@ for backend, gpu, fault, renderer, fallback in cases:
         env["SYSTEMLESS_NATIVE_RECOVERY_ONLY"] = "1"
     else:
         env.pop("SYSTEMLESS_NATIVE_RECOVERY_ONLY", None)
-    command = [str(root / "target/ci-test/systemless"), str(archive)]
+    command = [str(root / "target/ci-test/systemless"), str(archive), "--guest-only"]
     if gpu:
         command.append("--gpu")
     if renderer:
@@ -138,6 +143,68 @@ for backend, gpu, fault, renderer, fallback in cases:
                       and state.get("elapsed_seconds", 0) >= args.soak_seconds)
         except subprocess.TimeoutExpired:
             passed = False
+    print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
+    if not passed:
+        failed.append(name)
+for backend, gpu in workspace_cases:
+    name = "workspace-" + backend + ("-wgpu" if gpu else "")
+    case = output / name
+    case.mkdir(exist_ok=True)
+    archive = case / "toolbox-showcase.sit"
+    shutil.copy2(root / "tests/toolbox-showcase/toolbox-showcase.sit", archive)
+    report = case / "report.json"
+    report.unlink(missing_ok=True)
+    (case / ".systemless" / "workspace.json").unlink(missing_ok=True)
+    env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME=backend,
+               SYSTEMLESS_NATIVE_WINDOW_PROBE=str(report))
+    env.pop("SYSTEMLESS_GPU_FAULT", None)
+    env.pop("SYSTEMLESS_NATIVE_RECOVERY_ONLY", None)
+    env["SYSTEMLESS_NATIVE_SOAK_SECONDS"] = "0"
+    command = [str(root / "target/ci-test/systemless"), str(archive)]
+    if gpu:
+        command.append("--gpu")
+    with (case / "run.log").open("w") as log:
+        process = None
+        try:
+            process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+            deadline = time.monotonic() + 120
+            captured = set()
+            while process.poll() is None:
+                if time.monotonic() > deadline:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(command, 120)
+                if os.sys.platform.startswith("linux"):
+                    try:
+                        current = json.loads(report.read_text())
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        current = {}
+                    for phase, filename in [(1, "native-initial.png"), (8, "native-window.png")]:
+                        if current.get("phase", 0) >= phase and filename not in captured:
+                            # Read the actual client surface, without desktop margins.
+                            time.sleep(0.3)
+                            window_id = int(current["window"]["native_window_id"])
+                            try:
+                                raw = subprocess.run(["xwd", "-id", str(window_id), "-silent"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+                                subprocess.run(["convert", "xwd:-", str(case / filename)], input=raw.stdout, check=True, timeout=10)
+                            except subprocess.CalledProcessError:
+                                # The window can be unmapped during fullscreen/focus transitions.
+                                # Retry on the next progress sample without stopping the probe.
+                                continue
+                            captured.add(filename)
+                time.sleep(0.05)
+            state = json.loads(report.read_text()) if report.exists() else {}
+            passed = (process.returncode == 0 and state.get("passed") is True
+                      and state.get("renderer") == "workspace"
+                      and state.get("workspace_splitter_qualified") is True
+                      and state.get("workspace_hidden_release_qualified") is True)
+        except (OSError, KeyError, TypeError, ValueError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+            print(f"{name}: {error}", file=log)
+            passed = False
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
     print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
     if not passed:
         failed.append(name)

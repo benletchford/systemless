@@ -93,12 +93,12 @@ pub(super) struct Health {
     readback_budget: std::time::Duration,
     failed: AtomicBool,
     failure: Mutex<Option<Failure>>,
-    wake: Option<winit::event_loop::EventLoopProxy<()>>,
+    wake: Option<winit::event_loop::EventLoopProxy<super::DesktopEvent>>,
 }
 impl Health {
     pub fn install(
         device: &wgpu::Device,
-        wake: Option<winit::event_loop::EventLoopProxy<()>>,
+        wake: Option<winit::event_loop::EventLoopProxy<super::DesktopEvent>>,
     ) -> Arc<Self> {
         let health = Arc::new(Self {
             readback_budget: super::wgpu_buffers::readback_budget(device),
@@ -131,7 +131,7 @@ impl Health {
         self.failed.store(true, Ordering::Release);
         drop(failure);
         if let Some(wake) = &self.wake {
-            let _ = wake.send_event(());
+            let _ = wake.send_event(super::DesktopEvent::Wake);
         }
     }
     pub fn wait_readback(&self, device: &wgpu::Device) -> Result<(), String> {
@@ -266,6 +266,8 @@ impl App {
         self.show_runtime_error();
     }
     pub(super) fn recover_wgpu(&mut self, error: Failure) {
+        // The workspace (layout, drafts, sessions) outlives its device.
+        let workspace = self.wgpu.as_mut().and_then(|gpu| gpu.take_workspace());
         // Destroy the old surface before a replacement claims the native view.
         self.wgpu = None;
         self.last_presented_guest_tick = None;
@@ -276,11 +278,14 @@ impl App {
         }
         if self.wgpu_recovery.rebuild(&error) {
             match self.create_wgpu_presenter() {
-                Ok(gpu) => {
+                Ok(mut gpu) => {
                     eprintln!(
                         "[GPU] {}; recreated wgpu presenter ({}/2)",
                         error, self.wgpu_recovery.rebuilds
                     );
+                    if let Some(workspace) = workspace {
+                        gpu.adopt_workspace(workspace);
+                    }
                     self.wgpu = Some(gpu);
                 }
                 Err(message) => {
@@ -295,6 +300,18 @@ impl App {
         }
     }
     pub(super) fn fallback_wgpu(&mut self, message: String) {
+        if self.workspace {
+            // Platform presenters cannot host egui, and host-presented guest
+            // dialogs would become unreachable. Stop with saved guest files.
+            self.wgpu = None;
+            self.use_wgpu = false;
+            self.wgpu_recovery.fallback = Some(message.clone());
+            self.stop_renderer(format!(
+                "The GPU device for the workspace failed ({message}). Guest files \
+                 were saved; relaunch with --guest-only to use platform presentation."
+            ));
+            return;
+        }
         self.wgpu = None;
         self.use_wgpu = false;
         self.use_software = self.gpu_fallback == renderer_selection::GpuFallback::Software;

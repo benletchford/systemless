@@ -3003,6 +3003,29 @@ pub(crate) fn dispatch_supported_import(
             ))
         }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => {
+            // Mirror Notification Manager alert strings into the host UI.
+            let record = cpu.gpr[3];
+            match operation {
+                PpcSystemCompatibilityOperation::NmInstall if record != 0 => {
+                    let text_ptr = memory
+                        .read_u32_be(record + crate::notification_manager::NM_STR_OFFSET)
+                        .unwrap_or(0);
+                    if text_ptr != 0 {
+                        let length = memory.read_u8(text_ptr).unwrap_or(0);
+                        let bytes: Vec<u8> = (1..=u32::from(length))
+                            .filter_map(|offset| memory.read_u8(text_ptr + offset))
+                            .collect();
+                        toolbox_startup.host_ui.note_notification(
+                            record,
+                            crate::trap::types::decode_mac_roman(&bytes),
+                        );
+                    }
+                }
+                PpcSystemCompatibilityOperation::NmRemove => {
+                    toolbox_startup.host_ui.remove_notification(record);
+                }
+                _ => {}
+            }
             Some(dispatch_system::ppc_dispatch_system_compatibility(
                 operation,
                 cpu,
@@ -3085,6 +3108,11 @@ pub(crate) fn dispatch_supported_import(
                 launched_app_path,
             ))
         }
+        PpcImportDispatcherTarget::GetColor => Some(dispatch_printing::ppc_dispatch_get_color(
+            cpu,
+            memory,
+            toolbox_startup,
+        )),
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }

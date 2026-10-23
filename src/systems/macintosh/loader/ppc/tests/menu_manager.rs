@@ -10354,3 +10354,66 @@ fn menu_id_setter_import_updates_live_lookup_and_preserves_menu_contents() {
         }
     }
 }
+
+#[test]
+fn host_popup_menu_select_powerpc_parks_without_drawing_and_returns_the_host_choice() {
+    use crate::systems::macintosh::host_ui::PopupMenuReply;
+    for choice in [Some((300, 3)), None] {
+        let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_ui.enabled = true;
+        let menu = install_test_popup_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            300,
+            b"Popup",
+            b"Red;(Green;Blue",
+        );
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let length = front.row_bytes * front.height;
+        let before = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length);
+        let call = |loaded: &mut PpcLoadedApp, button: bool| {
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PopUpMenuSelect;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = menu;
+            loaded.cpu.gpr[4] = 100;
+            loaded.cpu.gpr[5] = 80;
+            loaded.cpu.gpr[6] = 1;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: button,
+                ..PpcInputSnapshot::default()
+            });
+            loaded.run_with_hle_imports(64)
+        };
+        let probe = call(&mut loaded, true);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let popup = loaded.host_popup_menu().expect("host popup is published");
+        assert_eq!((popup.menu, popup.item, popup.anchor), (300, 1, (100, 80)));
+        assert!(loaded.toolbox_startup.execution.menu().is_none());
+        // Releasing the button does not end the host menu.
+        let probe = call(&mut loaded, false);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.host_popup_menu().is_some());
+        assert!(!loaded.reply_host_popup_menu(PopupMenuReply {
+            id: popup.id,
+            choice: Some((300, 2)),
+        }));
+        assert!(loaded.reply_host_popup_menu(PopupMenuReply {
+            id: popup.id,
+            choice
+        }));
+        call(&mut loaded, false);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            choice.map_or(0, |(menu, item)| ((menu as u32) << 16) | item as u32)
+        );
+        assert!(!loaded.toolbox_startup.host_ui.popup_active());
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, length),
+            before
+        );
+    }
+}

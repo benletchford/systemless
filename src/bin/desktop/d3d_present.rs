@@ -177,7 +177,7 @@ unsafe fn compile(entry: PCSTR, target: PCSTR) -> Result<ID3DBlob> {
 impl D3dPresenter {
     pub fn new(
         window: std::rc::Rc<Window>,
-        wake: winit::event_loop::EventLoopProxy<()>,
+        wake: winit::event_loop::EventLoopProxy<super::DesktopEvent>,
     ) -> Result<Self> {
         let RawWindowHandle::Win32(handle) =
             window.window_handle().map_err(|e| e.to_string())?.as_raw()
@@ -303,7 +303,9 @@ impl D3dPresenter {
             if ready.is_invalid() {
                 return Err("no DXGI frame latency event".into());
             }
-            let waiter = match FrameWaiter::new(ready, move || wake.send_event(()).is_ok()) {
+            let waiter = match FrameWaiter::new(ready, move || {
+                wake.send_event(super::DesktopEvent::Wake).is_ok()
+            }) {
                 Ok(waiter) => waiter,
                 Err(message) => {
                     let _ = CloseHandle(ready);
