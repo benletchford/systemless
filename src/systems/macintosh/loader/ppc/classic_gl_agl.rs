@@ -16,10 +16,8 @@ pub const AGL_BAD_PROPERTY: u32 = 10001;
 pub const AGL_BAD_PIXELFMT: u32 = 10002;
 pub const AGL_BAD_RENDINFO: u32 = 10003;
 pub const AGL_BAD_CONTEXT: u32 = 10004;
-pub const AGL_BAD_DRAWABLE: u32 = 10005;
 pub const AGL_BAD_GDEV: u32 = 10006;
 pub const AGL_BAD_VALUE: u32 = 10008;
-pub const AGL_BAD_MATCH: u32 = 10009;
 pub const AGL_BAD_ENUM: u32 = 10010;
 pub const AGL_BAD_FULLSCREEN: u32 = 10012;
 pub const AGL_BAD_POINTER: u32 = 10014;
@@ -444,6 +442,7 @@ impl PpcAglState {
         framebuffer.present(ClassicGlColorBuffer::Front, memory, surface)
     }
 
+    #[cfg(test)]
     pub fn current_mut(&mut self) -> Option<&mut PpcAglContext> {
         let handle = self.current_context;
         self.context_mut(handle)
