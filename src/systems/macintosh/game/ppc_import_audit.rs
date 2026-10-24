@@ -84,7 +84,8 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
     }
 
     let mut fragments = Vec::new();
-    let mut registered_paths = Vec::new();
+    let mut registered = std::collections::HashSet::new();
+    let mut installers = std::collections::HashSet::new();
     let mut resource_files: Vec<_> = vfs.resource_files.iter().collect();
     resource_files.sort_by_key(|file| vfs_path_sort_key(&file.path));
     for resource_file in resource_files {
@@ -99,7 +100,7 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
         // Launch skips system-component installers; so does the audit.
         if ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application.as_deref())
         {
-            registered_paths.push(resource_file.path.to_ascii_lowercase());
+            installers.insert(resource_file.path.to_ascii_lowercase());
             continue;
         }
         let Some(data_file) = vfs
@@ -113,16 +114,17 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
             if fragment.architecture != ARCH_POWERPC {
                 continue;
             }
-            let Some(bytes) = fragment
-                .data_fork_range(data_file.data.len())
-                .and_then(|range| data_file.data.get(range))
-            else {
+            let Some(range) = fragment.data_fork_range(data_file.data.len()) else {
+                continue;
+            };
+            let start = range.start;
+            let Some(bytes) = data_file.data.get(range) else {
                 continue;
             };
             if !is_powerpc_pef(bytes) {
                 continue;
             }
-            registered_paths.push(resource_file.path.to_ascii_lowercase());
+            registered.insert((resource_file.path.to_ascii_lowercase(), start));
             if fragment.usage == USAGE_LIB && is_native_replacement_library(&fragment.name) {
                 continue;
             }
@@ -142,21 +144,38 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
         }
     }
 
-    // Plug-ins loaded through GetDiskFragment need no 'cfrg' resource.
+    // Plug-ins and code loaded through GetDiskFragment need no 'cfrg'
+    // resource, and a data fork may carry further containers after its
+    // registered fragment (an application can load the second with
+    // GetDiskFragment). Audit every PowerPC container in each data fork.
     let mut files: Vec<_> = vfs.files.iter().collect();
     files.sort_by_key(|file| vfs_path_sort_key(&file.path));
     for file in files {
-        if registered_paths.contains(&file.path.to_ascii_lowercase()) || !is_powerpc_pef(&file.data)
-        {
+        let path = file.path.to_ascii_lowercase();
+        if installers.contains(&path) {
             continue;
         }
-        fragments.push(fragment_audit(
-            &file.path,
-            None,
-            "unregistered",
-            &file.data,
-            &bundled,
-        ));
+        for start in pef_container_offsets(&file.data) {
+            if registered.contains(&(path.clone(), start)) {
+                continue;
+            }
+            let bytes = &file.data[start..];
+            if !is_powerpc_pef(bytes) {
+                continue;
+            }
+            let location = if start == 0 {
+                file.path.clone()
+            } else {
+                format!("{}@{start}", file.path)
+            };
+            fragments.push(fragment_audit(
+                &location,
+                None,
+                "unregistered",
+                bytes,
+                &bundled,
+            ));
+        }
     }
 
     PpcImportAuditReport {
@@ -170,6 +189,16 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
 /// neither their exports nor their own imports participate in binding.
 fn is_native_replacement_library(name: &str) -> bool {
     name.eq_ignore_ascii_case("DrawSprocketLib") || name.eq_ignore_ascii_case("InputSprocketLib")
+}
+
+/// Offsets of every `Joy!peff` container header in a data fork.
+fn pef_container_offsets(data: &[u8]) -> Vec<usize> {
+    const MAGIC: &[u8; 8] = b"Joy!peff";
+    data.windows(MAGIC.len())
+        .enumerate()
+        .filter(|(_, window)| *window == MAGIC)
+        .map(|(offset, _)| offset)
+        .collect()
 }
 
 fn is_powerpc_pef(bytes: &[u8]) -> bool {
