@@ -3113,6 +3113,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::AbsoluteToNanoseconds
         | PpcImportDispatcherTarget::NanosecondsToAbsolute
         | PpcImportDispatcherTarget::AddAbsoluteToAbsolute
+        | PpcImportDispatcherTarget::SubAbsoluteFromAbsolute
         | PpcImportDispatcherTarget::MPDelayUntil => {
             unreachable!("time imports return through dispatch_time_import")
         }
