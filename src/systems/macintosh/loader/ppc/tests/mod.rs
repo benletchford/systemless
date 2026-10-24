@@ -218,6 +218,7 @@ mod gworld;
 mod blit;
 
 mod file_manager;
+mod host_ui;
 mod opengl_memory;
 mod event_manager;
 mod global_mouse;

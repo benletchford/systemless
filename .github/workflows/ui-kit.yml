@@ -1,0 +1,61 @@
+name: UI kit
+
+on:
+  pull_request:
+    paths:
+      - 'crates/systemless-ui/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/bin/desktop/**'
+      - 'src/bin/systemless.rs'
+      - '.github/workflows/ui-kit.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'crates/systemless-ui/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/bin/desktop/**'
+      - 'src/bin/systemless.rs'
+      - '.github/workflows/ui-kit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-kit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: UI kit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux window and software GPU dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-dev libwayland-dev libvulkan1 mesa-vulkan-drivers
+      - name: Check UI dependency licenses
+        if: runner.os == 'Linux'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: crates/systemless-ui/Cargo.toml
+          arguments: --all-features --config crates/systemless-ui/deny.toml
+          command: check licenses
+      - run: cargo test --locked -p systemless-ui --no-default-features
+      - run: cargo test --locked -p systemless-ui --features desktop
+      - run: cargo clippy --locked -p systemless-ui --all-features --all-targets -- -D warnings
+      - run: cargo check --locked --bin systemless
+      - name: Verify workspace GPU composition
+        if: runner.os == 'Linux'
+        run: cargo test --locked --bin systemless workspace_ui::tests -- --ignored

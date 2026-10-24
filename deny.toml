@@ -11,6 +11,7 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
     "ISC",
     "MIT",
     "Unicode-3.0",
@@ -21,6 +22,9 @@ allow = [
 # Keep copyleft and component-specific licences scoped to the reviewed crates
 # that require them. New GPL, LGPL, AGPL, or OFL dependencies will fail.
 exceptions = [
+    # egui bundled fonts, unchanged; notices included in crates/systemless-ui/licenses.
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    { crate = "systemless-ui", allow = ["GPL-3.0-or-later"] },
     # Reviewed unchanged Rust translation; source notices and no-endorsement terms.
     # https://spdx.org/licenses/bzip2-1.0.6.html
     { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },

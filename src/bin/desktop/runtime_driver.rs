@@ -1,7 +1,7 @@
 //! Guest initialization, pacing, sound and saves, independent of host windows.
 //! The driver is still called on the event thread during the initial extraction.
 
-use super::runtime_protocol::{CursorWarp, GuiCommand, GuiState};
+use super::runtime_protocol::{CursorWarp, DialogTextAck, GuiCommand, GuiState};
 use super::{
     configure_realtime_execution_rate, debug_server, foreground_cpu_batch_instructions,
     service_pending_sound_work, DesktopSaveStore, FramePhaseTimer, HostMouseReleaseLatch,
@@ -10,15 +10,17 @@ use super::{
 };
 use std::path::PathBuf;
 use systemless::systems::macintosh::game;
-#[cfg(target_os = "macos")]
 use systemless::systems::macintosh::runner::MenuBarPolicy;
 use systemless::systems::macintosh::{runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
     pub(super) gpu: bool,
+    pub(super) workspace: bool,
     generation: u64,
     snapshot_sequence: u64,
     warp_serial: u64,
+    file_reply: Option<(u64, u64, u64, bool)>,
+    dialog_text_replies: std::collections::HashMap<u64, std::sync::Arc<DialogTextAck>>,
     pending_warp: Option<CursorWarp>,
     #[cfg(target_os = "macos")]
     identity: Option<std::sync::Arc<game::ApplicationIdentity>>,
@@ -90,9 +92,12 @@ impl GuiDriver {
             .expect("desktop runtime generation exhausted");
         Self {
             gpu: false,
+            workspace: false,
             generation,
             snapshot_sequence: 0,
             warp_serial: 0,
+            file_reply: None,
+            dialog_text_replies: Default::default(),
             pending_warp: None,
             #[cfg(target_os = "macos")]
             identity: None,
@@ -139,9 +144,15 @@ impl GuiDriver {
             None => game::new_runner_with_addressing(!self.addressing_24_bit),
         };
         runner.set_ui_theme(self.ui_theme);
+        runner.set_host_ui_enabled(self.workspace);
+        if self.workspace {
+            runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
+        }
         if self.gpu {
             runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
-            runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
+            runner.set_quickdraw_gpu_renderer(Box::new(
+                super::wgpu_quickdraw::QuickDrawRenderer::new(),
+            ));
         }
         #[cfg(target_os = "macos")]
         if self.native_integrations {
@@ -205,6 +216,99 @@ impl GuiDriver {
             return;
         };
         self.force_next_render = true;
+        if let GuiCommand::DialogText(reply) = command {
+            let (serial, id) = (reply.serial, reply.id);
+            let accepted = runner.reply_host_dialog_text(&reply);
+            let text = accepted
+                .then(|| runner.host_dialog())
+                .flatten()
+                .filter(|dialog| dialog.id == id)
+                .and_then(|dialog| {
+                    dialog
+                        .items
+                        .into_iter()
+                        .find(|item| item.number == reply.item)
+                })
+                .map(|item| item.text);
+            self.dialog_text_replies.insert(
+                id,
+                std::sync::Arc::new(DialogTextAck {
+                    serial,
+                    id,
+                    accepted,
+                    text,
+                }),
+            );
+            return;
+        }
+        if let GuiCommand::PopupMenu(reply) = command {
+            runner.reply_host_popup_menu(reply);
+            return;
+        }
+        if let GuiCommand::SystemDialog(reply) = command {
+            runner.reply_host_system_dialog(reply);
+            return;
+        }
+        if let GuiCommand::DismissNotification(id) = command {
+            runner.dismiss_host_notification(id);
+            return;
+        }
+        if let GuiCommand::SetBalloonHelp(enabled) = command {
+            runner.set_balloon_help(enabled);
+            return;
+        }
+        if let GuiCommand::Modeless(command) = command {
+            use super::runtime_protocol::ModelessCommand;
+            match command {
+                ModelessCommand::Activate { id, revision } => {
+                    runner.activate_host_modeless_dialog(id, revision);
+                }
+                ModelessCommand::Item(reply) => {
+                    runner.reply_host_modeless_dialog(&reply);
+                }
+                ModelessCommand::Control(reply) => {
+                    runner.reply_host_modeless_dialog_control(&reply);
+                }
+                ModelessCommand::Close { id, revision } => {
+                    runner.close_host_modeless_dialog(id, revision);
+                }
+                ModelessCommand::Text(reply) => {
+                    let (serial, id) = (reply.serial, reply.id);
+                    let accepted = runner.reply_host_modeless_dialog_text(&reply);
+                    let text = accepted
+                        .then(|| runner.host_modeless_dialogs())
+                        .and_then(|dialogs| dialogs.into_iter().find(|dialog| dialog.id == id))
+                        .and_then(|dialog| {
+                            dialog
+                                .items
+                                .into_iter()
+                                .find(|item| item.number == reply.item)
+                        })
+                        .map(|item| item.text);
+                    self.dialog_text_replies.insert(
+                        id,
+                        std::sync::Arc::new(DialogTextAck {
+                            serial,
+                            id,
+                            accepted,
+                            text,
+                        }),
+                    );
+                }
+            }
+            return;
+        }
+        if let GuiCommand::FileDialog(reply) = command {
+            let serial = self
+                .file_reply
+                .map_or(0, |r| r.0)
+                .checked_add(1)
+                .expect("dialog reply sequence exhausted");
+            let (id, revision) = (reply.id, reply.revision);
+            let accepted = runner.reply_host_file_dialog(reply);
+            self.file_reply = Some((serial, id, revision, accepted));
+            return;
+        }
         Self::apply_guest_command(runner, &mut self.mouse_release_latch, command);
     }
 
@@ -213,12 +317,32 @@ impl GuiDriver {
         mouse_release_latch: &mut HostMouseReleaseLatch,
         command: GuiCommand,
     ) {
+        let modality = runner.ui_modality();
+        if matches!(command, GuiCommand::Menu { .. }) && modality.menus_blocked {
+            return;
+        }
+        if modality.owner != systemless::systems::macintosh::host_ui::UiOwner::Guest
+            && matches!(
+                command,
+                GuiCommand::MouseMove { .. }
+                    | GuiCommand::MouseDown { .. }
+                    | GuiCommand::KeyDown { .. }
+                    | GuiCommand::Menu { .. }
+            )
+        {
+            return;
+        }
         match command {
             GuiCommand::MouseMove { v, h } => {
                 runner.set_mouse_position(v, h);
                 runner.dispatcher_mut().show_cursor();
             }
             GuiCommand::MouseDown { v, h } => {
+                // The pane shows a projected dialog's saved background, not
+                // the hidden guest window still occupying that geometry.
+                if runner.host_modeless_dialog_at(v, h) {
+                    return;
+                }
                 runner.push_mouse_down(v, h);
                 mouse_release_latch.press();
             }
@@ -229,6 +353,35 @@ impl GuiDriver {
             }
             GuiCommand::KeyDown { key, character } => runner.push_key_down(key, character),
             GuiCommand::KeyUp { key, character } => runner.push_key_up(key, character),
+            GuiCommand::Dialog(reply) => {
+                if let Some((v, h)) = runner.host_dialog_item_position(&reply) {
+                    runner.push_mouse_down(v, h);
+                    mouse_release_latch.press();
+                    if let Some((v, h)) = mouse_release_latch.release((v, h)) {
+                        runner.push_mouse_up(v, h);
+                    }
+                }
+            }
+            GuiCommand::DialogControl(reply) => {
+                if let Some((v, h)) = runner.reply_host_dialog_control(&reply) {
+                    runner.push_mouse_down(v, h);
+                    mouse_release_latch.press();
+                    if let Some((v, h)) = mouse_release_latch.release((v, h)) {
+                        runner.push_mouse_up(v, h);
+                    }
+                }
+            }
+            GuiCommand::DialogText(reply) => {
+                runner.reply_host_dialog_text(&reply);
+            }
+            GuiCommand::FileDialog(reply) => {
+                runner.reply_host_file_dialog(reply);
+            }
+            GuiCommand::Modeless(_)
+            | GuiCommand::PopupMenu(_)
+            | GuiCommand::SystemDialog(_)
+            | GuiCommand::DismissNotification(_)
+            | GuiCommand::SetBalloonHelp(_) => {}
             GuiCommand::Menu { menu, item } => {
                 runner.select_guest_menu_item(menu, item);
             }
@@ -250,9 +403,73 @@ impl GuiDriver {
                 position,
             });
         }
+        if native_models && self.workspace {
+            let menus = runner.guest_menu_snapshot();
+            let changed = output.menus.as_ref().is_none_or(|old| **old != menus);
+            if changed {
+                output.menus = Some(std::sync::Arc::new(menus));
+            }
+            // Menu balloons load `hmnu` resources only when help is shown,
+            // and again only when the menus change.
+            let help = runner.balloon_help_enabled();
+            if help && (changed || output.menu_help.is_none()) {
+                output.menu_help = Some(std::sync::Arc::new(
+                    runner.guest_menu_help().into_iter().collect(),
+                ));
+            } else if !help {
+                output.menu_help = None;
+            }
+        }
+        if self.workspace {
+            output.live_dialogs = runner.host_dialog_ids();
+            let general = runner.host_dialog();
+            if output.dialog.as_deref() != general.as_ref() {
+                output.dialog = general.map(std::sync::Arc::new);
+            }
+            let modeless = runner.host_modeless_dialogs();
+            if output.modeless_dialogs.len() != modeless.len()
+                || output
+                    .modeless_dialogs
+                    .iter()
+                    .zip(&modeless)
+                    .any(|(old, new)| **old != *new)
+            {
+                output.modeless_dialogs = modeless
+                    .into_iter()
+                    .map(|new| {
+                        output
+                            .modeless_dialogs
+                            .iter()
+                            .find(|old| ***old == new)
+                            .cloned()
+                            .unwrap_or_else(|| std::sync::Arc::new(new))
+                    })
+                    .collect();
+            }
+            output.popup_menu = runner.host_popup_menu();
+            output.system_dialog = runner.host_system_dialog();
+            output.notifications = runner.host_notifications();
+            output.balloon = runner.host_balloon();
+            output.balloon_help = runner.balloon_help_enabled();
+            output.guest_surface = runner.guest_modal_surface();
+            output.guest_windows = runner.guest_modeless_surfaces();
+            output.stopped = runner.unexpected_stop_reason();
+            let dialog = runner.host_file_dialog();
+            if output.file_dialog.as_deref() != dialog.as_ref() {
+                output.file_dialog = dialog.map(std::sync::Arc::new);
+            }
+        }
         output.generation = self.generation;
         output.screen_mode = runner.dispatcher().screen_mode;
         output.cursor = runner.dispatcher().cursor().cloned();
+        output.modality = runner.ui_modality();
+        output.file_reply = self.file_reply;
+        self.dialog_text_replies
+            .retain(|id, _| output.live_dialogs.contains(id));
+        output.dialog_text_replies = self.dialog_text_replies.values().cloned().collect();
+        output
+            .dialog_text_replies
+            .sort_unstable_by_key(|reply| reply.id);
         output.warp = self.pending_warp;
         #[cfg(target_os = "macos")]
         {
@@ -808,6 +1025,747 @@ mod snapshot_tests {
         runner.bus_mut().fill_bytes(address, 32 * 32, 1);
         driver.runner = Some(runner);
         driver
+    }
+
+    #[test]
+    fn workspace_file_dialog_round_trips_through_execution_owner() {
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+        let mut driver = driver();
+        driver.workspace = true;
+        let runner = driver.runner.as_mut().unwrap();
+        runner.set_host_ui_enabled(true);
+        let base = 0x10000;
+        let sp = 0x100000;
+        let result = 0x110000;
+        runner.bus_mut().write_word(base, 0xA9EA);
+        runner.bus_mut().write_word(sp, 6);
+        runner.bus_mut().write_long(sp + 2, result);
+        runner.bus_mut().write_long(sp + 6, 0);
+        runner.bus_mut().write_word(sp + 10, 0);
+        runner.bus_mut().write_long(sp + 12, 0);
+        runner.cpu_mut().write_reg(Register::PC, base);
+        runner.cpu_mut().write_reg(Register::A7, sp);
+        runner.run_gui_slice_with_audio(1, 0, 0);
+        let mut state = GuiState::default();
+        driver.capture_state(&mut state, false);
+        let dialog = state
+            .file_dialog
+            .clone()
+            .expect("dialog crosses snapshot boundary");
+        let reply = FileDialogReply {
+            id: dialog.id,
+            revision: dialog.revision,
+            action: FileDialogAction::Cancel,
+        };
+        driver.apply_command(GuiCommand::FileDialog(reply.clone()));
+        driver
+            .runner
+            .as_mut()
+            .unwrap()
+            .run_gui_slice_with_audio(1, 0, 0);
+        driver.capture_state(&mut state, false);
+        assert!(state.file_dialog.is_none());
+        assert_eq!(
+            state.file_reply,
+            Some((1, dialog.id, dialog.revision, true))
+        );
+        assert_eq!(driver.runner.as_ref().unwrap().bus().read_byte(result), 0);
+        driver.apply_command(GuiCommand::FileDialog(reply));
+        driver.capture_state(&mut state, false);
+        assert_eq!(
+            state.file_reply,
+            Some((2, dialog.id, dialog.revision, false))
+        );
+    }
+
+    #[test]
+    fn text_acknowledgements_survive_multiple_dialog_commands_before_a_snapshot() {
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::host_ui::DialogTextReply;
+        let mut driver = driver();
+        driver.workspace = true;
+        let runner = driver.runner.as_mut().unwrap();
+        runner.set_host_ui_enabled(true);
+        let base = 0x10000;
+        let sp = 0x100000;
+        let bounds = runner.bus_mut().alloc(8);
+        for (offset, value) in [(0, 5), (2, 5), (4, 25), (6, 25)] {
+            runner.bus_mut().write_word(bounds + offset, value);
+        }
+        let mut windows = Vec::new();
+        for _ in 0..2 {
+            runner.bus_mut().write_word(base, 0xA97D); // NewDialog
+            runner.bus_mut().fill_bytes(sp, 34, 0);
+            runner.bus_mut().write_long(sp + 10, u32::MAX);
+            runner.bus_mut().write_word(sp + 14, 1);
+            runner.bus_mut().write_long(sp + 22, bounds);
+            runner.cpu_mut().write_reg(Register::PC, base);
+            runner.cpu_mut().write_reg(Register::A7, sp);
+            runner.run_gui_slice_with_audio(1, 0, 0);
+            let window = runner.bus().read_long(sp + 30);
+            assert_ne!(window, 0);
+            windows.push(window);
+        }
+        let ids = runner.host_dialog_ids();
+        assert_eq!(ids.len(), 2);
+        // Neither window is modal: both commands are rejected, but each live
+        // editor must receive its own answer rather than waiting indefinitely.
+        for id in &ids {
+            driver.apply_command(GuiCommand::DialogText(DialogTextReply {
+                serial: 1,
+                id: *id,
+                revision: 0,
+                item: 1,
+                expected: String::new(),
+                text: "draft".into(),
+                selection: (5, 5),
+            }));
+        }
+        let mut state = GuiState::default();
+        driver.capture_state(&mut state, false);
+        assert_eq!(state.live_dialogs, ids);
+        assert_eq!(state.dialog_text_replies.len(), 2);
+        for (ack, id) in state.dialog_text_replies.iter().zip(&ids) {
+            assert_eq!(ack.id, *id);
+            assert_eq!(ack.serial, 1);
+            assert!(!ack.accepted);
+            assert!(ack.text.is_none());
+        }
+        driver.capture_state(&mut state, false);
+        assert_eq!(
+            state.dialog_text_replies.len(),
+            2,
+            "snapshot replacement preserves both answers"
+        );
+        let runner = driver.runner.as_mut().unwrap();
+        runner.bus_mut().write_word(base, 0xA983); // DisposeDialog
+        runner.bus_mut().write_long(sp, windows[1]);
+        runner.cpu_mut().write_reg(Register::PC, base);
+        runner.cpu_mut().write_reg(Register::A7, sp);
+        runner.run_gui_slice_with_audio(1, 0, 0);
+        driver.capture_state(&mut state, false);
+        assert_eq!(state.live_dialogs.len(), 1);
+        assert_eq!(state.dialog_text_replies.len(), 1);
+        assert_eq!(state.dialog_text_replies[0].id, state.live_dialogs[0]);
+    }
+
+    /// Opt-in real-application smoke check. Set SYSTEMLESS_REAL_APPS to a
+    /// colon-separated list of archives. Each runs with the host UI, answering
+    /// any Systemless-owned interface it raises, and is compared with a run
+    /// whose host UI is disabled: the host UI must not introduce a stop.
+    #[test]
+    #[ignore = "requires locally supplied application archives"]
+    fn workspace_real_application_smoke() {
+        use super::super::runtime_protocol::ModelessCommand;
+        use systemless::systems::macintosh::host_ui::{
+            DialogReply, FileDialogAction, FileDialogReply, PopupMenuReply, SystemDialogAnswer,
+            SystemDialogReply,
+        };
+        let Some(list) = std::env::var_os("SYSTEMLESS_REAL_APPS") else {
+            eprintln!("SYSTEMLESS_REAL_APPS is unset; nothing to check");
+            return;
+        };
+        let frames: usize = std::env::var("SYSTEMLESS_REAL_APP_FRAMES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1800);
+        let mut failures = Vec::new();
+        for archive in std::env::split_paths(&list) {
+            let run = |host: bool| {
+                let mut driver = driver();
+                driver.workspace = host;
+                let mut runner = game::new_runner_with_configuration(true, 8);
+                runner.set_host_ui_enabled(host);
+                runner.set_app_start_time(3_000_000_000);
+                let app = match game::load_game_from_path(&mut runner, &archive) {
+                    Ok(app) => app,
+                    Err(error) => return Err(format!("load failed: {error}")),
+                };
+                game::init_game(&mut runner, &app);
+                configure_realtime_execution_rate(&mut runner);
+                driver.runner = Some(runner);
+                let mut state = GuiState::default();
+                let mut seen = std::collections::BTreeMap::<&str, usize>::new();
+                for frame in 0..frames {
+                    super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                    if driver.runner.as_ref().unwrap().is_halted() {
+                        break;
+                    }
+                    // Explore Systemless-owned UI the application exposes:
+                    // About, Open… and Preferences…, when present.
+                    if frame > 0 && frame % 400 == 0 {
+                        let runner = driver.runner.as_mut().unwrap();
+                        let menus = runner.guest_menu_snapshot();
+                        let wanted = ["about", "open", "preferences"][(frame / 400 - 1) % 3];
+                        let choice = menus.menus.iter().find_map(|menu| {
+                            menu.items
+                                .iter()
+                                .find(|item| {
+                                    item.enabled
+                                        && item.submenu_id.is_none()
+                                        && item.text.to_lowercase().starts_with(wanted)
+                                })
+                                .map(|item| (menu.id, item.number))
+                        });
+                        if let Some((menu, item)) = choice {
+                            runner.select_guest_menu_item(menu, item);
+                            *seen
+                                .entry(
+                                    ["menu:about", "menu:open", "menu:preferences"]
+                                        [(frame / 400 - 1) % 3],
+                                )
+                                .or_default() += 1;
+                        }
+                    }
+                    if !host || frame % 15 != 0 {
+                        continue;
+                    }
+                    driver.capture_state(&mut state, true);
+                    // Answer whatever Systemless-owned UI is waiting.
+                    if let Some(dialog) = state.dialog.clone().filter(|d| !d.busy) {
+                        *seen.entry("dialog").or_default() += 1;
+                        if std::env::var_os("SYSTEMLESS_REAL_APP_TRACE").is_some() {
+                            eprintln!(
+                                "[REAL-APP-DIALOG] frame={frame} title={:?} default={} cancel={} items={:?}",
+                                dialog.title,
+                                dialog.default_item,
+                                dialog.cancel_item,
+                                dialog.items.iter().map(|i| (i.number, i.kind, i.enabled, i.text.clone())).collect::<Vec<_>>()
+                            );
+                        }
+                        // Prefer buttons that continue without input, then
+                        // the default and cancel items.
+                        let preferred = dialog.items.iter().find(|i| {
+                            i.kind == 4
+                                && i.enabled
+                                && ["demo", "continue", "skip", "ok", "done"]
+                                    .iter()
+                                    .any(|word| i.text.to_lowercase().starts_with(word))
+                        });
+                        let item = preferred.map(|i| i.number).or_else(|| {
+                            [dialog.default_item, dialog.cancel_item]
+                                .into_iter()
+                                .find(|item| {
+                                    dialog.items.iter().any(|i| i.number == *item && i.enabled)
+                                })
+                        });
+                        if let Some(item) = item {
+                            driver.apply_command(GuiCommand::Dialog(DialogReply {
+                                id: dialog.id,
+                                revision: dialog.revision,
+                                item,
+                            }));
+                        }
+                    }
+                    if let Some(dialog) = state.file_dialog.clone().filter(|d| !d.busy) {
+                        *seen.entry("file").or_default() += 1;
+                        driver.apply_command(GuiCommand::FileDialog(FileDialogReply {
+                            id: dialog.id,
+                            revision: dialog.revision,
+                            action: FileDialogAction::Cancel,
+                        }));
+                    }
+                    if let Some(popup) = state.popup_menu.clone() {
+                        *seen.entry("popup").or_default() += 1;
+                        driver.apply_command(GuiCommand::PopupMenu(PopupMenuReply {
+                            id: popup.id,
+                            choice: None,
+                        }));
+                    }
+                    if let Some(dialog) = state.system_dialog.clone() {
+                        *seen.entry("system").or_default() += 1;
+                        driver.apply_command(GuiCommand::SystemDialog(SystemDialogReply {
+                            id: dialog.id,
+                            answer: SystemDialogAnswer::Cancel,
+                        }));
+                    }
+                    for note in state.notifications.clone() {
+                        *seen.entry("notification").or_default() += 1;
+                        driver.apply_command(GuiCommand::DismissNotification(note.id));
+                    }
+                    if state.guest_surface.is_some() {
+                        *seen.entry("guest-modal").or_default() += 1;
+                    }
+                    if !state.guest_windows.is_empty() {
+                        *seen.entry("guest-window").or_default() += 1;
+                    }
+                    if let Some(window) = state.modeless_dialogs.first().filter(|d| !d.busy) {
+                        *seen.entry("modeless").or_default() += 1;
+                        if window.closable {
+                            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Close {
+                                id: window.id,
+                                revision: window.revision,
+                            }));
+                        }
+                    }
+                }
+                let runner = driver.runner.as_ref().unwrap();
+                Ok((runner.unexpected_stop_reason(), seen))
+            };
+            let name = archive.display().to_string();
+            match (run(false), run(true)) {
+                (Ok((baseline, _)), Ok((hosted, seen))) => {
+                    eprintln!("[REAL-APP] {name}: baseline={baseline:?} hosted={hosted:?} host-ui={seen:?}");
+                    if hosted.is_some() && baseline.is_none() {
+                        failures.push(format!("{name}: host UI stopped the guest: {hosted:?}"));
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    eprintln!("[REAL-APP] {name}: skipped ({error})")
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    #[ignore = "runs the source-built Macintosh application on both CPU backends"]
+    fn workspace_showcase_popup_control_round_trip() {
+        use systemless::systems::macintosh::host_ui::{PopupMenuReply, UiOwner};
+        let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/toolbox-showcase.sit");
+        for powerpc in [false, true] {
+            let mut driver = driver();
+            driver.workspace = true;
+            let mut runner = game::new_runner_with_configuration(true, 8);
+            runner.set_prefer_powerpc_executables(powerpc);
+            runner.set_host_ui_enabled(true);
+            runner.set_app_start_time(3_000_000_000);
+            let app = game::load_game_from_path(&mut runner, &archive).unwrap();
+            game::init_game(&mut runner, &app);
+            configure_realtime_execution_rate(&mut runner);
+            for _ in 0..60 {
+                super::super::headless_time::frame(&mut runner, 0);
+                if runner
+                    .guest_menu_snapshot()
+                    .menus
+                    .iter()
+                    .any(|m| m.id == 129)
+                {
+                    break;
+                }
+            }
+            assert!(
+                runner.select_guest_menu_item(129, 16),
+                "Popup & Dropdown page"
+            );
+            for _ in 0..30 {
+                super::super::headless_time::frame(&mut runner, 0);
+            }
+            driver.runner = Some(runner);
+            let mut state = GuiState::default();
+            // Main window content starts at (50, 40); the control is local
+            // (100, 190, 124, 400) with a 60-pixel title.
+            let open = |driver: &mut GuiDriver, state: &mut GuiState| {
+                let runner = driver.runner.as_mut().unwrap();
+                let (v, h) = runner.presented_mouse_position(50 + 112, 40 + 320);
+                driver.apply_command(GuiCommand::MouseDown { v, h });
+                for _ in 0..60 {
+                    super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                    driver.capture_state(state, false);
+                    if state.popup_menu.is_some() {
+                        break;
+                    }
+                }
+                driver.apply_command(GuiCommand::MouseUp { v, h });
+                for _ in 0..10 {
+                    super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                }
+                driver.capture_state(state, false);
+                state
+                    .popup_menu
+                    .clone()
+                    .expect("the popup stays open after release")
+            };
+            let popup = open(&mut driver, &mut state);
+            assert_eq!(popup.menu, 143, "powerpc={powerpc}");
+            assert_eq!(popup.item, 1);
+            assert_eq!(state.modality.owner, UiOwner::PopupMenu);
+            assert!(state.modality.menus_blocked);
+            assert!(!driver
+                .runner
+                .as_mut()
+                .unwrap()
+                .select_guest_menu_item(129, 1));
+            // A separator cannot be chosen; a real item becomes the value.
+            driver.apply_command(GuiCommand::PopupMenu(PopupMenuReply {
+                id: popup.id,
+                choice: Some((143, 3)),
+            }));
+            driver.capture_state(&mut state, false);
+            assert!(state.popup_menu.is_some());
+            driver.apply_command(GuiCommand::PopupMenu(PopupMenuReply {
+                id: popup.id,
+                choice: Some((143, 4)),
+            }));
+            for _ in 0..30 {
+                super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+            }
+            driver.capture_state(&mut state, false);
+            assert!(state.popup_menu.is_none());
+            assert_eq!(state.modality.owner, UiOwner::Guest);
+            let popup = open(&mut driver, &mut state);
+            assert_eq!(popup.item, 4, "the control kept the host choice");
+            driver.apply_command(GuiCommand::PopupMenu(PopupMenuReply {
+                id: popup.id,
+                choice: None,
+            }));
+            for _ in 0..30 {
+                super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+            }
+            driver.capture_state(&mut state, false);
+            assert!(state.popup_menu.is_none());
+            assert!(!driver.runner.as_ref().unwrap().is_halted());
+        }
+    }
+
+    #[test]
+    #[ignore = "runs the source-built Macintosh application on both CPU backends"]
+    fn workspace_showcase_modeless_round_trip() {
+        use super::super::runtime_protocol::ModelessCommand;
+        use systemless::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+        let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/toolbox-showcase.sit");
+        for powerpc in [false, true] {
+            let mut driver = driver();
+            driver.workspace = true;
+            let mut runner = game::new_runner_with_configuration(true, 8);
+            runner.set_prefer_powerpc_executables(powerpc);
+            runner.set_host_ui_enabled(true);
+            runner.set_app_start_time(3_000_000_000);
+            let app = game::load_game_from_path(&mut runner, &archive).unwrap();
+            game::init_game(&mut runner, &app);
+            assert_eq!(runner.is_powerpc_app(), powerpc);
+            configure_realtime_execution_rate(&mut runner);
+            for _ in 0..60 {
+                super::super::headless_time::frame(&mut runner, 0);
+                if runner
+                    .guest_menu_snapshot()
+                    .menus
+                    .iter()
+                    .any(|m| m.id == 129)
+                {
+                    break;
+                }
+            }
+            assert!(
+                runner.select_guest_menu_item(129, 6),
+                "Dialogs & Alerts page"
+            );
+            for _ in 0..30 {
+                super::super::headless_time::frame(&mut runner, 0);
+            }
+            runner.push_key_down(3, b'f');
+            runner.push_key_up(3, b'f');
+            for _ in 0..120 {
+                super::super::headless_time::frame(&mut runner, 0);
+                if !runner.host_modeless_dialogs().is_empty() {
+                    break;
+                }
+            }
+            driver.runner = Some(runner);
+            let mut state = GuiState::default();
+            // Runs until `done` accepts the published front-most Find view.
+            let settle =
+                |driver: &mut GuiDriver, state: &mut GuiState, done: &dyn Fn(&GuiState) -> bool| {
+                    for _ in 0..180 {
+                        driver.capture_state(state, false);
+                        if done(state) {
+                            return;
+                        }
+                        super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                    }
+                    driver.capture_state(state, false);
+                    assert!(
+                        done(state),
+                        "powerpc={powerpc}: {:?}",
+                        state.modeless_dialogs
+                    );
+                };
+            settle(&mut driver, &mut state, &|s| {
+                s.modeless_dialogs.first().is_some_and(|d| !d.busy)
+            });
+            let find = state.modeless_dialogs[0].clone();
+            assert_eq!(find.title, "Find");
+            assert!(find.closable && find.movable);
+            assert!(state.dialog.is_none());
+            assert_eq!(
+                state.modality.owner,
+                systemless::systems::macintosh::host_ui::UiOwner::Guest
+            );
+            assert!(
+                !state.modality.menus_blocked,
+                "modeless dialogs do not block menus"
+            );
+
+            // Text commits in place and is acknowledged canonically.
+            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Text(
+                DialogTextReply {
+                    id: find.id,
+                    revision: find.revision,
+                    serial: 1,
+                    expected: String::new(),
+                    item: 4,
+                    text: "needle".into(),
+                    selection: (6, 6),
+                },
+            )));
+            driver.capture_state(&mut state, false);
+            let ack = state
+                .dialog_text_replies
+                .iter()
+                .find(|ack| ack.id == find.id)
+                .unwrap();
+            assert!(ack.accepted, "powerpc={powerpc}");
+            assert_eq!(ack.text.as_deref(), Some("needle"));
+            assert_eq!(
+                state.modeless_dialogs[0]
+                    .items
+                    .iter()
+                    .find(|i| i.number == 4)
+                    .unwrap()
+                    .text,
+                "needle"
+            );
+            // The application observes the committed edit through DialogSelect.
+            settle(&mut driver, &mut state, &|s| {
+                s.modeless_dialogs
+                    .first()
+                    .is_some_and(|d| d.items.iter().any(|i| i.number == 6 && i.text == "Editing"))
+            });
+            let view = state.modeless_dialogs[0].clone();
+            assert_eq!(
+                view.items.iter().find(|i| i.number == 4).unwrap().text,
+                "needle"
+            );
+
+            // Find arrives through the application's DialogSelect exactly once.
+            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Item(DialogReply {
+                id: view.id,
+                revision: view.revision,
+                item: 1,
+            })));
+            settle(&mut driver, &mut state, &|s| {
+                s.modeless_dialogs.first().is_some_and(|d| {
+                    d.items
+                        .iter()
+                        .any(|i| i.number == 6 && i.text == "Found needle")
+                })
+            });
+            // The checkbox toggles once in application code, not twice.
+            let view = state.modeless_dialogs[0].clone();
+            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Item(DialogReply {
+                id: view.id,
+                revision: view.revision,
+                item: 5,
+            })));
+            settle(&mut driver, &mut state, &|s| {
+                s.modeless_dialogs
+                    .first()
+                    .is_some_and(|d| d.items.iter().any(|i| i.number == 5 && i.value == 1))
+            });
+            for _ in 0..20 {
+                super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+            }
+            driver.capture_state(&mut state, false);
+            let view = state.modeless_dialogs[0].clone();
+            assert_eq!(view.items.iter().find(|i| i.number == 5).unwrap().value, 1);
+            // A stale revision is rejected without reaching the guest.
+            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Close {
+                id: view.id,
+                revision: view.revision + 100,
+            }));
+            for _ in 0..20 {
+                super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+            }
+            driver.capture_state(&mut state, false);
+            assert_eq!(state.modeless_dialogs.len(), 1);
+            // Closing is the application's TrackGoAway decision: it hides the
+            // palette, retaining its identity for a later ShowWindow.
+            let view = state.modeless_dialogs[0].clone();
+            driver.apply_command(GuiCommand::Modeless(ModelessCommand::Close {
+                id: view.id,
+                revision: view.revision,
+            }));
+            settle(&mut driver, &mut state, &|s| s.modeless_dialogs.is_empty());
+            assert!(state.live_dialogs.contains(&view.id));
+            assert!(!driver.runner.as_ref().unwrap().is_halted());
+        }
+    }
+
+    #[test]
+    #[ignore = "runs the source-built Macintosh application on both CPU backends"]
+    fn workspace_showcase_text_round_trip() {
+        use systemless::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+        let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/toolbox-showcase.sit");
+        for powerpc in [false, true] {
+            let mut driver = driver();
+            driver.workspace = true;
+            let mut runner = game::new_runner_with_configuration(true, 8);
+            runner.set_prefer_powerpc_executables(powerpc);
+            runner.set_host_ui_enabled(true);
+            runner.set_app_start_time(3_000_000_000);
+            let app = game::load_game_from_path(&mut runner, &archive).unwrap();
+            game::init_game(&mut runner, &app);
+            assert_eq!(runner.is_powerpc_app(), powerpc);
+            configure_realtime_execution_rate(&mut runner);
+            for _ in 0..60 {
+                super::super::headless_time::frame(&mut runner, 0);
+                if runner
+                    .guest_menu_snapshot()
+                    .menus
+                    .iter()
+                    .any(|m| m.id == 132)
+                {
+                    break;
+                }
+            }
+            assert!(runner.select_guest_menu_item(132, 6));
+            for _ in 0..120 {
+                super::super::headless_time::frame(&mut runner, 0);
+                if runner.host_dialog().is_some() {
+                    break;
+                }
+            }
+            driver.runner = Some(runner);
+            let mut state = GuiState::default();
+            driver.capture_state(&mut state, false);
+            let source = state
+                .dialog
+                .clone()
+                .expect("application preferences use host UI");
+            assert_eq!(source.title, "Game Preferences");
+            assert!(state.modality.menus_blocked);
+            assert!(
+                !driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .select_guest_menu_item(132, 6),
+                "an enabled application menu cannot queue behind a modal"
+            );
+            if !powerpc {
+                driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .dispatcher_mut()
+                    .dialog_tracking
+                    .as_mut()
+                    .unwrap()
+                    .filter_proc = 0x10000;
+                driver.capture_state(&mut state, false);
+                assert!(state.dialog.is_none());
+                // The guest-rendered fallback is framed by a host modal surface.
+                let surface = state.guest_surface.clone().expect("guest dialog is lifted");
+                assert_eq!(
+                    (surface.id, surface.title.as_str()),
+                    (source.id, "Game Preferences")
+                );
+                assert_eq!(
+                    (
+                        surface.bounds.2 - surface.bounds.0,
+                        surface.bounds.3 - surface.bounds.1
+                    ),
+                    (source.size.1 as i16, source.size.0 as i16)
+                );
+                assert!(state.live_dialogs.contains(&source.id));
+                assert_eq!(
+                    state.modality.owner,
+                    systemless::systems::macintosh::host_ui::UiOwner::Guest
+                );
+                assert!(state.modality.menus_blocked);
+                assert!(!driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .select_guest_menu_item(132, 6));
+                driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .dispatcher_mut()
+                    .dialog_tracking
+                    .as_mut()
+                    .unwrap()
+                    .filter_proc = 0;
+                driver.capture_state(&mut state, false);
+                assert!(
+                    state.guest_surface.is_none(),
+                    "host projection replaces the surface"
+                );
+            }
+            let source = state.dialog.clone().unwrap();
+            let field = source
+                .items
+                .iter()
+                .find(|i| i.kind == 16 && i.enabled)
+                .unwrap();
+            let text = DialogTextReply {
+                id: source.id,
+                revision: source.revision,
+                serial: 1,
+                expected: field.text.clone(),
+                item: field.number,
+                text: "Renée".into(),
+                selection: (5, 5),
+            };
+            driver.apply_command(GuiCommand::DialogText(text));
+            driver.capture_state(&mut state, false);
+            assert_eq!(
+                state
+                    .dialog_text_replies
+                    .first()
+                    .map(|reply| reply.as_ref()),
+                Some(&DialogTextAck {
+                    serial: 1,
+                    id: source.id,
+                    accepted: true,
+                    text: Some("Renée".into()),
+                })
+            );
+            assert!(state.live_dialogs.contains(&source.id));
+            let updated = state.dialog.clone().unwrap();
+            assert_eq!(
+                updated
+                    .items
+                    .iter()
+                    .find(|i| i.number == field.number)
+                    .unwrap()
+                    .text,
+                "Renée"
+            );
+            driver.apply_command(GuiCommand::Dialog(DialogReply {
+                id: updated.id,
+                revision: updated.revision,
+                item: updated.default_item,
+            }));
+            for _ in 0..120 {
+                let runner = driver.runner.as_mut().unwrap();
+                let work = super::super::headless_time::frame(runner, 0);
+                if work.foreground > 0 {
+                    driver.mouse_release_latch.observe_guest_progress();
+                }
+                if let Some((v, h)) = driver.mouse_release_latch.take_ready_release() {
+                    runner.push_mouse_up(v, h);
+                }
+                if !runner.host_dialog_ids().contains(&updated.id) {
+                    break;
+                }
+            }
+            driver.capture_state(&mut state, false);
+            assert!(
+                state.dialog.is_none(),
+                "guest consumes Save and retires the host view"
+            );
+            assert!(
+                !state.live_dialogs.contains(&updated.id),
+                "disposed guest dialog retires its editor session"
+            );
+            assert!(!driver.runner.as_ref().unwrap().is_halted());
+        }
     }
 
     /// A retired compact snapshot no one else holds takes the next frame in

@@ -4971,11 +4971,6 @@ pub const fn evaluate_hm_set_balloons_parameters(raw_flag: u32) -> HMSetBalloons
     }
 }
 
-/// Evaluates HMIsBalloon return value (always false, as balloons are not displayed).
-pub const fn evaluate_hm_is_balloon() -> bool {
-    false
-}
-
 /// Architecture-neutral parameter extraction and validation for MenuSelect.
 /// FUNCTION MenuSelect(startPt: Point): LONGINT;
 /// Inside Macintosh Volume I (1985), p. I-353.
@@ -7494,7 +7489,6 @@ mod tests {
         let balloons_off = evaluate_hm_set_balloons_parameters(0);
         assert!(!balloons_off.enabled());
 
-        assert!(!evaluate_hm_is_balloon());
     }
 
     #[test]

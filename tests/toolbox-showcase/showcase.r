@@ -15,6 +15,7 @@ type 'DATA' {
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
+#define rFindDialog 131
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
@@ -282,6 +283,30 @@ resource 'DITL' (rPrefDialog, preload) {
         {125, 105, 145, 300}, EditText { enabled, "Maverick" };
         /* Nova keeps inactive edit items beyond the dialog portRect. */
         {300, 105, 320, 300}, EditText { disabled, "Hidden Edit Text" }
+    }
+};
+
+/* A modeless Find palette: a standard document-style dialog driven through
+ * IsDialogEvent/DialogSelect from the application's own event loop. */
+resource 'DLOG' (rFindDialog, preload) {
+    {80, 340, 210, 630},
+    noGrowDocProc,
+    invisible,
+    goAway,
+    0x0,
+    rFindDialog,
+    "Find",
+    noAutoCenter
+};
+
+resource 'DITL' (rFindDialog, preload) {
+    {
+        {95, 200, 115, 270}, Button { enabled, "Find" };
+        {95, 115, 115, 185}, Button { enabled, "Done" };
+        {15, 15, 31, 60}, StaticText { disabled, "Find:" };
+        {15, 70, 31, 270}, EditText { enabled, "" };
+        {45, 15, 61, 200}, CheckBox { enabled, "Match case" };
+        {70, 15, 86, 270}, StaticText { disabled, "Ready" }
     }
 };
 

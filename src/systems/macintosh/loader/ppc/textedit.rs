@@ -2041,6 +2041,7 @@ pub(super) fn ppc_te_copy_or_cut(
 }
 
 pub(super) fn ppc_te_draw(
+    host_ui: Option<&crate::systems::macintosh::host_ui::HostUiState>,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     gworlds: &[PpcGWorldRecord],
@@ -2052,6 +2053,12 @@ pub(super) fn ppc_te_draw(
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
         return;
     };
+    let port = memory
+        .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+        .unwrap_or(fallback_port);
+    if host_ui.is_some_and(|state| state.dialog_presented(port)) {
+        return;
+    }
     let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
         return;
     };

@@ -215,3 +215,106 @@ fn hle_import_runner_get_adb_info_exposes_standard_devices() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
 }
+
+#[test]
+fn host_package_dialogs_powerpc_park_until_the_host_answers() {
+    use crate::systems::macintosh::host_ui::{
+        SystemDialogAnswer, SystemDialogKind, SystemDialogReply,
+    };
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetColor"),
+        PpcImportDispatcherTarget::GetColor
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PrError")).unwrap();
+    loaded.toolbox_startup.host_ui.enabled = true;
+    for (op, kind) in [
+        (
+            PpcPrintingCompatibilityOperation::PrJobDialog,
+            SystemDialogKind::Print,
+        ),
+        (
+            PpcPrintingCompatibilityOperation::PrStlDialog,
+            SystemDialogKind::PageSetup,
+        ),
+    ] {
+        for (answer, result) in [
+            (SystemDialogAnswer::Confirm, 1),
+            (SystemDialogAnswer::Cancel, 0),
+        ] {
+            let mut dispatch = |loaded: &mut PpcLoadedApp| {
+                ppc_dispatch_printing_compatibility(
+                    op,
+                    &loaded.cpu,
+                    &mut loaded.memory,
+                    &mut loaded.toolbox_startup,
+                )
+            };
+            assert_eq!(dispatch(&mut loaded), PpcImportAction::Yield(u64::MAX));
+            let dialog = loaded.toolbox_startup.host_ui.system_dialog().unwrap();
+            assert_eq!(dialog.kind, kind);
+            assert_eq!(dispatch(&mut loaded), PpcImportAction::Yield(u64::MAX));
+            assert!(loaded
+                .toolbox_startup
+                .host_ui
+                .reply_system_dialog(SystemDialogReply {
+                    id: dialog.id,
+                    answer
+                }));
+            assert_eq!(dispatch(&mut loaded), PpcImportAction::Return(result));
+        }
+    }
+    let (input, output, prompt) = (
+        PPC_DATA_BASE + 0x2000,
+        PPC_DATA_BASE + 0x2010,
+        PPC_DATA_BASE + 0x2020,
+    );
+    loaded.memory.add_region(input, vec![0; 64]);
+    for (index, value) in [0x1000u16, 0x2000, 0x3000].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u16_be(input + index as u32 * 2, value)
+            .unwrap();
+    }
+    loaded.memory.write_u8(prompt, 3).unwrap();
+    for (index, byte) in b"Ink".iter().enumerate() {
+        loaded
+            .memory
+            .write_u8(prompt + 1 + index as u32, *byte)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = prompt;
+    loaded.cpu.gpr[5] = input;
+    loaded.cpu.gpr[6] = output;
+    let action = dispatch_printing::ppc_dispatch_get_color(
+        &loaded.cpu,
+        &mut loaded.memory,
+        &mut loaded.toolbox_startup,
+    );
+    assert_eq!(action, PpcImportAction::Yield(u64::MAX));
+    let dialog = loaded.toolbox_startup.host_ui.system_dialog().unwrap();
+    assert_eq!(
+        dialog.kind,
+        SystemDialogKind::Color {
+            prompt: "Ink".into(),
+            color: [0x1000, 0x2000, 0x3000]
+        }
+    );
+    assert!(loaded
+        .toolbox_startup
+        .host_ui
+        .reply_system_dialog(SystemDialogReply {
+            id: dialog.id,
+            answer: SystemDialogAnswer::Color([0xffff, 0, 0x8080]),
+        }));
+    let action = dispatch_printing::ppc_dispatch_get_color(
+        &loaded.cpu,
+        &mut loaded.memory,
+        &mut loaded.toolbox_startup,
+    );
+    assert_eq!(action, PpcImportAction::Return(1));
+    let written: Vec<_> = (0..3)
+        .map(|i| loaded.memory.read_u16_be(output + i * 2).unwrap())
+        .collect();
+    assert_eq!(written, vec![0xffff, 0, 0x8080]);
+}

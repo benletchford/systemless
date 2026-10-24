@@ -19,14 +19,14 @@
 </p>
 
 <p align="center">
-  <img src=".github/assets/systemless-launch-macos.gif" alt="Launching Escape Velocity from Finder with native macOS menu and application icon integration">
+  <img src=".github/assets/systemless-launch-macos.gif" alt="Legacy guest-only launch of Escape Velocity with native macOS menu and application icon integration">
 </p>
 
 Systemless reimplements the classic Mac Toolbox and operating-system APIs in
 Rust, allowing original 68K and PowerPC Macintosh software to run without a ROM
-image, a System installation, or hardware emulation. On macOS, classic
-applications keep their own identity: guest menus appear in the native menu bar,
-while the guest application name and icon integrate with the Dock.
+image, a System installation, or hardware emulation. The desktop uses an egui
+workspace with dockable guest and inspector panes. The legacy `--guest-only`
+mode retains macOS native menus, application identity and Dock integration.
 
 ## Try it in your browser
 
@@ -101,18 +101,28 @@ selects an executable resource fork from the archive.
 Systemless does not ship applications, games, Mac ROMs, or Apple system software.
 Use legally obtained application archives.
 
+The desktop opens the egui workspace with a dockable guest pane, live inspector, Macintosh menu projection and host preferences:
+
+```sh
+cargo run --release -- path/to/app-or-game.sit
+```
+
+The workspace uses the existing winit host and wgpu device. It saves layout and appearance under `.systemless/workspace.json` beside the archive directory. Use `--guest-only` for the legacy guest-only window. `--workspace` remains accepted for compatibility. Headless runs do not activate the workspace. Systemless-implemented Macintosh interface elements use egui: menus (the menu bar, PopUpMenuSelect and popup controls), Standard File open/save, alerts, modal and modeless dialogs (buttons, choices, editable text, ICON/cicn/PICT artwork, standard CNTL controls, scroll-bar ranges and flat popups), the Color Picker, Printing Manager dialogs and Notification Manager alerts. Dialog items still reach the application through its normal Dialog Manager calls and callbacks. Dialogs whose contents the application draws itself (custom controls, user items or application filters) keep the guest's pixels inside an egui modal frame. Building the workspace requires Rust 1.95. The independent design-system crate and standalone gallery live under `crates/systemless-ui`.
+
 For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
 Fat applications launch their native PowerPC slice by default. Pass
 `--prefer-68k` to run the classic slice for compatibility testing;
 `--prefer-powerpc` remains accepted for explicit PowerPC selection.
 
-Windows uses D3D11 presentation by default, with automatic software fallback if
+On Windows, `--guest-only` uses D3D11 presentation, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
 
-Pass `--gpu` (or `--renderer=wgpu`) to opt into cross-platform wgpu desktop presentation (Metal,
-Vulkan, or DX12, depending on the host). This renders the complete Macintosh
-desktop, including system windows and text, through wgpu. Retained outline text
+The workspace always composes through cross-platform wgpu (Metal, Vulkan, or
+DX12, depending on the host). Pass `--gpu` (or `--renderer=wgpu`) to also run
+guest drawing, text and supported 3D rendering through wgpu. In `--guest-only`
+mode this also selects wgpu desktop presentation, which renders the complete
+Macintosh desktop, including system windows and text, through wgpu. Retained outline text
 and drawing coverage use exact integer area sampling, including cropped and
 resized desktops.
 
@@ -135,11 +145,15 @@ CopyBits, exact indexed colors and guest write observers. Unsupported requests,
 degenerate triangles and work beyond device limits retain software rendering.
 Strict device tests exercise the kernels independently of adaptive selection.
 
-`--renderer=auto` is the default and currently selects existing platform
-presentation and CPU dispatch. `--renderer=platform` explicitly selects that
-path for rollback. Wgpu remains opt-in until hardware qualification is complete;
-`--gpu` and `--renderer` cannot be combined. Wgpu failures fall back to platform
-presentation while preserving the guest. `--headless --gpu` enables the same adaptive guest rasterization in play
+`--renderer=auto` is the default: the workspace composes through wgpu while
+guest rasterization keeps CPU dispatch, and the guest-only window keeps existing
+platform presentation. `--renderer=platform` and `--renderer=software` select the
+guest-only window with that presenter for rollback. Wgpu guest rendering remains
+opt-in until hardware qualification is complete; `--gpu` and `--renderer` cannot
+be combined. In the guest-only window, wgpu failures fall back to platform
+presentation while preserving the guest. The workspace first recreates a failed
+device, keeping its layout, dialogs and drafts; if that fails it stops after
+saving guest files. `--headless --gpu` enables the same adaptive guest rasterization in play
 scripts and timed runs without creating a window; it does not measure desktop
 presentation. GPU initialization and rendering errors remain visible in logs.
 
@@ -159,21 +173,20 @@ macOS, and Windows. Linux uses Mesa's Vulkan adapter for headless qualification.
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
 separate thread while the window consumes complete owned snapshots. Closing the
-window requests an asynchronous save flush and runtime shutdown. On macOS,
-native Quit also defers termination until that owner has flushed saves and
-destroyed the guest; its completion runs in AppKit’s termination modal loop.
+window requests an asynchronous save flush and runtime shutdown. In the legacy
+macOS `--guest-only` window, native Quit also defers termination until that
+owner has flushed saves and destroyed the guest; its completion runs in AppKit’s termination modal loop.
 Native application identity inspection also runs on the owner while a loading
 window remains available; the host relaunches only after that owner finishes.
-The desktop suite passes 128 tests, including owner-thread lifetime, stalled
-initialization, ordered input, shutdown and save persistence, with debugger
-support enabled. An offscreen Metal text/dialog capture also passes. Available
-macOS interactive checks cover launch, gameplay, application-menu tracking,
-window zoom/resizing and a successful AppKit Quit. A controlled owner stall also
+Desktop coverage includes owner-thread lifetime, stalled initialization,
+ordered input, shutdown and save persistence, including debugger-enabled checks. An offscreen Metal text/dialog capture also passes. Available
+legacy `--guest-only` macOS interactive checks cover launch, gameplay,
+application-menu tracking, window zoom/resizing and a successful AppKit Quit. A controlled owner stall also
 preserved native menu and resize response, with
 AppKit Quit completing after owner release. Native pilot save/restart checks
 passed; broader input, fullscreen-exit and cross-display/platform coverage
-remain limited. The default remains the same-thread
-compatibility path; leave the variable unset to use it.
+remain limited. Guest execution still runs on the window thread by default;
+leave the variable unset to use that execution mode.
 
 For intermittent desktop stalls, set `SYSTEMLESS_PROFILE_FRAMES=1` when launching.
 The terminal reports CPU, compositing, outline rendering and Metal drawable-wait
@@ -373,13 +386,15 @@ systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
 ```
 
-On macOS, desktop windows open at the guest’s logical resolution: an 800×600
+The workspace opens with room for its guest and inspector panes and fits the
+guest image to its pane while preserving aspect ratio. In macOS `--guest-only`
+mode, windows open at the guest’s logical resolution: an 800×600
 guest gets an 800×600-point content area (1600×1200 backing pixels on a 2× Retina
 display). Oversized windows shrink to fit the monitor. Other platforms use an
 automatic display-sized window. Games keep their aspect ratio, and windows
 remain manually resizable. Use `--display-scale` with an
-integer from 1 through 8 to override automatic sizing with an exact physical
-guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
+integer from 1 through 8 in `--guest-only` mode to override automatic sizing
+with an exact physical guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
 On systems where macOS selects direct scan-out for the fullscreen surface this
 measurably reduced pointer-to-screen latency in testing (see issue #1050); the
 benefit depends on the machine and compositor state and is not guaranteed.
@@ -388,10 +403,10 @@ The default `classic-system7` guest chrome uses classic Macintosh presentation,
 control geometry, and metrics. The optional Systemless theme remains available
 with `--ui-theme systemless-default`.
 
-The desktop runner uses the canonical machine profile automatically. On macOS,
-guest menus are mirrored into the native menu bar and the guest's application
-name and icon are integrated with the Dock. Other platforms render the classic
-menu bar according to the guest application's own visibility state.
+The desktop runner uses the canonical machine profile automatically. The
+workspace projects Macintosh menus into egui. With `--guest-only`, macOS mirrors
+guest menus into the native menu bar and integrates the guest application name
+and icon with the Dock; other platforms retain the classic guest menu bar.
 
 Desktop saves are stored next to the launched archive under
 `.systemless/saves/<archive-name>/`. For example, launching

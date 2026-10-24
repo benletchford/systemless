@@ -12,6 +12,7 @@ use std::time::Instant;
 #[derive(Clone)]
 pub(super) struct RuntimeConfig {
     pub gpu: bool,
+    pub workspace: bool,
     #[cfg(target_os = "macos")]
     pub native_preflight: bool,
     pub game_path: PathBuf,
@@ -76,6 +77,7 @@ impl RuntimeOwner {
                     config.ui_theme,
                 );
                 driver.gpu = config.gpu;
+                driver.workspace = config.workspace;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         #[cfg(target_os = "macos")]
@@ -297,6 +299,7 @@ mod tests {
     fn config() -> RuntimeConfig {
         RuntimeConfig {
             gpu: false,
+            workspace: false,
             #[cfg(target_os = "macos")]
             native_preflight: false,
             game_path: "owner-test".into(),

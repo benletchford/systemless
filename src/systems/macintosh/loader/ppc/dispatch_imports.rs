@@ -1483,6 +1483,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HMGetBalloons
         | PpcImportDispatcherTarget::HMIsBalloon
         | PpcImportDispatcherTarget::HMSetBalloons
+        | PpcImportDispatcherTarget::HMShowBalloon
+        | PpcImportDispatcherTarget::HMRemoveBalloon
         | PpcImportDispatcherTarget::HiliteMenu
         | PpcImportDispatcherTarget::MenuNoop
         | PpcImportDispatcherTarget::MenuKey
@@ -2829,6 +2831,41 @@ pub(crate) fn dispatch_supported_import(
             ))
         }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => {
+            // Mirror Notification Manager alert strings into the host UI.
+            let record = cpu.gpr[3];
+            match operation {
+                PpcSystemCompatibilityOperation::NmInstall if record != 0 => {
+                    let text_ptr = memory
+                        .read_u32_be(record + crate::notification_manager::NM_STR_OFFSET)
+                        .unwrap_or(0);
+                    if text_ptr != 0 {
+                        let length = memory.read_u8(text_ptr).unwrap_or(0);
+                        let bytes: Vec<u8> = (1..=u32::from(length))
+                            .filter_map(|offset| memory.read_u8(text_ptr + offset))
+                            .collect();
+                        toolbox_startup.host_ui.note_notification(
+                            record,
+                            crate::trap::types::decode_mac_roman(&bytes),
+                        );
+                    }
+                }
+                PpcSystemCompatibilityOperation::NmRemove => {
+                    toolbox_startup.host_ui.remove_notification(record);
+                }
+                PpcSystemCompatibilityOperation::DiBadMount => {
+                    // Park on the host's bad-disk alert, then keep the result.
+                    if toolbox_startup.host_ui.system_dialog_active() {
+                        if toolbox_startup.host_ui.take_system_answer().is_none() {
+                            return Some(PpcImportAction::Yield(u64::MAX));
+                        }
+                    } else if toolbox_startup.host_ui.begin_system_dialog(
+                        crate::systems::macintosh::host_ui::SystemDialogKind::BadDisk,
+                    ) {
+                        return Some(PpcImportAction::Yield(u64::MAX));
+                    }
+                }
+                _ => {}
+            }
             Some(dispatch_system::ppc_dispatch_system_compatibility(
                 operation,
                 cpu,
@@ -2853,6 +2890,11 @@ pub(crate) fn dispatch_supported_import(
                 toolbox_startup,
             ))
         }
+        PpcImportDispatcherTarget::GetColor => Some(dispatch_printing::ppc_dispatch_get_color(
+            cpu,
+            memory,
+            toolbox_startup,
+        )),
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }

@@ -886,6 +886,7 @@ fn native_toolbox_theme_changes_chrome_without_changing_guest_geometry() {
             &loaded.window_list,
             window,
             false,
+            None,
         );
         assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, content), geometry);
         assert_eq!(
@@ -997,6 +998,7 @@ fn ppc_direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
         &loaded.window_list,
         back,
         false,
+        None,
     );
 
     assert_eq!(
@@ -1420,6 +1422,7 @@ fn ppc_window_removal_exposure_uses_pattern_when_host_hides_menu_bar() {
         &mut event_queue,
         0,
         PpcInputSnapshot::default(),
+        None,
     );
 
     let black = ppc_physical_screen_color_pixel(
@@ -1481,6 +1484,7 @@ fn ppc_window_geometry_exposure_preserves_newly_covered_pixels() {
         &mut event_queue,
         0,
         PpcInputSnapshot::default(),
+        None,
     );
 
     assert_eq!(
@@ -10576,4 +10580,29 @@ fn fullscreen_preflight_and_invalid_outputs_leave_guest_state_unchanged() {
     assert_eq!(loaded.memory.read_u32_be(scratch), Some(0xa5a5a5a5));
     assert_eq!(*loaded.current_gworld, port);
     assert!(loaded.toolbox_startup.fullscreen.is_none());
+}
+
+#[test]
+fn select_window_delivers_activation_transition_once() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let first = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 4, true, u32::MAX);
+    let second = create_test_cwindow(&mut loaded, scratch, (70, 80, 170, 280), 4, true, u32::MAX);
+    loaded.set_event_queue([]);
+    loaded.cpu.gpr[3] = first;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    let events: Vec<_> = loaded
+        .event_queue()
+        .iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(events, vec![(second, 0), (first, 1)]);
+    loaded.cpu.gpr[3] = second;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront));
+    loaded.set_event_queue([]);
+    loaded.cpu.gpr[3] = first;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    assert!(!loaded.event_queue().iter().any(|event| event.what == 8));
 }

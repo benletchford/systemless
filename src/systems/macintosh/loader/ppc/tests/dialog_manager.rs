@@ -44,102 +44,118 @@ fn text_services_leave_events_for_the_application_without_an_input_method() {
 
 #[test]
 fn standard_alert_waits_for_input_then_disposes_the_dialog() {
-    let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let base = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(base, vec![0; 256]);
-    loaded.memory.write_u16_be(base, 0x7fff).unwrap();
-    loaded
-        .memory
-        .write_bytes(base + 32, b"\x0cVideo setup?")
-        .unwrap();
-    loaded.cpu.gpr[3] = 3;
-    loaded.cpu.gpr[4] = base + 32;
-    loaded.cpu.gpr[5] = 0;
-    loaded.cpu.gpr[6] = 0;
-    loaded.cpu.gpr[7] = base;
+    for host in [false, true] {
+        let pef = synthetic_pef_with_library_import(b"AppearanceLib", b"StandardAlert");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_ui.enabled = host;
+        let base = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(base, vec![0; 256]);
+        loaded.memory.write_u16_be(base, 0x7fff).unwrap();
+        loaded
+            .memory
+            .write_bytes(base + 32, b"\x0cVideo setup?")
+            .unwrap();
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = base + 32;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = base;
 
-    let probe = loaded.run_with_hle_imports(128);
-    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-    assert_eq!(loaded.memory.read_u16_be(base), Some(0x7fff));
-    let dialog = *loaded.current_gworld;
-    assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
-    let items_handle = loaded
-        .memory
-        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
-        .unwrap();
-    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
-    let point = (i32::from(bounds.1), i32::from(bounds.0));
-    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-    let border_pixel = ppc_quickdraw_read_pixel(&mut loaded.memory, front, point);
-    let handles = loaded.handles();
-    let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
-    assert!(items.iter().any(
-        |item| ppc_handle_bytes(&mut loaded.memory, &handles, item.handle).as_deref()
-            == Some(b"Video setup?")
-    ));
-    let window_count = loaded.window_list.len();
-    let caller = (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr);
-    assert_eq!(caller.0[3..8], [3, base + 32, 0, 0, base]);
-    loaded.run_with_hle_imports(128);
-    assert_eq!(
-        loaded.window_list.len(),
-        window_count,
-        "waiting must reuse the alert"
-    );
-    assert_eq!(
-        (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr),
-        caller,
-        "an idle pass must leave the caller's registers intact"
-    );
-
-    loaded.set_event_queue([
-        PpcQueuedEvent {
-            what: 3,
-            message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
-            when: 0,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        },
-        PpcQueuedEvent {
-            what: 6,
-            message: dialog,
-            when: 0,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        },
-    ]);
-    let probe = loaded.run_with_hle_imports(128);
-    assert!(matches!(
-        probe.result,
-        PpcRunResult::Halted {
-            pc: PPC_HALT_PC,
-            ..
+        let probe = loaded.run_with_hle_imports(128);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(loaded.memory.read_u16_be(base), Some(0x7fff));
+        let dialog = *loaded.current_gworld;
+        if host {
+            assert!(loaded.host_dialog().is_some());
         }
-    ));
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert_eq!(loaded.memory.read_u16_be(base), Some(1));
-    assert!(!loaded.window_list.contains(&dialog));
-    assert!(!loaded
-        .event_queue()
-        .iter()
-        .any(|event| event.what == 6 && event.message == dialog));
-    assert!(!loaded
-        .handles()
-        .iter()
-        .any(|record| record.handle == items_handle));
-    let desktop_pixel = ppc_physical_screen_color_pixel(
-        front,
-        ppc_standard_desktop_color(&loaded.gworlds, point.0, point.1),
-        &loaded.screen_clut,
-    );
-    assert_ne!(border_pixel, desktop_pixel);
-    assert_eq!(
-        ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
-        desktop_pixel
-    );
+        assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+        let items_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+            .unwrap();
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let point = (i32::from(bounds.1), i32::from(bounds.0));
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let border_pixel = ppc_quickdraw_read_pixel(&mut loaded.memory, front, point);
+        let handles = loaded.handles();
+        let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+        assert!(items.iter().any(|item| ppc_handle_bytes(
+            &mut loaded.memory,
+            &handles,
+            item.handle
+        )
+        .as_deref()
+            == Some(b"Video setup?")));
+        let window_count = loaded.window_list.len();
+        let caller = (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr);
+        assert_eq!(caller.0[3..8], [3, base + 32, 0, 0, base]);
+        loaded.run_with_hle_imports(128);
+        assert_eq!(
+            loaded.window_list.len(),
+            window_count,
+            "waiting must reuse the alert"
+        );
+        assert_eq!(
+            (loaded.cpu.gpr, loaded.cpu.lr, loaded.cpu.ctr, loaded.cpu.cr),
+            caller,
+            "an idle pass must leave the caller's registers intact"
+        );
+
+        loaded.set_event_queue([
+            PpcQueuedEvent {
+                what: 3,
+                message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+            PpcQueuedEvent {
+                what: 6,
+                message: dialog,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+        ]);
+        let probe = loaded.run_with_hle_imports(128);
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(base), Some(1));
+        assert!(!loaded.window_list.contains(&dialog));
+        assert!(!loaded
+            .event_queue()
+            .iter()
+            .any(|event| event.what == 6 && event.message == dialog));
+        assert!(!loaded
+            .handles()
+            .iter()
+            .any(|record| record.handle == items_handle));
+        let desktop_pixel = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, point.0, point.1),
+            &loaded.screen_clut,
+        );
+        if !host {
+            assert_ne!(border_pixel, desktop_pixel);
+        }
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+            desktop_pixel
+        );
+        assert!(loaded.host_dialog().is_none());
+        assert!(!loaded
+            .toolbox_startup
+            .host_dialog_backings
+            .contains_key(&dialog));
+    }
 }
 
 #[test]
@@ -706,16 +722,54 @@ fn recorded_modal_filter_call(loaded: &mut PpcLoadedApp, record: u32) -> Recorde
 /// A GetNewDialog dialog with one OK button at local (12, 20, 32, 90),
 /// left with the import rebound to ModalDialog(filter, itemHit).
 fn modal_dialog_with_filter(filter: u32) -> (PpcLoadedApp, u32, u32) {
+    modal_dialog_with_options(filter, false)
+}
+
+fn modal_dialog_with_options(filter: u32, host: bool) -> (PpcLoadedApp, u32, u32) {
+    modal_dialog_with_items(filter, host, vec![make_test_ditl_item(12, 20, 32, 90, b"OK")])
+}
+
+fn modal_dialog_with_items(
+    filter: u32,
+    host: bool,
+    items: Vec<Vec<u8>>,
+) -> (PpcLoadedApp, u32, u32) {
+    modal_dialog_with_resources(filter, host, items, Vec::new())
+}
+
+fn modal_dialog_with_resources(
+    filter: u32,
+    host: bool,
+    items: Vec<Vec<u8>>,
+    resources: Vec<([u8; 4], i16, Vec<u8>)>,
+) -> (PpcLoadedApp, u32, u32) {
+    modal_dialog_with_resources_and_proc(filter, host, items, resources, 1)
+}
+
+fn modal_dialog_with_resources_and_proc(
+    filter: u32,
+    host: bool,
+    items: Vec<Vec<u8>>,
+    resources: Vec<([u8; 4], i16, Vec<u8>)>,
+    proc_id: i16,
+) -> (PpcLoadedApp, u32, u32) {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.toolbox_startup.host_ui.enabled = host;
     let mut dlog = vec![0; 22];
     for (offset, value) in [(0, 60i16), (2, 80), (4, 160), (6, 280)] {
         dlog[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
     dlog[10] = 1;
+    if host {
+        dlog[8..10].copy_from_slice(&proc_id.to_be_bytes());
+    }
     dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
-    let ditl = make_test_ditl(&[make_test_ditl_item(12, 20, 32, 90, b"OK")]);
-    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+    let ditl = make_test_ditl(&items);
+    for (res_type, res_id, data) in [(*b"DLOG", 128, dlog), (*b"DITL", 128, ditl)]
+        .into_iter()
+        .chain(resources)
+    {
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
         loaded
             .process_file_system
@@ -723,7 +777,7 @@ fn modal_dialog_with_filter(filter: u32) -> (PpcLoadedApp, u32, u32) {
                 ref_num: current_resource_refnum,
                 path: String::new(),
                 res_type: u32::from_be_bytes(res_type),
-                res_id: 128,
+                res_id,
                 name: Vec::new(),
                 data: data.into(),
                 raw_data: None,
@@ -731,6 +785,15 @@ fn modal_dialog_with_filter(filter: u32) -> (PpcLoadedApp, u32, u32) {
                 attrs: 0,
                 handle: 0,
             });
+    }
+    if host {
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front,
+            (135, 82),
+            2
+        ));
     }
     loaded.cpu.gpr[3] = 128;
     loaded.cpu.gpr[4] = 0;
@@ -822,37 +885,40 @@ fn created_modal_filter_upp_invokes_original_callback_and_masks_boolean_result()
 
 #[test]
 fn modal_dialog_offers_each_event_to_its_filter_before_hit_testing() {
-    let filter = PPC_CODE_BASE + 0x1000;
-    let record = PPC_DATA_BASE + 0x1800;
-    let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_filter(filter);
-    install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
-    let caller_sp = loaded.cpu.gpr[1];
-    // A click in the OK button (dialog global origin 60, 80).
-    let click = modal_filter_mouse_down(60 + 20, 80 + 50);
-    loaded.set_event_queue([click]);
+    for host in [false, true] {
+        let filter = PPC_CODE_BASE + 0x1000;
+        let record = PPC_DATA_BASE + 0x1800;
+        let (mut loaded, dialog, item_hit_ptr) = modal_dialog_with_options(filter, host);
+        install_recording_modal_filter(&mut loaded, filter, record, MODAL_FILTER_FALSE, None);
+        let caller_sp = loaded.cpu.gpr[1];
+        // A click in the OK button (dialog global origin 60, 80).
+        let click = modal_filter_mouse_down(60 + 20, 80 + 50);
+        loaded.set_event_queue([click]);
 
-    let probe = loaded.run_with_hle_imports(512);
+        let probe = loaded.run_with_hle_imports(512);
 
-    assert!(matches!(
-        probe.result,
-        PpcRunResult::Halted {
-            pc: PPC_HALT_PC,
-            ..
-        }
-    ));
-    let call = recorded_modal_filter_call(&mut loaded, record);
-    assert_eq!(call.count, 1);
-    assert_eq!(call.dialog, dialog);
-    assert_eq!(call.item_hit_ptr, item_hit_ptr);
-    assert_eq!(call.event, click);
-    // The EventRecord lives in a frame below the caller's stack.
-    assert!(call.sp < caller_sp && call.sp % 16 == 0);
-    assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_sp);
-    // Declined: ModalDialog hit-tests the event itself.
-    assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
-    assert_eq!(loaded.cpu.gpr[1], caller_sp);
-    assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
-    assert!(loaded.dialog_callback_stack.is_empty());
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
+        let call = recorded_modal_filter_call(&mut loaded, record);
+        assert_eq!(call.count, 1);
+        assert_eq!(call.dialog, dialog);
+        assert_eq!(call.item_hit_ptr, item_hit_ptr);
+        assert_eq!(call.event, click);
+        // The EventRecord lives in a frame below the caller's stack.
+        assert!(call.sp < caller_sp && call.sp % 16 == 0);
+        assert!(call.event_ptr > call.sp && call.event_ptr + 16 <= caller_sp);
+        // Declined: ModalDialog hit-tests the event itself.
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+        assert_eq!(loaded.cpu.gpr[1], caller_sp);
+        assert_eq!(loaded.cpu.gpr[3..5], [filter, item_hit_ptr]);
+        assert!(loaded.dialog_callback_stack.is_empty());
+        assert!(loaded.host_dialog().is_none());
+    }
 }
 
 #[test]
@@ -1569,7 +1635,8 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
         &loaded.process_file_system.vfs_resources,
         *loaded.process_file_system.current_resource_file,
         dialog,
-    ));
+    &loaded.toolbox_startup,
+));
 
     let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
     assert_eq!(
@@ -7177,4 +7244,1903 @@ fn dialog_sheet_window_filter_and_item_insertion_dispatch_with_canonical_evaluat
         let probe = loaded_app.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
     }
+}
+
+
+#[test]
+fn host_message_dialog_powerpc_preserves_background_and_returns_guest_item() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, dialog, result) = modal_dialog_with_options(0, true);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::CycleLimit { .. }
+    ));
+    let snapshot = loaded
+        .host_dialog()
+        .expect("native message dialog is projected");
+    assert_eq!(snapshot.items[0].text, "OK");
+    let mut reply = DialogReply {
+        id: snapshot.id,
+        revision: snapshot.revision,
+        item: 1,
+    };
+    assert!(loaded
+        .host_dialog_item_position(&DialogReply {
+            item: 0,
+            ..reply.clone()
+        })
+        .is_none());
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (135, 82)),
+        Some(2)
+    );
+    let ditl_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let ditl = loaded.memory.read_u32_be(ditl_handle).unwrap();
+    loaded.memory.write_u8(ditl + 14, 0).unwrap();
+    assert!(loaded.host_dialog().is_none());
+    assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+    loaded.memory.write_u8(ditl + 14, 4).unwrap();
+    let resumed = loaded.host_dialog().unwrap();
+    assert!(resumed.revision > reply.revision);
+    assert!(loaded.host_dialog_item_position(&reply).is_none());
+    reply.revision = resumed.revision;
+    let item_handle =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap()[0]
+            .handle;
+    let control = loaded.memory.read_u32_be(item_handle).unwrap();
+    loaded
+        .memory
+        .write_u8(control + PPC_CONTROL_HILITE_OFFSET, 255)
+        .unwrap();
+    assert!(loaded.host_dialog_item_position(&reply).is_none());
+    let disabled = loaded.host_dialog().unwrap();
+    assert!(disabled.revision > snapshot.revision);
+    assert!(!disabled.items[0].enabled);
+    loaded
+        .memory
+        .write_u8(control + PPC_CONTROL_HILITE_OFFSET, 0)
+        .unwrap();
+    let current = loaded.host_dialog().unwrap();
+    let (v, h) = loaded
+        .host_dialog_item_position(&DialogReply {
+            revision: current.revision,
+            ..reply
+        })
+        .unwrap();
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    assert_eq!(loaded.memory.read_u16_be(result), Some(1));
+    let retained = loaded
+        .host_dialog()
+        .expect("visible dialog remains projected after itemHit");
+    assert!(retained.busy);
+    assert_eq!(retained.id, snapshot.id);
+    assert!(loaded
+        .host_dialog_item_position(&DialogReply {
+            id: retained.id,
+            revision: retained.revision,
+            item: 1
+        })
+        .is_none());
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = dialog;
+    loaded.run_with_hle_imports(128);
+    assert!(loaded
+        .toolbox_startup
+        .host_ui
+        .dialog_identity(dialog)
+        .is_none());
+    assert!(!loaded
+        .toolbox_startup
+        .host_dialog_backings
+        .contains_key(&dialog));
+}
+
+#[test]
+fn host_preference_choices_powerpc_report_live_values_and_guest_hits() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for (kind, resource) in [
+        (4, false),
+        (5, false),
+        (6, false),
+        (4, true),
+        (5, true),
+        (6, true),
+    ] {
+        let payload: &[u8] = if resource {
+            &[0, 200]
+        } else {
+            b"Sound Effects"
+        };
+        let items = vec![
+            make_test_ditl_item(12, 20, 32, 90, b"OK"),
+            make_test_ditl_item_typed(40, 20, 60, 190, if resource { 7 } else { kind }, payload),
+        ];
+        let mut resources = Vec::new();
+        if resource {
+            let mut cntl = vec![0; 23];
+            cntl[10] = 1;
+            cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+            cntl[16..18].copy_from_slice(&i16::from(kind - 4).to_be_bytes());
+            cntl[22] = 13;
+            cntl.extend_from_slice(b"Sound Effects");
+            resources.push((*b"CNTL", 200, cntl));
+        }
+        let (mut loaded, dialog, result) = modal_dialog_with_resources(0, true, items, resources);
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let initial = loaded.host_dialog().unwrap();
+        assert_eq!((initial.items[1].kind, initial.items[1].value), (kind, 0));
+        assert_eq!(initial.items[1].text, "Sound Effects");
+        let handles = loaded.handles();
+        let handle =
+            ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap()[1].handle;
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front,
+            (185, 110),
+            2
+        ));
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetControlValue);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (185, 110)),
+            Some(2)
+        );
+        loaded.controls.with_mut(|records| {
+            records
+                .iter_mut()
+                .find(|r| r.handle == handle)
+                .unwrap()
+                .active = false
+        });
+        assert!(!loaded.host_dialog().unwrap().items[1].enabled);
+        loaded.controls.with_mut(|records| {
+            records
+                .iter_mut()
+                .find(|r| r.handle == handle)
+                .unwrap()
+                .active = true
+        });
+        if resource {
+            loaded.controls.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|r| r.handle == handle)
+                    .unwrap()
+                    .proc_id = 8
+            });
+            assert!(
+                loaded.host_dialog().is_none(),
+                "unsupported CDEFs retain guest rendering"
+            );
+            loaded.controls.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|r| r.handle == handle)
+                    .unwrap()
+                    .proc_id = i16::from(kind - 4)
+            });
+        }
+        let pointer = loaded.memory.read_u32_be(handle).unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            pointer + PPC_CONTROL_RECT_OFFSET,
+            45,
+            30,
+            65,
+            190,
+        )
+        .unwrap();
+        let current = loaded.host_dialog().unwrap();
+        assert_eq!(current.items[1].rect, (45, 30, 65, 190));
+        assert_eq!(current.items[1].value, 1);
+        assert!(current.revision > initial.revision);
+        let (v, h) = loaded
+            .host_dialog_item_position(&DialogReply {
+                id: current.id,
+                revision: current.revision,
+                item: 2,
+            })
+            .unwrap();
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = result;
+        loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u16_be(result), Some(2));
+        let retained = loaded
+            .host_dialog()
+            .expect("item handler retains the host view");
+        assert!(retained.busy);
+        assert_eq!(retained.id, current.id);
+        assert!(retained.revision > current.revision);
+        let retained_reply = DialogReply {
+            id: retained.id,
+            revision: retained.revision,
+            item: 2,
+        };
+        assert!(loaded.host_dialog_item_position(&retained_reply).is_none());
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front,
+            (185, 110),
+            2
+        ));
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetControlValue);
+        let updated = loaded.host_dialog().unwrap();
+        assert!(updated.busy);
+        assert_eq!(
+            updated.items[1].value, 0,
+            "handler updates are projected from live controls"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (185, 110)),
+            Some(2)
+        );
+        if resource {
+            loaded.controls.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|record| record.handle == handle)
+                    .unwrap()
+                    .proc_id = 8
+            });
+            assert!(loaded.host_dialog().is_none());
+            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            loaded.controls.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|record| record.handle == handle)
+                    .unwrap()
+                    .proc_id = i16::from(kind - 4)
+            });
+            assert!(
+                loaded.host_dialog().is_none(),
+                "guest presentation resumes only at the next supported modal call"
+            );
+        }
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = result;
+        loaded.set_event_queue([]);
+        loaded.run_with_hle_imports(128);
+        let ready = loaded.host_dialog().unwrap();
+        assert!(!ready.busy);
+        assert_eq!(ready.id, current.id);
+        assert!(ready.revision > updated.revision);
+        assert!(loaded.host_dialog_item_position(&retained_reply).is_none());
+        assert!(loaded
+            .host_dialog_item_position(&DialogReply {
+                revision: ready.revision,
+                ..retained_reply
+            })
+            .is_some());
+    }
+}
+
+#[test]
+fn host_dialog_text_powerpc_updates_borrowed_handle_and_selection() {
+    use crate::systems::macintosh::host_ui::DialogTextReply;
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 20, 30, 180, 16, b"First"),
+        make_test_ditl_item_typed(40, 20, 60, 180, 16, b"Second"),
+    ];
+    let (mut loaded, dialog, _) = modal_dialog_with_items(0, true, items);
+    loaded.run_with_hle_imports(128);
+    let source = loaded
+        .host_dialog()
+        .expect("editable native dialog projects");
+    let reply = DialogTextReply {
+        id: source.id,
+        revision: source.revision,
+        serial: 1,
+        item: 3,
+        expected: "Second".into(),
+        text: "café".into(),
+        selection: (4, 1),
+    };
+    let regs = loaded.cpu.gpr;
+    let pc = loaded.cpu.pc;
+    assert!(loaded.reply_host_dialog_text(&reply));
+    assert_eq!(loaded.cpu.gpr, regs);
+    assert_eq!(loaded.cpu.pc, pc);
+    let current = loaded.host_dialog().unwrap();
+    assert_eq!(current.edit_item, 3);
+    assert_eq!(current.items[2].text, "café");
+    assert_eq!(current.items[2].selection, Some((1, 4)));
+    assert!(!loaded.reply_host_dialog_text(&reply));
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te = ppc_te_record_ptr(&mut loaded.memory, te_handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u16_be(te + PPC_TE_LENGTH_OFFSET),
+        Some(4)
+    );
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(te + PPC_TE_HTEXT_OFFSET),
+        Some(items[2].handle)
+    );
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (105, 102), 123);
+    ppc_te_draw(
+        Some(&loaded.toolbox_startup.host_ui),
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.gworlds,
+        te_handle,
+        dialog,
+        loaded.quickdraw_fore_color,
+        &loaded.quickdraw_fore_indices,
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (105, 102)),
+        Some(123)
+    );
+    let invalid = DialogTextReply {
+        revision: current.revision,
+        expected: "stale".into(),
+        ..reply.clone()
+    };
+    assert!(!loaded.reply_host_dialog_text(&invalid));
+    let empty = DialogTextReply {
+        revision: current.revision,
+        expected: "café".into(),
+        text: String::new(),
+        selection: (99, 99),
+        ..reply
+    };
+    assert!(loaded.reply_host_dialog_text(&empty));
+    assert_eq!(
+        loaded.host_dialog().unwrap().items[2].selection,
+        Some((0, 0))
+    );
+    let current = loaded.host_dialog().unwrap();
+    let long = DialogTextReply {
+        revision: current.revision,
+        expected: String::new(),
+        text: "line\n".repeat(100),
+        selection: (500, 500),
+        ..empty
+    };
+    assert!(loaded.reply_host_dialog_text(&long));
+    let current = loaded.host_dialog().unwrap();
+    assert_eq!(current.items[2].text, long.text);
+    assert_eq!(current.items[2].selection, Some((500, 500)));
+    let oversized = DialogTextReply {
+        revision: current.revision,
+        expected: long.text.clone(),
+        text: "x".repeat(i16::MAX as usize + 1),
+        ..long
+    };
+    assert!(!loaded.reply_host_dialog_text(&oversized));
+    let (v, h) = loaded
+        .host_dialog_item_position(&crate::systems::macintosh::host_ui::DialogReply {
+            id: current.id,
+            revision: current.revision,
+            item: current.default_item,
+        })
+        .unwrap();
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    let retained = loaded
+        .host_dialog()
+        .expect("completed dialog retains its editors");
+    assert!(retained.busy);
+    assert_eq!(retained.items[2].text, current.items[2].text);
+    assert!(!loaded.reply_host_dialog_text(&DialogTextReply {
+        revision: retained.revision,
+        text: "blocked".into(),
+        ..oversized
+    }));
+    assert_eq!(
+        loaded.host_dialog().unwrap().items[2].text,
+        current.items[2].text
+    );
+}
+
+#[test]
+fn nested_host_modal_order_keeps_file_parent_below_supported_and_guest_children() {
+    use crate::systems::macintosh::host_ui::{
+        DialogReply, FileDialogAction, FileDialogReply, UiOwner,
+    };
+    fn inspect(loaded: &PpcLoadedApp) -> crate::runner::FixtureRunner {
+        let app = crate::loader::LoadedApp::from_ppc(loaded.clone());
+        let mut runner = crate::runner::FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        runner.init_app(&app);
+        runner.set_host_ui_enabled(true);
+        runner
+    }
+    let (mut loaded, parent, _) = modal_dialog_with_options(0, true);
+    loaded.run_with_hle_imports(128);
+    let parent_view = loaded.host_dialog().unwrap();
+    let parent_reply = DialogReply {
+        id: parent_view.id,
+        revision: parent_view.revision,
+        item: 1,
+    };
+    assert_eq!(inspect(&loaded).ui_modality().owner, UiOwner::Dialog);
+    let callback = PPC_DATA_BASE + 0x3000;
+    loaded
+        .memory
+        .add_region(callback, 0x4800_0000u32.to_be_bytes().to_vec()); // callback stays in flight
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Document".into(),
+        data: b"data".to_vec().into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"TEXT"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    let file_reply = PPC_DATA_BASE + 0x3100;
+    loaded.memory.add_region(file_reply, vec![0; 88]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::StandardGetFile;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = callback;
+    loaded.cpu.gpr[4] = u32::MAX;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = file_reply;
+    loaded.run_with_hle_imports(128);
+    let file = loaded.host_file_dialog().unwrap();
+    assert!(file.busy, "file filter is still executing guest code");
+    let mut runner = inspect(&loaded);
+    assert_eq!(runner.ui_modality().owner, UiOwner::FileDialog);
+    assert!(runner.host_dialog_item_position(&parent_reply).is_none());
+    // Mixed Mode can enter a classic child while a native file callback waits.
+    let classic = runner.bus_mut().alloc(200);
+    assert_ne!(classic, 0);
+    runner.bus_mut().write_byte(classic + crate::window_manager::WINDOW_VISIBLE_FLAG_OFFSET, 1);
+    runner.dispatcher_mut().host_ui.register_dialog(classic);
+    runner.dispatcher_mut().host_ui.note_dialog_modal(classic);
+    runner.dispatcher_mut().dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+        dialog_ptr: classic,
+        bounds: (10, 20, 70, 180),
+        proc_id: 1,
+        items: vec![crate::trap::dispatch::DialogItem {
+            item_type: 4,
+            rect: (20, 20, 40, 100),
+            text: "OK".into(),
+            ..Default::default()
+        }],
+        default_item: 1,
+        draw_procs_done: true,
+        rendered_pixels_final: true,
+        ..Default::default()
+    });
+    assert_eq!(runner.ui_modality().owner, UiOwner::Dialog);
+    let classic_view = runner.host_dialog().unwrap();
+    assert_ne!(classic_view.id, parent_view.id);
+    assert!(runner.host_dialog_ids().contains(&parent_view.id));
+    assert!(runner.host_dialog_ids().contains(&classic_view.id));
+    runner
+        .dispatcher_mut()
+        .dialog_tracking
+        .as_mut()
+        .unwrap()
+        .filter_proc = 0x10000;
+    assert_eq!(runner.ui_modality().owner, UiOwner::Guest);
+    assert!(runner.ui_modality().menus_blocked);
+    runner.dispatcher_mut().dialog_tracking = None;
+    runner.dispatcher_mut().host_ui.retire_dialog(classic);
+    assert!(!runner.host_dialog_ids().contains(&classic_view.id));
+    assert!(runner.host_dialog_ids().contains(&parent_view.id));
+    assert_eq!(runner.ui_modality().owner, UiOwner::FileDialog);
+    // Enter a child dialog while that callback owns the stack. The retained
+    // Standard File call remains alive; this is not a second picker session.
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNewDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    loaded.run_with_hle_imports(128);
+    let child = loaded.cpu.gpr[3];
+    assert_ne!(child, parent);
+    loaded.current_gworld.with_mut(|port| *port = child);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = PPC_DATA_BASE + 0x1100;
+    loaded.run_with_hle_imports(128);
+    let child_view = loaded.host_dialog().unwrap();
+    let mut runner = inspect(&loaded);
+    assert_eq!(runner.ui_modality().owner, UiOwner::Dialog);
+    assert!(runner.ui_modality().menus_blocked);
+    assert!(runner.host_dialog_item_position(&parent_reply).is_none());
+    assert!(runner
+        .host_dialog_item_position(&DialogReply {
+            id: child_view.id,
+            revision: child_view.revision,
+            item: 1
+        })
+        .is_some());
+    assert!(!runner.reply_host_file_dialog(FileDialogReply {
+        id: file.id,
+        revision: file.revision,
+        action: FileDialogAction::Cancel
+    }));
+    // An unsupported child must receive raw guest input, rather than being
+    // hidden under its parent's disabled picker.
+    let ditl_handle = loaded
+        .memory
+        .read_u32_be(child + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let ditl = loaded.memory.read_u32_be(ditl_handle).unwrap();
+    loaded.memory.write_u8(ditl + 14, 0).unwrap();
+    let mut runner = inspect(&loaded);
+    assert_eq!(runner.ui_modality().owner, UiOwner::Guest);
+    assert!(runner.ui_modality().menus_blocked);
+    assert!(runner.host_file_dialog().unwrap().busy);
+}
+
+#[test]
+fn host_icon_dialog_powerpc_preserves_artwork_and_item_hit() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for color in [false, true] {
+        let mut mono = vec![0; 128];
+        mono[0] = 0x80;
+        let mut resources = vec![(*b"ICON", 513, mono)];
+        if color {
+            resources.push((
+                *b"cicn",
+                513,
+                crate::systems::macintosh::host_ui::artwork_tests::color_icon(),
+            ));
+        }
+        let items = vec![
+            make_test_ditl_item(70, 100, 90, 170, b"OK"),
+            make_test_ditl_item_typed(10, 10, 42, 42, 32, &[2, 1]),
+        ];
+        let (mut loaded, dialog, result) = modal_dialog_with_resources(0, true, items, resources);
+        loaded.run_with_hle_imports(128);
+        let initial = loaded.host_dialog().unwrap();
+        let image = initial.items[1].artwork.as_ref().unwrap();
+        assert_eq!(image.monochrome, !color);
+        assert_eq!(image.rgba[3], 255);
+        let old = DialogReply {
+            id: initial.id,
+            revision: initial.revision,
+            item: 2,
+        };
+        if color {
+            assert_eq!(&image.rgba[..4], &[255, 0, 0, 255]);
+            loaded
+                .process_file_system
+                .with_resource_manager_mut(|manager| {
+                    let icon = manager
+                        .vfs_resources
+                        .iter_mut()
+                        .find(|r| r.res_type == u32::from_be_bytes(*b"cicn") && r.res_id == 513)
+                        .unwrap();
+                    icon.data[102..104].copy_from_slice(&0u16.to_be_bytes());
+                    icon.data[104..106].copy_from_slice(&u16::MAX.to_be_bytes());
+                });
+        } else {
+            let items = ppc_dialog_items_for_dialog(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                dialog,
+            )
+            .unwrap();
+            let pointer = loaded.memory.read_u32_be(items[1].handle).unwrap();
+            loaded.memory.write_u8(pointer, 0x40).unwrap();
+        }
+        let current = loaded.host_dialog().unwrap();
+        assert!(current.revision > initial.revision);
+        assert!(loaded.host_dialog_item_position(&old).is_none());
+        assert_eq!(image.rgba[3], 255);
+        let (v, h) = loaded
+            .host_dialog_item_position(&DialogReply {
+                revision: current.revision,
+                ..old
+            })
+            .unwrap();
+        loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u16_be(result), Some(2));
+    }
+}
+
+#[test]
+fn host_dialog_powerpc_hide_show_refreshes_background_and_close_reuse_retires_identity() {
+    use crate::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 20, 30, 180, 16, b"Original"),
+    ];
+    let (mut loaded, dialog, result) = modal_dialog_with_items(0, true, items);
+    loaded.run_with_hle_imports(128);
+    let initial = loaded.host_dialog().unwrap();
+    assert!(loaded.reply_host_dialog_text(&DialogTextReply {
+        id: initial.id,
+        revision: initial.revision,
+        serial: 1,
+        item: 2,
+        expected: "Original".into(),
+        text: "Edited".into(),
+        selection: (6, 6),
+    }));
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let marker = (120, 105);
+    for (show_hide, finish_modal) in [(false, false), (true, false), (false, true), (true, false)] {
+        if finish_modal {
+            let current = loaded.host_dialog().unwrap();
+            let (v, h) = loaded
+                .host_dialog_item_position(&DialogReply {
+                    id: current.id,
+                    revision: current.revision,
+                    item: 1,
+                })
+                .unwrap();
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = result;
+            loaded.current_gworld.with_mut(|port| *port = dialog);
+            loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+            assert!(matches!(
+                loaded.run_with_hle_imports(128).result,
+                PpcRunResult::Halted { .. }
+            ));
+            assert!(loaded.host_dialog().unwrap().busy);
+        }
+        let before = loaded.host_dialog().unwrap();
+        let old_reply = DialogReply {
+            id: before.id,
+            revision: before.revision,
+            item: 1,
+        };
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front,
+            marker,
+            123
+        ));
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(
+            &mut loaded,
+            if show_hide {
+                PpcImportDispatcherTarget::ShowHide
+            } else {
+                PpcImportDispatcherTarget::HideWindow
+            },
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, marker),
+            Some(123)
+        );
+        assert!(loaded.host_dialog().is_none());
+        assert!(loaded.host_dialog_ids().contains(&before.id));
+        assert!(loaded.host_dialog_item_position(&old_reply).is_none());
+        assert!(ppc_quickdraw_write_raw_pixel(
+            &mut loaded.memory,
+            front,
+            marker,
+            124
+        ));
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = 1;
+        run_test_import(
+            &mut loaded,
+            if show_hide {
+                PpcImportDispatcherTarget::ShowHide
+            } else {
+                PpcImportDispatcherTarget::ShowWindow
+            },
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, marker),
+            Some(124),
+            "ShowWindow must use the newly exposed background"
+        );
+        let shown = loaded.host_dialog().unwrap();
+        assert_eq!(shown.id, initial.id);
+        assert_eq!(shown.busy, before.busy);
+        assert!(shown.revision > before.revision);
+        assert_eq!(shown.items[1].text, "Edited");
+        assert_eq!(shown.items[1].selection, Some((6, 6)));
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, marker),
+            Some(124)
+        );
+        assert!(loaded.host_dialog_item_position(&old_reply).is_none());
+    }
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseDialog);
+    assert!(loaded.host_dialog().is_none());
+    assert!(!loaded.host_dialog_ids().contains(&initial.id));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, marker),
+        Some(124)
+    );
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = dialog;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    assert_eq!(loaded.cpu.gpr[3], dialog, "caller-owned storage is reused");
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = result;
+    loaded.set_event_queue([]);
+    loaded.run_with_hle_imports(128);
+    let replacement = loaded.host_dialog().unwrap();
+    assert_ne!(replacement.id, initial.id);
+    assert_eq!(replacement.items[1].text, "Original");
+    assert!(loaded
+        .host_dialog_item_position(&DialogReply {
+            id: initial.id,
+            revision: replacement.revision,
+            item: 1,
+        })
+        .is_none());
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        marker,
+        125
+    ));
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
+    assert!(loaded.host_dialog().is_none());
+    assert!(!loaded.host_dialog_ids().contains(&replacement.id));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, marker),
+        Some(125)
+    );
+}
+
+#[test]
+fn host_dialog_powerpc_window_manager_updates_metadata_without_repainting_owned_frames() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, parent, result) = modal_dialog_with_options(0, true);
+    loaded.run_with_hle_imports(128);
+    let initial = loaded.host_dialog().unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let len = front.row_bytes * front.height;
+    let original = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap();
+    let title = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(title, vec![0; 64]);
+    ppc_write_pstring_bytes(&mut loaded.memory, title, b"Updated preferences");
+    loaded.cpu.gpr[3] = parent;
+    loaded.cpu.gpr[4] = title;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
+    );
+    let renamed = loaded.host_dialog().unwrap();
+    assert_eq!(renamed.title, "Updated preferences");
+    assert!(renamed.revision > initial.revision);
+    assert!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+        "host-owned window paint changed the framebuffer"
+    );
+    for hilited in [false, true] {
+        loaded.cpu.gpr[3] = parent;
+        loaded.cpu.gpr[4] = u32::from(hilited);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow),
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(parent + PPC_CWINDOW_HILITED_OFFSET)
+                .unwrap()
+                != 0,
+            hilited
+        );
+        assert!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+            "host-owned window paint changed the framebuffer"
+        );
+    }
+    for target in [
+        PpcImportDispatcherTarget::PaintOne,
+        PpcImportDispatcherTarget::DrawNew,
+    ] {
+        let update = loaded
+            .memory
+            .read_u32_be(parent + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, update, 0, 0, 0, 0).unwrap();
+        loaded.cpu.gpr[3] = parent;
+        loaded.cpu.gpr[4] = if target == PpcImportDispatcherTarget::DrawNew {
+            1
+        } else {
+            0
+        };
+        run_test_import(&mut loaded, target);
+        let bounds = ppc_read_rgn_bbox(&mut loaded.memory, update).unwrap();
+        assert!(
+            bounds.0 < bounds.2 && bounds.1 < bounds.3,
+            "update regions still accumulate"
+        );
+        assert!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+            "host-owned window paint changed the framebuffer"
+        );
+    }
+    let (v, h) = loaded
+        .host_dialog_item_position(&DialogReply {
+            id: renamed.id,
+            revision: renamed.revision,
+            item: 1,
+        })
+        .unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = result;
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    assert!(loaded.host_dialog().unwrap().busy);
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let child = loaded.cpu.gpr[3];
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = result;
+    loaded.set_event_queue([]);
+    loaded.run_with_hle_imports(128);
+    let child_view = loaded.host_dialog().unwrap();
+    assert_ne!(child_view.id, initial.id);
+    let (v, h) = loaded
+        .host_dialog_item_position(&DialogReply {
+            id: child_view.id,
+            revision: child_view.revision,
+            item: 1,
+        })
+        .unwrap();
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    loaded.cpu.gpr[3] = child;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+    assert!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+        "child disposal must not repaint the host-owned parent"
+    );
+    let resumed = loaded.host_dialog().unwrap();
+    assert_eq!(resumed.id, initial.id);
+    assert!(resumed.busy);
+    assert_eq!(resumed.title, "Updated preferences");
+    loaded.cpu.gpr[3] = parent;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+    );
+    assert!(loaded.host_dialog().is_none());
+    assert!(!loaded.host_dialog_ids().contains(&initial.id));
+    assert!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+        "host-owned window paint changed the framebuffer"
+    );
+}
+
+#[test]
+fn host_dialog_powerpc_window_geometry_preserves_background_and_hit_coordinates() {
+    for proc_id in [1, 5] {
+        check_host_dialog_powerpc_window_geometry_preserves_background_and_hit_coordinates(proc_id);
+    }
+}
+
+fn check_host_dialog_powerpc_window_geometry_preserves_background_and_hit_coordinates(proc_id: i16) {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, dialog, result) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+        Vec::new(),
+        proc_id,
+    );
+    loaded.run_with_hle_imports(128);
+    let initial = loaded.host_dialog().unwrap();
+    assert_eq!(initial.movable, proc_id == 5);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let len = front.row_bytes * front.height;
+    for offset in 0..len {
+        loaded
+            .memory
+            .write_u8(
+                front.base_addr + offset,
+                (offset.wrapping_mul(17) / 641) as u8,
+            )
+            .unwrap();
+    }
+    let original = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap();
+    let old_reply = DialogReply {
+        id: initial.id,
+        revision: initial.revision,
+        item: 1,
+    };
+    let before_hit = loaded.host_dialog_item_position(&old_reply).unwrap();
+    let old_bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = (old_bounds.1 + 40) as u32;
+    loaded.cpu.gpr[5] = (old_bounds.0 + 30) as u32;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+    let moved = loaded.host_dialog().unwrap();
+    assert_eq!(moved.id, initial.id);
+    assert_eq!(moved.size, initial.size);
+    assert!(moved.revision > initial.revision);
+    assert!(loaded.host_dialog_item_position(&old_reply).is_none());
+    let moved_hit = loaded
+        .host_dialog_item_position(&DialogReply {
+            id: moved.id,
+            revision: moved.revision,
+            item: 1,
+        })
+        .unwrap();
+    assert_eq!(moved_hit, (before_hit.0 + 30, before_hit.1 + 40));
+    assert!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+        "moving an egui-owned dialog changed guest pixels"
+    );
+    for (width, height) in [(360, 200), (300, 140)] {
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = width;
+        loaded.cpu.gpr[5] = height;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SizeWindow);
+        let resized = loaded.host_dialog().unwrap();
+        assert_eq!(resized.id, initial.id);
+        assert_eq!(resized.size, (width as u16, height as u16));
+        assert!(resized.revision > moved.revision);
+        assert!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+            "resizing an egui-owned dialog changed guest pixels"
+        );
+    }
+    let ready = loaded.host_dialog().unwrap();
+    let (v, h) = loaded
+        .host_dialog_item_position(&DialogReply {
+            id: ready.id,
+            revision: ready.revision,
+            item: 1,
+        })
+        .unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = result;
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    let retained = loaded.host_dialog().unwrap();
+    assert!(retained.busy);
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = (old_bounds.1 + 60) as u32;
+    loaded.cpu.gpr[5] = (old_bounds.0 + 50) as u32;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+    let moved_retained = loaded.host_dialog().unwrap();
+    assert!(moved_retained.busy);
+    assert_eq!(moved_retained.id, initial.id);
+    assert!(moved_retained.revision > retained.revision);
+    let update = loaded
+        .memory
+        .read_u32_be(dialog + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    let bounds = ppc_read_rgn_bbox(&mut loaded.memory, update).unwrap();
+    assert!(bounds.0 < bounds.2 && bounds.1 < bounds.3);
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == dialog));
+    assert!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap() == original,
+        "retained dialog geometry replayed stale background pixels"
+    );
+}
+
+#[test]
+fn host_dialog_powerpc_missing_standard_alert_icons_keep_host_presentation() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for icon in [0_i16, 1, 2, 300] {
+        let items = vec![
+            make_test_ditl_item(70, 100, 90, 170, b"OK"),
+            make_test_ditl_item_typed(10, 10, 42, 42, 32 | 0x80, &icon.to_be_bytes()),
+        ];
+        let (mut loaded, dialog, result) = modal_dialog_with_resources(0, true, items, vec![]);
+        loaded.run_with_hle_imports(128);
+        let view = loaded.host_dialog();
+        if icon == 300 {
+            assert!(view.is_none());
+            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            continue;
+        }
+        let view = view.unwrap();
+        assert!(view.items[1].artwork.as_ref().unwrap().is_valid());
+        assert_eq!(view.items[1].artwork.as_ref().unwrap().width, 128);
+        assert!(!view.items[1].enabled);
+        let (v, h) = loaded
+            .host_dialog_item_position(&DialogReply {
+                id: view.id,
+                revision: view.revision,
+                item: 1,
+            })
+            .unwrap();
+        loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u16_be(result), Some(1));
+    }
+}
+
+#[test]
+fn host_picture_dialog_powerpc_preserves_artwork_and_picture_item_hit() {
+    use crate::systems::macintosh::host_ui::{picture_artwork_tests::picture, DialogReply};
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 10, 42, 42, 64, &[2, 1]),
+    ];
+    let (mut loaded, dialog, result) =
+        modal_dialog_with_resources(0, true, items, vec![(*b"PICT", 513, picture())]);
+    loaded.run_with_hle_imports(128);
+    let view = loaded.host_dialog().unwrap();
+    assert_eq!(view.items[1].kind, 64);
+    assert_eq!(
+        &view.items[1].artwork.as_ref().unwrap().rgba[..4],
+        &[255, 0, 0, 255]
+    );
+    let old = DialogReply {
+        id: view.id,
+        revision: view.revision,
+        item: 2,
+    };
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    let data = loaded.memory.read_u32_be(items[1].handle).unwrap();
+    loaded
+        .memory
+        .write_u8(data + picture().len() as u32 - 1, 0)
+        .unwrap();
+    assert!(loaded.host_dialog().is_none());
+    assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+    loaded
+        .memory
+        .write_u8(data + picture().len() as u32 - 1, 255)
+        .unwrap();
+    let view = loaded.host_dialog().unwrap();
+    assert_eq!(view.id, old.id);
+    assert!(view.revision > old.revision);
+    assert!(loaded.host_dialog_item_position(&old).is_none());
+    let (v, h) = loaded
+        .host_dialog_item_position(&DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 2,
+        })
+        .unwrap();
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    assert_eq!(loaded.memory.read_u16_be(result), Some(2));
+}
+
+#[test]
+fn host_popup_dialog_powerpc_validates_choices_and_returns_item_hit() {
+    use crate::systems::macintosh::host_ui::{
+        popup_tests::resources, DialogControlReply, DialogReply,
+    };
+    let (control, menu) = resources();
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 10, 30, 130, 7, &[2, 1]),
+    ];
+    let (mut loaded, dialog, result) = modal_dialog_with_resources(
+        0,
+        true,
+        items,
+        vec![(*b"CNTL", 513, control), (*b"MENU", 300, menu)],
+    );
+    loaded.run_with_hle_imports(128);
+    let view = loaded.host_dialog().unwrap();
+    assert_eq!(view.items[1].kind, 7);
+    assert_eq!(view.items[1].value, 1);
+    assert_eq!(view.items[1].choices.len(), 4);
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    let control = loaded.memory.read_u32_be(items[1].handle).unwrap();
+    let data_handle = loaded
+        .memory
+        .read_u32_be(control + PPC_CONTROL_DATA_OFFSET)
+        .unwrap();
+    let data = loaded.memory.read_u32_be(data_handle).unwrap();
+    let menu_handle = loaded.memory.read_u32_be(data).unwrap();
+    let menu_data = loaded.memory.read_u32_be(menu_handle).unwrap();
+    loaded.memory.write_u32_be(menu_data + 6, 0x1234).unwrap();
+    assert!(loaded.host_dialog().is_none());
+    loaded.memory.write_u32_be(menu_data + 6, 0).unwrap();
+    loaded.memory.write_bytes(menu_data + 16, b"New").unwrap();
+    let updated = loaded.host_dialog().unwrap();
+    assert_eq!(updated.id, view.id);
+    assert!(updated.revision > view.revision);
+    assert_eq!(updated.items[1].choices[0].text, "New");
+    let view = updated;
+    let mut reply = DialogControlReply {
+        dialog: DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 2,
+        },
+        expected: 1,
+        value: 4,
+    };
+    for invalid in [0, 2, 3, 5] {
+        reply.value = invalid;
+        assert!(loaded.reply_host_dialog_control(&reply).is_none());
+    }
+    reply.value = 4;
+    let (v, h) = loaded.reply_host_dialog_control(&reply).unwrap();
+    assert!(loaded.reply_host_dialog_control(&reply).is_none());
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    let control = loaded.memory.read_u32_be(items[1].handle).unwrap();
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+        Some(4)
+    );
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    assert_eq!(loaded.memory.read_u16_be(result), Some(2));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+        Some(4)
+    );
+    assert!(loaded.host_dialog().unwrap().busy);
+    assert!(loaded.reply_host_dialog_control(&reply).is_none());
+}
+
+#[test]
+fn host_range_dialog_powerpc_preserves_exact_thumb_value_and_tracking_result() {
+    use crate::systems::macintosh::host_ui::{
+        range_tests::resource, DialogControlReply, DialogRange, DialogReply,
+    };
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 10, 26, 170, 7, &[2, 1]),
+    ];
+    let (mut loaded, dialog, result) =
+        modal_dialog_with_resources(0, true, items, vec![(*b"CNTL", 513, resource())]);
+    loaded.run_with_hle_imports(128);
+    let view = loaded.host_dialog().unwrap();
+    assert_eq!(view.items[1].kind, 17);
+    assert_eq!(
+        view.items[1].range,
+        Some(DialogRange {
+            min: -100,
+            max: 100
+        })
+    );
+    let mut reply = DialogControlReply {
+        dialog: DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 2,
+        },
+        expected: 0,
+        value: -101,
+    };
+    assert!(loaded.reply_host_dialog_control(&reply).is_none());
+    reply.value = 75;
+    let (v, h) = loaded.reply_host_dialog_control(&reply).unwrap();
+    assert!(loaded.reply_host_dialog_control(&reply).is_none());
+    loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+    assert!(matches!(
+        loaded.run_with_hle_imports(128).result,
+        PpcRunResult::Halted { .. }
+    ));
+    assert_eq!(loaded.memory.read_u16_be(result), Some(2));
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    let handle = items[1].handle;
+    let control = loaded.memory.read_u32_be(handle).unwrap();
+    let rect = ppc_read_rect(&mut loaded.memory, control + PPC_CONTROL_RECT_OFFSET).unwrap();
+    let v = (i32::from(rect.0) + i32::from(rect.2)) / 2;
+    let h = (i32::from(rect.1) + i32::from(rect.3)) / 2;
+    for (action, expected) in [(0x1234, 129), (0, 22)] {
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = ((v as u16 as u32) << 16) | h as u16 as u32;
+        loaded.cpu.gpr[5] = action;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+        );
+        assert_eq!(loaded.cpu.gpr[3], expected);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+            Some(75)
+        );
+    }
+}
+
+#[test]
+fn host_dialog_powerpc_keeps_standard_filter_callback_and_rejects_patched_vector() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for alias in [false, true] {
+        let alias_ptr = PPC_DATA_BASE + 0x5000;
+        let filter = if alias {
+            alias_ptr
+        } else {
+            PPC_STD_FILTER_TVECTOR
+        };
+        let (mut loaded, dialog, result) = modal_dialog_with_options(filter, true);
+        let entry = loaded.memory.read_u32_be(PPC_STD_FILTER_TVECTOR).unwrap();
+        if alias {
+            loaded.memory.add_region(
+                alias_ptr,
+                [entry.to_be_bytes(), 0u32.to_be_bytes()].concat(),
+            );
+        }
+        let caller_sp = loaded.cpu.gpr[1];
+        let caller_rtoc = loaded.cpu.gpr[2];
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let view = loaded
+            .host_dialog()
+            .expect("the built-in standard filter keeps host presentation");
+        assert_eq!(loaded.toolbox_startup.host_active_dialog_filter, filter);
+        for _ in 0..32 {
+            loaded.run_with_hle_imports(1);
+            let current = loaded
+                .host_dialog()
+                .expect("callback continuations must not hide the host view");
+            assert_eq!(current.id, view.id);
+        }
+        let reply = DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        };
+        if alias {
+            loaded.memory.write_u32_be(alias_ptr, entry + 4).unwrap();
+            assert!(loaded.host_dialog().is_none());
+            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            assert!(loaded.host_dialog_item_position(&reply).is_none());
+            loaded.memory.write_u32_be(alias_ptr, entry).unwrap();
+            let resumed = loaded.host_dialog().unwrap();
+            assert_eq!(resumed.id, view.id);
+            assert!(resumed.revision > view.revision);
+            assert!(loaded.host_dialog_item_position(&reply).is_none());
+        } else {
+            // Published system vectors and code are protected from guest writes.
+            assert!(loaded.memory.write_u32_be(filter, entry + 4).is_none());
+            assert!(loaded.memory.write_u32_be(entry, 0).is_none());
+        }
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let original = ppc_memory_read_bytes(
+            &mut loaded.memory,
+            front.base_addr,
+            front.row_bytes * front.height,
+        )
+        .unwrap();
+        // The standard filter handles Return through its normal guest callback ABI.
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: b'\r' as u32,
+            when: 77,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(512).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u16_be(result), Some(1));
+        assert_eq!(loaded.cpu.gpr[1], caller_sp);
+        assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
+        assert!(loaded.dialog_callback_stack.is_empty());
+        assert_eq!(
+            ppc_memory_read_bytes(
+                &mut loaded.memory,
+                front.base_addr,
+                front.row_bytes * front.height
+            )
+            .unwrap(),
+            original
+        );
+        assert!(loaded.host_dialog().unwrap().busy);
+    }
+}
+
+#[test]
+fn host_dialog_powerpc_modality_follows_blocking_call_then_window_kind() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for proc_id in [4, 5] {
+        let (mut loaded, dialog, result) = modal_dialog_with_resources_and_proc(
+            0,
+            true,
+            vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+            Vec::new(),
+            proc_id,
+        );
+        assert!(loaded.host_dialog().is_none());
+        assert!(loaded.modal_status().dialog.is_none());
+        loaded.run_with_hle_imports(128);
+        let view = loaded
+            .host_dialog()
+            .expect("ModalDialog owns either window style");
+        assert!(view.movable && !view.busy);
+        assert_eq!(loaded.modal_status().dialog, Some(dialog));
+        let reply = DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        };
+        let (v, h) = loaded.host_dialog_item_position(&reply).unwrap();
+        loaded.set_event_queue([modal_filter_mouse_down(v, h)]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(128).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u16_be(result), Some(1));
+        let retained = loaded.host_dialog();
+        if proc_id == 5 {
+            assert!(retained.unwrap().busy);
+            assert_eq!(loaded.modal_status().dialog, Some(dialog));
+        } else {
+            assert!(retained.is_none());
+            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            assert!(loaded.modal_status().dialog.is_none());
+        }
+        assert!(loaded.host_dialog_item_position(&reply).is_none());
+    }
+}
+
+#[test]
+fn host_modeless_inventory_powerpc_keeps_multiple_windows_without_modality() {
+    let (mut loaded, first, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let second = loaded.cpu.gpr[3];
+    assert_ne!(second, first);
+    assert!(loaded.host_modeless_dialogs(true).is_empty());
+    let views = loaded.host_modeless_dialogs(false);
+    assert_eq!(views.len(), 2);
+    assert_eq!(
+        views[0].1.id,
+        loaded
+            .toolbox_startup
+            .host_ui
+            .dialog_identity(second)
+            .unwrap()
+    );
+    assert_eq!(
+        views[1].1.id,
+        loaded
+            .toolbox_startup
+            .host_ui
+            .dialog_identity(first)
+            .unwrap()
+    );
+    assert!(views.iter().all(|(_, view)| view.movable && !view.busy));
+    assert!(loaded.modal_status().dialog.is_none());
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (135, 82)),
+        Some(2)
+    );
+    for _ in 0..5 {
+        assert!(loaded.host_dialog().is_none());
+        assert_eq!(loaded.host_modeless_dialogs(false), views);
+    }
+    let blocked = loaded.host_modeless_dialogs(true);
+    assert!(blocked
+        .iter()
+        .zip(&views)
+        .all(|((_, new), (_, old))| new.busy && new.revision > old.revision));
+    let resumed = loaded.host_modeless_dialogs(false);
+    assert!(resumed
+        .iter()
+        .zip(&blocked)
+        .all(|((_, new), (_, old))| !new.busy && new.revision > old.revision));
+    loaded.cpu.gpr[3] = second;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+    let hidden = loaded.host_modeless_dialogs(false);
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].1, resumed[1].1);
+    loaded.cpu.gpr[3] = second;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+    let shown = loaded.host_modeless_dialogs(false);
+    assert_eq!(shown.len(), 2);
+    let restored = shown
+        .iter()
+        .find(|(_, view)| view.id == resumed[0].1.id)
+        .unwrap();
+    assert!(restored.1.revision > resumed[0].1.revision);
+    loaded.cpu.gpr[3] = second;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+    assert_eq!(loaded.host_modeless_dialogs(false).len(), 1);
+    assert!(!loaded
+        .toolbox_startup
+        .host_ui
+        .live_dialog_ids()
+        .contains(&restored.1.id));
+}
+
+#[test]
+fn host_modeless_activation_powerpc_preserves_cpu_and_uses_window_events() {
+    let (mut loaded, first, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let second = loaded.cpu.gpr[3];
+    let views = loaded.host_modeless_dialogs(false);
+    let target = &views[1].1;
+    let cpu = loaded.cpu.clone();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let pixels = ppc_memory_read_bytes(
+        &mut loaded.memory,
+        front.base_addr,
+        front.row_bytes * front.height,
+    )
+    .unwrap();
+    loaded.set_event_queue([]);
+    assert!(!loaded.activate_host_modeless_dialog(target.id, target.revision + 1));
+    assert_eq!(
+        ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
+        Some(second)
+    );
+    assert!(loaded.activate_host_modeless_dialog(target.id, target.revision));
+    assert_eq!(
+        ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
+        Some(first)
+    );
+    assert_eq!(*loaded.current_gworld, first);
+    let events: Vec<_> = loaded
+        .event_queue()
+        .iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(events, vec![(second, 0), (first, 1)]);
+    assert_eq!(loaded.cpu.gpr, cpu.gpr);
+    assert_eq!(loaded.cpu.fpr, cpu.fpr);
+    assert_eq!(
+        (loaded.cpu.pc, loaded.cpu.lr, loaded.cpu.cr),
+        (cpu.pc, cpu.lr, cpu.cr)
+    );
+    assert_eq!(
+        ppc_memory_read_bytes(
+            &mut loaded.memory,
+            front.base_addr,
+            front.row_bytes * front.height
+        )
+        .unwrap(),
+        pixels
+    );
+    assert!(loaded.modal_status().dialog.is_none());
+    loaded.set_event_queue([]);
+    assert!(loaded.activate_host_modeless_dialog(target.id, target.revision));
+    assert!(!loaded.event_queue().iter().any(|event| event.what == 8));
+    loaded.cpu.gpr[3] = first;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+    assert!(!loaded.activate_host_modeless_dialog(target.id, target.revision));
+}
+
+#[test]
+fn host_modeless_items_text_and_close_powerpc_arrive_through_guest_event_calls() {
+    use crate::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+    let (mut loaded, first, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![
+            make_test_ditl_item(60, 20, 80, 90, b"OK"),
+            make_test_ditl_item_typed(10, 10, 26, 150, 16, b"draft"),
+        ],
+        Vec::new(),
+        4,
+    );
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let second = loaded.cpu.gpr[3];
+    loaded
+        .memory
+        .write_u8(first + PPC_CWINDOW_GO_AWAY_OFFSET, 1)
+        .unwrap();
+    let views = loaded.host_modeless_dialogs(false);
+    let target = views.iter().find(|(_, v)| v.closable).unwrap().1.clone();
+    assert_eq!(views[1].1.id, target.id);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let framebuffer = |loaded: &mut PpcLoadedApp| {
+        ppc_memory_read_bytes(
+            &mut loaded.memory,
+            front.base_addr,
+            front.row_bytes * front.height,
+        )
+        .unwrap()
+    };
+    let pixels = framebuffer(&mut loaded);
+    let event_ptr = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(event_ptr, vec![0; 32]);
+    let dialog_select = |loaded: &mut PpcLoadedApp, point: (i16, i16)| {
+        ppc_write_event_record(&mut loaded.memory, event_ptr, 1, 0, 0, point.0, point.1, 0);
+        loaded.memory.write_u32_be(event_ptr + 16, 0).unwrap();
+        loaded.memory.write_u16_be(event_ptr + 20, 0).unwrap();
+        loaded.cpu.gpr[3] = event_ptr;
+        loaded.cpu.gpr[4] = event_ptr + 16;
+        loaded.cpu.gpr[5] = event_ptr + 20;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::DialogCompatibility(
+                PpcDialogCompatibilityOperation::DialogSelect,
+            ),
+        );
+        (
+            loaded.cpu.gpr[3],
+            loaded.memory.read_u32_be(event_ptr + 16).unwrap(),
+            loaded.memory.read_u16_be(event_ptr + 20).unwrap(),
+        )
+    };
+
+    assert!(loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id: target.id,
+            revision: target.revision + 1,
+            item: 1,
+        })
+        .is_none());
+    assert_eq!(
+        ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
+        Some(second)
+    );
+    let te = loaded
+        .memory
+        .read_u32_be(first + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .and_then(|handle| ppc_te_record_ptr(&mut loaded.memory, handle));
+    let selection = te.map(|te| {
+        (
+            loaded.memory.read_u16_be(te + PPC_TE_SEL_START_OFFSET),
+            loaded.memory.read_u16_be(te + PPC_TE_SEL_END_OFFSET),
+        )
+    });
+    let point = loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id: target.id,
+            revision: target.revision,
+            item: 1,
+        })
+        .unwrap();
+    // Selecting the obscured window precedes the item, as a guest click would.
+    assert_eq!(
+        ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list),
+        Some(first)
+    );
+    assert!(loaded.host_modeless_dialog_at(point.0, point.1));
+    assert_eq!(dialog_select(&mut loaded, point), (1, first, 1));
+    let te_after = te.map(|te| {
+        (
+            loaded.memory.read_u16_be(te + PPC_TE_SEL_START_OFFSET),
+            loaded.memory.read_u16_be(te + PPC_TE_SEL_END_OFFSET),
+        )
+    });
+    assert_eq!(te_after, selection);
+
+    let view = loaded
+        .host_modeless_dialogs(false)
+        .into_iter()
+        .find(|(_, v)| v.id == target.id)
+        .unwrap()
+        .1;
+    let edited = loaded
+        .reply_host_modeless_dialog_text(&DialogTextReply {
+            id: view.id,
+            revision: view.revision,
+            serial: 1,
+            expected: "draft".into(),
+            item: 2,
+            text: "host value".into(),
+            selection: (2, 4),
+        })
+        .unwrap()
+        .expect("the edit is reported like a keystroke");
+    assert_eq!(dialog_select(&mut loaded, edited), (1, first, 2));
+    let view = loaded
+        .host_modeless_dialogs(false)
+        .into_iter()
+        .find(|(_, v)| v.id == target.id)
+        .unwrap()
+        .1;
+    let edit = view.items.iter().find(|i| i.number == 2).unwrap();
+    assert_eq!(edit.text, "host value");
+    assert_eq!(edit.selection, Some((2, 4)));
+
+    let close = loaded
+        .host_modeless_close_position(view.id, view.revision)
+        .unwrap();
+    loaded.set_event_queue([]);
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = first;
+    loaded.cpu.gpr[4] = ((close.0 as u16 as u32) << 16) | close.1 as u16 as u32;
+    // The release is already queued; the button is up when TrackGoAway runs.
+    loaded.set_input_snapshot(PpcInputSnapshot::default());
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert!(loaded.toolbox_startup.go_away_tracking.is_none());
+    assert_eq!(framebuffer(&mut loaded), pixels);
+    // Without a staged intent, a released button is an ordinary failed track.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = first;
+    loaded.cpu.gpr[4] = ((close.0 as u16 as u32) << 16) | close.1 as u16 as u32;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn guest_dialog_surface_powerpc_reports_guest_rendered_bounds_until_projection() {
+    let (mut loaded, dialog, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+        Vec::new(),
+        1,
+    );
+    let id = loaded
+        .toolbox_startup
+        .host_ui
+        .dialog_identity(dialog)
+        .unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    assert_eq!(
+        loaded.guest_dialog_surface(dialog),
+        Some((id, String::new(), bounds))
+    );
+    assert_eq!((bounds.2 - bounds.0, bounds.3 - bounds.1), (100, 200));
+    loaded.run_with_hle_imports(256);
+    assert!(loaded.host_dialog().is_some());
+    assert_eq!(
+        loaded.guest_dialog_surface(dialog),
+        None,
+        "host projection owns it"
+    );
+}
+
+#[test]
+fn host_modeless_click_completes_a_powerpc_application_track_control() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, dialog, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(60, 20, 80, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    let view = loaded.host_modeless_dialogs(false)[0].1.clone();
+    let point = loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    let handles = loaded.handles();
+    let handle =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap()[0].handle;
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let local = ((point.0 - bounds.0) as u16 as u32) << 16 | (point.1 - bounds.1) as u16 as u32;
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = local;
+    loaded.cpu.gpr[5] = 0;
+    loaded.set_input_snapshot(PpcInputSnapshot::default());
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as u16, 10);
+    assert!(loaded
+        .toolbox_startup
+        .host_ui
+        .take_host_click(dialog, point, false)
+        .is_none());
+}
+
+#[test]
+fn projected_modeless_dialogs_powerpc_survive_guest_move_resize_and_arbitrary_stacking() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut loaded, first, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(60, 20, 80, 90, b"OK")],
+        Vec::new(),
+        4,
+    );
+    let mut dialogs = vec![first];
+    for _ in 0..2 {
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = u32::MAX;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        dialogs.push(loaded.cpu.gpr[3]);
+    }
+    assert_eq!(loaded.host_modeless_dialogs(false).len(), 3);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let len = front.row_bytes * front.height;
+    let background = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap();
+    let call = |loaded: &mut PpcLoadedApp, target, window: u32, args: [u32; 3]| {
+        loaded.cpu.gpr[3] = window;
+        loaded.cpu.gpr[4] = args[0];
+        loaded.cpu.gpr[5] = args[1];
+        loaded.cpu.gpr[6] = args[2];
+        run_test_import(loaded, target);
+        loaded.host_modeless_dialogs(false)
+    };
+    for order in [[0usize, 1, 2], [2, 0, 1], [1, 2, 0]] {
+        for index in order {
+            call(
+                &mut loaded,
+                PpcImportDispatcherTarget::SelectWindow,
+                dialogs[index],
+                [0; 3],
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap(),
+                background,
+                "{order:?}"
+            );
+        }
+        let views = loaded.host_modeless_dialogs(false);
+        let pointers: Vec<_> = views
+            .iter()
+            .map(|(_, v)| loaded.toolbox_startup.host_ui.dialog_pointer(v.id).unwrap())
+            .collect();
+        assert_eq!(
+            pointers,
+            order.iter().rev().map(|i| dialogs[*i]).collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::HideWindow,
+            dialogs[1],
+            [0; 3]
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ShowWindow,
+            dialogs[1],
+            [0; 3]
+        )
+        .len(),
+        3
+    );
+    let id = loaded
+        .toolbox_startup
+        .host_ui
+        .dialog_identity(dialogs[0])
+        .unwrap();
+    call(
+        &mut loaded,
+        PpcImportDispatcherTarget::MoveWindow,
+        dialogs[0],
+        [30, 200, 1],
+    );
+    let views = call(
+        &mut loaded,
+        PpcImportDispatcherTarget::SizeWindow,
+        dialogs[0],
+        [260, 150, 1],
+    );
+    let view = views
+        .iter()
+        .map(|(_, v)| v)
+        .find(|v| v.id == id)
+        .unwrap()
+        .clone();
+    assert_eq!(view.size, (260, 150));
+    let point = loaded
+        .reply_host_modeless_dialog(&DialogReply {
+            id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialogs[0]).unwrap();
+    assert_eq!((bounds.0, bounds.1), (200, 30));
+    assert_eq!(point, (200 + 70, 30 + 55));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap(),
+        background
+    );
 }

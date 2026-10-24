@@ -770,6 +770,47 @@ fn ppc_host_mouse_input_enters_the_shared_queue_in_global_coordinates() {
 }
 
 #[test]
+fn host_dialog_selection_preserves_centered_native_viewport_coordinates() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    install_ppc_sound_event_boundary_fixture(&mut app);
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_host_ui_enabled(true);
+    let (offset_v, offset_h) = runner.ppc_viewport_offset();
+    assert!(offset_v > 0 && offset_h > 0);
+    // A native app can enter a classic Dialog Manager call through Mixed Mode.
+    let mut tracking = dialog_tracking_for_test(0, 0);
+    tracking.bounds = (10, 20, 50, 100);
+    tracking.items.push(crate::trap::dispatch::DialogItem {
+        item_type: 4,
+        rect: (0, 0, 20, 60),
+        text: "OK".into(),
+        resource_id: 0,
+        proc_ptr: 0,
+        sel_start: 0,
+        sel_end: 0,
+    });
+    runner
+        .dispatcher
+        .host_ui
+        .register_dialog(tracking.dialog_ptr);
+    runner.dispatcher.dialog_tracking = Some(tracking);
+    let view = runner.host_dialog().unwrap();
+    let position = runner
+        .host_dialog_item_position(&DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    assert_eq!(position, (20 + offset_v, 50 + offset_h));
+    runner.push_mouse_down(position.0, position.1);
+    let event = runner.process_context.event_queue().back().unwrap();
+    assert_eq!((event.where_v, event.where_h), (20, 50));
+}
+
+#[test]
 fn ppc_event_queue_has_immediate_bidirectional_visibility() {
     let app = halted_ppc_app_with_sound(PpcSoundState::default());
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -1139,4 +1180,242 @@ fn ppc_retained_drag_wait_advances_clock_and_timers_without_executing_idle_cycle
     assert!(running);
     assert!(runner.is_drag_presentation_wait());
     assert_eq!(runner.guest_tick(), before + 2);
+}
+
+#[test]
+fn guest_modal_ownership_blocks_and_expires_staged_host_menu_commands() {
+    use crate::systems::macintosh::host_ui::UiOwner;
+    for host in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_host_ui_enabled(host);
+        let mut tracking = dialog_tracking_for_test(0, 0);
+        tracking.filter_proc = 0x10000; // guest filter retains rendering/input ownership
+        runner
+            .dispatcher
+            .pending_native_menu_selection
+            .stage((132, 6));
+        runner.dispatcher.dialog_tracking = Some(tracking);
+        let modality = runner.ui_modality();
+        assert_eq!(modality.owner, UiOwner::Guest);
+        assert!(modality.menus_blocked);
+        assert!(runner.dispatcher.pending_native_menu_selection.is_none());
+        runner.dispatcher.dialog_tracking = None;
+        assert!(!runner.ui_modality().menus_blocked);
+        assert!(
+            runner.dispatcher.pending_native_menu_selection.is_none(),
+            "dismissal cannot revive the old command"
+        );
+    }
+}
+
+#[test]
+fn owned_standard_filter_keeps_classic_host_dialog_and_guest_callback_abi() {
+    use crate::cpu::Register;
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+    runner.set_host_ui_enabled(true);
+    let screen = runner.bus.alloc(640 * 480);
+    runner.bus.write_bytes(screen, &vec![0x77; 640 * 480]);
+    runner.bus.write_long(0x0824, screen);
+    runner
+        .dispatcher
+        .set_screen_mode_for_test(screen, 640, 640, 480, 8);
+    let mut dlog = vec![0; 22];
+    for (offset, value) in [(0, 60i16), (2, 80), (4, 160), (6, 280), (8, 1), (18, 128)] {
+        dlog[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    dlog[10] = 1;
+    let mut ditl = vec![0; 6];
+    for value in [12i16, 20, 32, 90] {
+        ditl.extend_from_slice(&value.to_be_bytes());
+    }
+    ditl.extend_from_slice(&[4, 2, b'O', b'K']);
+    runner
+        .dispatcher
+        .install_test_resource(&mut runner.bus, *b"DLOG", 128, &dlog);
+    runner
+        .dispatcher
+        .install_test_resource(&mut runner.bus, *b"DITL", 128, &ditl);
+    let sp = 0x700000;
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_long(sp, u32::MAX);
+    runner.bus.write_long(sp + 4, 0);
+    runner.bus.write_word(sp + 8, 128);
+    runner
+        .dispatcher
+        .dispatch_dialog(true, 0x17c, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap()
+        .unwrap();
+    let dialog = runner.bus.read_long(sp + 10);
+    assert_ne!(dialog, 0);
+    let filter_out = runner.bus.alloc(4);
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_long(sp, filter_out);
+    runner.m68k.cpu.write_reg(Register::D0, 0x0203);
+    runner
+        .dispatcher
+        .dispatch_dialog(true, 0x268, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap()
+        .unwrap();
+    let filter = runner.bus.read_long(filter_out);
+    let hit = runner.bus.alloc(2);
+    runner.bus.write_long(sp, hit);
+    runner.bus.write_long(sp + 4, filter);
+    runner.bus.write_word(0x10000, 0xa991); // ModalDialog
+    runner.bus.write_word(0x10002, 0x60fe); // retain the visible item handler
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.m68k.cpu.write_reg(Register::PC, 0x10000);
+    runner.run_steps(512, Some(1));
+    let view = runner
+        .host_dialog()
+        .expect("the standard-filter dialog is projected");
+    assert!(
+        runner.dispatcher.dialog_filter_result_addr != 0,
+        "the runner must have offered an event to the guest filter"
+    );
+    let (v, h) = runner
+        .host_dialog_item_position(&DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        })
+        .unwrap();
+    runner.push_mouse_down(v, h);
+    runner.push_mouse_up(v, h);
+    for tick in 2..66 {
+        runner.run_steps(512, Some(tick));
+        if runner.dispatcher.dialog_tracking.is_none() {
+            break;
+        }
+    }
+    assert!(runner.dispatcher.dialog_tracking.is_none());
+    assert_eq!(runner.bus.read_word(hit), 1);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 8);
+    assert_eq!(
+        runner
+            .bus
+            .read_word(runner.dispatcher.dialog_filter_result_addr),
+        0
+    );
+    assert!(runner.host_dialog().unwrap().busy);
+    assert!(runner
+        .bus
+        .read_bytes(screen, 640 * 480)
+        .iter()
+        .all(|pixel| *pixel == 0x77));
+}
+
+#[test]
+fn host_modeless_item_reaches_a_classic_guest_event_loop_once() {
+    use crate::cpu::Register;
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+    runner.set_host_ui_enabled(true);
+    let screen = runner.bus.alloc(640 * 480);
+    runner.bus.write_bytes(screen, &vec![0x77; 640 * 480]);
+    runner.bus.write_long(0x0824, screen);
+    runner
+        .dispatcher
+        .set_screen_mode_for_test(screen, 640, 640, 480, 8);
+    let mut dlog = vec![0; 22];
+    for (offset, value) in [(0, 60i16), (2, 80), (4, 160), (6, 280), (8, 4), (18, 128)] {
+        dlog[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    dlog[10] = 1;
+    dlog[12] = 1;
+    let mut ditl = vec![0; 6];
+    for value in [12i16, 20, 32, 90] {
+        ditl.extend_from_slice(&value.to_be_bytes());
+    }
+    ditl.extend_from_slice(&[4, 2, b'O', b'K']);
+    runner
+        .dispatcher
+        .install_test_resource(&mut runner.bus, *b"DLOG", 128, &dlog);
+    runner
+        .dispatcher
+        .install_test_resource(&mut runner.bus, *b"DITL", 128, &ditl);
+    let sp = 0x700000;
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_long(sp, u32::MAX);
+    runner.bus.write_long(sp + 4, 0);
+    runner.bus.write_word(sp + 8, 128);
+    runner
+        .dispatcher
+        .dispatch_dialog(true, 0x17c, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap()
+        .unwrap();
+    let dialog = runner.bus.read_long(sp + 10);
+    assert_ne!(dialog, 0);
+    // loop: GetNextEvent(everyEvent, event); DialogSelect(event, dialog, hit)
+    let (event, dialog_out, hit) = (0x20000u32, 0x20020u32, 0x20024u32);
+    let mut code = vec![0x4267, 0x3f3c, 0xffff, 0x4879];
+    code.extend([(event >> 16) as u16, event as u16, 0xa970, 0x301f, 0x4267]);
+    for pointer in [event, dialog_out, hit] {
+        code.extend([0x4879, (pointer >> 16) as u16, pointer as u16]);
+    }
+    code.extend([0xa980, 0x301f, 0x60d6]);
+    for (index, word) in code.iter().enumerate() {
+        runner.bus.write_word(0x10000 + index as u32 * 2, *word);
+    }
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.m68k.cpu.write_reg(Register::PC, 0x10000);
+    runner.run_steps(2048, Some(1));
+    let views = runner.host_modeless_dialogs();
+    let view = views
+        .first()
+        .expect("the visible WDEF-4 dialog is projected");
+    assert_eq!((view.closable, view.busy), (true, false), "{view:?}");
+    let pixels = runner.bus.read_bytes(screen, 640 * 480);
+    assert!(pixels.iter().all(|pixel| *pixel == 0x77));
+    // Raw guest-pane presses over the hidden window are not delivered.
+    assert!(runner.host_modeless_dialog_at(60 + 22, 80 + 55));
+    assert!(!runner.host_modeless_dialog_at(400, 600));
+    assert!(!runner.reply_host_modeless_dialog(&DialogReply {
+        id: view.id,
+        revision: view.revision + 1,
+        item: 1,
+    }));
+    assert!(runner.reply_host_modeless_dialog(&DialogReply {
+        id: view.id,
+        revision: view.revision,
+        item: 1,
+    }));
+    for tick in 2..34 {
+        runner.run_steps(2048, Some(tick));
+        if runner.bus.read_word(hit) != 0 {
+            break;
+        }
+    }
+    assert_eq!(runner.bus.read_word(hit), 1);
+    assert_eq!(runner.bus.read_long(dialog_out), dialog);
+    // The staged click is consumed; later loop iterations report nothing new.
+    runner.bus.write_word(hit, 0);
+    for tick in 34..42 {
+        runner.run_steps(2048, Some(tick));
+    }
+    assert_eq!(runner.bus.read_word(hit), 0);
+    assert_eq!(runner.bus.read_bytes(screen, 640 * 480), pixels);
+}
+
+#[test]
+fn unexpected_stop_reason_reports_system_errors_but_not_exit_to_shell() {
+    use crate::cpu::Register;
+    for (code, expected) in [
+        (
+            vec![0x3f3c, 0x0019, 0xa9c9],
+            Some("The application reported system error 25."),
+        ),
+        (vec![0xa9f4], None),
+    ] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, Default::default());
+        for (index, word) in code.iter().enumerate() {
+            runner.bus.write_word(0x10000 + index as u32 * 2, *word);
+        }
+        runner.m68k.cpu.write_reg(Register::A7, 0x700000);
+        runner.m68k.cpu.write_reg(Register::PC, 0x10000);
+        assert!(runner.unexpected_stop_reason().is_none());
+        runner.run_steps(64, Some(1));
+        assert!(runner.is_halted());
+        assert_eq!(runner.unexpected_stop_reason().as_deref(), expected);
+    }
 }

@@ -950,6 +950,54 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Inside Macintosh Volume VI (1991), chapter 11, p. 11-65.
             let params = crate::menu_manager::evaluate_hm_set_balloons_parameters(cpu.gpr[3]);
             toolbox_startup.help_balloons_enabled = params.enabled();
+            if toolbox_startup.host_ui.enabled {
+                toolbox_startup.host_ui.balloons_enabled = params.enabled();
+                if !params.enabled() {
+                    toolbox_startup.host_ui.remove_balloon();
+                }
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::HMShowBalloon => {
+            // FUNCTION HMShowBalloon(aHelpMsg: HMMessageRecord; tip: Point;
+            //   alternateRect: RectPtr; tipProc: Ptr; theProc, variant,
+            //   method: INTEGER): OSErr; More Macintosh Toolbox (1993), 3-100.
+            // The host presents string balloons; help stays disabled otherwise.
+            const HM_HELP_DISABLED: i16 = -850;
+            let message = cpu.gpr[3];
+            let tip = ((cpu.gpr[4] >> 16) as u16 as i16, cpu.gpr[4] as u16 as i16);
+            let bytes: Vec<u8> = (0..260u32)
+                .map_while(|offset| {
+                    (message != 0)
+                        .then(|| memory.read_u8(message + offset))
+                        .flatten()
+                })
+                .collect();
+            let lookup = |kind: [u8; 4], id: i16| {
+                ppc_vfs_resource_index(
+                    vfs_resources,
+                    current_resource_refnum,
+                    u32::from_be_bytes(kind),
+                    id,
+                    false,
+                )
+                .map(|index| vfs_resources[index].data.to_vec())
+            };
+            let text = crate::systems::macintosh::host_ui::balloon_message_text(&bytes, lookup);
+            let artwork =
+                crate::systems::macintosh::host_ui::balloon_message_picture(&bytes, lookup);
+            let shown = (text.is_some() || artwork.is_some())
+                && toolbox_startup
+                    .host_ui
+                    .show_balloon(text.unwrap_or_default(), artwork, tip);
+            Some(PpcImportAction::Return(ppc_i16_result(if shown {
+                PPC_NO_ERR
+            } else {
+                HM_HELP_DISABLED
+            })))
+        }
+        PpcImportDispatcherTarget::HMRemoveBalloon => {
+            toolbox_startup.host_ui.remove_balloon();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::HMIsBalloon => {
@@ -959,7 +1007,7 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // Inside Macintosh Volume VI (1991), chapter 11, p. 11-66.
             // The 68k Pack14 path has the same no-balloon state.
             Some(PpcImportAction::Return(u32::from(
-                crate::menu_manager::evaluate_hm_is_balloon(),
+                toolbox_startup.host_ui.balloon().is_some(),
             )))
         }
         PpcImportDispatcherTarget::HiliteMenu => {
