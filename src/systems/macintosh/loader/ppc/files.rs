@@ -744,23 +744,7 @@ pub(super) fn ppc_pbh_get_v_info(
     // Inside Macintosh: Files (1992), pp. 2-144--2-146: a positive
     // ioVolIndex enumerates the VCB queue, zero selects by reference only,
     // and a negative index uses the standard name/reference search order.
-    let boot_volume = || PpcVfsVolumeRecord {
-        ref_num: PPC_BOOT_VOLUME_REF_NUM,
-        name: crate::trap::TrapDispatcher::boot_volume_name().to_string(),
-        root_dir_id: PPC_ROOT_DIR_ID,
-        attributes: 0,
-        file_count: 0,
-        allocation_block_count: u16::MAX,
-        allocation_block_size: 4096,
-        clump_size: 4096,
-        free_blocks: 0x8000,
-        bitmap_start: 3,
-        allocation_pointer: 4,
-        allocation_start: 3,
-        next_catalog_id: 1024,
-        created_date: 0,
-        modified_date: 0,
-    };
+    let boot_volume = ppc_boot_volume_record;
     let volume_by_name = |name: &str| {
         let volume_name = name.split(':').next().unwrap_or(name);
         if volume_name.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
@@ -882,6 +866,164 @@ pub(super) fn ppc_pbh_get_v_info(
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
+/// The boot volume, which is not itself a VFS volume record.
+fn ppc_boot_volume_record() -> PpcVfsVolumeRecord {
+    PpcVfsVolumeRecord {
+        ref_num: PPC_BOOT_VOLUME_REF_NUM,
+        name: crate::trap::TrapDispatcher::boot_volume_name().to_string(),
+        root_dir_id: PPC_ROOT_DIR_ID,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: u16::MAX,
+        allocation_block_size: 4096,
+        clump_size: 4096,
+        free_blocks: 0x8000,
+        bitmap_start: 3,
+        allocation_pointer: 4,
+        allocation_start: 3,
+        next_catalog_id: 1024,
+        created_date: 0,
+        modified_date: 0,
+    }
+}
+
+/// FSGetVolumeInfo and PBGetVolumeInfoSync (Files.h, Universal Interfaces
+/// 3.4): a positive index enumerates mounted volumes, otherwise `volume`
+/// selects one by reference; enumeration ends with nsvErr.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_fs_get_volume_info(
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    volume_ref: i16,
+    volume_index: u32,
+    actual_volume_ptr: u32,
+    info_ptr: u32,
+    name_ptr: u32,
+    root_ref_ptr: u32,
+) -> i16 {
+    let selected = if volume_index > 0 {
+        if volume_index == 1 {
+            Some(ppc_boot_volume_record())
+        } else {
+            vfs_volumes.get((volume_index - 2) as usize).cloned()
+        }
+    } else {
+        let volume_ref = working_directories
+            .get(&volume_ref)
+            .map(|wd| wd.volume_ref_num)
+            .unwrap_or(volume_ref);
+        if volume_ref == PPC_BOOT_VOLUME_REF_NUM || volume_ref == 0 {
+            Some(ppc_boot_volume_record())
+        } else {
+            vfs_volumes
+                .iter()
+                .find(|volume| volume.ref_num == volume_ref)
+                .cloned()
+        }
+    };
+    let Some(volume) = selected else {
+        return PPC_NSV_ERR;
+    };
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] FSGetVolumeInfo index={volume_index} vref={volume_ref} -> {:?} ({})",
+            volume.name, volume.ref_num
+        );
+    }
+    if actual_volume_ptr != 0
+        && memory
+            .write_u16_be(actual_volume_ptr, volume.ref_num as u16)
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    if info_ptr != 0 {
+        if !ppc_memory_can_write_bytes(memory, info_ptr, 126) {
+            return PPC_PARAM_ERR;
+        }
+        // FSVolumeInfo: four UTCDateTimes (UInt16 high seconds, UInt32 low
+        // seconds, UInt16 fraction), counts, 64-bit sizes, allocation
+        // fields, Finder info, then flags and drive information.
+        let block_size = volume.allocation_block_size;
+        let total_blocks = u32::from(volume.allocation_block_count);
+        let free_blocks = u32::from(volume.free_blocks);
+        let _ = memory.write_bytes(info_ptr, &[0; 126]);
+        let _ = memory.write_u32_be(info_ptr + 2, volume.created_date);
+        let _ = memory.write_u32_be(info_ptr + 10, volume.modified_date);
+        let _ = memory.write_u32_be(info_ptr + 32, u32::from(volume.file_count));
+        let _ = memory.write_u64_be(
+            info_ptr + 40,
+            u64::from(total_blocks) * u64::from(block_size),
+        );
+        let _ = memory.write_u64_be(
+            info_ptr + 48,
+            u64::from(free_blocks) * u64::from(block_size),
+        );
+        let _ = memory.write_u32_be(info_ptr + 56, block_size);
+        let _ = memory.write_u32_be(info_ptr + 60, total_blocks);
+        let _ = memory.write_u32_be(info_ptr + 64, free_blocks);
+        let _ = memory.write_u32_be(info_ptr + 68, u32::from(volume.allocation_pointer));
+        let _ = memory.write_u32_be(info_ptr + 72, volume.clump_size);
+        let _ = memory.write_u32_be(info_ptr + 76, volume.clump_size);
+        let _ = memory.write_u32_be(info_ptr + 80, volume.next_catalog_id);
+        let _ = memory.write_u16_be(info_ptr + 116, volume.attributes & 0x8080);
+        let _ = memory.write_u16_be(info_ptr + 120, 0x4244);
+        let _ = memory.write_u16_be(info_ptr + 122, 1);
+        let _ = memory.write_u16_be(info_ptr + 124, (-33i16) as u16);
+    }
+    if name_ptr != 0 {
+        // HFSUniStr255: a UInt16 length followed by up to 255 UniChars.
+        let name: Vec<u16> = volume.name.encode_utf16().take(255).collect();
+        if !ppc_memory_can_write_bytes(memory, name_ptr, 2 + 2 * name.len() as u32) {
+            return PPC_PARAM_ERR;
+        }
+        let _ = memory.write_u16_be(name_ptr, name.len() as u16);
+        for (index, unit) in name.iter().enumerate() {
+            let _ = memory.write_u16_be(name_ptr + 2 + 2 * index as u32, *unit);
+        }
+    }
+    if root_ref_ptr != 0 {
+        // FSRef is 80 opaque bytes; record the volume and root directory.
+        if !ppc_memory_can_write_bytes(memory, root_ref_ptr, 80) {
+            return PPC_PARAM_ERR;
+        }
+        let _ = memory.write_bytes(root_ref_ptr, &[0; 80]);
+        let _ = memory.write_u16_be(root_ref_ptr, volume.ref_num as u16);
+        let _ = memory.write_u32_be(root_ref_ptr + 2, volume.root_dir_id);
+    }
+    PPC_NO_ERR
+}
+
+/// PBGetVolumeInfoSync with an FSVolumeInfoParam: ioVRefNum at 22,
+/// volumeIndex at 24, whichInfo at 28, then volumeInfo, volumeName and ref.
+pub(super) fn ppc_pb_get_volume_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 44) {
+        return PPC_PARAM_ERR;
+    }
+    let mut read = |offset| memory.read_u32_be(pb + offset).unwrap_or(0);
+    let (index, info, name, root) = (read(24), read(32), read(36), read(40));
+    let volume_ref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+    let err = ppc_fs_get_volume_info(
+        memory,
+        vfs_volumes,
+        working_directories,
+        volume_ref,
+        index,
+        pb + 22,
+        info,
+        name,
+        root,
+    );
+    ppc_complete_pb(memory, pb, err)
 }
 
 pub(super) fn ppc_complete_pb(memory: &mut PpcSectionMem, pb: u32, err: i16) -> i16 {

@@ -484,6 +484,29 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 working_directories,
             ))))
         }
+        PpcImportDispatcherTarget::PBGetVolumeInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_pb_get_volume_info(cpu, memory, vfs_volumes, working_directories),
+            )))
+        }
+        PpcImportDispatcherTarget::FSGetVolumeInfo => {
+            let volume_ref = cpu.gpr[3] as u16 as i16;
+            let (index, actual, info) = (cpu.gpr[4], cpu.gpr[5], cpu.gpr[7]);
+            let (name, root) = (cpu.gpr[8], cpu.gpr[9]);
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_fs_get_volume_info(
+                    memory,
+                    vfs_volumes,
+                    working_directories,
+                    volume_ref,
+                    index,
+                    actual,
+                    info,
+                    name,
+                    root,
+                ),
+            )))
+        }
         PpcImportDispatcherTarget::GetVInfo => {
             // Inside Macintosh: Files (1992), p. 2-67: drive 0 selects the
             // default volume; the result includes its name, vRefNum, and
