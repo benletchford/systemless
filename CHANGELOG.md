@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.100.0](https://github.com/benletchford/systemless/compare/v0.99.0...v0.100.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove deprecated crate-root module aliases
+
+### Features
+
+* **ppc:** add a static PowerPC import gap audit ([6b4c15a](https://github.com/benletchford/systemless/commit/6b4c15a68a68fd3abb62484bf54a793134a1d792))
+* **ppc:** audit every PowerPC container embedded in a data fork ([#4955](https://github.com/benletchford/systemless/issues/4955)) ([e189419](https://github.com/benletchford/systemless/commit/e18941928b04f7c2edc3cc0efbc29e0c20bd91f8))
+* **ppc:** implement the QuickDraw 3D RAVE drawing engine ([#4953](https://github.com/benletchford/systemless/issues/4953)) ([062df77](https://github.com/benletchford/systemless/commit/062df77a09b99c0895418d5f33aa7cce9dda6fe5))
+* **ppc:** render classic Mac OpenGL 1.2 through a native fixed-function pipeline ([#4944](https://github.com/benletchford/systemless/issues/4944)) ([168c3de](https://github.com/benletchford/systemless/commit/168c3de60713a349ceb8ca1bd610772704e4bb27))
+
+
+### Bug Fixes
+
+* **ppc:** answer component refcon calls for unregistered components ([#4946](https://github.com/benletchford/systemless/issues/4946)) ([67a7cda](https://github.com/benletchford/systemless/commit/67a7cdac2486d4be1b1e2c233c34ee164ae3dd59))
+* **ppc:** bind every Carbon multimedia import through QuickTimeLib ([#4949](https://github.com/benletchford/systemless/issues/4949)) ([51ce15b](https://github.com/benletchford/systemless/commit/51ce15b1f875faf7ef63aa0068accd5c22705001))
+* **ppc:** implement MathLib x80tod with round-to-nearest narrowing ([#4937](https://github.com/benletchford/systemless/issues/4937)) ([6e4f1cb](https://github.com/benletchford/systemless/commit/6e4f1cb25f76b2a38e19abd1e37459d284e46418))
+* **ppc:** implement the Carbon p2cstrcpy and c2pstrcpy string copies ([#4950](https://github.com/benletchford/systemless/issues/4950)) ([b4e410c](https://github.com/benletchford/systemless/commit/b4e410c2ced96f9e9d5dc29cfdeeb1dff92f2fc7))
+* **ppc:** keep bundled system-library installers from shadowing the runtime ([#4940](https://github.com/benletchford/systemless/issues/4940)) ([a5cb793](https://github.com/benletchford/systemless/commit/a5cb7939a96435b0fca7ae8df1be844589a72ff3))
+* **ppc:** report InputSprocket 1.7.3 and bind CodeFragmentMgr fragment loaders ([#4957](https://github.com/benletchford/systemless/issues/4957)) ([88e016b](https://github.com/benletchford/systemless/commit/88e016b2b8439d292e9e553b906ae1d2541e8c46))
+* **ppc:** resolve CarbonLib math exports through MathLib ([#4952](https://github.com/benletchford/systemless/issues/4952)) ([4deb29f](https://github.com/benletchford/systemless/commit/4deb29fce932a3d2653e67e5ce00a6b5c7e04f87))
+* **ppc:** return from the debugstr glue like DebugStr ([#4941](https://github.com/benletchford/systemless/issues/4941)) ([27c82b3](https://github.com/benletchford/systemless/commit/27c82b3257bf9d3467d2ccc904ee2fade4bda6e2))
+* **ppc:** seed BootDrive and add its PowerPC low-memory accessors ([#4939](https://github.com/benletchford/systemless/issues/4939)) ([5c9877b](https://github.com/benletchford/systemless/commit/5c9877b5950914953ad5d693e33c21d1890ab6d1))
+
+
+### Performance Improvements
+
+* **ppc:** refuse full sound queues before decoding and copy guest ranges in bulk ([#4943](https://github.com/benletchford/systemless/issues/4943)) ([5faa817](https://github.com/benletchford/systemless/commit/5faa8170f8ddd1693c445cf6b9293d2e87403092))
+
+
+### Code Refactoring
+
+* remove deprecated crate-root module aliases ([0447fcc](https://github.com/benletchford/systemless/commit/0447fcc684e33091f7bfbb4a0cbad8effc55d67a))
+
 ## [0.99.0](https://github.com/benletchford/systemless/compare/v0.98.1...v0.99.0) (2026-10-21)
 
 
