@@ -10904,3 +10904,46 @@ fn hierarchical_create_resolves_registered_working_directory_and_preserves_exclu
         assert_eq!(loaded.vfs_files.len(), count);
     }
 }
+
+#[test]
+fn pb_get_volume_info_enumerates_the_boot_volume_then_ends() {
+    let pef = synthetic_pef_with_import(b"PBGetVolumeInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let info = pb + 0x100;
+    let name = pb + 0x200;
+    loaded.memory.add_region(pb, vec![0; 0x400]);
+    loaded.memory.write_u32_be(pb + 24, 1).unwrap();
+    loaded.memory.write_u32_be(pb + 32, info).unwrap();
+    loaded.memory.write_u32_be(pb + 36, name).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u16_be(pb + 22),
+        Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+    );
+    assert_eq!(loaded.memory.read_u32_be(info + 56), Some(4096));
+    let volume_name = crate::trap::TrapDispatcher::boot_volume_name();
+    assert_eq!(
+        loaded.memory.read_u16_be(name),
+        Some(volume_name.encode_utf16().count() as u16)
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(name + 2),
+        volume_name.encode_utf16().next()
+    );
+
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(pb, vec![0; 0x400]);
+    loaded.memory.write_u32_be(pb + 24, 99).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    loaded.run_with_hle_imports(64);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NSV_ERR as u16));
+}

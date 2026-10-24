@@ -505,6 +505,8 @@ pub enum PpcImportDispatcherTarget {
     PBResolveFileIDRef,
     PBSetCatInfo,
     PBHGetVInfo,
+    PBGetVolumeInfo,
+    FSGetVolumeInfo,
     GetVInfo,
     GetVRefNum,
     PBDTGetPath,
@@ -1275,6 +1277,7 @@ pub enum PpcImportDispatcherTarget {
     NewUserItemUPP,
     DisposeUserItemUPP,
     NewControlActionUPP,
+    NewTEClickLoopUPP,
     DisposeControlActionUPP,
     NewControlKeyFilterUPP,
     DisposeControlKeyFilterUPP,
@@ -3582,6 +3585,8 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBHGetVInfo")
         | ("InterfaceLib", "PBHGetVInfoSync")
         | ("InterfaceLib", "PBHGetVInfoAsync") => PpcImportDispatcherTarget::PBHGetVInfo,
+        ("InterfaceLib", "PBGetVolumeInfoSync") => PpcImportDispatcherTarget::PBGetVolumeInfo,
+        ("InterfaceLib", "FSGetVolumeInfo") => PpcImportDispatcherTarget::FSGetVolumeInfo,
         ("InterfaceLib", "GetVInfo") => PpcImportDispatcherTarget::GetVInfo,
         ("InterfaceLib", "GetVRefNum") => PpcImportDispatcherTarget::GetVRefNum,
         ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
@@ -4711,6 +4716,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NewSndCallBackUPP") => PpcImportDispatcherTarget::NewSndCallBackUPP,
         ("InterfaceLib", "DisposeSndCallBackUPP") => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
         ("InterfaceLib", "NewControlActionUPP") => PpcImportDispatcherTarget::NewControlActionUPP,
+        ("InterfaceLib", "NewTEClickLoopUPP") => PpcImportDispatcherTarget::NewTEClickLoopUPP,
+        ("InterfaceLib", "DisposeTEClickLoopUPP") => {
+            PpcImportDispatcherTarget::DisposeRoutineDescriptor
+        }
         ("InterfaceLib", "DisposeControlActionUPP") => {
             PpcImportDispatcherTarget::DisposeControlActionUPP
         }

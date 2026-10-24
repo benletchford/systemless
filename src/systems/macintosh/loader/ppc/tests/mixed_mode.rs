@@ -4245,3 +4245,22 @@ fn sound_callback_upp_resolves_weak_import_allocates_descriptor_and_disposes() {
     assert_eq!(loaded.cpu.gpr[3], descriptor);
     assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, callback, 8), Some(original_code));
 }
+
+#[test]
+fn new_te_click_loop_upp_builds_a_register_based_descriptor() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"NewTEClickLoopUPP")).unwrap();
+    let callback = PPC_CODE_BASE;
+    loaded.cpu.gpr[3] = callback;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewTEClickLoopUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0x0000_F812));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+        Some(callback)
+    );
+}
