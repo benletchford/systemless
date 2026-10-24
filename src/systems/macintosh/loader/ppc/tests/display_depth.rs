@@ -2394,3 +2394,46 @@ fn hle_import_runner_get_max_device_requires_screen_intersection() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn basic_bitmaps_on_the_screen_take_the_screen_depth() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    let screen = ppc_read_pixmap_bits(&mut loaded.memory, PPC_MAIN_PIXMAP).unwrap();
+    assert_ne!(screen.depth, 1);
+    let scratch = PPC_DATA_BASE + 0xb000;
+    loaded.memory.add_region(scratch, vec![0; 0x40]);
+    // An old-style GrafPort's portBits: a BitMap (rowBytes high bit clear)
+    // addressing the screen, as NewWindow builds it from screenBits.
+    let on_screen = scratch;
+    loaded
+        .memory
+        .write_u32_be(on_screen, screen.base_addr)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(on_screen + 4, screen.row_bytes as u16)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, on_screen + 6, -20, -10, 100, 200).unwrap();
+    // The same BitMap shape addressing ordinary memory stays one bit deep.
+    let off_screen = scratch + 0x20;
+    loaded
+        .memory
+        .write_u32_be(off_screen, scratch + 0x30)
+        .unwrap();
+    loaded.memory.write_u16_be(off_screen + 4, 2).unwrap();
+    ppc_write_rect(&mut loaded.memory, off_screen + 6, 0, 0, 1, 16).unwrap();
+
+    let resolved =
+        ppc_resolve_pixmap_bits_with_provenance(&mut loaded.memory, &loaded.gworlds, on_screen)
+            .unwrap()
+            .bits;
+    assert_eq!(resolved.depth, screen.depth);
+    assert_eq!(resolved.row_bytes, screen.row_bytes);
+    assert_eq!((resolved.top, resolved.left), (-20, -10));
+
+    let resolved =
+        ppc_resolve_pixmap_bits_with_provenance(&mut loaded.memory, &loaded.gworlds, off_screen)
+            .unwrap()
+            .bits;
+    assert_eq!(resolved.depth, 1);
+}

@@ -3676,6 +3676,32 @@ pub(crate) fn ppc_resolve_pixmap_bits(
     ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, bits_ptr).map(|resolved| resolved.bits)
 }
 
+/// An old-style GrafPort's portBits is a basic BitMap. When it addresses the
+/// screen, Color QuickDraw draws through the screen's PixMap, so a window
+/// created with NewWindow on a 16-bit screen still receives 16-bit pixels.
+/// Such a BitMap keeps its own bounds and takes the screen's depth and
+/// rowBytes; any other BitMap remains one bit deep.
+fn ppc_screen_bitmap_as_screen_pixmap(
+    memory: &mut PpcSectionMem,
+    bits_ptr: u32,
+    bits: PpcPixMapBits,
+) -> PpcPixMapBits {
+    let basic_bitmap = memory
+        .read_u16_be(bits_ptr + 4)
+        .is_some_and(|row_bytes| row_bytes & 0x8000 == 0);
+    if !basic_bitmap {
+        return bits;
+    }
+    match ppc_read_pixmap_bits(memory, PPC_MAIN_PIXMAP) {
+        Some(screen) if screen.base_addr == bits.base_addr && screen.depth != 1 => PpcPixMapBits {
+            row_bytes: screen.row_bytes,
+            depth: screen.depth,
+            ..bits
+        },
+        _ => bits,
+    }
+}
+
 pub(crate) fn ppc_resolve_pixmap_bits_with_provenance(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -3751,7 +3777,7 @@ pub(crate) fn ppc_resolve_pixmap_bits_with_provenance(
     }
     if let Some(bits) = ppc_read_pixmap_bits(memory, bits_ptr) {
         return Some(PpcResolvedPixMapBits {
-            bits,
+            bits: ppc_screen_bitmap_as_screen_pixmap(memory, bits_ptr, bits),
             guest_bounds: true,
             authoritative_bounds: true,
         });
