@@ -791,6 +791,7 @@ pub enum PpcImportDispatcherTarget {
     AbsoluteToNanoseconds,
     NanosecondsToAbsolute,
     AddAbsoluteToAbsolute,
+    SubAbsoluteFromAbsolute,
     MPDelayUntil,
     SysEnvirons,
     TextWidth,
@@ -2607,6 +2608,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpUserSelectContext") => {
             PpcImportDispatcherTarget::DSpUserSelectContext
         }
+        // DSpSetWindowToFront(WindowRef): DrawSprocket contexts never cover
+        // the application's windows here, so there is no ordering to change.
+        ("DrawSprocketLib", "DSpSetWindowToFront") => PpcImportDispatcherTarget::ReturnNoErr,
         ("DrawSprocketLib", "DSpSetBlankingColor") => {
             PpcImportDispatcherTarget::DSpSetBlankingColor
         }
@@ -4387,6 +4391,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "DriverServicesLib", "AddAbsoluteToAbsolute") => {
             PpcImportDispatcherTarget::AddAbsoluteToAbsolute
         }
+        ("InterfaceLib" | "DriverServicesLib", "SubAbsoluteFromAbsolute") => {
+            PpcImportDispatcherTarget::SubAbsoluteFromAbsolute
+        }
         ("InterfaceLib" | "MPLibrary", "MPDelayUntil") => {
             PpcImportDispatcherTarget::MPDelayUntil
         }
@@ -4652,6 +4659,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GraphicsImportGetBoundsRect") => {
             PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
         }
+        // Playback and decode quality hints do not change the output here.
+        ("QuickTimeLib", "SetMoviePlayHints") => PpcImportDispatcherTarget::NoOpPreserve,
+        ("QuickTimeLib", "GraphicsImportSetQuality") => PpcImportDispatcherTarget::ReturnNoErr,
         ("QuickTimeLib", "GraphicsImportSetGWorld") => {
             PpcImportDispatcherTarget::QtGraphicsImportSetGWorld
         }

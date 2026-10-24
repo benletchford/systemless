@@ -174,3 +174,52 @@ fn fsp_rename_renames_the_spec_target() {
         "System Folder/Preferences/New Log"
     );
 }
+
+#[test]
+fn otto_matic_weak_imports_resolve_and_absolute_times_subtract() {
+    for (library, symbol, target) in [
+        (
+            "CarbonLib",
+            "SubAbsoluteFromAbsolute",
+            PpcImportDispatcherTarget::SubAbsoluteFromAbsolute,
+        ),
+        (
+            "Apple;Carbon;Multimedia",
+            "SetMoviePlayHints",
+            PpcImportDispatcherTarget::NoOpPreserve,
+        ),
+        (
+            "Apple;Carbon;Multimedia",
+            "GraphicsImportSetQuality",
+            PpcImportDispatcherTarget::ReturnNoErr,
+        ),
+        (
+            "DrawSprocketLib",
+            "DSpSetWindowToFront",
+            PpcImportDispatcherTarget::ReturnNoErr,
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(library, symbol),
+            target,
+            "{symbol}"
+        );
+    }
+
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"SubAbsoluteFromAbsolute")).unwrap();
+    let out = PPC_STACK_TOP - 64;
+    loaded.cpu.gpr[3] = out;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = 10;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 20;
+    let action = dispatch_simple_hot_import_fast(
+        &PpcImportDispatcherTarget::SubAbsoluteFromAbsolute,
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        0,
+    );
+    assert!(matches!(action, Some(PpcImportAction::ReturnPreserve)));
+    assert_eq!(loaded.memory.read_u64_be(out), Some((1u64 << 32) - 10));
+}
