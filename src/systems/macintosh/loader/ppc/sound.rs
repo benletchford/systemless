@@ -121,6 +121,7 @@ pub struct PpcSoundState {
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
     pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
     pub completion_invocations: Vec<PpcSoundCompletionInvocationRecord>,
+    pub sound_sprocket: super::PpcSoundSprocketState,
     pub sys_beep_count: u32,
     pub last_sys_beep_duration: i16,
     pub start_count: u32,
@@ -446,6 +447,13 @@ pub(crate) fn ppc_snd_set_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: 
     if channel == 0 || info_ptr == 0 {
         return PPC_PARAM_ERR;
     }
+    if ppc_sound_trace_enabled() {
+        let info = ppc_memory_read_bytes(memory, info_ptr, 32).unwrap_or_default();
+        eprintln!(
+            "[PPC-TRACE] SndSetInfo chan=${channel:08X} selector={:?} info={info:02X?}",
+            String::from_utf8_lossy(&selector.to_be_bytes())
+        );
+    }
 
     // SndSetInfo(SndChannelPtr, OSType, const void *) is a SoundLib 3.1
     // call. siSampleRate ('srat') uses a pointer to an unsigned 16.16 Fixed
@@ -453,6 +461,30 @@ pub(crate) fn ppc_snd_set_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: 
     // Universal Interfaces 3.4.1, Sound.h; Inside Macintosh: Sound (1994),
     // Sound Input Manager Reference, siSampleRate.
     match &selector.to_be_bytes() {
+        // siPreMixerSoundComponent installs a filter ahead of the mixer.
+        // Only the SoundSprocket 3-D filter is available.
+        b"prmx" => {
+            if super::sound_sprocket::ppc_is_sound_sprocket_filter(memory, info_ptr) {
+                PPC_NO_ERR
+            } else {
+                SI_UNKNOWN_INFO_TYPE
+            }
+        }
+        b"3dif" => {
+            let Some(gain) = super::sound_sprocket::ppc_sound_sprocket_gain(memory, info_ptr)
+            else {
+                return PPC_PARAM_ERR;
+            };
+            let Some(()) = sound
+                .manager
+                .with_channel_mut(channel, |channel| channel.set_localization(gain))
+            else {
+                return PPC_PARAM_ERR;
+            };
+            PPC_NO_ERR
+        }
+        // Speaker setup and CPU load limit change nothing for stereo output.
+        b"3dst" | b"3dll" => PPC_NO_ERR,
         b"srat" => {
             let Some(rate) = memory.read_u32_be(info_ptr) else {
                 return PPC_PARAM_ERR;

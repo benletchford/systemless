@@ -1310,6 +1310,7 @@ pub enum PpcImportDispatcherTarget {
     SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility(PpcFileCompatibilityOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
+    SoundSprocket(PpcSoundSprocketFunction),
     OpenTransport(PpcOpenTransportFunction),
     OtElapsed { milliseconds: bool },
     ToolboxCompat(PpcToolboxCompatOperation),
@@ -1470,6 +1471,11 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
+        ("SoundSprocketLib", symbol) if PpcSoundSprocketFunction::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::SoundSprocket(
+                PpcSoundSprocketFunction::from_name(symbol).expect("checked"),
+            )
+        }
         ("NetSprocketLib", "NSpInitialize") => PpcImportDispatcherTarget::NSpInitialize,
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
         ("OpenGLMemory", "glmSetFunc") => PpcImportDispatcherTarget::GlmSetFunc,
