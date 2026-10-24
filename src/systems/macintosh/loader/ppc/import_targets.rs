@@ -1308,6 +1308,8 @@ pub enum PpcImportDispatcherTarget {
     SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility(PpcFileCompatibilityOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
+    OpenTransport(PpcOpenTransportFunction),
+    OtElapsed { milliseconds: bool },
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
     StandardFileCompatibility(PpcStandardFileOperation),
@@ -1360,6 +1362,49 @@ pub enum PpcImportDispatcherTarget {
     Unsupported,
 }
 
+/// Open Transport's CFM client libraries, including Carbon's namespace.
+fn ppc_is_open_transport_library(library_name: &str) -> bool {
+    matches!(
+        library_name,
+        "OTClientLib"
+            | "OTClientUtilLib"
+            | "OTUtilityLib"
+            | "OTNtvUtilLib"
+            | "OTInetClientLib"
+            | "OTATalkClientLib"
+            | "OTATalkSharedLib"
+            | "OTXTILib"
+            | "OpenTransportLib"
+            | "Apple;Carbon;Networking"
+    )
+}
+
+fn ppc_is_open_transport_symbol(symbol_name: &str) -> bool {
+    ppc_open_transport_target(symbol_name) != PpcImportDispatcherTarget::Unsupported
+}
+
+/// Open Transport's client libraries share one implementation; the memory
+/// and time-stamp utilities reuse their Toolbox equivalents.
+fn ppc_open_transport_target(symbol_name: &str) -> PpcImportDispatcherTarget {
+    match symbol_name {
+        "OTAllocMem" | "OTAllocMemPriv" | "OTAllocMemInContext" => {
+            PpcImportDispatcherTarget::NewPtr { clear: false }
+        }
+        "OTFreeMem" => PpcImportDispatcherTarget::DisposePtr,
+        "NewOTNotifyUPP" => PpcImportDispatcherTarget::NewOTNotifyUPP,
+        "OTMemzero" => PpcImportDispatcherTarget::BlockZero,
+        "OTGetTimeStamp" => PpcImportDispatcherTarget::Microseconds,
+        "OTElapsedMilliseconds" => PpcImportDispatcherTarget::OtElapsed { milliseconds: true },
+        "OTElapsedMicroseconds" => PpcImportDispatcherTarget::OtElapsed {
+            milliseconds: false,
+        },
+        symbol => PpcOpenTransportFunction::from_name(symbol)
+            .map_or(PpcImportDispatcherTarget::Unsupported, |function| {
+                PpcImportDispatcherTarget::OpenTransport(function)
+            }),
+    }
+}
+
 pub(crate) fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
@@ -1400,6 +1445,8 @@ pub(crate) fn dispatcher_target_for_import(
             | "QDFlushPortBuffer"
             | "qdflushportbuffer",
         ) => "CarbonLib",
+        // CarbonLib re-exports the Open Transport client entry points.
+        ("CarbonLib", symbol) if ppc_is_open_transport_symbol(symbol) => "OTClientLib",
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
         // same PowerPC signatures as StdCLib. Leave its private symbols
@@ -1413,6 +1460,9 @@ pub(crate) fn dispatcher_target_for_import(
         ) => "StdCLib",
         _ => library_name,
     };
+    if ppc_is_open_transport_library(library_name) {
+        return ppc_open_transport_target(symbol_name);
+    }
     match (library_name, symbol_name) {
         ("NetSprocketLib", "NSpInitialize") => PpcImportDispatcherTarget::NSpInitialize,
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
@@ -4625,9 +4675,6 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
         ("InterfaceLib", "PurgeMemSys") => PpcImportDispatcherTarget::PurgeMemSys,
-        ("Apple;Carbon;Networking" | "OpenTransportLib", "NewOTNotifyUPP") => {
-            PpcImportDispatcherTarget::NewOTNotifyUPP
-        }
         ("InterfaceLib", "ReleaseResource") => PpcImportDispatcherTarget::ReleaseResource,
         ("InterfaceLib", "DetachResource") => PpcImportDispatcherTarget::DetachResource,
         ("InterfaceLib", "ReadPartialResource") => PpcImportDispatcherTarget::ReadPartialResource,

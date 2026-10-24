@@ -2845,6 +2845,9 @@ pub(crate) fn dispatch_supported_import(
                 &mut toolbox_startup.kchr_cache_ptr,
             ))
         }
+        PpcImportDispatcherTarget::OpenTransport(function) => Some(
+            dispatch_open_transport::ppc_dispatch_open_transport(function, cpu, memory),
+        ),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
         ),
@@ -3099,6 +3102,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
         | PpcImportDispatcherTarget::Microseconds
+        | PpcImportDispatcherTarget::OtElapsed { .. }
         | PpcImportDispatcherTarget::AbsoluteToNanoseconds
         | PpcImportDispatcherTarget::NanosecondsToAbsolute
         | PpcImportDispatcherTarget::AddAbsoluteToAbsolute

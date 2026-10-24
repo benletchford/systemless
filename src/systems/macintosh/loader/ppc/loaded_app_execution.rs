@@ -2532,6 +2532,14 @@ pub(crate) fn dispatch_simple_hot_import_fast(
             microseconds,
             None,
         )),
+        PpcImportDispatcherTarget::OtElapsed { milliseconds } => Some(PpcImportAction::Return(
+            dispatch_open_transport::ppc_ot_elapsed(
+                memory,
+                cpu.gpr[3],
+                microseconds,
+                *milliseconds,
+            ),
+        )),
         PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
             // PowerPC's struct-return ABI places the output pointer in r3 and
             // the 64-bit AbsoluteTime input in r4:r5. Our virtual absolute
