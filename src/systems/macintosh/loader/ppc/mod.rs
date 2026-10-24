@@ -110,6 +110,7 @@ mod dispatch_apple_events;
 use dispatch_apple_events::*;
 mod dispatch_appearance;
 mod dispatch_appletalk;
+mod power_compat;
 mod dispatch_open_transport;
 mod dispatch_toolbox_compat;
 mod dispatch_bit_transfers;

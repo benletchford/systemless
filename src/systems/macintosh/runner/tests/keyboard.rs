@@ -89,6 +89,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         clock_cycle_phase: 0,
         trap_default_gateways: Default::default(),
         native_exception_handler: 0,
+        power_mq: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
