@@ -319,6 +319,34 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                 .unwrap_or(0);
             Some(PpcImportAction::Return(result))
         }
+        PpcImportDispatcherTarget::LNextCell => {
+            // Boolean LNextCell(Boolean hNext, Boolean vNext, Cell *theCell,
+            // ListHandle). Inside Macintosh: More Macintosh Toolbox (1993),
+            // p. 4-80: advance across the row, down the column, or row by row
+            // when both are set; false once no further cell exists.
+            let (h_next, v_next, cell_ptr) =
+                (cpu.gpr[3] & 0xff != 0, cpu.gpr[4] & 0xff != 0, cpu.gpr[5]);
+            let result = list_manager
+                .with_record_ref(cpu.gpr[6], |record| {
+                    let v = memory.read_u16_be(cell_ptr)? as i16;
+                    let h = memory.read_u16_be(cell_ptr + 2)? as i16;
+                    let (top, left, bottom, right) = record.data_bounds;
+                    let next = match (h_next, v_next) {
+                        (true, true) if h + 1 < right => Some((v, h + 1)),
+                        (true, true) if v + 1 < bottom => Some((v + 1, left)),
+                        (true, false) if h + 1 < right => Some((v, h + 1)),
+                        (false, true) if v + 1 < bottom => Some((v + 1, h)),
+                        _ => None,
+                    }
+                    .filter(|&(v, h)| v >= top && h >= left)?;
+                    let _ = memory.write_u16_be(cell_ptr, next.0 as u16);
+                    let _ = memory.write_u16_be(cell_ptr + 2, next.1 as u16);
+                    Some(1)
+                })
+                .flatten()
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(result))
+        }
         PpcImportDispatcherTarget::LSetSelect => {
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;

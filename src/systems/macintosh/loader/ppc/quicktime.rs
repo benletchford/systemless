@@ -50,6 +50,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetCallBackTimeBase,
     GetMovieActive,
     GetMovieTimeBase,
+    GetMovieColorTable,
     GetMovieTimeScale,
     GetMoviePreferredRate,
     GetMoviePreferredVolume,
@@ -477,6 +478,19 @@ pub(super) fn dispatch_quicktime_compatibility(
             }
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieColorTable => {
+            // Inside Macintosh: QuickTime (1993), p. 2-201: a movie without a
+            // colour table returns nil through the CTabHandle argument.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                return PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(
+                    quicktime, -2010, // invalidMovie
+                )));
+            }
+            if cpu.gpr[4] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[4], 0);
+            }
+            PpcImportAction::Return(ppc_i16_result(ppc_qt_record_error(quicktime, PPC_NO_ERR)))
         }
         PpcQuickTimeCompatibilityOperation::GetMovieTimeScale => {
             // Inside Macintosh: QuickTime (1993), p. 2-183.

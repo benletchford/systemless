@@ -541,3 +541,58 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         .contains(&(0, 0)));
     assert!(!original.list_manager.contains_handle(0x0032_3000));
 }
+
+#[test]
+fn native_list_manager_lnextcell_walks_rows_then_columns() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LNextCell"),
+        PpcImportDispatcherTarget::LNextCell
+    );
+    let pef = synthetic_pef_with_import(b"LNew");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (view_ptr, bounds_ptr, cell_ptr) = (scratch, scratch + 8, scratch + 52);
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 90, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 2, 2).unwrap();
+    loaded.cpu.gpr[3] = view_ptr;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = (20u32 << 16) | 100;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
+    for register in 8..=10 {
+        loaded.cpu.gpr[register] = 0;
+    }
+    loaded
+        .memory
+        .write_u32_be(
+            ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        loaded.run_with_hle_imports(128).unsupported_import_index,
+        None
+    );
+    let list = loaded.cpu.gpr[3];
+
+    let next = |loaded: &mut PpcLoadedApp, h_next: u32, v_next: u32| {
+        loaded.cpu.gpr[3] = h_next;
+        loaded.cpu.gpr[4] = v_next;
+        loaded.cpu.gpr[5] = cell_ptr;
+        loaded.cpu.gpr[6] = list;
+        run_test_import(loaded, PpcImportDispatcherTarget::LNextCell);
+        let cell = (
+            loaded.memory.read_u16_be(cell_ptr).unwrap() as i16,
+            loaded.memory.read_u16_be(cell_ptr + 2).unwrap() as i16,
+        );
+        (loaded.cpu.gpr[3], cell)
+    };
+    loaded.memory.write_u32_be(cell_ptr, 0).unwrap();
+    assert_eq!(next(&mut loaded, 1, 1), (1, (0, 1)));
+    assert_eq!(next(&mut loaded, 1, 1), (1, (1, 0)));
+    assert_eq!(next(&mut loaded, 1, 0), (1, (1, 1)));
+    assert_eq!(next(&mut loaded, 1, 0), (0, (1, 1)));
+    assert_eq!(next(&mut loaded, 0, 1), (0, (1, 1)));
+}

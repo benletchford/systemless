@@ -23,6 +23,7 @@ pub enum PpcSystemCompatibilityOperation {
     Enqueue,
     FindNextComponent,
     GetComponentRefcon,
+    GetComponentVersion,
     SetComponentRefcon,
     FindScriptRun,
     FindWord,
@@ -813,6 +814,12 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // invalid and reads as a zero refcon (Inside Macintosh: More
             // Macintosh Toolbox, Component Manager).
             PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::GetComponentVersion => {
+            // long GetComponentVersion(ComponentInstance). No component
+            // instance can be open here (OpenDefaultComponent returns nil), so
+            // the call reports badComponentInstance (Components.h).
+            PpcImportAction::Return(0x8000_8001)
         }
         PpcSystemCompatibilityOperation::SetComponentRefcon => {
             // void SetComponentRefcon(Component aComponent, long theRefcon):
