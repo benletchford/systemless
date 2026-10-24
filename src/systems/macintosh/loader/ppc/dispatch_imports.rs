@@ -1748,6 +1748,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FlushVol
         | PpcImportDispatcherTarget::PBFlushVol
         | PpcImportDispatcherTarget::PBHGetVInfo
+        | PpcImportDispatcherTarget::PBGetVolumeInfo
+        | PpcImportDispatcherTarget::FSGetVolumeInfo
         | PpcImportDispatcherTarget::GetVInfo
         | PpcImportDispatcherTarget::GetVRefNum
         | PpcImportDispatcherTarget::PBDTGetPath
@@ -2737,6 +2739,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeUserItemUPP
         | PpcImportDispatcherTarget::NewSndCallBackUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
+        | PpcImportDispatcherTarget::NewTEClickLoopUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::NewControlKeyFilterUPP
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
