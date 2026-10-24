@@ -2823,8 +2823,14 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
             "CloseConnection",
         ) => PpcImportDispatcherTarget::CloseConnection,
-        ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
-        ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "GetMemFragment",
+        ) => PpcImportDispatcherTarget::GetMemFragment,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "GetDiskFragment",
+        ) => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") => {

@@ -127,10 +127,12 @@ pub(super) fn dispatch_inputsprocket_import(
         // Apple InputSprocket.h 1.7 (QuickTime 6.0.2 SDK) declares
         // ISpGetVersion as returning the four-byte NumVersion structure.
         // The CFM PowerPC structure-result pointer is passed in r3, matching
-        // SndSoundManagerVersion above. NumVersion 1.7 final is 01 70 80 00.
+        // SndSoundManagerVersion above. The 1.7 header is the final API; the
+        // 1.7.x releases added no entry points, so report 1.7.3 final
+        // (01 73 80 00), the release later titles require.
         PpcImportDispatcherTarget::ISpGetVersion => {
             if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
-                let _ = memory.write_u32_be(cpu.gpr[3], 0x0170_8000);
+                let _ = memory.write_u32_be(cpu.gpr[3], 0x0173_8000);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
