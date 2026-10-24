@@ -16,7 +16,7 @@ pub mod functions;
 pub mod glu;
 pub mod math;
 mod pipeline;
-mod raster;
+pub(crate) mod raster;
 pub mod state;
 pub mod texture;
 

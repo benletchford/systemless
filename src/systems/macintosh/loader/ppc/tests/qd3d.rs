@@ -26184,14 +26184,21 @@ fn hle_import_runner_handles_qa_next_engine_end_of_list() {
         b"QuickDraw\xaa 3D Accelerator",
         b"QADeviceGetNextEngine",
     );
+    // The accelerated engine is followed by Apple's software engine, which
+    // ends the list.
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.cpu.gpr[3] = 0;
     loaded.cpu.gpr[4] = PPC_QA_ENGINE;
-
     let probe = loaded.run_with_hle_imports(64);
-
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], PPC_QA_SOFTWARE_ENGINE);
+
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = PPC_QA_SOFTWARE_ENGINE;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
 
@@ -26218,12 +26225,12 @@ fn hle_import_runner_handles_qa_engine_gestalt() {
 
     for (selector, expected) in [
         (1, ppc_qa_fast_features()),
-        (2, PPC_QA_VENDOR_APPLE),
-        (3, PPC_QA_ENGINE_APPLE_SW),
+        (2, PPC_QA_VENDOR_SYSTEMLESS),
+        (3, PPC_QA_ENGINE_SYSTEMLESS),
         (4, 1),
         (5, PPC_QA_ENGINE_NAME.len() as u32),
         (7, PPC_QA_AVAILABLE_TEXTURE_MEMORY),
-        (42, 0),
+        (16, 0),
     ] {
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.memory.add_region(response_ptr, vec![0xaa; 4]);
@@ -26242,6 +26249,16 @@ fn hle_import_runner_handles_qa_engine_gestalt() {
             "selector {selector}"
         );
     }
+
+    // An unknown selector reports kQAGestaltUnknown and leaves the response.
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(response_ptr, vec![0xaa; 4]);
+    loaded.cpu.gpr[3] = PPC_QA_ENGINE;
+    loaded.cpu.gpr[4] = 42;
+    loaded.cpu.gpr[5] = response_ptr;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 6);
+    assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(0xaaaa_aaaa));
 
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.memory.add_region(response_ptr, vec![0xaa; 64]);
@@ -27891,5 +27908,22 @@ fn q3_clip_covers_viewport_edges_when_triangles_cross_behind_the_eye() {
             });
             assert!(covered, "edge={edge}, reverse={reverse}: viewport pixel must be covered");
         }
+    }
+}
+
+#[test]
+fn hle_import_runner_reports_the_apple_software_engine_without_fast_features() {
+    let pef =
+        synthetic_pef_with_library_import(b"QuickDraw\xaa 3D Accelerator", b"QAEngineGestalt");
+    let response_ptr = PPC_DATA_BASE + 0x1000;
+    for (selector, expected) in [(1, 0), (2, PPC_QA_VENDOR_APPLE), (3, PPC_QA_ENGINE_APPLE_SW)] {
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.memory.add_region(response_ptr, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = PPC_QA_SOFTWARE_ENGINE;
+        loaded.cpu.gpr[4] = selector;
+        loaded.cpu.gpr[5] = response_ptr;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0, "selector {selector}");
+        assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(expected), "selector {selector}");
     }
 }

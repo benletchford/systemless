@@ -1161,6 +1161,7 @@ fn load_pef_application_with_optional_disk_fragment(
         glm_callbacks: [None; 8],
         glm_callback_stack: Vec::new(),
         glm_allocations: HashMap::new(),
+        rave: PpcRaveState::default(),
         glm_page_free_all_queue: VecDeque::new(),
         glm_error: 0,
     })

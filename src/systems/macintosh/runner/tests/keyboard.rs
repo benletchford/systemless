@@ -203,6 +203,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         glm_callbacks: [None; 8],
         glm_callback_stack: Vec::new(),
         glm_allocations: HashMap::new(),
+        rave: Default::default(),
         glm_page_free_all_queue: VecDeque::new(),
         glm_error: 0,
         draw_sprocket: PpcDrawSprocketState::default(),

@@ -134,6 +134,7 @@ pub struct PpcLoadedApp {
     pub(crate) glm_callbacks: [Option<PpcCallbackTarget>; 8],
     pub(crate) glm_callback_stack: Vec<PpcGlmCallbackState>,
     pub(crate) glm_allocations: HashMap<u32, (bool, u32)>,
+    pub(crate) rave: PpcRaveState,
     pub(crate) glm_page_free_all_queue: VecDeque<u32>,
     pub(crate) glm_error: u32,
 }

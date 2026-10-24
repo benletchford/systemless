@@ -2703,7 +2703,10 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::QADeviceGetFirstEngine => {
             Some(PpcImportAction::Return(PPC_QA_ENGINE))
         }
-        PpcImportDispatcherTarget::QADeviceGetNextEngine => Some(PpcImportAction::Return(0)),
+        // The accelerated engine is followed by Apple's software engine.
+        PpcImportDispatcherTarget::QADeviceGetNextEngine => Some(PpcImportAction::Return(
+            if cpu.gpr[4] == PPC_QA_ENGINE { PPC_QA_SOFTWARE_ENGINE } else { 0 },
+        )),
         PpcImportDispatcherTarget::QAEngineGestalt => Some(PpcImportAction::Return(
             qd3d::ppc_qa_engine_gestalt(cpu, memory),
         )),
@@ -3150,14 +3153,9 @@ pub(crate) fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::Agl(function) => Some(ppc_agl_function(
-            function,
-            cpu,
-            memory,
-            agl,
-            gworlds,
-            window_list,
-        )),
+        PpcImportDispatcherTarget::Agl(function) => {
+            Some(ppc_agl_function(function, cpu, memory, agl, gworlds))
+        }
         PpcImportDispatcherTarget::Gl(function) => {
             use super::classic_gl::functions::{GlFunction, GlNamed};
             let handle = agl.current_context();
@@ -3207,6 +3205,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GlmGetError
         | PpcImportDispatcherTarget::GlmGetInteger => {
             unreachable!("OpenGL memory imports return through the fast dispatcher")
+        }
+        PpcImportDispatcherTarget::Rave(_) => {
+            unreachable!("RAVE imports return through the fast dispatcher")
         }
         PpcImportDispatcherTarget::UnresolvedWeak | PpcImportDispatcherTarget::Unsupported => None,
     }
@@ -3350,7 +3351,6 @@ fn ppc_agl_function(
     memory: &mut PpcSectionMem,
     agl: &mut PpcAglState,
     gworlds: &[PpcGWorldRecord],
-    window_list: &SharedProcessWindowList,
 ) -> PpcImportAction {
     use classic_gl_agl::PpcAglFunction as F;
     // Signatures: Apple AGL/agl.h (Mac OS X 10.2.8 SDK), AGL 2.0.

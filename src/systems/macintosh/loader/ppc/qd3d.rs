@@ -4891,7 +4891,12 @@ pub fn ppc_q3_software_projected_line_midpoint(
 
 // --- QuickDraw 3D Acceleration (RAVE) Constants ---
 
+/// The accelerated drawing engine: the native rasteriser presented with
+/// RAVE's fast-path features.
 pub const PPC_QA_ENGINE: u32 = 0x4000_0100;
+/// Apple's software engine, which every RAVE installation registers; titles
+/// use it for off-screen memory contexts.
+pub const PPC_QA_SOFTWARE_ENGINE: u32 = 0x4000_0108;
 pub const PPC_QA_DRAW_CONTEXT: u32 = 0x4000_0110;
 pub const PPC_QA_DRAW_CONTEXT_PRIVATE: u32 = 0x4000_0190;
 pub const PPC_QA_DRAW_CONTEXT_METHOD_SLOT_COUNT: u32 = 31;
@@ -4906,8 +4911,12 @@ pub const PPC_QA_FAST_GOURAUD: u32 = 1 << 1;
 pub const PPC_QA_FAST_TEXTURE: u32 = 1 << 2;
 pub const PPC_QA_VENDOR_APPLE: u32 = 0;
 pub const PPC_QA_ENGINE_APPLE_SW: u32 = 0;
+/// Vendor identity of the accelerated engine ('SYSL').
+pub const PPC_QA_VENDOR_SYSTEMLESS: u32 = u32::from_be_bytes(*b"SYSL");
+pub const PPC_QA_ENGINE_SYSTEMLESS: u32 = 1;
 pub const PPC_QA_AVAILABLE_TEXTURE_MEMORY: u32 = 8 * 1024 * 1024;
-pub const PPC_QA_ENGINE_NAME: &[u8] = b"Apple Software Renderer";
+pub const PPC_QA_ENGINE_NAME: &[u8] = b"Systemless Accelerated Renderer";
+pub const PPC_QA_SOFTWARE_ENGINE_NAME: &[u8] = b"Apple Software Renderer";
 
 pub const PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES: u64 = 416_000;
 pub const PPC_Q3_HOT_IMPORT_EXTRA_CYCLES: u64 = 1_536;
@@ -16816,12 +16825,18 @@ pub(crate) fn ppc_qa_engine_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem
     let engine = cpu.gpr[3];
     let selector = cpu.gpr[4];
     let response = cpu.gpr[5];
-    if engine != PPC_QA_ENGINE || response == 0 {
+    let software = engine == PPC_QA_SOFTWARE_ENGINE;
+    if (engine != PPC_QA_ENGINE && !software) || response == 0 {
         return ppc_i16_result(PPC_PARAM_ERR);
     }
+    let name = if software {
+        PPC_QA_SOFTWARE_ENGINE_NAME
+    } else {
+        PPC_QA_ENGINE_NAME
+    };
 
     let response_size = if selector == 6 {
-        PPC_QA_ENGINE_NAME.len() as u32 + 1
+        name.len() as u32 + 1
     } else {
         4
     };
@@ -16829,16 +16844,39 @@ pub(crate) fn ppc_qa_engine_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem
         return ppc_i16_result(PPC_PARAM_ERR);
     }
 
+    // TQAGestaltSelector (RAVE.h). Pixel-type masks have bit n set for
+    // TQAImagePixelType n: draw contexts render to RGB16/ARGB16/RGB32/ARGB32,
+    // and textures and bitmaps also accept the indexed, 4444, 332 and
+    // intensity formats.
+    const DRAW_CONTEXT_PIXEL_TYPES: u32 = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+    const TEXTURE_PIXEL_TYPES: u32 = DRAW_CONTEXT_PIXEL_TYPES
+        | (1 << 5)
+        | (1 << 6)
+        | (1 << 9)
+        | (1 << 10)
+        | (1 << 11)
+        | (1 << 12)
+        | (1 << 13);
+    const QA_GESTALT_UNKNOWN: u32 = 6;
     let write_result = match selector {
         0 => memory.write_u32_be(response, ppc_qa_optional_features()),
-        1 => memory.write_u32_be(response, ppc_qa_fast_features()),
-        2 => memory.write_u32_be(response, PPC_QA_VENDOR_APPLE),
-        3 => memory.write_u32_be(response, PPC_QA_ENGINE_APPLE_SW),
+        1 => memory.write_u32_be(response, if software { 0 } else { ppc_qa_fast_features() }),
+        2 => memory.write_u32_be(
+            response,
+            if software { PPC_QA_VENDOR_APPLE } else { PPC_QA_VENDOR_SYSTEMLESS },
+        ),
+        3 => memory.write_u32_be(
+            response,
+            if software { PPC_QA_ENGINE_APPLE_SW } else { PPC_QA_ENGINE_SYSTEMLESS },
+        ),
         4 => memory.write_u32_be(response, 1),
-        5 => memory.write_u32_be(response, PPC_QA_ENGINE_NAME.len() as u32),
-        6 => ppc_write_c_string(memory, response, PPC_QA_ENGINE_NAME),
-        7 => memory.write_u32_be(response, PPC_QA_AVAILABLE_TEXTURE_MEMORY),
-        _ => memory.write_u32_be(response, 0),
+        5 => memory.write_u32_be(response, name.len() as u32),
+        6 => ppc_write_c_string(memory, response, name),
+        7 | 8 => memory.write_u32_be(response, PPC_QA_AVAILABLE_TEXTURE_MEMORY),
+        9 | 10 => memory.write_u32_be(response, DRAW_CONTEXT_PIXEL_TYPES),
+        11..=14 => memory.write_u32_be(response, TEXTURE_PIXEL_TYPES),
+        15 | 16 => memory.write_u32_be(response, 0),
+        _ => return QA_GESTALT_UNKNOWN,
     };
 
     if write_result.is_some() {
@@ -16849,11 +16887,12 @@ pub(crate) fn ppc_qa_engine_gestalt(cpu: &mut PpcCpu, memory: &mut PpcSectionMem
 }
 
 pub(crate) fn ppc_qa_optional_features() -> u32 {
-    PPC_QA_OPTIONAL_TEXTURE | PPC_QA_OPTIONAL_TEXTURE_COLOR | PPC_QA_OPTIONAL_PERSPECTIVE_Z
+    super::rave::ppc_rave_optional_features()
 }
 
 pub(crate) fn ppc_qa_fast_features() -> u32 {
-    PPC_QA_FAST_LINE | PPC_QA_FAST_GOURAUD | PPC_QA_FAST_TEXTURE
+    // kQAFast_Line, Gouraud, Texture, TextureHQ, Blend and FogDepth.
+    PPC_QA_FAST_LINE | PPC_QA_FAST_GOURAUD | PPC_QA_FAST_TEXTURE | (1 << 3) | (1 << 4) | (1 << 10)
 }
 
 fn ppc_write_c_string(memory: &mut PpcSectionMem, ptr: u32, bytes: &[u8]) -> Option<()> {
