@@ -727,6 +727,7 @@ pub enum PpcImportDispatcherTarget {
     LAddRow,
     LDelRow,
     LGetSelect,
+    LNextCell,
     LSetSelect,
     LSetCell,
     LGetCell,
@@ -4214,6 +4215,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LAddRow") => PpcImportDispatcherTarget::LAddRow,
         ("InterfaceLib", "LDelRow") => PpcImportDispatcherTarget::LDelRow,
         ("InterfaceLib", "LGetSelect") => PpcImportDispatcherTarget::LGetSelect,
+        ("InterfaceLib", "LNextCell") => PpcImportDispatcherTarget::LNextCell,
         ("InterfaceLib", "LSetSelect") => PpcImportDispatcherTarget::LSetSelect,
         ("InterfaceLib", "LSetCell") => PpcImportDispatcherTarget::LSetCell,
         ("InterfaceLib", "LGetCell") => PpcImportDispatcherTarget::LGetCell,
@@ -5330,6 +5332,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ZoomWindow" | "zoomwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
         }
+        ("InterfaceLib", "AEDuplicateDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DuplicateDesc,
+        ),
+        ("InterfaceLib", "AECoerceDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CoerceDesc,
+        ),
+        ("InterfaceLib", "AEGetNthDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetNthDesc,
+        ),
         ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::CountItems,
         ),
@@ -6006,6 +6017,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "ObscureCursor") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::ObscureCursor,
         ),
+        ("InterfaceLib", "GetComponentVersion") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetComponentVersion,
+        ),
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
         ),
@@ -6265,6 +6279,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieActive") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieActive,
         ),
+        ("QuickTimeLib", "GetMovieColorTable") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMovieColorTable,
+            )
+        }
         ("QuickTimeLib", "GetMovieTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
         ),

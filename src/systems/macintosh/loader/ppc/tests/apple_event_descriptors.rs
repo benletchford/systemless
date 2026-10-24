@@ -1881,3 +1881,136 @@ fn native_ppc_call_object_accessor_runs_seven_argument_68k_pascal_callback() {
     assert_eq!(native.memory.read_u32_be(token + 4), Some(0x12345678));
     assert!(native.guest_calls().is_empty());
 }
+
+#[test]
+fn native_ppc_ae_duplicate_coerce_and_get_nth_desc_copy_descriptors() {
+    let ae = |operation| PpcImportDispatcherTarget::AppleEventCompatibility(operation);
+    for (symbol, operation) in [
+        (
+            "AEDuplicateDesc",
+            PpcAppleEventCompatibilityOperation::DuplicateDesc,
+        ),
+        (
+            "AECoerceDesc",
+            PpcAppleEventCompatibilityOperation::CoerceDesc,
+        ),
+        (
+            "AEGetNthDesc",
+            PpcAppleEventCompatibilityOperation::GetNthDesc,
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            ae(operation)
+        );
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            ae(operation)
+        );
+    }
+    let pef = synthetic_pef_with_import(b"AECreateList");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let (list, source, copy, coerced, nth) = (
+        scratch,
+        scratch + 8,
+        scratch + 0x10,
+        scratch + 0x18,
+        scratch + 0x50,
+    );
+    let text = scratch + 0x40;
+    loaded.memory.write_bytes(text, b"cows").unwrap();
+
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[4] = text;
+    loaded.cpu.gpr[5] = 4;
+    loaded.cpu.gpr[6] = source;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = copy;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::DuplicateDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(copy),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    let copy_handle = loaded.memory.read_u32_be(copy + 4).unwrap();
+    assert_ne!(copy_handle, loaded.memory.read_u32_be(source + 4).unwrap());
+    let copy_data = loaded.memory.read_u32_be(copy_handle).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, copy_data, 4),
+        Some(b"cows".to_vec())
+    );
+
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"long");
+    loaded.cpu.gpr[5] = coerced;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u32_be(coerced), Some(0));
+
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[5] = coerced;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(coerced),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = list;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateList),
+    );
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = source;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = PPC_TYPE_WILDCARD;
+    loaded.cpu.gpr[6] = scratch + 0x30;
+    loaded.cpu.gpr[7] = nth;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetNthDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(nth),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetNthDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_DESC_NOT_FOUND));
+    assert_eq!(loaded.memory.read_u32_be(nth), Some(0));
+}

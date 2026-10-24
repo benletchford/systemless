@@ -2259,6 +2259,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LAddRow
         | PpcImportDispatcherTarget::LDelRow
         | PpcImportDispatcherTarget::LGetSelect
+        | PpcImportDispatcherTarget::LNextCell
         | PpcImportDispatcherTarget::LSetSelect
         | PpcImportDispatcherTarget::LSetCell
         | PpcImportDispatcherTarget::LGetCell

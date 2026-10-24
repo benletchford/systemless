@@ -4564,3 +4564,28 @@ fn movie_time_follows_set_movie_time_value() {
         Some(loaded.quicktime.movie_time_scale)
     );
 }
+
+#[test]
+fn movie_color_table_is_nil_and_component_version_rejects_instances() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetComponentVersion"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetComponentVersion
+        )
+    );
+    let pef = synthetic_pef_with_import(b"GetMovieColorTable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let out = PPC_STACK_TOP - 64;
+    loaded.memory.write_u32_be(out, 0xDEAD_BEEF).unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::GetMovieColorTable,
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = out;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0));
+}

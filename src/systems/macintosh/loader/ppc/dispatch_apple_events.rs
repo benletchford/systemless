@@ -1114,6 +1114,9 @@ pub enum PpcAppleEventCompatibilityOperation {
     PutParamPtr,
     PutDesc,
     Send,
+    DuplicateDesc,
+    CoerceDesc,
+    GetNthDesc,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1458,6 +1461,135 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                     }
                 }
                 PPC_ERR_AE_DESC_NOT_FOUND
+            }
+        }
+        PpcAppleEventCompatibilityOperation::DuplicateDesc
+        | PpcAppleEventCompatibilityOperation::CoerceDesc => {
+            // AEDuplicateDesc(const AEDesc *, AEDesc *result) and
+            // AECoerceDesc(const AEDesc *, DescType, AEDesc *result).
+            // Inside Macintosh: Interapplication Communication (1993), 5-28
+            // and 5-35. Only identity coercions are installed, so coercing to
+            // another type fails with errAECoercionFail.
+            let source = cpu.gpr[3];
+            let (to_type, result_ptr) =
+                if operation == PpcAppleEventCompatibilityOperation::CoerceDesc {
+                    (Some(cpu.gpr[4]), cpu.gpr[5])
+                } else {
+                    (None, cpu.gpr[4])
+                };
+            if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
+                PPC_PARAM_ERR
+            } else {
+                let value = ppc_ae_descriptor(memory, &apple_events.descriptors, source);
+                match value {
+                    None => {
+                        // A null descriptor duplicates to another null one.
+                        let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+                        if to_type.is_some() {
+                            PPC_ERR_AE_COERCION_FAIL
+                        } else {
+                            PPC_NO_ERR
+                        }
+                    }
+                    Some(value)
+                        if to_type.is_some_and(|to_type| {
+                            to_type != PPC_TYPE_WILDCARD && to_type != value.desc_type
+                        }) =>
+                    {
+                        let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+                        PPC_ERR_AE_COERCION_FAIL
+                    }
+                    Some(value) => {
+                        let result = ppc_create_process_owned_ae_desc(
+                            process_memory_manager,
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            Some(&apple_events.descriptors),
+                            result_ptr,
+                            value.desc_type,
+                            &value.data,
+                        );
+                        if result == PPC_NO_ERR {
+                            ppc_store_ae_descriptor_semantics(
+                                memory,
+                                &apple_events.descriptors,
+                                result_ptr,
+                                value,
+                            );
+                            apple_events.descriptors.with_mut(|state| {
+                                if let Some(event) = state.events.get(&source).cloned() {
+                                    state.events.insert(result_ptr, event);
+                                }
+                            });
+                        }
+                        result
+                    }
+                }
+            }
+        }
+        PpcAppleEventCompatibilityOperation::GetNthDesc => {
+            // AEGetNthDesc(const AEDescList *, long index, DescType desired,
+            // AEKeyword *keyword, AEDesc *result). Inside Macintosh:
+            // Interapplication Communication (1993), 5-33.
+            let index = cpu.gpr[4] as usize;
+            let result_ptr = cpu.gpr[7];
+            let value = (index != 0)
+                .then(|| {
+                    apple_events
+                        .descriptors
+                        .events
+                        .get(&cpu.gpr[3])
+                        .and_then(|event| event.items.get(index - 1).cloned())
+                        .or_else(|| {
+                            ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                                .and_then(|descriptor| descriptor.items.get(index - 1).cloned())
+                        })
+                })
+                .flatten();
+            if result_ptr != 0 {
+                let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+            }
+            match value {
+                None => PPC_ERR_AE_DESC_NOT_FOUND,
+                Some((_, value))
+                    if cpu.gpr[5] != PPC_TYPE_WILDCARD && cpu.gpr[5] != value.desc_type =>
+                {
+                    PPC_ERR_AE_COERCION_FAIL
+                }
+                Some(_)
+                    if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) =>
+                {
+                    PPC_PARAM_ERR
+                }
+                Some((keyword, value)) => {
+                    if cpu.gpr[6] != 0 {
+                        let _ = memory.write_u32_be(cpu.gpr[6], keyword);
+                    }
+                    let result = ppc_create_process_owned_ae_desc(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        Some(&apple_events.descriptors),
+                        result_ptr,
+                        value.desc_type,
+                        &value.data,
+                    );
+                    if result == PPC_NO_ERR {
+                        ppc_store_ae_descriptor_semantics(
+                            memory,
+                            &apple_events.descriptors,
+                            result_ptr,
+                            value,
+                        );
+                    }
+                    result
+                }
             }
         }
         PpcAppleEventCompatibilityOperation::Send => {
