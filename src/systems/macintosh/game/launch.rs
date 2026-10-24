@@ -3426,7 +3426,27 @@ fn executable_candidate_is_better(
         }
     }
 
-    candidate.selection_key(prefer_powerpc) > previous.selection_key(prefer_powerpc)
+    let mut candidate_key = candidate.selection_key(prefer_powerpc);
+    let mut previous_key = previous.selection_key(prefer_powerpc);
+    // A demo yields to its full version, not to an unrelated bundled helper
+    // such as a matchmaking client that shares no words with its name.
+    if candidate.is_demo != previous.is_demo
+        && !executable_families_share_a_word(candidate, previous)
+    {
+        candidate_key.6 = true;
+        previous_key.6 = true;
+    }
+    candidate_key > previous_key
+}
+
+fn executable_families_share_a_word(
+    left: &ExecutableCandidate,
+    right: &ExecutableCandidate,
+) -> bool {
+    let left = executable_family_name(&left.name);
+    let right = executable_family_name(&right.name);
+    left.split(' ')
+        .any(|word| !word.is_empty() && right.split(' ').any(|other| other == word))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -5211,6 +5231,50 @@ mod tests {
             assert_eq!(
                 selected.expect("expected an executable candidate").name,
                 "Game Folder/Game Demo"
+            );
+        }
+    }
+
+    #[test]
+    fn executable_selection_prefers_demo_game_over_bundled_helper_app() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let helper_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+
+        for helper_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                (
+                    "AvP Demo ƒ/Aliens vs Predator Demo",
+                    &game_rsrc,
+                    300_000usize,
+                    *b"AvPd",
+                ),
+                (
+                    "AvP Demo ƒ/GameRanger Folder/GameRanger",
+                    &helper_rsrc,
+                    200_000usize,
+                    *b"GRgr",
+                ),
+            ];
+            if helper_first {
+                candidates.reverse();
+            }
+            for (name, rsrc, data_len, creator) in candidates {
+                maybe_select_executable(
+                    &mut selected,
+                    name,
+                    &[0],
+                    rsrc,
+                    true,
+                    data_len,
+                    creator,
+                    1,
+                );
+            }
+
+            assert_eq!(
+                selected.expect("expected an executable candidate").name,
+                "AvP Demo ƒ/Aliens vs Predator Demo"
             );
         }
     }
