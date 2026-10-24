@@ -1311,6 +1311,7 @@ pub enum PpcImportDispatcherTarget {
     FileCompatibility(PpcFileCompatibilityOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     SoundSprocket(PpcSoundSprocketFunction),
+    DebugStr { c_string: bool },
     OpenTransport(PpcOpenTransportFunction),
     OtElapsed { milliseconds: bool },
     ToolboxCompat(PpcToolboxCompatOperation),
@@ -3216,11 +3217,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawGrowIcon" | "drawgrowicon") => {
             PpcImportDispatcherTarget::DrawGrowIcon
         }
+        ("InterfaceLib", "OpenCPicture") => PpcImportDispatcherTarget::MenuNoop,
         // debugstr is the lowercase C-string glue for DebugStr; with no
         // low-level debugger installed both spellings return to the caller.
-        ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr" | "debugstr") => {
-            PpcImportDispatcherTarget::MenuNoop
-        }
+        ("InterfaceLib", "DebugStr") => PpcImportDispatcherTarget::DebugStr { c_string: false },
+        ("InterfaceLib", "debugstr") => PpcImportDispatcherTarget::DebugStr { c_string: true },
         ("InterfaceLib", "LocalToGlobal") => PpcImportDispatcherTarget::LocalToGlobal,
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,

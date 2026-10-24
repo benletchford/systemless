@@ -2855,6 +2855,23 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::ToolboxCompat(operation) => Some(
             dispatch_toolbox_compat::ppc_dispatch_toolbox_compat(operation, cpu, memory),
         ),
+        PpcImportDispatcherTarget::DebugStr { c_string } => {
+            // No low-level debugger is installed, so the call returns; the
+            // message is the application's own assertion text, worth seeing.
+            if ppc_hle_trace_enabled() {
+                let message = if c_string {
+                    dispatch_stdc::ppc_std_c_string(memory, cpu.gpr[3], 255)
+                } else {
+                    ppc_read_pstring_bytes(memory, cpu.gpr[3]).unwrap_or_default()
+                };
+                eprintln!(
+                    "[PPC-TRACE] DebugStr lr=${:08X} {:?}",
+                    cpu.lr,
+                    decode_mac_roman(&message)
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
         ),
