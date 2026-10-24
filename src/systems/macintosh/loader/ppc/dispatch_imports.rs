@@ -2904,6 +2904,14 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
+        PpcImportDispatcherTarget::SoundSprocket(function) => {
+            Some(sound_sprocket::ppc_dispatch_sound_sprocket(
+                function,
+                cpu,
+                memory,
+                &mut sound.sound_sprocket,
+            ))
+        }
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => {
             let service_callbacks = matches!(
                 operation,

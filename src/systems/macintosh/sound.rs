@@ -350,6 +350,9 @@ pub struct SndChannel {
     /// ampCmd amplitude, 0 (silent) to 255 (full), applied on top of
     /// `volume`.
     amplitude: u8,
+    /// SoundSprocket localization gain as packed stereo values, applied on
+    /// top of `volume`; full volume unless a 3-D filter localizes the channel.
+    localization: u32,
     /// Current playback rate relative to the channel's base sample rate.
     rate_fixed: u32,
     /// Sample rate selected through Sound Manager channel information.
@@ -417,6 +420,7 @@ impl SndChannel {
             callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
             amplitude: FULL_AMPLITUDE,
+            localization: FULL_STEREO_VOLUME,
             rate_fixed: UNITY_RATE_FIXED,
             sample_rate_fixed: RATE_22KHZ_FIXED,
             pending_callback_cmds: Vec::new(),
@@ -653,10 +657,20 @@ impl SndChannel {
         self.amplitude = amplitude.clamp(0, i16::from(FULL_AMPLITUDE)) as u8;
     }
 
-    /// The packed stereo volume scaled by the ampCmd amplitude.
+    /// Set the SoundSprocket localization gain (packed stereo, 0x0100 full).
+    pub(crate) fn set_localization(&mut self, packed_gain: u32) {
+        self.localization = packed_gain;
+    }
+
+    /// The packed stereo volume scaled by the ampCmd amplitude and the
+    /// SoundSprocket localization gain.
     fn mix_volume(&self) -> u32 {
-        let scale = |volume: u32| volume * u32::from(self.amplitude) / u32::from(FULL_AMPLITUDE);
-        (scale(self.volume >> 16) << 16) | scale(self.volume & 0xFFFF)
+        let full = u32::from(FULL_VOLUME);
+        let scale = |volume: u32, gain: u32| {
+            volume * u32::from(self.amplitude) / u32::from(FULL_AMPLITUDE) * gain / full
+        };
+        (scale(self.volume >> 16, self.localization >> 16) << 16)
+            | scale(self.volume & 0xFFFF, self.localization & 0xFFFF)
     }
 
     pub fn set_rate(&mut self, rate_fixed: u32) {
