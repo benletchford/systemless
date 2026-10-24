@@ -3494,6 +3494,15 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib" | "DisplayLib", "DMUseScreenPrefs") => {
             PpcImportDispatcherTarget::ReturnNoErr
         }
+        // The display configuration never changes, so a registered
+        // notification procedure is accepted and never called.
+        (
+            "InterfaceLib" | "DisplayLib",
+            "DMRegisterNotifyProc"
+            | "DMRemoveNotifyProc"
+            | "DMRegisterExtendedNotifyProc"
+            | "DMRemoveExtendedNotifyProc",
+        ) => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "NewGWorld") => PpcImportDispatcherTarget::NewGWorld,
         ("InterfaceLib", "UpdateGWorld") => PpcImportDispatcherTarget::UpdateGWorld,
         ("InterfaceLib", "DisposeGWorld") => PpcImportDispatcherTarget::DisposeGWorld,
