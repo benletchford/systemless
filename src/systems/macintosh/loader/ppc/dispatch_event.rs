@@ -530,6 +530,14 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             ppc_write_microseconds(cpu, memory, tick_count);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::OtElapsed { milliseconds } => Some(PpcImportAction::Return(
+            super::dispatch_open_transport::ppc_ot_elapsed(
+                memory,
+                cpu.gpr[3],
+                crate::time_manager::evaluate_microseconds(tick_count),
+                *milliseconds,
+            ),
+        )),
         _ => None,
     }
 }
