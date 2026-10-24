@@ -2357,6 +2357,13 @@ impl PpcLoadedApp {
                         native_exception_stack.clear();
                         break ppc_native_exception_result(context, total_cycles);
                     }
+                    PpcRunResult::Unimplemented { pc, .. }
+                        if power_compat::ppc_emulate_power_instruction(
+                            &mut self.cpu,
+                            &mut self.memory,
+                            &mut self.power_mq,
+                            pc,
+                        ) => {}
                     PpcRunResult::CycleLimit { .. } => {
                         break ppc_run_result_with_cycles(step_result, total_cycles);
                     }

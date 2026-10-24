@@ -1063,6 +1063,7 @@ fn load_pef_application_with_optional_disk_fragment(
         clock_cycle_phase: 0,
         trap_default_gateways: HashMap::new(),
         native_exception_handler: 0,
+        power_mq: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),

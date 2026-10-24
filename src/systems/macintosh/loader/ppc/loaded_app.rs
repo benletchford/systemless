@@ -26,6 +26,8 @@ pub struct PpcLoadedApp {
     /// an application patch and must run through Mixed Mode.
     pub(crate) trap_default_gateways: HashMap<u16, u32>,
     pub native_exception_handler: u32,
+    /// The 601's MQ register, used by emulated POWER instructions.
+    pub power_mq: u32,
     pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,

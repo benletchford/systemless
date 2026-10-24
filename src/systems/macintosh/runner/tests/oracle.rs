@@ -31,6 +31,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         clock_cycle_phase: 0,
         trap_default_gateways: Default::default(),
         native_exception_handler: 0,
+        power_mq: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
