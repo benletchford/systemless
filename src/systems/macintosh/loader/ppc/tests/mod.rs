@@ -264,6 +264,7 @@ mod osl_callbacks;
 mod core_foundation;
 mod internet_config;
 mod open_transport;
+mod toolbox_compat;
 mod icon_services;
 pub(crate) use mixed_mode::*;
 mod quicktime;
