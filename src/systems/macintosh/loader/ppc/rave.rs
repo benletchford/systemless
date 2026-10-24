@@ -125,7 +125,6 @@ const PIXEL_I8: u32 = 12;
 const PIXEL_AI16_88: u32 = 13;
 
 const CONTEXT_NO_Z_BUFFER: u32 = 1 << 0;
-const CONTEXT_DOUBLE_BUFFER: u32 = 1 << 2;
 const TEXTURE_MIPMAP: u32 = 1 << 1;
 const TEXTURE_FLIP_ORIGIN: u32 = 1 << 6;
 
@@ -134,7 +133,7 @@ const TEXTURE_FLIP_ORIGIN: u32 = 1 << 6;
 const FIRST_RAVE_HANDLE: u32 = 0x6100_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PpcRaveFunction {
+pub enum PpcRaveFunction {
     DrawContextNew,
     DrawContextDelete,
     ColorTableNew,
