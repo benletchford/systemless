@@ -1310,6 +1310,10 @@ pub enum PpcImportDispatcherTarget {
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     OpenTransport(PpcOpenTransportFunction),
     OtElapsed { milliseconds: bool },
+    ToolboxCompat(PpcToolboxCompatOperation),
+    EraseRgn,
+    FSpRename,
+    PBDTGetAPPL,
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
     SlotCompatibility,
     StandardFileCompatibility(PpcStandardFileOperation),
@@ -3247,6 +3251,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PaintArc") => PpcImportDispatcherTarget::PaintArc,
         ("InterfaceLib" | "CarbonLib", "FrameRgn") => PpcImportDispatcherTarget::FrameRgn,
         ("InterfaceLib" | "CarbonLib", "PaintRgn") => PpcImportDispatcherTarget::PaintRgn,
+        ("InterfaceLib" | "CarbonLib", "EraseRgn") => PpcImportDispatcherTarget::EraseRgn,
         ("InterfaceLib" | "CarbonLib", "FillRgn") => PpcImportDispatcherTarget::FillRgn,
         ("InterfaceLib" | "CarbonLib", "FillCRgn") => PpcImportDispatcherTarget::FillCRgn,
         ("InterfaceLib" | "CarbonLib", "InvertRgn") => PpcImportDispatcherTarget::InvertRgn,
@@ -3583,6 +3588,25 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::IsAutoSlpControlDisabled
         }
         ("InterfaceLib", "OpenDriver") => PpcImportDispatcherTarget::OpenDriver,
+        ("InterfaceLib", "CloseDriver" | "KillIO" | "SerReset" | "SerSetBuf" | "SerGetBuf") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::UnopenedDriver)
+        }
+        // HMRemoveBalloon succeeds with no balloon shown; GZSaveHnd is nil
+        // outside a grow-zone procedure.
+        ("InterfaceLib" | "CarbonLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "GZSaveHnd") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "GetRegionBounds") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetRegionBounds)
+        }
+        ("InterfaceLib", "GetPortTextFont") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortTextFont)
+        }
+        ("InterfaceLib", "GetPortTextSize") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortTextSize)
+        }
+        ("InterfaceLib", "SetWindowContentColor") => PpcImportDispatcherTarget::ToolboxCompat(
+            PpcToolboxCompatOperation::SetWindowContentColor,
+        ),
         ("InterfaceLib", "Status") => PpcImportDispatcherTarget::Status,
         ("InterfaceLib", "Control") => PpcImportDispatcherTarget::Control,
         ("InterfaceLib", "PBControl")
@@ -3640,6 +3664,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetVInfo") => PpcImportDispatcherTarget::GetVInfo,
         ("InterfaceLib", "GetVRefNum") => PpcImportDispatcherTarget::GetVRefNum,
         ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
+        ("InterfaceLib", "PBDTGetAPPLSync" | "PBDTGetAPPL") => {
+            PpcImportDispatcherTarget::PBDTGetAPPL
+        }
         ("InterfaceLib", "PBDTGetCommentSync") => PpcImportDispatcherTarget::PBDTGetCommentSync,
         ("InterfaceLib", "PBGetFCBInfo")
         | ("InterfaceLib", "PBGetFCBInfoSync")
@@ -3736,6 +3763,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
         ("InterfaceLib", "HRename") => PpcImportDispatcherTarget::HRename,
+        ("InterfaceLib", "FSpRename") => PpcImportDispatcherTarget::FSpRename,
         ("InterfaceLib", "PBHRenameSync") => PpcImportDispatcherTarget::PBHRenameSync,
         ("InterfaceLib", "PBRenameSync") => PpcImportDispatcherTarget::PBRenameSync,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
@@ -4194,7 +4222,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetTEScrpLength" | "TEGetScrapLength") => {
             PpcImportDispatcherTarget::TEScrapLength { set: false }
         }
-        ("InterfaceLib", "LMSetTEScrpLength") => {
+        ("InterfaceLib", "LMSetTEScrpLength" | "TESetScrapLength") => {
             PpcImportDispatcherTarget::TEScrapLength { set: true }
         }
         (

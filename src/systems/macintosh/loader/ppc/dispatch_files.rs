@@ -169,6 +169,28 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::FSpRename => {
+            // Files.h: FSpRename(const FSSpec *, ConstStr255Param newName) is
+            // HRename with the spec's vRefNum (+0), parID (+2), and name (+6).
+            let spec = cpu.gpr[3];
+            let mut call = cpu.clone();
+            call.gpr[3] = memory.read_u16_be(spec).unwrap_or(0) as i16 as i32 as u32;
+            call.gpr[4] = memory.read_u32_be(spec + 2).unwrap_or(0);
+            call.gpr[5] = spec + 6;
+            call.gpr[6] = cpu.gpr[4];
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_h_rename(
+                &call,
+                memory,
+                vfs_directories,
+                vfs_files,
+                deleted_vfs_file_paths,
+                files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                default_dir_id,
+            ))))
+        }
         PpcImportDispatcherTarget::PBHRenameSync | PpcImportDispatcherTarget::PBRenameSync => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_rename_sync(
                 matches!(binding.dispatcher_target, PpcImportDispatcherTarget::PBHRenameSync),
@@ -591,6 +613,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
         ))),
+        PpcImportDispatcherTarget::PBDTGetAPPL => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_dt_get_appl(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
+        ))),
         PpcImportDispatcherTarget::PBDTGetCommentSync => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_pb_dt_get_comment(cpu, memory, vfs_volumes)),
         )),
@@ -842,6 +867,54 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         }
         _ => None,
     }
+}
+
+/// More Macintosh Toolbox (1993), p. 9-28: afpItemNotFound, no application
+/// with the requested creator is in the desktop database.
+const PPC_AFP_ITEM_NOT_FOUND: i16 = -5018;
+
+/// PBDTGetAPPL: find the ioIndex-th application whose creator matches
+/// ioFileCreator (+52), returning its name through ioNamePtr (+18) and its
+/// parent directory in ioAPPLParID (+100). An ioIndex of 0 asks for the
+/// most suitable copy, which is the first.
+fn ppc_pb_dt_get_appl(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 104) {
+        return PPC_PARAM_ERR;
+    }
+    let name_ptr = memory.read_u32_be(pb + 18).unwrap_or(0);
+    let index = memory.read_u16_be(pb + 26).unwrap_or(0) as i16;
+    let creator = memory.read_u32_be(pb + 52).unwrap_or(0);
+    let appl = u32::from_be_bytes(*b"APPL");
+    let mut paths: Vec<&str> = vfs_files
+        .iter()
+        .filter(|file| file.file_type == appl && file.creator == creator)
+        .map(|file| file.path.as_str())
+        .chain(
+            vfs_resource_files
+                .iter()
+                .filter(|file| file.file_type == appl && file.creator == creator)
+                .map(|file| file.path.as_str()),
+        )
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let Some(path) = paths.get(usize::from(index.max(1) as u16) - 1) else {
+        return ppc_complete_pb(memory, pb, PPC_AFP_ITEM_NOT_FOUND);
+    };
+    let name = encode_mac_roman_lossy(path.rsplit('/').next().unwrap_or(path));
+    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &name) {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    let _ = memory.write_u32_be(pb + 28, 0);
+    let _ = memory.write_u32_be(pb + 100, ppc_parent_dir_id_for_path(vfs_directories, path));
+    ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
 fn ppc_pb_dt_get_path(

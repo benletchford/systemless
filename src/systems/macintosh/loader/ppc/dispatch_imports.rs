@@ -1718,6 +1718,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FSpCreate
         | PpcImportDispatcherTarget::HCreate
         | PpcImportDispatcherTarget::HRename
+        | PpcImportDispatcherTarget::FSpRename
         | PpcImportDispatcherTarget::PBHRenameSync
         | PpcImportDispatcherTarget::PBRenameSync
         | PpcImportDispatcherTarget::Create
@@ -1753,6 +1754,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetVInfo
         | PpcImportDispatcherTarget::GetVRefNum
         | PpcImportDispatcherTarget::PBDTGetPath
+        | PpcImportDispatcherTarget::PBDTGetAPPL
         | PpcImportDispatcherTarget::PBDTGetCommentSync
         | PpcImportDispatcherTarget::PBGetFInfo
         | PpcImportDispatcherTarget::PBHGetFInfo
@@ -1947,6 +1949,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::FrameRgn
         | PpcImportDispatcherTarget::PaintRgn
+        | PpcImportDispatcherTarget::EraseRgn
         | PpcImportDispatcherTarget::FillRgn
         | PpcImportDispatcherTarget::FillCRgn
         | PpcImportDispatcherTarget::InvertRgn => {
@@ -2847,6 +2850,9 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::OpenTransport(function) => Some(
             dispatch_open_transport::ppc_dispatch_open_transport(function, cpu, memory),
+        ),
+        PpcImportDispatcherTarget::ToolboxCompat(operation) => Some(
+            dispatch_toolbox_compat::ppc_dispatch_toolbox_compat(operation, cpu, memory),
         ),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),

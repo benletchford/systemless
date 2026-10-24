@@ -1107,6 +1107,18 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::EraseRgn => {
+            // EraseRgn fills the region with the port's background colour.
+            let _ = ppc_paint_region(
+                memory,
+                gworlds,
+                current_gworld,
+                cpu.gpr[3],
+                *quickdraw_back_color,
+                None,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PaintRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);

@@ -111,6 +111,7 @@ use dispatch_apple_events::*;
 mod dispatch_appearance;
 mod dispatch_appletalk;
 mod dispatch_open_transport;
+mod dispatch_toolbox_compat;
 mod dispatch_bit_transfers;
 mod dispatch_collection;
 mod dispatch_drag;
@@ -331,6 +332,7 @@ pub use dispatch_dialog::PpcDialogCompatibilityOperation;
 pub(super) use dispatch_appletalk::ppc_dispatch_appletalk_compatibility;
 pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
 pub use dispatch_open_transport::PpcOpenTransportFunction;
+pub use dispatch_toolbox_compat::PpcToolboxCompatOperation;
 #[cfg(test)]
 pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 pub use dispatch_printing::PpcPrintingCompatibilityOperation;
