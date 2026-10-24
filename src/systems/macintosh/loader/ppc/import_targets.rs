@@ -6268,6 +6268,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeBase,
         ),
+        ("QuickTimeLib", "GetMovieTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieTime,
+        ),
+        ("QuickTimeLib", "SetMovieTimeValue") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieTimeValue,
+        ),
         ("QuickTimeLib", "GetMovieTimeScale") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeScale,
         ),
