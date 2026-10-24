@@ -2935,6 +2935,44 @@ fn load_selected_executable(
     }
 }
 
+/// The runtime implements OpenGL natively in place of Apple's OpenGL
+/// extensions. Titles locate those files in the Extensions folder and read
+/// their 'vers' resource before using OpenGL, so each is present with the
+/// implemented OpenGL version unless the archive supplies its own copy.
+fn install_native_opengl_extensions(runner: &mut FixtureRunner) {
+    // 'vers' (Macintosh Toolbox Essentials (1992), pp. 7-69--7-70): BCD
+    // version 1.2.0 final, region 0, then the short and long version strings.
+    let mut vers = vec![0x01, 0x20, 0x80, 0x00, 0x00, 0x00];
+    for text in ["1.2", "1.2, Systemless OpenGL"] {
+        vers.push(text.len() as u8);
+        vers.extend_from_slice(text.as_bytes());
+    }
+    let Some(fork) = crate::managers::resource::serialize_resource_fork(&[
+        crate::managers::resource::ResourceForkEntry {
+            res_type: *b"vers",
+            id: 1,
+            name: Vec::new(),
+            data: vers,
+            attrs: 0,
+        },
+    ]) else {
+        return;
+    };
+    let dispatcher = runner.dispatcher_mut();
+    for name in ["OpenGLEngine", "OpenGLLibrary", "OpenGLUtility", "OpenGLMemory"] {
+        let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&format!(
+            "System Folder/Extensions/{name}"
+        ));
+        if dispatcher.vfs.get(&path).is_some() || dispatcher.vfs_rsrc.get(&path).is_some() {
+            continue;
+        }
+        dispatcher.vfs.insert(path.clone(), Vec::new());
+        dispatcher.vfs_rsrc.insert(path.clone(), fork.clone());
+        // CFM shared libraries have file type 'shlb'.
+        dispatcher.set_vfs_entry_finfo(&path, u32::from_be_bytes(*b"shlb"), 0x3F3F_3F3F, 0);
+    }
+}
+
 fn load_powerpc_executable(
     runner: &mut FixtureRunner,
     executable: &ExecutableCandidate,
@@ -2949,6 +2987,7 @@ fn load_powerpc_executable(
         .get(&executable.vfs_key)
         .cloned()
         .ok_or_else(|| format!("Selected executable data fork missing: {}", executable.name))?;
+    install_native_opengl_extensions(runner);
     let ppc_vfs = ppc_diagnostic_vfs(runner, Some(&executable.name));
     let pef = pef_fragment_data(&data, fragment_offset, fragment_length).ok_or_else(|| {
         format!(
@@ -4366,6 +4405,30 @@ mod tests {
         assert!(runner
             .dispatcher()
             .vfs_path_is_read_only("Disk 2/Color Playroom/MainPlayRoom.rsrc"));
+    }
+
+    #[test]
+    fn powerpc_launch_presents_versioned_opengl_extensions() {
+        let mut runner = new_runner();
+        let bundled = "System Folder/Extensions/OpenGLMemory";
+        runner
+            .dispatcher_mut()
+            .vfs_rsrc
+            .insert(bundled.to_string(), vec![7]);
+        install_native_opengl_extensions(&mut runner);
+
+        let engine = runner
+            .vfs_file_snapshot("System Folder/Extensions/OpenGLEngine")
+            .expect("OpenGLEngine is present");
+        assert_eq!(engine.file_type, u32::from_be_bytes(*b"shlb"));
+        let fork = ResourceFork::parse(&engine.resource_fork).expect("valid resource fork");
+        let vers = fork.get(*b"vers", 1).expect("vers 1");
+        assert_eq!(&vers.data[..4], &[0x01, 0x20, 0x80, 0x00]);
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get(bundled),
+            Some(&vec![7]),
+            "an archive's own copy is kept"
+        );
     }
 
     #[test]
