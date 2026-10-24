@@ -314,7 +314,7 @@ pub(super) fn dispatch_quicktime_import(
     }
 }
 
-fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
+pub(super) fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
     let duration = if quicktime.movie_file_duration == 0 {
         600
     } else {

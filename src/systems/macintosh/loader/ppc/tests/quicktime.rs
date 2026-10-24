@@ -4521,3 +4521,46 @@ fn quicktime_callback_type_returns_signed_short_flags_and_preserves_time_base() 
         }
     }
 }
+
+#[test]
+fn movie_time_follows_set_movie_time_value() {
+    let pef = synthetic_pef_with_import(b"SetMovieTimeValue");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.quicktime.movie_file_duration = 600;
+    loaded.quicktime.movie_tasks_until_done = 4;
+    assert_eq!(
+        dispatcher_target_for_import("QuickTimeLib", "SetMovieTimeValue"),
+        PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieTimeValue
+        )
+    );
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::SetMovieTimeValue,
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 300;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.quicktime.movie_task_count, 2);
+    assert!(!loaded.quicktime.movie_at_beginning);
+
+    let record = PPC_STACK_TOP - 64;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::GetMovieTime,
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = record;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 300);
+    assert_eq!(loaded.memory.read_u32_be(record + 4), Some(300));
+    assert_eq!(
+        loaded.memory.read_u32_be(record + 8),
+        Some(loaded.quicktime.movie_time_scale)
+    );
+}

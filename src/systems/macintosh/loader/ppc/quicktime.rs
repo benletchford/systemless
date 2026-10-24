@@ -40,6 +40,8 @@ pub fn ppc_main_screen_height() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
+    GetMovieTime,
+    SetMovieTimeValue,
     NewCallBack,
     DisposeCallBack,
     CancelCallBack,
@@ -430,6 +432,51 @@ pub(super) fn dispatch_quicktime_compatibility(
             } else {
                 0
             })
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieTime => {
+            // Inside Macintosh: QuickTime (1993), p. 2-169: GetMovieTime(Movie,
+            // TimeRecord *) returns the current time in the movie's time scale
+            // and, when the record is supplied, fills value, scale, and base.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                return PpcImportAction::Return(0);
+            }
+            let time = super::dispatch_quicktime::quicktime_callback_time(quicktime).max(0) as u64;
+            let record = cpu.gpr[4];
+            if record != 0 && ppc_memory_can_write_bytes(memory, record, 16) {
+                let _ = memory.write_u64_be(record, time);
+                let _ = memory.write_u32_be(record + 8, quicktime.movie_time_scale);
+                let _ = memory.write_u32_be(record + 12, PPC_QT_TIME_BASE);
+            }
+            let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::Return(time.min(u64::from(u32::MAX)) as u32)
+        }
+        PpcQuickTimeCompatibilityOperation::SetMovieTimeValue => {
+            // Inside Macintosh: QuickTime (1993), p. 2-172: move the movie to
+            // a time in its own time scale, clamped to the movie's extent.
+            if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
+                return PpcImportAction::ReturnPreserve;
+            }
+            let duration = if quicktime.movie_file_duration == 0 {
+                600
+            } else {
+                quicktime.movie_file_duration
+            };
+            let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
+            let time = ((cpu.gpr[4] as i32).max(0) as u64).min(duration);
+            let before = super::dispatch_quicktime::quicktime_callback_time(quicktime);
+            quicktime.movie_task_count = (time.saturating_mul(tasks) / duration.max(1)) as u32;
+            quicktime.movie_at_beginning = time == 0;
+            ppc_qt_reset_movie_video_decode_cache(quicktime);
+            ppc_qt_stop_movie_audio(sound);
+            if before != super::dispatch_quicktime::quicktime_callback_time(quicktime) {
+                quicktime
+                    .callbacks
+                    .mark_event(PPC_QT_TIME_BASE, callbacks::Event::Jump);
+            }
+            let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::ReturnPreserve
         }
         PpcQuickTimeCompatibilityOperation::GetMovieTimeScale => {
             // Inside Macintosh: QuickTime (1993), p. 2-183.
