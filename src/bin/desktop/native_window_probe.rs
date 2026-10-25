@@ -636,7 +636,23 @@ impl Probe {
                 }
                 if self.wayland {
                     // Clients cannot move focus or warp the pointer on
-                    // Wayland; finish with the captured-release check.
+                    // Wayland; finish with the captured-release check from a
+                    // pointer position delivered through the input adapter.
+                    if self.expected_guest.is_none() {
+                        let Some(rect) = self
+                            .app
+                            .wgpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.workspace.as_ref())
+                            .and_then(|ui| ui.guest_rect)
+                        else {
+                            return;
+                        };
+                        let point = egui_probe_point(rect, window.scale_factor());
+                        self.move_pointer(event_loop, &window, point);
+                        self.expected_guest = Some(self.app.host_mouse_to_mac(point.0, point.1));
+                        return;
+                    }
                     if !self.workspace_hidden_release(event_loop, &window) {
                         return;
                     }
