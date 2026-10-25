@@ -153,6 +153,12 @@ pub struct PpcAglContext {
     pub enables: std::collections::BTreeSet<u32>,
     /// aglSetInteger values, up to four integers per option.
     pub integers: std::collections::BTreeMap<u32, [i32; 4]>,
+    /// The handle of the first context in this context's share group.
+    pub share_group: u32,
+    /// Whether this context currently holds the group's shared objects. Only
+    /// one context is current at a time, so the objects move to whichever
+    /// member becomes current.
+    pub holds_shared_objects: bool,
 }
 
 impl Default for PpcAglState {
@@ -226,10 +232,16 @@ impl PpcAglState {
     }
 
     pub fn create_context(&mut self, format: u32, share: u32) -> u32 {
-        // Shared display lists and textures need shared GL object state.
-        if share != 0 {
-            return 0;
-        }
+        // A share context joins its texture objects and display lists to the
+        // new context's (AGL/agl.h aglCreateContext).
+        let share_group = if share == 0 {
+            None
+        } else {
+            match self.context(share) {
+                Some(context) => Some(context.share_group),
+                None => return 0,
+            }
+        };
         let Some(format) = self
             .pixel_format(format)
             .map(|format| format.request.clone())
@@ -252,8 +264,33 @@ impl PpcAglState {
             gl,
             enables: [220].into_iter().collect(), // AGL_RASTERIZATION
             integers: Default::default(),
+            share_group: share_group.unwrap_or(handle),
+            holds_shared_objects: share_group.is_none(),
         });
         handle
+    }
+
+    /// Move a share group's objects into `handle`, which is about to be used.
+    fn gather_shared_objects(&mut self, handle: u32) {
+        let Some(group) = self.context(handle).map(|context| context.share_group) else {
+            return;
+        };
+        let Some(holder) = self
+            .contexts
+            .iter()
+            .position(|context| context.share_group == group && context.holds_shared_objects)
+        else {
+            return;
+        };
+        if self.contexts[holder].handle == handle {
+            return;
+        }
+        let objects = self.contexts[holder].gl.take_shared_objects();
+        self.contexts[holder].holds_shared_objects = false;
+        if let Some(context) = self.context_mut(handle) {
+            context.gl.put_shared_objects(objects);
+            context.holds_shared_objects = true;
+        }
     }
 
     pub fn context(&self, handle: u32) -> Option<&PpcAglContext> {
@@ -276,9 +313,20 @@ impl PpcAglState {
         else {
             return false;
         };
-        self.contexts.swap_remove(index);
+        let mut removed = self.contexts.swap_remove(index);
         if self.current_context == handle {
             self.current_context = 0;
+        }
+        // The group's objects outlive any one member.
+        if removed.holds_shared_objects {
+            if let Some(heir) = self
+                .contexts
+                .iter_mut()
+                .find(|context| context.share_group == removed.share_group)
+            {
+                heir.gl.put_shared_objects(removed.gl.take_shared_objects());
+                heir.holds_shared_objects = true;
+            }
         }
         true
     }
@@ -286,6 +334,9 @@ impl PpcAglState {
     pub fn set_current_context(&mut self, handle: u32) -> bool {
         if handle != 0 && self.context(handle).is_none() {
             return false;
+        }
+        if handle != 0 {
+            self.gather_shared_objects(handle);
         }
         self.current_context = handle;
         true
@@ -781,5 +832,35 @@ mod tests {
         assert!(agl.swap_buffers(context, &mut memory, surface));
         assert_eq!(memory.read_u32_be(0x1000), Some(0x00FF_0000));
         assert_eq!(memory.read_u32_be(0x1004), Some(0x00FF_0000));
+    }
+
+    #[test]
+    fn shared_contexts_hand_texture_objects_to_the_current_member() {
+        let mut agl = PpcAglState::default();
+        let format = agl.choose_pixel_format(PpcAglPixelFormatRequest {
+            rgba: true,
+            double_buffered: true,
+            ..Default::default()
+        });
+        let first = agl.create_context(format, 0);
+        assert_ne!(first, 0);
+        assert!(agl.set_current_context(first));
+        agl.context_mut(first)
+            .unwrap()
+            .gl
+            .state
+            .textures
+            .insert(7, Default::default());
+
+        let second = agl.create_context(format, first);
+        assert_ne!(second, 0);
+        assert_eq!(agl.create_context(format, 0xDEAD_0000), 0);
+        assert!(agl.set_current_context(second));
+        assert!(agl.context(second).unwrap().gl.state.textures.contains_key(&7));
+        assert!(agl.context(first).unwrap().gl.state.textures.is_empty());
+
+        // The objects outlive the context holding them.
+        assert!(agl.destroy_context(second));
+        assert!(agl.context(first).unwrap().gl.state.textures.contains_key(&7));
     }
 }

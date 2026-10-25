@@ -179,7 +179,33 @@ pub enum GlResult {
     Value(u32),
 }
 
+/// The objects an AGL context shares with the other members of its share
+/// group: texture objects and their name counter, and display lists
+/// (AGL/agl.h aglCreateContext; OpenGL 1.2.1, Appendix C.3).
+#[derive(Debug, Default)]
+pub struct GlSharedObjects {
+    textures: HashMap<u32, texture::Texture>,
+    next_texture_name: u32,
+    lists: HashMap<u32, Rc<Vec<GlCall>>>,
+}
+
 impl GlContext {
+    /// Remove the shared objects so another context in the group can hold
+    /// them while it is current.
+    pub fn take_shared_objects(&mut self) -> GlSharedObjects {
+        GlSharedObjects {
+            textures: std::mem::take(&mut self.state.textures),
+            next_texture_name: std::mem::replace(&mut self.state.next_texture_name, 1),
+            lists: std::mem::take(&mut self.lists),
+        }
+    }
+
+    pub fn put_shared_objects(&mut self, objects: GlSharedObjects) {
+        self.state.textures = objects.textures;
+        self.state.next_texture_name = objects.next_texture_name;
+        self.lists = objects.lists;
+    }
+
     pub fn new(double_buffered: bool) -> Self {
         let mut state = ContextState::default();
         let buffer = if double_buffered { BACK } else { FRONT };
