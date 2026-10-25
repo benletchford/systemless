@@ -1329,6 +1329,7 @@ pub enum PpcImportDispatcherTarget {
     DisposeUserItemUPP,
     NewControlActionUPP,
     NewTEClickLoopUPP,
+    NewNavEventUPP,
     DisposeControlActionUPP,
     NewControlKeyFilterUPP,
     DisposeControlKeyFilterUPP,
@@ -1375,6 +1376,12 @@ pub enum PpcImportDispatcherTarget {
     WindowContentColor {
         set: bool,
     },
+    CarbonPrinting(PpcCarbonPrintingOperation),
+    NavGetDefaultDialogOptions,
+    GetCurrentScrap,
+    GetScrapFlavorSize,
+    GetScrapFlavorData,
+    PutScrapFlavor,
     SlotCompatibility,
     StandardFileCompatibility(PpcStandardFileOperation),
     SoundInputCompatibility(PpcSoundInputCompatibilityOperation),
@@ -1470,6 +1477,31 @@ fn ppc_open_transport_target(symbol_name: &str) -> PpcImportDispatcherTarget {
     }
 }
 
+/// Carbon Printing Manager entry points, which only CarbonLib exports.
+const PPC_CARBON_PRINTING_SYMBOLS: &[&str] = &[
+    "PMBegin",
+    "PMEnd",
+    "PMNewPageFormat",
+    "PMNewPrintSettings",
+    "PMDefaultPageFormat",
+    "PMDefaultPrintSettings",
+    "PMValidatePageFormat",
+    "PMValidatePrintSettings",
+    "PMDisposePageFormat",
+    "PMDisposePrintSettings",
+    "PMFlattenPageFormat",
+    "PMFlattenPrintSettings",
+    "PMUnflattenPageFormat",
+    "PMUnflattenPrintSettings",
+    "PMGetAdjustedPageRect",
+    "PMPageSetupDialog",
+    "PMPrintDialog",
+    "PMBeginDocument",
+    "PMEndDocument",
+    "PMBeginPage",
+    "PMEndPage",
+];
+
 pub(crate) fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
@@ -1510,6 +1542,8 @@ pub(crate) fn dispatcher_target_for_import(
             | "QDFlushPortBuffer"
             | "qdflushportbuffer",
         ) => "CarbonLib",
+        // The Carbon Printing Manager is a CarbonLib-only API.
+        ("CarbonLib", symbol) if PPC_CARBON_PRINTING_SYMBOLS.contains(&symbol) => "CarbonLib",
         // CarbonLib re-exports the Open Transport client entry points.
         ("CarbonLib", symbol) if ppc_is_open_transport_symbol(symbol) => "OTClientLib",
         ("CarbonLib", _) => "InterfaceLib",
@@ -3810,7 +3844,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         // Font rendering is the same either way.
         ("InterfaceLib", "SetOutlinePreferred") => PpcImportDispatcherTarget::ReturnNoErr,
-        ("InterfaceLib", "DisposeNavEventUPP") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib" | "NavigationLib", "DisposeNavEventUPP") => {
+            PpcImportDispatcherTarget::DisposeRoutineDescriptor
+        }
         // There is a single display, so it is already the main display.
         ("InterfaceLib" | "DisplayLib", "DMSetMainDisplay") => {
             PpcImportDispatcherTarget::ReturnNoErr
@@ -3892,6 +3928,37 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "ZeroScrap" | "ClearCurrentScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
         ("InterfaceLib", "UnloadScrap") => PpcImportDispatcherTarget::UnloadScrap,
+        ("InterfaceLib", "GetCurrentScrap") => PpcImportDispatcherTarget::GetCurrentScrap,
+        ("InterfaceLib", "GetScrapFlavorSize") => PpcImportDispatcherTarget::GetScrapFlavorSize,
+        ("InterfaceLib", "GetScrapFlavorData") => PpcImportDispatcherTarget::GetScrapFlavorData,
+        ("InterfaceLib", "PutScrapFlavor") => PpcImportDispatcherTarget::PutScrapFlavor,
+        // Navigation Services. CarbonLib links Navigation in, so NavLoad and
+        // NavUnload have nothing to load or release.
+        ("InterfaceLib" | "NavigationLib", "NavLoad" | "NavUnload") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        ("InterfaceLib" | "NavigationLib", "NavGetDefaultDialogOptions") => {
+            PpcImportDispatcherTarget::NavGetDefaultDialogOptions
+        }
+        ("InterfaceLib" | "NavigationLib", "NavPutFile") => {
+            PpcImportDispatcherTarget::StandardFileCompatibility(
+                PpcStandardFileOperation::NavPutFile,
+            )
+        }
+        // NavCompleteSave translates the saved file when the reply asks for
+        // translation. NavPutFile never requests translation, so there is
+        // nothing to complete.
+        ("InterfaceLib" | "NavigationLib", "NavCompleteSave") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        ("InterfaceLib" | "NavigationLib", "NavDisposeReply") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::NavDisposeReply,
+            )
+        }
+        ("InterfaceLib" | "NavigationLib", "NewNavEventUPP") => {
+            PpcImportDispatcherTarget::NewNavEventUPP
+        }
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
         ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
@@ -6511,6 +6578,70 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "StandardNBP") => PpcImportDispatcherTarget::AppleTalkCompatibility(
             PpcAppleTalkCompatibilityOperation::StandardNbp,
         ),
+        // Carbon Printing Manager (PMApplication.h), a CarbonLib export.
+        ("CarbonLib", "PMBegin") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::Begin)
+        }
+        ("CarbonLib", "PMEnd") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::End)
+        }
+        ("CarbonLib", "PMNewPageFormat") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::NewPageFormat)
+        }
+        ("CarbonLib", "PMNewPrintSettings") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::NewPrintSettings)
+        }
+        ("CarbonLib", "PMDefaultPageFormat") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::DefaultPageFormat)
+        }
+        ("CarbonLib", "PMDefaultPrintSettings") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::DefaultPrintSettings,
+        ),
+        ("CarbonLib", "PMValidatePageFormat") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::ValidatePageFormat,
+        ),
+        ("CarbonLib", "PMValidatePrintSettings") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::ValidatePrintSettings,
+        ),
+        ("CarbonLib", "PMDisposePageFormat") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::DisposePageFormat)
+        }
+        ("CarbonLib", "PMDisposePrintSettings") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::DisposePrintSettings,
+        ),
+        ("CarbonLib", "PMFlattenPageFormat") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::FlattenPageFormat)
+        }
+        ("CarbonLib", "PMFlattenPrintSettings") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::FlattenPrintSettings,
+        ),
+        ("CarbonLib", "PMUnflattenPageFormat") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::UnflattenPageFormat,
+        ),
+        ("CarbonLib", "PMUnflattenPrintSettings") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::UnflattenPrintSettings,
+        ),
+        ("CarbonLib", "PMGetAdjustedPageRect") => PpcImportDispatcherTarget::CarbonPrinting(
+            PpcCarbonPrintingOperation::GetAdjustedPageRect,
+        ),
+        ("CarbonLib", "PMPageSetupDialog") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::PageSetupDialog)
+        }
+        ("CarbonLib", "PMPrintDialog") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::PrintDialog)
+        }
+        ("CarbonLib", "PMBeginDocument") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::BeginDocument)
+        }
+        ("CarbonLib", "PMEndDocument") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::EndDocument)
+        }
+        ("CarbonLib", "PMBeginPage") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::BeginPage)
+        }
+        ("CarbonLib", "PMEndPage") => {
+            PpcImportDispatcherTarget::CarbonPrinting(PpcCarbonPrintingOperation::EndPage)
+        }
         ("InterfaceLib", "PrClose") => PpcImportDispatcherTarget::PrintingCompatibility(
             PpcPrintingCompatibilityOperation::PrClose,
         ),

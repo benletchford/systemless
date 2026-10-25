@@ -310,6 +310,20 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewNavEventUPP => {
+            // Navigation.h uppNavEventProcInfo: C stack-based, no result,
+            // NavEventCallbackMessage, NavCBRecPtr and void * parameters.
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                0x0000_0FC1,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewTEClickLoopUPP => {
             // TextEdit.h uppTEClickLoopProcInfo: register-based, Boolean in
             // D0, TERec pointer in A3.

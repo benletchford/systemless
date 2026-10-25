@@ -167,8 +167,101 @@ pub(super) fn dispatch_scrap_import(
             };
             Some(PpcImportAction::Return(result))
         }
+        PpcImportDispatcherTarget::GetCurrentScrap => {
+            // GetCurrentScrap(ScrapRef *) returns a reference to the current
+            // scrap. ClearCurrentScrap replaces the scrap, so the reference
+            // encodes the scrap count that ZeroScrap advances.
+            if cpu.gpr[3] == 0 {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let reference = ppc_current_scrap_ref(scrap);
+            let result = match memory.write_u32_be(cpu.gpr[3], reference) {
+                Some(()) => PPC_NO_ERR,
+                None => PPC_PARAM_ERR,
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::GetScrapFlavorSize
+        | PpcImportDispatcherTarget::GetScrapFlavorData => {
+            // GetScrapFlavorSize(scrap, flavorType, Size *byteCount) and
+            // GetScrapFlavorData(scrap, flavorType, Size *byteCount,
+            // void *destination). The data call copies at most *byteCount
+            // bytes and stores the full available byte count (Scrap.h).
+            let result = if cpu.gpr[3] != ppc_current_scrap_ref(scrap) {
+                PPC_BAD_SCRAP_REF_ERR
+            } else if let Some(flavor) = scrap.desktop.flavor(cpu.gpr[4].to_be_bytes()) {
+                let size_ptr = cpu.gpr[5];
+                let length = flavor.data.len() as u32;
+                if binding.dispatcher_target == PpcImportDispatcherTarget::GetScrapFlavorSize {
+                    match memory.write_u32_be(size_ptr, length) {
+                        Some(()) => PPC_NO_ERR,
+                        None => PPC_PARAM_ERR,
+                    }
+                } else {
+                    let capacity = memory.read_u32_be(size_ptr).map(|size| size as i32);
+                    match capacity {
+                        Some(capacity) if capacity >= 0 => {
+                            let count = length.min(capacity as u32) as usize;
+                            let copied = count == 0
+                                || memory
+                                    .write_bytes(cpu.gpr[6], &flavor.data[..count])
+                                    .is_some();
+                            if copied && memory.write_u32_be(size_ptr, length).is_some() {
+                                PPC_NO_ERR
+                            } else {
+                                PPC_PARAM_ERR
+                            }
+                        }
+                        _ => PPC_PARAM_ERR,
+                    }
+                }
+            } else {
+                // scrapFlavorNotFoundErr equals noTypeErr.
+                crate::scrap_manager::NO_TYPE_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::PutScrapFlavor => {
+            // PutScrapFlavor(scrap, flavorType, flags, flavorSize,
+            // flavorData) adds one flavor to the current scrap; a flavor
+            // type may be put only once per scrap. A NULL flavorData is a
+            // promise that a ScrapPromiseKeeper would keep later; this
+            // runtime never calls a promise keeper, so it refuses promises
+            // rather than report data it can never supply.
+            let flavor_type = cpu.gpr[4].to_be_bytes();
+            let size = cpu.gpr[6] as i32;
+            let result = if cpu.gpr[3] != ppc_current_scrap_ref(scrap) {
+                PPC_BAD_SCRAP_REF_ERR
+            } else if scrap.desktop.flavor(flavor_type).is_some() {
+                PPC_DUPLICATE_SCRAP_FLAVOR_ERR
+            } else if size < 0 || (cpu.gpr[7] == 0 && size != 0) {
+                PPC_PARAM_ERR
+            } else if let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[7], size as u32)
+                .or_else(|| (size == 0).then(Vec::new))
+            {
+                // The Carbon current scrap always exists, even before the
+                // application first clears it.
+                scrap
+                    .desktop
+                    .initialize_and_append_entry(flavor_type, bytes);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         _ => None,
     }
+}
+
+// MacErrors.h, Scrap Manager errors.
+const PPC_BAD_SCRAP_REF_ERR: i16 = -4990;
+const PPC_DUPLICATE_SCRAP_FLAVOR_ERR: i16 = -4989;
+
+/// The opaque ScrapRef of the current scrap: a tag in the high half and the
+/// scrap count, which changes whenever the scrap is cleared, in the low half.
+fn ppc_current_scrap_ref(scrap: &PpcScrapState) -> u32 {
+    u32::from_be_bytes(*b"SR\0\0") | u32::from(scrap.desktop.summary().count as u16)
 }
 
 fn ppc_get_scrap(

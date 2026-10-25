@@ -9,6 +9,9 @@ pub(super) enum PpcStandardFileMode {
     GetLegacy,
     PutModern,
     PutLegacy,
+    /// Navigation Services NavPutFile, which shares the put dialog but
+    /// returns an OSErr and a NavReplyRecord.
+    PutNavigation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +96,9 @@ pub(super) struct PpcStandardFileDispatchContext<'a> {
     pub(super) working_directories: &'a mut HashMap<i16, ProcessWorkingDirectory>,
     pub(super) next_working_directory_ref_num: &'a mut i16,
     pub(super) event_queue: &'a mut EventQueue,
+    pub(super) heap_limit: u32,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) apple_event_descriptors: &'a SharedProcessAppleEventDescriptors,
 }
 
 pub(super) fn dispatch_standard_file_import(
@@ -115,7 +121,15 @@ pub(super) fn dispatch_standard_file_import(
         working_directories,
         next_working_directory_ref_num,
         event_queue,
+        heap_limit,
+        handles,
+        apple_event_descriptors,
     } = context;
+    let mut navigation = PpcNavigationReplyContext {
+        heap_limit,
+        handles,
+        descriptors: apple_event_descriptors,
+    };
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::StandardGetFile => Some(ppc_dispatch_standard_file(
@@ -135,6 +149,7 @@ pub(super) fn dispatch_standard_file_import(
             working_directories,
             next_working_directory_ref_num,
             event_queue,
+            &mut navigation,
         )),
         PpcImportDispatcherTarget::StandardFileCompatibility(operation) => {
             Some(ppc_dispatch_standard_file(
@@ -154,10 +169,144 @@ pub(super) fn dispatch_standard_file_import(
                 working_directories,
                 next_working_directory_ref_num,
                 event_queue,
+                &mut navigation,
             ))
         }
         _ => None,
     }
+}
+
+/// The allocation state NavPutFile needs to build its reply's AEDescList.
+pub(super) struct PpcNavigationReplyContext<'a> {
+    heap_limit: u32,
+    handles: &'a mut Vec<PpcHandleRecord>,
+    descriptors: &'a SharedProcessAppleEventDescriptors,
+}
+
+// Navigation.h: NavDialogOptions fields (mac68k alignment).
+const PPC_NAV_DIALOG_OPTIONS_SAVED_FILE_NAME_OFFSET: u32 = 1034;
+const PPC_NAV_DIALOG_OPTIONS_MESSAGE_OFFSET: u32 = 1290;
+// Navigation.h: NavReplyRecord is 256 bytes; selection is at +6.
+const PPC_NAV_REPLY_RECORD_SIZE: usize = 256;
+pub(super) const PPC_NAV_REPLY_SELECTION_OFFSET: u32 = 6;
+const PPC_TYPE_NULL: u32 = u32::from_be_bytes(*b"null");
+const PPC_TYPE_FSS: u32 = u32::from_be_bytes(*b"fss ");
+const PPC_TYPE_AE_LIST: u32 = u32::from_be_bytes(*b"list");
+const PPC_USER_CANCELED_ERR: i16 = -128;
+
+// Navigation.h: kNavDefaultNavDlogOptions.
+const PPC_NAV_DEFAULT_DIALOG_OPTION_FLAGS: u32 = 0x0000_00E4;
+const PPC_NAV_DIALOG_OPTIONS_SIZE: usize = 2048;
+const PPC_NAV_DIALOG_OPTIONS_CLIENT_NAME_OFFSET: u32 = 10;
+
+/// NavGetDefaultDialogOptions(NavDialogOptions *) fills in version 0, the
+/// default option flags, location (-1, -1) for the default position, and
+/// the application's name as clientName; the other strings stay empty.
+pub(super) fn ppc_nav_get_default_dialog_options(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    launched_app_path: Option<&str>,
+) -> PpcImportAction {
+    let options = cpu.gpr[3];
+    if options == 0
+        || memory
+            .write_bytes(options, &[0; PPC_NAV_DIALOG_OPTIONS_SIZE])
+            .is_none()
+    {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    let _ = memory.write_u32_be(options + 2, PPC_NAV_DEFAULT_DIALOG_OPTION_FLAGS);
+    let _ = memory.write_u32_be(options + 6, u32::MAX);
+    let mut name = launched_app_path
+        .map(ppc_vfs_basename_bytes)
+        .unwrap_or_default();
+    name.truncate(255);
+    let _ = ppc_write_pstring_bytes(
+        memory,
+        options + PPC_NAV_DIALOG_OPTIONS_CLIENT_NAME_OFFSET,
+        &name,
+    );
+    PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+}
+
+/// The result a put dialog returns when it is cancelled.
+fn ppc_standard_file_put_cancelled(mode: PpcStandardFileMode) -> PpcImportAction {
+    if mode == PpcStandardFileMode::PutNavigation {
+        PpcImportAction::Return(ppc_i16_result(PPC_USER_CANCELED_ERR))
+    } else {
+        PpcImportAction::ReturnPreserve
+    }
+}
+
+/// Writes NavPutFile's NavReplyRecord. An accepted dialog's selection is an
+/// AEDescList holding the chosen file's FSSpec; a cancelled dialog leaves
+/// validRecord false and a null selection.
+#[allow(clippy::too_many_arguments)]
+fn ppc_navigation_write_put_reply(
+    memory: &mut PpcSectionMem,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    navigation: &mut PpcNavigationReplyContext<'_>,
+    reply: u32,
+    saved: Option<(i16, u32, &[u8], bool)>,
+) -> i16 {
+    if reply == 0
+        || memory
+            .write_bytes(reply, &[0; PPC_NAV_REPLY_RECORD_SIZE])
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    let selection = reply + PPC_NAV_REPLY_SELECTION_OFFSET;
+    let _ = memory.write_u32_be(selection, PPC_TYPE_NULL);
+    let Some((vref, dir_id, name, replacing)) = saved else {
+        return PPC_USER_CANCELED_ERR;
+    };
+    let mut fsspec = vec![0; 70];
+    fsspec[..2].copy_from_slice(&vref.to_be_bytes());
+    fsspec[2..6].copy_from_slice(&dir_id.to_be_bytes());
+    let length = name.len().min(63);
+    fsspec[6] = length as u8;
+    fsspec[7..7 + length].copy_from_slice(&name[..length]);
+    let result = super::dispatch_apple_events::ppc_create_process_owned_ae_desc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        navigation.heap_limit,
+        last_mem_error,
+        navigation.handles,
+        Some(navigation.descriptors),
+        selection,
+        PPC_TYPE_AE_LIST,
+        &[],
+    );
+    if result != PPC_NO_ERR {
+        let _ = memory.write_u32_be(selection, PPC_TYPE_NULL);
+        return result;
+    }
+    let list = ProcessAeDescriptor {
+        desc_type: PPC_TYPE_AE_LIST,
+        items: vec![(
+            PPC_TYPE_WILDCARD,
+            ProcessAeDescriptor {
+                desc_type: PPC_TYPE_FSS,
+                data: fsspec,
+                ..Default::default()
+            },
+        )],
+        ..Default::default()
+    };
+    super::dispatch_apple_events::ppc_store_ae_descriptor_semantics(
+        memory,
+        navigation.descriptors,
+        selection,
+        list,
+    );
+    // version 0 has no saveFileName; validRecord and replacing follow.
+    let _ = memory.write_u8(reply + 2, 1);
+    let _ = memory.write_u8(reply + 3, u8::from(replacing));
+    PPC_NO_ERR
 }
 
 pub(super) const PPC_STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
@@ -184,6 +333,7 @@ fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
         PpcStandardFileMode::GetLegacy => cpu.gpr[9],
         PpcStandardFileMode::PutModern => cpu.gpr[5],
         PpcStandardFileMode::PutLegacy => cpu.gpr[7],
+        PpcStandardFileMode::PutNavigation => cpu.gpr[4],
     }
 }
 
@@ -433,6 +583,9 @@ pub enum PpcStandardFileOperation {
     /// DlgHookUPP dlgHook, SFReply *reply): the C glue for SFPutFile.
     SfPutFileCString,
     StandardPutFile,
+    /// NavPutFile(defaultLocation, reply, dialogOptions, eventProc,
+    /// fileType, fileCreator, callBackUD).
+    NavPutFile,
 }
 
 impl PpcStandardFileOperation {
@@ -444,6 +597,7 @@ impl PpcStandardFileOperation {
             Self::SfpPutFile | Self::SfPutFile | Self::SfPutFileCString => {
                 PpcStandardFileMode::PutLegacy
             }
+            Self::NavPutFile => PpcStandardFileMode::PutNavigation,
         }
     }
 
@@ -453,7 +607,7 @@ impl PpcStandardFileOperation {
             Self::SfGetFile | Self::SfpGetFile | Self::SfpPutFile | Self::SfPutFile => cpu.gpr[3],
             Self::CustomGetFile => cpu.gpr[8],
             Self::CustomPutFile => cpu.gpr[7],
-            Self::StandardGetFile | Self::StandardPutFile => return None,
+            Self::StandardGetFile | Self::StandardPutFile | Self::NavPutFile => return None,
         };
         let origin = ppc_standard_file_point_from_gpr(point);
         if origin == (-1, -1) {
@@ -472,7 +626,8 @@ impl PpcStandardFileOperation {
             | Self::SfpPutFile
             | Self::SfPutFile
             | Self::SfPutFileCString
-            | Self::StandardPutFile => (0, false),
+            | Self::StandardPutFile
+            | Self::NavPutFile => (0, false),
         }
     }
 
@@ -480,6 +635,11 @@ impl PpcStandardFileOperation {
         match self {
             Self::CustomPutFile | Self::StandardPutFile => cpu.gpr[3],
             Self::SfpPutFile | Self::SfPutFile | Self::SfPutFileCString => cpu.gpr[4],
+            // NavDialogOptions.message is the prompt above the name field.
+            Self::NavPutFile if cpu.gpr[5] != 0 => {
+                cpu.gpr[5] + PPC_NAV_DIALOG_OPTIONS_MESSAGE_OFFSET
+            }
+            Self::NavPutFile => 0,
             Self::StandardGetFile | Self::CustomGetFile | Self::SfGetFile | Self::SfpGetFile => 0,
         }
     }
@@ -1080,7 +1240,9 @@ fn ppc_standard_file_write_get_reply(
             let _ = memory.write_u16_be(reply + 8, 0);
             let _ = ppc_write_pstring_bytes(memory, reply + 10, &entry.name);
         }
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {}
+        PpcStandardFileMode::PutModern
+        | PpcStandardFileMode::PutLegacy
+        | PpcStandardFileMode::PutNavigation => {}
     }
 }
 
@@ -1130,7 +1292,9 @@ fn ppc_standard_file_write_put_reply(
                 let _ = ppc_write_pstring_bytes(memory, reply + 10, name);
             }
         }
-        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {}
+        PpcStandardFileMode::GetModern
+        | PpcStandardFileMode::GetLegacy
+        | PpcStandardFileMode::PutNavigation => {}
     }
 }
 
@@ -1179,6 +1343,10 @@ fn ppc_standard_file_finish_get(
 fn ppc_standard_file_finish_put(
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    navigation: &mut PpcNavigationReplyContext<'_>,
     tracking: PpcStandardFilePutTrackingState,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
@@ -1189,6 +1357,32 @@ fn ppc_standard_file_finish_put(
     accepted: bool,
 ) -> PpcImportAction {
     ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    startup.standard_file_put_tracking = None;
+    if tracking.call.mode == PpcStandardFileMode::PutNavigation {
+        let replacing = ppc_fsspec_target_exists(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            tracking.dir_id,
+            &tracking.name,
+        );
+        let saved = (accepted && !tracking.name.is_empty()).then_some((
+            tracking.vref,
+            tracking.dir_id,
+            tracking.name.as_slice(),
+            replacing,
+        ));
+        let result = ppc_navigation_write_put_reply(
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            navigation,
+            tracking.call.reply,
+            saved,
+        );
+        return PpcImportAction::Return(ppc_i16_result(result));
+    }
     if accepted && !tracking.name.is_empty() {
         let replacing = ppc_fsspec_target_exists(
             vfs_directories,
@@ -1221,7 +1415,6 @@ fn ppc_standard_file_finish_put(
     } else {
         ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
     }
-    startup.standard_file_put_tracking = None;
     PpcImportAction::ReturnPreserve
 }
 
@@ -1521,9 +1714,9 @@ fn ppc_standard_file_get_start(
     let (num_types, type_list) = match mode {
         PpcStandardFileMode::GetModern => (cpu.gpr[4] as u16 as i16, cpu.gpr[5]),
         PpcStandardFileMode::GetLegacy => (cpu.gpr[6] as u16 as i16, cpu.gpr[7]),
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
-            return PpcImportAction::ReturnPreserve
-        }
+        PpcStandardFileMode::PutModern
+        | PpcStandardFileMode::PutLegacy
+        | PpcStandardFileMode::PutNavigation => return PpcImportAction::ReturnPreserve,
     };
     let reply = ppc_standard_file_reply_ptr(mode, cpu);
     let Some(file_types) = ppc_standard_file_get_type_list(memory, num_types, type_list) else {
@@ -1613,6 +1806,11 @@ fn ppc_standard_file_put_start(
     let name_ptr = match mode {
         PpcStandardFileMode::PutModern => cpu.gpr[4],
         PpcStandardFileMode::PutLegacy => cpu.gpr[5],
+        // NavDialogOptions.savedFileName is the default name.
+        PpcStandardFileMode::PutNavigation if cpu.gpr[5] != 0 => {
+            cpu.gpr[5] + PPC_NAV_DIALOG_OPTIONS_SAVED_FILE_NAME_OFFSET
+        }
+        PpcStandardFileMode::PutNavigation => 0,
         PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
             return PpcImportAction::ReturnPreserve
         }
@@ -1628,8 +1826,20 @@ fn ppc_standard_file_put_start(
     name.truncate(63);
     let reply = ppc_standard_file_reply_ptr(mode, cpu);
     let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
-        ppc_standard_file_write_cancel_reply(memory, mode, reply);
-        return PpcImportAction::ReturnPreserve;
+        if mode == PpcStandardFileMode::PutNavigation {
+            // Without a screen the dialog cannot be shown; the reply is
+            // written as though the user cancelled it.
+            if reply != 0
+                && memory
+                    .write_bytes(reply, &[0; PPC_NAV_REPLY_RECORD_SIZE])
+                    .is_some()
+            {
+                let _ = memory.write_u32_be(reply + PPC_NAV_REPLY_SELECTION_OFFSET, PPC_TYPE_NULL);
+            }
+        } else {
+            ppc_standard_file_write_cancel_reply(memory, mode, reply);
+        }
+        return ppc_standard_file_put_cancelled(mode);
     };
     let bounds = ppc_standard_file_centered_bounds(
         front_buffer,
@@ -1672,6 +1882,7 @@ fn ppc_dispatch_standard_file(
     working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
     next_working_directory_ref_num: &mut i16,
     event_queue: &mut EventQueue,
+    navigation: &mut PpcNavigationReplyContext<'_>,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu, memory);
@@ -1698,12 +1909,18 @@ fn ppc_dispatch_standard_file(
                 requested_origin,
             )
         }
-        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
+        PpcStandardFileMode::PutModern
+        | PpcStandardFileMode::PutLegacy
+        | PpcStandardFileMode::PutNavigation => {
             if let Some(mut tracking) = startup.standard_file_put_tracking.take() {
                 if tracking.call.return_address != cpu.lr {
                     return ppc_standard_file_finish_put(
                         memory,
                         startup,
+                        process_memory_manager,
+                        heap_cursor,
+                        last_mem_error,
+                        navigation,
                         tracking,
                         vfs_directories,
                         vfs_files,
@@ -1730,6 +1947,10 @@ fn ppc_dispatch_standard_file(
                             return ppc_standard_file_finish_put(
                                 memory,
                                 startup,
+                                process_memory_manager,
+                                heap_cursor,
+                                last_mem_error,
+                                navigation,
                                 tracking,
                                 vfs_directories,
                                 vfs_files,
@@ -1755,6 +1976,10 @@ fn ppc_dispatch_standard_file(
                             return ppc_standard_file_finish_put(
                                 memory,
                                 startup,
+                                process_memory_manager,
+                                heap_cursor,
+                                last_mem_error,
+                                navigation,
                                 tracking,
                                 vfs_directories,
                                 vfs_files,
@@ -1785,6 +2010,10 @@ fn ppc_dispatch_standard_file(
                     return ppc_standard_file_finish_put(
                         memory,
                         startup,
+                        process_memory_manager,
+                        heap_cursor,
+                        last_mem_error,
+                        navigation,
                         tracking,
                         vfs_directories,
                         vfs_files,

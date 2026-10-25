@@ -966,7 +966,7 @@ pub(super) fn ppc_ae_descriptor(
         })
 }
 
-fn ppc_store_ae_descriptor_semantics(
+pub(super) fn ppc_store_ae_descriptor_semantics(
     memory: &mut PpcSectionMem,
     state: &SharedProcessAppleEventDescriptors,
     address: u32,
@@ -1137,6 +1137,9 @@ pub enum PpcAppleEventCompatibilityOperation {
     DuplicateDesc,
     CoerceDesc,
     GetNthDesc,
+    /// Navigation Services NavDisposeReply(NavReplyRecord *), which releases
+    /// the reply's selection AEDescList.
+    NavDisposeReply,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1250,8 +1253,14 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                 result
             }
         }
-        PpcAppleEventCompatibilityOperation::DisposeDesc => {
-            let desc = cpu.gpr[3];
+        PpcAppleEventCompatibilityOperation::DisposeDesc
+        | PpcAppleEventCompatibilityOperation::NavDisposeReply => {
+            let desc = if operation == PpcAppleEventCompatibilityOperation::NavDisposeReply {
+                cpu.gpr[3]
+                    .wrapping_add(super::dispatch_standard_file::PPC_NAV_REPLY_SELECTION_OFFSET)
+            } else {
+                cpu.gpr[3]
+            };
             if desc == 0 || !ppc_memory_can_write_bytes(memory, desc, 8) {
                 PPC_PARAM_ERR
             } else {
