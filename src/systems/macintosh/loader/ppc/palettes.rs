@@ -952,15 +952,7 @@ pub(crate) fn ppc_write_device_color_table(
     // ColorTable therefore describes the same logical colors as the hardware
     // CLUT used to display its pixel indexes.
     // Inside Macintosh Volume VI (1991), pp. 20-15, 20-20.
-    let color_table = memory
-        .read_u32_be(gdevice_handle)
-        .filter(|device| *device != 0)
-        .and_then(|device| memory.read_u32_be(device + 22))
-        .filter(|pixmap_handle| *pixmap_handle != 0)
-        .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle))
-        .filter(|pixmap| *pixmap != 0)
-        .and_then(|pixmap| memory.read_u32_be(pixmap + 42))
-        .filter(|table_handle| *table_handle != 0)
+    let color_table = ppc_gdevice_ctable_handle(memory, gdevice_handle)
         .and_then(|table_handle| memory.read_u32_be(table_handle))
         .filter(|table| *table != 0);
     let Some(color_table) = color_table else {
@@ -1117,8 +1109,13 @@ pub(crate) fn ppc_gdevice_ctable_handle_with_provenance(
             known: false,
         };
     };
+    // A direct device's PixMap still owns a color table handle, but its
+    // pixels do not index it, so it is not a device CLUT.
+    let direct = memory
+        .read_u16_be(pixmap + 30)
+        .is_some_and(|pixel_type| pixel_type == 16);
     PpcOptionalHandleResolution {
-        handle: (raw_handle != 0).then_some(raw_handle),
+        handle: (raw_handle != 0 && !direct).then_some(raw_handle),
         known: true,
     }
 }
@@ -1653,15 +1650,7 @@ pub(crate) fn ppc_apply_set_entries(
 
     let color_table = update_device_ctable
         .then(|| {
-            memory
-                .read_u32_be(current_gdevice)
-                .filter(|device| *device != 0)
-                .and_then(|device| memory.read_u32_be(device + 22))
-                .filter(|pixmap_handle| *pixmap_handle != 0)
-                .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle))
-                .filter(|pixmap| *pixmap != 0)
-                .and_then(|pixmap| memory.read_u32_be(pixmap + 42))
-                .filter(|table_handle| *table_handle != 0)
+            ppc_gdevice_ctable_handle(memory, current_gdevice)
                 .and_then(|table_handle| memory.read_u32_be(table_handle))
                 .filter(|table_ptr| *table_ptr != 0)
         })

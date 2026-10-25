@@ -2427,11 +2427,11 @@ pub(crate) fn ppc_update_pixmap_depth(
     pixmap: u32,
     row_bytes: u32,
     depth: u32,
-    indexed_ctable: u32,
+    color_table: u32,
 ) -> Option<()> {
-    let (pixel_type, component_count, component_size, color_table) = match depth {
-        1 | 2 | 4 | 8 => (0, 1, depth as u16, indexed_ctable),
-        16 => (16, 3, 5, 0),
+    let (pixel_type, component_count, component_size) = match depth {
+        1 | 2 | 4 | 8 => (0, 1, depth as u16),
+        16 => (16, 3, 5),
         _ => return None,
     };
     memory.write_u16_be(pixmap + 4, (row_bytes as u16) | 0x8000)?;
@@ -2889,8 +2889,16 @@ pub(crate) fn ppc_set_depth_with_geometry(
                 }
             }
             selected
+        } else if pixmap == main_pixmap {
+            PPC_MAIN_CTABLE_HANDLE
         } else {
-            0
+            // Inside Macintosh: Imaging With QuickDraw (1994), PixMap and
+            // NewPixMap: every PixMap owns a color table handle, so a direct
+            // screen keeps one even though its pixels do not index it.
+            memory
+                .read_u32_be(pixmap + 42)
+                .filter(|handle| *handle != 0)
+                .unwrap_or(PPC_MAIN_CTABLE_HANDLE)
         };
         screen_pixmap_updates.push((pixmap, indexed_ctable));
     }

@@ -241,7 +241,10 @@ fn hle_import_runner_set_depth_installs_each_advertised_screen_personality() {
             assert_eq!(loaded.screen_clut, expected_clut);
             assert_eq!(loaded.color_manager_clut, expected_clut);
         } else {
-            assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42), Some(0));
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42),
+                Some(PPC_MAIN_CTABLE_HANDLE)
+            );
             assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(16));
             assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(3));
             assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 36), Some(5));
@@ -994,7 +997,13 @@ fn hle_import_runner_set_depth_preserves_device_state_and_clear_bounds() {
                     Some(PPC_MAIN_CTABLE_HANDLE),
                 )
             } else {
-                (Some(16), Some(16), Some(3), Some(5), Some(0))
+                (
+                    Some(16),
+                    Some(16),
+                    Some(3),
+                    Some(5),
+                    Some(PPC_MAIN_CTABLE_HANDLE),
+                )
             }
         );
         assert_eq!(
@@ -1267,7 +1276,7 @@ fn hle_import_runner_set_depth_synchronizes_only_screen_backed_color_ports() {
                         Some(16),
                         Some(3),
                         Some(5),
-                        Some(0),
+                        Some(PPC_MAIN_CTABLE_HANDLE),
                     )
                 }
             );
@@ -1545,7 +1554,7 @@ fn hle_import_runner_set_depth_follows_live_set_port_pix_aliases() {
                     Some(16),
                     Some(3),
                     Some(5),
-                    Some(0),
+                    Some(private_ctable_handle),
                 )
             }
         );
@@ -2086,7 +2095,10 @@ fn hle_import_runner_handles_set_depth() {
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(16));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(3));
     assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 36), Some(5));
-    assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42), Some(0));
+    assert_eq!(
+                loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42),
+                Some(PPC_MAIN_CTABLE_HANDLE)
+            );
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
