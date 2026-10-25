@@ -129,6 +129,7 @@ mod dispatch_devices;
 mod dispatch_dialog;
 mod dispatch_drawsprocket;
 mod dispatch_event;
+mod dispatch_file_manager;
 mod dispatch_files;
 mod dispatch_fsref;
 mod dispatch_fonts;
@@ -346,6 +347,7 @@ pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 pub use dispatch_printing::PpcPrintingCompatibilityOperation;
 pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
 
+pub use dispatch_file_manager::PpcFileManagerOperation;
 pub use dispatch_files::PpcFileCompatibilityOperation;
 use dispatch_fsref::ppc_write_volume_root_fsref;
 pub use dispatch_fsref::PpcFsRefOperation;

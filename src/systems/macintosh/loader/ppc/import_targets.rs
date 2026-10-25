@@ -1346,6 +1346,7 @@ pub enum PpcImportDispatcherTarget {
     QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
     SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility(PpcFileCompatibilityOperation),
+    FileManager(PpcFileManagerOperation),
     FsRef(PpcFsRefOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     TextEncoding(PpcTextEncodingOperation),
@@ -3843,9 +3844,69 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FSpOpenRF") => PpcImportDispatcherTarget::FSpOpenRF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
         ("InterfaceLib", "FSOpen") => PpcImportDispatcherTarget::FSOpen,
-        ("InterfaceLib", "PBOpen")
-        | ("InterfaceLib", "PBOpenSync")
-        | ("InterfaceLib", "PBOpenAsync") => PpcImportDispatcherTarget::PBOpen,
+        // Inside Macintosh: Files (PBOpenDF): PBOpen without the driver
+        // lookup, and the runtime opens no drivers through PBOpen.
+        ("InterfaceLib", "PBOpen" | "PBOpenSync" | "PBOpenAsync")
+        | ("InterfaceLib", "PBOpenDF" | "PBOpenDFSync" | "PBOpenDFAsync") => {
+            PpcImportDispatcherTarget::PBOpen
+        }
+        ("InterfaceLib", "PBOpenRF" | "PBOpenRFSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbOpenRf {
+                hierarchical: false,
+                deny_modes: false,
+            })
+        }
+        ("InterfaceLib", "PBHOpenRF" | "PBHOpenRFSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbOpenRf {
+                hierarchical: true,
+                deny_modes: false,
+            })
+        }
+        ("InterfaceLib", "PBHOpenRFDeny" | "PBHOpenRFDenySync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbOpenRf {
+                hierarchical: true,
+                deny_modes: true,
+            })
+        }
+        ("InterfaceLib", "HOpenRF") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::HOpenRf)
+        }
+        ("InterfaceLib", "CloseWD") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CloseWd)
+        }
+        ("InterfaceLib", "CreateResFile") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CreateResFile)
+        }
+        ("InterfaceLib", "FSpCatMove") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::FSpCatMove)
+        }
+        ("InterfaceLib", "FSpExchangeFiles") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::FSpExchangeFiles)
+        }
+        ("InterfaceLib", "PBHCopyFileSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbHCopyFile)
+        }
+        ("InterfaceLib", "PBHSetFLockSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbHSetFLock)
+        }
+        ("InterfaceLib", "PBHRstFLockSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbHRstFLock)
+        }
+        ("InterfaceLib", "PBDTOpenInform") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbDtOpenInform)
+        }
+        ("InterfaceLib", "PBDTSetCommentSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbDtSetComment)
+        }
+        ("InterfaceLib", "PBEject") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbEject)
+        }
+        ("InterfaceLib", "PBMountVol") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbMountVol)
+        }
+        ("InterfaceLib", "fsdelete") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::FsDeleteCString)
+        }
         ("InterfaceLib", "PBHOpenDF")
         | ("InterfaceLib", "PBHOpenDFSync")
         | ("InterfaceLib", "PBHOpenDFAsync")
@@ -6333,9 +6394,6 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PBHGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbHGetVolSync,
         ),
-        ("InterfaceLib", "PBHOpenRFSync") => PpcImportDispatcherTarget::FileCompatibility(
-            PpcFileCompatibilityOperation::PbHOpenRfSync,
-        ),
         ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbHSetVolSync,
         ),
@@ -6460,6 +6518,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "SFPutFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
             PpcStandardFileOperation::SfPutFile,
+        ),
+        ("InterfaceLib", "sfputfile") => PpcImportDispatcherTarget::StandardFileCompatibility(
+            PpcStandardFileOperation::SfPutFileCString,
         ),
         ("InterfaceLib", "StandardPutFile") => {
             PpcImportDispatcherTarget::StandardFileCompatibility(

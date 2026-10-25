@@ -879,6 +879,29 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 application_working_directory_ref_num,
             ))
         }
+        PpcImportDispatcherTarget::FileManager(operation) => {
+            Some(dispatch_file_manager::ppc_dispatch_file_manager(
+                operation,
+                dispatch_file_manager::PpcFileManagerContext {
+                    cpu,
+                    memory,
+                    files,
+                    writable_refnums,
+                    vfs_files,
+                    vfs_directories,
+                    deleted_vfs_file_paths,
+                    vfs_resource_files,
+                    resource_files,
+                    vfs_resources,
+                    next_file_ref_num,
+                    last_resource_error,
+                    default_dir_id,
+                    vfs_volumes,
+                    working_directories,
+                    application_working_directory_ref_num,
+                },
+            ))
+        }
         PpcImportDispatcherTarget::FsRef(operation) => Some(PpcImportAction::Return(
             ppc_i16_result(dispatch_fsref::ppc_dispatch_fsref(
                 operation,
@@ -1006,7 +1029,7 @@ fn ppc_pb_dt_get_appl(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
-fn ppc_pb_dt_get_path(
+pub(super) fn ppc_pb_dt_get_path(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
@@ -1096,7 +1119,6 @@ pub enum PpcFileCompatibilityOperation {
     PbGetWdInfoSync,
     PbHGetVolParmsSync,
     PbHGetVolSync,
-    PbHOpenRfSync,
     PbHSetVolSync,
     PbOpenWdSync,
 }
@@ -1306,21 +1328,12 @@ pub(super) fn ppc_dispatch_file_compatibility(
         PpcFileCompatibilityOperation::PbCloseWdSync => {
             let pb = cpu.gpr[3];
             let wd_ref_num = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
-            let is_volume_ref_num = wd_ref_num == PPC_BOOT_VOLUME_REF_NUM
-                || vfs_volumes
-                    .iter()
-                    .any(|volume| volume.ref_num == wd_ref_num);
-            let closed = working_directories.remove(&wd_ref_num);
-            let result = if is_volume_ref_num || closed.is_some() {
-                if *application_working_directory_ref_num == wd_ref_num {
-                    *application_working_directory_ref_num = closed
-                        .map(|record| record.volume_ref_num)
-                        .unwrap_or(wd_ref_num);
-                }
-                PPC_NO_ERR
-            } else {
-                PPC_RF_NUM_ERR
-            };
+            let result = dispatch_file_manager::ppc_close_working_directory(
+                wd_ref_num,
+                vfs_volumes,
+                working_directories,
+                application_working_directory_ref_num,
+            );
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
         }
         PpcFileCompatibilityOperation::PbHSetVolSync => {
@@ -1407,8 +1420,7 @@ pub(super) fn ppc_dispatch_file_compatibility(
         PpcFileCompatibilityOperation::PbHGetVolParmsSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR)),
         ),
-        PpcFileCompatibilityOperation::PbHOpenRfSync
-        | PpcFileCompatibilityOperation::PbCatSearchSync
+        PpcFileCompatibilityOperation::PbCatSearchSync
         | PpcFileCompatibilityOperation::PbDirCreateSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_FNF_ERR)),
         ),
