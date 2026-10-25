@@ -3400,13 +3400,58 @@ impl FixtureRunner {
     }
 
     pub fn host_dialog(&mut self) -> Option<crate::systems::macintosh::host_ui::DialogSnapshot> {
-        if self.host_dialog_is_native() {
+        let mut snapshot = if self.host_dialog_is_native() {
             self.native
                 .application_mut()
                 .and_then(|app| app.host_dialog())
         } else {
             self.dispatcher.host_dialog(&mut self.bus)
+        }?;
+        let (v, h) = self.ppc_viewport_offset();
+        for rect in snapshot
+            .items
+            .iter_mut()
+            .filter_map(|item| item.guest_rect.as_mut())
+        {
+            *rect = (
+                rect.0.saturating_add(v),
+                rect.1.saturating_add(h),
+                rect.2.saturating_add(v),
+                rect.3.saturating_add(h),
+            );
         }
+        Some(snapshot)
+    }
+
+    /// The presented point for a click at `point` (offset within the item)
+    /// on an application-drawn item of the modal dialog. Clicks reach the
+    /// guest's ModalDialog loop, and so its filter, as ordinary mouse events.
+    pub fn host_dialog_point_position(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogReply,
+        point: (i16, i16),
+    ) -> Option<(i16, i16)> {
+        if self.guest_work_is_suspended()
+            || self.ui_modality().owner != crate::systems::macintosh::host_ui::UiOwner::Dialog
+        {
+            return None;
+        }
+        let snapshot = self.host_dialog()?;
+        if snapshot.busy || (snapshot.id, snapshot.revision) != (reply.id, reply.revision) {
+            return None;
+        }
+        let (top, left, bottom, right) = snapshot
+            .items
+            .iter()
+            .find(|item| item.number == reply.item)?
+            .guest_rect?;
+        if bottom <= top || right <= left {
+            return None;
+        }
+        Some((
+            top.saturating_add(point.0).clamp(top, bottom - 1),
+            left.saturating_add(point.1).clamp(left, right - 1),
+        ))
     }
 
     /// Owned modeless inventory in guest front-to-back order. Blocking calls
@@ -3591,6 +3636,24 @@ impl FixtureRunner {
         {
             return false;
         }
+        if self.host_dialog().is_some_and(|dialog| dialog.guest_filter) {
+            return self.type_host_dialog_text(reply);
+        }
+        self.apply_host_dialog_text(reply)
+    }
+
+    /// Keystrokes remain queued for the guest, such as a typed dialog edit.
+    pub fn host_typed_keys_pending(&self) -> bool {
+        self.dispatcher
+            .event_queue
+            .iter()
+            .any(|event| event.what == 3)
+    }
+
+    fn apply_host_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
         if !self.host_dialog_is_native() {
             self.dispatcher.reply_host_dialog_text(&mut self.bus, reply)
         } else {
@@ -3598,6 +3661,50 @@ impl FixtureRunner {
                 .application_mut()
                 .is_some_and(|app| app.reply_host_dialog_text(reply))
         }
+    }
+
+    /// Deliver an edit to a dialog whose application filters events as the
+    /// keystrokes a person would type: TextEdit selects the changed range,
+    /// then each inserted character (or one Delete) passes through
+    /// ModalDialog and the filter, which may reject it. The next snapshot
+    /// carries whatever text the application accepted.
+    fn type_host_dialog_text(
+        &mut self,
+        reply: &crate::systems::macintosh::host_ui::DialogTextReply,
+    ) -> bool {
+        let old: Vec<char> = reply.expected.chars().collect();
+        let new: Vec<char> = reply.text.chars().collect();
+        let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+        let suffix = old[prefix..]
+            .iter()
+            .rev()
+            .zip(new[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let (Ok(start), Ok(end)) = (u16::try_from(prefix), u16::try_from(old.len() - suffix))
+        else {
+            return false;
+        };
+        let select = crate::systems::macintosh::host_ui::DialogTextReply {
+            text: reply.expected.clone(),
+            selection: (start, end),
+            ..reply.clone()
+        };
+        if !self.apply_host_dialog_text(&select) {
+            return false;
+        }
+        let inserted: String = new[prefix..new.len() - suffix].iter().collect();
+        let inserted = crate::mac_roman::encode_mac_roman_lossy(&inserted.replace('\n', "\r"));
+        if inserted.is_empty() && start != end {
+            self.push_key_down(0x33, 0x08);
+            self.push_key_up(0x33, 0x08);
+        }
+        for byte in inserted {
+            let key = mac_key_code_for_character(byte);
+            self.push_key_down(key, byte);
+            self.push_key_up(key, byte);
+        }
+        true
     }
 
     pub fn reply_host_dialog_control(
@@ -14303,3 +14410,63 @@ fn load_app_generic<M: MemoryBus>(
 
 #[cfg(test)]
 mod tests;
+
+/// US-layout virtual key code for a synthesized keystroke's character.
+/// Characters without a key of their own report key code 0.
+fn mac_key_code_for_character(character: u8) -> u8 {
+    const KEYS: &[(&[u8], u8)] = &[
+        (b"aA", 0x00),
+        (b"sS", 0x01),
+        (b"dD", 0x02),
+        (b"fF", 0x03),
+        (b"hH", 0x04),
+        (b"gG", 0x05),
+        (b"zZ", 0x06),
+        (b"xX", 0x07),
+        (b"cC", 0x08),
+        (b"vV", 0x09),
+        (b"bB", 0x0B),
+        (b"qQ", 0x0C),
+        (b"wW", 0x0D),
+        (b"eE", 0x0E),
+        (b"rR", 0x0F),
+        (b"yY", 0x10),
+        (b"tT", 0x11),
+        (b"1!", 0x12),
+        (b"2@", 0x13),
+        (b"3#", 0x14),
+        (b"4$", 0x15),
+        (b"6^", 0x16),
+        (b"5%", 0x17),
+        (b"=+", 0x18),
+        (b"9(", 0x19),
+        (b"7&", 0x1A),
+        (b"-_", 0x1B),
+        (b"8*", 0x1C),
+        (b"0)", 0x1D),
+        (b"]}", 0x1E),
+        (b"oO", 0x1F),
+        (b"uU", 0x20),
+        (b"[{", 0x21),
+        (b"iI", 0x22),
+        (b"pP", 0x23),
+        (b"\r", 0x24),
+        (b"lL", 0x25),
+        (b"jJ", 0x26),
+        (b"'\"", 0x27),
+        (b"kK", 0x28),
+        (b";:", 0x29),
+        (b"\\|", 0x2A),
+        (b",<", 0x2B),
+        (b"/?", 0x2C),
+        (b"nN", 0x2D),
+        (b"mM", 0x2E),
+        (b".>", 0x2F),
+        (b"\t", 0x30),
+        (b" ", 0x31),
+        (b"`~", 0x32),
+    ];
+    KEYS.iter()
+        .find(|(characters, _)| characters.contains(&character))
+        .map_or(0, |(_, key)| *key)
+}

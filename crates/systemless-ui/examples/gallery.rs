@@ -174,6 +174,7 @@ impl eframe::App for Gallery {
                             default: 1,
                             cancel: 2,
                             help: &[],
+                            report_clicks: false,
                         },
                         &mut [],
                         self.active_window == index,

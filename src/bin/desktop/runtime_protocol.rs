@@ -13,6 +13,11 @@ pub(super) enum GuiCommand {
     KeyUp { key: u8, character: u8 },
     Menu { menu: i16, item: i16 },
     Dialog(systemless::systems::macintosh::host_ui::DialogReply),
+    /// A click at an offset within an application-drawn dialog item.
+    DialogPoint {
+        reply: systemless::systems::macintosh::host_ui::DialogReply,
+        point: (i16, i16),
+    },
     DialogControl(systemless::systems::macintosh::host_ui::DialogControlReply),
     DialogText(systemless::systems::macintosh::host_ui::DialogTextReply),
     FileDialog(systemless::systems::macintosh::host_ui::FileDialogReply),

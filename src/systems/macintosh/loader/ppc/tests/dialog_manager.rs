@@ -7283,8 +7283,13 @@ fn host_message_dialog_powerpc_preserves_background_and_returns_guest_item() {
         .unwrap();
     let ditl = loaded.memory.read_u32_be(ditl_handle).unwrap();
     loaded.memory.write_u8(ditl + 14, 0).unwrap();
-    assert!(loaded.host_dialog().is_none());
-    assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+    // A user item is embedded as the guest's own pixels.
+    assert!(loaded
+        .host_dialog()
+        .unwrap()
+        .items
+        .iter()
+        .any(|item| item.kind == 0 && item.guest_rect.is_some()));
     loaded.memory.write_u8(ditl + 14, 4).unwrap();
     let resumed = loaded.host_dialog().unwrap();
     assert!(resumed.revision > reply.revision);
@@ -7427,8 +7432,13 @@ fn host_preference_choices_powerpc_report_live_values_and_guest_hits() {
                     .proc_id = 8
             });
             assert!(
-                loaded.host_dialog().is_none(),
-                "unsupported CDEFs retain guest rendering"
+                loaded
+                    .host_dialog()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .any(|item| item.kind == 0 && item.guest_rect.is_some()),
+                "unsupported CDEFs are embedded as guest pixels"
             );
             loaded.controls.with_mut(|records| {
                 records
@@ -7509,8 +7519,13 @@ fn host_preference_choices_powerpc_report_live_values_and_guest_hits() {
                     .unwrap()
                     .proc_id = 8
             });
-            assert!(loaded.host_dialog().is_none());
-            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            assert!(loaded
+                .host_dialog()
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item.kind == 0 && item.guest_rect.is_some()));
+            assert!(loaded.toolbox_startup.host_ui.dialog_presented(dialog));
             loaded.controls.with_mut(|records| {
                 records
                     .iter_mut()
@@ -7519,8 +7534,13 @@ fn host_preference_choices_powerpc_report_live_values_and_guest_hits() {
                     .proc_id = i16::from(kind - 4)
             });
             assert!(
-                loaded.host_dialog().is_none(),
-                "guest presentation resumes only at the next supported modal call"
+                loaded
+                    .host_dialog()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|item| item.guest_rect.is_none()),
+                "a standard control is native again"
             );
         }
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
@@ -7753,7 +7773,9 @@ fn nested_host_modal_order_keeps_file_parent_below_supported_and_guest_children(
         .as_mut()
         .unwrap()
         .filter_proc = 0x10000;
-    assert_eq!(runner.ui_modality().owner, UiOwner::Guest);
+    // An application filter stays in the classic ModalDialog loop.
+    assert_eq!(runner.ui_modality().owner, UiOwner::Dialog);
+    assert!(runner.host_dialog().unwrap().guest_filter);
     assert!(runner.ui_modality().menus_blocked);
     runner.dispatcher_mut().dialog_tracking = None;
     runner.dispatcher_mut().host_ui.retire_dialog(classic);
@@ -7803,8 +7825,15 @@ fn nested_host_modal_order_keeps_file_parent_below_supported_and_guest_children(
         .unwrap();
     let ditl = loaded.memory.read_u32_be(ditl_handle).unwrap();
     loaded.memory.write_u8(ditl + 14, 0).unwrap();
+    // The child's user item is embedded; the child stays the host modal.
     let mut runner = inspect(&loaded);
-    assert_eq!(runner.ui_modality().owner, UiOwner::Guest);
+    assert_eq!(runner.ui_modality().owner, UiOwner::Dialog);
+    assert!(runner
+        .host_dialog()
+        .unwrap()
+        .items
+        .iter()
+        .any(|item| item.kind == 0 && item.guest_rect.is_some()));
     assert!(runner.ui_modality().menus_blocked);
     assert!(runner.host_file_dialog().unwrap().busy);
 }
@@ -8302,8 +8331,12 @@ fn host_dialog_powerpc_missing_standard_alert_icons_keep_host_presentation() {
         loaded.run_with_hle_imports(128);
         let view = loaded.host_dialog();
         if icon == 300 {
-            assert!(view.is_none());
-            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+            // Missing artwork: the guest's drawing is embedded instead.
+            assert!(view
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| item.kind == 0 && item.guest_rect.is_some()));
             continue;
         }
         let view = view.unwrap();
@@ -8355,8 +8388,12 @@ fn host_picture_dialog_powerpc_preserves_artwork_and_picture_item_hit() {
         .memory
         .write_u8(data + picture().len() as u32 - 1, 0)
         .unwrap();
-    assert!(loaded.host_dialog().is_none());
-    assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
+    assert!(loaded
+        .host_dialog()
+        .unwrap()
+        .items
+        .iter()
+        .any(|item| item.kind == 0 && item.guest_rect.is_some()));
     loaded
         .memory
         .write_u8(data + picture().len() as u32 - 1, 255)
@@ -8413,7 +8450,12 @@ fn host_popup_dialog_powerpc_validates_choices_and_returns_item_hit() {
     let menu_handle = loaded.memory.read_u32_be(data).unwrap();
     let menu_data = loaded.memory.read_u32_be(menu_handle).unwrap();
     loaded.memory.write_u32_be(menu_data + 6, 0x1234).unwrap();
-    assert!(loaded.host_dialog().is_none());
+    assert!(loaded
+        .host_dialog()
+        .unwrap()
+        .items
+        .iter()
+        .any(|item| item.kind == 0 && item.guest_rect.is_some()));
     loaded.memory.write_u32_be(menu_data + 6, 0).unwrap();
     loaded.memory.write_bytes(menu_data + 16, b"New").unwrap();
     let updated = loaded.host_dialog().unwrap();
@@ -8570,10 +8612,11 @@ fn host_dialog_powerpc_keeps_standard_filter_callback_and_rejects_patched_vector
             item: 1,
         };
         if alias {
+            // A patched vector is the application's own filter: it stays in
+            // ModalDialog's loop and the projection says so.
             loaded.memory.write_u32_be(alias_ptr, entry + 4).unwrap();
-            assert!(loaded.host_dialog().is_none());
-            assert!(!loaded.toolbox_startup.host_ui.dialog_presented(dialog));
-            assert!(loaded.host_dialog_item_position(&reply).is_none());
+            assert!(loaded.host_dialog().unwrap().guest_filter);
+            assert!(loaded.toolbox_startup.host_ui.dialog_presented(dialog));
             loaded.memory.write_u32_be(alias_ptr, entry).unwrap();
             let resumed = loaded.host_dialog().unwrap();
             assert_eq!(resumed.id, view.id);

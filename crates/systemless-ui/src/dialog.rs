@@ -97,6 +97,15 @@ pub enum FieldKind<'a> {
     },
     Checkbox(bool),
     Radio(bool),
+    /// Content another renderer draws, shown live from `uv` of `texture`
+    /// (such as an application-drawn item of an emulated dialog). Clicks are
+    /// reported in `FormResponse::points`.
+    Embedded {
+        texture: egui::TextureId,
+        uv: egui::Rect,
+        size: [u16; 2],
+        interactive: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +131,9 @@ pub struct Form<'a> {
     pub cancel: i16,
     /// Hover help by field or button ID, such as classic help balloons.
     pub help: &'a [(i16, &'a str)],
+    /// Report clicks on text and images in `FormResponse::points`, for
+    /// hosts whose application reacts to clicks anywhere in a form.
+    pub report_clicks: bool,
 }
 
 pub struct EditorField {
@@ -139,6 +151,9 @@ pub struct FormResponse {
     /// Changed editors are updated in place. Flush these changes before applying
     /// an action when the host must synchronize them with another runtime.
     pub edits: Vec<(i16, crate::editor::Change)>,
+    /// Clicks on embedded fields: field ID and position as a fraction of
+    /// the field's width and height.
+    pub points: Vec<(i16, [f32; 2])>,
 }
 
 /// A message is a form containing only explanatory text and actions.
@@ -184,6 +199,7 @@ pub fn form(
             default,
             cancel,
             help: &[],
+            report_clicks: false,
         },
         &mut [],
     )
@@ -218,6 +234,7 @@ pub fn show_with_shortcuts(
         default,
         cancel,
         help,
+        report_clicks,
     } = form;
     let help_for = |id: i16| {
         help.iter()
@@ -226,6 +243,7 @@ pub fn show_with_shortcuts(
     };
     let mut edits = Vec::new();
     let mut values = Vec::new();
+    let mut points = Vec::new();
     let mut cancelling = false;
     ui.set_min_width(360.);
     ui.set_max_width(520.);
@@ -305,7 +323,14 @@ pub fn show_with_shortcuts(
                             response.response.labelled_by(label.id);
                         }
                         FieldKind::Text => {
-                            ui.label(field.text);
+                            let label = egui::Label::new(field.text);
+                            if report_clicks {
+                                if ui.add(label.sense(egui::Sense::click())).clicked() {
+                                    points.push((field.id, [0.5, 0.5]));
+                                }
+                            } else {
+                                ui.add(label);
+                            }
                         }
                         FieldKind::Edit => {
                             if let Some(editor) = editors.iter_mut().find(|e| e.id == field.id) {
@@ -333,7 +358,7 @@ pub fn show_with_shortcuts(
                                 .min(1.);
                             let mut image = egui::Image::new((texture, desired * scale))
                                 .alt_text(field.text)
-                                .sense(if interactive {
+                                .sense(if interactive || report_clicks {
                                     egui::Sense::click()
                                 } else {
                                     egui::Sense::hover()
@@ -341,8 +366,51 @@ pub fn show_with_shortcuts(
                             if monochrome {
                                 image = image.tint(theme.colors.text);
                             }
-                            if ui.add(image).clicked() && interactive && result.is_none() {
+                            let response = ui.add(image);
+                            if response.clicked() && interactive && result.is_none() {
                                 result = Some(field.id);
+                            } else if response.clicked() && report_clicks {
+                                let rect = response.rect;
+                                let at = response.interact_pointer_pos().unwrap_or(rect.center());
+                                points.push((
+                                    field.id,
+                                    [
+                                        ((at.x - rect.left()) / rect.width().max(1.)).clamp(0., 1.),
+                                        ((at.y - rect.top()) / rect.height().max(1.)).clamp(0., 1.),
+                                    ],
+                                ));
+                            }
+                        }
+                        FieldKind::Embedded {
+                            texture,
+                            uv,
+                            size,
+                            interactive,
+                        } => {
+                            // Shown at its own size so the content stays legible
+                            // and positions map exactly.
+                            let desired = egui::vec2(f32::from(size[0]), f32::from(size[1]));
+                            let scale = (ui.available_width() / desired.x.max(1.)).min(1.);
+                            let response = ui.add(
+                                egui::Image::new((texture, desired * scale))
+                                    .uv(uv)
+                                    .alt_text(field.text)
+                                    .sense(if interactive {
+                                        egui::Sense::click()
+                                    } else {
+                                        egui::Sense::hover()
+                                    }),
+                            );
+                            if interactive && response.clicked() {
+                                let rect = response.rect;
+                                let at = response.interact_pointer_pos().unwrap_or(rect.center());
+                                points.push((
+                                    field.id,
+                                    [
+                                        ((at.x - rect.left()) / rect.width().max(1.)).clamp(0., 1.),
+                                        ((at.y - rect.top()) / rect.height().max(1.)).clamp(0., 1.),
+                                    ],
+                                ));
                             }
                         }
                         FieldKind::Checkbox(mut value) => {
@@ -390,9 +458,9 @@ pub fn show_with_shortcuts(
     });
     if cancelling {
         values.clear();
-    } else if !values.is_empty() {
-        // A control selection is its own interaction. Finish it before a
-        // simultaneous default activation, preserving the selected value.
+    } else if !values.is_empty() || !points.is_empty() {
+        // A control selection or embedded click is its own interaction.
+        // Finish it before a simultaneous default activation.
         result = None;
     }
 
@@ -400,6 +468,7 @@ pub fn show_with_shortcuts(
         action: result,
         values,
         edits,
+        points,
     }
 }
 
@@ -452,6 +521,7 @@ mod tests {
                             default: 1,
                             cancel: 2,
                             help: &[],
+                            report_clicks: false,
                         },
                         &mut editors,
                     );
@@ -476,6 +546,132 @@ mod tests {
         assert_eq!(response.edits.len(), 1);
         assert_eq!(response.edits[0].0, 3);
         assert!(response.edits[0].1.text);
+    }
+
+    #[test]
+    fn embedded_fields_show_a_texture_region_and_report_click_positions() {
+        let ctx = egui::Context::default();
+        let theme = Theme::default();
+        theme.apply(&ctx);
+        let texture = ctx.load_texture(
+            "guest",
+            egui::ColorImage::filled([100, 100], egui::Color32::WHITE),
+            egui::TextureOptions::NEAREST,
+        );
+        let uv = egui::Rect::from_min_max(egui::pos2(0.25, 0.5), egui::pos2(0.65, 0.7));
+        let frame = |events| {
+            let mut response = FormResponse::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600., 400.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    response = show(
+                        ui,
+                        &theme,
+                        Form {
+                            title: "",
+                            fields: &[
+                                Field {
+                                    id: 5,
+                                    text: "Application-drawn content",
+                                    enabled: true,
+                                    kind: FieldKind::Embedded {
+                                        texture: texture.id(),
+                                        uv,
+                                        size: [40, 20],
+                                        interactive: true,
+                                    },
+                                },
+                                Field {
+                                    id: 6,
+                                    text: "Click anywhere",
+                                    enabled: true,
+                                    kind: FieldKind::Text,
+                                },
+                            ],
+                            buttons: &[],
+                            default: 0,
+                            cancel: 0,
+                            help: &[],
+                            report_clicks: true,
+                        },
+                        &mut [],
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            let mesh = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => {
+                        Some((**mesh).clone())
+                    }
+                    egui::Shape::Rect(rect)
+                        if rect
+                            .brush
+                            .as_ref()
+                            .is_some_and(|brush| brush.fill_texture_id == texture.id()) =>
+                    {
+                        let brush = rect.brush.as_ref().unwrap();
+                        let mut mesh = egui::Mesh::with_texture(texture.id());
+                        mesh.add_rect_with_uv(rect.rect, brush.uv, egui::Color32::WHITE);
+                        Some(mesh)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == "Click anywhere" => {
+                        Some(text.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            (response, mesh, text)
+        };
+        frame(Vec::new());
+        let (_, mesh, text) = frame(Vec::new());
+        let bounds = mesh.calc_bounds();
+        assert!(
+            (bounds.size() - egui::vec2(40., 20.)).length() < 0.5,
+            "shown at its own size"
+        );
+        let (min_uv, max_uv) = mesh.vertices.iter().fold(
+            (egui::pos2(1., 1.), egui::pos2(0., 0.)),
+            |(min, max), vertex| (min.min(vertex.uv), max.max(vertex.uv)),
+        );
+        assert!((min_uv - uv.min).length() < 1e-4 && (max_uv - uv.max).length() < 1e-4);
+        let click = |at: egui::Pos2| {
+            frame(vec![egui::Event::PointerMoved(at), press(at, true)]);
+            frame(vec![press(at, false)]).0
+        };
+        let response = click(bounds.min + egui::vec2(10., 15.));
+        assert_eq!(response.points.len(), 1);
+        let (id, [x, y]) = response.points[0];
+        assert_eq!(id, 5);
+        assert!((x - 0.25).abs() < 0.03 && (y - 0.75).abs() < 0.03);
+        assert_eq!(response.action, None);
+        let response = click(text.center());
+        assert_eq!(response.points, vec![(6, [0.5, 0.5])]);
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
     }
 
     #[test]
@@ -811,6 +1007,7 @@ mod tests {
                             default: 1,
                             cancel: 2,
                             help: &[],
+                            report_clicks: false,
                         },
                         &mut [],
                     );
@@ -927,6 +1124,7 @@ mod tests {
                             default: 1,
                             cancel: 2,
                             help: &[],
+                            report_clicks: false,
                         },
                         &mut [],
                     );
@@ -1001,6 +1199,7 @@ mod nonmodal_shortcut_tests {
                                         default: 1,
                                         cancel: 2,
                                         help: &[],
+                                        report_clicks: false,
                                     },
                                     &mut [],
                                     active,

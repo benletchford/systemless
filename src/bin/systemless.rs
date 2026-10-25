@@ -3596,6 +3596,7 @@ impl ApplicationHandler<DesktopEvent> for App {
             let actions = std::mem::take(&mut ui.menu_actions);
             let file_actions = std::mem::take(&mut ui.file_actions);
             let dialog_actions = std::mem::take(&mut ui.dialog_actions);
+            let point_actions = std::mem::take(&mut ui.dialog_point_actions);
             let text_actions = std::mem::take(&mut ui.dialog_text_actions);
             let control_actions = std::mem::take(&mut ui.dialog_control_actions);
             let modeless_actions = std::mem::take(&mut ui.modeless_actions);
@@ -3626,6 +3627,9 @@ impl ApplicationHandler<DesktopEvent> for App {
             }
             for reply in dialog_actions {
                 self.send_command(runtime_protocol::GuiCommand::Dialog(reply));
+            }
+            for (reply, point) in point_actions {
+                self.send_command(runtime_protocol::GuiCommand::DialogPoint { reply, point });
             }
             for reply in file_actions {
                 self.send_command(runtime_protocol::GuiCommand::FileDialog(reply));

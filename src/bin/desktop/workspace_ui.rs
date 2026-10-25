@@ -65,6 +65,11 @@ pub struct WorkspaceUi {
     pub menu_actions: Vec<(i16, i16)>,
     dialog: Option<std::sync::Arc<systemless::systems::macintosh::host_ui::DialogSnapshot>>,
     pub dialog_actions: Vec<systemless::systems::macintosh::host_ui::DialogReply>,
+    /// Clicks on application-drawn dialog items: reply and offset within the item.
+    pub dialog_point_actions: Vec<(
+        systemless::systems::macintosh::host_ui::DialogReply,
+        (i16, i16),
+    )>,
     dialog_editors: dialog_editors::DialogEditorSessions,
     dialog_surfaces: std::collections::HashMap<u64, systemless_ui::dialog::ModalState>,
     modeless: Vec<std::sync::Arc<systemless::systems::macintosh::host_ui::DialogSnapshot>>,
@@ -253,6 +258,7 @@ impl WorkspaceUi {
                         index == 0 && !self.guest_focused,
                         // The window title bar already names the dialog.
                         false,
+                        None,
                     )
                 },
             );
@@ -684,7 +690,9 @@ impl WorkspaceUi {
                     closable: false,
                 },
                 |ui| {
-                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                    let (rect, response) =
+                        ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                    response.widget_info(|| application_drawn_info(&surface.title));
                     ui.painter().image(texture, rect, uv, egui::Color32::WHITE);
                     rect
                 },
@@ -732,6 +740,7 @@ impl WorkspaceUi {
                     ui.add_space(6.);
                 }
                 let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                response.widget_info(|| application_drawn_info(&surface.title));
                 ui.painter().image(texture, rect, uv, egui::Color32::WHITE);
                 ui.painter().rect_stroke(
                     rect,
@@ -941,6 +950,7 @@ impl WorkspaceUi {
             menu_actions: Vec::new(),
             dialog: None,
             dialog_actions: Vec::new(),
+            dialog_point_actions: Vec::new(),
             dialog_editors: Default::default(),
             dialog_surfaces: Default::default(),
             modeless: Vec::new(),
@@ -1097,12 +1107,13 @@ impl WorkspaceUi {
                 if self.keys.contains(&event.physical_key) {
                     return true;
                 }
-                let owned = self.guest_focused
+                let owned = (self.guest_focused
                     && self
                         .context
                         .memory(|m| m.focused())
                         .is_none_or(|id| id == egui::Id::new("guest-input"))
-                    && self.guest_input_available();
+                    && self.guest_input_available())
+                    || self.filtered_dialog_key(event.physical_key);
                 if owned {
                     self.keys.insert(event.physical_key);
                 }
@@ -1110,6 +1121,37 @@ impl WorkspaceUi {
             }
             _ => false,
         }
+    }
+    /// Keys for a modal dialog whose application filters events go to the
+    /// guest's ModalDialog, as on a Macintosh, unless the host form uses
+    /// them: text fields, focus, and the default/cancel keys that commit
+    /// pending text first.
+    fn filtered_dialog_key(&self, key: winit::keyboard::PhysicalKey) -> bool {
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        let Some(dialog) = self
+            .dialog
+            .as_ref()
+            .filter(|dialog| dialog.guest_filter && !dialog.busy)
+        else {
+            return false;
+        };
+        let standard_button = |item: i16| {
+            dialog
+                .items
+                .iter()
+                .any(|i| i.number == item && i.kind == 4 && i.enabled)
+        };
+        self.modality.owner == UiOwner::Dialog
+            && self.dialog_editors.active.synchronized()
+            && self.context.memory(|m| m.focused()).is_none()
+            && match key {
+                PhysicalKey::Code(KeyCode::Tab) => false,
+                PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                    !standard_button(dialog.default_item)
+                }
+                PhysicalKey::Code(KeyCode::Escape) => !standard_button(dialog.cancel_item),
+                _ => true,
+            }
     }
     fn guest_input_available(&self) -> bool {
         // UI-owned gestures keep their owner until release, even when a
@@ -1379,16 +1421,17 @@ impl WorkspaceUi {
                             .filter(|menu| menu.visible_in_menu_bar && !menu.hierarchical)
                         {
                             ui.add_enabled_ui(menu.enabled && !self.modality.menus_blocked, |ui| {
-                                ui.menu_button(&menu.title, |ui| {
+                                let title = ui.menu_button(&menu.title, |ui| {
                                     let rows = menu_rows(menus, self.menu_help.as_deref(), menu.id, &mut Vec::new());
                                     if let Some(choice) = systemless_ui::menu::items(ui, &rows) {
                                         self.menu_actions.push(choice);
                                     }
                                 });
+                                systemless_ui::menu::mark_menu_title(&title.response);
                             });
                         }
                     }
-                    ui.menu_button("Workspace", |ui| {
+                    let workspace = ui.menu_button("Workspace", |ui| {
                         if ui.button("Reset layout").clicked() {
                             self.dock = initial_layout();
                             ui.close();
@@ -1402,7 +1445,8 @@ impl WorkspaceUi {
                             ui.close();
                         }
                     });
-                    ui.menu_button("Help", |ui| {
+                    systemless_ui::menu::mark_menu_title(&workspace.response);
+                    let help = ui.menu_button("Help", |ui| {
                         let mut enabled = self.balloon_help;
                         let label = if enabled { "Hide Balloons" } else { "Show Balloons" };
                         if ui.button(label).clicked() {
@@ -1412,6 +1456,7 @@ impl WorkspaceUi {
                             ui.close();
                         }
                     });
+                    systemless_ui::menu::mark_menu_title(&help.response);
                 });
             });
             egui::CentralPanel::default().show(ui, |ui| {
@@ -1439,6 +1484,16 @@ impl WorkspaceUi {
             self.show_window_help(ui.ctx());
             if let Some(dialog) = self.dialog.clone().filter(|_| self.modality.owner == UiOwner::Dialog) {
                 let buttons: Vec<_> = dialog.items.iter().filter(|i| i.kind == 4).map(|i| i.number).collect();
+                let (left, top, width, height) = self.crop;
+                let guest_view = texture.filter(|_| width > 0 && height > 0).map(|(id, _)| {
+                    (
+                        id,
+                        egui::Rect::from_min_size(
+                            egui::pos2(left as f32, top as f32),
+                            egui::vec2(width as f32, height as f32),
+                        ),
+                    )
+                });
                 let response = systemless_ui::dialog::show_modal(
                     ui.ctx(),
                     egui::Id::new(("macintosh-dialog", dialog.id)),
@@ -1453,6 +1508,7 @@ impl WorkspaceUi {
                             &mut self.dialog_editors.active,
                             true,
                             true,
+                            guest_view,
                         )
                     },
                 );
@@ -1462,8 +1518,52 @@ impl WorkspaceUi {
                         buttons.contains(id)
                             && dialog.items.iter().any(|i| i.number == *id && i.enabled)
                     });
+                // Default and cancel items the application draws itself have
+                // no host button; their keys click them in the guest. A
+                // filtering application receives the keys instead.
+                if !dialog.busy && !dialog.guest_filter && response.inner.action.is_none() {
+                    let pressed = ui.ctx().input(|input| {
+                        [
+                            (input.key_pressed(egui::Key::Enter), dialog.default_item),
+                            (input.key_pressed(egui::Key::Escape), dialog.cancel_item),
+                        ]
+                    });
+                    for (_, item) in pressed.into_iter().filter(|(pressed, _)| *pressed) {
+                        if let Some(target) = dialog
+                            .items
+                            .iter()
+                            .find(|i| i.number == item && i.kind == 0 && i.enabled && i.guest_rect.is_some())
+                        {
+                            let (top, left, bottom, right) = target.rect;
+                            self.dialog_point_actions.push((
+                                systemless::systems::macintosh::host_ui::DialogReply {
+                                    id: dialog.id,
+                                    revision: dialog.revision,
+                                    item,
+                                },
+                                ((bottom - top) / 2, (right - left) / 2),
+                            ));
+                        }
+                    }
+                }
                 for (id, _) in response.inner.edits {
                     self.dialog_editors.active.edited(id);
+                }
+                for (item, [x, y]) in response.inner.points {
+                    if let Some(source) = dialog.items.iter().find(|source| source.number == item) {
+                        let (top, left, bottom, right) = source.rect;
+                        self.dialog_point_actions.push((
+                            systemless::systems::macintosh::host_ui::DialogReply {
+                                id: dialog.id,
+                                revision: dialog.revision,
+                                item,
+                            },
+                            (
+                                (y * (bottom - top) as f32) as i16,
+                                (x * (right - left) as f32) as i16,
+                            ),
+                        ));
+                    }
                 }
                 for (item, value) in response.inner.values {
                     if let Some(source) = dialog.items.iter().find(|source| source.number == item) {
@@ -1679,6 +1779,7 @@ fn dialog_form(
     editors: &mut dialog_editors::DialogEditors,
     shortcuts: bool,
     heading: bool,
+    guest: Option<(egui::TextureId, egui::Rect)>,
 ) -> systemless_ui::dialog::FormResponse {
     // Buttons render in the action row; help items (1) have no presentation.
     let mut body: Vec<_> = dialog
@@ -1743,11 +1844,38 @@ fn dialog_form(
                 "Application icon"
             } else if i.kind == 64 {
                 "Application picture"
+            } else if i.kind == 0 && i.guest_rect.is_some() {
+                "Application-drawn content"
             } else {
                 &i.text
             },
-            enabled: matches!(i.kind, 8 | 32 | 64) || i.enabled,
+            // Embedded guest pixels are never dimmed: the application draws
+            // their state, and its filter may accept clicks on disabled items.
+            enabled: matches!(i.kind, 0 | 8 | 32 | 64) || i.enabled,
             kind: match i.kind {
+                0 if i.guest_rect.is_some() && guest.is_some() => {
+                    let (texture, crop) = guest.unwrap();
+                    let (top, left, bottom, right) = i.guest_rect.unwrap();
+                    let uv = egui::Rect::from_min_max(
+                        egui::pos2(
+                            (left as f32 - crop.left()) / crop.width(),
+                            (top as f32 - crop.top()) / crop.height(),
+                        ),
+                        egui::pos2(
+                            (right as f32 - crop.left()) / crop.width(),
+                            (bottom as f32 - crop.top()) / crop.height(),
+                        ),
+                    );
+                    systemless_ui::dialog::FieldKind::Embedded {
+                        texture,
+                        uv,
+                        size: [
+                            (right as i32 - left as i32).clamp(1, 1024) as u16,
+                            (bottom as i32 - top as i32).clamp(1, 1024) as u16,
+                        ],
+                        interactive: true,
+                    }
+                }
                 17 => {
                     let range = i.range.unwrap();
                     systemless_ui::dialog::FieldKind::Range {
@@ -1801,6 +1929,8 @@ fn dialog_form(
                 default: dialog.default_item,
                 cancel: dialog.cancel_item,
                 help: &help,
+                // A filtering application may react to clicks anywhere.
+                report_clicks: dialog.guest_filter,
             },
             &mut editors.fields,
             shortcuts,
@@ -1809,11 +1939,24 @@ fn dialog_form(
     .inner
 }
 
-/// Rich/custom items retain guest rendering until their adapters exist.
+/// Accessible description of guest pixels framed by the host: their content
+/// is drawn by the application, so only the frame is described.
+fn application_drawn_info(title: &str) -> egui::WidgetInfo {
+    let label = if title.is_empty() {
+        "Application-drawn content".to_string()
+    } else {
+        format!("{title}: application-drawn content")
+    };
+    egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label)
+}
+
+/// Rich/custom items retain guest rendering until their adapters exist;
+/// application-drawn items embed the guest's own pixels.
 fn host_renderable(dialog: &systemless::systems::macintosh::host_ui::DialogSnapshot) -> bool {
     !dialog.items.is_empty()
         && dialog.items.iter().all(|i| {
             matches!(i.kind, 1 | 4..=7 | 8 | 16)
+                || (i.kind == 0 && i.guest_rect.is_some())
                 || (i.kind == 17
                     && i.range
                         .is_some_and(|range| range.min <= i.value && i.value <= range.max))
@@ -1933,6 +2076,9 @@ impl TabViewer for Viewer<'_> {
                         egui::Id::new("guest-input"),
                         egui::Sense::click_and_drag(),
                     );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Image, true, "Macintosh screen")
+                    });
                     if response.clicked() {
                         response.request_focus();
                     }
@@ -2400,6 +2546,7 @@ mod tests {
                                     range: None,
                                     choices: Vec::new(),
                                     artwork: None,
+                                    guest_rect: None,
                                     number: 1,
                                     kind: 4,
                                     enabled: true,
@@ -2412,6 +2559,7 @@ mod tests {
                                     range: None,
                                     choices: Vec::new(),
                                     artwork: None,
+                                    guest_rect: None,
                                     number: 2,
                                     kind: 4,
                                     enabled: true,
@@ -2424,6 +2572,7 @@ mod tests {
                                     range: None,
                                     choices: Vec::new(),
                                     artwork: None,
+                                    guest_rect: None,
                                     number: 3,
                                     kind: 8,
                                     enabled: true,
@@ -2437,6 +2586,7 @@ mod tests {
                                     range: None,
                                     choices: Vec::new(),
                                     artwork: None,
+                                    guest_rect: None,
                                     number: 4,
                                     kind: 5,
                                     enabled: true,
@@ -2449,6 +2599,7 @@ mod tests {
                                     range: None,
                                     choices: Vec::new(),
                                     artwork: None,
+                                    guest_rect: None,
                                     number: 5,
                                     kind: 6,
                                     enabled: true,
@@ -2459,6 +2610,7 @@ mod tests {
                                 },
                             ],
                             help: Vec::new(),
+                            guest_filter: false,
                         },
                     )),
                     &[43],
@@ -2527,6 +2679,7 @@ mod tests {
                         range: None,
                         choices: Vec::new(),
                         artwork: None,
+                        guest_rect: None,
                         number: 6,
                         kind: 16,
                         enabled: true,
@@ -2541,6 +2694,7 @@ mod tests {
                         range: None,
                         choices: Vec::new(),
                         artwork: None,
+                        guest_rect: None,
                         number: 7,
                         kind: 8,
                         enabled: true,
@@ -2562,6 +2716,7 @@ mod tests {
                                 monochrome: false,
                             },
                         )),
+                        guest_rect: None,
                         number: 8,
                         kind: 32,
                         enabled: false,
@@ -2739,6 +2894,7 @@ mod tests {
                         text: "Quality".into(),
                         value: 1,
                         artwork: None,
+                        guest_rect: None,
                         selection: None,
                     },
                 );
@@ -2795,6 +2951,7 @@ mod tests {
                         }),
                         choices: Vec::new(),
                         artwork: None,
+                        guest_rect: None,
                         number: 10,
                         kind: 17,
                         enabled: true,
@@ -3245,7 +3402,7 @@ mod tests {
                                             Field { id: 4, text: "Retain window layout", enabled: true, kind: FieldKind::Checkbox(true) },
                                         ],
                                         buttons: &[Button { id: 1, text: "Apply", enabled: true }, Button { id: 2, text: "Cancel", enabled: true }],
-                                        default: 1, cancel: 2, help: &[],
+                                        default: 1, cancel: 2, help: &[], report_clicks: false,
                                     }, &mut [], index == 1)
                                 },
                             );
@@ -3306,6 +3463,7 @@ mod tests {
                 range: None,
                 choices: Vec::new(),
                 artwork: None,
+                guest_rect: None,
                 number,
                 kind,
                 enabled: true,
@@ -3338,6 +3496,7 @@ mod tests {
                 cancel_item: 2,
                 busy: false,
                 help: Vec::new(),
+                guest_filter: false,
             }
         }
         pollster::block_on(async {
@@ -4238,6 +4397,129 @@ mod tests {
                 ui.set_guest_windows(&[]);
                 frame(&mut ui);
                 assert!(ui.lifted_windows.is_empty() && ui.guest_window_states.is_empty());
+
+                // A native dialog embeds an application-drawn item as live
+                // guest pixels; clicks map to guest offsets within it.
+                use systemless::systems::macintosh::host_ui::{DialogItemSnapshot, DialogSnapshot};
+                let item = |number: i16, kind: u8, rect: (i16, i16, i16, i16), text: &str| {
+                    DialogItemSnapshot {
+                        range: None,
+                        choices: Vec::new(),
+                        number,
+                        kind,
+                        enabled: true,
+                        rect,
+                        text: text.into(),
+                        value: 0,
+                        selection: None,
+                        artwork: None,
+                        guest_rect: None,
+                    }
+                };
+                let mut embedded = item(2, 0, (10, 10, 50, 90), "");
+                embedded.guest_rect = Some((110, 210, 150, 290));
+                let dialog = DialogSnapshot {
+                    movable: false,
+                    closable: false,
+                    id: 40,
+                    revision: 1,
+                    title: "Registration".into(),
+                    size: (300, 120),
+                    items: vec![item(1, 4, (90, 200, 110, 260), "OK"), embedded],
+                    edit_item: 0,
+                    default_item: 1,
+                    cancel_item: 2,
+                    busy: false,
+                    help: Vec::new(),
+                    guest_filter: true,
+                };
+                ui.set_modality(UiModality {
+                    owner: UiOwner::Dialog,
+                    menus_blocked: true,
+                });
+                ui.set_dialog(Some(std::sync::Arc::new(dialog)), &[40]);
+                for _ in 0..3 {
+                    frame(&mut ui);
+                }
+                let pixels = readback(&device, &queue, &target, size);
+                // The embedded region is the only undimmed magenta.
+                let (mut min, mut max) = ([usize::MAX; 2], [0usize; 2]);
+                for y in 0..size[1] as usize {
+                    for x in 0..size[0] as usize {
+                        let i = (y * size[0] as usize + x) * 4;
+                        if pixels[i] > 200 && pixels[i + 1] < 60 && pixels[i + 2] > 200 {
+                            min = [min[0].min(x), min[1].min(y)];
+                            max = [max[0].max(x), max[1].max(y)];
+                        }
+                    }
+                }
+                let shown = egui::Rect::from_min_max(
+                    egui::pos2(min[0] as f32 / scale, min[1] as f32 / scale),
+                    egui::pos2((max[0] + 1) as f32 / scale, (max[1] + 1) as f32 / scale),
+                );
+                assert!(
+                    (shown.size() - egui::vec2(80., 40.)).length() < 1.5,
+                    "embedded at the item's size: {shown:?}"
+                );
+                let mut click_time = 1000.;
+                let at = shown.min + egui::vec2(20., 10.);
+                for events in [
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    vec![egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    }],
+                ] {
+                    click_time += 0.2;
+                    let mut input = egui::RawInput {
+                        time: Some(click_time),
+                        events,
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1000., 700.),
+                        )),
+                        ..Default::default()
+                    };
+                    input
+                        .viewports
+                        .get_mut(&egui::ViewportId::ROOT)
+                        .unwrap()
+                        .native_pixels_per_point = Some(scale);
+                    let output = ui.build_frame(input);
+                    ui.paint(
+                        &device,
+                        &queue,
+                        &target.create_view(&Default::default()),
+                        size,
+                        output,
+                    );
+                }
+                let actions = std::mem::take(&mut ui.dialog_point_actions);
+                assert_eq!(actions.len(), 1);
+                let (reply, (v, h)) = &actions[0];
+                assert_eq!((reply.id, reply.revision, reply.item), (40, 1, 2));
+                assert!((v - 10).abs() <= 1 && (h - 20).abs() <= 1, "{v} {h}");
+                assert!(ui.dialog_actions.is_empty());
+                // The filtering application receives keys the form does not
+                // need; Return stays with the host's default button.
+                use winit::keyboard::{KeyCode, PhysicalKey};
+                ui.context
+                    .memory_mut(|m| m.surrender_focus(m.focused().unwrap_or(egui::Id::NULL)));
+                assert!(!ui.filtered_dialog_key(PhysicalKey::Code(KeyCode::Enter)));
+                assert!(!ui.filtered_dialog_key(PhysicalKey::Code(KeyCode::Tab)));
+                assert!(ui.filtered_dialog_key(PhysicalKey::Code(KeyCode::Escape)));
+                assert!(ui.filtered_dialog_key(PhysicalKey::Code(KeyCode::KeyY)));
+                ui.set_dialog(None, &[]);
             }
         });
     }

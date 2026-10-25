@@ -246,6 +246,7 @@ mod tests {
                     range: None,
                     choices: Vec::new(),
                     artwork: None,
+                    guest_rect: None,
                     number: 1,
                     kind: 4,
                     enabled: true,
@@ -258,6 +259,7 @@ mod tests {
                     range: None,
                     choices: Vec::new(),
                     artwork: None,
+                    guest_rect: None,
                     number: 2,
                     kind: 16,
                     enabled: true,
@@ -268,6 +270,7 @@ mod tests {
                 },
             ],
             help: Vec::new(),
+            guest_filter: false,
         }
     }
     #[test]

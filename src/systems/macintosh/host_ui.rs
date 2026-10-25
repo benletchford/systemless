@@ -1539,6 +1539,10 @@ pub struct DialogSnapshot {
     pub busy: bool,
     /// Balloon help by item number, published while Balloon Help is on.
     pub help: Vec<(i16, String)>,
+    /// The application filters this dialog's events: keys the frontend does
+    /// not need are forwarded to the guest, and text edits arrive as
+    /// keystrokes the filter can inspect.
+    pub guest_filter: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1574,6 +1578,12 @@ pub struct DialogItemSnapshot {
     /// Normalized character offsets, only for editable text items.
     pub selection: Option<(u16, u16)>,
     pub artwork: Option<std::sync::Arc<DialogArtwork>>,
+    /// The item's rectangle in presented coordinates, for application-drawn
+    /// items (kind 0: user items, custom controls), whose region of the live
+    /// guest frame the frontend shows, and for every item of a dialog whose
+    /// application filters events. Clicks there reach the guest as mouse
+    /// events at the matching point.
+    pub guest_rect: Option<(i16, i16, i16, i16)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1816,6 +1826,7 @@ pub(crate) mod popup_tests {
             cancel_item: 0,
             busy: false,
             help: Vec::new(),
+            guest_filter: false,
         };
         let before = state.project_dialog(snapshot.clone());
         state.invalidate_dialog_snapshot(100);
@@ -1880,6 +1891,7 @@ mod dialog_projection_tests {
             cancel_item: 2,
             busy: false,
             help: Vec::new(),
+            guest_filter: false,
         }
     }
     #[test]

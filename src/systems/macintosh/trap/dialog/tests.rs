@@ -757,9 +757,11 @@
             if host {
                 let old = reply.clone().unwrap();
                 let pointer = disp.dialog_tracking.as_ref().unwrap().dialog_ptr;
+                // A user item is embedded as the guest's own pixels.
                 disp.dialog_items.get_mut(&pointer).unwrap()[0].item_type = 0;
-                assert!(disp.host_dialog(&mut bus).is_none());
-                assert!(!disp.host_ui.dialog_presented(pointer));
+                let embedded = disp.host_dialog(&mut bus).unwrap();
+                assert!(embedded.revision > old.revision);
+                assert!(embedded.items[0].kind == 0 && embedded.items[0].guest_rect.is_some());
                 disp.dialog_items.get_mut(&pointer).unwrap()[0].item_type = 4;
                 let fresh = disp.host_dialog(&mut bus).unwrap();
                 assert!(fresh.revision > old.revision);
@@ -22571,9 +22573,12 @@ fn host_preference_choices_report_live_values_and_guest_hits() {
                     .unwrap()
                     .proc_id = 8
             });
+            let view = disp.host_dialog(&mut bus).unwrap();
             assert!(
-                disp.host_dialog(&mut bus).is_none(),
-                "unsupported CDEFs retain guest rendering"
+                view.items
+                    .iter()
+                    .any(|item| item.kind == 0 && item.guest_rect.is_some()),
+                "unsupported CDEFs are embedded as guest pixels"
             );
             disp.control_manager.with_mut(|records| {
                 records
@@ -23522,8 +23527,12 @@ fn host_dialog_missing_standard_alert_icons_keep_host_presentation() {
             .unwrap();
         let view = disp.host_dialog(&mut bus);
         if icon == 300 {
-            assert!(view.is_none());
-            assert!(!disp.host_ui.dialog_presented(dialog));
+            // Missing artwork: the guest's drawing is embedded instead.
+            let view = view.unwrap();
+            assert!(view
+                .items
+                .iter()
+                .any(|item| item.kind == 0 && item.guest_rect.is_some()));
             continue;
         }
         let view = view.unwrap();
@@ -23592,8 +23601,8 @@ fn host_picture_dialog_preserves_guest_framebuffer_and_picture_item_hit() {
     let handle = TrapDispatcher::dialog_item_handle(&bus, dialog, 2);
     let data = bus.read_long(handle);
     bus.write_byte(data + picture().len() as u32 - 1, 0);
-    assert!(disp.host_dialog(&mut bus).is_none());
-    assert!(!disp.host_ui.dialog_presented(dialog));
+    let embedded = disp.host_dialog(&mut bus).unwrap();
+    assert!(embedded.items[1].kind == 0 && embedded.items[1].guest_rect.is_some());
     bus.write_byte(data + picture().len() as u32 - 1, 255);
     let view = disp.host_dialog(&mut bus).unwrap();
     assert_eq!(view.id, old.id);
@@ -23671,7 +23680,8 @@ fn host_popup_dialog_validates_choices_updates_control_and_returns_item_hit() {
             .handle,
     );
     bus.write_long(menu_data + 6, 0x1234);
-    assert!(disp.host_dialog(&mut bus).is_none());
+    let embedded = disp.host_dialog(&mut bus).unwrap();
+    assert!(embedded.items[1].kind == 0 && embedded.items[1].guest_rect.is_some());
     bus.write_long(menu_data + 6, 0);
     bus.write_bytes(
         menu_data + 16 + u32::from(bus.read_byte(menu_data + 14)),
@@ -23866,10 +23876,13 @@ fn host_dialog_accepts_owned_standard_filter_but_rejects_patched_code() {
         item: 1,
     };
     assert!(disp.host_dialog_item_position(&mut bus, &reply).is_some());
+    assert!(!view.guest_filter, "the owned standard filter is not the application's");
+    // A patched filter is the application's own: it stays in ModalDialog's
+    // loop and the projection says so.
     bus.write_word(filter + 6, 0x7001);
-    assert!(disp.host_dialog(&mut bus).is_none());
-    assert!(!disp.host_ui.dialog_presented(dialog));
-    assert!(disp.host_dialog_item_position(&mut bus, &reply).is_none());
+    let filtered = disp.host_dialog(&mut bus).unwrap();
+    assert!(filtered.guest_filter);
+    assert!(disp.host_ui.dialog_presented(dialog));
     bus.write_word(filter + 6, 0x7000);
     let resumed = disp.host_dialog(&mut bus).unwrap();
     assert_eq!(resumed.id, view.id);
@@ -23881,8 +23894,8 @@ fn host_dialog_accepts_owned_standard_filter_but_rejects_patched_code() {
         .all(|pixel| *pixel == 0x77));
     disp.dialog_tracking.as_mut().unwrap().filter_proc = filter + 6;
     assert!(
-        disp.host_dialog(&mut bus).is_none(),
-        "other callback entry points retain guest presentation"
+        disp.host_dialog(&mut bus).unwrap().guest_filter,
+        "other callback entry points are application filters"
     );
 }
 

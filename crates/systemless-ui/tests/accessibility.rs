@@ -36,6 +36,7 @@ fn accessible_form_exposes_controls_and_accepts_click_actions() {
                         default: 2,
                         cancel: 0,
                         help: &[],
+                        report_clicks: false,
                     },
                     &mut [],
                 ));
@@ -197,9 +198,17 @@ fn accessible_popup_menu_and_window_expose_rows_and_accept_clicks() {
             .cloned()
     };
     let scout = find("Scout").expect("menu rows are accessible");
-    assert_eq!(scout.1.role(), Role::Button);
+    assert_eq!(scout.1.role(), Role::MenuItem, "plain rows are not toggles");
+    assert!(scout.1.toggled().is_none());
     assert!(scout.1.supports_action(Action::Click));
-    assert!(find("Veteran").is_some(), "checked rows keep their names");
+    let veteran = find("Veteran").expect("checked rows keep their names");
+    assert_eq!(veteran.1.role(), Role::MenuItemCheckBox);
+    assert_eq!(veteran.1.toggled(), Some(egui::accesskit::Toggled::True));
+    assert_eq!(
+        veteran.1.label(),
+        Some("Veteran"),
+        "the check glyph is state, not name"
+    );
     assert!(find("Locked").is_some_and(|(_, node)| node.is_disabled()));
     assert!(
         find("Search the document").is_some(),

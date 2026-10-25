@@ -5568,12 +5568,9 @@ fn ppc_modal_dialog(
     toolbox_startup.guest_modal_dialog = Some(dialog);
     toolbox_startup.host_ui.note_dialog_modal(dialog);
     toolbox_startup.pending_native_menu_selection.take();
-    let host_eligible = ppc_host_modal_filter_supported(memory, params.filter_proc())
-        && matches!(ppc_window_proc_id(memory, dialog), 1..=5)
-        && !items.is_empty()
-        && items
-            .iter()
-            .all(|item| ppc_host_dialog_item_kind(controls, item).is_some());
+    // Application filters stay in this loop, which offers them every event;
+    // items Systemless cannot draw are embedded as the guest's own pixels.
+    let host_eligible = matches!(ppc_window_proc_id(memory, dialog), 1..=5) && !items.is_empty();
     if host_eligible {
         toolbox_startup.host_active_dialog = Some(dialog);
         toolbox_startup.host_active_dialog_filter = params.filter_proc();
@@ -6257,15 +6254,6 @@ impl PpcLoadedApp {
             }
             (pointer, busy)
         } else if let Some(dialog) = self.toolbox_startup.host_active_dialog {
-            if !ppc_host_modal_filter_supported(
-                &mut self.memory,
-                self.toolbox_startup.host_active_dialog_filter,
-            ) {
-                let handles = self.handles();
-                self.resume_guest_dialog(dialog, &handles);
-                return None;
-            }
-
             (dialog, false)
         } else {
             // A completed itemHit leaves the dialog visible while application
@@ -6295,15 +6283,27 @@ impl PpcLoadedApp {
         let handles = self.handles();
         let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
         let items = ppc_dialog_items_for_dialog(&mut self.memory, &handles, dialog)?;
-        if self.controls.with_ref(|controls| {
-            items
-                .iter()
-                .any(|item| ppc_host_dialog_item_kind(controls, item).is_none())
-        }) {
+        // Modal dialogs embed items Systemless cannot draw natively; modeless
+        // windows keep guest rendering for them.
+        let can_embed = modeless.is_none();
+        let guest_filter = modeless.is_none()
+            && self.toolbox_startup.host_active_dialog == Some(dialog)
+            && !ppc_host_modal_filter_supported(
+                &mut self.memory,
+                self.toolbox_startup.host_active_dialog_filter,
+            );
+        if !can_embed
+            && self.controls.with_ref(|controls| {
+                items
+                    .iter()
+                    .any(|item| ppc_host_dialog_item_kind(controls, item).is_none())
+            })
+        {
             self.resume_guest_dialog(dialog, &handles);
             return None;
         }
         let mut projected = Vec::new();
+        let mut embeds = false;
         for (index, item) in items.iter().enumerate() {
             let control = (matches!(item.item_type & 0x7f, 4..=7))
                 .then(|| self.memory.read_u32_be(item.handle))
@@ -6321,24 +6321,21 @@ impl PpcLoadedApp {
                 continue;
             }
             let range = self.host_dialog_range(item);
-            if self
+            let kind = self
                 .controls
-                .with_ref(|records| ppc_host_dialog_item_kind(records, item))
-                == Some(17)
-                && range.is_none()
-            {
-                self.resume_guest_dialog(dialog, &handles);
-                return None;
-            }
-            let Some(choices) = self.host_dialog_choices(item, &handles) else {
-                self.resume_guest_dialog(dialog, &handles);
-                return None;
-            };
+                .with_ref(|records| ppc_host_dialog_item_kind(records, item));
+            let choices = self.host_dialog_choices(item, &handles);
             let artwork = self.host_dialog_artwork(dialog, (index + 1) as i16, item, &handles);
-            if matches!(item.item_type & 0x7f, 32 | 64) && artwork.is_none() {
+            let embedded = kind.is_none()
+                || (kind == Some(17) && range.is_none())
+                || choices.is_none()
+                || (matches!(item.item_type & 0x7f, 32 | 64) && artwork.is_none());
+            if embedded && !can_embed {
                 self.resume_guest_dialog(dialog, &handles);
                 return None;
             }
+            embeds |= embedded;
+            let choices = choices.unwrap_or_default();
             let text = if matches!(item.item_type & 0x7f, 32 | 64) {
                 Vec::new()
             } else {
@@ -6353,11 +6350,16 @@ impl PpcLoadedApp {
                 range,
                 choices,
                 number: (index + 1) as i16,
-                artwork,
-                kind: self
-                    .controls
-                    .with_ref(|controls| ppc_host_dialog_item_kind(controls, item))
-                    .unwrap(),
+                artwork: if embedded { None } else { artwork },
+                guest_rect: (embedded || guest_filter).then(|| {
+                    (
+                        bounds.0.saturating_add(rect.0),
+                        bounds.1.saturating_add(rect.1),
+                        bounds.0.saturating_add(rect.2),
+                        bounds.1.saturating_add(rect.3),
+                    )
+                }),
+                kind: kind.filter(|_| !embedded).unwrap_or(0),
                 enabled: item.is_enabled()
                     && self.controls.with_ref(|records| {
                         records
@@ -6442,6 +6444,7 @@ impl PpcLoadedApp {
                 .unwrap_or(0) as i16,
             busy,
             help: Vec::new(),
+            guest_filter,
         };
         let front = ppc_front_buffer_for_gworld(&self.gworlds, PPC_MAIN_GWORLD)?;
         let structure =
@@ -6469,7 +6472,8 @@ impl PpcLoadedApp {
         } else {
             self.toolbox_startup.host_ui.present_dialog(dialog)
         };
-        if restore {
+        // Embedded items show the guest's own drawing, so it stays in place.
+        if restore && !embeds {
             ppc_standard_file_restore_pixels(&mut self.memory, &backing.pixels, backing.front);
         }
         // Balloon help strings come from the help item's `hdlg`.

@@ -21,6 +21,9 @@ pub(super) struct GuiDriver {
     warp_serial: u64,
     file_reply: Option<(u64, u64, u64, bool)>,
     dialog_text_replies: std::collections::HashMap<u64, std::sync::Arc<DialogTextAck>>,
+    /// An edit typed into a filtered dialog: (serial, dialog, item, quiet
+    /// captures). Acknowledged once the guest has consumed the keystrokes.
+    typed_text: Option<(u64, u64, i16, u8)>,
     pending_warp: Option<CursorWarp>,
     #[cfg(target_os = "macos")]
     identity: Option<std::sync::Arc<game::ApplicationIdentity>>,
@@ -98,6 +101,7 @@ impl GuiDriver {
             warp_serial: 0,
             file_reply: None,
             dialog_text_replies: Default::default(),
+            typed_text: None,
             pending_warp: None,
             #[cfg(target_os = "macos")]
             identity: None,
@@ -218,7 +222,14 @@ impl GuiDriver {
         self.force_next_render = true;
         if let GuiCommand::DialogText(reply) = command {
             let (serial, id) = (reply.serial, reply.id);
+            let typed = runner
+                .host_dialog()
+                .is_some_and(|dialog| dialog.guest_filter);
             let accepted = runner.reply_host_dialog_text(&reply);
+            if accepted && typed {
+                self.typed_text = Some((serial, id, reply.item, 0));
+                return;
+            }
             let text = accepted
                 .then(|| runner.host_dialog())
                 .flatten()
@@ -362,6 +373,15 @@ impl GuiDriver {
                     }
                 }
             }
+            GuiCommand::DialogPoint { reply, point } => {
+                if let Some((v, h)) = runner.host_dialog_point_position(&reply, point) {
+                    runner.push_mouse_down(v, h);
+                    mouse_release_latch.press();
+                    if let Some((v, h)) = mouse_release_latch.release((v, h)) {
+                        runner.push_mouse_up(v, h);
+                    }
+                }
+            }
             GuiCommand::DialogControl(reply) => {
                 if let Some((v, h)) = runner.reply_host_dialog_control(&reply) {
                     runner.push_mouse_down(v, h);
@@ -468,6 +488,29 @@ impl GuiDriver {
         output.cursor = runner.dispatcher().cursor().cloned();
         output.modality = runner.ui_modality();
         output.file_reply = self.file_reply;
+        if let Some((serial, id, item, quiet)) = self.typed_text {
+            if runner.host_typed_keys_pending() {
+                self.typed_text = Some((serial, id, item, 0));
+            } else if quiet < 1 {
+                self.typed_text = Some((serial, id, item, quiet + 1));
+            } else {
+                self.typed_text = None;
+                let text = runner
+                    .host_dialog()
+                    .filter(|dialog| dialog.id == id)
+                    .and_then(|dialog| dialog.items.into_iter().find(|i| i.number == item))
+                    .map(|item| item.text);
+                self.dialog_text_replies.insert(
+                    id,
+                    std::sync::Arc::new(DialogTextAck {
+                        serial,
+                        id,
+                        accepted: text.is_some(),
+                        text,
+                    }),
+                );
+            }
+        }
         self.dialog_text_replies
             .retain(|id, _| output.live_dialogs.contains(id));
         output.dialog_text_replies = self.dialog_text_replies.values().cloned().collect();
@@ -1192,7 +1235,15 @@ mod snapshot_tests {
                 let mut state = GuiState::default();
                 let mut seen = std::collections::BTreeMap::<&str, usize>::new();
                 for frame in 0..frames {
-                    super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                    let runner = driver.runner.as_mut().unwrap();
+                    let work = super::super::headless_time::frame(runner, 0);
+                    // Deliver deferred releases as the desktop driver does.
+                    if work.foreground > 0 {
+                        driver.mouse_release_latch.observe_guest_progress();
+                    }
+                    if let Some((v, h)) = driver.mouse_release_latch.take_ready_release() {
+                        runner.push_mouse_up(v, h);
+                    }
                     if driver.runner.as_ref().unwrap().is_halted() {
                         break;
                     }
@@ -1251,7 +1302,10 @@ mod snapshot_tests {
                             [dialog.default_item, dialog.cancel_item]
                                 .into_iter()
                                 .find(|item| {
-                                    dialog.items.iter().any(|i| i.number == *item && i.enabled)
+                                    dialog
+                                        .items
+                                        .iter()
+                                        .any(|i| i.number == *item && i.enabled && i.kind != 0)
                                 })
                         });
                         if let Some(item) = item {
@@ -1260,6 +1314,38 @@ mod snapshot_tests {
                                 revision: dialog.revision,
                                 item,
                             }));
+                        } else {
+                            // No standard button: click an application-drawn
+                            // control that reads like one, or anywhere in a
+                            // dialog whose filter handles clicks itself.
+                            let target = dialog
+                                .items
+                                .iter()
+                                .filter(|i| i.kind == 0 && i.enabled && i.guest_rect.is_some())
+                                .find(|i| {
+                                    ["demo", "continue", "skip", "ok", "done", "cancel"]
+                                        .iter()
+                                        .any(|word| i.text.to_lowercase().starts_with(word))
+                                })
+                                .or_else(|| {
+                                    dialog
+                                        .items
+                                        .iter()
+                                        .filter(|_| dialog.guest_filter)
+                                        .find(|i| i.guest_rect.is_some())
+                                });
+                            if let Some(target) = target {
+                                *seen.entry("dialog-point").or_default() += 1;
+                                let (top, left, bottom, right) = target.rect;
+                                driver.apply_command(GuiCommand::DialogPoint {
+                                    reply: DialogReply {
+                                        id: dialog.id,
+                                        revision: dialog.revision,
+                                        item: target.number,
+                                    },
+                                    point: ((bottom - top) / 2, (right - left) / 2),
+                                });
+                            }
                         }
                     }
                     if let Some(dialog) = state.file_dialog.clone().filter(|d| !d.busy) {
@@ -1321,6 +1407,187 @@ mod snapshot_tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// A dialog whose application filters events stays in egui: edits reach
+    /// TextEdit as keystrokes through ModalDialog and the filter, and the
+    /// acknowledgement waits for the guest's result.
+    #[test]
+    #[ignore = "runs the source-built Macintosh application"]
+    fn workspace_showcase_filtered_dialog_types_edits_through_the_filter() {
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::host_ui::DialogTextReply;
+        let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/toolbox-showcase.sit");
+        let mut driver = driver();
+        driver.workspace = true;
+        let mut runner = game::new_runner_with_configuration(true, 8);
+        runner.set_prefer_powerpc_executables(false);
+        runner.set_host_ui_enabled(true);
+        runner.set_app_start_time(3_000_000_000);
+        let app = game::load_game_from_path(&mut runner, &archive).unwrap();
+        game::init_game(&mut runner, &app);
+        configure_realtime_execution_rate(&mut runner);
+        for _ in 0..60 {
+            super::super::headless_time::frame(&mut runner, 0);
+            if runner
+                .guest_menu_snapshot()
+                .menus
+                .iter()
+                .any(|m| m.id == 132)
+            {
+                break;
+            }
+        }
+        assert!(runner.select_guest_menu_item(132, 6));
+        for _ in 0..120 {
+            super::super::headless_time::frame(&mut runner, 0);
+            if runner.host_dialog().is_some() {
+                break;
+            }
+        }
+        // An application filter that declines every event, at an address of
+        // the application's own: the standard filter's code, copied.
+        let filter = runner.bus_mut().alloc(16);
+        for (offset, word) in [
+            (0, 0x4ef9u16),
+            (6, 0x7000),
+            (8, 0x426f),
+            (10, 0x0010),
+            (12, 0x4e74),
+            (14, 0x000c),
+        ] {
+            runner.bus_mut().write_word(filter + offset, word);
+        }
+        runner.bus_mut().write_long(filter + 2, filter + 6);
+        runner
+            .dispatcher_mut()
+            .dialog_tracking
+            .as_mut()
+            .unwrap()
+            .filter_proc = filter;
+        driver.runner = Some(runner);
+        let mut state = GuiState::default();
+        driver.capture_state(&mut state, false);
+        let source = state.dialog.clone().expect("filtered dialogs stay in egui");
+        assert!(source.guest_filter);
+        assert!(source.items.iter().all(|item| item.guest_rect.is_some()));
+        let field = source
+            .items
+            .iter()
+            .find(|i| i.kind == 16 && i.enabled)
+            .unwrap()
+            .clone();
+        driver.apply_command(GuiCommand::DialogText(DialogTextReply {
+            id: source.id,
+            revision: source.revision,
+            serial: 1,
+            expected: field.text.clone(),
+            item: field.number,
+            text: "Renée".into(),
+            selection: (5, 5),
+        }));
+        driver.capture_state(&mut state, false);
+        assert!(
+            state.dialog_text_replies.is_empty(),
+            "acknowledged only after the guest consumes the keystrokes"
+        );
+        let runner = driver.runner.as_mut().unwrap();
+        assert!(runner.host_typed_keys_pending());
+        for _ in 0..60 {
+            super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+            driver.capture_state(&mut state, false);
+            if !state.dialog_text_replies.is_empty() {
+                break;
+            }
+        }
+        let ack = state
+            .dialog_text_replies
+            .first()
+            .expect("acknowledged")
+            .clone();
+        assert!(ack.accepted);
+        assert_eq!(
+            ack.text.as_deref(),
+            Some("Renée"),
+            "TextEdit received each keystroke"
+        );
+        // Edits inside the text arrive at the selection, as TEKey applies them.
+        // The Showcase reenters ModalDialog without a filter after each item
+        // hit, so the application filter is reinstated for each step.
+        let refilter = |driver: &mut GuiDriver, state: &mut GuiState| {
+            driver
+                .runner
+                .as_mut()
+                .unwrap()
+                .dispatcher_mut()
+                .dialog_tracking
+                .as_mut()
+                .unwrap()
+                .filter_proc = filter;
+            driver.capture_state(state, false);
+            assert!(state.dialog.as_ref().unwrap().guest_filter);
+        };
+        for (serial, (before, after)) in (2..).zip([("Renée", "Re-née"), ("Re-née", "Rnée")]) {
+            refilter(&mut driver, &mut state);
+            let dialog = state.dialog.clone().unwrap();
+            driver.apply_command(GuiCommand::DialogText(DialogTextReply {
+                id: dialog.id,
+                revision: dialog.revision,
+                serial,
+                expected: before.into(),
+                item: field.number,
+                text: after.into(),
+                selection: (0, 0),
+            }));
+            assert!(
+                driver.runner.as_ref().unwrap().host_typed_keys_pending(),
+                "delivered as keystrokes"
+            );
+            for _ in 0..60 {
+                super::super::headless_time::frame(driver.runner.as_mut().unwrap(), 0);
+                driver.capture_state(&mut state, false);
+                if state
+                    .dialog_text_replies
+                    .iter()
+                    .any(|ack| ack.serial == serial)
+                {
+                    break;
+                }
+            }
+            let ack = state
+                .dialog_text_replies
+                .iter()
+                .find(|ack| ack.serial == serial)
+                .expect("acknowledged");
+            assert_eq!(ack.text.as_deref(), Some(after));
+        }
+        let typed = state.dialog.clone().unwrap();
+        assert_eq!(
+            typed
+                .items
+                .iter()
+                .find(|i| i.number == field.number)
+                .unwrap()
+                .text,
+            "Rnée"
+        );
+        // A click anywhere reaches the guest as a mouse event at that point.
+        refilter(&mut driver, &mut state);
+        let typed = state.dialog.clone().unwrap();
+        let label = typed.items.iter().find(|i| i.kind == 8).unwrap();
+        let (top, left, ..) = label.guest_rect.unwrap();
+        assert_eq!(
+            driver.runner.as_mut().unwrap().host_dialog_point_position(
+                &systemless::systems::macintosh::host_ui::DialogReply {
+                    id: typed.id,
+                    revision: typed.revision,
+                    item: label.number,
+                },
+                (2, 3),
+            ),
+            Some((top + 2, left + 3))
+        );
     }
 
     #[test]
@@ -1651,6 +1918,8 @@ mod snapshot_tests {
                 "an enabled application menu cannot queue behind a modal"
             );
             if !powerpc {
+                // An application filter keeps the dialog in egui; the filter
+                // still sees every event in ModalDialog's loop.
                 driver
                     .runner
                     .as_mut()
@@ -1660,6 +1929,40 @@ mod snapshot_tests {
                     .as_mut()
                     .unwrap()
                     .filter_proc = 0x10000;
+                driver.capture_state(&mut state, false);
+                assert!(state
+                    .dialog
+                    .as_ref()
+                    .is_some_and(|dialog| dialog.guest_filter));
+                driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .dispatcher_mut()
+                    .dialog_tracking
+                    .as_mut()
+                    .unwrap()
+                    .filter_proc = 0;
+                // A window definition Systemless cannot frame natively keeps
+                // the guest's drawing, lifted into a host modal surface.
+                let proc_id = driver
+                    .runner
+                    .as_ref()
+                    .unwrap()
+                    .dispatcher()
+                    .dialog_tracking
+                    .as_ref()
+                    .unwrap()
+                    .proc_id;
+                driver
+                    .runner
+                    .as_mut()
+                    .unwrap()
+                    .dispatcher_mut()
+                    .dialog_tracking
+                    .as_mut()
+                    .unwrap()
+                    .proc_id = 16;
                 driver.capture_state(&mut state, false);
                 assert!(state.dialog.is_none());
                 // The guest-rendered fallback is framed by a host modal surface.
@@ -1694,7 +1997,7 @@ mod snapshot_tests {
                     .dialog_tracking
                     .as_mut()
                     .unwrap()
-                    .filter_proc = 0;
+                    .proc_id = proc_id;
                 driver.capture_state(&mut state, false);
                 assert!(
                     state.guest_surface.is_none(),

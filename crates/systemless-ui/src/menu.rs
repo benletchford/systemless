@@ -50,11 +50,12 @@ pub fn items<Id: Copy>(ui: &mut egui::Ui, items: &[Item<Id>]) -> Option<Id> {
         }
         ui.add_enabled_ui(item.enabled, |ui| {
             if !item.children.is_empty() {
-                ui.menu_button(&item.text, |ui| {
+                let response = ui.menu_button(&item.text, |ui| {
                     if let Some(id) = self::items(ui, &item.children) {
                         chosen = Some(id);
                     }
                 });
+                mark_menu_title(&response.response);
                 return;
             }
             // Mark checked rows explicitly: selection fill is invisible on
@@ -64,11 +65,29 @@ pub fn items<Id: Copy>(ui: &mut egui::Ui, items: &[Item<Id>]) -> Option<Id> {
             } else {
                 item.text.clone()
             };
-            let mut button = egui::Button::new(text).selected(item.checked);
+            // Only checked rows opt into toggle semantics; others are plain
+            // menu items to assistive technology.
+            let mut button = egui::Button::new(text);
+            if item.checked {
+                button = button.selected(true);
+            }
             if let Some(shortcut) = &item.shortcut {
                 button = button.shortcut_text(shortcut);
             }
             let mut response = ui.add(button);
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                use egui::accesskit::{Role, Toggled};
+                if item.checked {
+                    node.set_role(Role::MenuItemCheckBox);
+                    node.set_toggled(Toggled::True);
+                } else {
+                    node.set_role(Role::MenuItem);
+                }
+                node.set_label(match &item.shortcut {
+                    Some(shortcut) => format!("{} {shortcut}", item.text),
+                    None => item.text.clone(),
+                });
+            });
             if let Some(help) = &item.help {
                 response = response.on_hover_text(help);
             }
@@ -79,6 +98,15 @@ pub fn items<Id: Copy>(ui: &mut egui::Ui, items: &[Item<Id>]) -> Option<Id> {
         });
     }
     chosen
+}
+
+/// Expose a response that opens a menu (a menu bar title or submenu parent)
+/// as a menu item with a menu popup.
+pub fn mark_menu_title(response: &egui::Response) {
+    response.ctx.accesskit_node_builder(response.id, |node| {
+        node.set_role(egui::accesskit::Role::MenuItem);
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+    });
 }
 
 pub struct PopupResponse<Id> {

@@ -11,6 +11,7 @@ on:
       - '.github/scripts/verify-native-window.py'
       - '.github/scripts/wait-for-window-manager.py'
       - '.github/scripts/test-native-window-cases.py'
+      - '.github/scripts/verify-screen-reader.py'
   workflow_dispatch:
     inputs:
       soak-seconds:
@@ -137,5 +138,52 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: native-workspace-${{ matrix.name }}
+          path: native-window-results/
+          if-no-files-found: warn
+
+  # What screen readers receive: AT-SPI (Orca) on Linux, UI Automation
+  # (NVDA, Narrator) on Windows, driven against the live workspace.
+  screen-reader:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    name: screen reader (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install virtual desktop and accessibility bus
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers at-spi2-core python3-gi gir1.2-atspi-2.0 dbus-x11 libglib2.0-bin
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build optimized native probe
+        run: cargo build --locked --profile ci-test --bin systemless --features test-support
+      - name: Run AT-SPI check
+        if: matrix.name == 'linux'
+        run: |
+          dbus-run-session -- sh -c '
+            /usr/libexec/at-spi-bus-launcher --launch-immediately &
+            for attempt in $(seq 50); do gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress >/dev/null 2>&1 && break; sleep 0.2; done
+            for property in IsEnabled ScreenReaderEnabled; do
+              gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status "$property" "<true>"
+            done
+            xvfb-run -a -s "-screen 0 1600x1200x24" sh -c "openbox & python3 .github/scripts/wait-for-window-manager.py && /usr/bin/python3 .github/scripts/verify-screen-reader.py"
+          '
+      - name: Run UI Automation check
+        if: matrix.name == 'windows'
+        run: python .github/scripts/verify-screen-reader.py
+      - name: Preserve accessibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screen-reader-${{ matrix.name }}
           path: native-window-results/
           if-no-files-found: warn

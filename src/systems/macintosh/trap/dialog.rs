@@ -13208,32 +13208,46 @@ impl super::TrapDispatcher {
                                             (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
                                         if !command_printable {
                                             match char_code {
-                                                // Backspace/Delete or printable ASCII.
-                                                0x08 | 0x20..=0x7E => {
+                                                // Backspace/Delete, printable ASCII or
+                                                // a Mac Roman character.
+                                                0x08 | 0x20..=0x7E | 0x80..=0xFF => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
                                         if let Some(tracking) = self.dialog_tracking.as_mut() {
                                             let text_before = tracking.edit_text.clone();
                                             if tracking.edit_item > 0 {
-                                                if char_code == 0x08 {
-                                                    if !tracking.edit_text_modified {
-                                                        // First backspace clears selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    } else if !tracking.edit_text.is_empty() {
-                                                        tracking.edit_text.pop();
+                                                let cursor = if !tracking.edit_text_modified {
+                                                    // The first key replaces the field's
+                                                    // initial whole-text selection.
+                                                    tracking.edit_text.clear();
+                                                    tracking.edit_text_modified = true;
+                                                    if char_code != 0x08 {
+                                                        tracking.edit_text =
+                                                            decode_mac_roman(&[char_code]);
                                                     }
-                                                } else {
-                                                    if !tracking.edit_text_modified {
-                                                        // First keypress replaces selection
-                                                        tracking.edit_text.clear();
-                                                        tracking.edit_text_modified = true;
-                                                    }
-                                                    tracking.edit_text.push(char_code as char);
-                                                }
-                                                let cursor =
                                                     encode_mac_roman_lossy(&tracking.edit_text)
-                                                        .len();
+                                                        .len()
+                                                } else {
+                                                    // Later keys edit at the selection, as
+                                                    // TEKey does.
+                                                    let (start, end) = tracking
+                                                        .items
+                                                        .get((tracking.edit_item - 1) as usize)
+                                                        .map_or((0, 0), |item| {
+                                                            (
+                                                                item.sel_start.max(0) as usize,
+                                                                item.sel_end.max(0) as usize,
+                                                            )
+                                                        });
+                                                    let (bytes, cursor) = Self::textedit_key_result(
+                                                        &encode_mac_roman_lossy(&tracking.edit_text),
+                                                        start,
+                                                        end,
+                                                        char_code,
+                                                    );
+                                                    tracking.edit_text = decode_mac_roman(&bytes);
+                                                    cursor
+                                                };
                                                 Self::set_tracking_active_edit_selection(
                                                     tracking, cursor, cursor,
                                                 );
@@ -18261,37 +18275,34 @@ impl super::TrapDispatcher {
             )
             .item_number()
         });
-        // Custom controls and application filters retain guest callbacks and presentation.
-        if tracking.is_some_and(|call| !self.host_dialog_filter_supported(bus, call.filter_proc))
-            || !matches!(proc_id, 1..=5)
-            || items.is_empty()
-            || items.iter().enumerate().any(|(i, item)| {
-                self.host_dialog_item_kind(bus, dialog, (i + 1) as i16, item.item_type)
-                    .is_none()
-                    || (self.host_dialog_item_kind(bus, dialog, (i + 1) as i16, item.item_type)
-                        == Some(17)
-                        && self
-                            .host_dialog_range(bus, dialog, (i + 1) as i16)
-                            .is_none())
-                    || self
-                        .host_dialog_choices(bus, dialog, (i + 1) as i16, item.item_type)
-                        .is_none()
-            })
-        {
-            if self.host_ui.unpresent_dialog(dialog) {
-                self.redraw_dialog_window_contents(bus, dialog);
-            }
-            return None;
-        }
+        // Items Systemless cannot draw natively (user items, custom controls,
+        // missing artwork) are embedded as live guest pixels in modal
+        // dialogs; the application keeps drawing them. Application filters
+        // stay in ModalDialog's event loop.
         let artwork: Vec<_> = items
             .iter()
             .enumerate()
             .map(|(i, item)| self.host_dialog_artwork(bus, dialog, (i + 1) as i16, item))
             .collect();
-        if items
+        let embedded: Vec<bool> = items
             .iter()
-            .zip(&artwork)
-            .any(|(item, image)| matches!(item.item_type & 0x7f, 32 | 64) && image.is_none())
+            .enumerate()
+            .map(|(i, item)| {
+                let number = (i + 1) as i16;
+                let kind = self.host_dialog_item_kind(bus, dialog, number, item.item_type);
+                kind.is_none()
+                    || (kind == Some(17) && self.host_dialog_range(bus, dialog, number).is_none())
+                    || self
+                        .host_dialog_choices(bus, dialog, number, item.item_type)
+                        .is_none()
+                    || (matches!(item.item_type & 0x7f, 32 | 64) && artwork[i].is_none())
+            })
+            .collect();
+        let guest_filter =
+            tracking.is_some_and(|call| !self.host_dialog_filter_supported(bus, call.filter_proc));
+        if !matches!(proc_id, 1..=5)
+            || items.is_empty()
+            || (embedded.contains(&true) && (modeless.is_some() || tracking.is_none()))
         {
             if self.host_ui.unpresent_dialog(dialog) {
                 self.redraw_dialog_window_contents(bus, dialog);
@@ -18353,10 +18364,26 @@ impl super::TrapDispatcher {
                             .host_dialog_choices(bus, dialog, number, item.item_type)
                             .unwrap_or_default(),
                         number,
-                        artwork: artwork[i].clone(),
-                        kind: self
-                            .host_dialog_item_kind(bus, dialog, number, item.item_type)
-                            .unwrap(),
+                        artwork: if embedded[i] {
+                            None
+                        } else {
+                            artwork[i].clone()
+                        },
+                        guest_rect: (embedded[i] || guest_filter).then(|| {
+                            let (top, left, bottom, right) = item.rect;
+                            (
+                                bounds.0.saturating_add(top),
+                                bounds.1.saturating_add(left),
+                                bounds.0.saturating_add(bottom),
+                                bounds.1.saturating_add(right),
+                            )
+                        }),
+                        kind: if embedded[i] {
+                            0
+                        } else {
+                            self.host_dialog_item_kind(bus, dialog, number, item.item_type)
+                                .unwrap()
+                        },
                         enabled: item.item_type & 0x80 == 0
                             && !self.dialog_control_inactive(bus, dialog, number)
                             && control.is_none_or(|p| {
@@ -18417,6 +18444,7 @@ impl super::TrapDispatcher {
                 })
                 .collect(),
             help: Vec::new(),
+            guest_filter,
         };
         if snapshot.items.is_empty() {
             if self.host_ui.unpresent_dialog(dialog) {
@@ -18455,7 +18483,8 @@ impl super::TrapDispatcher {
         } else {
             self.host_ui.present_dialog(dialog)
         };
-        if restore {
+        // Embedded items show the guest's own drawing, so it stays in place.
+        if restore && !embedded.contains(&true) {
             if let Some(background) = self.host_dialog_backgrounds.get(&dialog) {
                 self.restore_dialog_pixels(bus, background.bounds, &background.pixels);
             } else {
@@ -18594,6 +18623,8 @@ impl super::TrapDispatcher {
         {
             tracking.edit_item = reply.item;
             tracking.edit_text = normalized.clone();
+            // The host's selection, not the initial select-all, now applies.
+            tracking.edit_text_modified = true;
             if let Some(item) = tracking.items.get_mut((reply.item - 1) as usize) {
                 item.set_text(&normalized);
                 item.sel_start = selection.0 as i16;
