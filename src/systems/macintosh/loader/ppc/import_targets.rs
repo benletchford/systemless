@@ -1326,6 +1326,7 @@ pub enum PpcImportDispatcherTarget {
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
     MathCompatibility(PpcMathCompatibilityOperation),
+    MathFp(PpcFpFunction),
     StdCCompatibility(PpcStdCCompatibilityOperation),
     ObjectSupportCompatibility,
     ObjectSupportCreateOffsetDescriptor,
@@ -2328,6 +2329,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::Rave(
                 super::PpcRaveFunction::from_name(symbol).expect("checked"),
             )
+        }
+        ("MathLib", symbol) if PpcFpFunction::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::MathFp(PpcFpFunction::from_name(symbol).expect("checked"))
         }
         ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
