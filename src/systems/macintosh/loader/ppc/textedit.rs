@@ -50,6 +50,7 @@ pub(crate) const PPC_TE_SCRAP_STYLE_FONT_OFFSET: u32 = 0x08;
 pub(crate) const PPC_TE_SCRAP_STYLE_FACE_OFFSET: u32 = 0x0a;
 pub(crate) const PPC_TE_SCRAP_STYLE_SIZE_OFFSET: u32 = 0x0c;
 pub(crate) const PPC_TE_SCRAP_STYLE_COLOR_OFFSET: u32 = 0x0e;
+pub(crate) const PPC_TE_SCRAP_ELEMENT_SIZE: u32 = 0x14;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PpcTeResolvedStyle {
@@ -1916,6 +1917,107 @@ pub(super) fn ppc_te_scrap_handle(
     if handle != 0 {
         let _ = memory.write_u32_be(crate::memory::globals::addr::TE_SCRP_HANDLE, handle);
         let _ = memory.write_u16_be(crate::memory::globals::addr::TE_SCRP_LENGTH, 0);
+    }
+    handle
+}
+
+/// Inside Macintosh: Text (1993), p. 2-91: TEGetStyleScrapHandle returns a
+/// new StScrpHandle describing each style run in the current selection, or
+/// NIL for a monostyled record. An insertion point yields the style that
+/// typing would use there.
+pub(super) fn ppc_te_style_scrap_for_selection(
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+) -> u32 {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return 0;
+    };
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff) {
+        return 0;
+    }
+    let text_len = ppc_te_text_bytes(memory, handles, te_handle)
+        .map(|text| text.len())
+        .unwrap_or(0);
+    let mut start = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0),
+    );
+    let mut end = usize::from(
+        memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0),
+    );
+    if end < start {
+        std::mem::swap(&mut start, &mut end);
+    }
+    start = start.min(text_len);
+    end = end.min(text_len);
+    let runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+    let mut elements: Vec<(u32, PpcTeResolvedStyle)> = Vec::new();
+    if start == end {
+        let style = ppc_te_null_style_resolved_style(memory, te_handle).unwrap_or_else(|| {
+            ppc_te_style_at_offset(
+                &runs,
+                start.saturating_sub(1).min(text_len.saturating_sub(1)),
+            )
+        });
+        elements.push((0, style));
+    } else {
+        elements.push((0, ppc_te_style_at_offset(&runs, start)));
+        for run in runs
+            .iter()
+            .filter(|run| run.start > start && run.start < end)
+        {
+            if elements.last().map(|(_, style)| *style) != Some(run.style) {
+                elements.push(((run.start - start) as u32, run.style));
+            }
+        }
+    }
+    let size = PPC_TE_SCRAP_STYLE_TAB_OFFSET + PPC_TE_SCRAP_ELEMENT_SIZE * elements.len() as u32;
+    let handle = ppc_allocator_view_allocate_handle(
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        size,
+        true,
+    );
+    let Some(ptr) = memory.read_u32_be(handle).filter(|ptr| *ptr != 0) else {
+        return 0;
+    };
+    let _ = memory.write_u16_be(ptr + PPC_TE_SCRAP_N_STYLES_OFFSET, elements.len() as u16);
+    for (index, (start_char, style)) in elements.iter().enumerate() {
+        let element =
+            ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET + PPC_TE_SCRAP_ELEMENT_SIZE * index as u32;
+        let _ = memory.write_u32_be(element, *start_char);
+        let _ = memory.write_u16_be(
+            element + PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET,
+            style.line_height as u16,
+        );
+        let _ = memory.write_u16_be(
+            element + PPC_TE_SCRAP_STYLE_ASCENT_OFFSET,
+            style.ascent as u16,
+        );
+        let _ = memory.write_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET, style.font as u16);
+        let _ = memory.write_u8(element + PPC_TE_SCRAP_STYLE_FACE_OFFSET, style.face);
+        let _ = memory.write_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET, style.size as u16);
+        for (offset, component) in [style.color.red, style.color.green, style.color.blue]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = memory.write_u16_be(
+                element + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + 2 * offset as u32,
+                component,
+            );
+        }
     }
     handle
 }

@@ -543,6 +543,28 @@ pub(super) fn dispatch_memory_import(
             ppc_apply_process_native_handle(process_memory_manager, handles, handle);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ReallocateHandle => {
+            // Inside Macintosh: Memory (1992), p. 2-56: ReallocateHandle
+            // releases any existing block and allocates a new one of the
+            // requested size for the same master pointer. The old contents are
+            // not preserved.
+            let handle = cpu.gpr[3];
+            let size = cpu.gpr[4];
+            *last_mem_error =
+                process_memory_manager.empty_process_handle_from_native_import(memory, handle);
+            if *last_mem_error == PPC_NO_ERR {
+                *last_mem_error = process_memory_manager
+                    .set_process_handle_size_from_native_import(memory, handle, size);
+            }
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::HLock => {
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {

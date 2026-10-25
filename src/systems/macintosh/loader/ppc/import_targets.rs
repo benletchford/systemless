@@ -31,6 +31,7 @@ pub enum PpcImportDispatcherTarget {
     UnholdMemory,
     DisposeHandle,
     EmptyHandle,
+    ReallocateHandle,
     GetHandleSize,
     SetHandleSize,
     HLock,
@@ -713,6 +714,7 @@ pub enum PpcImportDispatcherTarget {
     TEPaste { dialog: bool },
     TETransferScrap { from_desktop: bool },
     TEScrapHandle,
+    TEGetStyleScrapHandle,
     TEScrapLength { set: bool },
     SelectDialogItemText,
     InitDialogs,
@@ -1311,6 +1313,7 @@ pub enum PpcImportDispatcherTarget {
     VInstall,
     VRemove,
     SlotVInstall,
+    DTInstall,
     SlotVRemove,
     LegacyMemoryUtility(PpcLegacyMemoryUtilityOperation),
     LegacyControl(PpcLegacyControlOperation),
@@ -2797,6 +2800,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "UnholdMemory") => PpcImportDispatcherTarget::UnholdMemory,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
         ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
+        ("InterfaceLib", "ReallocateHandle") => PpcImportDispatcherTarget::ReallocateHandle,
         // The uncached variants change hardware cache policy, not the byte
         // copy contract. Guest memory has no separate hardware cache here.
         ("InterfaceLib", "BlockMove")
@@ -4281,6 +4285,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::TETransferScrap { from_desktop: true }
         }
         ("InterfaceLib", "TEScrapHandle") => PpcImportDispatcherTarget::TEScrapHandle,
+        ("InterfaceLib", "TEGetStyleScrapHandle") => {
+            PpcImportDispatcherTarget::TEGetStyleScrapHandle
+        }
         ("InterfaceLib", "LMGetTEScrpLength" | "TEGetScrapLength") => {
             PpcImportDispatcherTarget::TEScrapLength { set: false }
         }
@@ -4926,6 +4933,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "VInstall") => PpcImportDispatcherTarget::VInstall,
         ("InterfaceLib", "VRemove") => PpcImportDispatcherTarget::VRemove,
         ("InterfaceLib", "SlotVInstall") => PpcImportDispatcherTarget::SlotVInstall,
+        ("InterfaceLib", "DTInstall") => PpcImportDispatcherTarget::DTInstall,
         ("InterfaceLib", "SlotVRemove") => PpcImportDispatcherTarget::SlotVRemove,
         ("InterfaceLib", "BitClr") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::BitClear,

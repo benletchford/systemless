@@ -7,10 +7,26 @@
 
 use super::*;
 
+/// A libm routine named by its fp.h symbol. Equality compares the symbol,
+/// since function pointer addresses are not guaranteed to be unique.
+#[derive(Debug, Clone, Copy)]
+pub struct PpcFpRoutine<F> {
+    pub name: &'static str,
+    pub routine: F,
+}
+
+impl<F> PartialEq for PpcFpRoutine<F> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl<F> Eq for PpcFpRoutine<F> {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcFpFunction {
-    Unary(fn(f64) -> f64),
-    Binary(fn(f64, f64) -> f64),
+    Unary(PpcFpRoutine<fn(f64) -> f64>),
+    Binary(PpcFpRoutine<fn(f64, f64) -> f64>),
     Frexp,
     Remquo,
     Scalb,
@@ -22,31 +38,97 @@ pub enum PpcFpFunction {
 impl PpcFpFunction {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
-            "acosh" => Self::Unary(libm::acosh),
-            "asinh" => Self::Unary(libm::asinh),
-            "atanh" => Self::Unary(libm::atanh),
-            "cosh" => Self::Unary(libm::cosh),
-            "sinh" => Self::Unary(libm::sinh),
-            "tanh" => Self::Unary(libm::tanh),
-            "erf" => Self::Unary(libm::erf),
-            "erfc" => Self::Unary(libm::erfc),
-            "exp2" => Self::Unary(libm::exp2),
-            "expm1" => Self::Unary(libm::expm1),
-            "log1p" => Self::Unary(libm::log1p),
-            "log2" => Self::Unary(libm::log2),
+            "acosh" => Self::Unary(PpcFpRoutine {
+                name: "acosh",
+                routine: libm::acosh,
+            }),
+            "asinh" => Self::Unary(PpcFpRoutine {
+                name: "asinh",
+                routine: libm::asinh,
+            }),
+            "atanh" => Self::Unary(PpcFpRoutine {
+                name: "atanh",
+                routine: libm::atanh,
+            }),
+            "cosh" => Self::Unary(PpcFpRoutine {
+                name: "cosh",
+                routine: libm::cosh,
+            }),
+            "sinh" => Self::Unary(PpcFpRoutine {
+                name: "sinh",
+                routine: libm::sinh,
+            }),
+            "tanh" => Self::Unary(PpcFpRoutine {
+                name: "tanh",
+                routine: libm::tanh,
+            }),
+            "erf" => Self::Unary(PpcFpRoutine {
+                name: "erf",
+                routine: libm::erf,
+            }),
+            "erfc" => Self::Unary(PpcFpRoutine {
+                name: "erfc",
+                routine: libm::erfc,
+            }),
+            "exp2" => Self::Unary(PpcFpRoutine {
+                name: "exp2",
+                routine: libm::exp2,
+            }),
+            "expm1" => Self::Unary(PpcFpRoutine {
+                name: "expm1",
+                routine: libm::expm1,
+            }),
+            "log1p" => Self::Unary(PpcFpRoutine {
+                name: "log1p",
+                routine: libm::log1p,
+            }),
+            "log2" => Self::Unary(PpcFpRoutine {
+                name: "log2",
+                routine: libm::log2,
+            }),
             // fp.h gamma is the gamma function itself, not its logarithm.
-            "gamma" => Self::Unary(libm::tgamma),
-            "lgamma" => Self::Unary(libm::lgamma),
+            "gamma" => Self::Unary(PpcFpRoutine {
+                name: "gamma",
+                routine: libm::tgamma,
+            }),
+            "lgamma" => Self::Unary(PpcFpRoutine {
+                name: "lgamma",
+                routine: libm::lgamma,
+            }),
             // nearbyint rounds in the current (round-to-nearest) mode
             // without raising inexact, which rint's result matches.
-            "nearbyint" => Self::Unary(libm::rint),
-            "trunc" => Self::Unary(libm::trunc),
-            "copysign" => Self::Binary(libm::copysign),
-            "fdim" => Self::Binary(libm::fdim),
-            "fmax" => Self::Binary(libm::fmax),
-            "fmin" => Self::Binary(libm::fmin),
-            "remainder" => Self::Binary(libm::remainder),
-            "nextafterd" => Self::Binary(libm::nextafter),
+            "nearbyint" => Self::Unary(PpcFpRoutine {
+                name: "nearbyint",
+                routine: libm::rint,
+            }),
+            "trunc" => Self::Unary(PpcFpRoutine {
+                name: "trunc",
+                routine: libm::trunc,
+            }),
+            "copysign" => Self::Binary(PpcFpRoutine {
+                name: "copysign",
+                routine: libm::copysign,
+            }),
+            "fdim" => Self::Binary(PpcFpRoutine {
+                name: "fdim",
+                routine: libm::fdim,
+            }),
+            "fmax" => Self::Binary(PpcFpRoutine {
+                name: "fmax",
+                routine: libm::fmax,
+            }),
+            "fmin" => Self::Binary(PpcFpRoutine {
+                name: "fmin",
+                routine: libm::fmin,
+            }),
+            "remainder" => Self::Binary(PpcFpRoutine {
+                name: "remainder",
+                routine: libm::remainder,
+            }),
+            "nextafterd" => Self::Binary(PpcFpRoutine {
+                name: "nextafterd",
+                routine: libm::nextafter,
+            }),
             "frexp" => Self::Frexp,
             "remquo" => Self::Remquo,
             "scalb" => Self::Scalb,
@@ -88,8 +170,8 @@ pub(crate) fn ppc_dispatch_fp(
     let x = f64::from_bits(cpu.fpr[1]);
     let y = f64::from_bits(cpu.fpr[2]);
     let result = match function {
-        PpcFpFunction::Unary(f) => f(x),
-        PpcFpFunction::Binary(f) => f(x, y),
+        PpcFpFunction::Unary(f) => (f.routine)(x),
+        PpcFpFunction::Binary(f) => (f.routine)(x, y),
         PpcFpFunction::Frexp => {
             // double frexp(double x, int *exponent).
             let (mantissa, exponent) = libm::frexp(x);

@@ -110,9 +110,58 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             });
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::DTInstall => {
+            // Inside Macintosh: Processes (1994), pp. 6-12 to 6-13: DTInstall
+            // queues a DeferredTask (qType dtQType = 7, dtAddr at 8, dtParam at
+            // 12) to run once interrupts are re-enabled, and returns vTypErr
+            // for any other qType. Systemless runs interrupt-level work
+            // synchronously, so the task runs as soon as it is installed.
+            let task_ptr = cpu.gpr[3];
+            if task_ptr == 0
+                || memory.read_u16_be(task_ptr + PPC_DEFERRED_TASK_QTYPE_OFFSET)
+                    != Some(PPC_DT_QTYPE)
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_VTYPE_ERR)));
+            }
+            let routine = memory
+                .read_u32_be(task_ptr + PPC_DEFERRED_TASK_ADDR_OFFSET)
+                .unwrap_or(0);
+            let param = memory
+                .read_u32_be(task_ptr + PPC_DEFERRED_TASK_PARAM_OFFSET)
+                .unwrap_or(0);
+            let restore_rtoc = cpu.gpr[2];
+            let final_pc = cpu.lr;
+            let Some(target) = (routine != 0)
+                .then(|| ppc_resolve_callback_target(memory, routine, restore_rtoc, None))
+                .flatten()
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
+            };
+            install_powerpc_call_arguments(cpu, memory, &[param])?;
+            GuestCallEffect::call_guest(
+                GuestCallRequest::new(GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: target.entry,
+                    rtoc: target.rtoc,
+                }),
+                GuestCallContinuation::to_powerpc(
+                    PPC_GUEST_CALL_RETURN_PC,
+                    final_pc,
+                    restore_rtoc,
+                    PpcNativeReturnGpr3::Set(ppc_i16_result(PPC_NO_ERR)),
+                ),
+            )
+            .into_ppc_import_action()
+        }
         _ => None,
     }
 }
+
+const PPC_DT_QTYPE: u16 = 7;
+const PPC_VTYPE_ERR: i16 = -2;
+const PPC_DEFERRED_TASK_QTYPE_OFFSET: u32 = 4;
+const PPC_DEFERRED_TASK_ADDR_OFFSET: u32 = 8;
+const PPC_DEFERRED_TASK_PARAM_OFFSET: u32 = 12;
 
 pub(crate) fn ppc_install_vbl_task(
     memory: &mut PpcSectionMem,
