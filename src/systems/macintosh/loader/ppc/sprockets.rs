@@ -244,6 +244,11 @@ pub struct PpcInputSprocketState {
     pub last_virtual_elements_out_ptr: u32,
     pub keyboard_defaults: PpcInputSprocketKeyboardDefaults,
     pub keyboard_default_cursor: u32,
+    /// The mouse position and button last reported through the mouse
+    /// device's own elements, so ISpElement_GetNextEvent can report changes.
+    pub device_mouse_h: Option<i16>,
+    pub device_mouse_v: Option<i16>,
+    pub device_mouse_button: bool,
 }
 
 impl Default for PpcInputSprocketState {
@@ -260,6 +265,9 @@ impl Default for PpcInputSprocketState {
             last_virtual_elements_out_ptr: 0,
             keyboard_defaults: PpcInputSprocketKeyboardDefaults::default(),
             keyboard_default_cursor: 0,
+            device_mouse_h: None,
+            device_mouse_v: None,
+            device_mouse_button: false,
         }
     }
 }
@@ -2627,6 +2635,41 @@ pub(crate) fn ppc_isp_element_list_get_next_event(
     PPC_NO_ERR
 }
 
+/// Apple Game Sprockets Legacy Reference (2003), p. 62:
+/// ISpElement_GetNextEvent reports one change on a single element. The mouse
+/// device's delta elements report the Fixed-point movement since they were
+/// last read, positive right and up; its button reports 1 on press and 0 on
+/// release. Returns the event data, or None when nothing changed.
+pub(crate) fn ppc_isp_device_element_next_event(
+    element: u32,
+    input: PpcInputSnapshot,
+    input_sprocket: &mut PpcInputSprocketState,
+) -> Option<u32> {
+    if !input_sprocket.mouse_active {
+        return None;
+    }
+    match element {
+        PPC_ISP_MOUSE_X_ELEMENT => {
+            let last = input_sprocket.device_mouse_h.replace(input.mouse_h);
+            let delta = i32::from(input.mouse_h) - i32::from(last?);
+            (delta != 0).then_some(delta.wrapping_shl(16) as u32)
+        }
+        PPC_ISP_MOUSE_Y_ELEMENT => {
+            let last = input_sprocket.device_mouse_v.replace(input.mouse_v);
+            let delta = i32::from(last?) - i32::from(input.mouse_v);
+            (delta != 0).then_some(delta.wrapping_shl(16) as u32)
+        }
+        PPC_ISP_MOUSE_BUTTON_ELEMENT => {
+            if input.mouse_button == input_sprocket.device_mouse_button {
+                return None;
+            }
+            input_sprocket.device_mouse_button = input.mouse_button;
+            Some(u32::from(input.mouse_button))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn ppc_isp_element_list_flush(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -3699,7 +3742,7 @@ pub(crate) fn ppc_isp_element_get_simple_state(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     input: PpcInputSnapshot,
-    input_sprocket: PpcInputSprocketState,
+    input_sprocket: &mut PpcInputSprocketState,
     virtual_elements: &[PpcInputSprocketVirtualElementRecord],
 ) -> i16 {
     let element = cpu.gpr[3];
@@ -3709,6 +3752,24 @@ pub(crate) fn ppc_isp_element_get_simple_state(
     }
     if !ppc_memory_can_write_bytes(memory, state_ptr, 4) {
         return PPC_PARAM_ERR;
+    }
+    // The emulated devices' own elements are opaque references rather than
+    // guest records. A delta element's state is the movement since it was
+    // last read, shared with its events; the button reports whether it is
+    // held.
+    let device_state = match element {
+        PPC_ISP_MOUSE_BUTTON_ELEMENT => {
+            Some(u32::from(input_sprocket.mouse_active && input.mouse_button))
+        }
+        PPC_ISP_MOUSE_X_ELEMENT | PPC_ISP_MOUSE_Y_ELEMENT => {
+            Some(ppc_isp_device_element_next_event(element, input, input_sprocket).unwrap_or(0))
+        }
+        PPC_ISP_KEYBOARD_ELEMENT => Some(0),
+        _ => None,
+    };
+    if let Some(state) = device_state {
+        let _ = memory.write_u32_be(state_ptr, state);
+        return PPC_NO_ERR;
     }
     let (Some(kind), Some(fallback_state)) =
         (memory.read_u32_be(element), memory.read_u32_be(element + 4))
@@ -3723,7 +3784,7 @@ pub(crate) fn ppc_isp_element_get_simple_state(
         kind,
         fallback_state,
         input,
-        input_sprocket,
+        *input_sprocket,
         action_binding,
         keyboard_binding,
     );
