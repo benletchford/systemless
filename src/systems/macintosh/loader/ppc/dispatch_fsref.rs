@@ -176,7 +176,7 @@ fn ppc_fsref_scratch(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> Result<u32, i1
     }
 }
 
-fn ppc_read_fsref(memory: &mut PpcSectionMem, ref_ptr: u32) -> Result<(i16, u32, Vec<u8>), i16> {
+pub(super) fn ppc_read_fsref(memory: &mut PpcSectionMem, ref_ptr: u32) -> Result<(i16, u32, Vec<u8>), i16> {
     if ref_ptr == 0 {
         return Err(PPC_PARAM_ERR);
     }

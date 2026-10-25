@@ -249,6 +249,7 @@ pub(super) fn dispatch_core_foundation_import(
     last_mem_error: &mut i16,
     toolbox_startup: &mut PpcToolboxStartupState,
     vfs_files: &ProcessVfsFileRecords,
+    vfs_directories: &[PpcVfsDirectory],
     launched_app_path: Option<&str>,
 ) -> Option<PpcImportAction> {
     let state = &mut toolbox_startup.cf_strings;
@@ -342,6 +343,52 @@ pub(super) fn dispatch_core_foundation_import(
                     last_mem_error,
                 )
             })))
+        }
+        PpcImportDispatcherTarget::CfStringCreateWithCharacters => {
+            // CFStringCreateWithCharacters(allocator, const UniChar *chars,
+            // CFIndex numChars) copies UTF-16 code units into a new string.
+            let count = cpu.gpr[5] as usize;
+            let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[4], (count * 2) as u32)
+                .or_else(|| (count == 0).then(Vec::new))
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
+                .collect();
+            let value = String::from_utf16_lossy(&units);
+            let reference = state.create(
+                value,
+                false,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfStringCompare => {
+            // CFStringCompare(a, b, CFStringCompareFlags) returns
+            // kCFCompareLessThan (-1), EqualTo (0), or GreaterThan (1);
+            // kCFCompareCaseInsensitive (1) folds case.
+            let (Some(a), Some(b)) = (
+                state.objects.get(&cpu.gpr[3]),
+                state.objects.get(&cpu.gpr[4]),
+            ) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let ordering = if cpu.gpr[5] & 1 != 0 {
+                a.value.to_lowercase().cmp(&b.value.to_lowercase())
+            } else {
+                a.value.cmp(&b.value)
+            };
+            Some(PpcImportAction::Return(ordering as i32 as u32))
+        }
+        PpcImportDispatcherTarget::CfBooleanGetValue => {
+            // Booleans only reach this runtime's guests from property lists,
+            // which it does not decode into CFBoolean objects.
+            Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::CfStringGetLength => {
             // CFString.h: length is the number of 16-bit Unicode code units.
@@ -596,6 +643,147 @@ pub(super) fn dispatch_core_foundation_import(
             let reference = state.create_url(
                 path,
                 true,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfBundleCopyBundleUrl => {
+            // CFBundleCopyBundleURL returns a caller-owned directory URL for
+            // the bundle's top-level folder.
+            let root = state
+                .main_bundle
+                .as_ref()
+                .filter(|bundle| bundle.reference == cpu.gpr[3])
+                .map(|bundle| {
+                    bundle_root(&bundle.path)
+                        .unwrap_or(&bundle.path)
+                        .to_string()
+                })
+                .or_else(|| {
+                    state
+                        .bundles
+                        .get(&cpu.gpr[3])
+                        .map(|bundle| bundle.path.clone())
+                });
+            let Some(root) = root else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let reference = state.create_url(
+                root,
+                true,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfBundleCopyResourceUrl => {
+            // CFBundleCopyResourceURL(bundle, resourceName, resourceType,
+            // subDirName) finds Contents/Resources/[subDir/]name[.type], or
+            // returns NULL when no such file exists.
+            let root = state
+                .main_bundle
+                .as_ref()
+                .filter(|bundle| bundle.reference == cpu.gpr[3])
+                .and_then(|bundle| bundle_root(&bundle.path).map(str::to_string))
+                .or_else(|| {
+                    state
+                        .bundles
+                        .get(&cpu.gpr[3])
+                        .map(|bundle| bundle.path.clone())
+                });
+            let string = |reference: u32| {
+                state
+                    .objects
+                    .get(&reference)
+                    .map(|object| object.value.clone())
+            };
+            let (Some(root), Some(name)) = (root, string(cpu.gpr[4])) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let file = match string(cpu.gpr[5]).filter(|kind| !kind.is_empty()) {
+                Some(kind) => format!("{name}.{kind}"),
+                None => name,
+            };
+            let directory = match string(cpu.gpr[6]).filter(|sub| !sub.is_empty()) {
+                Some(sub) => format!("{root}/Contents/Resources/{sub}"),
+                None => format!("{root}/Contents/Resources"),
+            };
+            let path = format!("{directory}/{file}");
+            let is_directory = vfs_directories
+                .iter()
+                .any(|entry| entry.path.eq_ignore_ascii_case(&path));
+            if !is_directory
+                && !vfs_files
+                    .iter()
+                    .any(|entry| entry.path.eq_ignore_ascii_case(&path))
+            {
+                return Some(PpcImportAction::Return(0));
+            }
+            let reference = state.create_url(
+                path,
+                is_directory,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfBundleGetFunctionPointerForName => {
+            // A CFM application's main bundle and the bundles CFBundleCreate
+            // opens here export no Mach-O symbols, so lookups find nothing,
+            // as under CarbonLib on Mac OS 9.
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::CfUrlGetFsRef => {
+            // CFURLGetFSRef(url, FSRef *) returns true when the URL names an
+            // existing object.
+            let Some(url) = state.urls.get(&cpu.gpr[3]) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let exists = vfs_directories
+                .iter()
+                .any(|entry| entry.path.eq_ignore_ascii_case(&url.path))
+                || vfs_files
+                    .iter()
+                    .any(|entry| entry.path.eq_ignore_ascii_case(&url.path));
+            let written = exists
+                && super::dispatch_fsref::ppc_write_fsref_parts(
+                    memory,
+                    cpu.gpr[4],
+                    PPC_BOOT_VOLUME_REF_NUM,
+                    ppc_parent_dir_id_for_path(vfs_directories, &url.path),
+                    &ppc_vfs_basename_bytes(&url.path),
+                );
+            Some(PpcImportAction::Return(u32::from(written)))
+        }
+        PpcImportDispatcherTarget::CfUrlCreateFromFsRef => {
+            // CFURLCreateFromFSRef(allocator, const FSRef *) returns a
+            // caller-owned URL for the object the ref names.
+            let Ok((_, parent, name)) = super::dispatch_fsref::ppc_read_fsref(memory, cpu.gpr[4])
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, parent) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let name = crate::mac_roman::decode_mac_roman(&name);
+            let path = if parent_path.is_empty() {
+                name
+            } else {
+                format!("{parent_path}/{name}")
+            };
+            let is_directory = vfs_directories
+                .iter()
+                .any(|entry| entry.path.eq_ignore_ascii_case(&path));
+            let reference = state.create_url(
+                path,
+                is_directory,
                 process_memory_manager,
                 memory,
                 heap_cursor,

@@ -923,6 +923,14 @@ pub enum PpcImportDispatcherTarget {
     CfBundleCopyPrivateFrameworksUrl,
     CfUrlCreateCopyAppendingPathComponent,
     CfBundleCreate,
+    CfBundleCopyBundleUrl,
+    CfBundleCopyResourceUrl,
+    CfBundleGetFunctionPointerForName,
+    CfUrlGetFsRef,
+    CfUrlCreateFromFsRef,
+    CfStringCompare,
+    CfStringCreateWithCharacters,
+    CfBooleanGetValue,
     CfBundleLoadExecutable,
     LowerText,
     StripText,
@@ -4519,6 +4527,22 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
         }
         ("InterfaceLib", "CFBundleCreate") => PpcImportDispatcherTarget::CfBundleCreate,
+        ("InterfaceLib", "CFBundleCopyBundleURL") => {
+            PpcImportDispatcherTarget::CfBundleCopyBundleUrl
+        }
+        ("InterfaceLib", "CFBundleCopyResourceURL") => {
+            PpcImportDispatcherTarget::CfBundleCopyResourceUrl
+        }
+        ("InterfaceLib", "CFBundleGetFunctionPointerForName") => {
+            PpcImportDispatcherTarget::CfBundleGetFunctionPointerForName
+        }
+        ("InterfaceLib", "CFURLGetFSRef") => PpcImportDispatcherTarget::CfUrlGetFsRef,
+        ("InterfaceLib", "CFURLCreateFromFSRef") => PpcImportDispatcherTarget::CfUrlCreateFromFsRef,
+        ("InterfaceLib", "CFStringCompare") => PpcImportDispatcherTarget::CfStringCompare,
+        ("InterfaceLib", "CFStringCreateWithCharacters") => {
+            PpcImportDispatcherTarget::CfStringCreateWithCharacters
+        }
+        ("InterfaceLib", "CFBooleanGetValue") => PpcImportDispatcherTarget::CfBooleanGetValue,
         ("InterfaceLib", "CFBundleLoadExecutable") => {
             PpcImportDispatcherTarget::CfBundleLoadExecutable
         }
