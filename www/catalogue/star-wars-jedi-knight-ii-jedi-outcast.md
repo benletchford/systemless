@@ -11,7 +11,7 @@ architectures:
 default_architecture: ppc
 category: FPS
 compatibility:
-  status: broken
+  status: boots
   verified:
   - date: "2026-09-28"
     tester: Catalogue maintainer
@@ -23,6 +23,17 @@ compatibility:
       browser launch have not been verified.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/3319
+  - date: "2026-10-25"
+    tester: Catalogue maintainer
+    systemless_version: ea0d5998231187cf3d37abb745c0aae5ca0f7cd1
+    architecture: ppc
+    environment: >-
+      Native replay of the unchanged demo. The game executable is CFM and the Mach-O
+      HID bundle is optional, so startup continues past CFBundleLoadExecutable and
+      reaches the OpenGL main menu. Keyboard navigation opens the LOAD GAME page.
+      Starting a level, gameplay and browser launch have not been verified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5009
 artifacts:
 - id: archive
   role: archive
@@ -57,5 +68,5 @@ references:
 ## The original Mac demo
 
 This is the unchanged 2002 Mac demo package. Its Classic Mac executable is
-PowerPC only. Browser launch is disabled while Systemless work on the demo's
-PowerPC library loading continues.
+PowerPC only. It reaches its OpenGL main menu in Systemless, and keyboard input
+drives the menus. Browser launch stays disabled until gameplay is verified.
