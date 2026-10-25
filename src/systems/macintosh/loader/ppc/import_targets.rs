@@ -1309,6 +1309,7 @@ pub enum PpcImportDispatcherTarget {
     QuickDrawCompatibility(PpcQuickDrawCompatibilityOperation),
     SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility(PpcFileCompatibilityOperation),
+    FsRef(PpcFsRefOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     SoundSprocket(PpcSoundSprocketFunction),
     DebugStr { c_string: bool },
@@ -1477,6 +1478,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SoundSprocket(
                 PpcSoundSprocketFunction::from_name(symbol).expect("checked"),
             )
+        }
+        ("InterfaceLib", symbol) if PpcFsRefOperation::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::FsRef(PpcFsRefOperation::from_name(symbol).expect("checked"))
         }
         ("NetSprocketLib", "NSpInitialize") => PpcImportDispatcherTarget::NSpInitialize,
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,

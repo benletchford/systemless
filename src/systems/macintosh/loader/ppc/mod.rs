@@ -129,6 +129,7 @@ mod dispatch_dialog;
 mod dispatch_drawsprocket;
 mod dispatch_event;
 mod dispatch_files;
+mod dispatch_fsref;
 mod dispatch_fonts;
 mod font_swap;
 mod dispatch_gestalt;
@@ -344,6 +345,8 @@ pub use dispatch_printing::PpcPrintingCompatibilityOperation;
 pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
 
 pub use dispatch_files::PpcFileCompatibilityOperation;
+use dispatch_fsref::ppc_write_volume_root_fsref;
+pub use dispatch_fsref::PpcFsRefOperation;
 
 pub use files::{PpcDeleteByNameOperation, PpcParameterBlockCreateOperation};
 
