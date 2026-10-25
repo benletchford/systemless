@@ -1,5 +1,232 @@
+use super::super::dispatch_core_foundation::PpcCfNumberValue;
 use super::*;
 use crate::process_context::ProcessVfsFileRecord;
+
+fn make_test_cfstring(loaded: &mut PpcLoadedApp, address: u32, text: &str) -> u32 {
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.push(0);
+    loaded.memory.write_bytes(address, &bytes).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = address;
+    loaded.cpu.gpr[5] = 0x0800_0100;
+    run_test_import(loaded, PpcImportDispatcherTarget::CfStringCreateWithCString);
+    loaded.cpu.gpr[3]
+}
+
+fn read_test_cfstring(loaded: &mut PpcLoadedApp, reference: u32, buffer: u32) -> String {
+    loaded.cpu.gpr[3] = reference;
+    loaded.cpu.gpr[4] = buffer;
+    loaded.cpu.gpr[5] = 256;
+    loaded.cpu.gpr[6] = 0x0800_0100;
+    run_test_import(loaded, PpcImportDispatcherTarget::CfStringGetCString);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    let mut bytes = Vec::new();
+    for offset in 0.. {
+        match loaded.memory.read_u8(buffer + offset).unwrap() {
+            0 => break,
+            byte => bytes.push(byte),
+        }
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
+#[test]
+fn carbon_cf_collections_read_values_by_index_key_and_number_type() {
+    for (symbol, target) in [
+        (
+            "CFArrayGetCount",
+            PpcImportDispatcherTarget::CfArrayGetCount,
+        ),
+        (
+            "CFArrayGetValueAtIndex",
+            PpcImportDispatcherTarget::CfArrayGetValueAtIndex,
+        ),
+        (
+            "CFDictionaryGetValue",
+            PpcImportDispatcherTarget::CfDictionaryGetValue,
+        ),
+        (
+            "CFNumberGetValue",
+            PpcImportDispatcherTarget::CfNumberGetValue,
+        ),
+    ] {
+        assert_eq!(dispatcher_target_for_import("CarbonLib", symbol), target);
+    }
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CFArrayGetCount")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    let width_key = make_test_cfstring(&mut loaded, scratch, "Width");
+    let lookup_key = make_test_cfstring(&mut loaded, scratch + 0x40, "Width");
+    let missing_key = make_test_cfstring(&mut loaded, scratch + 0x80, "Height");
+    let (array, dictionary) = (0x7000_0000, 0x7000_0010);
+    let (number, float) = (0x7000_0020, 0x7000_0030);
+    let state = &mut loaded.toolbox_startup.cf_strings;
+    state.insert_array(array, vec![dictionary, number]);
+    state.insert_dictionary(dictionary, vec![(width_key, number)]);
+    state.insert_number(number, PpcCfNumberValue::Integer(640));
+    state.insert_number(float, PpcCfNumberValue::Float(2.5_f64.to_bits()));
+
+    loaded.cpu.gpr[3] = array;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfArrayGetCount);
+    assert_eq!(loaded.cpu.gpr[3], 2);
+    loaded.cpu.gpr[3] = array;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfArrayGetValueAtIndex,
+    );
+    assert_eq!(loaded.cpu.gpr[3], dictionary);
+    loaded.cpu.gpr[3] = array;
+    loaded.cpu.gpr[4] = 2;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfArrayGetValueAtIndex,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    // Keys match by CFEqual, so an equal string found elsewhere matches.
+    loaded.cpu.gpr[3] = dictionary;
+    loaded.cpu.gpr[4] = lookup_key;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfDictionaryGetValue);
+    assert_eq!(loaded.cpu.gpr[3], number);
+    loaded.cpu.gpr[3] = dictionary;
+    loaded.cpu.gpr[4] = missing_key;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfDictionaryGetValue);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    let out = scratch + 0x200;
+    let get = |loaded: &mut PpcLoadedApp, number: u32, number_type: u32| {
+        loaded.cpu.gpr[3] = number;
+        loaded.cpu.gpr[4] = number_type;
+        loaded.cpu.gpr[5] = out;
+        run_test_import(loaded, PpcImportDispatcherTarget::CfNumberGetValue);
+        loaded.cpu.gpr[3]
+    };
+    // kCFNumberSInt32Type
+    assert_eq!(get(&mut loaded, number, 3), 1);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(640));
+    // 640 does not fit an SInt8: the stored result is lossy and reported.
+    assert_eq!(get(&mut loaded, number, 1), 0);
+    assert_eq!(loaded.memory.read_u8(out), Some(0x7f));
+    // kCFNumberDoubleType
+    assert_eq!(get(&mut loaded, float, 13), 1);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0x4004_0000));
+    // kCFNumberIntType truncates 2.5.
+    assert_eq!(get(&mut loaded, float, 9), 0);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(2));
+
+    loaded.cpu.gpr[3] = array;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRetain);
+    loaded.cpu.gpr[3] = array;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfGetRetainCount);
+    assert_eq!(loaded.cpu.gpr[3], 2);
+    for _ in 0..2 {
+        loaded.cpu.gpr[3] = array;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CfRelease);
+    }
+    loaded.cpu.gpr[3] = array;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfArrayGetCount);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn carbon_cfurl_file_system_paths_round_trip_through_the_boot_volume() {
+    for (symbol, target) in [
+        (
+            "CFURLCreateWithFileSystemPath",
+            PpcImportDispatcherTarget::CfUrlCreateWithFileSystemPath,
+        ),
+        (
+            "CFURLCreateWithString",
+            PpcImportDispatcherTarget::CfUrlCreateWithString,
+        ),
+        (
+            "CFURLCopyFileSystemPath",
+            PpcImportDispatcherTarget::CfUrlCopyFileSystemPath,
+        ),
+    ] {
+        assert_eq!(dispatcher_target_for_import("CarbonLib", symbol), target);
+    }
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CFURLCreateWithFileSystemPath")).unwrap();
+    loaded.set_launched_app_path("Game/Game Carbon");
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x800]);
+    let out = scratch + 0x600;
+    let create = |loaded: &mut PpcLoadedApp, path: u32, style: u32, directory: u32| {
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = path;
+        loaded.cpu.gpr[5] = style;
+        loaded.cpu.gpr[6] = directory;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::CfUrlCreateWithFileSystemPath,
+        );
+        loaded.cpu.gpr[3]
+    };
+    let copy = |loaded: &mut PpcLoadedApp, url: u32, style: u32| {
+        loaded.cpu.gpr[3] = url;
+        loaded.cpu.gpr[4] = style;
+        run_test_import(loaded, PpcImportDispatcherTarget::CfUrlCopyFileSystemPath);
+        let path = loaded.cpu.gpr[3];
+        assert_ne!(path, 0);
+        read_test_cfstring(loaded, path, out)
+    };
+    let url_path = |loaded: &PpcLoadedApp, url: u32| {
+        let state = &loaded.toolbox_startup.cf_strings;
+        state.url_path(url).map(str::to_string)
+    };
+
+    let posix = make_test_cfstring(&mut loaded, scratch, "/MacintoshHD/Game/Data/");
+    let url = create(&mut loaded, posix, 0, 1);
+    assert_eq!(url_path(&loaded, url).as_deref(), Some("Game/Data"));
+    assert_eq!(copy(&mut loaded, url, 0), "/MacintoshHD/Game/Data");
+    assert_eq!(copy(&mut loaded, url, 1), "MacintoshHD:Game:Data");
+
+    // Relative paths resolve against the application's folder.
+    let relative = make_test_cfstring(&mut loaded, scratch + 0x40, "Plug-ins/../Prefs");
+    let url = create(&mut loaded, relative, 0, 0);
+    assert_eq!(url_path(&loaded, url).as_deref(), Some("Game/Prefs"));
+    let hfs = make_test_cfstring(&mut loaded, scratch + 0x80, "::Other:File");
+    let url = create(&mut loaded, hfs, 1, 0);
+    assert_eq!(url_path(&loaded, url).as_deref(), Some("Other/File"));
+
+    // A path outside the boot volume names no VFS entry.
+    let framework = "/System/Library/Frameworks/OpenGL.framework";
+    let system = make_test_cfstring(&mut loaded, scratch + 0xc0, framework);
+    let url = create(&mut loaded, system, 0, 1);
+    assert_eq!(copy(&mut loaded, url, 0), framework);
+    loaded.cpu.gpr[3] = url;
+    loaded.cpu.gpr[4] = scratch + 0x400;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfUrlGetFsRef);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    // The Windows path style names no Mac OS volume.
+    assert_eq!(create(&mut loaded, system, 2, 1), 0);
+
+    let string_url = |loaded: &mut PpcLoadedApp, text: u32, base: u32| {
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = text;
+        loaded.cpu.gpr[5] = base;
+        run_test_import(loaded, PpcImportDispatcherTarget::CfUrlCreateWithString);
+        loaded.cpu.gpr[3]
+    };
+    let read_me = "file://localhost/MacintoshHD/Game/Read%20Me";
+    let file = make_test_cfstring(&mut loaded, scratch + 0x100, read_me);
+    let url = string_url(&mut loaded, file, 0);
+    assert_eq!(url_path(&loaded, url).as_deref(), Some("Game/Read Me"));
+    assert_eq!(copy(&mut loaded, url, 1), "MacintoshHD:Game:Read Me");
+    let sibling = make_test_cfstring(&mut loaded, scratch + 0x140, "Data/Pilot");
+    let url = string_url(&mut loaded, sibling, url);
+    assert_eq!(url_path(&loaded, url).as_deref(), Some("Game/Data/Pilot"));
+    let page = "http://www.example.com/nova/index.html?x=1";
+    let web = make_test_cfstring(&mut loaded, scratch + 0x180, page);
+    let url = string_url(&mut loaded, web, 0);
+    assert_ne!(url, 0);
+    assert_eq!(copy(&mut loaded, url, 0), "/nova/index.html");
+    // Characters that need escaping make the string invalid.
+    let spaced = make_test_cfstring(&mut loaded, scratch + 0x1c0, "http://a b/");
+    assert_eq!(string_url(&mut loaded, spaced, 0), 0);
+}
 
 #[test]
 fn classic_cfbundle_load_executable_rejects_mach_o_code() {

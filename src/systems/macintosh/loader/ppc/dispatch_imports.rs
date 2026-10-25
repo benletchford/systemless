@@ -2435,7 +2435,14 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfStringCompare
         | PpcImportDispatcherTarget::CfStringCreateWithCharacters
         | PpcImportDispatcherTarget::CfBooleanGetValue
-        | PpcImportDispatcherTarget::CfBundleLoadExecutable => {
+        | PpcImportDispatcherTarget::CfBundleLoadExecutable
+        | PpcImportDispatcherTarget::CfArrayGetCount
+        | PpcImportDispatcherTarget::CfArrayGetValueAtIndex
+        | PpcImportDispatcherTarget::CfDictionaryGetValue
+        | PpcImportDispatcherTarget::CfNumberGetValue
+        | PpcImportDispatcherTarget::CfUrlCreateWithFileSystemPath
+        | PpcImportDispatcherTarget::CfUrlCreateWithString
+        | PpcImportDispatcherTarget::CfUrlCopyFileSystemPath => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
         PpcImportDispatcherTarget::ICStart
