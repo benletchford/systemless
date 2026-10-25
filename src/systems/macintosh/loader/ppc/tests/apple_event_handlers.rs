@@ -666,3 +666,44 @@ fn ppc_special_handler_install_preserves_native_callbacks_and_system_scope() {
     assert_eq!(loaded.apple_events.special_handlers.get(&(true, class)), Some(&0x2000));
     assert_eq!(loaded.apple_events.special_handlers.get(&(false, class)), Some(&0x3000));
 }
+
+#[test]
+fn ae_remove_event_handler_requires_the_installed_handler() {
+    let pef = synthetic_pef_with_import(b"AEInstallEventHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (handler_tvector, handler_entry) = (scratch, scratch + 0x100);
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    loaded
+        .memory
+        .write_u32_be(handler_tvector, handler_entry)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(handler_entry, 0x4e80_0020)
+        .unwrap();
+    loaded.cpu.gpr[3] = PPC_CORE_EVENT_CLASS;
+    loaded.cpu.gpr[4] = PPC_OPEN_APPLICATION_EVENT;
+    loaded.cpu.gpr[5] = handler_tvector;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AEInstallEventHandler,
+    );
+    assert_eq!(loaded.apple_events.handlers.len(), 1);
+
+    for (handler, expected) in [
+        (scratch + 0x40, ppc_i16_result(-1717)),
+        (handler_tvector, ppc_i16_result(PPC_NO_ERR)),
+        (handler_tvector, ppc_i16_result(-1717)),
+    ] {
+        loaded.cpu.gpr[3] = PPC_CORE_EVENT_CLASS;
+        loaded.cpu.gpr[4] = PPC_OPEN_APPLICATION_EVENT;
+        loaded.cpu.gpr[5] = handler;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AERemoveEventHandler);
+        assert_eq!(loaded.cpu.gpr[3], expected);
+    }
+    assert_eq!(loaded.apple_events.handlers.len(), 0);
+}

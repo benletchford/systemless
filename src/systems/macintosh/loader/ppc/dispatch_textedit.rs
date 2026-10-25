@@ -705,20 +705,35 @@ pub(super) fn dispatch_textedit_import(
             cpu.gpr[4],
             cpu.gpr[3] as u16,
         ))),
-        PpcImportDispatcherTarget::TEScroll { pinned } => {
-            let moved = ppc_te_scroll(
-                memory,
-                cpu.gpr[5],
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4] as u16 as i16,
-                pinned,
-            );
+        PpcImportDispatcherTarget::TEScroll { .. } | PpcImportDispatcherTarget::TESelView => {
+            let (te_handle, dh, dv, pinned) = match binding.dispatcher_target {
+                PpcImportDispatcherTarget::TEScroll { pinned } => (
+                    cpu.gpr[5],
+                    cpu.gpr[3] as u16 as i16,
+                    cpu.gpr[4] as u16 as i16,
+                    pinned,
+                ),
+                // TESelView does nothing unless automatic scrolling is on.
+                _ => {
+                    let te_handle = cpu.gpr[3];
+                    let delta = scrap
+                        .text_edit
+                        .feature_bit(te_handle, 0)
+                        .then(|| ppc_te_sel_view_delta(memory, handles, te_handle))
+                        .flatten();
+                    let Some((dh, dv)) = delta else {
+                        return Some(PpcImportAction::ReturnPreserve);
+                    };
+                    (te_handle, dh, dv, false)
+                }
+            };
+            let moved = ppc_te_scroll(memory, te_handle, dh, dv, pinned);
             // Text (1993), p. 2-89: TEScroll scrolls the text within the
             // viewRect, leaving uncovered areas in the background color as
             // ScrollRect does. Erasing the viewRect before redrawing gives
             // the same image; redrawing over the old pixels would accumulate
             // srcOr text at every previous position.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]).filter(|_| moved) {
+            if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle).filter(|_| moved) {
                 let port = memory
                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
                     .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
@@ -738,11 +753,53 @@ pub(super) fn dispatch_textedit_import(
                 memory,
                 handles,
                 gworlds,
-                cpu.gpr[5],
+                te_handle,
                 current_gworld,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices,
             );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::TEGetOffset => {
+            // TextEdit.h: TEGetOffset(Point pt, TEHandle) passes the Point by
+            // value, v in the high half of r3 and h in the low half.
+            let (v, h) = ((cpu.gpr[3] >> 16) as u16 as i16, cpu.gpr[3] as u16 as i16);
+            let offset = ppc_te_point_to_offset(memory, handles, cpu.gpr[4], v, h).unwrap_or(0);
+            Some(PpcImportAction::Return(offset as u32))
+        }
+        PpcImportDispatcherTarget::TEGetStyle => {
+            // TextEdit.h: TEGetStyle(short offset, TextStyle *, short
+            // *lineHeight, short *fontAscent, TEHandle). Inside Macintosh:
+            // Text (1993), p. 2-95: a monostyled record reports its own font.
+            let (offset, style_ptr, height_ptr, ascent_ptr, te_handle) = (
+                cpu.gpr[3] as u16 as usize,
+                cpu.gpr[4],
+                cpu.gpr[5],
+                cpu.gpr[6],
+                cpu.gpr[7],
+            );
+            let text_len = ppc_te_text_bytes(memory, handles, te_handle)
+                .map(|text| text.len())
+                .unwrap_or(0);
+            let runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+            if !runs.is_empty() {
+                let style = ppc_te_style_at_offset(&runs, offset.min(text_len));
+                if ppc_memory_can_write_bytes(memory, style_ptr, 12) {
+                    let _ = memory.write_u16_be(style_ptr, style.font as u16);
+                    let _ = memory.write_u8(style_ptr + 2, style.face);
+                    let _ = memory.write_u8(style_ptr + 3, 0);
+                    let _ = memory.write_u16_be(style_ptr + 4, style.size as u16);
+                    let _ = memory.write_u16_be(style_ptr + 6, style.color.red);
+                    let _ = memory.write_u16_be(style_ptr + 8, style.color.green);
+                    let _ = memory.write_u16_be(style_ptr + 10, style.color.blue);
+                }
+                if height_ptr != 0 {
+                    let _ = memory.write_u16_be(height_ptr, style.line_height as u16);
+                }
+                if ascent_ptr != 0 {
+                    let _ = memory.write_u16_be(ascent_ptr, style.ascent as u16);
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEAutoView => {

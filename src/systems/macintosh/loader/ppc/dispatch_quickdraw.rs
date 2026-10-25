@@ -100,8 +100,15 @@ pub(super) fn dispatch_quickdraw_import(
             let _ = memory.write_bytes(destination, &white);
             Some(PpcImportAction::Return(destination))
         }
-        PpcImportDispatcherTarget::GetForeColor => {
-            let color_ptr = cpu.gpr[3];
+        // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-74–4-75:
+        // SaveFore/SaveBack and RestoreFore/RestoreBack keep the colour in a
+        // ColorSpec, whose RGBColor follows the two-byte value field.
+        PpcImportDispatcherTarget::GetForeColor | PpcImportDispatcherTarget::SaveFore => {
+            let color_ptr = if binding.dispatcher_target == PpcImportDispatcherTarget::SaveFore {
+                cpu.gpr[3].wrapping_add(2)
+            } else {
+                cpu.gpr[3]
+            };
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
                 let color = ppc_port_rgb_colors(memory, current_gworld)
                     .map_or(*quickdraw_fore_color, |colors| colors.0);
@@ -109,8 +116,12 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetBackColor => {
-            let color_ptr = cpu.gpr[3];
+        PpcImportDispatcherTarget::GetBackColor | PpcImportDispatcherTarget::SaveBack => {
+            let color_ptr = if binding.dispatcher_target == PpcImportDispatcherTarget::SaveBack {
+                cpu.gpr[3].wrapping_add(2)
+            } else {
+                cpu.gpr[3]
+            };
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
                 let color = ppc_port_rgb_colors(memory, current_gworld)
                     .map_or(*quickdraw_back_color, |colors| colors.1);
@@ -215,8 +226,13 @@ pub(super) fn dispatch_quickdraw_import(
             };
             Some(PpcImportAction::Return(result as u32))
         }
-        PpcImportDispatcherTarget::RGBForeColor => {
-            if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
+        PpcImportDispatcherTarget::RGBForeColor | PpcImportDispatcherTarget::RestoreFore => {
+            let color_ptr = if binding.dispatcher_target == PpcImportDispatcherTarget::RestoreFore {
+                cpu.gpr[3].wrapping_add(2)
+            } else {
+                cpu.gpr[3]
+            };
+            if let Some(color) = ppc_read_rgb_color(memory, color_ptr) {
                 *quickdraw_fore_color = color;
                 let main_8bpp = current_gdevice == PPC_MAIN_GDEVICE
                     && ppc_current_gdevice_record(memory, current_gdevice)
@@ -248,8 +264,13 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::RGBBackColor => {
-            if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
+        PpcImportDispatcherTarget::RGBBackColor | PpcImportDispatcherTarget::RestoreBack => {
+            let color_ptr = if binding.dispatcher_target == PpcImportDispatcherTarget::RestoreBack {
+                cpu.gpr[3].wrapping_add(2)
+            } else {
+                cpu.gpr[3]
+            };
+            if let Some(color) = ppc_read_rgb_color(memory, color_ptr) {
                 *quickdraw_back_color = color;
                 let main_8bpp = current_gdevice == PPC_MAIN_GDEVICE
                     && ppc_current_gdevice_record(memory, current_gdevice)

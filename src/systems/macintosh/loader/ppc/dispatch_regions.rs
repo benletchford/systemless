@@ -48,9 +48,16 @@ pub(super) fn dispatch_region_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetPortVisibleRegion => {
+        PpcImportDispatcherTarget::GetPortVisibleRegion
+        | PpcImportDispatcherTarget::GetPortClipRegion => {
+            let offset =
+                if binding.dispatcher_target == PpcImportDispatcherTarget::GetPortClipRegion {
+                    PPC_CGRAF_PORT_CLIP_RGN_OFFSET
+                } else {
+                    PPC_CGRAF_PORT_VIS_RGN_OFFSET
+                };
             let source = cpu.gpr[3]
-                .checked_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+                .checked_add(offset)
                 .filter(|_| cpu.gpr[3] != 0)
                 .and_then(|address| memory.read_u32_be(address))
                 .unwrap_or(0);
