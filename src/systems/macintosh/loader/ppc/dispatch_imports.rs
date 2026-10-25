@@ -1414,6 +1414,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::UnholdMemory
         | PpcImportDispatcherTarget::DisposeHandle
         | PpcImportDispatcherTarget::EmptyHandle
+        | PpcImportDispatcherTarget::ReallocateHandle
         | PpcImportDispatcherTarget::GetHandleSize
         | PpcImportDispatcherTarget::SetHandleSize
         | PpcImportDispatcherTarget::HLock
@@ -1557,6 +1558,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEPaste { .. }
         | PpcImportDispatcherTarget::TETransferScrap { .. }
         | PpcImportDispatcherTarget::TEScrapHandle
+        | PpcImportDispatcherTarget::TEGetStyleScrapHandle
         | PpcImportDispatcherTarget::TEScrapLength { .. } => {
             unreachable!("textedit imports return through dispatch_textedit_import")
         }
@@ -1670,6 +1672,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::VInstall
         | PpcImportDispatcherTarget::VRemove
         | PpcImportDispatcherTarget::SlotVInstall
+        | PpcImportDispatcherTarget::DTInstall
         | PpcImportDispatcherTarget::SlotVRemove => {
             unreachable!("time and vbl imports return through dispatch_time_import")
         }

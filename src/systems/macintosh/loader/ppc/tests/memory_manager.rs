@@ -5291,3 +5291,36 @@ fn resource_materialization_shares_fork_and_detaches_edited_payload() {
     drop(snapshot);
     assert_eq!(resources[1].data, b"second");
 }
+
+#[test]
+fn reallocate_handle_gives_a_handle_a_new_block_of_the_requested_size() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewHandle")).unwrap();
+    loaded.cpu.gpr[3] = 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let handle = loaded.cpu.gpr[3];
+
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 64;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReallocateHandle);
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_ne!(ptr, 0);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+    assert_eq!(loaded.cpu.gpr[3], 64);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MemError);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_NO_ERR);
+
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EmptyHandle);
+    assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReallocateHandle);
+    assert_ne!(loaded.memory.read_u32_be(handle), Some(0));
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+    assert_eq!(loaded.cpu.gpr[3], 16);
+}

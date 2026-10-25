@@ -1207,3 +1207,98 @@ fn textedit_idle_uses_the_same_guest_caret_interval_as_get_caret_time() {
         );
     }
 }
+
+#[test]
+fn te_get_style_scrap_handle_describes_each_run_in_the_selection() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let style_ptr = scratch + 0x40;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 80, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    loaded
+        .memory
+        .write_bytes(scratch + 0x20, b"Styled")
+        .unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20;
+    loaded.cpu.gpr[4] = 6;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+    for (start, end, font) in [(0, 3, 3u16), (3, 6, 4)] {
+        loaded.memory.write_u16_be(style_ptr, font).unwrap();
+        loaded.memory.write_u16_be(style_ptr + 4, 12).unwrap();
+        loaded.cpu.gpr[3] = start;
+        loaded.cpu.gpr[4] = end;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x0005;
+        loaded.cpu.gpr[4] = style_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+    }
+
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = 5;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEGetStyleScrapHandle,
+    );
+    let scrap_handle = loaded.cpu.gpr[3];
+    assert_ne!(scrap_handle, 0);
+    let scrap_ptr = loaded.memory.read_u32_be(scrap_handle).unwrap();
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET),
+        Some(2)
+    );
+    let first = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+    let second = first + PPC_TE_SCRAP_ELEMENT_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(first), Some(0));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(first + PPC_TE_SCRAP_STYLE_FONT_OFFSET),
+        Some(3)
+    );
+    assert_eq!(loaded.memory.read_u32_be(second), Some(2));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(second + PPC_TE_SCRAP_STYLE_FONT_OFFSET),
+        Some(4)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(second + PPC_TE_SCRAP_STYLE_SIZE_OFFSET),
+        Some(12)
+    );
+}
+
+#[test]
+fn te_get_style_scrap_handle_returns_nil_for_a_monostyled_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x40]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 80, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEGetStyleScrapHandle,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}

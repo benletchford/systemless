@@ -919,6 +919,21 @@ pub(super) fn dispatch_textedit_import(
             };
             Some(PpcImportAction::Return(handle))
         }
+        PpcImportDispatcherTarget::TEGetStyleScrapHandle => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let handle = ppc_te_style_scrap_for_selection(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                cpu.gpr[3],
+            );
+            Some(PpcImportAction::Return(handle))
+        }
         PpcImportDispatcherTarget::TEScrapLength { set } => {
             if set {
                 let requested = cpu.gpr[3] as i32;

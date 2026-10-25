@@ -1310,3 +1310,46 @@ fn sound_callback_slice_retains_command_and_resumes_before_restoring_caller() {
     assert_eq!(loaded.memory.read_u16_be(command + 2), Some(7));
     assert_eq!(loaded.memory.read_u32_be(command + 4), Some(42));
 }
+
+#[test]
+fn dtinstall_runs_the_deferred_task_with_its_parameter() {
+    let pef = synthetic_pef_with_import(b"DTInstall");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let task_ptr = scratch;
+    let tvector = scratch + 0x20;
+    let code = scratch + 0x40;
+    let result = scratch + 0x100;
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    // lis r4, 0x0200; stw r3, 0x1100(r4); blr
+    for (index, word) in [0x3c80_0200u32, 0x9064_1100, 0x4e80_0020]
+        .into_iter()
+        .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(code + 4 * index as u32, word)
+            .unwrap();
+    }
+    loaded.memory.write_u32_be(tvector, code).unwrap();
+    loaded
+        .memory
+        .write_u32_be(tvector + 4, loaded.rtoc)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = task_ptr;
+    loaded.memory.write_u16_be(task_ptr + 4, 1).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DTInstall);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-2));
+
+    loaded.memory.write_u16_be(task_ptr + 4, 7).unwrap();
+    loaded.memory.write_u32_be(task_ptr + 8, tvector).unwrap();
+    loaded
+        .memory
+        .write_u32_be(task_ptr + 12, 0x1234_5678)
+        .unwrap();
+    loaded.cpu.gpr[3] = task_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DTInstall);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(result), Some(0x1234_5678));
+}
