@@ -30,6 +30,11 @@ pub const PPC_MAIN_GWORLD: u32 = 0x02f0_0000;
 pub const PPC_MAIN_GDEVICE: u32 = 0x02f0_0100;
 pub const PPC_DSP_BACK_GWORLD: u32 = 0x4001_0000;
 pub const PPC_DATA_BASE: u32 = 0x0200_0000;
+/// Base for an application's data sections when they do not fit between
+/// [`PPC_DATA_BASE`] and the framebuffer at [`PPC_MAIN_SCREEN_BASE`]. The
+/// PowerPC address space is sparse, so this keeps a large data section (such
+/// as Jedi Knight II's 19 MB) clear of the toolbox structures and heap.
+pub const PPC_LARGE_DATA_BASE: u32 = 0x7000_0000;
 pub const PPC_HEAP_BASE: u32 = 0x0300_0000;
 pub(crate) const PPC_HEAP_ALIGNMENT: u32 = 16;
 pub const PPC_STACK_TOP: u32 = 0x0500_0000;
