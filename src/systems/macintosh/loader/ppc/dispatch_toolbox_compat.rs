@@ -14,6 +14,12 @@ pub enum PpcToolboxCompatOperation {
     GetPortTextFont,
     GetPortTextSize,
     SetWindowContentColor,
+    /// Communications Toolbox calls with no connection tools installed:
+    /// CMNew and CRMSearch find nothing and return nil.
+    CommToolboxNil,
+    /// The other calls report cmGenericError (-1); CMGetProcID's -1 means
+    /// no such tool, and CMIdle and CMDispose ignore the value.
+    CommToolboxError,
 }
 
 pub(crate) fn ppc_dispatch_toolbox_compat(
@@ -50,6 +56,8 @@ pub(crate) fn ppc_dispatch_toolbox_compat(
                 .unwrap_or(0);
             PpcImportAction::Return(value as i16 as i32 as u32)
         }
+        PpcToolboxCompatOperation::CommToolboxNil => PpcImportAction::Return(0),
+        PpcToolboxCompatOperation::CommToolboxError => PpcImportAction::Return(ppc_i16_result(-1)),
         PpcToolboxCompatOperation::SetWindowContentColor => {
             // MacWindows.h: the content colour only affects how the Window
             // Manager erases content; drawing uses the port background.

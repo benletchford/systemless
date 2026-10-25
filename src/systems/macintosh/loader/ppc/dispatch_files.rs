@@ -850,6 +850,21 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
         ))),
+        PpcImportDispatcherTarget::FollowFinderAlias => {
+            // Aliases.h: FollowFinderAlias(fromFile, alias, logon, target,
+            // wasChanged) is ResolveAlias with a mount-permission flag, and
+            // the runtime never mounts volumes on demand.
+            let mut call = cpu.clone();
+            call.gpr[5] = cpu.gpr[6];
+            call.gpr[6] = cpu.gpr[7];
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_resolve_alias(
+                &mut call,
+                memory,
+                vfs_directories,
+                handles,
+                aliases,
+            ))))
+        }
         PpcImportDispatcherTarget::MatchAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_match_alias(cpu, memory, vfs_directories, handles, aliases),
         ))),

@@ -132,6 +132,11 @@ pub(crate) fn import_data_address_for(library_name: &str, symbol_name: &str) -> 
         // dereference it directly as a double, so bind the known export to
         // stable data storage regardless of the PEF class tag.
         ("MathLib", "pi") => Some(PPC_IMPORT_MATH_PI),
+        // CFBase.h defines kCFAllocatorDefault as NULL: a data symbol whose
+        // value selects the default allocator.
+        ("CarbonLib" | "CoreFoundation", "kCFAllocatorDefault") => {
+            Some(PPC_IMPORT_CF_ALLOCATOR_DEFAULT)
+        }
         ("MathLib", "_FE_DFL_ENV") => Some(PPC_IMPORT_MATH_FE_DFL_ENV),
         _ => None,
     }
@@ -160,6 +165,7 @@ pub(crate) fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
     // as an int and `MacOSErr` as a short. Both begin clear at process launch.
     let _ = memory.write_u32_be(PPC_IMPORT_STD_ERRNO, 0);
     let _ = memory.write_u16_be(PPC_IMPORT_STD_MAC_OS_ERR, 0);
+    let _ = memory.write_u32_be(PPC_IMPORT_CF_ALLOCATOR_DEFAULT, 0);
     let _ = memory.write_bytes(
         PPC_STDIO_IOB_ADDR,
         &vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize],
