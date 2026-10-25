@@ -518,6 +518,60 @@ pub(super) fn dispatch_gworld_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CreateNewPort => {
+            // Quickdraw.h: CreateNewPort() allocates a CGrafPort and opens
+            // it as OpenCPort does, which also makes it the current port.
+            // It returns NULL when the port cannot be allocated.
+            let port = process_memory_manager.new_native_ptr(memory, PPC_CGRAF_PORT_SIZE, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if port == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            let mut open_cpu = cpu.clone();
+            open_cpu.gpr[3] = port;
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            if !ppc_open_cport(
+                &open_cpu,
+                &mut allocator,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                gworlds,
+                *current_gdevice,
+            ) {
+                let _ = process_memory_manager.dispose_native_ptr(port);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+                return Some(PpcImportAction::Return(0));
+            }
+            let pixmap_handle = ppc_gworld_pixmap(memory, gworlds, port);
+            if pixmap_handle != 0 {
+                gworld_pixel_states.set_quickdraw_pixel_state(pixmap_handle, 0);
+                ppc_sync_gworld_pixel_state_mirror(gworlds, pixmap_handle, 0);
+            }
+            quickdraw_fore_indices.remove(&port);
+            *current_gworld = port;
+            ppc_restore_port_colors(
+                memory,
+                *current_gworld,
+                quickdraw_fore_color,
+                quickdraw_back_color,
+            );
+            Some(PpcImportAction::Return(port))
+        }
         PpcImportDispatcherTarget::InitCPort => {
             ppc_init_cport(memory, gworlds, cpu.gpr[3], *current_gdevice);
             Some(PpcImportAction::ReturnPreserve)

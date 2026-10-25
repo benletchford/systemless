@@ -19,6 +19,8 @@ pub struct PpcToolboxStartupState {
     pub(crate) help_balloons_enabled: bool,
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
+    /// The menu bar height HideMenuBar saved, while the bar is hidden.
+    pub(crate) hidden_menu_bar_height: Option<u16>,
     pub(super) fullscreen: Option<dispatch_window::PpcFullScreenState>,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     pub(crate) execution: ExecutionMenuViews,
@@ -41,6 +43,8 @@ pub struct PpcToolboxStartupState {
     pub(super) standard_file_put_tracking: Option<PpcStandardFilePutTrackingState>,
     pub text_edit_initialized: bool,
     pub(crate) printing_error: i16,
+    /// SetWindowContentColor colours, keyed by window.
+    pub(crate) window_content_colors: std::collections::BTreeMap<u32, [u16; 3]>,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
     pub flush_events_count: u32,
@@ -135,6 +139,7 @@ impl Default for PpcToolboxStartupState {
             help_balloons_enabled: false,
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
+            hidden_menu_bar_height: None,
             fullscreen: None,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             execution: ExecutionMenuViews::detached(),
@@ -153,6 +158,7 @@ impl Default for PpcToolboxStartupState {
             standard_file_put_tracking: None,
             text_edit_initialized: false,
             printing_error: 0,
+            window_content_colors: std::collections::BTreeMap::new(),
             dialogs_initialized: false,
             dialog_resume_proc: 0,
             flush_events_count: 0,

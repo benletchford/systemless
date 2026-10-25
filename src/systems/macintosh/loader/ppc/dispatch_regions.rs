@@ -76,6 +76,31 @@ pub(super) fn dispatch_region_import(
                 0
             }))
         }
+        PpcImportDispatcherTarget::SetPortClipRegion => {
+            // SetPortClipRegion(CGrafPtr, RgnHandle) copies the region into
+            // the port's own clipRgn, as SetClip does for the current port.
+            let clip_rgn = cpu.gpr[3]
+                .checked_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+                .filter(|_| cpu.gpr[3] != 0)
+                .and_then(|address| memory.read_u32_be(address))
+                .unwrap_or(0);
+            if clip_rgn != 0 {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                *last_mem_error = ppc_copy_rgn(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    cpu.gpr[4],
+                    clip_rgn,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetClip | PpcImportDispatcherTarget::SetClip => {
             let clip_rgn = memory
                 .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))

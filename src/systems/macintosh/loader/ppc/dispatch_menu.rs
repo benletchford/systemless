@@ -1061,6 +1061,35 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, params.height() as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::HideMenuBar => {
+            // HideMenuBar makes the menu bar invisible and gives its space
+            // to the screen: the menu bar height becomes zero until
+            // ShowMenuBar restores it.
+            if toolbox_startup.hidden_menu_bar_height.is_none() {
+                let height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20);
+                toolbox_startup.hidden_menu_bar_height = Some(height);
+                toolbox_startup.host_menu_bar_hidden = true;
+                let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::ShowMenuBar => {
+            // ShowMenuBar restores the height HideMenuBar saved and draws
+            // the menu bar again.
+            if let Some(height) = toolbox_startup.hidden_menu_bar_height.take() {
+                toolbox_startup.host_menu_bar_hidden = false;
+                let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, height);
+                let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+                let _ = ppc_draw_menu_bar_with_colors(
+                    memory,
+                    gworlds,
+                    *current_menu_list,
+                    screen_clut,
+                    MenuColorTable::new(&menu_color_bytes),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MenuSelect => {
             let _params = crate::menu_manager::evaluate_menu_select_parameters(cpu.gpr[3]);
             ppc_step_menu_tracking(

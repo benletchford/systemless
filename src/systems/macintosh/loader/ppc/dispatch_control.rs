@@ -379,6 +379,7 @@ pub enum PpcLegacyControlOperation {
     GetControlMaximum,
     GetControlMinimum,
     GetControlOwner,
+    GetControlPopupMenuId,
     GetControlProperty,
     GetControlPropertyAttributes,
     GetControlPropertySize,
@@ -1374,6 +1375,18 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .and_then(|ptr| memory.read_u32_be(ptr.wrapping_add(PPC_CONTROL_OWNER_OFFSET)))
                 .unwrap_or(0);
             Some(PpcImportAction::Return(owner))
+        }
+        PpcLegacyControlOperation::GetControlPopupMenuId => {
+            // Controls.h: GetControlPopupMenuID(ControlHandle) returns the
+            // pop-up menu's ID; other controls have no pop-up menu.
+            let id = controls
+                .iter()
+                .find(|record| {
+                    record.handle == cpu.gpr[3]
+                        && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+                })
+                .map_or(0, |record| record.popup_menu_id);
+            Some(PpcImportAction::Return(id as i32 as u32))
         }
         PpcLegacyControlOperation::GetControlRegion => {
             let control = cpu.gpr[3];

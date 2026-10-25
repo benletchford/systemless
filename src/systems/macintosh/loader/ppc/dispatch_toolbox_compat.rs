@@ -1,6 +1,7 @@
 //! Toolbox entry points whose results depend only on guest memory.
 
 use super::*;
+use std::collections::BTreeMap;
 
 /// Inside Macintosh: Devices (1994), p. 1-112: notOpenErr, driver not open.
 const PPC_NOT_OPEN_ERR: i16 = -28;
@@ -21,7 +22,10 @@ pub enum PpcToolboxCompatOperation {
     GetPortForeColor,
     GetPortBackColor,
     GetPixBounds,
-    SetWindowContentColor,
+    SetPortBounds,
+    SetPortGrafProcs,
+    SetPortPenMode,
+    IsPortColor,
     /// Communications Toolbox calls with no connection tools installed:
     /// CMNew and CRMSearch find nothing and return nil.
     CommToolboxNil,
@@ -133,10 +137,86 @@ pub(crate) fn ppc_dispatch_toolbox_compat(
         }
         PpcToolboxCompatOperation::CommToolboxNil => PpcImportAction::Return(0),
         PpcToolboxCompatOperation::CommToolboxError => PpcImportAction::Return(ppc_i16_result(-1)),
-        PpcToolboxCompatOperation::SetWindowContentColor => {
-            // MacWindows.h: the content colour only affects how the Window
-            // Manager erases content; drawing uses the port background.
-            PpcImportAction::Return(0)
+        PpcToolboxCompatOperation::SetPortBounds => {
+            // Quickdraw.h: SetPortBounds(CGrafPtr, const Rect *) replaces
+            // portRect at +16, which both port formats share.
+            let (port, rect) = (cpu.gpr[3], cpu.gpr[4]);
+            if let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect) {
+                if port != 0 && ppc_memory_can_write_bytes(memory, port.wrapping_add(16), 8) {
+                    let _ = ppc_write_rect(memory, port.wrapping_add(16), top, left, bottom, right);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcToolboxCompatOperation::SetPortGrafProcs => {
+            // SetPortGrafProcs(CGrafPtr, CQDProcsPtr) stores grafProcs at
+            // +104, the field GetPortGrafProcs reads.
+            let port = cpu.gpr[3];
+            if port != 0 && ppc_memory_can_write_bytes(memory, port.wrapping_add(104), 4) {
+                let _ = memory.write_u32_be(port.wrapping_add(104), cpu.gpr[4]);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcToolboxCompatOperation::SetPortPenMode => {
+            // SetPortPenMode(CGrafPtr, SInt32) stores pnMode at +56, as
+            // PenMode does for the current port.
+            let port = cpu.gpr[3];
+            if port != 0 && ppc_memory_can_write_bytes(memory, port.wrapping_add(56), 2) {
+                let _ = memory.write_u16_be(port.wrapping_add(56), cpu.gpr[4] as u16);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcToolboxCompatOperation::IsPortColor => {
+            // IsPortColor(CGrafPtr) is true for a CGrafPort, whose
+            // portVersion at +6 has its two high bits set.
+            let color = cpu.gpr[3] != 0
+                && memory
+                    .read_u16_be(cpu.gpr[3].wrapping_add(6))
+                    .is_some_and(|version| version & 0xc000 == 0xc000);
+            PpcImportAction::Return(u32::from(color))
         }
     }
+}
+
+/// The default content colour of a window whose colour table is the
+/// standard one: white.
+const PPC_DEFAULT_WINDOW_CONTENT_COLOR: [u16; 3] = [0xffff; 3];
+
+/// SetWindowContentColor(WindowRef, const RGBColor *) and
+/// GetWindowContentColor(WindowRef, RGBColor *) keep the colour the Window
+/// Manager erases the content region with. The runtime erases with the port
+/// background, so the colour is only recorded and reported.
+pub(crate) fn ppc_window_content_color(
+    set: bool,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    colors: &mut BTreeMap<u32, [u16; 3]>,
+) -> PpcImportAction {
+    let (window, color) = (cpu.gpr[3], cpu.gpr[4]);
+    if window == 0 || color == 0 {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    let result = if set {
+        match ppc_read_rgb_color(memory, color) {
+            Some(rgb) => {
+                colors.insert(window, [rgb.red, rgb.green, rgb.blue]);
+                PPC_NO_ERR
+            }
+            None => PPC_PARAM_ERR,
+        }
+    } else {
+        let components = colors
+            .get(&window)
+            .copied()
+            .unwrap_or(PPC_DEFAULT_WINDOW_CONTENT_COLOR);
+        if ppc_memory_can_write_bytes(memory, color, 6) {
+            for (index, component) in components.into_iter().enumerate() {
+                let _ = memory.write_u16_be(color + 2 * index as u32, component);
+            }
+            PPC_NO_ERR
+        } else {
+            PPC_PARAM_ERR
+        }
+    };
+    PpcImportAction::Return(ppc_i16_result(result))
 }
