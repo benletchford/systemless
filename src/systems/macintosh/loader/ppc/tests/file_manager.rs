@@ -10912,10 +10912,12 @@ fn pb_get_volume_info_enumerates_the_boot_volume_then_ends() {
     let pb = PPC_DATA_BASE + 0x1000;
     let info = pb + 0x100;
     let name = pb + 0x200;
+    let root = pb + 0x300;
     loaded.memory.add_region(pb, vec![0; 0x400]);
     loaded.memory.write_u32_be(pb + 24, 1).unwrap();
     loaded.memory.write_u32_be(pb + 32, info).unwrap();
     loaded.memory.write_u32_be(pb + 36, name).unwrap();
+    loaded.memory.write_u32_be(pb + 40, root).unwrap();
     loaded.cpu.gpr[3] = pb;
 
     let probe = loaded.run_with_hle_imports(64);
@@ -10935,6 +10937,20 @@ fn pb_get_volume_info_enumerates_the_boot_volume_then_ends() {
     assert_eq!(
         loaded.memory.read_u16_be(name + 2),
         volume_name.encode_utf16().next()
+    );
+    // The root directory FSRef names the volume inside fsRtParID.
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, root, 4).as_deref(),
+        Some(&b"SyFR"[..])
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(root + 4),
+        Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+    );
+    assert_eq!(loaded.memory.read_u32_be(root + 6), Some(1));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, root + 10),
+        Some(encode_mac_roman_lossy(volume_name))
     );
 
     let mut loaded = load_pef_application(&pef).unwrap();

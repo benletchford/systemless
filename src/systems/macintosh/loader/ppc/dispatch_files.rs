@@ -826,6 +826,27 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 application_working_directory_ref_num,
             ))
         }
+        PpcImportDispatcherTarget::FsRef(operation) => Some(PpcImportAction::Return(
+            ppc_i16_result(dispatch_fsref::ppc_dispatch_fsref(
+                operation,
+                &mut dispatch_fsref::PpcFsRefContext {
+                    cpu,
+                    memory,
+                    files,
+                    writable_refnums,
+                    vfs_files,
+                    vfs_directories,
+                    next_vfs_dir_id,
+                    deleted_vfs_file_paths,
+                    vfs_resource_files,
+                    resource_files,
+                    vfs_resources,
+                    next_file_ref_num,
+                    default_dir_id,
+                    vfs_volumes,
+                },
+            )),
+        )),
         PpcImportDispatcherTarget::ResolveAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_resolve_alias(cpu, memory, vfs_directories, handles, aliases),
         ))),

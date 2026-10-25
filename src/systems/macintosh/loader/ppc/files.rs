@@ -985,14 +985,12 @@ pub(super) fn ppc_fs_get_volume_info(
             let _ = memory.write_u16_be(name_ptr + 2 + 2 * index as u32, *unit);
         }
     }
-    if root_ref_ptr != 0 {
-        // FSRef is 80 opaque bytes; record the volume and root directory.
-        if !ppc_memory_can_write_bytes(memory, root_ref_ptr, 80) {
-            return PPC_PARAM_ERR;
-        }
-        let _ = memory.write_bytes(root_ref_ptr, &[0; 80]);
-        let _ = memory.write_u16_be(root_ref_ptr, volume.ref_num as u16);
-        let _ = memory.write_u32_be(root_ref_ptr + 2, volume.root_dir_id);
+    // FSRef is 80 opaque bytes; the root directory's ref names the volume
+    // inside fsRtParID, as the Carbon FSRef calls expect.
+    if root_ref_ptr != 0
+        && !ppc_write_volume_root_fsref(memory, root_ref_ptr, volume.ref_num, &volume.name)
+    {
+        return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
 }
@@ -1292,7 +1290,7 @@ pub(super) fn ppc_catalog_child_by_index(
     entries.into_iter().nth(fdir_index.saturating_sub(1))
 }
 
-fn ppc_vfs_directory_valence(
+pub(super) fn ppc_vfs_directory_valence(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],

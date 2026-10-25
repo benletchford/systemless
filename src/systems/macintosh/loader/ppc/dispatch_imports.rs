@@ -1784,7 +1784,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
         | PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
-        | PpcImportDispatcherTarget::FileCompatibility(_) => {
+        | PpcImportDispatcherTarget::FileCompatibility(_)
+        | PpcImportDispatcherTarget::FsRef(_) => {
             unreachable!("file imports return through dispatch_file_import")
         }
         PpcImportDispatcherTarget::SetResLoad
