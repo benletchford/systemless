@@ -3119,7 +3119,40 @@ pub(super) fn ppc_fsp_open_rf(
         Ok(path) => path,
         Err(err) => return err,
     };
-    let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) else {
+    ppc_open_resource_fork_path(
+        memory,
+        &path,
+        permission,
+        ref_num_out_ptr,
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        files,
+        writable_refnums,
+        next_file_ref_num,
+    )
+}
+
+/// Opens an access path to the resource fork of the file at `path` as a
+/// byte stream, as FSpOpenRF, HOpenRF and the PBOpenRF family do, writing
+/// the new file reference number to `ref_num_out_ptr`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_open_resource_fork_path(
+    memory: &mut PpcSectionMem,
+    path: &str,
+    permission: u8,
+    ref_num_out_ptr: u32,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> i16 {
+    if ref_num_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, ref_num_out_ptr, 2) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, path) else {
         return PPC_FNF_ERR;
     };
     let path = vfs_resource_files[resource_index].path.clone();
@@ -3154,7 +3187,10 @@ pub(super) fn ppc_fsp_open_rf(
     }
     *next_file_ref_num = next_ref_num;
     if ppc_hle_trace_enabled() {
-        eprintln!("[PPC-TRACE] FSpOpenRF path=\"{}\" permission={} -> ref={}", path, permission, ref_num);
+        eprintln!(
+            "[PPC-TRACE] OpenRF path=\"{}\" permission={} -> ref={}",
+            path, permission, ref_num
+        );
     }
     PPC_NO_ERR
 }
@@ -4967,17 +5003,45 @@ fn ppc_rename_by_name(
     {
         return PPC_DUP_FN_ERR;
     }
+    ppc_move_vfs_path(
+        &old_path,
+        &new_path,
+        vfs_directories,
+        vfs_files,
+        deleted_vfs_file_paths,
+        files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+    );
+    PPC_NO_ERR
+}
 
+/// Moves every catalog record at or below `old_path` to `new_path`: both
+/// forks, directories, open access paths and loaded resources. The caller
+/// has already checked that `new_path` is free.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_move_vfs_path(
+    old_path: &str,
+    new_path: &str,
+    vfs_directories: &mut [PpcVfsDirectory],
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut [PpcFileRecord],
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut [PpcResourceFileRecord],
+    vfs_resources: &mut [PpcVfsResourceRecord],
+) {
     let data_moves = vfs_files
         .iter()
         .filter_map(|file| {
-            ppc_renamed_path(&file.path, &old_path, &new_path).map(|new| (file.path.clone(), new))
+            ppc_renamed_path(&file.path, old_path, new_path).map(|new| (file.path.clone(), new))
         })
         .collect::<Vec<_>>();
     let resource_moves = vfs_resource_files
         .iter()
         .filter_map(|file| {
-            ppc_renamed_path(&file.path, &old_path, &new_path).map(|new| (file.path.clone(), new))
+            ppc_renamed_path(&file.path, old_path, new_path).map(|new| (file.path.clone(), new))
         })
         .collect::<Vec<_>>();
     for (old, new) in &data_moves {
@@ -4995,27 +5059,26 @@ fn ppc_rename_by_name(
         }
     }
     for directory in vfs_directories.iter_mut() {
-        if let Some(renamed) = ppc_renamed_path(&directory.path, &old_path, &new_path) {
+        if let Some(renamed) = ppc_renamed_path(&directory.path, old_path, new_path) {
             directory.path = renamed;
             directory.dirty = true;
         }
     }
     for file in files.iter_mut() {
-        if let Some(renamed) = ppc_renamed_path(&file.path, &old_path, &new_path) {
+        if let Some(renamed) = ppc_renamed_path(&file.path, old_path, new_path) {
             file.path = renamed;
         }
     }
     for file in resource_files.iter_mut() {
-        if let Some(renamed) = ppc_renamed_path(&file.path, &old_path, &new_path) {
+        if let Some(renamed) = ppc_renamed_path(&file.path, old_path, new_path) {
             file.path = renamed;
         }
     }
     for resource in vfs_resources.iter_mut() {
-        if let Some(renamed) = ppc_renamed_path(&resource.path, &old_path, &new_path) {
+        if let Some(renamed) = ppc_renamed_path(&resource.path, old_path, new_path) {
             resource.path = renamed;
         }
     }
-    PPC_NO_ERR
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

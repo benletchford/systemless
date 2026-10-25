@@ -16,6 +16,9 @@ pub(super) struct PpcStandardFileCall {
     pub(super) mode: PpcStandardFileMode,
     pub(super) reply: u32,
     pub(super) return_address: u32,
+    /// The lowercase C glue (sfputfile) passes C strings and receives the
+    /// reply's fName as a C string.
+    pub(super) c_strings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,11 +187,16 @@ fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
     }
 }
 
-fn ppc_standard_file_call(mode: PpcStandardFileMode, cpu: &PpcCpu) -> PpcStandardFileCall {
+fn ppc_standard_file_call(
+    mode: PpcStandardFileMode,
+    cpu: &PpcCpu,
+    c_strings: bool,
+) -> PpcStandardFileCall {
     PpcStandardFileCall {
         mode,
         reply: ppc_standard_file_reply_ptr(mode, cpu),
         return_address: cpu.lr,
+        c_strings,
     }
 }
 
@@ -421,6 +429,9 @@ pub enum PpcStandardFileOperation {
     SfpGetFile,
     SfpPutFile,
     SfPutFile,
+    /// sfputfile(Point *where, const char *prompt, const char *origName,
+    /// DlgHookUPP dlgHook, SFReply *reply): the C glue for SFPutFile.
+    SfPutFileCString,
     StandardPutFile,
 }
 
@@ -430,12 +441,15 @@ impl PpcStandardFileOperation {
             Self::StandardGetFile | Self::CustomGetFile => PpcStandardFileMode::GetModern,
             Self::SfGetFile | Self::SfpGetFile => PpcStandardFileMode::GetLegacy,
             Self::CustomPutFile | Self::StandardPutFile => PpcStandardFileMode::PutModern,
-            Self::SfpPutFile | Self::SfPutFile => PpcStandardFileMode::PutLegacy,
+            Self::SfpPutFile | Self::SfPutFile | Self::SfPutFileCString => {
+                PpcStandardFileMode::PutLegacy
+            }
         }
     }
 
-    fn requested_origin(self, cpu: &PpcCpu) -> Option<(i16, i16)> {
+    fn requested_origin(self, cpu: &PpcCpu, memory: &mut PpcSectionMem) -> Option<(i16, i16)> {
         let point = match self {
+            Self::SfPutFileCString => memory.read_u32_be(cpu.gpr[3]).unwrap_or(u32::MAX),
             Self::SfGetFile | Self::SfpGetFile | Self::SfpPutFile | Self::SfPutFile => cpu.gpr[3],
             Self::CustomGetFile => cpu.gpr[8],
             Self::CustomPutFile => cpu.gpr[7],
@@ -454,26 +468,40 @@ impl PpcStandardFileOperation {
             Self::StandardGetFile => (cpu.gpr[3], false),
             Self::CustomGetFile => (cpu.gpr[3], true),
             Self::SfGetFile | Self::SfpGetFile => (cpu.gpr[5], false),
-            Self::CustomPutFile | Self::SfpPutFile | Self::SfPutFile | Self::StandardPutFile => {
-                (0, false)
-            }
+            Self::CustomPutFile
+            | Self::SfpPutFile
+            | Self::SfPutFile
+            | Self::SfPutFileCString
+            | Self::StandardPutFile => (0, false),
         }
     }
 
     fn prompt_pointer(self, cpu: &PpcCpu) -> u32 {
         match self {
             Self::CustomPutFile | Self::StandardPutFile => cpu.gpr[3],
-            Self::SfpPutFile | Self::SfPutFile => cpu.gpr[4],
+            Self::SfpPutFile | Self::SfPutFile | Self::SfPutFileCString => cpu.gpr[4],
             Self::StandardGetFile | Self::CustomGetFile | Self::SfGetFile | Self::SfpGetFile => 0,
         }
     }
 }
 
-fn ppc_standard_file_prompt(memory: &mut PpcSectionMem, prompt_ptr: u32) -> Vec<u8> {
+fn ppc_standard_file_string(memory: &mut PpcSectionMem, ptr: u32, c_string: bool) -> Vec<u8> {
+    if c_string {
+        ppc_std_c_string(memory, ptr, 255)
+    } else {
+        ppc_read_pstring_bytes(memory, ptr).unwrap_or_default()
+    }
+}
+
+fn ppc_standard_file_prompt(
+    memory: &mut PpcSectionMem,
+    prompt_ptr: u32,
+    c_string: bool,
+) -> Vec<u8> {
     if prompt_ptr == 0 {
         return b"Save as:".to_vec();
     }
-    let prompt = ppc_read_pstring_bytes(memory, prompt_ptr).unwrap_or_default();
+    let prompt = ppc_standard_file_string(memory, prompt_ptr, c_string);
     if prompt.is_empty() {
         b"Save as:".to_vec()
     } else {
@@ -1064,6 +1092,7 @@ fn ppc_standard_file_write_put_reply(
     dir_id: u32,
     name: &[u8],
     replacing: bool,
+    c_string: bool,
 ) {
     if reply == 0 {
         return;
@@ -1091,7 +1120,15 @@ fn ppc_standard_file_write_put_reply(
             let _ = memory.write_u32_be(reply + 2, 0);
             let _ = memory.write_u16_be(reply + 6, vref as u16);
             let _ = memory.write_u16_be(reply + 8, 0);
-            let _ = ppc_write_pstring_bytes(memory, reply + 10, name);
+            if c_string {
+                // fName is a Str63; the C glue converts it in place.
+                let name = &name[..name.len().min(63)];
+                for (offset, byte) in name.iter().chain(std::iter::once(&0)).enumerate() {
+                    let _ = memory.write_u8(reply + 10 + offset as u32, *byte);
+                }
+            } else {
+                let _ = ppc_write_pstring_bytes(memory, reply + 10, name);
+            }
         }
         PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {}
     }
@@ -1179,6 +1216,7 @@ fn ppc_standard_file_finish_put(
             tracking.dir_id,
             &tracking.name,
             replacing,
+            tracking.call.c_strings,
         );
     } else {
         ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
@@ -1533,7 +1571,7 @@ fn ppc_standard_file_get_start(
                 && num_types == -1,
         });
     let tracking = PpcStandardFileGetTrackingState {
-        call: ppc_standard_file_call(mode, cpu),
+        call: ppc_standard_file_call(mode, cpu, false),
         entries,
         current_dir_id,
         file_types,
@@ -1570,6 +1608,7 @@ fn ppc_standard_file_put_start(
     mode: PpcStandardFileMode,
     prompt_ptr: u32,
     requested_origin: Option<(i16, i16)>,
+    c_strings: bool,
 ) -> PpcImportAction {
     let name_ptr = match mode {
         PpcStandardFileMode::PutModern => cpu.gpr[4],
@@ -1579,7 +1618,7 @@ fn ppc_standard_file_put_start(
         }
     };
     let mut name = if name_ptr != 0 {
-        ppc_read_pstring_bytes(memory, name_ptr).unwrap_or_default()
+        ppc_standard_file_string(memory, name_ptr, c_strings)
     } else {
         Vec::new()
     };
@@ -1599,10 +1638,10 @@ fn ppc_standard_file_put_start(
         requested_origin,
     );
     let tracking = PpcStandardFilePutTrackingState {
-        call: ppc_standard_file_call(mode, cpu),
+        call: ppc_standard_file_call(mode, cpu, c_strings),
         vref: PPC_BOOT_VOLUME_REF_NUM,
         dir_id: default_dir_id,
-        prompt: ppc_standard_file_prompt(memory, prompt_ptr),
+        prompt: ppc_standard_file_prompt(memory, prompt_ptr, c_strings),
         name: name.clone(),
         sel_start: 0,
         sel_end: name.len(),
@@ -1635,7 +1674,7 @@ fn ppc_dispatch_standard_file(
     event_queue: &mut EventQueue,
 ) -> PpcImportAction {
     let mode = operation.mode();
-    let requested_origin = operation.requested_origin(cpu);
+    let requested_origin = operation.requested_origin(cpu, memory);
     match mode {
         PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
             ppc_standard_file_get_start(
@@ -1770,6 +1809,7 @@ fn ppc_dispatch_standard_file(
                     mode,
                     prompt_ptr,
                     requested_origin,
+                    operation == PpcStandardFileOperation::SfPutFileCString,
                 )
             }
         }
