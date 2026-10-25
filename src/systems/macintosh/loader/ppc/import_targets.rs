@@ -952,6 +952,13 @@ pub enum PpcImportDispatcherTarget {
     CfStringCreateWithCharacters,
     CfBooleanGetValue,
     CfBundleLoadExecutable,
+    CfArrayGetCount,
+    CfArrayGetValueAtIndex,
+    CfDictionaryGetValue,
+    CfNumberGetValue,
+    CfUrlCreateWithFileSystemPath,
+    CfUrlCreateWithString,
+    CfUrlCopyFileSystemPath,
     LowerText,
     StripText,
     UpperText,
@@ -4653,6 +4660,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CFBooleanGetValue") => PpcImportDispatcherTarget::CfBooleanGetValue,
         ("InterfaceLib", "CFBundleLoadExecutable") => {
             PpcImportDispatcherTarget::CfBundleLoadExecutable
+        }
+        ("InterfaceLib", "CFArrayGetCount") => PpcImportDispatcherTarget::CfArrayGetCount,
+        ("InterfaceLib", "CFArrayGetValueAtIndex") => {
+            PpcImportDispatcherTarget::CfArrayGetValueAtIndex
+        }
+        ("InterfaceLib", "CFDictionaryGetValue") => PpcImportDispatcherTarget::CfDictionaryGetValue,
+        ("InterfaceLib", "CFNumberGetValue") => PpcImportDispatcherTarget::CfNumberGetValue,
+        ("InterfaceLib", "CFURLCreateWithFileSystemPath") => {
+            PpcImportDispatcherTarget::CfUrlCreateWithFileSystemPath
+        }
+        ("InterfaceLib", "CFURLCreateWithString") => {
+            PpcImportDispatcherTarget::CfUrlCreateWithString
+        }
+        ("InterfaceLib", "CFURLCopyFileSystemPath") => {
+            PpcImportDispatcherTarget::CfUrlCopyFileSystemPath
         }
         ("InterfaceLib" | "CarbonLib", "LowerText" | "LowercaseText") => {
             PpcImportDispatcherTarget::LowerText

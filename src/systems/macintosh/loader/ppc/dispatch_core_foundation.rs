@@ -25,8 +25,61 @@ struct PpcCfBundle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcCfUrl {
+    /// For file URLs on the boot volume, the VFS path. Paths outside the boot
+    /// volume keep their absolute POSIX form, which begins with `/` and so
+    /// never names a VFS entry.
     path: String,
     is_directory: bool,
+    retain_count: u32,
+    /// The URL string of a URL whose scheme is not `file`.
+    non_file: Option<String>,
+}
+
+// CoreFoundation/CFNumber.h: CFNumberType.
+const CF_NUMBER_SINT8_TYPE: u32 = 1;
+const CF_NUMBER_SINT16_TYPE: u32 = 2;
+const CF_NUMBER_SINT32_TYPE: u32 = 3;
+const CF_NUMBER_SINT64_TYPE: u32 = 4;
+const CF_NUMBER_FLOAT32_TYPE: u32 = 5;
+const CF_NUMBER_FLOAT64_TYPE: u32 = 6;
+const CF_NUMBER_CHAR_TYPE: u32 = 7;
+const CF_NUMBER_SHORT_TYPE: u32 = 8;
+const CF_NUMBER_INT_TYPE: u32 = 9;
+const CF_NUMBER_LONG_TYPE: u32 = 10;
+const CF_NUMBER_LONG_LONG_TYPE: u32 = 11;
+const CF_NUMBER_FLOAT_TYPE: u32 = 12;
+const CF_NUMBER_DOUBLE_TYPE: u32 = 13;
+const CF_NUMBER_CF_INDEX_TYPE: u32 = 14;
+
+// CoreFoundation/CFURL.h: CFURLPathStyle.
+const CF_URL_POSIX_PATH_STYLE: u32 = 0;
+const CF_URL_HFS_PATH_STYLE: u32 = 1;
+
+/// A CFNumber's stored value. Floating-point values keep their IEEE bits so
+/// the state stays `Eq`. No supported import creates CFNumber, CFArray, or
+/// CFDictionary objects yet, so the accessors find none outside tests.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PpcCfNumberValue {
+    Integer(i64),
+    Float(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcCfArray {
+    values: Vec<u32>,
+    retain_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcCfDictionary {
+    entries: Vec<(u32, u32)>,
+    retain_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcCfNumber {
+    value: PpcCfNumberValue,
     retain_count: u32,
 }
 
@@ -38,6 +91,9 @@ pub(super) struct PpcCfStringState {
     main_bundle: Option<PpcCfBundle>,
     bundles: BTreeMap<u32, PpcCfBundle>,
     urls: BTreeMap<u32, PpcCfUrl>,
+    arrays: BTreeMap<u32, PpcCfArray>,
+    dictionaries: BTreeMap<u32, PpcCfDictionary>,
+    numbers: BTreeMap<u32, PpcCfNumber>,
 }
 
 impl PpcCfStringState {
@@ -51,10 +107,86 @@ impl PpcCfStringState {
         self.urls.get(&reference).map(|url| url.is_directory)
     }
 
+    #[cfg(test)]
+    pub(super) fn insert_array(&mut self, reference: u32, values: Vec<u32>) {
+        let array = PpcCfArray {
+            values,
+            retain_count: 1,
+        };
+        self.arrays.insert(reference, array);
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_dictionary(&mut self, reference: u32, entries: Vec<(u32, u32)>) {
+        let dictionary = PpcCfDictionary {
+            entries,
+            retain_count: 1,
+        };
+        self.dictionaries.insert(reference, dictionary);
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_number(&mut self, reference: u32, value: PpcCfNumberValue) {
+        let number = PpcCfNumber {
+            value,
+            retain_count: 1,
+        };
+        self.numbers.insert(reference, number);
+    }
+
+    /// The retain count of an array, dictionary, or number object.
+    fn collection_retain_count(&mut self, reference: u32) -> Option<&mut u32> {
+        if let Some(array) = self.arrays.get_mut(&reference) {
+            return Some(&mut array.retain_count);
+        }
+        if let Some(dictionary) = self.dictionaries.get_mut(&reference) {
+            return Some(&mut dictionary.retain_count);
+        }
+        self.numbers
+            .get_mut(&reference)
+            .map(|number| &mut number.retain_count)
+    }
+
+    /// Whether two dictionary keys are equal. CFDictionaryGetValue compares
+    /// keys with the key callbacks' equality, which for CFType keys is
+    /// CFEqual: CFStrings are equal when their characters are equal.
+    fn keys_equal(&self, left: u32, right: u32) -> bool {
+        if left == right {
+            return true;
+        }
+        match (self.objects.get(&left), self.objects.get(&right)) {
+            (Some(left), Some(right)) => left.value == right.value,
+            _ => false,
+        }
+    }
+
     fn create_url(
         &mut self,
         path: String,
         is_directory: bool,
+        process_memory_manager: &mut ProcessNativeMemoryManager,
+        memory: &mut PpcSectionMem,
+        heap_cursor: &mut u32,
+        last_mem_error: &mut i16,
+    ) -> u32 {
+        let url = PpcCfUrl {
+            path,
+            is_directory,
+            retain_count: 1,
+            non_file: None,
+        };
+        self.insert_url(
+            url,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        )
+    }
+
+    fn insert_url(
+        &mut self,
+        url: PpcCfUrl,
         process_memory_manager: &mut ProcessNativeMemoryManager,
         memory: &mut PpcSectionMem,
         heap_cursor: &mut u32,
@@ -68,14 +200,7 @@ impl PpcCfStringState {
             last_mem_error,
         );
         if reference != 0 {
-            self.urls.insert(
-                reference,
-                PpcCfUrl {
-                    path,
-                    is_directory,
-                    retain_count: 1,
-                },
-            );
+            self.urls.insert(reference, url);
         }
         reference
     }
@@ -149,6 +274,185 @@ impl PpcCfStringState {
             );
         }
     }
+}
+
+/// Joins path components, resolving `.` and `..`, onto `base`.
+fn normalize_components<'a>(base: Vec<&'a str>, path: &'a str) -> Vec<&'a str> {
+    let mut components = base;
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            component => components.push(component),
+        }
+    }
+    components
+}
+
+/// Maps components of an absolute POSIX path to a URL path. CarbonLib names
+/// mounted volumes as top-level POSIX directories, so `/<boot volume>/a`
+/// names VFS entry `a`.
+fn url_path_from_posix_components(components: &[&str]) -> String {
+    let volume = crate::trap::dispatch::BOOT_VOLUME_NAME;
+    match components.split_first() {
+        Some((first, rest)) if first.eq_ignore_ascii_case(volume) => rest.join("/"),
+        _ => format!("/{}", components.join("/")),
+    }
+}
+
+/// The POSIX components of a URL path.
+fn posix_components(path: &str) -> Vec<&str> {
+    match path.strip_prefix('/') {
+        Some(outside) => outside.split('/').filter(|part| !part.is_empty()).collect(),
+        None => std::iter::once(crate::trap::dispatch::BOOT_VOLUME_NAME)
+            .chain(path.split('/').filter(|part| !part.is_empty()))
+            .collect(),
+    }
+}
+
+/// Converts a file system path in `style` to a URL path. Relative paths
+/// resolve against `base`, a URL path naming a directory.
+fn url_path_from_file_system_path(path: &str, style: u32, base: &str) -> Option<String> {
+    match style {
+        CF_URL_POSIX_PATH_STYLE => {
+            let base = if path.starts_with('/') {
+                Vec::new()
+            } else {
+                posix_components(base)
+            };
+            let components = normalize_components(base, path);
+            Some(url_path_from_posix_components(&components))
+        }
+        CF_URL_HFS_PATH_STYLE => {
+            // An HFS path is absolute when it contains a colon that is not
+            // its first character; its first component names the volume.
+            // Each extra leading colon of a relative path names a parent.
+            let absolute = path.find(':').is_some_and(|index| index > 0);
+            let mut components = if absolute {
+                Vec::new()
+            } else {
+                posix_components(base)
+            };
+            let relative = if absolute {
+                path
+            } else {
+                path.strip_prefix(':').unwrap_or(path)
+            };
+            let mut parts = relative.split(':').peekable();
+            while let Some(part) = parts.next() {
+                if !part.is_empty() {
+                    components.push(part);
+                } else if parts.peek().is_some() {
+                    components.pop();
+                }
+            }
+            Some(url_path_from_posix_components(&components))
+        }
+        // The Windows path style names no Mac OS volume.
+        _ => None,
+    }
+}
+
+/// Converts a URL path to a file system path in `style`, without a trailing
+/// separator except after a bare HFS volume name.
+fn file_system_path_from_url_path(path: &str, style: u32) -> Option<String> {
+    let components = posix_components(path);
+    match style {
+        CF_URL_POSIX_PATH_STYLE => Some(format!("/{}", components.join("/"))),
+        CF_URL_HFS_PATH_STYLE => match components.as_slice() {
+            [] => None,
+            [volume] => Some(format!("{volume}:")),
+            components => Some(components.join(":")),
+        },
+        _ => None,
+    }
+}
+
+/// Decodes `%XX` escapes as UTF-8, the encoding CFURL uses for file paths.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(index + 1..index + 3)?).ok()?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+/// Whether `text` uses only characters RFC 2396 allows in a URL reference.
+/// CFURLCreateWithString returns NULL for strings that need escaping.
+fn is_url_string(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || "-_.!~*'();/?:@&=+$,%#[]".contains(ch))
+}
+
+/// The scheme of an absolute URL string, per RFC 2396's `scheme` grammar.
+fn url_scheme(text: &str) -> Option<&str> {
+    let (scheme, _) = text.split_once(':')?;
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    let valid = first.is_ascii_alphabetic()
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'));
+    valid.then_some(scheme)
+}
+
+/// The path portion of a URL string: after the scheme and authority, and
+/// before any query or fragment.
+fn url_string_path(text: &str) -> &str {
+    let rest = match url_scheme(text) {
+        Some(scheme) => &text[scheme.len() + 1..],
+        None => text,
+    };
+    let rest = match rest.strip_prefix("//") {
+        Some(authority) => authority.find('/').map_or("", |index| &authority[index..]),
+        None => rest,
+    };
+    rest.split(['?', '#']).next().unwrap_or("")
+}
+
+/// Parses a `file:` URL string's path to a URL path, when its authority is
+/// empty or `localhost`.
+fn file_url_path(text: &str) -> Option<String> {
+    let rest = &text[url_scheme(text)?.len() + 1..];
+    let rest = match rest.strip_prefix("//") {
+        Some(authority) => {
+            let (host, path) = authority.split_at(authority.find('/').unwrap_or(authority.len()));
+            if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+                return None;
+            }
+            path
+        }
+        None => rest,
+    };
+    let path = percent_decode(rest.split(['?', '#']).next().unwrap_or(""))?;
+    if !path.starts_with('/') {
+        return None;
+    }
+    let components = normalize_components(Vec::new(), &path);
+    Some(url_path_from_posix_components(&components))
+}
+
+/// Resolves a relative URL reference against a base URL string, per the
+/// RFC 2396 merge of a relative path with the base path's directory.
+fn resolve_url_string(base: &str, relative: &str) -> String {
+    let base = base.split(['?', '#']).next().unwrap_or(base);
+    if relative.starts_with('/') {
+        let path_start = base.len() - url_string_path(base).len();
+        return format!("{}{relative}", &base[..path_start]);
+    }
+    let directory = base.rfind('/').map_or(base, |index| &base[..=index]);
+    format!("{directory}{relative}")
 }
 
 fn read_c_bytes(memory: &mut PpcSectionMem, address: u32) -> Option<Vec<u8>> {
@@ -513,6 +817,9 @@ pub(super) fn dispatch_core_foundation_import(
             } else if let Some(bundle) = state.bundles.get_mut(&cpu.gpr[3]) {
                 bundle.retain_count = bundle.retain_count.saturating_add(1);
                 Some(PpcImportAction::Return(cpu.gpr[3]))
+            } else if let Some(retain_count) = state.collection_retain_count(cpu.gpr[3]) {
+                *retain_count = retain_count.saturating_add(1);
+                Some(PpcImportAction::Return(cpu.gpr[3]))
             } else {
                 Some(PpcImportAction::Return(0))
             }
@@ -551,6 +858,20 @@ pub(super) fn dispatch_core_foundation_import(
                         last_mem_error,
                     );
                 }
+            } else if let Some(retain_count) = state.collection_retain_count(cpu.gpr[3]) {
+                *retain_count -= 1;
+                if *retain_count == 0 {
+                    state.arrays.remove(&cpu.gpr[3]);
+                    state.dictionaries.remove(&cpu.gpr[3]);
+                    state.numbers.remove(&cpu.gpr[3]);
+                    let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+                    ppc_apply_process_native_allocator(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                    );
+                }
             } else {
                 state.release(
                     cpu.gpr[3],
@@ -581,6 +902,7 @@ pub(super) fn dispatch_core_foundation_import(
                         .get(&cpu.gpr[3])
                         .map(|bundle| bundle.retain_count)
                 })
+                .or_else(|| state.collection_retain_count(cpu.gpr[3]).copied())
                 .unwrap_or(0),
         )),
         PpcImportDispatcherTarget::CfBundleGetMainBundle => {
@@ -743,7 +1065,11 @@ pub(super) fn dispatch_core_foundation_import(
         PpcImportDispatcherTarget::CfUrlGetFsRef => {
             // CFURLGetFSRef(url, FSRef *) returns true when the URL names an
             // existing object.
-            let Some(url) = state.urls.get(&cpu.gpr[3]) else {
+            let Some(url) = state
+                .urls
+                .get(&cpu.gpr[3])
+                .filter(|url| url.non_file.is_none())
+            else {
                 return Some(PpcImportAction::Return(0));
             };
             let exists = vfs_directories
@@ -805,6 +1131,9 @@ pub(super) fn dispatch_core_foundation_import(
             let component = component.value.as_str();
             let path = if component.is_empty() {
                 base.path.clone()
+            } else if base.path.is_empty() {
+                // The boot volume's root directory has the empty VFS path.
+                component.to_string()
             } else {
                 format!("{}/{}", base.path.trim_end_matches('/'), component)
             };
@@ -926,6 +1255,258 @@ pub(super) fn dispatch_core_foundation_import(
                 .unwrap_or(0);
             Some(PpcImportAction::Return(reference))
         }
+        PpcImportDispatcherTarget::CfArrayGetCount => {
+            // CFArrayGetCount(theArray) returns the number of values.
+            let count = state
+                .arrays
+                .get(&cpu.gpr[3])
+                .map_or(0, |array| array.values.len() as u32);
+            Some(PpcImportAction::Return(count))
+        }
+        PpcImportDispatcherTarget::CfArrayGetValueAtIndex => {
+            // CFArrayGetValueAtIndex(theArray, idx) returns the value without
+            // retaining it; an index outside 0..count has no value.
+            let value = state
+                .arrays
+                .get(&cpu.gpr[3])
+                .and_then(|array| array.values.get(cpu.gpr[4] as usize).copied())
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(value))
+        }
+        PpcImportDispatcherTarget::CfDictionaryGetValue => {
+            // CFDictionaryGetValue(theDict, key) returns the value for an
+            // equal key without retaining it, or NULL when no key matches.
+            let value = state
+                .dictionaries
+                .get(&cpu.gpr[3])
+                .and_then(|dictionary| {
+                    dictionary
+                        .entries
+                        .iter()
+                        .find(|(key, _)| state.keys_equal(*key, cpu.gpr[4]))
+                })
+                .map_or(0, |(_, value)| *value);
+            Some(PpcImportAction::Return(value))
+        }
+        PpcImportDispatcherTarget::CfNumberGetValue => {
+            // CFNumberGetValue(number, theType, valuePtr) stores the value
+            // converted to theType and returns true only when the conversion
+            // is exact; an inexact conversion still stores the result.
+            let Some(number) = state.numbers.get(&cpu.gpr[3]) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let (bytes, exact) = match cf_number_bytes(number.value, cpu.gpr[4]) {
+                Some(converted) => converted,
+                None => return Some(PpcImportAction::Return(0)),
+            };
+            if cpu.gpr[5] == 0 || memory.write_bytes(cpu.gpr[5], &bytes).is_none() {
+                return Some(PpcImportAction::Return(0));
+            }
+            Some(PpcImportAction::Return(u32::from(exact)))
+        }
+        PpcImportDispatcherTarget::CfUrlCreateWithFileSystemPath => {
+            // CFURLCreateWithFileSystemPath(allocator, filePath, pathStyle,
+            // isDirectory) returns an owned file URL. CarbonLib has no POSIX
+            // working directory, so relative paths resolve against the
+            // application's folder, the default directory at launch.
+            let Some(path) = state
+                .objects
+                .get(&cpu.gpr[4])
+                .map(|path| path.value.clone())
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let base = launched_app_path
+                .and_then(|path| path.rsplit_once('/'))
+                .map_or("", |(directory, _)| directory);
+            let Some(path) = url_path_from_file_system_path(&path, cpu.gpr[5], base) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let reference = state.create_url(
+                path,
+                cpu.gpr[6] & 0xff != 0,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfUrlCreateWithString => {
+            // CFURLCreateWithString(allocator, URLString, baseURL) returns an
+            // owned URL, or NULL when the string is not a valid URL. A
+            // relative string resolves against baseURL when one is given.
+            let Some(text) = state
+                .objects
+                .get(&cpu.gpr[4])
+                .map(|text| text.value.clone())
+                .filter(|text| is_url_string(text))
+            else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let base = state.urls.get(&cpu.gpr[5]).cloned();
+            let url = if url_scheme(&text).is_some() {
+                cf_url_from_string(text)
+            } else {
+                match base {
+                    Some(PpcCfUrl {
+                        non_file: Some(base),
+                        ..
+                    }) => cf_url_from_string(resolve_url_string(&base, &text)),
+                    Some(base) => {
+                        let directory = if base.is_directory {
+                            base.path.as_str()
+                        } else {
+                            base.path.rsplit_once('/').map_or("", |(parent, _)| parent)
+                        };
+                        let path = percent_decode(url_string_path(&text)).and_then(|path| {
+                            url_path_from_file_system_path(
+                                &path,
+                                CF_URL_POSIX_PATH_STYLE,
+                                directory,
+                            )
+                        });
+                        path.map(|path| PpcCfUrl {
+                            path,
+                            is_directory: url_string_path(&text).ends_with('/'),
+                            retain_count: 1,
+                            non_file: None,
+                        })
+                    }
+                    // Without a base, a relative reference stays relative.
+                    None => cf_url_from_string(text),
+                }
+            };
+            let Some(url) = url else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let reference = state.insert_url(
+                url,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
+        PpcImportDispatcherTarget::CfUrlCopyFileSystemPath => {
+            // CFURLCopyFileSystemPath(anURL, pathStyle) returns an owned
+            // string of the URL's path in pathStyle, without a trailing
+            // separator, or NULL when the path cannot be expressed.
+            let Some(url) = state.urls.get(&cpu.gpr[3]) else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let path = match &url.non_file {
+                Some(text) => percent_decode(url_string_path(text)).and_then(|path| {
+                    if path.starts_with('/') {
+                        let components = normalize_components(Vec::new(), &path);
+                        let path = format!("/{}", components.join("/"));
+                        file_system_path_from_url_path(&path, cpu.gpr[4])
+                    } else {
+                        // A relative URL's path stays relative.
+                        let path = path.trim_end_matches('/');
+                        match cpu.gpr[4] {
+                            CF_URL_POSIX_PATH_STYLE => Some(path.to_string()),
+                            CF_URL_HFS_PATH_STYLE => Some(format!(":{}", path.replace('/', ":"))),
+                            _ => None,
+                        }
+                    }
+                }),
+                None => file_system_path_from_url_path(&url.path, cpu.gpr[4]),
+            };
+            let Some(path) = path else {
+                return Some(PpcImportAction::Return(0));
+            };
+            let reference = state.create(
+                path,
+                false,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(reference))
+        }
         _ => None,
     }
+}
+
+/// Builds the URL an absolute or base-less URL string names.
+fn cf_url_from_string(text: String) -> Option<PpcCfUrl> {
+    let is_directory = url_string_path(&text).ends_with('/');
+    let is_file = url_scheme(&text).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file"));
+    if is_file {
+        if let Some(path) = file_url_path(&text) {
+            return Some(PpcCfUrl {
+                path,
+                is_directory,
+                retain_count: 1,
+                non_file: None,
+            });
+        }
+    }
+    Some(PpcCfUrl {
+        path: text.clone(),
+        is_directory,
+        retain_count: 1,
+        non_file: Some(text),
+    })
+}
+
+/// Converts a CFNumber value to the big-endian bytes of `number_type`, and
+/// whether the conversion was exact.
+fn cf_number_bytes(value: PpcCfNumberValue, number_type: u32) -> Option<(Vec<u8>, bool)> {
+    let float = match value {
+        PpcCfNumberValue::Integer(integer) => integer as f64,
+        PpcCfNumberValue::Float(bits) => f64::from_bits(bits),
+    };
+    let integer = |bits: u32| -> (i64, bool) {
+        let (min, max) = (-(1_i128 << (bits - 1)), (1_i128 << (bits - 1)) - 1);
+        match value {
+            PpcCfNumberValue::Integer(integer) => {
+                let clamped = i128::from(integer).clamp(min, max) as i64;
+                (clamped, clamped == integer)
+            }
+            PpcCfNumberValue::Float(_) => {
+                let truncated = float.trunc();
+                let clamped = (truncated as i128).clamp(min, max) as i64;
+                (clamped, truncated == float && clamped as f64 == truncated)
+            }
+        }
+    };
+    Some(match number_type {
+        CF_NUMBER_SINT8_TYPE | CF_NUMBER_CHAR_TYPE => {
+            let (value, exact) = integer(8);
+            ((value as i8).to_be_bytes().to_vec(), exact)
+        }
+        CF_NUMBER_SINT16_TYPE | CF_NUMBER_SHORT_TYPE => {
+            let (value, exact) = integer(16);
+            ((value as i16).to_be_bytes().to_vec(), exact)
+        }
+        // int, long, and CFIndex are 32 bits wide on PowerPC Mac OS.
+        CF_NUMBER_SINT32_TYPE
+        | CF_NUMBER_INT_TYPE
+        | CF_NUMBER_LONG_TYPE
+        | CF_NUMBER_CF_INDEX_TYPE => {
+            let (value, exact) = integer(32);
+            ((value as i32).to_be_bytes().to_vec(), exact)
+        }
+        CF_NUMBER_SINT64_TYPE | CF_NUMBER_LONG_LONG_TYPE => {
+            let (value, exact) = integer(64);
+            (value.to_be_bytes().to_vec(), exact)
+        }
+        CF_NUMBER_FLOAT32_TYPE | CF_NUMBER_FLOAT_TYPE => {
+            let single = float as f32;
+            let exact = f64::from(single) == float || float.is_nan();
+            let exact = exact
+                && !matches!(value, PpcCfNumberValue::Integer(integer) if single as i64 != integer);
+            (single.to_be_bytes().to_vec(), exact)
+        }
+        CF_NUMBER_FLOAT64_TYPE | CF_NUMBER_DOUBLE_TYPE => {
+            let exact =
+                !matches!(value, PpcCfNumberValue::Integer(integer) if float as i64 != integer);
+            (float.to_be_bytes().to_vec(), exact)
+        }
+        _ => return None,
+    })
 }
