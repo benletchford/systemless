@@ -60,7 +60,8 @@ pub struct WorkspaceUi {
     pub crop: (u32, u32, u32, u32),
     pub inspection: Inspection,
     modality: UiModality,
-    pub menus: Option<std::sync::Arc<systemless::systems::macintosh::menu_model::GuestMenuSnapshot>>,
+    pub menus:
+        Option<std::sync::Arc<systemless::systems::macintosh::menu_model::GuestMenuSnapshot>>,
     pub menu_actions: Vec<(i16, i16)>,
     dialog: Option<std::sync::Arc<systemless::systems::macintosh::host_ui::DialogSnapshot>>,
     pub dialog_actions: Vec<systemless::systems::macintosh::host_ui::DialogReply>,
@@ -132,8 +133,10 @@ impl WorkspaceUi {
         live_dialogs: &[u64],
     ) {
         let dialog = dialog.filter(|d| host_renderable(d));
-        self.pending_controls.retain(|id, _| live_dialogs.contains(id));
-        self.dialog_surfaces.retain(|id, _| live_dialogs.contains(id));
+        self.pending_controls
+            .retain(|id, _| live_dialogs.contains(id));
+        self.dialog_surfaces
+            .retain(|id, _| live_dialogs.contains(id));
         self.dialog_editors.sync(dialog.as_deref(), live_dialogs);
         if self.dialog != dialog {
             if self
@@ -2831,8 +2834,15 @@ mod tests {
                 assert!(!labels.iter().any(|label| label == "Preferences"));
                 assert_eq!(ui.dialog_editors.active.fields[0].editor.text, "Renée");
                 if let Some(directory) = std::env::var_os("SYSTEMLESS_UI_CAPTURE_DIR") {
-                    image::save_buffer(std::path::PathBuf::from(directory).join(format!("range-dialog-{scale}x.png")),
-                        &readback(&device, &queue, &target, size), size[0], size[1], image::ColorType::Rgba8).unwrap();
+                    image::save_buffer(
+                        std::path::PathBuf::from(directory)
+                            .join(format!("range-dialog-{scale}x.png")),
+                        &readback(&device, &queue, &target, size),
+                        size[0],
+                        size[1],
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
                 }
 
                 let mut handling = editable.clone();
@@ -3118,7 +3128,6 @@ mod tests {
                     )
                     .unwrap();
                 }
-
             }
         });
     }
@@ -3551,8 +3560,10 @@ mod tests {
     #[test]
     #[ignore = "requires a real wgpu adapter"]
     fn workspace_popup_menu_replies_at_both_dpi_scales() {
-        use systemless::systems::macintosh::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
         use systemless::systems::macintosh::host_ui::{PopupMenuReply, PopupMenuSnapshot};
+        use systemless::systems::macintosh::menu_model::{
+            GuestMenu, GuestMenuItem, GuestMenuSnapshot,
+        };
         let item = |number: i16, text: &str, enabled: bool| GuestMenuItem {
             number,
             text: text.into(),

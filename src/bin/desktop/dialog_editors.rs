@@ -134,7 +134,8 @@ impl DialogEditors {
     }
     pub fn restore_focus(&mut self) {
         let focused = self.focused.unwrap_or(self.active_item);
-        self.control_focus = (!self.fields.iter().any(|field| field.id == focused)).then_some(focused);
+        self.control_focus =
+            (!self.fields.iter().any(|field| field.id == focused)).then_some(focused);
         for field in &mut self.fields {
             field.editor.request_focus = field.id == focused;
         }
@@ -506,5 +507,4 @@ mod tests {
             assert_eq!(state.flush(&source), (None, None));
         }
     }
-
 }
