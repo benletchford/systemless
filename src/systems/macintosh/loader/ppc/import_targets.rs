@@ -412,6 +412,20 @@ pub enum PpcImportDispatcherTarget {
     FlashMenuBar,
     HMGetHelpMenuHandle,
     HMGetBalloons,
+    HMShowBalloon,
+    SetMCEntries,
+    LGetCellDataLocation,
+    LAddColumn,
+    LCellSize,
+    LRect,
+    TEGetStyleHandle,
+    TEReplaceStyle,
+    DisposeIconSuite,
+    QuickDrawShape(PpcQuickDrawShapeOperation),
+    StdText,
+    StdTxMeas,
+    IsOutline,
+    OutlineMetrics,
     HMIsBalloon,
     HMSetBalloons,
     HiliteMenu,
@@ -3828,6 +3842,51 @@ pub(crate) fn dispatcher_target_for_import(
             | "CMAccept" | "CMIOKill" | "CMGetProcID" | "CRMGetIndToolName" | "CMIdle"
             | "CMDispose",
         ) => PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxError),
+        ("InterfaceLib", "PtToAngle") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::PtToAngle)
+        }
+        ("InterfaceLib", "IsCmdChar") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::IsCmdChar)
+        }
+        ("InterfaceLib", "GetColor") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetColor)
+        }
+        ("InterfaceLib", "FindServiceWindow") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::FindServiceWindow)
+        }
+        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::HMShowBalloon,
+        ("InterfaceLib", "SetMCEntries") => PpcImportDispatcherTarget::SetMCEntries,
+        ("InterfaceLib", "LGetCellDataLocation") => PpcImportDispatcherTarget::LGetCellDataLocation,
+        ("InterfaceLib", "LAddColumn") => PpcImportDispatcherTarget::LAddColumn,
+        ("InterfaceLib", "LCellSize") => PpcImportDispatcherTarget::LCellSize,
+        ("InterfaceLib", "LRect") => PpcImportDispatcherTarget::LRect,
+        ("InterfaceLib", "TEGetStyleHandle") => PpcImportDispatcherTarget::TEGetStyleHandle,
+        ("InterfaceLib", "TEReplaceStyle") => PpcImportDispatcherTarget::TEReplaceStyle,
+        ("InterfaceLib", "DisposeIconSuite") => PpcImportDispatcherTarget::DisposeIconSuite,
+        ("InterfaceLib", "FillOval") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillOval)
+        }
+        ("InterfaceLib", "FrameArc") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc)
+        }
+        ("InterfaceLib", "StdRect") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::StdRect)
+        }
+        ("InterfaceLib", "StdRgn") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::StdRgn)
+        }
+        ("InterfaceLib", "StdText") => PpcImportDispatcherTarget::StdText,
+        ("InterfaceLib", "StdTxMeas") => PpcImportDispatcherTarget::StdTxMeas,
+        ("InterfaceLib", "IsOutline") => PpcImportDispatcherTarget::IsOutline,
+        ("InterfaceLib", "OutlineMetrics") => PpcImportDispatcherTarget::OutlineMetrics,
+        // The PowerPC Control Manager draws controls with the system colours
+        // and keeps no auxiliary control records, so a per-control colour
+        // table has nothing to change.
+        ("InterfaceLib", "SetControlColor") => PpcImportDispatcherTarget::ReturnNoErr,
+        // Colour matching uses the device's inverse table and never calls
+        // custom search procedures, which is the result every installed
+        // procedure gets when it declines a colour.
+        ("InterfaceLib", "AddSearch" | "DelSearch") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "MatchAlias") => PpcImportDispatcherTarget::MatchAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
         ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {

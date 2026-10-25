@@ -455,6 +455,40 @@ pub(super) fn dispatch_resource_import(
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::DisposeIconSuite => {
+            // Inside Macintosh: More Macintosh Toolbox (DisposeIconSuite):
+            // releases the suite. With disposeData set, member handles that
+            // are not resources are disposed too; resource handles stay with
+            // the Resource Manager, which owns them.
+            let suite = cpu.gpr[3];
+            let dispose_data = cpu.gpr[4] & 0xff != 0;
+            let Some(entries) = ppc_icon_suite_member_handles(memory, suite) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let mut doomed = vec![suite];
+            if dispose_data {
+                doomed.extend(entries.into_iter().filter(|handle| {
+                    *handle != 0
+                        && !vfs_resources
+                            .iter()
+                            .any(|resource| resource.handle == *handle)
+                }));
+            }
+            for handle in doomed {
+                if process_memory_manager.dispose_process_handle_from_native_import(memory, handle)
+                {
+                    handles.retain(|record| record.handle != handle);
+                }
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+            }
+            *last_mem_error = PPC_NO_ERR;
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         PpcImportDispatcherTarget::GetIcon | PpcImportDispatcherTarget::GetPattern => {
             let resource_id = cpu.gpr[3];
             cpu.gpr[3] = if matches!(

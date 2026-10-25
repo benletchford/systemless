@@ -767,6 +767,99 @@ pub(super) fn dispatch_textedit_import(
             let offset = ppc_te_point_to_offset(memory, handles, cpu.gpr[4], v, h).unwrap_or(0);
             Some(PpcImportAction::Return(offset as u32))
         }
+        PpcImportDispatcherTarget::TEGetStyleHandle => {
+            // Inside Macintosh: Text (TEGetStyleHandle): a styled record
+            // (txSize -1) keeps its TEStyleHandle in txFont/txFace; a
+            // monostyled record has none.
+            let handle = ppc_te_record_ptr(memory, cpu.gpr[3])
+                .filter(|te_ptr| memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff))
+                .and_then(|te_ptr| memory.read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(handle))
+        }
+        PpcImportDispatcherTarget::TEReplaceStyle => {
+            // Inside Macintosh: Text (TEReplaceStyle): within the selection,
+            // every run whose attributes selected by mode equal oldStyle's
+            // takes newStyle's values for those attributes. TextEdit.h's
+            // PowerPC ABI is (mode, oldStyle, newStyle, fRedraw, hTE).
+            let (mode, old_style, new_style) = (cpu.gpr[3] as u16, cpu.gpr[4], cpu.gpr[5]);
+            let (redraw, te_handle) = (cpu.gpr[6] != 0, cpu.gpr[7]);
+            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let Some(text_len) =
+                ppc_te_text_bytes(memory, handles, te_handle).map(|text| text.len())
+            else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let selection = [PPC_TE_SEL_START_OFFSET, PPC_TE_SEL_END_OFFSET]
+                .map(|offset| usize::from(memory.read_u16_be(te_ptr + offset).unwrap_or(0)));
+            let start = selection[0].min(selection[1]).min(text_len);
+            let end = selection[0].max(selection[1]).min(text_len);
+            let old = (
+                memory.read_u16_be(old_style).map(|font| font as i16),
+                memory.read_u8(old_style + 2),
+                memory
+                    .read_u16_be(old_style + 4)
+                    .map(|size| ppc_te_font_lookup_size(size as i16)),
+                [0u32, 2, 4].map(|offset| memory.read_u16_be(old_style + 6 + offset)),
+            );
+            let runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+            let mut segments = Vec::new();
+            for (index, run) in runs.iter().enumerate() {
+                let run_end = runs.get(index + 1).map_or(text_len, |next| next.start);
+                let (from, to) = (run.start.max(start), run_end.min(end));
+                let style = run.style;
+                let color = [style.color.red, style.color.green, style.color.blue].map(Some);
+                let matches = (mode & 0x0001 == 0 || old.0 == Some(style.font))
+                    && (mode & 0x0002 == 0 || old.1 == Some(style.face))
+                    && (mode & 0x0004 == 0 || old.2 == Some(style.size))
+                    && (mode & 0x0008 == 0 || old.3 == color);
+                if from < to && matches {
+                    segments.push((from, to));
+                }
+            }
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let mut changed = false;
+            for (from, to) in segments {
+                changed |= ppc_te_set_style_for_range(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                    from,
+                    to,
+                    mode & 0x001f,
+                    new_style,
+                );
+            }
+            if changed && redraw {
+                let _ = ppc_te_recalculate_layout(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                );
+                ppc_te_draw(
+                    memory,
+                    handles,
+                    gworlds,
+                    te_handle,
+                    current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TEGetStyle => {
             // TextEdit.h: TEGetStyle(short offset, TextStyle *, short
             // *lineHeight, short *fontAscent, TEHandle). Inside Macintosh:

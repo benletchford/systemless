@@ -346,6 +346,7 @@ pub use dispatch_toolbox_compat::PpcToolboxCompatOperation;
 pub(super) use dispatch_printing::ppc_dispatch_printing_compatibility;
 pub use dispatch_printing::PpcPrintingCompatibilityOperation;
 pub use dispatch_quickdraw::PpcQuickDrawCompatibilityOperation;
+pub use dispatch_quickdraw::PpcQuickDrawShapeOperation;
 
 pub use dispatch_file_manager::PpcFileManagerOperation;
 pub use dispatch_files::PpcFileCompatibilityOperation;

@@ -1844,3 +1844,94 @@ fn get_pixel_reports_whether_a_local_pixel_is_not_white() {
         assert_eq!(loaded.cpu.gpr[3], expected, "({h}, {v})");
     }
 }
+
+/// Runs `target` on a fresh 8-bit port with r3..r5 and returns the pixels.
+fn shape_pixels(target: PpcImportDispatcherTarget, regs: [u32; 3], pattern: [u8; 8]) -> Vec<u8> {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillOval")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(&mut loaded.memory, RECT, -2, -3, 8, 15).unwrap();
+    loaded.memory.write_bytes(PATTERN, &pattern).unwrap();
+    loaded.cpu.gpr[3] = regs[0];
+    loaded.cpu.gpr[4] = regs[1];
+    loaded.cpu.gpr[5] = regs[2];
+    run_test_import(&mut loaded, target);
+    read_pixels(&mut loaded, pixels.len())
+}
+
+#[test]
+fn fill_oval_with_a_solid_pattern_matches_paint_oval() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "FillOval"),
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillOval)
+    );
+    let fill = shape_pixels(
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillOval),
+        [RECT, PATTERN, 0],
+        [0xff; 8],
+    );
+    let paint = shape_pixels(PpcImportDispatcherTarget::PaintOval, [RECT, 0, 0], [0; 8]);
+    assert_eq!(fill, paint);
+    assert_ne!(fill, initial_pixels());
+    let gray = shape_pixels(
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillOval),
+        [RECT, PATTERN, 0],
+        GRAY,
+    );
+    assert_ne!(gray, paint);
+}
+
+#[test]
+fn frame_arc_draws_only_the_outline_part_of_the_wedge() {
+    let original = initial_pixels();
+    let paint = shape_pixels(PpcImportDispatcherTarget::PaintArc, [RECT, 0, 180], [0; 8]);
+    let frame = shape_pixels(
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc),
+        [RECT, 0, 180],
+        [0; 8],
+    );
+    let changed = |pixels: &[u8]| {
+        pixels
+            .iter()
+            .zip(&original)
+            .filter(|(now, before)| now != before)
+            .count()
+    };
+    assert!(changed(&frame) > 0);
+    assert!(changed(&frame) < changed(&paint));
+    for (index, value) in frame.iter().enumerate() {
+        if *value != original[index] {
+            assert_eq!(
+                *value, paint[index],
+                "frame pixel {index} is outside the wedge"
+            );
+        }
+    }
+}
+
+#[test]
+fn std_rect_and_std_rgn_dispatch_each_graf_verb() {
+    for (verb, equivalent) in [
+        (0u32, PpcImportDispatcherTarget::FrameRect),
+        (1, PpcImportDispatcherTarget::PaintRect),
+        (2, PpcImportDispatcherTarget::EraseRect),
+        (3, PpcImportDispatcherTarget::InvertRect),
+    ] {
+        let bottleneck = shape_pixels(
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::StdRect),
+            [verb, RECT, 0],
+            [0; 8],
+        );
+        let direct = shape_pixels(equivalent.clone(), [RECT, 0, 0], [0; 8]);
+        assert_eq!(bottleneck, direct, "verb {verb} as {equivalent:?}");
+    }
+    let region = REGION_HANDLES[1];
+    let bottleneck = shape_pixels(
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::StdRgn),
+        [1, region, 0],
+        [0; 8],
+    );
+    let direct = shape_pixels(PpcImportDispatcherTarget::PaintRgn, [region, 0, 0], [0; 8]);
+    assert_eq!(bottleneck, direct);
+}

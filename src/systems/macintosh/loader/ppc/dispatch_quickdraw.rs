@@ -1073,6 +1073,158 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillOval) => {
+            // Inside Macintosh: Imaging With QuickDraw (FillOval): fills the
+            // oval inscribed in the rectangle with a bit pattern, row by row
+            // through the same pattern fill FillRect uses.
+            let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let mut pattern = [0u8; 8];
+            if memory.read_bytes_into(cpu.gpr[4], &mut pattern).is_none() {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            let (top, left, bottom, right) = rect;
+            let rows = TrapDispatcher::compute_oval_spans(
+                right.saturating_sub(left),
+                bottom.saturating_sub(top),
+            );
+            if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                pict::recording_push_word(commands, 0x000A); // FillPat
+                commands.extend_from_slice(&pattern);
+                pict::recording_push_rect(commands, 0x0054, rect); // fillOval
+            } else if toolbox_startup.open_region_port == current_gworld {
+                let rows = rows
+                    .into_iter()
+                    .map(|(row_left, row_right)| {
+                        vec![
+                            left.saturating_add(row_left),
+                            left.saturating_add(row_right),
+                        ]
+                    })
+                    .collect();
+                ppc_open_region_include_rows(toolbox_startup, top, rows);
+            } else {
+                let fore = (
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+                let back = (
+                    *quickdraw_back_color,
+                    toolbox_startup
+                        .quickdraw_back_indices
+                        .get(&current_gworld)
+                        .copied(),
+                );
+                for (row, (row_left, row_right)) in rows.into_iter().enumerate() {
+                    let y = top.saturating_add(row as i16);
+                    let _ = ppc_fill_rect(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        (
+                            y,
+                            left.saturating_add(row_left),
+                            y.saturating_add(1),
+                            left.saturating_add(row_right),
+                        ),
+                        pattern,
+                        fore,
+                        back,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc) => {
+            // Inside Macintosh: Imaging With QuickDraw (FrameArc): draws the
+            // arc of the oval's outline with the pen; arcs are not added to
+            // a region being recorded.
+            if toolbox_startup.open_region_port != current_gworld {
+                let _ = ppc_draw_arc(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    cpu.gpr[3],
+                    (cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16),
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    true,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::QuickDrawShape(
+            operation @ (PpcQuickDrawShapeOperation::StdRect | PpcQuickDrawShapeOperation::StdRgn),
+        ) => {
+            // Inside Macintosh: Imaging With QuickDraw (StdRect, StdRgn): the
+            // standard bottlenecks take a GrafVerb (frame, paint, erase,
+            // invert, fill) and the shape, and do what the matching
+            // FrameRect/PaintRect/... call does. fill uses the port's own
+            // fill pattern: fillPixPat (+62) in a colour port, fillPat (+40)
+            // in a basic GrafPort.
+            let region = operation == PpcQuickDrawShapeOperation::StdRgn;
+            let color_port = memory
+                .read_u16_be(current_gworld.wrapping_add(6))
+                .is_some_and(|version| version & 0xc000 == 0xc000);
+            let fill_pixpat = if color_port {
+                memory
+                    .read_u32_be(current_gworld.wrapping_add(62))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let target = match (cpu.gpr[3] as u8, region) {
+                (0, false) => PpcImportDispatcherTarget::FrameRect,
+                (1, false) => PpcImportDispatcherTarget::PaintRect,
+                (2, false) => PpcImportDispatcherTarget::EraseRect,
+                (3, false) => PpcImportDispatcherTarget::InvertRect,
+                (4, false) if fill_pixpat != 0 => PpcImportDispatcherTarget::FillCRect,
+                (4, false) if color_port => PpcImportDispatcherTarget::PaintRect,
+                (4, false) => PpcImportDispatcherTarget::FillRect,
+                (0, true) => PpcImportDispatcherTarget::FrameRgn,
+                (1, true) => PpcImportDispatcherTarget::PaintRgn,
+                (2, true) => PpcImportDispatcherTarget::EraseRgn,
+                (3, true) => PpcImportDispatcherTarget::InvertRgn,
+                (4, true) if fill_pixpat != 0 => PpcImportDispatcherTarget::FillCRgn,
+                (4, true) if color_port => PpcImportDispatcherTarget::PaintRgn,
+                (4, true) => PpcImportDispatcherTarget::FillRgn,
+                _ => return Some(PpcImportAction::ReturnPreserve),
+            };
+            cpu.gpr[3] = cpu.gpr[4];
+            cpu.gpr[4] = if color_port {
+                fill_pixpat
+            } else {
+                current_gworld.wrapping_add(40)
+            };
+            let redirected = PpcImportBinding {
+                dispatcher_target: target,
+                ..binding.clone()
+            };
+            dispatch_quickdraw_import(PpcQuickDrawDispatchContext {
+                binding: &redirected,
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                gworlds,
+                tick_count,
+                current_gworld,
+                current_gdevice,
+                quickdraw_op_colors,
+                quickdraw_hilite_colors,
+                screen_clut,
+                color_manager_clut,
+                quickdraw_fore_color,
+                quickdraw_fore_indices,
+                quickdraw_back_color,
+                quickdraw_pen_h,
+                quickdraw_pen_v,
+                toolbox_startup,
+            })
+        }
         PpcImportDispatcherTarget::PaintArc => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
@@ -1394,6 +1546,18 @@ pub(super) fn dispatch_quickdraw_import(
         }
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcQuickDrawShapeOperation {
+    /// FillOval(const Rect *, const Pattern *)
+    FillOval,
+    /// FrameArc(const Rect *, short startAngle, short arcAngle)
+    FrameArc,
+    /// StdRect(GrafVerb, const Rect *)
+    StdRect,
+    /// StdRgn(GrafVerb, RgnHandle)
+    StdRgn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

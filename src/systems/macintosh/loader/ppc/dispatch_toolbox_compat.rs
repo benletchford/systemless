@@ -8,6 +8,10 @@ const PPC_NOT_OPEN_ERR: i16 = -28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcToolboxCompatOperation {
+    PtToAngle,
+    IsCmdChar,
+    GetColor,
+    FindServiceWindow,
     /// CloseDriver, KillIO, SerReset, SerSetBuf and SerGetBuf on a driver
     /// that OpenDriver never opened.
     UnopenedDriver,
@@ -137,6 +141,59 @@ pub(crate) fn ppc_dispatch_toolbox_compat(
         }
         PpcToolboxCompatOperation::CommToolboxNil => PpcImportAction::Return(0),
         PpcToolboxCompatOperation::CommToolboxError => PpcImportAction::Return(ppc_i16_result(-1)),
+        PpcToolboxCompatOperation::PtToAngle => {
+            // Inside Macintosh: Imaging With QuickDraw (PtToAngle): the angle
+            // from the rectangle's centre to the point, clockwise from 12
+            // o'clock and scaled to the rectangle, so that 45 degrees always
+            // passes through the top-right corner.
+            let (rect_ptr, point, out) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            if let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect_ptr) {
+                let angle = ppc_pt_to_angle(
+                    (top, left, bottom, right),
+                    ((point >> 16) as u16 as i16, point as u16 as i16),
+                );
+                if ppc_memory_can_write_bytes(memory, out, 2) {
+                    let _ = memory.write_u16_be(out, angle as u16);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcToolboxCompatOperation::IsCmdChar => {
+            // Inside Macintosh: Text (IsCmdChar): true when a key-down or
+            // auto-key event has the Command key down and its character,
+            // translated without the Command modifier, is `test`. The
+            // event's message already holds that translation.
+            let event = cpu.gpr[3];
+            let test = cpu.gpr[4] as u8;
+            let what = memory.read_u16_be(event).unwrap_or(0);
+            let message = memory.read_u32_be(event + 2).unwrap_or(0);
+            let modifiers = memory.read_u16_be(event + 14).unwrap_or(0);
+            let matches = matches!(what, 3 | 5) && modifiers & 0x0100 != 0 && message as u8 == test;
+            PpcImportAction::Return(u32::from(matches))
+        }
+        PpcToolboxCompatOperation::GetColor => {
+            // The runtime has no Color Picker dialog, so GetColor behaves as
+            // a dismissed picker: it returns false and leaves the original
+            // colour as the result. Inside Macintosh: Advanced Color
+            // Imaging (GetColor).
+            let (input, output) = (cpu.gpr[5], cpu.gpr[6]);
+            if let Some(color) = ppc_memory_read_bytes(memory, input, 6) {
+                if ppc_memory_can_write_bytes(memory, output, 6) {
+                    let _ = memory.write_bytes(output, &color);
+                }
+            }
+            PpcImportAction::Return(0)
+        }
+        PpcToolboxCompatOperation::FindServiceWindow => {
+            // Inside Macintosh: Text (FindServiceWindow): no input method
+            // has opened a floating service window, so no point is inside
+            // one; the result is inDesk with a nil window.
+            let out = cpu.gpr[4];
+            if ppc_memory_can_write_bytes(memory, out, 4) {
+                let _ = memory.write_u32_be(out, 0);
+            }
+            PpcImportAction::Return(0)
+        }
         PpcToolboxCompatOperation::SetPortBounds => {
             // Quickdraw.h: SetPortBounds(CGrafPtr, const Rect *) replaces
             // portRect at +16, which both port formats share.
@@ -219,4 +276,23 @@ pub(crate) fn ppc_window_content_color(
         }
     };
     PpcImportAction::Return(ppc_i16_result(result))
+}
+
+/// PtToAngle's angle in whole degrees, 0 through 359.
+pub(crate) fn ppc_pt_to_angle(rect: (i16, i16, i16, i16), point: (i16, i16)) -> i16 {
+    let (top, left, bottom, right) = rect;
+    let height = f64::from(bottom) - f64::from(top);
+    let width = f64::from(right) - f64::from(left);
+    let dx = f64::from(point.1) - (f64::from(left) + f64::from(right)) / 2.0;
+    let dy = f64::from(point.0) - (f64::from(top) + f64::from(bottom)) / 2.0;
+    let (dx, dy) = if width > 0.0 && height > 0.0 {
+        (dx / width, dy / height)
+    } else {
+        (dx, dy)
+    };
+    if dx == 0.0 && dy == 0.0 {
+        return 0;
+    }
+    let degrees = dx.atan2(-dy).to_degrees().rem_euclid(360.0).round();
+    (degrees as i16) % 360
 }

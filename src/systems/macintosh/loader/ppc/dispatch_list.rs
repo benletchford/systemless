@@ -703,6 +703,140 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             });
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LAddColumn => {
+            // More Macintosh Toolbox (LAddColumn): inserts count empty columns
+            // before colNum (pinned to dataBounds) and returns the number of
+            // the first inserted column; existing columns move right.
+            let count = cpu.gpr[3] as u16 as i16;
+            let requested_column = cpu.gpr[4] as u16 as i16;
+            let mut added_column = requested_column;
+            list_manager.with_record_mut(cpu.gpr[5], |record| {
+                let column = requested_column.clamp(record.data_bounds.1, record.data_bounds.3);
+                added_column = column;
+                if count > 0 {
+                    let shift = |(row, cell_column): (i16, i16)| {
+                        if cell_column >= column {
+                            (row, cell_column.saturating_add(count))
+                        } else {
+                            (row, cell_column)
+                        }
+                    };
+                    record.cells = record
+                        .cells
+                        .drain()
+                        .map(|(cell, bytes)| (shift(cell), bytes))
+                        .collect();
+                    record.selected = record.selected.iter().map(|&cell| shift(cell)).collect();
+                    record.data_bounds.3 = record.data_bounds.3.saturating_add(count);
+                    ppc_list_recompute_visible(record);
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let result = ppc_list_sync_guest_storage(
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        record,
+                    );
+                    *last_mem_error = result;
+                    if record.draw_enabled {
+                        ppc_list_redraw(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            current_resource_refnum,
+                            record,
+                        );
+                    }
+                }
+            });
+            Some(PpcImportAction::Return(ppc_i16_result(added_column)))
+        }
+        PpcImportDispatcherTarget::LGetCellDataLocation => {
+            // More Macintosh Toolbox (LGetCellDataLocation): the offset of
+            // the cell's data in the cells handle and its length, or -1 in
+            // both for a cell outside dataBounds. Cell data is stored in
+            // row-major order, as ppc_list_sync_guest_storage lays it out.
+            let (offset_ptr, length_ptr, cell) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            let (v, h) = ((cell >> 16) as u16 as i16, cell as u16 as i16);
+            let location = list_manager
+                .with_record_ref(cpu.gpr[6], |record| {
+                    let index = ppc_list_cell_index(record, v, h)?;
+                    let cell_len = |cell: Option<(i16, i16)>| {
+                        cell.and_then(|cell| record.cells.get(&cell))
+                            .map_or(0, |bytes| bytes.len().min(0x7fff))
+                    };
+                    let offset = (0..index)
+                        .map(|index| cell_len(ppc_list_cell_for_index(record, index)))
+                        .sum::<usize>();
+                    Some((offset.min(0x7fff) as i16, cell_len(Some((v, h))) as i16))
+                })
+                .flatten()
+                .unwrap_or((-1, -1));
+            let _ = memory.write_u16_be(offset_ptr, location.0 as u16);
+            let _ = memory.write_u16_be(length_ptr, location.1 as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LCellSize => {
+            // More Macintosh Toolbox (LCellSize): sets cellSize, recomputes
+            // the visible cells and redraws the list.
+            let (v, h) = ((cpu.gpr[3] >> 16) as u16 as i16, cpu.gpr[3] as u16 as i16);
+            list_manager.with_record_mut(cpu.gpr[4], |record| {
+                record.cell_size = (v, h);
+                ppc_list_recompute_visible(record);
+                if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
+                    let _ = memory.write_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET, v as u16);
+                    let _ = memory.write_u16_be(list_ptr + PPC_LIST_CELL_SIZE_OFFSET + 2, h as u16);
+                }
+                let result = ppc_list_sync_guest_geometry(memory, record);
+                *last_mem_error = result;
+                if record.draw_enabled {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        record,
+                    );
+                }
+            });
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LRect => {
+            // More Macintosh Toolbox (LRect): the cell's rectangle in the
+            // list port's local coordinates, measured from rView and the
+            // first visible cell; an empty rectangle for a cell outside
+            // dataBounds.
+            let (rect_ptr, cell) = (cpu.gpr[3], cpu.gpr[4]);
+            let (v, h) = ((cell >> 16) as u16 as i16, cell as u16 as i16);
+            let cell_rect = |record: &PpcListRecord| {
+                ppc_list_cell_index(record, v, h)?;
+                let (cell_v, cell_h) = record.cell_size;
+                let row = v.saturating_sub(record.visible.0).saturating_mul(cell_v);
+                let column = h.saturating_sub(record.visible.1).saturating_mul(cell_h);
+                let top = record.view_rect.0.saturating_add(row);
+                let left = record.view_rect.1.saturating_add(column);
+                Some((
+                    top,
+                    left,
+                    top.saturating_add(cell_v),
+                    left.saturating_add(cell_h),
+                ))
+            };
+            let rect = list_manager
+                .with_record_ref(cpu.gpr[5], cell_rect)
+                .flatten()
+                .unwrap_or((0, 0, 0, 0));
+            let _ = ppc_write_rect(memory, rect_ptr, rect.0, rect.1, rect.2, rect.3);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LSize => {
             // More Macintosh Toolbox (1993), pp. 4-91--4-92: resize the
             // visible rectangle and redraw its contents as necessary.
