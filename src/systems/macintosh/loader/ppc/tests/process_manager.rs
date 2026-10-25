@@ -372,3 +372,64 @@ fn import_bindings_classify_process_manager_imports() {
         PpcImportDispatcherTarget::ExitToShell
     );
 }
+
+#[test]
+fn get_process_bundle_location_names_the_application_package() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "GetProcessBundleLocation"),
+        PpcImportDispatcherTarget::GetProcessBundleLocation
+    );
+    let pef = synthetic_pef_with_import(b"GetProcessBundleLocation");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    for (dir_id, path, parent) in [
+        (100, "Game", PPC_ROOT_DIR_ID),
+        (101, "Game/Game App", 100),
+        (102, "Game/Game App/Contents", 101),
+        (103, "Game/Game App/Contents/MacOSClassic", 102),
+    ] {
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id,
+            path: path.to_string(),
+            parent_dir_id: parent,
+            finder_flags: 0,
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            dirty: false,
+        });
+    }
+    let app_path = "Game/Game App/Contents/MacOSClassic/Game App";
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: app_path.to_string(),
+        data: (Vec::new()).into(),
+        creator: u32::from_be_bytes(*b"Game"),
+        file_type: u32::from_be_bytes(*b"APPL"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.set_launched_app_path(app_path);
+    let psn_ptr = PPC_DATA_BASE + 0x1000;
+    let location = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(psn_ptr, vec![0; 8]);
+    loaded.memory.add_region(location, vec![0; 80]);
+    loaded
+        .memory
+        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
+        .unwrap();
+    loaded.cpu.gpr[3] = psn_ptr;
+    loaded.cpu.gpr[4] = location;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    // The ref names the package folder "Game App" inside "Game" (dir 100).
+    assert_eq!(loaded.memory.read_u32_be(location + 6), Some(100));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, location + 10).as_deref(),
+        Some(&b"Game App"[..])
+    );
+}

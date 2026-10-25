@@ -31,6 +31,14 @@ pub(super) fn dispatch_process_import(
         PpcImportDispatcherTarget::GetCurrentProcess => ppc_get_current_process(cpu, memory),
         PpcImportDispatcherTarget::WakeUpProcess => ppc_wake_up_process(cpu, memory),
         PpcImportDispatcherTarget::SameProcess => ppc_same_process(cpu, memory),
+        PpcImportDispatcherTarget::GetProcessBundleLocation => ppc_get_process_bundle_location(
+            cpu,
+            memory,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            launched_app_path,
+        ),
         PpcImportDispatcherTarget::GetProcessInformation => ppc_get_process_information(
             cpu,
             memory,
@@ -115,6 +123,52 @@ fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
         .write_u8(result_ptr, u8::from(first == second))
         .is_none()
     {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+/// GetProcessBundleLocation(const ProcessSerialNumber *, FSRef *location):
+/// the application package's folder when the application runs from a
+/// bundle's Contents/MacOS or Contents/MacOSClassic folder, otherwise the
+/// application file itself (Processes.h, CarbonLib 1.5).
+fn ppc_get_process_bundle_location(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    launched_app_path: Option<&str>,
+) -> i16 {
+    let (psn_ptr, location) = (cpu.gpr[3], cpu.gpr[4]);
+    if psn_ptr == 0 || location == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let psn_high = memory.read_u32_be(psn_ptr).unwrap_or(u32::MAX);
+    let psn_low = memory.read_u32_be(psn_ptr + 4).unwrap_or(u32::MAX);
+    if !ProcessSerialNumber::new(psn_high, psn_low).is_current() {
+        return PPC_PROC_NOT_FOUND_ERR;
+    }
+    let app = resolve_process_application_metadata(
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        None,
+        launched_app_path,
+    );
+    let bundle = app
+        .path
+        .rsplit_once("/Contents/")
+        .filter(|(_, inner)| inner.starts_with("MacOS"))
+        .map_or(app.path.as_str(), |(bundle, _)| bundle);
+    let parent_dir_id = ppc_parent_dir_id_for_path(vfs_directories, bundle);
+    if !super::dispatch_fsref::ppc_write_fsref_parts(
+        memory,
+        location,
+        PPC_BOOT_VOLUME_REF_NUM,
+        parent_dir_id,
+        &ppc_vfs_basename_bytes(bundle),
+    ) {
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR

@@ -187,7 +187,7 @@ fn ppc_read_fsref(memory: &mut PpcSectionMem, ref_ptr: u32) -> Result<(i16, u32,
     ppc_read_fsspec_parts(memory, ref_ptr + PPC_FSREF_SPEC_OFFSET).ok_or(PPC_PARAM_ERR)
 }
 
-fn ppc_write_fsref_parts(
+pub(super) fn ppc_write_fsref_parts(
     memory: &mut PpcSectionMem,
     ref_ptr: u32,
     vref: i16,
