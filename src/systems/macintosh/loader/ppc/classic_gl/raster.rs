@@ -35,6 +35,10 @@ struct ActiveUnit<'a> {
     env: TexEnv,
     width: f32,
     height: f32,
+    /// Whether sampling depends on the level of detail. Without mipmaps and
+    /// with the same nearest/linear choice for minification and
+    /// magnification, every lambda samples the base level identically.
+    needs_lod: bool,
 }
 
 fn active_units(state: &ContextState) -> Vec<(usize, ActiveUnit<'_>)> {
@@ -52,6 +56,8 @@ fn active_units(state: &ContextState) -> Vec<(usize, ActiveUnit<'_>)> {
                 return None;
             };
             let (width, height) = texture.base_size();
+            let needs_lod = !matches!(min_filter, NEAREST | LINEAR)
+                || (min_filter == LINEAR) != (texture.mag_filter == LINEAR);
             Some((
                 unit,
                 ActiveUnit {
@@ -60,6 +66,7 @@ fn active_units(state: &ContextState) -> Vec<(usize, ActiveUnit<'_>)> {
                     env: state.raster.units[unit].env,
                     width: width as f32,
                     height: height as f32,
+                    needs_lod,
                 },
             ))
         })
@@ -441,6 +448,7 @@ pub fn draw_triangle(
     let own1 = owns_edge(c.x, c.y, a.x, a.y);
     let own2 = owns_edge(a.x, a.y, b.x, b.y);
     let covers = |e: f32, owned: bool| e > 0.0 || (e == 0.0 && owned);
+    let early_depth = state.raster.enables.depth_test && !state.raster.enables.stencil_test;
     let inv_area = 1.0 / area;
     // Perspective-correct attribute interpolation: interpolate attr/w and
     // 1/w linearly in window space.
@@ -489,6 +497,20 @@ pub fn draw_triangle(
                 continue;
             }
             let l = [e0 * inv_area, e1 * inv_area, e2 * inv_area];
+            let z = (interp(l, a.z, b.z, c.z) + depth_offset).clamp(0.0, 1.0);
+            // Early depth rejection: without stencil, a fragment that fails
+            // the depth test is discarded with no side effects, so skip its
+            // colour, texture, and fog work. process_fragment still applies
+            // the full per-fragment sequence to the survivors.
+            if early_depth {
+                let index = y * target.width + x;
+                if x < target.width
+                    && y < target.height
+                    && !compare(state.raster.depth_func, z, target.depth[index])
+                {
+                    continue;
+                }
+            }
             let w = interp(l, a.inv_w, b.inv_w, c.inv_w);
             let perspective =
                 |fa: f32, fb: f32, fc: f32| interp(l, fa * a.inv_w, fb * b.inv_w, fc * c.inv_w) / w;
@@ -499,6 +521,10 @@ pub fn draw_triangle(
             let mut lambda = [0.0; TEXTURE_UNITS];
             for (unit, active) in &units {
                 let st = tex_at(l, *unit);
+                texcoords[*unit] = st;
+                if !active.needs_lod {
+                    continue;
+                }
                 let dx = tex_at(weights(px + 1.0, py), *unit);
                 let dy = tex_at(weights(px, py + 1.0), *unit);
                 let dudx = (dx[0] - st[0]) * active.width;
@@ -509,9 +535,7 @@ pub fn draw_triangle(
                     .max(dudy * dudy + dvdy * dvdy)
                     .sqrt();
                 lambda[*unit] = if rho > 0.0 { rho.log2() } else { 0.0 };
-                texcoords[*unit] = st;
             }
-            let z = (interp(l, a.z, b.z, c.z) + depth_offset).clamp(0.0, 1.0);
             let fog = perspective(a.fog, b.fog, c.fog);
             process_fragment(
                 state,
