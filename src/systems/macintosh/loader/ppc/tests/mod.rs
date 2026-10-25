@@ -264,6 +264,7 @@ mod mixed_mode;
 mod osl_callbacks;
 mod core_foundation;
 mod internet_config;
+mod text_encoding;
 mod open_transport;
 mod toolbox_compat;
 mod icon_services;

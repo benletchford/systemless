@@ -110,6 +110,7 @@ mod dispatch_apple_events;
 use dispatch_apple_events::*;
 mod dispatch_appearance;
 mod dispatch_appletalk;
+mod dispatch_text_encoding;
 mod math_fp;
 mod sound_sprocket;
 mod power_compat;
@@ -335,6 +336,7 @@ pub use dispatch_dialog::PpcDialogCompatibilityOperation;
 #[cfg(test)]
 pub(super) use dispatch_appletalk::ppc_dispatch_appletalk_compatibility;
 pub use dispatch_appletalk::PpcAppleTalkCompatibilityOperation;
+pub use dispatch_text_encoding::PpcTextEncodingOperation;
 pub use math_fp::PpcFpFunction;
 pub use sound_sprocket::{PpcSoundSprocketFunction, PpcSoundSprocketState};
 pub use dispatch_open_transport::PpcOpenTransportFunction;

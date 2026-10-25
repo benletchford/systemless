@@ -2873,6 +2873,9 @@ pub(crate) fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::TextEncoding(operation) => Some(
+            dispatch_text_encoding::ppc_dispatch_text_encoding(operation, cpu, memory),
+        ),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
         ),

@@ -1311,6 +1311,7 @@ pub enum PpcImportDispatcherTarget {
     FileCompatibility(PpcFileCompatibilityOperation),
     FsRef(PpcFsRefOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
+    TextEncoding(PpcTextEncodingOperation),
     SoundSprocket(PpcSoundSprocketFunction),
     DebugStr { c_string: bool },
     OpenTransport(PpcOpenTransportFunction),
@@ -1481,6 +1482,13 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", symbol) if PpcFsRefOperation::from_name(symbol).is_some() => {
             PpcImportDispatcherTarget::FsRef(PpcFsRefOperation::from_name(symbol).expect("checked"))
+        }
+        ("InterfaceLib" | "TextEncodingConverter" | "UnicodeConverter" | "TextCommon", symbol)
+            if PpcTextEncodingOperation::from_name(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::TextEncoding(
+                PpcTextEncodingOperation::from_name(symbol).expect("checked"),
+            )
         }
         ("NetSprocketLib", "NSpInitialize") => PpcImportDispatcherTarget::NSpInitialize,
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
