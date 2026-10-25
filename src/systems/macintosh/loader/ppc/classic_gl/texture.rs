@@ -560,7 +560,12 @@ impl Texture {
         let wrap = |coordinate: i32, size: u32, mode: u32| -> i32 {
             let size = size as i32;
             if mode == REPEAT {
-                coordinate.rem_euclid(size)
+                if size & (size - 1) == 0 {
+                    // Power-of-two sizes wrap with a mask.
+                    coordinate & (size - 1)
+                } else {
+                    coordinate.rem_euclid(size)
+                }
             } else {
                 coordinate.clamp(0, size - 1)
             }
