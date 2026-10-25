@@ -276,7 +276,22 @@ pub(super) fn ppc_pb_get_cat_info(
     if filled.is_none() {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &entry.name) {
+    // Inside Macintosh: Files (1992), p. 2-191: the root directory's name is
+    // the volume name. Path builders that walk parent IDs up to fsRtDirID
+    // rely on it to form full pathnames.
+    let output_name = if entry.is_directory && entry.path.is_empty() {
+        let volume_name = vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == resolved_vref)
+            .map_or_else(
+                || crate::trap::TrapDispatcher::boot_volume_name().to_string(),
+                |volume| volume.name.clone(),
+            );
+        encode_mac_roman_lossy(&volume_name)
+    } else {
+        entry.name.clone()
+    };
+    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &output_name) {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {
@@ -288,7 +303,7 @@ pub(super) fn ppc_pb_get_cat_info(
             effective_dir_id,
             fdir_index,
             decode_mac_roman(&name_bytes),
-            decode_mac_roman(&entry.name)
+            decode_mac_roman(&output_name)
         );
     }
     ppc_complete_pb(memory, pb, PPC_NO_ERR)

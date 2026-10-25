@@ -10963,3 +10963,29 @@ fn pb_get_volume_info_enumerates_the_boot_volume_then_ends() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
     assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NSV_ERR as u16));
 }
+
+#[test]
+fn pb_get_cat_info_names_the_root_directory_after_its_volume() {
+    let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 0x100;
+    loaded.memory.add_region(pb, vec![0; 0x200]);
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u16_be(pb + 28, (-1i16) as u16).unwrap();
+    loaded.memory.write_u32_be(pb + 48, PPC_ROOT_DIR_ID).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(crate::trap::TrapDispatcher::boot_volume_name().as_bytes())
+    );
+}
