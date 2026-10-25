@@ -3969,7 +3969,6 @@ pub(crate) fn dispatcher_target_for_import(
         }
         // HMRemoveBalloon succeeds with no balloon shown; GZSaveHnd is nil
         // outside a grow-zone procedure.
-        ("InterfaceLib" | "CarbonLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "GZSaveHnd") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "GetRegionBounds") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetRegionBounds)

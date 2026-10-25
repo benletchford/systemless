@@ -23,7 +23,7 @@ fn audit_toolbox_calls_resolve_to_native_targets() {
         (
             "InterfaceLib",
             "HMRemoveBalloon",
-            PpcImportDispatcherTarget::ReturnNoErr,
+            PpcImportDispatcherTarget::HMRemoveBalloon,
         ),
         (
             "InterfaceLib",
