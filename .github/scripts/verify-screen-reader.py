@@ -76,7 +76,7 @@ class AtSpi:
                 continue
         return [n for n in found if n["handle"] is not None]
 
-    def activate(self, node):
+    def activate(self, node, expand=False):
         action = node["handle"].get_action_iface()
         if action is None or self.atspi.Action.get_n_actions(action) == 0:
             raise RuntimeError(f"{node['role']} {node['name']!r} offers no action")
@@ -104,11 +104,12 @@ if ($Invoke) {
     $info = $node.Current
     if ($info.Name -eq $request.name -and $info.ControlType.ProgrammaticName -eq $request.role) {
       $toggle = Pattern $node ([System.Windows.Automation.TogglePattern]::Pattern)
-      if ($toggle) { $toggle.Toggle(); exit 0 }
-      $invoke = Pattern $node ([System.Windows.Automation.InvokePattern]::Pattern)
-      if ($invoke) { $invoke.Invoke(); exit 0 }
+      if ($toggle) { $toggle.Toggle(); Write-Output "Toggle"; exit 0 }
       $expand = Pattern $node ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-      if ($expand) { $expand.Expand(); exit 0 }
+      if ($expand -and $request.expand) { $expand.Expand(); Write-Output "ExpandCollapse"; exit 0 }
+      $invoke = Pattern $node ([System.Windows.Automation.InvokePattern]::Pattern)
+      if ($invoke) { $invoke.Invoke(); Write-Output "Invoke"; exit 0 }
+      if ($expand) { $expand.Expand(); Write-Output "ExpandCollapse"; exit 0 }
       Write-Error "no pattern"; exit 2
     }
   }
@@ -150,11 +151,12 @@ class UiAutomation:
             return []
         return json.loads(result.stdout)
 
-    def activate(self, node):
-        request = json.dumps({"name": node["name"], "role": node["role"]})
+    def activate(self, node, expand=False):
+        request = json.dumps({"name": node["name"], "role": node["role"], "expand": expand})
         result = self._run("-Invoke", request)
         if result.returncode != 0:
             raise RuntimeError(f"{node['role']} {node['name']!r}: {result.stderr.strip()}")
+        record(f"  {node['name']!r} activated through {result.stdout.strip()}")
 
 
 # Platform role names for the roles this check relies on.
@@ -200,11 +202,23 @@ def wait_for(backend, role, name, timeout=60, gone=False):
     raise SystemExit(f"{role} {name!r} {state}; tree saved to {output / 'tree.json'}")
 
 
+def open_menu(backend, title, item):
+    """Open a menu title and return the item inside it. Some UI Automation
+    clients expand menus rather than invoking them, so both are tried."""
+    for expand in (False, True):
+        backend.activate(wait_for(backend, "button", title), expand=expand)
+        try:
+            return wait_for(backend, "button", item, timeout=15)
+        except SystemExit:
+            record(f"  {item!r} did not appear after activating {title!r}")
+    return wait_for(backend, "button", item)
+
+
 def main():
     case = Path(tempfile.mkdtemp())
     archive = case / "toolbox-showcase.sit"
     shutil.copy2(root / "tests/toolbox-showcase/toolbox-showcase.sit", archive)
-    env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME="thread")
+    env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME="thread", SYSTEMLESS_TRACE_ACCESSIBILITY="1")
     for name in ("SYSTEMLESS_NATIVE_WINDOW_PROBE", "SYSTEMLESS_GPU_FAULT"):
         env.pop(name, None)
     with (output / "run.log").open("w") as run_log:
@@ -219,8 +233,7 @@ def main():
             screen = wait_for(backend, "image", "Macintosh screen")
             record(f"guest pane exposed as {screen['role']!r}")
             # Open a Systemless-owned dialog through a guest submenu.
-            backend.activate(wait_for(backend, "button", "File"))
-            backend.activate(wait_for(backend, "button", "Game Options"))
+            backend.activate(open_menu(backend, "File", "Game Options"))
             backend.activate(wait_for(backend, "button", "Launch Modal Dialog…"))
             record("File > Game Options > Launch Modal Dialog… activated")
             checkbox = wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration")
@@ -246,6 +259,12 @@ def main():
             record("Cancel dismissed the dialog")
             if process.poll() is not None:
                 raise SystemExit(f"Systemless exited early with {process.returncode}")
+        except SystemExit:
+            run_log.flush()
+            trace = [line for line in (output / "run.log").read_text(errors="replace").splitlines()
+                     if line.startswith("[ACCESSIBILITY]")]
+            print("accessibility requests received:", *trace[-20:], sep="\n  ", flush=True)
+            raise
         finally:
             process.kill()
             process.wait()

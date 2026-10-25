@@ -891,6 +891,10 @@ impl WorkspaceUi {
     }
     pub fn accessibility_event(&mut self, event: egui_winit::accesskit_winit::WindowEvent) -> bool {
         use egui_winit::accesskit_winit::WindowEvent;
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *TRACE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_ACCESSIBILITY").is_some()) {
+            eprintln!("[ACCESSIBILITY] {event:?}");
+        }
         match event {
             WindowEvent::InitialTreeRequested => {
                 self.accessibility_active = true;
