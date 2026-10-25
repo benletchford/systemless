@@ -596,7 +596,8 @@ impl Probe {
                     "initial native focus"
                 });
             }
-            2 if self.resized && window.inner_size() == target_size && settled => {
+            // Wayland applies a requested size client-side, without a Resized event.
+            2 if (self.resized || self.wayland) && window.inner_size() == target_size && settled => {
                 if self.wayland {
                     // Fullscreen placement is compositor policy on Wayland.
                     self.advance("native resize observed");
