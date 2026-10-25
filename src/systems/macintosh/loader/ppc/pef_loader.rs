@@ -1168,11 +1168,34 @@ fn load_pef_application_with_optional_disk_fragment(
     })
 }
 
+/// Where an application's data sections begin: the usual base when they
+/// end at or below the framebuffer, otherwise the high data base.
+pub(crate) fn ppc_data_section_base(data_size: u32) -> u32 {
+    if PPC_DATA_BASE
+        .checked_add(data_size)
+        .is_some_and(|end| end <= PPC_MAIN_SCREEN_BASE)
+    {
+        PPC_DATA_BASE
+    } else {
+        PPC_LARGE_DATA_BASE
+    }
+}
+
 pub(crate) fn map_instantiated_sections(data: &[u8]) -> Result<Vec<MappedSection>, PpcLoadError> {
     let instantiated = instantiate_pef_sections(data).ok_or(PpcLoadError::SectionInstantiation)?;
     let mut mapped = Vec::with_capacity(instantiated.len());
     let mut code_cursor = PPC_CODE_BASE;
-    let mut data_cursor = PPC_DATA_BASE;
+    let data_size = instantiated
+        .iter()
+        .filter(|section| section.header.section_kind != SECTION_KIND_CODE)
+        .try_fold(0u32, |total, section| {
+            let align = alignment_bytes(section.header.alignment).ok()?;
+            align_up(total, align)
+                .ok()?
+                .checked_add(section.bytes.len() as u32)
+        })
+        .ok_or(PpcLoadError::AddressOverflow)?;
+    let mut data_cursor = ppc_data_section_base(data_size);
 
     for section in instantiated {
         let align = alignment_bytes(section.header.alignment)?;
@@ -1331,4 +1354,19 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes(
         data.get(offset..offset + 4)?.try_into().ok()?,
     ))
+}
+
+#[cfg(test)]
+mod data_section_placement_tests {
+    use super::*;
+
+    #[test]
+    fn data_sections_that_reach_the_framebuffer_move_to_the_high_base() {
+        let room = PPC_MAIN_SCREEN_BASE - PPC_DATA_BASE;
+        assert_eq!(ppc_data_section_base(0x1000), PPC_DATA_BASE);
+        assert_eq!(ppc_data_section_base(room), PPC_DATA_BASE);
+        assert_eq!(ppc_data_section_base(room + 1), PPC_LARGE_DATA_BASE);
+        // Jedi Knight II's demo has a 19,227,340-byte data section.
+        assert_eq!(ppc_data_section_base(19_227_340), PPC_LARGE_DATA_BASE);
+    }
 }
