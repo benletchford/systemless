@@ -413,6 +413,28 @@ fn ppc_write_microseconds_value(cpu: &PpcCpu, memory: &mut PpcSectionMem, usecs:
     let _ = memory.write_u64_be(microseconds_ptr, usecs);
 }
 
+pub(super) fn ppc_date_to_seconds(fields: [Option<u16>; 6]) -> Option<u32> {
+    let [year, month, day, hour, minute, second] = fields.map(|field| field.map(u32::from));
+    let month = month?.max(1) - 1;
+    let year = year?.max(u32::from(crate::time_manager::MAC_EPOCH_YEAR)) + month / 12;
+    let month = month % 12 + 1;
+    let mut days = 0u32;
+    for y in u32::from(crate::time_manager::MAC_EPOCH_YEAR)..year {
+        let leap = crate::time_manager::is_leap_year(y as u16);
+        days = days.wrapping_add(if leap { 366 } else { 365 });
+    }
+    for m in 1..month {
+        days = days.wrapping_add(crate::time_manager::days_in_month(year as u16, m as u16));
+    }
+    days = days.wrapping_add(day?.saturating_sub(1));
+    Some(
+        days.wrapping_mul(crate::time_manager::SECONDS_PER_DAY)
+            .wrapping_add(hour?.wrapping_mul(crate::time_manager::SECONDS_PER_HOUR))
+            .wrapping_add(minute?.wrapping_mul(crate::time_manager::SECONDS_PER_MINUTE))
+            .wrapping_add(second?),
+    )
+}
+
 fn ppc_seconds_to_date(memory: &mut PpcSectionMem, seconds: u32, date_ptr: u32) {
     if date_ptr == 0 || !ppc_memory_can_write_bytes(memory, date_ptr, crate::time_manager::DATE_TIME_REC_SIZE as u32) {
         return;
@@ -524,6 +546,21 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::SecondsToDate => {
             ppc_seconds_to_date(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::DateToSeconds => {
+            // Inside Macintosh: Operating System Utilities (DateToSeconds):
+            // the seconds since midnight, January 1, 1904, of a DateTimeRec
+            // (year, month, day, hour, minute, second; dayOfWeek is
+            // ignored). A month past December carries into the year.
+            let (date, out) = (cpu.gpr[3], cpu.gpr[4]);
+            let fields = [0u32, 2, 4, 6, 8, 10].map(|offset| memory.read_u16_be(date + offset));
+            if let (Some(seconds), true) = (
+                ppc_date_to_seconds(fields),
+                ppc_memory_can_write_bytes(memory, out, 4),
+            ) {
+                let _ = memory.write_u32_be(out, seconds);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::Microseconds => {

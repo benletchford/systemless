@@ -36,6 +36,15 @@ pub enum PpcToolboxCompatOperation {
     /// The other calls report cmGenericError (-1); CMGetProcID's -1 means
     /// no such tool, and CMIdle and CMDispose ignore the value.
     CommToolboxError,
+    /// CMGetToolName(procID, Str255 name): no tool has that procID, so the
+    /// name is empty.
+    CommToolboxToolName,
+    /// GetPageState(const void *address)
+    GetPageState,
+    /// LMGetWMgrPort()
+    WMgrPort,
+    /// OpenSlot(ParmBlkPtr, Boolean async)
+    OpenSlot,
 }
 
 pub(crate) fn ppc_dispatch_toolbox_compat(
@@ -231,6 +240,37 @@ pub(crate) fn ppc_dispatch_toolbox_compat(
                     .read_u16_be(cpu.gpr[3].wrapping_add(6))
                     .is_some_and(|version| version & 0xc000 == 0xc000);
             PpcImportAction::Return(u32::from(color))
+        }
+        PpcToolboxCompatOperation::CommToolboxToolName => {
+            let name = cpu.gpr[4];
+            if ppc_memory_can_write_bytes(memory, name, 1) {
+                let _ = memory.write_u8(name, 0);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcToolboxCompatOperation::GetPageState => {
+            // Inside Macintosh: Memory (GetPageState): with virtual memory
+            // off no page is managed by the pager, so every address reports
+            // kNotPaged.
+            const K_NOT_PAGED: u32 = 2;
+            PpcImportAction::Return(K_NOT_PAGED)
+        }
+        PpcToolboxCompatOperation::WMgrPort => {
+            // WMgrPort is the Window Manager port, the same port
+            // GetWMgrPort returns.
+            PpcImportAction::Return(PPC_MAIN_GWORLD)
+        }
+        PpcToolboxCompatOperation::OpenSlot => {
+            // Inside Macintosh: Devices (OpenSlot): opens a slot device's
+            // driver. The runtime has no slot devices or their drivers, so
+            // the open fails with openErr in the result and ioResult, as
+            // OpenDriver does.
+            let pb = cpu.gpr[3];
+            if ppc_memory_can_write_bytes(memory, pb, 26) {
+                let _ = memory.write_u16_be(pb + 24, 0);
+                let _ = memory.write_u16_be(pb + 16, PPC_OPEN_ERR as u16);
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_OPEN_ERR))
         }
     }
 }

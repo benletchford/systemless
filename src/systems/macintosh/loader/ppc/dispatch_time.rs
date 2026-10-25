@@ -110,6 +110,35 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             });
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::DeferUserFn => {
+            // Inside Macintosh: Memory (DeferUserFn): the function runs once
+            // it is safe to take a page fault. Virtual memory is off, so it
+            // runs immediately with its argument, and the call returns noErr.
+            let (routine, argument) = (cpu.gpr[3], cpu.gpr[4]);
+            let restore_rtoc = cpu.gpr[2];
+            let final_pc = cpu.lr;
+            let Some(target) = (routine != 0)
+                .then(|| ppc_resolve_callback_target(memory, routine, restore_rtoc, None))
+                .flatten()
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            install_powerpc_call_arguments(cpu, memory, &[argument])?;
+            GuestCallEffect::call_guest(
+                GuestCallRequest::new(GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: target.entry,
+                    rtoc: target.rtoc,
+                }),
+                GuestCallContinuation::to_powerpc(
+                    PPC_GUEST_CALL_RETURN_PC,
+                    final_pc,
+                    restore_rtoc,
+                    PpcNativeReturnGpr3::Set(ppc_i16_result(PPC_NO_ERR)),
+                ),
+            )
+            .into_ppc_import_action()
+        }
         PpcImportDispatcherTarget::DTInstall => {
             // Inside Macintosh: Processes (1994), pp. 6-12 to 6-13: DTInstall
             // queues a DeferredTask (qType dtQType = 7, dtAddr at 8, dtParam at

@@ -351,6 +351,7 @@ pub use dispatch_quickdraw::PpcQuickDrawShapeOperation;
 
 pub use dispatch_file_manager::PpcFileManagerOperation;
 pub use dispatch_files::PpcFileCompatibilityOperation;
+pub use dispatch_low_memory::PpcLowMemoryAccessor;
 use dispatch_fsref::ppc_write_volume_root_fsref;
 pub use dispatch_fsref::PpcFsRefOperation;
 

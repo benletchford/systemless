@@ -17,6 +17,8 @@ pub enum PpcPrintingCompatibilityOperation {
     PrPicFile,
     PrStlDialog,
     PrintDefault,
+    PrDlgMain,
+    PrJobInit,
 }
 
 pub(crate) fn ppc_dispatch_printing_compatibility(
@@ -48,7 +50,12 @@ pub(crate) fn ppc_dispatch_printing_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
+        // Inside Macintosh: Imaging With QuickDraw (PrJobInit, PrDlgMain):
+        // with no printer driver there is no job dialog to initialize, so
+        // PrJobInit returns nil and PrDlgMain ends the way PrJobDialog does.
+        PpcPrintingCompatibilityOperation::PrJobInit => PpcImportAction::Return(0),
         PpcPrintingCompatibilityOperation::PrJobDialog
+        | PpcPrintingCompatibilityOperation::PrDlgMain
         | PpcPrintingCompatibilityOperation::PrStlDialog => {
             let confirmed = printing_manager::evaluate_pr_dialog(PrintingArchitecture::PowerPc);
             PpcImportAction::Return(u32::from(confirmed))

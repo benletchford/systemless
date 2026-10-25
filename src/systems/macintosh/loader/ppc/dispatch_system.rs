@@ -22,6 +22,15 @@ pub enum PpcSystemCompatibilityOperation {
     Dequeue,
     Enqueue,
     FindNextComponent,
+    CountComponents,
+    GetComponentInfo,
+    CursorDeviceNew,
+    CursorDeviceDispose,
+    CursorDeviceMove,
+    CursorDeviceButtons,
+    CursorDeviceSetButtons,
+    CursorDeviceUnitsPerInch,
+    CursorDeviceFlush,
     GetComponentRefcon,
     GetComponentVersion,
     SetComponentRefcon,
@@ -90,6 +99,10 @@ pub enum PpcSystemCompatibilityOperation {
     TruncText,
     UpperString,
 }
+
+/// CursorDevices.h: CursorDevice uses mac68k (two-byte) alignment.
+/// Its final `privateFields[15]` begins at +108.
+const PPC_CURSOR_DEVICE_SIZE: u32 = 138;
 
 fn ppc_key_translate(memory: &mut PpcSectionMem, trans_data: u32, keycode: u16, state: u32) -> u32 {
     // KeyTranslate / KeyTrans uses the caller's KCHR modifier index and
@@ -808,6 +821,99 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             PpcImportAction::Return(0)
         }
         PpcSystemCompatibilityOperation::OpenDefaultComponent => PpcImportAction::Return(0),
+        PpcSystemCompatibilityOperation::CountComponents => {
+            // long CountComponents(ComponentDescription *looking): no
+            // components are registered, as FindNextComponent reports.
+            PpcImportAction::Return(0)
+        }
+        PpcSystemCompatibilityOperation::GetComponentInfo => {
+            // OSErr GetComponentInfo(Component, ...): no Component reference
+            // can be valid, so the call reports invalidComponentID
+            // (Components.h).
+            const INVALID_COMPONENT_ID: i16 = -3000;
+            PpcImportAction::Return(ppc_i16_result(INVALID_COMPONENT_ID))
+        }
+        PpcSystemCompatibilityOperation::CursorDeviceNew => {
+            // CursorDevices.h: CursorDeviceNewDevice(CursorDevicePtr *)
+            // allocates a zeroed CursorDevice record for the caller.
+            let out = cpu.gpr[3];
+            if !ppc_memory_can_write_bytes(memory, out, 4) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let device =
+                process_memory_manager.new_native_ptr(memory, PPC_CURSOR_DEVICE_SIZE, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            let _ = memory.write_u32_be(out, device);
+            PpcImportAction::Return(ppc_i16_result(if device == 0 {
+                PPC_MEM_FULL_ERR
+            } else {
+                PPC_NO_ERR
+            }))
+        }
+        PpcSystemCompatibilityOperation::CursorDeviceDispose => {
+            let device = cpu.gpr[3];
+            if device != 0 {
+                let _ = process_memory_manager.dispose_native_ptr(device);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcSystemCompatibilityOperation::CursorDeviceMove => {
+            // CursorDeviceMove(device, deltaX, deltaY) moves the cursor by
+            // the deltas through the low-memory mouse globals; the next
+            // host mouse sample replaces them, as further device movement
+            // would on a real machine.
+            use crate::memory::globals::addr;
+            let (dx, dy) = (cpu.gpr[4] as i32, cpu.gpr[5] as i32);
+            let mouse = memory.read_u32_be(addr::MOUSE_LOC2).unwrap_or(0);
+            let v = ((mouse >> 16) as i16 as i32 + dy).clamp(-32768, 32767) as u16;
+            let h = ((mouse as i16) as i32 + dx).clamp(-32768, 32767) as u16;
+            let point = (u32::from(v) << 16) | u32::from(h);
+            for global in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+                let _ = memory.write_u32_be(global, point);
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcSystemCompatibilityOperation::CursorDeviceButtons
+        | PpcSystemCompatibilityOperation::CursorDeviceSetButtons
+        | PpcSystemCompatibilityOperation::CursorDeviceUnitsPerInch => {
+            // CursorDevices.h: resolution is a Fixed at +20; cntButtons
+            // and buttons are single bytes at +25 and +27 respectively.
+            let device = cpu.gpr[3];
+            let written = if device == 0 {
+                None
+            } else {
+                match operation {
+                    PpcSystemCompatibilityOperation::CursorDeviceButtons => {
+                        memory.write_u8(device + 27, cpu.gpr[4] as u8)
+                    }
+                    PpcSystemCompatibilityOperation::CursorDeviceSetButtons => {
+                        memory.write_u8(device + 25, cpu.gpr[4] as u8)
+                    }
+                    _ => memory.write_u32_be(device + 20, cpu.gpr[4]),
+                }
+            };
+            let result = if written.is_some() {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::CursorDeviceFlush => {
+            // Movement is applied immediately, so nothing is pending.
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
         PpcSystemCompatibilityOperation::GetComponentRefcon => {
             // long GetComponentRefcon(Component aComponent). FindNextComponent
             // registers no components in this runtime, so every reference is
