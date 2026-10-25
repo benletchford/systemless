@@ -4789,6 +4789,39 @@ pub(super) fn ppc_h_rename(
     )
 }
 
+/// Files.h: Rename(oldName, vRefNum, newName), the non-hierarchical call
+/// that resolves names against vRefNum's default directory, as PBRename does.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_rename(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    default_dir_id: u32,
+) -> i16 {
+    ppc_rename_by_name(
+        memory,
+        vfs_directories,
+        vfs_files,
+        deleted_vfs_file_paths,
+        files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+        default_dir_id,
+        cpu.gpr[4] as u16 as i16,
+        0,
+        cpu.gpr[3],
+        cpu.gpr[5],
+        true,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_pb_rename_sync(
     hierarchical: bool,

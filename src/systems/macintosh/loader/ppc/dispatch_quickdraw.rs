@@ -1296,6 +1296,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     Exp1To3,
     Exp1To6,
     GetCPixel,
+    GetPixel,
     GetEntryColor,
     GetEntryUsage,
     GetItemIcon,
@@ -1502,7 +1503,8 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        PpcQuickDrawCompatibilityOperation::GetCPixel => {
+        PpcQuickDrawCompatibilityOperation::GetCPixel
+        | PpcQuickDrawCompatibilityOperation::GetPixel => {
             let color = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
                 .and_then(|surface| {
                     let front = surface.front_buffer;
@@ -1534,6 +1536,16 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                     })
                 })
                 .unwrap_or(PPC_RGB_BLACK);
+            if operation == PpcQuickDrawCompatibilityOperation::GetPixel {
+                // GetPixel(h, v) reports whether the pixel is set: black in a
+                // basic port, and any colour other than white in a colour one.
+                let white = PpcRgbColor {
+                    red: 0xffff,
+                    green: 0xffff,
+                    blue: 0xffff,
+                };
+                return PpcImportAction::Return(u32::from(color != white));
+            }
             let _ = ppc_write_rgb_color(memory, cpu.gpr[5], color);
             PpcImportAction::ReturnPreserve
         }

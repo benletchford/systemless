@@ -169,6 +169,20 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 default_dir_id,
             ))))
         }
+        PpcImportDispatcherTarget::Rename => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_rename(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                deleted_vfs_file_paths,
+                files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                default_dir_id,
+            ))))
+        }
         PpcImportDispatcherTarget::FSpRename => {
             // Files.h: FSpRename(const FSSpec *, ConstStr255Param newName) is
             // HRename with the spec's vRefNum (+0), parID (+2), and name (+6).
@@ -677,6 +691,45 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 default_dir_id,
             ))))
+        }
+        PpcImportDispatcherTarget::GetFInfoCString => {
+            // The lowercase C glue converts the caller's name to a Pascal
+            // string in place, makes the call, and converts it back.
+            ppc_c2pstr(cpu, memory);
+            let result = ppc_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            );
+            ppc_p2cstr(cpu, memory);
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::SetFInfo { c_string } => {
+            // Files.h: SetFInfo(fileName, vRefNum, const FInfo *) is
+            // HSetFInfo in the default directory of vRefNum.
+            let mut call = cpu.clone();
+            call.gpr[3] = cpu.gpr[4];
+            call.gpr[4] = 0;
+            call.gpr[5] = cpu.gpr[3];
+            call.gpr[6] = cpu.gpr[5];
+            if c_string {
+                ppc_c2pstr(cpu, memory);
+            }
+            let result = ppc_h_set_finfo(
+                &call,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                default_dir_id,
+            );
+            if c_string {
+                ppc_p2cstr(cpu, memory);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::HGetFInfo => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_h_get_finfo(

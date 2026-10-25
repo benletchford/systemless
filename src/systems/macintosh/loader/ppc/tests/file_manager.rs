@@ -10989,3 +10989,81 @@ fn pb_get_cat_info_names_the_root_directory_after_its_volume() {
         Some(crate::trap::TrapDispatcher::boot_volume_name().as_bytes())
     );
 }
+
+#[test]
+fn rename_and_c_string_finfo_glue_use_the_default_directory() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Rename")).unwrap();
+    // The runner re-reads the default directory from CurDirStore after each
+    // call.
+    loaded
+        .memory
+        .write_u32_be(
+            crate::memory::globals::addr::CUR_DIR_STORE,
+            PPC_PREFERENCES_DIR_ID,
+        )
+        .unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|dir| *dir = PPC_PREFERENCES_DIR_ID);
+    let base = PPC_DATA_BASE + 0x5000;
+    let (old_ptr, new_ptr, finfo) = (base, base + 0x40, base + 0x80);
+    loaded.memory.add_region(base, vec![0; 0x100]);
+    write_ppc_pstring(&mut loaded.memory, old_ptr, b"Old Log");
+    write_ppc_pstring(&mut loaded.memory, new_ptr, b"New Log");
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "System Folder/Preferences/Old Log".into(),
+        data: b"data fork".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = old_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = new_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Rename);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.vfs_files[0].path,
+        "System Folder/Preferences/New Log"
+    );
+
+    // setfinfo and getfinfo take C strings and leave them as C strings.
+    loaded.memory.write_bytes(new_ptr, b"New Log\0").unwrap();
+    loaded
+        .memory
+        .write_u32_be(finfo, u32::from_be_bytes(*b"TEXT"))
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(finfo + 4, u32::from_be_bytes(*b"ttxt"))
+        .unwrap();
+    loaded.cpu.gpr[3] = new_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = finfo;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SetFInfo { c_string: true },
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.vfs_files[0].file_type, u32::from_be_bytes(*b"TEXT"));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, new_ptr, 8),
+        Some(b"New Log\0".to_vec())
+    );
+
+    loaded.memory.write_u32_be(finfo, 0).unwrap();
+    loaded.cpu.gpr[3] = new_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = finfo;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetFInfoCString);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(finfo + 4),
+        Some(u32::from_be_bytes(*b"ttxt"))
+    );
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, new_ptr, 8),
+        Some(b"New Log\0".to_vec())
+    );
+}

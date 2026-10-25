@@ -522,6 +522,12 @@ pub enum PpcImportDispatcherTarget {
     PBGetFCBInfo,
     FSpGetFInfo,
     GetFInfo,
+    /// getfinfo: GetFInfo with a C-string file name.
+    GetFInfoCString,
+    /// SetFInfo(name, vRefNum, FInfo *), or setfinfo with a C-string name.
+    SetFInfo {
+        c_string: bool,
+    },
     HGetFInfo,
     FSpSetFInfo,
     HSetFInfo,
@@ -596,6 +602,7 @@ pub enum PpcImportDispatcherTarget {
     DeleteByName(PpcDeleteByNameOperation),
     HCreate,
     HRename,
+    Rename,
     PBHRenameSync,
     PBRenameSync,
     Create,
@@ -3811,9 +3818,10 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBGetFCBInfoSync")
         | ("InterfaceLib", "PBGetFCBInfoAsync") => PpcImportDispatcherTarget::PBGetFCBInfo,
         ("InterfaceLib", "FSpGetFInfo") => PpcImportDispatcherTarget::FSpGetFInfo,
-        ("InterfaceLib", "GetFInfo") | ("InterfaceLib", "getfinfo") => {
-            PpcImportDispatcherTarget::GetFInfo
-        }
+        ("InterfaceLib", "GetFInfo") => PpcImportDispatcherTarget::GetFInfo,
+        ("InterfaceLib", "getfinfo") => PpcImportDispatcherTarget::GetFInfoCString,
+        ("InterfaceLib", "SetFInfo") => PpcImportDispatcherTarget::SetFInfo { c_string: false },
+        ("InterfaceLib", "setfinfo") => PpcImportDispatcherTarget::SetFInfo { c_string: true },
         ("InterfaceLib", "HGetFInfo") => PpcImportDispatcherTarget::HGetFInfo,
         ("InterfaceLib", "FSpSetFInfo") => PpcImportDispatcherTarget::FSpSetFInfo,
         ("InterfaceLib", "HSetFInfo") => PpcImportDispatcherTarget::HSetFInfo,
@@ -3902,6 +3910,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "HCreate") => PpcImportDispatcherTarget::HCreate,
         ("InterfaceLib", "HRename") => PpcImportDispatcherTarget::HRename,
+        ("InterfaceLib", "Rename") => PpcImportDispatcherTarget::Rename,
         ("InterfaceLib", "FSpRename") => PpcImportDispatcherTarget::FSpRename,
         ("InterfaceLib", "PBHRenameSync") => PpcImportDispatcherTarget::PBHRenameSync,
         ("InterfaceLib", "PBRenameSync") => PpcImportDispatcherTarget::PBRenameSync,
@@ -5836,6 +5845,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "GetCPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetCPixel,
+        ),
+        ("InterfaceLib", "GetPixel") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::GetPixel,
         ),
         ("InterfaceLib", "GetEntryColor") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::GetEntryColor,

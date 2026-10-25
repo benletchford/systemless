@@ -1822,3 +1822,25 @@ fn fill_rect_with_an_unreadable_pattern_keeps_the_solid_fill() {
     assert_eq!(filled, solid);
     assert_ne!(filled, pixels);
 }
+
+#[test]
+fn get_pixel_reports_whether_a_local_pixel_is_not_white() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPixel")).unwrap();
+    install_port(&mut loaded, &fixture, 16);
+    let offset = |x: i16, y: i16| {
+        PIXELS + (y - BOUNDS.0) as u32 * u32::from(ROW_BYTES) + (x - BOUNDS.1) as u32 * 2
+    };
+    loaded.memory.write_u16_be(offset(1, 0), 0x7C00).unwrap();
+    loaded.memory.write_u16_be(offset(0, 1), 0x7FFF).unwrap();
+    let operation = PpcImportDispatcherTarget::QuickDrawCompatibility(
+        PpcQuickDrawCompatibilityOperation::GetPixel,
+    );
+    for ((h, v), expected) in [((1u32, 0u32), 1), ((0, 1), 0)] {
+        loaded.cpu.gpr[3] = h;
+        loaded.cpu.gpr[4] = v;
+        run_test_import(&mut loaded, operation.clone());
+        assert_eq!(loaded.cpu.gpr[3], expected, "({h}, {v})");
+    }
+}

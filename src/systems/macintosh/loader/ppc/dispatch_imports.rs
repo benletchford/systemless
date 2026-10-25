@@ -1726,6 +1726,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HCreate
         | PpcImportDispatcherTarget::HRename
         | PpcImportDispatcherTarget::FSpRename
+        | PpcImportDispatcherTarget::Rename
         | PpcImportDispatcherTarget::PBHRenameSync
         | PpcImportDispatcherTarget::PBRenameSync
         | PpcImportDispatcherTarget::Create
@@ -1769,6 +1770,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PBHSetFInfo
         | PpcImportDispatcherTarget::FSpGetFInfo
         | PpcImportDispatcherTarget::GetFInfo
+        | PpcImportDispatcherTarget::GetFInfoCString
+        | PpcImportDispatcherTarget::SetFInfo { .. }
         | PpcImportDispatcherTarget::HGetFInfo
         | PpcImportDispatcherTarget::FSpSetFInfo
         | PpcImportDispatcherTarget::HSetFInfo
