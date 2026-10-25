@@ -1430,6 +1430,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InitZone
         | PpcImportDispatcherTarget::SystemZone
         | PpcImportDispatcherTarget::ApplicationZone
+        | PpcImportDispatcherTarget::GetApplZone
+        | PpcImportDispatcherTarget::SetApplZone
         | PpcImportDispatcherTarget::MaxApplZone
         | PpcImportDispatcherTarget::MoreMasters
         | PpcImportDispatcherTarget::FlushCodeCache
@@ -1491,6 +1493,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::MenuEvent
         | PpcImportDispatcherTarget::MenuChoice
         | PpcImportDispatcherTarget::GetMBarHeight
+        | PpcImportDispatcherTarget::HideMenuBar
+        | PpcImportDispatcherTarget::ShowMenuBar
         | PpcImportDispatcherTarget::SetMBarHeight
         | PpcImportDispatcherTarget::MenuSelect => {
             unreachable!("menu imports return through dispatch_menu_import")
@@ -1845,6 +1849,11 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::InitGraf
         | PpcImportDispatcherTarget::GetQDGlobalsScreenBits
         | PpcImportDispatcherTarget::GetQDGlobalsWhite
+        | PpcImportDispatcherTarget::GetQDGlobalsGray
+        | PpcImportDispatcherTarget::ApplyThemeBackground
+        | PpcImportDispatcherTarget::DrawThemeEditTextFrame
+        | PpcImportDispatcherTarget::DrawThemeFocusRect
+        | PpcImportDispatcherTarget::GetThemeDrawingState
         | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
         | PpcImportDispatcherTarget::GetGray
@@ -1990,6 +1999,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetClip
         | PpcImportDispatcherTarget::GetPortVisibleRegion
         | PpcImportDispatcherTarget::GetPortClipRegion
+        | PpcImportDispatcherTarget::SetPortClipRegion
         | PpcImportDispatcherTarget::SetClip
         | PpcImportDispatcherTarget::BitMapToRegion
         | PpcImportDispatcherTarget::NewRgn
@@ -2098,6 +2108,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetGWorldPixMap
         | PpcImportDispatcherTarget::OpenPort
         | PpcImportDispatcherTarget::OpenCPort
+        | PpcImportDispatcherTarget::CreateNewPort
         | PpcImportDispatcherTarget::InitCPort
         | PpcImportDispatcherTarget::CloseCPort
         | PpcImportDispatcherTarget::SetPortBits { .. }
@@ -2284,6 +2295,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LNextCell
         | PpcImportDispatcherTarget::LSetSelect
         | PpcImportDispatcherTarget::LSetCell
+        | PpcImportDispatcherTarget::LAddToCell
+        | PpcImportDispatcherTarget::LDraw
         | PpcImportDispatcherTarget::LGetCell
         | PpcImportDispatcherTarget::LClick
         | PpcImportDispatcherTarget::LActivate
@@ -2883,6 +2896,14 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::ToolboxCompat(operation) => Some(
             dispatch_toolbox_compat::ppc_dispatch_toolbox_compat(operation, cpu, memory),
         ),
+        PpcImportDispatcherTarget::WindowContentColor { set } => {
+            Some(dispatch_toolbox_compat::ppc_window_content_color(
+                set,
+                cpu,
+                memory,
+                &mut toolbox_startup.window_content_colors,
+            ))
+        }
         PpcImportDispatcherTarget::DebugStr { c_string } => {
             // No low-level debugger is installed, so the call returns; the
             // message is the application's own assertion text, worth seeing.

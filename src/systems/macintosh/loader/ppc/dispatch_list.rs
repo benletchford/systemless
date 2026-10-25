@@ -423,6 +423,68 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LAddToCell => {
+            // LAddToCell(dataPtr, dataLen, theCell, lHandle) appends data to
+            // the cell's existing data. More Macintosh Toolbox (1993), List
+            // Manager, LAddToCell.
+            let length = usize::from(cpu.gpr[4] as u16);
+            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], length as u32);
+            let v = (cpu.gpr[5] >> 16) as u16 as i16;
+            let h = cpu.gpr[5] as u16 as i16;
+            if let Some(bytes) = bytes {
+                list_manager.with_record_mut(cpu.gpr[6], |record| {
+                    if ppc_list_cell_index(record, v, h).is_some() {
+                        record.cells.entry((v, h)).or_default().extend(bytes);
+                        let mut allocator = PpcProcessAllocatorView {
+                            memory_manager: process_memory_manager,
+                        };
+                        let result = ppc_list_sync_guest_storage(
+                            Some(&mut allocator),
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                            record,
+                        );
+                        *last_mem_error = result;
+                        if record.draw_enabled {
+                            ppc_list_redraw(
+                                memory,
+                                handles,
+                                controls,
+                                gworlds,
+                                vfs_resources,
+                                current_resource_refnum,
+                                record,
+                            );
+                        }
+                    }
+                });
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LDraw => {
+            // LDraw(theCell, lHandle) draws one cell even while automatic
+            // drawing is off. Redrawing the list paints that cell along
+            // with the visible cells around it.
+            let v = (cpu.gpr[3] >> 16) as u16 as i16;
+            let h = cpu.gpr[3] as u16 as i16;
+            list_manager.with_record_ref(cpu.gpr[4], |record| {
+                if ppc_list_cell_index(record, v, h).is_some() {
+                    ppc_list_redraw(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        record,
+                    );
+                }
+            });
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LGetCell => {
             let length_ptr = cpu.gpr[4];
             let requested = usize::from(memory.read_u16_be(length_ptr).unwrap_or(0));

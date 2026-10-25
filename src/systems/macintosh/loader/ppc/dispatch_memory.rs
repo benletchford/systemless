@@ -658,6 +658,20 @@ pub(super) fn dispatch_memory_import(
         PpcImportDispatcherTarget::ApplicationZone => {
             Some(PpcImportAction::Return(PPC_APPLICATION_ZONE))
         }
+        PpcImportDispatcherTarget::GetApplZone => {
+            // LMGetApplZone reads the ApplZone low-memory global.
+            let zone = memory
+                .read_u32_be(PPC_APPL_ZONE_ADDR)
+                .unwrap_or(PPC_APPLICATION_ZONE);
+            Some(PpcImportAction::Return(zone))
+        }
+        PpcImportDispatcherTarget::SetApplZone => {
+            // LMSetApplZone writes the ApplZone low-memory global. The
+            // process heap itself is not moved: allocations continue to use
+            // the application heap.
+            let _ = memory.write_u32_be(PPC_APPL_ZONE_ADDR, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::SetZone => {
             let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)

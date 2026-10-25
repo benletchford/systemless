@@ -216,6 +216,7 @@ fn drain_test_m68k_guest_calls(loaded: &mut PpcLoadedApp) {
 mod palette_manager;
 mod gworld;
 mod blit;
+mod carbon_toolbox;
 
 mod file_manager;
 mod fsref;

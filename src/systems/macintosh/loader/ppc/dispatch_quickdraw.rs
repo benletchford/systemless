@@ -100,6 +100,127 @@ pub(super) fn dispatch_quickdraw_import(
             let _ = memory.write_bytes(destination, &white);
             Some(PpcImportAction::Return(destination))
         }
+        PpcImportDispatcherTarget::GetQDGlobalsGray => {
+            // Quickdraw.h: Pattern *GetQDGlobalsGray(Pattern *gray).
+            // QDGlobals.gray precedes black and white, 24 bytes before
+            // thePort.
+            let destination = cpu.gpr[3];
+            if destination == 0 || !ppc_memory_can_write_bytes(memory, destination, 8) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let gray = toolbox_startup
+                .init_graf_global_ptr
+                .checked_sub(24)
+                .and_then(|address| ppc_memory_read_bytes(memory, address, 8))
+                // Before InitGraf, use its standard 50% gray pattern.
+                .unwrap_or_else(|| [0xaa, 0x55].repeat(4));
+            let _ = memory.write_bytes(destination, &gray);
+            Some(PpcImportAction::Return(destination))
+        }
+        PpcImportDispatcherTarget::ApplyThemeBackground => {
+            // ApplyThemeBackground(inKind, inBounds, inState, inDepth,
+            // inColorDev) sets the current port's background for a theme
+            // background kind. The current theme draws every background
+            // kind in its solid window background colour, and in white on
+            // monochrome devices.
+            let kind = cpu.gpr[3];
+            let depth = cpu.gpr[6] as i16;
+            let color_device = cpu.gpr[7] as u8 != 0;
+            let palette = ppc_ui_theme(gworlds).provider().palette();
+            let result = if !matches!(depth, 1 | 2 | 4 | 8 | 16 | 32) {
+                -30567 // themeMonitorDepthNotSupportedErr
+            } else if !(1..=5).contains(&kind) || current_gworld == 0 {
+                // Appearance.h defines background kinds 1 (tab pane)
+                // through 5 (secondary group box).
+                PPC_PARAM_ERR
+            } else {
+                let color = if depth > 1 && color_device {
+                    ppc_theme_rgb(palette.window_background)
+                } else {
+                    PPC_RGB_WHITE
+                };
+                *quickdraw_back_color = color;
+                toolbox_startup
+                    .quickdraw_back_indices
+                    .remove(&current_gworld);
+                let _ = ppc_write_port_rgb_color(
+                    memory,
+                    current_gworld,
+                    PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                    color,
+                );
+                PPC_NO_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::DrawThemeEditTextFrame
+        | PpcImportDispatcherTarget::DrawThemeFocusRect => {
+            // DrawThemeEditTextFrame(inRect, inState) draws a one-pixel
+            // frame just outside inRect, dark when active and light when
+            // inactive. DrawThemeFocusRect(inRect, inHasFocus) draws the
+            // two-pixel focus ring outside that frame in the theme accent,
+            // or erases it to the port background when focus is removed.
+            let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let palette = ppc_ui_theme(gworlds).provider().palette();
+            let (color, insets) =
+                if binding.dispatcher_target == PpcImportDispatcherTarget::DrawThemeEditTextFrame {
+                    let active = cpu.gpr[4] != 0;
+                    let color = if active {
+                        palette.frame_dark
+                    } else {
+                        palette.frame_light
+                    };
+                    (ppc_theme_rgb(color), 1..=1)
+                } else if cpu.gpr[4] as u8 != 0 {
+                    (ppc_theme_rgb(palette.accent), 2..=3)
+                } else {
+                    (*quickdraw_back_color, 2..=3)
+                };
+            for inset in insets {
+                let (t, l) = (top.saturating_sub(inset), left.saturating_sub(inset));
+                let (b, r) = (bottom.saturating_add(inset), right.saturating_add(inset));
+                for edge in [
+                    (t, l, t.saturating_add(1), r),
+                    (b.saturating_sub(1), l, b, r),
+                    (t, l, b, l.saturating_add(1)),
+                    (t, r.saturating_sub(1), b, r),
+                ] {
+                    let _ =
+                        ppc_paint_rect_bounds(memory, gworlds, current_gworld, edge, color, None);
+                }
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
+        PpcImportDispatcherTarget::GetThemeDrawingState => {
+            // GetThemeDrawingState(ThemeDrawingState *) returns an opaque
+            // snapshot of the current port's colours, pen and text state:
+            // a tag followed by the CGrafPort fields from rgbFgColor (+36)
+            // through txSize (+74).
+            let out = cpu.gpr[3];
+            if out == 0 || current_gworld == 0 || !ppc_memory_can_write_bytes(memory, out, 4) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let mut snapshot = b"tdst".to_vec();
+            snapshot.extend(
+                ppc_memory_read_bytes(memory, current_gworld.wrapping_add(36), 40)
+                    .unwrap_or_else(|| vec![0; 40]),
+            );
+            let state = process_memory_manager.new_native_ptr(memory, snapshot.len() as u32, true);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            let _ = memory.write_u32_be(out, state);
+            if state == 0 {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+            }
+            let _ = memory.write_bytes(state, &snapshot);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+        }
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-74–4-75:
         // SaveFore/SaveBack and RestoreFore/RestoreBack keep the colour in a
         // ColorSpec, whose RGBColor follows the two-byte value field.

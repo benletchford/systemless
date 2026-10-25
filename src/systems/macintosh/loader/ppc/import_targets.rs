@@ -48,6 +48,8 @@ pub enum PpcImportDispatcherTarget {
     InitZone,
     SystemZone,
     ApplicationZone,
+    GetApplZone,
+    SetApplZone,
     MaxApplZone,
     MoreMasters,
     FlushCodeCache,
@@ -131,6 +133,11 @@ pub enum PpcImportDispatcherTarget {
     GetQDGlobalsArrow,
     GetQDGlobalsScreenBits,
     GetQDGlobalsWhite,
+    GetQDGlobalsGray,
+    ApplyThemeBackground,
+    DrawThemeEditTextFrame,
+    DrawThemeFocusRect,
+    GetThemeDrawingState,
     HideCursor,
     ShowCursor,
     ShieldCursor,
@@ -237,6 +244,7 @@ pub enum PpcImportDispatcherTarget {
     RestoreFore,
     RestoreBack,
     GetPortClipRegion,
+    SetPortClipRegion,
     SetClip,
     GetPen,
     HidePen,
@@ -328,6 +336,8 @@ pub enum PpcImportDispatcherTarget {
     GetDefFontSize,
     GetFontName,
     GetMBarHeight,
+    HideMenuBar,
+    ShowMenuBar,
     SetMBarHeight,
     NewMenu,
     DisposeMenu,
@@ -441,6 +451,7 @@ pub enum PpcImportDispatcherTarget {
     GetGWorldPixMap,
     OpenPort,
     OpenCPort,
+    CreateNewPort,
     InitCPort,
     CloseCPort,
     SetPortBits { color: bool },
@@ -750,6 +761,8 @@ pub enum PpcImportDispatcherTarget {
     LNextCell,
     LSetSelect,
     LSetCell,
+    LAddToCell,
+    LDraw,
     LGetCell,
     LClick,
     LActivate,
@@ -1351,6 +1364,9 @@ pub enum PpcImportDispatcherTarget {
     FSpRename,
     PBDTGetAPPL,
     PrintingCompatibility(PpcPrintingCompatibilityOperation),
+    WindowContentColor {
+        set: bool,
+    },
     SlotCompatibility,
     StandardFileCompatibility(PpcStandardFileOperation),
     SoundInputCompatibility(PpcSoundInputCompatibilityOperation),
@@ -2398,6 +2414,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("MathLib", "__fpclassifyd") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::FpClassifyD)
         }
+        ("MathLib", "__fpclassifyf") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::FpClassifyF)
+        }
         ("MathLib", "nan") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Nan)
         }
@@ -2845,7 +2864,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetZone") => PpcImportDispatcherTarget::SetZone,
         // The ApplZone and SysZone low-memory globals hold the zones that
         // ApplicationZone and SystemZone return.
-        ("InterfaceLib", "LMGetApplZone") => PpcImportDispatcherTarget::ApplicationZone,
+        ("InterfaceLib", "LMGetApplZone") => PpcImportDispatcherTarget::GetApplZone,
+        ("InterfaceLib", "LMSetApplZone") => PpcImportDispatcherTarget::SetApplZone,
         ("InterfaceLib", "LMGetSysZone") => PpcImportDispatcherTarget::SystemZone,
         ("InterfaceLib", "InitZone") => PpcImportDispatcherTarget::InitZone,
         ("InterfaceLib", "SystemZone") => PpcImportDispatcherTarget::SystemZone,
@@ -2959,6 +2979,19 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsWhite" | "getqdglobalswhite") => {
             PpcImportDispatcherTarget::GetQDGlobalsWhite
+        }
+        ("InterfaceLib", "GetQDGlobalsGray") => PpcImportDispatcherTarget::GetQDGlobalsGray,
+        ("InterfaceLib" | "AppearanceLib", "ApplyThemeBackground") => {
+            PpcImportDispatcherTarget::ApplyThemeBackground
+        }
+        ("InterfaceLib" | "AppearanceLib", "DrawThemeEditTextFrame") => {
+            PpcImportDispatcherTarget::DrawThemeEditTextFrame
+        }
+        ("InterfaceLib" | "AppearanceLib", "DrawThemeFocusRect") => {
+            PpcImportDispatcherTarget::DrawThemeFocusRect
+        }
+        ("InterfaceLib" | "AppearanceLib", "GetThemeDrawingState") => {
+            PpcImportDispatcherTarget::GetThemeDrawingState
         }
         ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") => {
             PpcImportDispatcherTarget::QuickDrawCompatibility(
@@ -3352,6 +3385,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::GetPortVisibleRegion
         }
         ("InterfaceLib", "GetPortClipRegion") => PpcImportDispatcherTarget::GetPortClipRegion,
+        ("InterfaceLib", "SetPortClipRegion") => PpcImportDispatcherTarget::SetPortClipRegion,
         ("InterfaceLib", "SetClip") => PpcImportDispatcherTarget::SetClip,
         ("InterfaceLib", "GetPen") => PpcImportDispatcherTarget::GetPen,
         ("InterfaceLib", "HidePen") => PpcImportDispatcherTarget::HidePen,
@@ -3508,6 +3542,8 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetMBarHeight" | "setmbarheight" | "LMSetMBarHeight" | "lmsetmbarheight",
         ) => PpcImportDispatcherTarget::SetMBarHeight,
+        ("InterfaceLib", "HideMenuBar") => PpcImportDispatcherTarget::HideMenuBar,
+        ("InterfaceLib", "ShowMenuBar") => PpcImportDispatcherTarget::ShowMenuBar,
         ("InterfaceLib", "TestDeviceAttribute") => PpcImportDispatcherTarget::TestDeviceAttribute,
         ("InterfaceLib", "SetDeviceAttribute") => PpcImportDispatcherTarget::SetDeviceAttribute,
         ("InterfaceLib", "HasDepth") => PpcImportDispatcherTarget::HasDepth,
@@ -3604,6 +3640,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetGWorldPixMap") => PpcImportDispatcherTarget::GetGWorldPixMap,
         ("InterfaceLib", "OpenPort") => PpcImportDispatcherTarget::OpenPort,
         ("InterfaceLib", "OpenCPort") => PpcImportDispatcherTarget::OpenCPort,
+        ("InterfaceLib", "CreateNewPort") => PpcImportDispatcherTarget::CreateNewPort,
         ("InterfaceLib", "InitCPort") => PpcImportDispatcherTarget::InitCPort,
         ("InterfaceLib", "ClosePort") | ("InterfaceLib", "CloseCPort") => {
             PpcImportDispatcherTarget::CloseCPort
@@ -3711,9 +3748,24 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPixBounds") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPixBounds)
         }
-        ("InterfaceLib", "SetWindowContentColor") => PpcImportDispatcherTarget::ToolboxCompat(
-            PpcToolboxCompatOperation::SetWindowContentColor,
-        ),
+        ("InterfaceLib", "SetWindowContentColor") => {
+            PpcImportDispatcherTarget::WindowContentColor { set: true }
+        }
+        ("InterfaceLib", "GetWindowContentColor") => {
+            PpcImportDispatcherTarget::WindowContentColor { set: false }
+        }
+        ("InterfaceLib", "SetPortBounds") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::SetPortBounds)
+        }
+        ("InterfaceLib", "SetPortGrafProcs") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::SetPortGrafProcs)
+        }
+        ("InterfaceLib", "SetPortPenMode") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::SetPortPenMode)
+        }
+        ("InterfaceLib", "IsPortColor") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::IsPortColor)
+        }
         ("InterfaceLib", "Status") => PpcImportDispatcherTarget::Status,
         ("InterfaceLib", "Control") => PpcImportDispatcherTarget::Control,
         ("InterfaceLib", "PBControl")
@@ -4047,6 +4099,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlOwner" | "getcontrolowner") => {
             PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner)
         }
+        ("InterfaceLib", "GetControlPopupMenuID") => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlPopupMenuId,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlRegion" | "getcontrolregion",
@@ -4399,6 +4454,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LNextCell") => PpcImportDispatcherTarget::LNextCell,
         ("InterfaceLib", "LSetSelect") => PpcImportDispatcherTarget::LSetSelect,
         ("InterfaceLib", "LSetCell") => PpcImportDispatcherTarget::LSetCell,
+        ("InterfaceLib", "LAddToCell") => PpcImportDispatcherTarget::LAddToCell,
+        ("InterfaceLib", "LDraw") => PpcImportDispatcherTarget::LDraw,
         ("InterfaceLib", "LGetCell") => PpcImportDispatcherTarget::LGetCell,
         ("InterfaceLib", "LClick") => PpcImportDispatcherTarget::LClick,
         ("InterfaceLib", "LActivate") => PpcImportDispatcherTarget::LActivate,
@@ -6656,6 +6713,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("MathLib", "modf") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Modf)
+        }
+        ("MathLib", "modff") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Modff)
         }
         ("MathLib", "x80tod") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::X80ToD)

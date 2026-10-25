@@ -346,10 +346,12 @@ pub enum PpcMathCompatibilityOperation {
     FeClearExcept,
     FeTestExcept,
     FpClassifyD,
+    FpClassifyF,
     Floor,
     Ldexp,
     LdToX80,
     Modf,
+    Modff,
     Nan,
     Num2Dec,
     Str2Dec,
@@ -375,6 +377,23 @@ pub(super) fn ppc_dispatch_math_compatibility(
                 (0x7ff, 0) => 2,
                 (0x7ff, fraction) if fraction & (1_u64 << 51) == 0 => 0,
                 (0x7ff, _) => 1,
+                (0, 0) => 3,
+                (0, _) => 5,
+                _ => 4,
+            };
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::FpClassifyF => {
+            // __fpclassifyf(float) classifies the single-precision value,
+            // which arrives widened to a double in fr1, with the same
+            // FP_SNAN through FP_SUBNORMAL results as __fpclassifyd.
+            let bits = (f64::from_bits(cpu.fpr[1]) as f32).to_bits();
+            let exponent = (bits >> 23) & 0xff;
+            let fraction = bits & ((1_u32 << 23) - 1);
+            cpu.gpr[3] = match (exponent, fraction) {
+                (0xff, 0) => 2,
+                (0xff, fraction) if fraction & (1_u32 << 22) == 0 => 0,
+                (0xff, _) => 1,
                 (0, 0) => 3,
                 (0, _) => 5,
                 _ => 4,
@@ -456,6 +475,21 @@ pub(super) fn ppc_dispatch_math_compatibility(
             let _ = memory.write_u32_be(pointer, (bits >> 32) as u32);
             let _ = memory.write_u32_be(pointer + 4, bits as u32);
             cpu.fpr[1] = fractional.to_bits();
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::Modff => {
+            // modff(float x, float *iptr): x is in fr1 and takes one GPR
+            // slot, so iptr is r4. The integral part is stored as a float
+            // and the fractional part returned in fr1.
+            let value = f64::from_bits(cpu.fpr[1]) as f32;
+            let integer = if value.is_nan() { value } else { value.trunc() };
+            let fractional = if value.is_infinite() {
+                0.0f32.copysign(value)
+            } else {
+                value - integer
+            };
+            let _ = memory.write_u32_be(cpu.gpr[4], integer.to_bits());
+            cpu.fpr[1] = f64::from(fractional).to_bits();
             PpcImportAction::ReturnPreserve
         }
         PpcMathCompatibilityOperation::Dec2Num => {
