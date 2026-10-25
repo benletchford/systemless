@@ -1750,3 +1750,187 @@ fn input_sprocket_setl_tset_defaults_assign_keycodes_in_need_order() {
     );
     assert_eq!(state, PPC_ISP_AXIS_HIGH);
 }
+
+#[test]
+fn mouse_device_elements_report_movement_and_button_events() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTickle",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (event, was_event) = (scratch, scratch + 0x40);
+    loaded.memory.add_region(scratch, vec![0; 0x80]);
+    let mut state = PpcInputSprocketState::default();
+    let mut virtual_elements = Vec::new();
+    let mut next = |loaded: &mut PpcLoadedApp,
+                    state: &mut PpcInputSprocketState,
+                    element: u32,
+                    input: PpcInputSnapshot| {
+        loaded.cpu.gpr[3] = element;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = event;
+        loaded.cpu.gpr[6] = was_event;
+        let action = dispatch_inputsprocket::ppc_dispatch_input_sprocket_compatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            input,
+            7,
+            state,
+            &mut virtual_elements,
+        );
+        assert!(matches!(action, PpcImportAction::Return(0)));
+        (loaded.memory.read_u8(was_event) == Some(1))
+            .then(|| loaded.memory.read_u32_be(event + 16).unwrap())
+    };
+    let at = |h: i16, v: i16, button: bool| PpcInputSnapshot {
+        mouse_h: h,
+        mouse_v: v,
+        mouse_button: button,
+        ..PpcInputSnapshot::default()
+    };
+
+    // The first read establishes the position without reporting movement.
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_X_ELEMENT,
+            at(100, 50, false)
+        ),
+        None
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_Y_ELEMENT,
+            at(100, 50, false)
+        ),
+        None
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_X_ELEMENT,
+            at(103, 40, false)
+        ),
+        Some(3 << 16)
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_Y_ELEMENT,
+            at(103, 40, false)
+        ),
+        Some(10 << 16)
+    );
+    assert_eq!(loaded.memory.read_u32_be(event + 4), Some(7));
+    assert_eq!(
+        loaded.memory.read_u32_be(event + 8),
+        Some(PPC_ISP_MOUSE_Y_ELEMENT)
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_X_ELEMENT,
+            at(103, 40, false)
+        ),
+        None
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+            at(103, 40, true)
+        ),
+        Some(1)
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+            at(103, 40, true)
+        ),
+        None
+    );
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+            at(103, 40, false)
+        ),
+        Some(0)
+    );
+
+    // A deactivated mouse reports nothing.
+    state.mouse_active = false;
+    assert_eq!(
+        next(
+            &mut loaded,
+            &mut state,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+            at(103, 40, true)
+        ),
+        None
+    );
+}
+
+#[test]
+fn mouse_device_simple_state_reports_button_and_movement() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTickle",
+    ))
+    .unwrap();
+    let state_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(state_ptr, vec![0xff; 4]);
+    let mut state = PpcInputSprocketState::default();
+    let pressed = PpcInputSnapshot {
+        mouse_button: true,
+        ..PpcInputSnapshot::default()
+    };
+    for (element, input, expected) in [
+        (PPC_ISP_MOUSE_BUTTON_ELEMENT, pressed, 1),
+        (PPC_ISP_MOUSE_BUTTON_ELEMENT, PpcInputSnapshot::default(), 0),
+        // A delta element reports the movement since its last read.
+        (PPC_ISP_MOUSE_X_ELEMENT, pressed, 0),
+        (
+            PPC_ISP_MOUSE_X_ELEMENT,
+            PpcInputSnapshot {
+                mouse_h: 5,
+                ..pressed
+            },
+            5 << 16,
+        ),
+        (
+            PPC_ISP_MOUSE_X_ELEMENT,
+            PpcInputSnapshot {
+                mouse_h: 5,
+                ..pressed
+            },
+            0,
+        ),
+    ] {
+        loaded.cpu.gpr[3] = element;
+        loaded.cpu.gpr[4] = state_ptr;
+        assert_eq!(
+            ppc_isp_element_get_simple_state(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                input,
+                &mut state,
+                &[],
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u32_be(state_ptr), Some(expected));
+    }
+}

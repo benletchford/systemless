@@ -120,7 +120,7 @@ pub(super) fn dispatch_inputsprocket_import(
                 cpu,
                 memory,
                 input,
-                *input_sprocket,
+                input_sprocket,
                 input_sprocket_virtual_elements,
             )),
         )),
@@ -180,6 +180,8 @@ pub(super) fn dispatch_inputsprocket_import(
                 operation,
                 cpu,
                 memory,
+                input,
+                tick_count,
                 input_sprocket,
                 input_sprocket_virtual_elements,
             ))
@@ -202,6 +204,8 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
     operation: PpcInputSprocketCompatibilityOperation,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    input: PpcInputSnapshot,
+    tick_count: u32,
     input_sprocket: &mut PpcInputSprocketState,
     virtual_elements: &mut Vec<PpcInputSprocketVirtualElementRecord>,
 ) -> PpcImportAction {
@@ -235,12 +239,25 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
             //     UInt32 bufSize, ISpElementEventPtr event, Boolean *wasEvent).
             // An idle element leaves the event buffer untouched and clears the
             // Boolean output, which is the fourth argument, not bufSize.
-            let result = if cpu.gpr[6] != 0 && memory.write_u8(cpu.gpr[6], 0).is_some() {
-                PPC_NO_ERR
-            } else {
-                PPC_PARAM_ERR
+            let (element, buffer_size, event_ptr, was_event_ptr) =
+                (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6]);
+            if was_event_ptr == 0 || !ppc_memory_can_write_bytes(memory, was_event_ptr, 1) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let event = (buffer_size >= PPC_ISP_ELEMENT_EVENT_SIZE
+                && ppc_memory_can_write_bytes(memory, event_ptr, PPC_ISP_ELEMENT_EVENT_SIZE))
+            .then(|| ppc_isp_device_element_next_event(element, input, input_sprocket))
+            .flatten();
+            let Some(data) = event else {
+                let _ = memory.write_u8(was_event_ptr, 0);
+                return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
             };
-            PpcImportAction::Return(ppc_i16_result(result))
+            // ISpElementEvent: AbsoluteTime when, element, refCon, data.
+            for (offset, word) in [0, tick_count, element, 0, data].into_iter().enumerate() {
+                let _ = memory.write_u32_be(event_ptr + 4 * offset as u32, word);
+            }
+            let _ = memory.write_u8(was_event_ptr, 1);
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcInputSprocketCompatibilityOperation::ElementFlush
         | PpcInputSprocketCompatibilityOperation::Tickle => {
