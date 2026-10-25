@@ -25,6 +25,19 @@ compatibility:
       BasiliskII
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2416
+  - date: "2026-10-25"
+    tester: Catalogue maintainer
+    systemless_version: master after 0.99.0 deterministic play runner
+    architecture: ppc
+    environment: >-
+      Native PowerPC loading of the unchanged StuffIt archive passes the Startup
+      Options dialog, plays the introduction, and reaches the main menu. Single
+      Player Game, New Campaign and Human Campaign lead to the Hillsbrad briefing
+      and into the first mission. Selecting the Elven Archer shows its statistics
+      and commands, and a Move order walks it to the clicked location. Longer
+      PowerPC play, sound, and period Macintosh comparison remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4974
 artifacts:
 - id: archive
   role: archive
