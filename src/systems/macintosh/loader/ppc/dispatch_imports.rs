@@ -2947,6 +2947,9 @@ pub(crate) fn dispatch_supported_import(
                 "input sprocket compatibility imports return through dispatch_inputsprocket_import"
             )
         }
+        PpcImportDispatcherTarget::MathFp(function) => {
+            Some(math_fp::ppc_dispatch_fp(function, cpu, memory))
+        }
         PpcImportDispatcherTarget::MathCompatibility(operation) => {
             Some(ppc_dispatch_math_compatibility(operation, cpu, memory))
         }
