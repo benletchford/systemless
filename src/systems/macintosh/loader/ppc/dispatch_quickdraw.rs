@@ -579,6 +579,10 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_map_rect(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MapRgn => {
+            ppc_map_rgn(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MapPt => {
             ppc_map_pt(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
             Some(PpcImportAction::ReturnPreserve)

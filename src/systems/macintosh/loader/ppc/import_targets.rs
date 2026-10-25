@@ -463,6 +463,7 @@ pub enum PpcImportDispatcherTarget {
     OffsetRect,
     MapPt,
     MapRect,
+    MapRgn,
     InsetRect,
     FindWindow,
     PinRect,
@@ -487,6 +488,7 @@ pub enum PpcImportDispatcherTarget {
     NewAliasMinimalFromFullPath,
     UpdateAlias,
     ResolveAlias,
+    FollowFinderAlias,
     MatchAlias,
     ResolveAliasFile,
     ResolveAliasFileWithMountFlags,
@@ -3598,6 +3600,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetOrigin") => PpcImportDispatcherTarget::SetOrigin,
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
+        ("InterfaceLib" | "CarbonLib", "MapRgn") => PpcImportDispatcherTarget::MapRgn,
         ("InterfaceLib", "MapPt") => PpcImportDispatcherTarget::MapPt,
         ("InterfaceLib", "InsetRect") => PpcImportDispatcherTarget::InsetRect,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FindWindow" | "findwindow") => {
@@ -3668,6 +3671,19 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "UpdateAlias") => PpcImportDispatcherTarget::UpdateAlias,
         ("InterfaceLib", "ResolveAlias") => PpcImportDispatcherTarget::ResolveAlias,
+        ("InterfaceLib", "FollowFinderAlias") => PpcImportDispatcherTarget::FollowFinderAlias,
+        // No removable media is mounted, so there is nothing to eject.
+        ("InterfaceLib", "Eject") => PpcImportDispatcherTarget::ReturnNoErr,
+        // The Communications Toolbox with no connection tools installed.
+        ("InterfaceLib", "CMNew" | "CRMSearch") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxNil)
+        }
+        (
+            "InterfaceLib",
+            "CMChoose" | "CMOpen" | "CMClose" | "CMRead" | "CMWrite" | "CMStatus" | "CMListen"
+            | "CMAccept" | "CMIOKill" | "CMGetProcID" | "CRMGetIndToolName" | "CMIdle"
+            | "CMDispose",
+        ) => PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxError),
         ("InterfaceLib", "MatchAlias") => PpcImportDispatcherTarget::MatchAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
         ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {

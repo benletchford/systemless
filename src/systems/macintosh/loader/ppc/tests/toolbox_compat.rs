@@ -223,3 +223,62 @@ fn otto_matic_weak_imports_resolve_and_absolute_times_subtract() {
     assert!(matches!(action, Some(PpcImportAction::ReturnPreserve)));
     assert_eq!(loaded.memory.read_u64_be(out), Some((1u64 << 32) - 10));
 }
+
+#[test]
+fn audit_batch_three_calls_resolve_and_behave() {
+    for (symbol, target) in [
+        ("MapRgn", PpcImportDispatcherTarget::MapRgn),
+        (
+            "FollowFinderAlias",
+            PpcImportDispatcherTarget::FollowFinderAlias,
+        ),
+        ("Eject", PpcImportDispatcherTarget::ReturnNoErr),
+        (
+            "CMNew",
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxNil),
+        ),
+        (
+            "CMGetProcID",
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxError),
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            target,
+            "{symbol}"
+        );
+    }
+    assert_eq!(
+        import_data_address_for("CarbonLib", "kCFAllocatorDefault"),
+        Some(PPC_IMPORT_CF_ALLOCATOR_DEFAULT)
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MapRgn")).unwrap();
+    assert!(matches!(
+        compat(PpcToolboxCompatOperation::CommToolboxNil, &mut loaded),
+        PpcImportAction::Return(0)
+    ));
+    assert!(matches!(
+        compat(PpcToolboxCompatOperation::CommToolboxError, &mut loaded),
+        PpcImportAction::Return(value) if value == ppc_i16_result(-1)
+    ));
+
+    // A 10-by-10 rectangular region mapped from a 100-unit square onto a
+    // 200-unit square offset by 50 doubles and moves.
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 0x100]);
+    let (handle, region, src, dst) = (base, base + 0x10, base + 0x40, base + 0x50);
+    loaded.memory.write_u32_be(handle, region).unwrap();
+    loaded.memory.write_u16_be(region, 10).unwrap();
+    ppc_write_rect(&mut loaded.memory, region + 2, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, src, 0, 0, 100, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, dst, 50, 50, 250, 250).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = src;
+    loaded.cpu.gpr[5] = dst;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MapRgn);
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, region + 2),
+        Some((70, 70, 90, 90))
+    );
+}

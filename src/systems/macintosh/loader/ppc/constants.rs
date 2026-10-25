@@ -19,6 +19,7 @@ pub(crate) const PPC_IMPORT_STD_FLT_MAX: u32 = PPC_IMPORT_DATA_BASE + 0x43c;
 pub(crate) const PPC_IMPORT_STD_FLT_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x440;
 pub(crate) const PPC_IMPORT_STD_ERRNO: u32 = PPC_IMPORT_DATA_BASE + 0x444;
 pub(crate) const PPC_IMPORT_STD_MAC_OS_ERR: u32 = PPC_IMPORT_DATA_BASE + 0x448;
+pub(crate) const PPC_IMPORT_CF_ALLOCATOR_DEFAULT: u32 = PPC_IMPORT_DATA_BASE + 0x458;
 pub(crate) const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 pub(crate) const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used

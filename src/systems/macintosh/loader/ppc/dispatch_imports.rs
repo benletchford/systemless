@@ -1781,6 +1781,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PlotIconRef
         | PpcImportDispatcherTarget::ReleaseIconRef
         | PpcImportDispatcherTarget::ResolveAlias
+        | PpcImportDispatcherTarget::FollowFinderAlias
         | PpcImportDispatcherTarget::MatchAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
@@ -1866,6 +1867,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PtInRect
         | PpcImportDispatcherTarget::OffsetRect
         | PpcImportDispatcherTarget::MapRect
+        | PpcImportDispatcherTarget::MapRgn
         | PpcImportDispatcherTarget::MapPt
         | PpcImportDispatcherTarget::InsetRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")

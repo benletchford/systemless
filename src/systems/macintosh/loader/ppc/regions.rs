@@ -1642,6 +1642,72 @@ pub(super) fn ppc_offset_rect(memory: &mut PpcSectionMem, rect_ptr: u32, dh: i16
     )
 }
 
+/// MapRgn (InterfaceLib / $A8FB) maps every coordinate of a region
+/// proportionally from srcRect to dstRect, as MapPt maps a point.
+/// PROCEDURE MapRgn(rgn: RgnHandle; srcRect, dstRect: Rect);
+/// Inside Macintosh: Imaging With QuickDraw (1994), p. 3-108.
+pub(super) fn ppc_map_rgn(memory: &mut PpcSectionMem, rgn_handle: u32, src_ptr: u32, dst_ptr: u32) {
+    let (Some(ptr), Some(src), Some(dst)) = (
+        ppc_rgn_ptr(memory, rgn_handle),
+        ppc_read_rect(memory, src_ptr),
+        ppc_read_rect(memory, dst_ptr),
+    ) else {
+        return;
+    };
+    let Some(size) = memory.read_u16_be(ptr).map(u32::from) else {
+        return;
+    };
+    if size < 10 || !ppc_memory_can_write_bytes(memory, ptr, size) {
+        return;
+    }
+    let map = |value: i16, from: i16, to: i16, onto_from: i16, onto_to: i16| -> i16 {
+        let span = i64::from(to) - i64::from(from);
+        if span == 0 {
+            return value;
+        }
+        let mapped = i64::from(onto_from)
+            + (i64::from(value) - i64::from(from)) * (i64::from(onto_to) - i64::from(onto_from))
+                / span;
+        mapped.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+    };
+    let map_v = |v: i16| map(v, src.0, src.2, dst.0, dst.2);
+    let map_h = |h: i16| map(h, src.1, src.3, dst.1, dst.3);
+    let Some((top, left, bottom, right)) = ppc_read_rect(memory, ptr + 2) else {
+        return;
+    };
+    let _ = ppc_write_rect(
+        memory,
+        ptr + 2,
+        map_v(top),
+        map_h(left),
+        map_v(bottom),
+        map_h(right),
+    );
+    // Imaging With QuickDraw (1994), p. 3-93: rows alternate a vertical
+    // coordinate with horizontal boundaries, each list ending in $7FFF.
+    let mut offset = 10u32;
+    while offset + 2 <= size {
+        let Some(y) = memory.read_u16_be(ptr + offset) else {
+            return;
+        };
+        if y == 0x7fff {
+            return;
+        }
+        let _ = memory.write_u16_be(ptr + offset, map_v(y as i16) as u16);
+        offset += 2;
+        while offset + 2 <= size {
+            let Some(x) = memory.read_u16_be(ptr + offset) else {
+                return;
+            };
+            offset += 2;
+            if x == 0x7fff {
+                break;
+            }
+            let _ = memory.write_u16_be(ptr + offset - 2, map_h(x as i16) as u16);
+        }
+    }
+}
+
 pub(super) fn ppc_map_pt(memory: &mut PpcSectionMem, point_ptr: u32, src_ptr: u32, dst_ptr: u32) {
     // MapPt (InterfaceLib / $A8F9)
     // Maps a point proportionally between two rectangles.
