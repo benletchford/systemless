@@ -451,6 +451,10 @@ impl GuiDriver {
             output.notifications = runner.host_notifications();
             output.balloon = runner.host_balloon();
             output.balloon_help = runner.balloon_help_enabled();
+            let window_help = runner.guest_window_help();
+            if *output.window_help != window_help {
+                output.window_help = std::sync::Arc::new(window_help);
+            }
             output.guest_surface = runner.guest_modal_surface();
             output.guest_windows = runner.guest_modeless_surfaces();
             output.stopped = runner.unexpected_stop_reason();

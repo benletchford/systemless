@@ -17980,34 +17980,89 @@ impl super::TrapDispatcher {
         self.project_host_dialog(bus, None)
     }
 
-    /// Balloon help for a dialog's items from its help item's `hdlg`.
+    /// Balloon help for a dialog's items: its help item's `hdlg`, or one
+    /// an `hwin` assigns to the window.
     fn host_dialog_help(&mut self, bus: &mut MacMemoryBus, dialog: u32) -> Vec<(i16, String)> {
+        let ditl = Self::dialog_ditl_bytes(bus, dialog);
+        self.window_help(bus, dialog, ditl.as_deref()).items
+    }
+
+    fn dialog_ditl_bytes(bus: &MacMemoryBus, dialog: u32) -> Option<Vec<u8>> {
         let handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
         let pointer = if handle != 0 {
             bus.read_long(handle)
         } else {
             0
         };
-        let Some(size) = (pointer != 0)
+        let size = (pointer != 0)
             .then(|| bus.get_alloc_size(pointer))
-            .flatten()
-        else {
-            return Vec::new();
+            .flatten()?;
+        Some(bus.read_bytes(pointer, size as usize))
+    }
+
+    fn window_help(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window: u32,
+        ditl: Option<&[u8]>,
+    ) -> crate::systems::macintosh::host_ui::WindowHelp {
+        let title_handle = bus.read_long(window + 134);
+        let title_pointer = if title_handle != 0 {
+            bus.read_long(title_handle)
+        } else {
+            0
         };
-        let ditl = bus.read_bytes(pointer, size as usize);
-        let Some((id, first)) = crate::systems::macintosh::host_ui::ditl_help_reference(&ditl)
-        else {
-            return Vec::new();
+        let title = if title_pointer != 0 {
+            let length = bus.read_byte(title_pointer) as usize;
+            bus.read_bytes(title_pointer + 1, length)
+        } else {
+            Vec::new()
         };
-        let mut load = |kind: [u8; 4], id: i16| {
-            let (_, pointer) = self.find_or_load_resource_any(bus, kind, id)?;
+        let window_kind =
+            bus.read_word(window + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET) as i16;
+        let mut load = |dispatcher: &mut Self, kind: [u8; 4], id: i16| {
+            let (_, pointer) = dispatcher.find_or_load_resource_any(bus, kind, id)?;
             let size = bus.get_alloc_size(pointer)? as usize;
             Some(bus.read_bytes(pointer, size))
         };
-        let Some(hdlg) = load(*b"hdlg", id) else {
-            return Vec::new();
-        };
-        crate::systems::macintosh::host_ui::dialog_help_strings(&hdlg, first, load)
+        let hwins: Vec<Vec<u8>> = self
+            .resource_ids(*b"hwin")
+            .into_iter()
+            .filter_map(|id| load(self, *b"hwin", id))
+            .collect();
+        crate::systems::macintosh::host_ui::window_help(
+            ditl,
+            &title,
+            window_kind,
+            &hwins,
+            |kind, id| load(self, kind, id),
+        )
+    }
+
+    /// Automatic Balloon Help for visible guest-drawn windows, front to
+    /// back, in guest screen coordinates.
+    pub(crate) fn guest_window_help(
+        &mut self,
+        bus: &mut MacMemoryBus,
+    ) -> Vec<crate::systems::macintosh::host_ui::WindowHelpSnapshot> {
+        let mut help = Vec::new();
+        for window in self.window_list.windows() {
+            if !self.window_visible(bus, window) || self.host_ui.dialog_presented(window) {
+                continue;
+            }
+            let ditl = self
+                .dialog_items
+                .contains_key(&window)
+                .then(|| Self::dialog_ditl_bytes(bus, window))
+                .flatten();
+            let window_help = self.window_help(bus, window, ditl.as_deref());
+            help.push(crate::systems::macintosh::host_ui::WindowHelpSnapshot::new(
+                Self::dialog_screen_bounds(bus, window),
+                window_help,
+                ditl.as_deref(),
+            ));
+        }
+        help
     }
 
     /// Visible document-style dialogs that keep guest drawing (custom

@@ -79,6 +79,8 @@ pub struct WorkspaceUi {
     balloon: Option<systemless::systems::macintosh::host_ui::BalloonSnapshot>,
     balloon_texture: Option<ArtworkTexture>,
     pub menu_help: Option<std::sync::Arc<std::collections::HashMap<(i16, i16), String>>>,
+    pub window_help:
+        std::sync::Arc<Vec<systemless::systems::macintosh::host_ui::WindowHelpSnapshot>>,
     balloon_help: bool,
     pub balloon_help_action: Option<bool>,
     pub dismissed_notifications: Vec<u64>,
@@ -541,6 +543,35 @@ impl WorkspaceUi {
             });
     }
 
+    /// Automatic balloons for the guest window region under the pointer.
+    /// An explicit HMShowBalloon balloon takes precedence.
+    fn show_window_help(&self, context: &egui::Context) {
+        if !self.balloon_help || self.balloon.is_some() || !self.pointer_over_guest() {
+            return;
+        }
+        let Some(point) = self.map_pointer(self.pointer.x as f64, self.pointer.y as f64, 1.) else {
+            return;
+        };
+        let Some(text) =
+            systemless::systems::macintosh::host_ui::window_help_at(&self.window_help, point)
+        else {
+            return;
+        };
+        egui::Area::new(egui::Id::new("window-balloon"))
+            .order(egui::Order::Tooltip)
+            .interactable(false)
+            .fixed_pos(self.pointer + egui::vec2(12., 12.))
+            .constrain(true)
+            .show(context, |ui| {
+                egui::Frame::popup(ui.style())
+                    .inner_margin(10.)
+                    .show(ui, |ui| {
+                        ui.set_max_width(280.);
+                        ui.label(text);
+                    });
+            });
+    }
+
     pub fn set_notifications(
         &mut self,
         notifications: &[systemless::systems::macintosh::host_ui::NotificationSnapshot],
@@ -925,6 +956,7 @@ impl WorkspaceUi {
             balloon: None,
             balloon_texture: None,
             menu_help: None,
+            window_help: Default::default(),
             balloon_help: false,
             balloon_help_action: None,
             dismissed_notifications: Vec::new(),
@@ -1404,6 +1436,7 @@ impl WorkspaceUi {
             self.show_system_dialog(ui.ctx());
             self.show_notifications(ui.ctx());
             self.show_balloon(ui.ctx());
+            self.show_window_help(ui.ctx());
             if let Some(dialog) = self.dialog.clone().filter(|_| self.modality.owner == UiOwner::Dialog) {
                 let buttons: Vec<_> = dialog.items.iter().filter(|i| i.kind == 4).map(|i| i.number).collect();
                 let response = systemless_ui::dialog::show_modal(
@@ -3968,6 +4001,42 @@ mod tests {
                     .unwrap();
                 }
                 ui.set_balloon(None, true);
+
+                // Automatic window balloons follow the pointer over a guest
+                // window's hot rectangles; covered windows show nothing.
+                use systemless::systems::macintosh::host_ui::WindowHelpSnapshot;
+                ui.window_help = std::sync::Arc::new(vec![
+                    WindowHelpSnapshot {
+                        bounds: (50, 50, 90, 400),
+                        rects: Vec::new(),
+                    },
+                    WindowHelpSnapshot {
+                        bounds: (50, 50, 300, 400),
+                        rects: vec![((60, 150, 140, 260), "Shows the tools.".into())],
+                    },
+                ]);
+                let layer =
+                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("window-balloon"));
+                let shown = |ui: &WorkspaceUi| ui.context.memory(|m| m.areas().is_visible(&layer));
+                let inside = ui.guest_to_points(120, 200).unwrap();
+                ui.pointer = inside;
+                frame(&mut ui, vec![egui::Event::PointerMoved(inside)]);
+                frame(&mut ui, Vec::new());
+                assert!(shown(&ui));
+                let area = ui.context.memory(|m| m.area_rect(layer.id)).unwrap();
+                assert!((area.left_top() - inside - egui::vec2(12., 12.)).length() < 1.);
+                let covered = ui.guest_to_points(70, 200).unwrap();
+                ui.pointer = covered;
+                frame(&mut ui, vec![egui::Event::PointerMoved(covered)]);
+                frame(&mut ui, Vec::new());
+                assert!(!shown(&ui), "the front window hides the hot rectangle");
+                ui.pointer = inside;
+                frame(&mut ui, vec![egui::Event::PointerMoved(inside)]);
+                ui.balloon_help = false;
+                frame(&mut ui, Vec::new());
+                frame(&mut ui, Vec::new());
+                assert!(!shown(&ui), "nothing shows while Balloon Help is off");
+                ui.window_help = Default::default();
 
                 // An unexpected guest stop is reported once.
                 ui.set_stopped(Some("The application reported system error 25.".into()));

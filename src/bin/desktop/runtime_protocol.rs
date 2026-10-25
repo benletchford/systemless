@@ -70,6 +70,8 @@ pub(super) struct GuiState {
     pub balloon_help: bool,
     /// `hmnu` help strings by (menu, item), published while Balloon Help is on.
     pub menu_help: Option<Arc<std::collections::HashMap<(i16, i16), String>>>,
+    /// Automatic window balloons, front to back, while Balloon Help is on.
+    pub window_help: Arc<Vec<systemless::systems::macintosh::host_ui::WindowHelpSnapshot>>,
     pub guest_surface: Option<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,
     /// Guest-drawn modeless dialogs framed by the host, front to back.
     pub guest_windows: Vec<systemless::systems::macintosh::host_ui::GuestSurfaceSnapshot>,

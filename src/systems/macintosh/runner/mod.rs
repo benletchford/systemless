@@ -3267,6 +3267,25 @@ impl FixtureRunner {
         })
     }
 
+    /// Automatic balloons (`hwin`, `hrct`, `hdlg`) for guest-drawn windows,
+    /// front to back in presented coordinates; empty while help is off.
+    pub fn guest_window_help(
+        &mut self,
+    ) -> Vec<crate::systems::macintosh::host_ui::WindowHelpSnapshot> {
+        if !self.balloon_help_enabled() {
+            return Vec::new();
+        }
+        let (v, h) = self.ppc_viewport_offset();
+        let windows = match self.native.application_mut() {
+            Some(app) => app.guest_window_help(),
+            None => self.dispatcher.guest_window_help(&mut self.bus),
+        };
+        windows
+            .into_iter()
+            .map(|window| window.offset(v, h))
+            .collect()
+    }
+
     /// The balloon currently shown, with its tip in presented coordinates.
     pub fn host_balloon(&self) -> Option<crate::systems::macintosh::host_ui::BalloonSnapshot> {
         let mut balloon = self

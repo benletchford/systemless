@@ -24539,8 +24539,8 @@ fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.host_ui.enabled = true;
     install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
-    // hdlg 300: header (item offset 0, two records), missing record, item 1.
-    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    // hdlg 300: header (item index 0, two records), missing record, item 1.
+    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
     hdlg.extend([0, 4, 1, 0]);
     let mut first = vec![0u8; 12];
     first.extend(b"\x0fApplies changes");
@@ -24585,6 +24585,106 @@ fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
         .items
         .iter()
         .all(|item| item.kind != 1 || item.rect == (0, 0, 0, 0)));
+}
+
+#[test]
+fn hwin_assigns_dialog_and_window_balloons_to_projected_and_guest_drawn_windows() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.host_ui.balloons_enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let component = |id: i16, kind: &[u8; 4], length: i16, title: &[u8]| {
+        let mut bytes = id.to_be_bytes().to_vec();
+        bytes.extend(kind);
+        bytes.extend(length.to_be_bytes());
+        bytes.push(title.len() as u8);
+        bytes.extend(title);
+        if bytes.len() % 2 == 1 {
+            bytes.push(0);
+        }
+        bytes
+    };
+    // hwin: window kind -9 uses hrct 310; titles starting "Life" use hdlg 301.
+    let mut hwin = vec![0, 2, 0, 0, 0, 0, 0, 2];
+    hwin.extend(component(310, b"hrct", -9, b""));
+    hwin.extend(component(301, b"hdlg", 4, b"Life"));
+    disp.install_test_resource(&mut bus, *b"hwin", 200, &hwin);
+    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 1, 0];
+    let mut first = vec![0u8; 12];
+    first.extend(b"\x08Confirms");
+    hdlg.extend(((first.len() + 4) as i16).to_be_bytes());
+    hdlg.extend(1i16.to_be_bytes());
+    hdlg.extend(first);
+    disp.install_test_resource(&mut bus, *b"hdlg", 301, &hdlg);
+    let mut hrct = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let mut rect = vec![0, 5, 0, 5, 0, 0, 0, 0, 0, 20, 0, 100];
+    rect.extend(b"\x07Toolbar");
+    hrct.extend(((rect.len() + 4) as i16).to_be_bytes());
+    hrct.extend(1i16.to_be_bytes());
+    hrct.extend(rect);
+    disp.install_test_resource(&mut bus, *b"hrct", 310, &hrct);
+
+    // A projected dialog without a help item takes its hdlg from the hwin.
+    let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].1.help, vec![(1, "Confirms".to_string())]);
+    assert!(
+        disp.guest_window_help(&mut bus).is_empty(),
+        "projected dialogs are egui windows, not guest pane regions"
+    );
+
+    // A guest-drawn dialog (a user item) gets hot regions at its items.
+    let ditl = build_test_ditl_items(&[(0, (10, 10, 40, 60), b""), (4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, guest) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (220, 300, 340, 540),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 1);
+    let help = disp.guest_window_help(&mut bus);
+    assert_eq!(help.len(), 1);
+    assert_eq!(help[0].bounds, (220, 300, 340, 540));
+    assert_eq!(
+        help[0].rects,
+        vec![((230, 310, 260, 360), "Confirms".to_string())]
+    );
+    let windows = help.clone();
+    assert_eq!(
+        crate::systems::macintosh::host_ui::window_help_at(&windows, (240, 320)),
+        Some("Confirms")
+    );
+    assert_eq!(
+        crate::systems::macintosh::host_ui::window_help_at(&windows, (300, 320)),
+        None
+    );
+
+    // Window kind matching selects the hrct, local to the window.
+    bus.write_word(guest + 108, (-9i16) as u16);
+    let help = disp.guest_window_help(&mut bus);
+    assert_eq!(
+        help[0].rects,
+        vec![((220, 300, 240, 400), "Toolbar".to_string())]
+    );
 }
 
 
@@ -24644,6 +24744,7 @@ fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
             }
         }
     }
+
 
 
 
@@ -24739,6 +24840,7 @@ fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
 
 
 
+
     #[test]
     fn dialog_redraw_preserves_setctitle_for_standard_controls() {
         fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
@@ -24791,6 +24893,7 @@ fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
             );
         }
     }
+
 
 
 

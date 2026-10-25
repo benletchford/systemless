@@ -7894,6 +7894,29 @@ impl TrapDispatcher {
         None
     }
 
+    /// IDs of every resource of a type, in resource search order.
+    pub(crate) fn resource_ids(&self, res_type: [u8; 4]) -> Vec<i16> {
+        let res_type = Self::normalize_ostype(res_type);
+        let Some(resources) = self.resources.as_ref() else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        for refnum in self.resource_search_order() {
+            let Some(file) = resources.files.get(&refnum) else {
+                continue;
+            };
+            let mut file_ids: Vec<i16> = file
+                .loaded
+                .keys()
+                .filter(|(kind, _)| *kind == res_type)
+                .map(|(_, id)| *id)
+                .collect();
+            file_ids.sort_unstable();
+            ids.extend(file_ids);
+        }
+        ids
+    }
+
     pub(crate) fn count_resources(&self, res_type: [u8; 4], current_only: bool) -> usize {
         let res_type = Self::normalize_ostype(res_type);
         let Some(resources) = self.resources.as_ref() else {

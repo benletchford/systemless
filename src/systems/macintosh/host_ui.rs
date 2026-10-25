@@ -118,28 +118,30 @@ pub(crate) fn menu_help_strings(
     resource: &[u8],
     strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
 ) -> Vec<(i16, String)> {
-    help_records(resource, 0, strings)
+    help_components(resource, 10, true)
+        .into_iter()
+        .filter(|(index, ..)| *index >= 0)
+        .filter_map(|(index, kind, data)| Some((index, help_text(kind, data, &strings)?)))
+        .collect()
 }
 
-/// Shared `hmnu`/`hdlg` record walk. `prefix` skips per-record bytes before
-/// the strings (the tip point and alternate rectangle in `hdlg`).
-fn help_records(
-    resource: &[u8],
-    prefix: usize,
-    strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
-) -> Vec<(i16, String)> {
+/// Help resource components after a header whose component count is at
+/// `count_at`: (zero-based index, type, bytes after size and type). `hmnu`
+/// and `hdlg` begin with a missing-items component, reported as index -1.
+/// Each component's first word is its size in bytes.
+fn help_components(resource: &[u8], count_at: usize, missing: bool) -> Vec<(i16, i16, &[u8])> {
     let word = |offset: usize| {
         resource
             .get(offset..offset + 2)
             .map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]))
     };
-    let Some(count) = word(10) else {
+    let Some(count) = word(count_at) else {
         return Vec::new();
     };
-    let mut offset = 12usize;
-    let mut help = Vec::new();
-    // The first record describes missing items; the title and items follow.
-    for index in -1..i32::from(count.max(0)) {
+    let mut offset = count_at + 2;
+    let mut components = Vec::new();
+    let first = if missing { -1 } else { 0 };
+    for index in first..i32::from(count.max(0)) {
         let (Some(length), Some(kind)) = (word(offset), word(offset + 2)) else {
             break;
         };
@@ -147,35 +149,54 @@ fn help_records(
         if length < 4 || offset + length > resource.len() {
             break;
         }
-        let record = resource
-            .get(offset + 4 + prefix..offset + length)
-            .unwrap_or(&[]);
-        let text = match kind {
-            1 => record.first().and_then(|len| {
-                record
-                    .get(1..1 + usize::from(*len))
-                    .map(crate::trap::types::decode_mac_roman)
-            }),
-            3 if record.len() >= 4 => {
-                let mut message = vec![0, 3];
-                message.extend_from_slice(&record[..4]);
-                balloon_message_text(&message, &strings)
-            }
-            7 if record.len() >= 2 => {
-                let mut message = vec![0, 7];
-                message.extend_from_slice(&record[..2]);
-                balloon_message_text(&message, &strings)
-            }
-            _ => None,
-        };
-        if let Some(text) = text.filter(|text| !text.is_empty()) {
-            if index >= 0 {
-                help.push((index as i16, text));
-            }
-        }
+        components.push((index as i16, kind, &resource[offset + 4..offset + length]));
         offset += length;
     }
-    help
+    components
+}
+
+/// The enabled-state text of a help component's data: HMStringItem (1),
+/// HMStringResItem (3, `STR#` ID and index), HMTEResItem (6, `TEXT`) and
+/// HMSTRResItem (7, `STR `). Pictures and skipped items have no text.
+fn help_text(
+    kind: i16,
+    data: &[u8],
+    strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Option<String> {
+    let message_length = match kind {
+        1 => {
+            let length = usize::from(*data.first()?);
+            return Some(crate::trap::types::decode_mac_roman(
+                data.get(1..1 + length)?,
+            ))
+            .filter(|text| !text.is_empty());
+        }
+        3 => 4,
+        6 | 7 => 2,
+        _ => return None,
+    };
+    let mut message = vec![0, kind as u8];
+    message.extend_from_slice(data.get(..message_length)?);
+    balloon_message_text(&message, strings).filter(|text| !text.is_empty())
+}
+
+/// Collect the resources `parse` asks for, then parse again with them
+/// loaded: parsing is read-only while loading may need mutable access.
+fn with_loaded_resources<T>(
+    mut resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+    parse: impl Fn(&dyn Fn([u8; 4], i16) -> Option<Vec<u8>>) -> T,
+) -> T {
+    let requests = std::cell::RefCell::new(Vec::new());
+    let _ = parse(&|kind, id| {
+        requests.borrow_mut().push((kind, id));
+        None
+    });
+    let loaded: std::collections::HashMap<_, _> = requests
+        .into_inner()
+        .into_iter()
+        .filter_map(|(kind, id)| resource(kind, id).map(|data| ((kind, id), data)))
+        .collect();
+    parse(&|kind, id| loaded.get(&(kind, id)).cloned())
 }
 
 /// The `hdlg` a DITL's help item names: (resource ID, first item number).
@@ -207,26 +228,218 @@ pub(crate) fn ditl_help_reference(ditl: &[u8]) -> Option<(i16, i16)> {
 pub(crate) fn dialog_help_strings(
     hdlg: &[u8],
     first_item: i16,
-    mut resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+    resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
 ) -> Vec<(i16, String)> {
     let Some(offset) = hdlg.get(2..4).map(|b| i16::from_be_bytes([b[0], b[1]])) else {
         return Vec::new();
     };
-    let requests = std::cell::RefCell::new(Vec::new());
-    let _ = help_records(hdlg, 12, |kind, id| {
-        requests.borrow_mut().push((kind, id));
-        None
-    });
-    let loaded: std::collections::HashMap<_, _> = requests
-        .into_inner()
-        .into_iter()
-        .filter_map(|(kind, id)| resource(kind, id).map(|data| ((kind, id), data)))
-        .collect();
-    help_records(hdlg, 12, |kind, id| loaded.get(&(kind, id)).cloned())
-        .into_iter()
-        // Record 0 is the first described item, not a title as in `hmnu`.
-        .map(|(index, text)| (index + 1 + offset + first_item - 1, text))
-        .collect()
+    // Header: version, item index, options (long), balloon WDEF, variation,
+    // count. Components carry a tip and alternate rectangle before data.
+    with_loaded_resources(resource, |strings| {
+        help_components(hdlg, 12, true)
+            .into_iter()
+            .filter(|(index, ..)| *index >= 0)
+            .filter_map(|(index, kind, data)| {
+                let text = help_text(kind, data.get(12..)?, strings)?;
+                // Index 0 describes item `first_item + offset`.
+                Some((index + offset + first_item, text))
+            })
+            .collect()
+    })
+}
+
+/// Hot rectangles from an `hrct`: (rectangle local to the window, text).
+/// Header: version, options (long), balloon WDEF, variation, count; each
+/// component has a tip point and hot rectangle before its data.
+/// Inside Macintosh: More Macintosh Toolbox (1993), pp. 3-108--3-111.
+pub(crate) fn rect_help_strings(
+    hrct: &[u8],
+    resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Vec<((i16, i16, i16, i16), String)> {
+    with_loaded_resources(resource, |strings| {
+        help_components(hrct, 10, false)
+            .into_iter()
+            .filter_map(|(_, kind, data)| {
+                let word =
+                    |at: usize| Some(i16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?));
+                let rect = (word(4)?, word(6)?, word(8)?, word(10)?);
+                Some((rect, help_text(kind, data.get(12..)?, strings)?))
+            })
+            .collect()
+    })
+}
+
+/// The `hrct` or `hdlg` an `hwin` assigns to a window: a positive length
+/// matches that many leading title characters; a negative one matches the
+/// window kind. Inside Macintosh: More Macintosh Toolbox, pp. 3-112--3-113.
+pub(crate) fn window_help_reference(
+    hwin: &[u8],
+    title: &[u8],
+    window_kind: i16,
+) -> Option<([u8; 4], i16)> {
+    let word = |at: usize| Some(i16::from_be_bytes(hwin.get(at..at + 2)?.try_into().ok()?));
+    // Header: version, options (long), count.
+    let count = word(6)?;
+    let mut offset = 8usize;
+    for _ in 0..count.max(0) {
+        let id = word(offset)?;
+        let kind: [u8; 4] = hwin.get(offset + 2..offset + 6)?.try_into().ok()?;
+        let length = word(offset + 6)?;
+        let string_length = usize::from(*hwin.get(offset + 8)?);
+        let string = hwin.get(offset + 9..offset + 9 + string_length)?;
+        let matched = if length < 0 {
+            length == window_kind
+        } else {
+            let length = usize::try_from(length).ok()?.min(string.len());
+            length > 0 && title.len() >= length && title[..length] == string[..length]
+        };
+        if matched {
+            return Some((kind, id));
+        }
+        offset += 9 + string_length;
+        offset += offset & 1;
+    }
+    None
+}
+
+/// Item rectangles of a `DITL`, local to the dialog, in item order.
+pub(crate) fn ditl_item_rects(ditl: &[u8]) -> Vec<(i16, i16, i16, i16)> {
+    let word = |at: usize| Some(i16::from_be_bytes(ditl.get(at..at + 2)?.try_into().ok()?));
+    let Some(count) = word(0).and_then(|count| count.checked_add(1)) else {
+        return Vec::new();
+    };
+    let mut rects = Vec::new();
+    let mut offset = 2usize;
+    for _ in 0..count.max(0) {
+        let (Some(top), Some(left), Some(bottom), Some(right), Some(length)) = (
+            word(offset + 4),
+            word(offset + 6),
+            word(offset + 8),
+            word(offset + 10),
+            ditl.get(offset + 13),
+        ) else {
+            break;
+        };
+        rects.push((top, left, bottom, right));
+        let length = usize::from(*length);
+        offset += 14 + length + (length & 1);
+    }
+    rects
+}
+
+/// Balloon Help for one window. `items` are dialog-item strings keyed by
+/// item number; `rects` are hot rectangles local to the window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WindowHelp {
+    pub items: Vec<(i16, String)>,
+    pub rects: Vec<((i16, i16, i16, i16), String)>,
+}
+
+/// A window's help: a dialog's help item names its `hdlg`; otherwise the
+/// first `hwin` component matching the title or window kind names an `hdlg`
+/// (applying from item 1) or an `hrct`.
+pub(crate) fn window_help(
+    ditl: Option<&[u8]>,
+    title: &[u8],
+    window_kind: i16,
+    hwins: &[Vec<u8>],
+    mut resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+) -> WindowHelp {
+    let reference = ditl
+        .and_then(ditl_help_reference)
+        .map(|(id, first)| (*b"hdlg", id, first))
+        .or_else(|| {
+            hwins
+                .iter()
+                .find_map(|hwin| window_help_reference(hwin, title, window_kind))
+                .map(|(kind, id)| (kind, id, 1))
+        });
+    let Some((kind, id, first)) = reference else {
+        return WindowHelp::default();
+    };
+    let Some(data) = resource(kind, id) else {
+        return WindowHelp::default();
+    };
+    match &kind {
+        b"hdlg" => WindowHelp {
+            items: dialog_help_strings(&data, first, resource),
+            rects: Vec::new(),
+        },
+        b"hrct" => WindowHelp {
+            items: Vec::new(),
+            rects: rect_help_strings(&data, resource),
+        },
+        _ => WindowHelp::default(),
+    }
+}
+
+/// Automatic balloons for one guest-drawn window: content bounds and hot
+/// rectangles in presented coordinates. Windows without help still occlude
+/// the windows behind them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowHelpSnapshot {
+    pub bounds: (i16, i16, i16, i16),
+    pub rects: Vec<((i16, i16, i16, i16), String)>,
+}
+
+impl WindowHelpSnapshot {
+    /// Convert window-local help to global coordinates; dialog items take
+    /// their rectangles from the DITL.
+    pub(crate) fn new(bounds: (i16, i16, i16, i16), help: WindowHelp, ditl: Option<&[u8]>) -> Self {
+        let item_rects = ditl.map(ditl_item_rects).unwrap_or_default();
+        let items = help.items.into_iter().filter_map(|(item, text)| {
+            let rect = *item_rects.get(usize::try_from(item).ok()?.checked_sub(1)?)?;
+            Some((rect, text))
+        });
+        let (v, h) = (bounds.0, bounds.1);
+        let rects = help
+            .rects
+            .into_iter()
+            .chain(items)
+            .map(|((top, left, bottom, right), text)| {
+                (
+                    (
+                        top.saturating_add(v),
+                        left.saturating_add(h),
+                        bottom.saturating_add(v),
+                        right.saturating_add(h),
+                    ),
+                    text,
+                )
+            })
+            .collect();
+        Self { bounds, rects }
+    }
+
+    pub fn offset(mut self, v: i16, h: i16) -> Self {
+        let shift = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+            (
+                top.saturating_add(v),
+                left.saturating_add(h),
+                bottom.saturating_add(v),
+                right.saturating_add(h),
+            )
+        };
+        self.bounds = shift(self.bounds);
+        for (rect, _) in &mut self.rects {
+            *rect = shift(*rect);
+        }
+        self
+    }
+}
+
+/// The help text at a presented point: the frontmost window containing it
+/// decides, so covered windows never show balloons.
+pub fn window_help_at(windows: &[WindowHelpSnapshot], point: (i16, i16)) -> Option<&str> {
+    let inside = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+        point.0 >= top && point.0 < bottom && point.1 >= left && point.1 < right
+    };
+    let window = windows.iter().find(|window| inside(window.bounds))?;
+    window
+        .rects
+        .iter()
+        .find(|(rect, _)| inside(*rect))
+        .map(|(_, text)| text.as_str())
 }
 
 /// Help strings for every menu in a snapshot, keyed by (menu, item). The
@@ -241,18 +454,9 @@ pub(crate) fn guest_menu_help(
         let Some(hmnu) = resource(*b"hmnu", menu.id) else {
             continue;
         };
-        // Load referenced string resources first; parsing is read-only.
-        let requests = std::cell::RefCell::new(Vec::new());
-        let _ = menu_help_strings(&hmnu, |kind, id| {
-            requests.borrow_mut().push((kind, id));
-            None
-        });
-        let loaded: std::collections::HashMap<_, _> = requests
-            .into_inner()
-            .into_iter()
-            .filter_map(|(kind, id)| resource(kind, id).map(|data| ((kind, id), data)))
-            .collect();
-        for (item, text) in menu_help_strings(&hmnu, |kind, id| loaded.get(&(kind, id)).cloned()) {
+        let strings =
+            with_loaded_resources(&mut resource, |strings| menu_help_strings(&hmnu, strings));
+        for (item, text) in strings {
             help.push(((menu.id, item), text));
         }
     }
@@ -499,10 +703,10 @@ pub(crate) struct HostUiState {
     balloon: Option<BalloonSnapshot>,
     /// Request record, identity, alert text and whether the user dismissed it.
     notifications: Vec<(u32, u64, String, bool)>,
-    artwork: std::cell::RefCell<
-        std::collections::HashMap<(u32, i16), (u64, std::sync::Arc<DialogArtwork>)>,
-    >,
+    artwork: std::cell::RefCell<ArtworkCache>,
 }
+/// Rendered dialog artwork by (dialog, item): content hash and image.
+type ArtworkCache = std::collections::HashMap<(u32, i16), (u64, std::sync::Arc<DialogArtwork>)>;
 impl HostUiState {
     pub fn project_icon(
         &self,
@@ -1210,8 +1414,8 @@ impl DialogArtwork {
                     || x * x + (y + 0.34) * (y + 0.34) <= 0.11 * 0.11
             }
             _ => {
-                let outer = y >= -0.85 && y <= 0.78 && x.abs() <= (y + 0.85) * 0.55;
-                let inner = y >= -0.57 && y < 0.64 && x.abs() < (y + 0.57) * 0.55;
+                let outer = (-0.85..=0.78).contains(&y) && x.abs() <= (y + 0.85) * 0.55;
+                let inner = (-0.57..0.64).contains(&y) && x.abs() < (y + 0.57) * 0.55;
                 (outer && !inner)
                     || (x.abs() <= 0.08 && (-0.24..=0.26).contains(&y))
                     || x * x + (y - 0.46) * (y - 0.46) <= 0.09 * 0.09
@@ -1823,9 +2027,8 @@ mod balloon_tests {
         assert_eq!(ditl_help_reference(&appended), Some((300, 3)));
         // hdlg: header with item offset 0 and two item records after the
         // missing-items record; records carry a tip and alternate rectangle.
+        // Header: version, item index, options (long), WDEF, variation, count.
         let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
-        hdlg.truncate(12);
-        hdlg[10..12].copy_from_slice(&2i16.to_be_bytes());
         hdlg.extend(record(256, &[]));
         let mut first = vec![0; 12];
         first.extend(b"\x05Saves");
@@ -1840,5 +2043,54 @@ mod balloon_tests {
         assert_eq!(help, vec![(1, "Saves".into()), (2, "Cancel".into())]);
         let shifted = dialog_help_strings(&hdlg, 3, |_, _| None);
         assert_eq!(shifted, vec![(3, "Saves".into())]);
+        // The header's item index skips leading items (2 skips OK/Cancel).
+        hdlg[3] = 2;
+        let indexed = dialog_help_strings(&hdlg, 1, |_, _| None);
+        assert_eq!(indexed, vec![(3, "Saves".into())]);
+    }
+
+    #[test]
+    fn hwin_assigns_hrct_hot_rectangles_by_title_or_window_kind() {
+        // hwin: version, options (long), count; then components.
+        let mut hwin = vec![0, 2, 0, 0, 0, 0, 0, 2];
+        hwin.extend(200i16.to_be_bytes());
+        hwin.extend(b"hrct");
+        hwin.extend(5i16.to_be_bytes());
+        hwin.extend(b"\x07Palette");
+        hwin.extend(201i16.to_be_bytes());
+        hwin.extend(b"hdlg");
+        hwin.extend((-7i16).to_be_bytes());
+        hwin.extend([0, 0]);
+        assert_eq!(
+            window_help_reference(&hwin, b"Palette 2", 8),
+            Some((*b"hrct", 200))
+        );
+        assert_eq!(window_help_reference(&hwin, b"Pal", 8), None);
+        assert_eq!(
+            window_help_reference(&hwin, b"Untitled", -7),
+            Some((*b"hdlg", 201))
+        );
+        assert_eq!(window_help_reference(&hwin[..12], b"Palette", 0), None);
+        // hrct: version, options (long), WDEF, variation, count.
+        let mut hrct = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3];
+        let mut text = vec![0, 5, 0, 5];
+        text.extend([0, 0, 0, 0, 0, 20, 0, 100]);
+        text.extend(b"\x05Tools");
+        hrct.extend(record(1, &text));
+        hrct.extend(record(256, &[]));
+        let mut listed = vec![0, 0, 0, 0, 0, 20, 0, 0, 0, 40, 0, 100];
+        listed.extend([0, 128, 0, 1]);
+        hrct.extend(record(3, &listed));
+        let list = [0u8, 1, 6, b'C', b'o', b'l', b'o', b'r', b's'];
+        let rects = rect_help_strings(&hrct, |kind, id| {
+            (kind == *b"STR#" && id == 128).then(|| list.to_vec())
+        });
+        assert_eq!(
+            rects,
+            vec![
+                ((0, 0, 20, 100), "Tools".into()),
+                ((20, 0, 40, 100), "Colors".into())
+            ]
+        );
     }
 }

@@ -1342,6 +1342,7 @@ impl App {
         if let Some(ui) = self.wgpu.as_mut().and_then(|g| g.workspace.as_mut()) {
             ui.menus = self.guest_state.menus.clone();
             ui.menu_help = self.guest_state.menu_help.clone();
+            ui.window_help = self.guest_state.window_help.clone();
             ui.set_modality(self.guest_state.modality);
             ui.set_dialog(
                 self.guest_state.dialog.clone(),

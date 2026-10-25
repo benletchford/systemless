@@ -6603,31 +6603,94 @@ impl PpcLoadedApp {
         ))
     }
 
-    /// Balloon help for a dialog's items from its help item's `hdlg`.
+    /// Balloon help for a dialog's items: its help item's `hdlg`, or one
+    /// an `hwin` assigns to the window.
     fn host_dialog_help(&mut self, dialog: u32) -> Vec<(i16, String)> {
+        let ditl = self.dialog_ditl_bytes(dialog);
+        self.window_help(dialog, ditl.as_deref()).items
+    }
+
+    fn dialog_ditl_bytes(&mut self, dialog: u32) -> Option<Vec<u8>> {
         let handles = self.handles();
-        let Some(ditl) = self
-            .memory
+        self.memory
             .read_u32_be(dialog + DIALOG_ITEMS_OFFSET)
             .filter(|handle| *handle != 0)
             .and_then(|handle| ppc_handle_bytes(&mut self.memory, &handles, handle))
-        else {
-            return Vec::new();
-        };
-        let Some((id, first)) = crate::systems::macintosh::host_ui::ditl_help_reference(&ditl)
-        else {
-            return Vec::new();
-        };
+    }
+
+    fn window_help(
+        &mut self,
+        window: u32,
+        ditl: Option<&[u8]>,
+    ) -> crate::systems::macintosh::host_ui::WindowHelp {
+        let title = self
+            .memory
+            .read_u32_be(window + 134)
+            .filter(|handle| *handle != 0)
+            .and_then(|h| self.memory.read_u32_be(h))
+            .filter(|pointer| *pointer != 0)
+            .and_then(|p| ppc_read_pstring_bytes(&mut self.memory, p))
+            .unwrap_or_default();
+        let window_kind = self
+            .memory
+            .read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+            .unwrap_or(0) as i16;
         let current = self.current_resource_refnum();
         let resources = &self.vfs_resources;
         let load = |kind: [u8; 4], id: i16| {
             ppc_vfs_resource_index(resources, current, u32::from_be_bytes(kind), id, false)
                 .map(|index| resources[index].data.to_vec())
         };
-        let Some(hdlg) = load(*b"hdlg", id) else {
-            return Vec::new();
-        };
-        crate::systems::macintosh::host_ui::dialog_help_strings(&hdlg, first, load)
+        let hwin = u32::from_be_bytes(*b"hwin");
+        let mut ids: Vec<i16> = resources
+            .iter()
+            .filter(|record| {
+                record.res_type == hwin && record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
+            })
+            .map(|record| record.res_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let hwins: Vec<Vec<u8>> = ids
+            .into_iter()
+            .filter_map(|id| load(*b"hwin", id))
+            .collect();
+        crate::systems::macintosh::host_ui::window_help(ditl, &title, window_kind, &hwins, load)
+    }
+
+    /// Automatic Balloon Help for visible guest-drawn windows, front to
+    /// back, in guest screen coordinates.
+    pub(crate) fn guest_window_help(
+        &mut self,
+    ) -> Vec<crate::systems::macintosh::host_ui::WindowHelpSnapshot> {
+        let mut help = Vec::new();
+        for window in self.window_list.windows() {
+            if !ppc_window_is_visible(&mut self.memory, window)
+                || self.toolbox_startup.host_ui.dialog_presented(window)
+            {
+                continue;
+            }
+            let Some(bounds) = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, window)
+            else {
+                continue;
+            };
+            let dialog = self
+                .memory
+                .read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                == Some(crate::dialog_manager::DIALOG_WINDOW_KIND);
+            let ditl = if dialog {
+                self.dialog_ditl_bytes(window)
+            } else {
+                None
+            };
+            let window_help = self.window_help(window, ditl.as_deref());
+            help.push(crate::systems::macintosh::host_ui::WindowHelpSnapshot::new(
+                bounds,
+                window_help,
+                ditl.as_deref(),
+            ));
+        }
+        help
     }
 
     /// Validate a frontend command against the live modeless projection.

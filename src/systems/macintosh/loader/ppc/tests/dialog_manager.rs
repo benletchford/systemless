@@ -9147,6 +9147,44 @@ fn projected_modeless_dialogs_powerpc_survive_guest_move_resize_and_arbitrary_st
     );
 }
 
+#[test]
+fn guest_window_help_powerpc_reports_hwin_hot_rectangles_in_global_coordinates() {
+    let mut hwin = vec![0, 2, 0, 0, 0, 0, 0, 1];
+    hwin.extend(310i16.to_be_bytes());
+    hwin.extend(b"hrct");
+    hwin.extend((-9i16).to_be_bytes());
+    hwin.extend([0, 0]);
+    let mut hrct = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let mut rect = vec![0, 5, 0, 5, 0, 0, 0, 0, 0, 20, 0, 100];
+    rect.extend(b"\x07Toolbar");
+    hrct.extend(((rect.len() + 4) as i16).to_be_bytes());
+    hrct.extend(1i16.to_be_bytes());
+    hrct.extend(rect);
+    let (mut loaded, dialog, _) = modal_dialog_with_resources_and_proc(
+        0,
+        true,
+        vec![make_test_ditl_item(12, 20, 32, 90, b"OK")],
+        vec![(*b"hwin", 200, hwin), (*b"hrct", 310, hrct)],
+        4,
+    );
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let help = loaded.guest_window_help();
+    assert_eq!(help.len(), 1);
+    assert_eq!(help[0].bounds, bounds);
+    assert!(help[0].rects.is_empty(), "kind 2 does not match the hwin");
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, (-9i16) as u16);
+    let help = loaded.guest_window_help();
+    assert_eq!(
+        help[0].rects,
+        vec![(
+            (bounds.0, bounds.1, bounds.0 + 20, bounds.1 + 100),
+            "Toolbar".to_string()
+        )]
+    );
+}
+
 
 #[test]
 fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose() {
@@ -9252,6 +9290,7 @@ fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose()
         .iter()
         .any(|record| record.handle == owned));
 }
+
 
 
 
@@ -9417,5 +9456,6 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
         }
     }
 }
+
 
 
