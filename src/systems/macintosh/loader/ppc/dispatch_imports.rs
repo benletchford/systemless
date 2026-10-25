@@ -543,6 +543,7 @@ pub(crate) fn dispatch_supported_import(
         last_mem_error,
         toolbox_startup,
         vfs_files,
+        vfs_directories,
         launched_app_path,
     ) {
         return Some(action);
@@ -2409,6 +2410,14 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfBundleCopyPrivateFrameworksUrl
         | PpcImportDispatcherTarget::CfUrlCreateCopyAppendingPathComponent
         | PpcImportDispatcherTarget::CfBundleCreate
+        | PpcImportDispatcherTarget::CfBundleCopyBundleUrl
+        | PpcImportDispatcherTarget::CfBundleCopyResourceUrl
+        | PpcImportDispatcherTarget::CfBundleGetFunctionPointerForName
+        | PpcImportDispatcherTarget::CfUrlGetFsRef
+        | PpcImportDispatcherTarget::CfUrlCreateFromFsRef
+        | PpcImportDispatcherTarget::CfStringCompare
+        | PpcImportDispatcherTarget::CfStringCreateWithCharacters
+        | PpcImportDispatcherTarget::CfBooleanGetValue
         | PpcImportDispatcherTarget::CfBundleLoadExecutable => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }

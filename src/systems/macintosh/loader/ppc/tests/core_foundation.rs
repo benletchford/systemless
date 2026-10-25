@@ -687,3 +687,120 @@ fn carbon_cfstring_bytes_obey_range_encoding_and_output_capacity() {
     assert_eq!(loaded.cpu.gpr[3], 1);
     assert_eq!(loaded.memory.read_u32_be(used_len), Some(5));
 }
+
+#[test]
+fn carbon_cfbundle_resource_urls_and_fsref_conversions() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CFBundleCopyBundleURL")).unwrap();
+    loaded.set_launched_app_path("Demo.app/Contents/MacOSClassic/Demo");
+    loaded.seed_vfs_files_and_resources(
+        vec![ProcessVfsFileRecord {
+            path: "Demo.app/Contents/Resources/base/assets0.pk3".to_string(),
+            data: b"pak".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        }],
+        vec![],
+        vec![],
+    );
+    for (dir_id, path, parent) in [
+        (100, "Demo.app", PPC_ROOT_DIR_ID),
+        (101, "Demo.app/Contents", 100),
+    ] {
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id,
+            path: path.to_string(),
+            parent_dir_id: parent,
+            finder_flags: 0,
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            dirty: false,
+        });
+    }
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleGetMainBundle,
+    );
+    let bundle = loaded.cpu.gpr[3];
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyBundleUrl,
+    );
+    let bundle_url = loaded.cpu.gpr[3];
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(bundle_url),
+        Some("Demo.app")
+    );
+
+    let source = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(source, vec![0; 0x100]);
+    let constant = |loaded: &mut PpcLoadedApp, text: &[u8]| {
+        loaded.memory.write_bytes(source, text).unwrap();
+        loaded.cpu.gpr[3] = source;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::CfStringMakeConstantString,
+        );
+        loaded.cpu.gpr[3]
+    };
+    let name = constant(&mut loaded, b"assets0\0");
+    let kind = constant(&mut loaded, b"pk3\0");
+    let sub = constant(&mut loaded, b"base\0");
+    let other = constant(&mut loaded, b"ASSETS0\0");
+    loaded.cpu.gpr[3] = bundle;
+    loaded.cpu.gpr[4] = name;
+    loaded.cpu.gpr[5] = kind;
+    loaded.cpu.gpr[6] = sub;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyResourceUrl,
+    );
+    assert_eq!(
+        loaded
+            .toolbox_startup
+            .cf_strings
+            .url_path(loaded.cpu.gpr[3]),
+        Some("Demo.app/Contents/Resources/base/assets0.pk3")
+    );
+    loaded.cpu.gpr[3] = bundle;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::CfBundleCopyResourceUrl,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    let fsref = source + 0x40;
+    loaded.cpu.gpr[3] = bundle_url;
+    loaded.cpu.gpr[4] = fsref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfUrlGetFsRef);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = fsref;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfUrlCreateFromFsRef);
+    let round_trip = loaded.cpu.gpr[3];
+    assert_eq!(
+        loaded.toolbox_startup.cf_strings.url_path(round_trip),
+        Some("Demo.app")
+    );
+    assert_eq!(
+        loaded
+            .toolbox_startup
+            .cf_strings
+            .url_is_directory(round_trip),
+        Some(true)
+    );
+
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = other;
+    loaded.cpu.gpr[5] = 1; // kCFCompareCaseInsensitive
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfStringCompare);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = other;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CfStringCompare);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+}
