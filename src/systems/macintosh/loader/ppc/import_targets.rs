@@ -966,6 +966,7 @@ pub enum PpcImportDispatcherTarget {
     WakeUpProcess,
     SameProcess,
     GetProcessInformation,
+    GetProcessBundleLocation,
     ParamText,
     AlertReturnDefault(crate::dialog_manager::AlertKind),
     StandardAlert,
@@ -4617,6 +4618,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SameProcess") => PpcImportDispatcherTarget::SameProcess,
         ("InterfaceLib", "GetProcessInformation") => {
             PpcImportDispatcherTarget::GetProcessInformation
+        }
+        ("InterfaceLib", "GetProcessBundleLocation") => {
+            PpcImportDispatcherTarget::GetProcessBundleLocation
         }
         ("InterfaceLib", "ExitToShell") => PpcImportDispatcherTarget::ExitToShell,
         ("InterfaceLib", "SndSoundManagerVersion") => {

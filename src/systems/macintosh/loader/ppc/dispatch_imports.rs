@@ -2428,7 +2428,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetCurrentProcess
         | PpcImportDispatcherTarget::WakeUpProcess
         | PpcImportDispatcherTarget::SameProcess
-        | PpcImportDispatcherTarget::GetProcessInformation => {
+        | PpcImportDispatcherTarget::GetProcessInformation
+        | PpcImportDispatcherTarget::GetProcessBundleLocation => {
             unreachable!("Process Manager imports return through dispatch_process_import")
         }
         PpcImportDispatcherTarget::ParamText
