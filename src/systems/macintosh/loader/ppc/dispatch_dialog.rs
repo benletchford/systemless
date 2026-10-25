@@ -1074,7 +1074,9 @@ pub(super) fn dispatch_dialog_import(
             );
             if matches!(
                 &pass,
-                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+                PpcModalDialogPass::Done(
+                    PpcImportAction::ReturnPreserve | PpcImportAction::Return(_)
+                )
             ) {
                 toolbox_startup.guest_modal_dialog = None;
             }
@@ -1225,7 +1227,9 @@ pub(super) fn dispatch_dialog_import(
             );
             if matches!(
                 &pass,
-                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+                PpcModalDialogPass::Done(
+                    PpcImportAction::ReturnPreserve | PpcImportAction::Return(_)
+                )
             ) {
                 toolbox_startup.guest_modal_dialog = None;
             }
@@ -1416,7 +1420,9 @@ pub(super) fn dispatch_dialog_import(
             );
             if matches!(
                 &pass,
-                PpcModalDialogPass::Done(PpcImportAction::ReturnPreserve | PpcImportAction::Return(_))
+                PpcModalDialogPass::Done(
+                    PpcImportAction::ReturnPreserve | PpcImportAction::Return(_)
+                )
             ) {
                 toolbox_startup.guest_modal_dialog = None;
             }
@@ -3476,7 +3482,12 @@ fn ppc_new_dialog(
         && matches!(params.proc_id(), 1..=5)
         && ppc_handle_bytes(memory, handles, params.items())
             .and_then(|bytes| ppc_parse_dialog_items(&bytes))
-            .is_some_and(|items| !items.is_empty() && items.iter().all(|item| matches!(item.item_type & 0x7f, 4..=7 | 8 | 16 | 32 | 64)));
+            .is_some_and(|items| {
+                !items.is_empty()
+                    && items
+                        .iter()
+                        .all(|item| matches!(item.item_type & 0x7f, 4..=7 | 8 | 16 | 32 | 64))
+            });
     let backing = if capture_background {
         ppc_read_rect(memory, params.bounds_ptr()).and_then(|bounds| {
             let front = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
@@ -4802,7 +4813,10 @@ fn ppc_dialog_item_title(
     let base_type = dialog_item_base_type(item.item_type);
     if matches!(
         base_type,
-        DIALOG_ITEM_BUTTON | DIALOG_ITEM_CHECKBOX | DIALOG_ITEM_RADIO | DIALOG_ITEM_RESOURCE_CONTROL
+        DIALOG_ITEM_BUTTON
+            | DIALOG_ITEM_CHECKBOX
+            | DIALOG_ITEM_RADIO
+            | DIALOG_ITEM_RESOURCE_CONTROL
     ) {
         return memory
             .read_u32_be(item.handle)
@@ -6212,7 +6226,9 @@ impl PpcLoadedApp {
         use crate::systems::macintosh::host_ui::{DialogItemSnapshot, DialogSnapshot};
         let (dialog, busy) = if let Some((pointer, blocked)) = modeless {
             let eligible = ppc_window_proc_id(&mut self.memory, pointer) == 4
-                && self.memory.read_u16_be(pointer + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                && self
+                    .memory
+                    .read_u16_be(pointer + PPC_CWINDOW_WINDOW_KIND_OFFSET)
                     == Some(crate::dialog_manager::DIALOG_WINDOW_KIND);
             if !eligible && self.toolbox_startup.host_ui.dialog_is_modeless(pointer) {
                 let handles = self.handles();
@@ -6398,7 +6414,7 @@ impl PpcLoadedApp {
             .memory
             .read_u16_be(dialog + DIALOG_CANCEL_ITEM_OFFSET)
             .map(|n| n as i16);
-        let snapshot = DialogSnapshot {
+        let mut snapshot = DialogSnapshot {
             movable: matches!(ppc_window_proc_id(&mut self.memory, dialog), 4 | 5),
             closable: modeless.is_some()
                 && self
@@ -6425,6 +6441,7 @@ impl PpcLoadedApp {
             cancel_item: ppc_dialog_cancel_item(&mut self.memory, &handles, &items, cancel)
                 .unwrap_or(0) as i16,
             busy,
+            help: Vec::new(),
         };
         let front = ppc_front_buffer_for_gworld(&self.gworlds, PPC_MAIN_GWORLD)?;
         let structure =
@@ -6454,6 +6471,10 @@ impl PpcLoadedApp {
         };
         if restore {
             ppc_standard_file_restore_pixels(&mut self.memory, &backing.pixels, backing.front);
+        }
+        // Balloon help strings come from the help item's `hdlg`.
+        if self.toolbox_startup.host_ui.balloons_enabled {
+            snapshot.help = self.host_dialog_help(dialog);
         }
         Some(self.toolbox_startup.host_ui.project_dialog(snapshot))
     }
@@ -6565,10 +6586,9 @@ impl PpcLoadedApp {
         if snapshot.busy || (snapshot.id, snapshot.revision) != (reply.id, reply.revision) {
             return None;
         }
-        let item = snapshot
-            .items
-            .iter()
-            .find(|i| i.number == reply.item && i.enabled && matches!(i.kind, 4..=7 | 17 | 32 | 64))?;
+        let item = snapshot.items.iter().find(|i| {
+            i.number == reply.item && i.enabled && matches!(i.kind, 4..=7 | 17 | 32 | 64)
+        })?;
         let dialog = self.toolbox_startup.host_active_dialog?;
         let bounds = ppc_dialog_global_bounds(&mut self.memory, &self.gworlds, dialog)?;
         let (t, l, b, r) = item.rect;
@@ -6581,6 +6601,33 @@ impl PpcLoadedApp {
             (bounds.1 as i32 + (l as i32 + r as i32) / 2).clamp(i16::MIN as i32, i16::MAX as i32)
                 as i16,
         ))
+    }
+
+    /// Balloon help for a dialog's items from its help item's `hdlg`.
+    fn host_dialog_help(&mut self, dialog: u32) -> Vec<(i16, String)> {
+        let handles = self.handles();
+        let Some(ditl) = self
+            .memory
+            .read_u32_be(dialog + DIALOG_ITEMS_OFFSET)
+            .filter(|handle| *handle != 0)
+            .and_then(|handle| ppc_handle_bytes(&mut self.memory, &handles, handle))
+        else {
+            return Vec::new();
+        };
+        let Some((id, first)) = crate::systems::macintosh::host_ui::ditl_help_reference(&ditl)
+        else {
+            return Vec::new();
+        };
+        let current = self.current_resource_refnum();
+        let resources = &self.vfs_resources;
+        let load = |kind: [u8; 4], id: i16| {
+            ppc_vfs_resource_index(resources, current, u32::from_be_bytes(kind), id, false)
+                .map(|index| resources[index].data.to_vec())
+        };
+        let Some(hdlg) = load(*b"hdlg", id) else {
+            return Vec::new();
+        };
+        crate::systems::macintosh::host_ui::dialog_help_strings(&hdlg, first, load)
     }
 
     /// Validate a frontend command against the live modeless projection.

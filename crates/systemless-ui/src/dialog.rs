@@ -120,6 +120,8 @@ pub struct Form<'a> {
     pub buttons: &'a [Button<'a>],
     pub default: i16,
     pub cancel: i16,
+    /// Hover help by field or button ID, such as classic help balloons.
+    pub help: &'a [(i16, &'a str)],
 }
 
 pub struct EditorField {
@@ -181,6 +183,7 @@ pub fn form(
             buttons,
             default,
             cancel,
+            help: &[],
         },
         &mut [],
     )
@@ -214,7 +217,13 @@ pub fn show_with_shortcuts(
         buttons,
         default,
         cancel,
+        help,
     } = form;
+    let help_for = |id: i16| {
+        help.iter()
+            .find(|(item, _)| *item == id)
+            .map(|(_, text)| *text)
+    };
     let mut edits = Vec::new();
     let mut values = Vec::new();
     let mut cancelling = false;
@@ -250,7 +259,7 @@ pub fn show_with_shortcuts(
         .show(ui, |ui| {
             for field in fields {
                 ui.push_id(field.id, |ui| {
-                    ui.add_enabled_ui(field.enabled, |ui| match field.kind {
+                    let response = ui.add_enabled_ui(field.enabled, |ui| match field.kind {
                         FieldKind::Range {
                             value,
                             min,
@@ -352,6 +361,9 @@ pub fn show_with_shortcuts(
                             }
                         }
                     });
+                    if let Some(text) = help_for(field.id) {
+                        response.response.on_hover_text(text);
+                    }
                 });
                 ui.add_space(8.);
             }
@@ -364,12 +376,13 @@ pub fn show_with_shortcuts(
             } else {
                 ButtonStyle::Secondary
             };
-            if ui
+            let mut response = ui
                 .add_enabled_ui(item.enabled, |ui| button(ui, theme, item.text, style))
-                .inner
-                .clicked()
-                && result.is_none()
-            {
+                .inner;
+            if let Some(text) = help_for(item.id) {
+                response = response.on_hover_text(text);
+            }
+            if response.clicked() && result.is_none() {
                 result = Some(item.id);
                 cancelling = item.id == cancel && item.id != default;
             }
@@ -438,6 +451,7 @@ mod tests {
                             }],
                             default: 1,
                             cancel: 2,
+                            help: &[],
                         },
                         &mut editors,
                     );
@@ -796,6 +810,7 @@ mod tests {
                             ],
                             default: 1,
                             cancel: 2,
+                            help: &[],
                         },
                         &mut [],
                     );
@@ -911,6 +926,7 @@ mod tests {
                             ],
                             default: 1,
                             cancel: 2,
+                            help: &[],
                         },
                         &mut [],
                     );
@@ -984,6 +1000,7 @@ mod nonmodal_shortcut_tests {
                                         ],
                                         default: 1,
                                         cancel: 2,
+                                        help: &[],
                                     },
                                     &mut [],
                                     active,

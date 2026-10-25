@@ -76,6 +76,26 @@ pub struct BalloonSnapshot {
     pub tip: (i16, i16),
 }
 
+/// Lookup key under which callers supply a khmmTEHandle message's text.
+pub(crate) const BALLOON_TE_TEXT: [u8; 4] = *b"TEh\0";
+
+/// Lookup key under which callers supply a khmmPictHandle message's picture.
+pub(crate) const BALLOON_PICT_HANDLE: [u8; 4] = *b"PIh\0";
+
+/// The handle in a khmmTEHandle (4) or khmmPictHandle (5) message.
+pub(crate) fn balloon_message_te_handle(message: &[u8]) -> Option<u32> {
+    balloon_message_handle(message, 4)
+}
+pub(crate) fn balloon_message_pict_handle(message: &[u8]) -> Option<u32> {
+    balloon_message_handle(message, 5)
+}
+fn balloon_message_handle(message: &[u8], kind: u8) -> Option<u32> {
+    if message.get(0..2)? != [0, kind] {
+        return None;
+    }
+    Some(u32::from_be_bytes(message.get(2..6)?.try_into().ok()?))
+}
+
 /// The resource an HMMessageRecord names, if any: `STR#`, `STR `, `TEXT`
 /// or `PICT`, with its ID.
 pub(crate) fn balloon_message_resource(message: &[u8]) -> Option<([u8; 4], i16)> {
@@ -98,6 +118,16 @@ pub(crate) fn menu_help_strings(
     resource: &[u8],
     strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
 ) -> Vec<(i16, String)> {
+    help_records(resource, 0, strings)
+}
+
+/// Shared `hmnu`/`hdlg` record walk. `prefix` skips per-record bytes before
+/// the strings (the tip point and alternate rectangle in `hdlg`).
+fn help_records(
+    resource: &[u8],
+    prefix: usize,
+    strings: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Vec<(i16, String)> {
     let word = |offset: usize| {
         resource
             .get(offset..offset + 2)
@@ -117,7 +147,9 @@ pub(crate) fn menu_help_strings(
         if length < 4 || offset + length > resource.len() {
             break;
         }
-        let record = &resource[offset + 4..offset + length];
+        let record = resource
+            .get(offset + 4 + prefix..offset + length)
+            .unwrap_or(&[]);
         let text = match kind {
             1 => record.first().and_then(|len| {
                 record
@@ -144,6 +176,57 @@ pub(crate) fn menu_help_strings(
         offset += length;
     }
     help
+}
+
+/// The `hdlg` a DITL's help item names: (resource ID, first item number).
+/// HMScanhdlg (1) applies to items from 1; HMScanAppendhdlg (8) names the
+/// first item explicitly. Inside Macintosh: More Macintosh Toolbox, 3-41.
+pub(crate) fn ditl_help_reference(ditl: &[u8]) -> Option<(i16, i16)> {
+    let count = i16::from_be_bytes([*ditl.first()?, *ditl.get(1)?]).checked_add(1)?;
+    let mut offset = 2usize;
+    for _ in 0..count.max(0) {
+        let kind = *ditl.get(offset + 12)?;
+        let length = usize::from(*ditl.get(offset + 13)?);
+        let data = ditl.get(offset + 14..offset + 14 + length)?;
+        if kind & 0x7f == 1 && data.len() >= 4 {
+            let help_type = i16::from_be_bytes([data[0], data[1]]);
+            let id = i16::from_be_bytes([data[2], data[3]]);
+            return match help_type {
+                1 => Some((id, 1)),
+                8 if data.len() >= 6 => Some((id, i16::from_be_bytes([data[4], data[5]]))),
+                _ => None,
+            };
+        }
+        offset += 14 + length + (length & 1);
+    }
+    None
+}
+
+/// Dialog-item help strings from an `hdlg`, keyed by dialog item number.
+/// The header's item offset and the help item's first item both apply.
+pub(crate) fn dialog_help_strings(
+    hdlg: &[u8],
+    first_item: i16,
+    mut resource: impl FnMut([u8; 4], i16) -> Option<Vec<u8>>,
+) -> Vec<(i16, String)> {
+    let Some(offset) = hdlg.get(2..4).map(|b| i16::from_be_bytes([b[0], b[1]])) else {
+        return Vec::new();
+    };
+    let requests = std::cell::RefCell::new(Vec::new());
+    let _ = help_records(hdlg, 12, |kind, id| {
+        requests.borrow_mut().push((kind, id));
+        None
+    });
+    let loaded: std::collections::HashMap<_, _> = requests
+        .into_inner()
+        .into_iter()
+        .filter_map(|(kind, id)| resource(kind, id).map(|data| ((kind, id), data)))
+        .collect();
+    help_records(hdlg, 12, |kind, id| loaded.get(&(kind, id)).cloned())
+        .into_iter()
+        // Record 0 is the first described item, not a title as in `hmnu`.
+        .map(|(index, text)| (index + 1 + offset + first_item - 1, text))
+        .collect()
 }
 
 /// Help strings for every menu in a snapshot, keyed by (menu, item). The
@@ -181,13 +264,14 @@ pub(crate) fn balloon_message_picture(
     message: &[u8],
     resource: impl Fn([u8; 4], i16) -> Option<Vec<u8>>,
 ) -> Option<std::sync::Arc<DialogArtwork>> {
-    if message.get(0..2)? != [0, 2] {
-        return None;
-    }
-    let bytes = resource(
-        *b"PICT",
-        i16::from_be_bytes([*message.get(2)?, *message.get(3)?]),
-    )?;
+    let bytes = match message.get(0..2)? {
+        [0, 2] => resource(
+            *b"PICT",
+            i16::from_be_bytes([*message.get(2)?, *message.get(3)?]),
+        )?,
+        [0, 5] => resource(BALLOON_PICT_HANDLE, 0)?,
+        _ => return None,
+    };
     let word = |offset: usize| i16::from_be_bytes([bytes[offset], bytes[offset + 1]]);
     if bytes.len() < 10 {
         return None;
@@ -230,6 +314,10 @@ pub(crate) fn balloon_message_text(
                 offset += 1 + usize::from(*list.get(offset)?);
             }
             pstring(list.get(offset..)?)?
+        }
+        // khmmTEHandle: the caller supplies the record's text under TE_TEXT.
+        4 => {
+            crate::trap::types::decode_mac_roman(&resource(BALLOON_TE_TEXT, 0)?).replace('\r', "\n")
         }
         6 => {
             let text = resource(*b"TEXT", word(2)?)?;
@@ -1016,7 +1104,8 @@ pub(crate) fn standard_dialog_item_kind(kind: u8, control_proc: Option<i16>) -> 
             16 => Some(17),
             _ => None,
         }),
-        8 | 16 | 32 | 64 => Some(kind & 0x7f),
+        // Help items (1) name an `hdlg`; they have no presentation of their own.
+        1 | 8 | 16 | 32 | 64 => Some(kind & 0x7f),
         _ => None,
     }
 }
@@ -1244,6 +1333,8 @@ pub struct DialogSnapshot {
     pub default_item: i16,
     pub cancel_item: i16,
     pub busy: bool,
+    /// Balloon help by item number, published while Balloon Help is on.
+    pub help: Vec<(i16, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1520,6 +1611,7 @@ pub(crate) mod popup_tests {
             default_item: 1,
             cancel_item: 0,
             busy: false,
+            help: Vec::new(),
         };
         let before = state.project_dialog(snapshot.clone());
         state.invalidate_dialog_snapshot(100);
@@ -1583,6 +1675,7 @@ mod dialog_projection_tests {
             default_item: 1,
             cancel_item: 2,
             busy: false,
+            help: Vec::new(),
         }
     }
     #[test]
@@ -1711,5 +1804,41 @@ mod balloon_tests {
         let mut truncated = resource.clone();
         truncated.truncate(resource.len() - 3);
         assert_eq!(menu_help_strings(&truncated, |_, _| None).len(), 2);
+    }
+
+    #[test]
+    fn hdlg_help_follows_the_ditl_help_item_and_item_offsets() {
+        // DITL: a button, then a help item naming hdlg 300 (HMScanhdlg).
+        let mut ditl = vec![0, 1];
+        ditl.extend([0; 4]);
+        ditl.extend([0, 10, 0, 10, 0, 30, 0, 80]);
+        ditl.extend([4, 2, b'O', b'K']);
+        ditl.extend([0; 4]);
+        ditl.extend([0; 8]);
+        ditl.extend([1, 4, 0, 1, 1, 44]);
+        assert_eq!(ditl_help_reference(&ditl), Some((300, 1)));
+        let mut appended = ditl.clone();
+        let at = appended.len() - 6;
+        appended.splice(at.., [1, 6, 0, 8, 1, 44, 0, 3]);
+        assert_eq!(ditl_help_reference(&appended), Some((300, 3)));
+        // hdlg: header with item offset 0 and two item records after the
+        // missing-items record; records carry a tip and alternate rectangle.
+        let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+        hdlg.truncate(12);
+        hdlg[10..12].copy_from_slice(&2i16.to_be_bytes());
+        hdlg.extend(record(256, &[]));
+        let mut first = vec![0; 12];
+        first.extend(b"\x05Saves");
+        hdlg.extend(record(1, &first));
+        let mut second = vec![0; 12];
+        second.extend([0, 128, 0, 1]);
+        hdlg.extend(record(3, &second));
+        let list = [0u8, 1, 6, b'C', b'a', b'n', b'c', b'e', b'l'];
+        let help = dialog_help_strings(&hdlg, 1, |kind, id| {
+            (kind == *b"STR#" && id == 128).then(|| list.to_vec())
+        });
+        assert_eq!(help, vec![(1, "Saves".into()), (2, "Cancel".into())]);
+        let shifted = dialog_help_strings(&hdlg, 3, |_, _| None);
+        assert_eq!(shifted, vec![(3, "Saves".into())]);
     }
 }

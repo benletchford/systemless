@@ -1032,7 +1032,28 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                         .flatten()
                 })
                 .collect();
+            let te_text = crate::systems::macintosh::host_ui::balloon_message_te_handle(&bytes)
+                .and_then(|handle| ppc_te_record_ptr(memory, handle))
+                .and_then(|te| {
+                    let length = memory.read_u16_be(te + PPC_TE_LENGTH_OFFSET)? as u32;
+                    let text = memory
+                        .read_u32_be(te + PPC_TE_HTEXT_OFFSET)
+                        .and_then(|handle| memory.read_u32_be(handle))?;
+                    Some(
+                        (0..length)
+                            .filter_map(|i| memory.read_u8(text + i))
+                            .collect::<Vec<u8>>(),
+                    )
+                });
+            let picture = crate::systems::macintosh::host_ui::balloon_message_pict_handle(&bytes)
+                .and_then(|handle| ppc_handle_bytes(memory, handles, handle));
             let lookup = |kind: [u8; 4], id: i16| {
+                if kind == crate::systems::macintosh::host_ui::BALLOON_TE_TEXT {
+                    return te_text.clone();
+                }
+                if kind == crate::systems::macintosh::host_ui::BALLOON_PICT_HANDLE {
+                    return picture.clone();
+                }
                 ppc_vfs_resource_index(
                     vfs_resources,
                     current_resource_refnum,

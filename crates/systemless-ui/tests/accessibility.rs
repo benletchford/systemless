@@ -35,6 +35,7 @@ fn accessible_form_exposes_controls_and_accepts_click_actions() {
                         buttons: &buttons,
                         default: 2,
                         cancel: 0,
+                        help: &[],
                     },
                     &mut [],
                 ));

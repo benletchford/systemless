@@ -24534,6 +24534,59 @@ fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking()
     assert_eq!(bus.read_bytes(screen, 640 * 480), background);
 }
 
+#[test]
+fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    // hdlg 300: header (item offset 0, two records), missing record, item 1.
+    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    hdlg.extend([0, 4, 1, 0]);
+    let mut first = vec![0u8; 12];
+    first.extend(b"\x0fApplies changes");
+    first.push(0);
+    hdlg.extend(((first.len() + 4) as i16).to_be_bytes());
+    hdlg.extend(1i16.to_be_bytes());
+    hdlg.extend(first);
+    disp.install_test_resource(&mut bus, *b"hdlg", 300, &hdlg);
+    let ditl = build_test_ditl_items(&[
+        (4, (60, 100, 80, 170), b"OK"),
+        (1, (0, 0, 0, 0), &[0, 1, 1, 44]),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(
+        views.len(),
+        1,
+        "a help item no longer forces guest rendering"
+    );
+    assert!(
+        views[0].1.help.is_empty(),
+        "help is published only with Balloon Help on"
+    );
+    disp.host_ui.balloons_enabled = true;
+    disp.host_ui
+        .invalidate_dialog_snapshot(disp.host_ui.dialog_pointer(views[0].1.id).unwrap());
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(views[0].1.help, vec![(1, "Applies changes".to_string())]);
+    assert!(views[0]
+        .1
+        .items
+        .iter()
+        .all(|item| item.kind != 1 || item.rect == (0, 0, 0, 0)));
+}
+
 
     #[test]
     fn dialog_application_cdef_drawing_preserves_underlying_content() {
@@ -24591,6 +24644,7 @@ fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking()
             }
         }
     }
+
 
 
 
@@ -24684,6 +24738,7 @@ fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking()
 
 
 
+
     #[test]
     fn dialog_redraw_preserves_setctitle_for_standard_controls() {
         fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
@@ -24738,82 +24793,4 @@ fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking()
     }
 
 
-
-        fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
-            let (mut disp, mut cpu, mut bus) = setup();
-            let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
-            let ditl = build_test_ditl_item(item_type, (20, 20, 42, 160), initial);
-            let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
-            let (_, dialog) = call_new_dialog_for_test(
-                &mut disp,
-                &mut cpu,
-                &mut bus,
-                0,
-                (80, 90, 160, 280),
-                true,
-                4,
-                0xFFFF_FFFF,
-                items,
-            );
-            if let Some(title) = replacement {
-                let control = TrapDispatcher::dialog_item_handle(&bus, dialog, 1);
-                let text = bus.alloc(256);
-                bus.write_pstring(text, title);
-                cpu.write_reg(Register::A7, TEST_SP);
-                bus.write_long(TEST_SP, text);
-                bus.write_long(TEST_SP + 4, control);
-                disp.dispatch_control(true, 0x15F, &mut cpu, &mut bus)
-                    .unwrap()
-                    .unwrap();
-            }
-            // Isolate DrawDialog's rendering from the earlier Control
-            // Manager paint. Both paths must redraw the new title on a
-            // fresh surface, regardless of their previous chrome pixels.
-            bus.write_bytes(screen, &vec![0; 640 * 480]);
-            cpu.write_reg(Register::A7, TEST_SP);
-            bus.write_long(TEST_SP, dialog);
-            disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
-                .unwrap()
-                .unwrap();
-            bus.read_bytes(screen, 640 * 480)
-        }
-
-        fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
-            let (mut disp, mut cpu, mut bus) = setup();
-            let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
-            let ditl = build_test_ditl_item(item_type, (20, 20, 42, 160), initial);
-            let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
-            let (_, dialog) = call_new_dialog_for_test(
-                &mut disp,
-                &mut cpu,
-                &mut bus,
-                0,
-                (80, 90, 160, 280),
-                true,
-                4,
-                0xFFFF_FFFF,
-                items,
-            );
-            if let Some(title) = replacement {
-                let control = TrapDispatcher::dialog_item_handle(&bus, dialog, 1);
-                let text = bus.alloc(256);
-                bus.write_pstring(text, title);
-                cpu.write_reg(Register::A7, TEST_SP);
-                bus.write_long(TEST_SP, text);
-                bus.write_long(TEST_SP + 4, control);
-                disp.dispatch_control(true, 0x15F, &mut cpu, &mut bus)
-                    .unwrap()
-                    .unwrap();
-            }
-            // Isolate DrawDialog's rendering from the earlier Control
-            // Manager paint. Both paths must redraw the new title on a
-            // fresh surface, regardless of their previous chrome pixels.
-            bus.write_bytes(screen, &vec![0; 640 * 480]);
-            cpu.write_reg(Register::A7, TEST_SP);
-            bus.write_long(TEST_SP, dialog);
-            disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
-                .unwrap()
-                .unwrap();
-            bus.read_bytes(screen, 640 * 480)
-        }
 

@@ -2,8 +2,8 @@
 
 use super::dispatch::{
     selector_operation_route, DialogItem, DialogPopupDraw, DialogPopupTrackingState,
-    DialogTrackingState, HostDialogBackground, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
-    RetainedModalDialogClickState, SelectorOperationRoute,
+    DialogTrackingState, HostDialogBackground, PendingDialogPopupMenu, PersistentDialogSnapshot,
+    QueuedEvent, RetainedModalDialogClickState, SelectorOperationRoute,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -8467,7 +8467,13 @@ impl super::TrapDispatcher {
         is_default: bool,
         highlighted: bool,
     ) {
-        if self.dialog_tracking.as_ref().is_some_and(|t| self.host_ui.dialog_presented(t.dialog_ptr)) { return; }
+        if self
+            .dialog_tracking
+            .as_ref()
+            .is_some_and(|t| self.host_ui.dialog_presented(t.dialog_ptr))
+        {
+            return;
+        }
         let (top, left, bottom, right) = rect;
         if self.draw_theme_push_button_chrome(
             bus,
@@ -12302,7 +12308,11 @@ impl super::TrapDispatcher {
                 {
                     self.dialog_tracking = self.suspended_modal_dialogs.pop();
                 }
-                if let Some(dialog) = self.dialog_tracking.as_ref().map(|tracking| tracking.dialog_ptr) {
+                if let Some(dialog) = self
+                    .dialog_tracking
+                    .as_ref()
+                    .map(|tracking| tracking.dialog_ptr)
+                {
                     self.host_ui.note_dialog_modal(dialog);
                     self.cancel_host_menu_selection();
                 }
@@ -12769,7 +12779,10 @@ impl super::TrapDispatcher {
                                                 let mut item = item.clone();
                                                 if is_dialog_item_control(item.item_type) {
                                                     if let Some(pointer) = self
-                                                        .dialog_control_handle_for_item(dialog_ptr, (i + 1) as i16)
+                                                        .dialog_control_handle_for_item(
+                                                            dialog_ptr,
+                                                            (i + 1) as i16,
+                                                        )
                                                         .map(|handle| bus.read_long(handle))
                                                         .filter(|pointer| *pointer != 0)
                                                     {
@@ -17702,7 +17715,6 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests;
 
-
 impl super::TrapDispatcher {
     fn capture_host_dialog_background(&mut self, bus: &MacMemoryBus, dialog: u32) {
         if self.host_ui.dialog_identity(dialog).is_none()
@@ -17968,6 +17980,36 @@ impl super::TrapDispatcher {
         self.project_host_dialog(bus, None)
     }
 
+    /// Balloon help for a dialog's items from its help item's `hdlg`.
+    fn host_dialog_help(&mut self, bus: &mut MacMemoryBus, dialog: u32) -> Vec<(i16, String)> {
+        let handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_ITEMS_OFFSET);
+        let pointer = if handle != 0 {
+            bus.read_long(handle)
+        } else {
+            0
+        };
+        let Some(size) = (pointer != 0)
+            .then(|| bus.get_alloc_size(pointer))
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        let ditl = bus.read_bytes(pointer, size as usize);
+        let Some((id, first)) = crate::systems::macintosh::host_ui::ditl_help_reference(&ditl)
+        else {
+            return Vec::new();
+        };
+        let mut load = |kind: [u8; 4], id: i16| {
+            let (_, pointer) = self.find_or_load_resource_any(bus, kind, id)?;
+            let size = bus.get_alloc_size(pointer)? as usize;
+            Some(bus.read_bytes(pointer, size))
+        };
+        let Some(hdlg) = load(*b"hdlg", id) else {
+            return Vec::new();
+        };
+        crate::systems::macintosh::host_ui::dialog_help_strings(&hdlg, first, load)
+    }
+
     /// Visible document-style dialogs that keep guest drawing (custom
     /// controls, user items), in guest front-to-back order.
     pub(crate) fn guest_modeless_surfaces(
@@ -18201,7 +18243,7 @@ impl super::TrapDispatcher {
             }
             return None;
         }
-        let snapshot = DialogSnapshot {
+        let mut snapshot = DialogSnapshot {
             movable: matches!(proc_id, 4 | 5),
             closable: modeless.is_some()
                 && bus.read_byte(dialog + crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET) != 0,
@@ -18319,6 +18361,7 @@ impl super::TrapDispatcher {
                     }
                 })
                 .collect(),
+            help: Vec::new(),
         };
         if snapshot.items.is_empty() {
             if self.host_ui.unpresent_dialog(dialog) {
@@ -18373,6 +18416,10 @@ impl super::TrapDispatcher {
                 self.restore_dialog_pixels(bus, bounds, &saved);
             }
             self.dialog_visible_snapshots.remove(&dialog);
+        }
+        // Balloon help strings come from the help item's `hdlg`.
+        if self.host_ui.balloons_enabled {
+            snapshot.help = self.host_dialog_help(bus, dialog);
         }
         Some(self.host_ui.project_dialog(snapshot))
     }
@@ -18511,7 +18558,9 @@ impl super::TrapDispatcher {
             return None;
         }
         let item = snapshot.items.iter().find(|item| {
-            item.number == reply.item && item.enabled && matches!(item.kind, 4..=7 | 16 | 17 | 32 | 64)
+            item.number == reply.item
+                && item.enabled
+                && matches!(item.kind, 4..=7 | 16 | 17 | 32 | 64)
         })?;
         let tracking = self.dialog_tracking.as_ref()?;
         let (t, l, b, r) = item.rect;

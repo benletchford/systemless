@@ -267,6 +267,7 @@ mod tests {
                     selection: Some((0, 3)),
                 },
             ],
+            help: Vec::new(),
         }
     }
     #[test]

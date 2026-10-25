@@ -21422,7 +21422,28 @@ fn host_balloon_help_presents_string_and_resource_balloons() {
     assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
     let balloon = disp.host_ui.balloon().unwrap();
     assert!(balloon.text.is_empty() && balloon.artwork.as_ref().is_some_and(|a| a.is_valid()));
+    // khmmTEHandle balloons read the record's text.
+    let (te_handle, te) = (bus.alloc(4), bus.alloc(0x80));
+    let (text_handle, text) = (bus.alloc(4), bus.alloc(32));
+    bus.write_long(te_handle, te);
+    bus.write_long(text_handle, text);
+    bus.write_bytes(text, b"From TextEdit");
+    bus.write_word(te + 0x3C, 13);
+    bus.write_long(te + 0x3E, text_handle);
     bus.write_word(message, 4);
+    bus.write_long(message + 2, te_handle);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "From TextEdit");
+    // khmmPictHandle balloons render the handle's picture.
+    let (picture_handle, picture_ptr) = (bus.alloc(4), bus.alloc(picture.len() as u32));
+    bus.write_bytes(picture_ptr, &picture);
+    bus.write_long(picture_handle, picture_ptr);
+    bus.write_word(message, 5);
+    bus.write_long(message + 2, picture_handle);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert!(disp.host_ui.balloon().unwrap().artwork.is_some());
+    // Unknown message kinds are not presented.
+    bus.write_word(message, 9);
     assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
     assert_eq!(call(&mut disp, &mut bus, 0x0002, &[]), 0);
     assert!(disp.host_ui.balloon().is_none());

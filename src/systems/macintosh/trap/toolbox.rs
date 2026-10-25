@@ -2225,7 +2225,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFileGetTrackingState,
     ) {
-        if self.host_ui.enabled { return; }
+        if self.host_ui.enabled {
+            return;
+        }
         let items = Self::standard_file_get_dialog_items(tracking);
         self.draw_dialog(
             bus,
@@ -2826,7 +2828,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFilePutTrackingState,
     ) {
-        if self.host_ui.enabled { return; }
+        if self.host_ui.enabled {
+            return;
+        }
         let (_, _, location_label, writable) =
             self.standard_file_put_directory_location(tracking.current_dir_id);
         let items = Self::standard_file_put_dialog_items(tracking, &location_label, writable);
@@ -16852,7 +16856,37 @@ impl super::TrapDispatcher {
                             let size = bus.get_alloc_size(ptr)? as usize;
                             Some((kind, id, bus.read_bytes(ptr, size)))
                         });
+                        // TERec: teLength at $3C, hText at $3E. Inside Macintosh: Text, 2-63.
+                        let te_text =
+                            crate::systems::macintosh::host_ui::balloon_message_te_handle(&bytes)
+                                .filter(|handle| *handle != 0)
+                                .map(|handle| bus.read_long(handle))
+                                .filter(|te| *te != 0)
+                                .map(|te| {
+                                    let length = bus.read_word(te + 0x3C) as usize;
+                                    let text = bus.read_long(bus.read_long(te + 0x3E));
+                                    if text == 0 {
+                                        Vec::new()
+                                    } else {
+                                        bus.read_bytes(text, length)
+                                    }
+                                });
+                        let picture =
+                            crate::systems::macintosh::host_ui::balloon_message_pict_handle(&bytes)
+                                .filter(|handle| *handle != 0)
+                                .map(|handle| bus.read_long(handle))
+                                .filter(|pointer| *pointer != 0)
+                                .and_then(|pointer| {
+                                    let size = bus.get_alloc_size(pointer)? as usize;
+                                    Some(bus.read_bytes(pointer, size))
+                                });
                         let lookup = |kind: [u8; 4], id: i16| {
+                            if kind == crate::systems::macintosh::host_ui::BALLOON_TE_TEXT {
+                                return te_text.clone();
+                            }
+                            if kind == crate::systems::macintosh::host_ui::BALLOON_PICT_HANDLE {
+                                return picture.clone();
+                            }
                             loaded
                                 .as_ref()
                                 .filter(|(k, i, _)| *k == kind && *i == id)

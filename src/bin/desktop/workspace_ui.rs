@@ -1647,7 +1647,17 @@ fn dialog_form(
     shortcuts: bool,
     heading: bool,
 ) -> systemless_ui::dialog::FormResponse {
-    let mut body: Vec<_> = dialog.items.iter().filter(|i| i.kind != 4).collect();
+    // Buttons render in the action row; help items (1) have no presentation.
+    let mut body: Vec<_> = dialog
+        .items
+        .iter()
+        .filter(|i| !matches!(i.kind, 1 | 4))
+        .collect();
+    let help: Vec<_> = dialog
+        .help
+        .iter()
+        .map(|(item, text)| (*item, text.as_str()))
+        .collect();
     body.sort_by_key(|i| (i.rect.0, i.rect.1, i.number));
     let labels: std::collections::HashMap<_, _> = body
         .iter()
@@ -1757,6 +1767,7 @@ fn dialog_form(
                 buttons: &buttons,
                 default: dialog.default_item,
                 cancel: dialog.cancel_item,
+                help: &help,
             },
             &mut editors.fields,
             shortcuts,
@@ -1769,7 +1780,7 @@ fn dialog_form(
 fn host_renderable(dialog: &systemless::systems::macintosh::host_ui::DialogSnapshot) -> bool {
     !dialog.items.is_empty()
         && dialog.items.iter().all(|i| {
-            matches!(i.kind, 4..=7 | 8 | 16)
+            matches!(i.kind, 1 | 4..=7 | 8 | 16)
                 || (i.kind == 17
                     && i.range
                         .is_some_and(|range| range.min <= i.value && i.value <= range.max))
@@ -2414,6 +2425,7 @@ mod tests {
                                     value: 1,
                                 },
                             ],
+                            help: Vec::new(),
                         },
                     )),
                     &[43],
@@ -3200,7 +3212,7 @@ mod tests {
                                             Field { id: 4, text: "Retain window layout", enabled: true, kind: FieldKind::Checkbox(true) },
                                         ],
                                         buttons: &[Button { id: 1, text: "Apply", enabled: true }, Button { id: 2, text: "Cancel", enabled: true }],
-                                        default: 1, cancel: 2,
+                                        default: 1, cancel: 2, help: &[],
                                     }, &mut [], index == 1)
                                 },
                             );
@@ -3292,6 +3304,7 @@ mod tests {
                 default_item: 1,
                 cancel_item: 2,
                 busy: false,
+                help: Vec::new(),
             }
         }
         pollster::block_on(async {
