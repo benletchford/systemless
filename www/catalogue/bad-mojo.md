@@ -53,6 +53,17 @@ compatibility:
       roach's position and orientation.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2819
+  - date: "2026-10-25"
+    tester: Catalogue maintainer
+    systemless_version: c0ea264d376724e246d3b510979b001b36582113
+    architecture: ppc
+    environment: >-
+      Native replay of the PowerPC slice at the default 16-bit depth. The demo
+      switches the screen to thousands of colours and reaches the "Welcome to the
+      Bad Mojo Interactive Demo" menu by tick 900. Play Demo and browser launch of
+      the PowerPC slice have not been verified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/4984
 artifacts:
 - id: archive
   role: archive
