@@ -1639,21 +1639,16 @@ pub(crate) fn ppc_configure_dsp_framebuffers(
                 attributes.width as i16,
                 attributes.display_depth,
             )?;
-            if attributes.display_depth <= 8 {
-                memory.write_u32_be(record.pixmap + 42, PPC_MAIN_CTABLE_HANDLE)?;
-            }
+            // Every PixMap owns a color table handle, direct ones included.
+            memory.write_u32_be(record.pixmap + 42, PPC_MAIN_CTABLE_HANDLE)?;
         } else {
             // A screen-backed window keeps its local bounds through a display
             // switch. Only its shared pixel format changes while the context
             // is active.
-            let ctable = if attributes.display_depth <= 8 {
-                memory
-                    .read_u32_be(record.pixmap + 42)
-                    .filter(|ptr| *ptr != 0)
-                    .unwrap_or(PPC_MAIN_CTABLE_HANDLE)
-            } else {
-                0
-            };
+            let ctable = memory
+                .read_u32_be(record.pixmap + 42)
+                .filter(|ptr| *ptr != 0)
+                .unwrap_or(PPC_MAIN_CTABLE_HANDLE);
             ppc_update_pixmap_depth(
                 memory,
                 record.pixmap,

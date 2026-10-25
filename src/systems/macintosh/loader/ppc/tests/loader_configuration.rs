@@ -98,11 +98,7 @@ fn load_pef_application_configures_every_supported_main_display_depth() {
         );
         assert_eq!(
             loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42),
-            Some(if depth <= 8 {
-                PPC_MAIN_CTABLE_HANDLE
-            } else {
-                0
-            })
+            Some(PPC_MAIN_CTABLE_HANDLE)
         );
         assert_eq!(
             loaded.memory.read_u16_be(PPC_MAIN_GDEVICE_RECORD + 4),
