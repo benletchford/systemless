@@ -1302,3 +1302,70 @@ fn te_get_style_scrap_handle_returns_nil_for_a_monostyled_record() {
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn te_get_offset_get_style_and_sel_view_follow_the_text_layout() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (style_ptr, height_ptr, ascent_ptr) = (scratch + 0x40, scratch + 0x60, scratch + 0x62);
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 400, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 40, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+    let text = b"one\rtwo\rthree\rfour\rfive\rsix\rseven";
+    loaded.memory.write_bytes(scratch + 0x100, text).unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x100;
+    loaded.cpu.gpr[4] = text.len() as u32;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+    // Offset 4 starts the second line; TEGetPoint and TEGetOffset agree.
+    loaded.cpu.gpr[3] = 4;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetPoint);
+    let point = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = point.wrapping_add(0x0001_0000);
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetOffset);
+    assert_eq!(loaded.cpu.gpr[3], 4);
+
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = style_ptr;
+    loaded.cpu.gpr[5] = height_ptr;
+    loaded.cpu.gpr[6] = ascent_ptr;
+    loaded.cpu.gpr[7] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetStyle);
+    let line_height = loaded.memory.read_u16_be(height_ptr).unwrap();
+    assert!(line_height > 0);
+    assert!(loaded.memory.read_u16_be(ascent_ptr).unwrap() > 0);
+
+    // Select the last line, below the 30-pixel viewRect.
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    let last = text.len() as u32 - 1;
+    loaded.cpu.gpr[3] = last;
+    loaded.cpu.gpr[4] = last;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    let dest_top = loaded.memory.read_u16_be(te_ptr).unwrap();
+
+    // Without automatic scrolling, TESelView leaves destRect alone.
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    assert_eq!(loaded.memory.read_u16_be(te_ptr), Some(dest_top));
+
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEAutoView);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    let scrolled_top = loaded.memory.read_u16_be(te_ptr).unwrap() as i16;
+    assert!(scrolled_top < dest_top as i16);
+    loaded.cpu.gpr[3] = last;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetPoint);
+    let caret_top = (loaded.cpu.gpr[3] >> 16) as u16 as i16;
+    assert!(caret_top >= 10 && caret_top + line_height as i16 <= 40);
+}

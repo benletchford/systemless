@@ -282,3 +282,116 @@ fn audit_batch_three_calls_resolve_and_behave() {
         Some((70, 70, 90, 90))
     );
 }
+
+#[test]
+fn carbon_port_accessors_read_cgrafport_fields() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPortPenMode")).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 0x200]);
+    let (port, out) = (base, base + 0x100);
+    loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    for (offset, value) in [(36u32, 0x1111u16), (38, 0x2222), (40, 0x3333)] {
+        loaded.memory.write_u16_be(port + offset, value).unwrap();
+    }
+    loaded.memory.write_u16_be(port + 42, 0xaaaa).unwrap();
+    loaded.memory.write_u32_be(port + 52, 0x0002_0003).unwrap();
+    loaded.memory.write_u16_be(port + 56, 10).unwrap();
+    loaded.memory.write_u8(port + 70, 0x05).unwrap();
+    loaded.memory.write_u16_be(port + 72, 1).unwrap();
+    loaded.memory.write_u32_be(port + 104, 0x0123_4560).unwrap();
+    loaded.cpu.gpr[3] = port;
+    loaded.cpu.gpr[4] = out;
+
+    for (operation, expected) in [
+        (PpcToolboxCompatOperation::GetPortPenMode, 10),
+        (PpcToolboxCompatOperation::GetPortTextFace, 5),
+        (PpcToolboxCompatOperation::GetPortTextMode, 1),
+        (PpcToolboxCompatOperation::GetPortGrafProcs, 0x0123_4560),
+    ] {
+        assert!(
+            matches!(compat(operation, &mut loaded), PpcImportAction::Return(value) if value == expected),
+            "{operation:?}"
+        );
+    }
+    compat(PpcToolboxCompatOperation::GetPortPenSize, &mut loaded);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0x0002_0003));
+    compat(PpcToolboxCompatOperation::GetPortForeColor, &mut loaded);
+    assert_eq!(loaded.memory.read_u16_be(out), Some(0x1111));
+    assert_eq!(loaded.memory.read_u16_be(out + 4), Some(0x3333));
+    compat(PpcToolboxCompatOperation::GetPortBackColor, &mut loaded);
+    assert_eq!(loaded.memory.read_u16_be(out), Some(0xaaaa));
+
+    // A basic GrafPort reports black on white.
+    loaded.memory.write_u16_be(port + 6, 0).unwrap();
+    compat(PpcToolboxCompatOperation::GetPortBackColor, &mut loaded);
+    assert_eq!(loaded.memory.read_u16_be(out + 2), Some(0xffff));
+
+    let (pixmap, master) = (base + 0x40, base + 0x50);
+    loaded.memory.write_u32_be(pixmap, master).unwrap();
+    for (index, value) in [0u16, 0, 480, 640].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u16_be(master + 6 + 2 * index as u32, value)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = pixmap;
+    compat(PpcToolboxCompatOperation::GetPixBounds, &mut loaded);
+    assert_eq!(loaded.memory.read_u16_be(out + 6), Some(640));
+}
+
+#[test]
+fn carbon_and_legacy_gap_symbols_resolve_to_native_targets() {
+    for (library, symbol, target) in [
+        (
+            "CarbonLib",
+            "GetPortForeColor",
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortForeColor),
+        ),
+        (
+            "CarbonLib",
+            "GetPortClipRegion",
+            PpcImportDispatcherTarget::GetPortClipRegion,
+        ),
+        (
+            "InterfaceLib",
+            "LMSetResLoad",
+            PpcImportDispatcherTarget::SetResLoad,
+        ),
+        (
+            "InterfaceLib",
+            "PtInIconID",
+            PpcImportDispatcherTarget::PtInRect,
+        ),
+        (
+            "InterfaceLib",
+            "UnmountVol",
+            PpcImportDispatcherTarget::ReturnError(-47),
+        ),
+        (
+            "InterfaceLib",
+            "CountADBs",
+            PpcImportDispatcherTarget::ReturnNoErr,
+        ),
+        (
+            "InterfaceLib",
+            "GetIndADB",
+            PpcImportDispatcherTarget::ReturnError(-1),
+        ),
+        (
+            "InterfaceLib",
+            "AERemoveEventHandler",
+            PpcImportDispatcherTarget::AERemoveEventHandler,
+        ),
+        (
+            "InterfaceLib",
+            "TESelView",
+            PpcImportDispatcherTarget::TESelView,
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(library, symbol),
+            target,
+            "{symbol}"
+        );
+    }
+}

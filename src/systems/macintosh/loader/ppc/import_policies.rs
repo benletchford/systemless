@@ -134,7 +134,9 @@ pub(crate) fn import_data_address_for(library_name: &str, symbol_name: &str) -> 
         ("MathLib", "pi") => Some(PPC_IMPORT_MATH_PI),
         // CFBase.h defines kCFAllocatorDefault as NULL: a data symbol whose
         // value selects the default allocator.
-        ("CarbonLib" | "CoreFoundation", "kCFAllocatorDefault") => {
+        // The HLE CoreFoundation ignores allocators, so the system default
+        // allocator behaves exactly like the default one.
+        ("CarbonLib" | "CoreFoundation", "kCFAllocatorDefault" | "kCFAllocatorSystemDefault") => {
             Some(PPC_IMPORT_CF_ALLOCATOR_DEFAULT)
         }
         ("MathLib", "_FE_DFL_ENV") => Some(PPC_IMPORT_MATH_FE_DFL_ENV),

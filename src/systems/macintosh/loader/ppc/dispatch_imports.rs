@@ -1552,6 +1552,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEGetHeight
         | PpcImportDispatcherTarget::TEGetPoint
         | PpcImportDispatcherTarget::TEScroll { .. }
+        | PpcImportDispatcherTarget::TESelView
+        | PpcImportDispatcherTarget::TEGetOffset
+        | PpcImportDispatcherTarget::TEGetStyle
         | PpcImportDispatcherTarget::TEAutoView
         | PpcImportDispatcherTarget::TEFeatureFlag
         | PpcImportDispatcherTarget::TECopy { .. }
@@ -1846,6 +1849,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::BackColor
         | PpcImportDispatcherTarget::SetThemePen
         | PpcImportDispatcherTarget::RGBForeColor
+        | PpcImportDispatcherTarget::SaveFore
+        | PpcImportDispatcherTarget::SaveBack
+        | PpcImportDispatcherTarget::RestoreFore
+        | PpcImportDispatcherTarget::RestoreBack
         | PpcImportDispatcherTarget::RGBBackColor
         | PpcImportDispatcherTarget::OpColor
         | PpcImportDispatcherTarget::HiliteColor
@@ -1979,6 +1986,7 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::ClipRect
         | PpcImportDispatcherTarget::GetClip
         | PpcImportDispatcherTarget::GetPortVisibleRegion
+        | PpcImportDispatcherTarget::GetPortClipRegion
         | PpcImportDispatcherTarget::SetClip
         | PpcImportDispatcherTarget::BitMapToRegion
         | PpcImportDispatcherTarget::NewRgn
@@ -2260,6 +2268,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
+        | PpcImportDispatcherTarget::AERemoveEventHandler
         | PpcImportDispatcherTarget::AEInstallSpecialHandler
         | PpcImportDispatcherTarget::AEProcessAppleEvent => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")

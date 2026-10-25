@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Inside Macintosh: Interapplication Communication (1993), p. 4-112.
+const PPC_ERR_AE_HANDLER_NOT_FOUND: i16 = -1717;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PpcAppleEventDispatchAllocation {
     pub(super) resume_guest_call_depth: usize,
@@ -815,6 +818,23 @@ pub(super) fn dispatch_apple_event_import(
         }
         PpcImportDispatcherTarget::AEInstallEventHandler => {
             Some(ppc_install_apple_event_handler(cpu, memory, apple_events))
+        }
+        PpcImportDispatcherTarget::AERemoveEventHandler => {
+            // Inside Macintosh: Interapplication Communication (1993),
+            // p. 4-64: AERemoveEventHandler(class, ID, handler, isSysHandler)
+            // removes the entry only when the handler matches, and reports
+            // errAEHandlerNotFound otherwise. A nil handler matches any.
+            let removed = apple_events.handlers.remove(
+                cpu.gpr[6] & 0xff != 0,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5],
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(if removed {
+                PPC_NO_ERR
+            } else {
+                PPC_ERR_AE_HANDLER_NOT_FOUND
+            })))
         }
         PpcImportDispatcherTarget::AEProcessAppleEvent => {
             let guest_call_depth = toolbox_startup.execution.calls().depth();

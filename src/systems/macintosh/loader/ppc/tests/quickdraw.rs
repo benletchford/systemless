@@ -6990,3 +6990,32 @@ fn copied_color_port_bitmap_proxy_resolves_pixels_and_colour_table() {
         assert!(table.handle.is_none());
     }
 }
+
+#[test]
+fn save_and_restore_fore_color_use_the_colorspec_rgb_field() {
+    let pef = synthetic_pef_with_import(b"SaveFore");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let (spec, color) = (PPC_DATA_BASE + 0x1000, PPC_DATA_BASE + 0x1010);
+    loaded.memory.add_region(spec, vec![0; 0x20]);
+    for (index, component) in [0x1234u16, 0x5678, 0x9abc].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u16_be(color + 2 * index as u32, component)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = color;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
+    loaded.cpu.gpr[3] = spec;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SaveFore);
+    assert_eq!(loaded.memory.read_u16_be(spec), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(spec + 2), Some(0x1234));
+    assert_eq!(loaded.memory.read_u16_be(spec + 6), Some(0x9abc));
+
+    loaded.memory.write_u16_be(spec + 2, 0xffff).unwrap();
+    loaded.cpu.gpr[3] = spec;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RestoreFore);
+    loaded.cpu.gpr[3] = color;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetForeColor);
+    assert_eq!(loaded.memory.read_u16_be(color), Some(0xffff));
+    assert_eq!(loaded.memory.read_u16_be(color + 2), Some(0x5678));
+}

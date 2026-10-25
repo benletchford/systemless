@@ -66,6 +66,8 @@ pub enum PpcQuickTimeCompatibilityOperation {
     MCGetControllerBoundsRect,
     MCSetActionFilterWithRefCon,
     MCSetControllerBoundsRect,
+    MCSetControllerPort,
+    MCGetControllerPort,
     MCIdle,
     MCGetCurrentTime,
     GetMovieVolume,
@@ -816,6 +818,29 @@ pub(super) fn dispatch_quicktime_compatibility(
                 return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
             };
             controller.rect = rect;
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcQuickTimeCompatibilityOperation::MCSetControllerPort
+        | PpcQuickTimeCompatibilityOperation::MCGetControllerPort => {
+            // QuickTime Components (1993), pp. 2-39–2-40: the controller
+            // draws into the port MCSetMovie or MCSetControllerPort gave it.
+            let Some(controller) = quicktime
+                .movie_controllers
+                .iter_mut()
+                .find(|controller| controller.handle == cpu.gpr[3])
+            else {
+                return PpcImportAction::Return(
+                    if operation == PpcQuickTimeCompatibilityOperation::MCGetControllerPort {
+                        0
+                    } else {
+                        ppc_i16_result(PPC_INVALID_COMPONENT_ID)
+                    },
+                );
+            };
+            if operation == PpcQuickTimeCompatibilityOperation::MCGetControllerPort {
+                return PpcImportAction::Return(controller.window);
+            }
+            controller.window = cpu.gpr[4];
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcQuickTimeCompatibilityOperation::MCIdle => {

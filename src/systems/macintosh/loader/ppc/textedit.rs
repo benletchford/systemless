@@ -1836,6 +1836,49 @@ pub(super) fn ppc_te_get_point(
     (u32::from(v as u16) << 16) | u32::from(h as u16)
 }
 
+/// Inside Macintosh: Text (1993), p. 2-91: TESelView scrolls the text the
+/// least distance that brings the selection start inside viewRect. Returns
+/// the (dh, dv) TEScroll would need, or None when nothing has to move.
+pub(super) fn ppc_te_sel_view_delta(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    te_handle: u32,
+) -> Option<(i16, i16)> {
+    let te_ptr = ppc_te_record_ptr(memory, te_handle)?;
+    let sel_start = memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?;
+    let point = ppc_te_get_point(memory, handles, te_handle, sel_start);
+    let (top, h) = ((point >> 16) as u16 as i16, point as u16 as i16);
+    let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let line_height = if styled {
+        let text_len = ppc_te_text_bytes(memory, handles, te_handle)
+            .map(|text| text.len())
+            .unwrap_or(0);
+        let runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+        ppc_te_style_at_offset(&runs, usize::from(sel_start)).line_height
+    } else {
+        ppc_te_metrics(memory, te_ptr).2
+    }
+    .max(1);
+    let (view_top, view_left, view_bottom, view_right) =
+        ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET)?;
+    let bottom = top.saturating_add(line_height);
+    let dv = if top < view_top {
+        view_top - top
+    } else if bottom > view_bottom {
+        (view_bottom - bottom).max(view_top - top)
+    } else {
+        0
+    };
+    let dh = if h < view_left {
+        view_left - h
+    } else if h >= view_right {
+        view_right - 1 - h
+    } else {
+        0
+    };
+    (dh != 0 || dv != 0).then_some((dh, dv))
+}
+
 /// Moves destRect by (dh, dv), pinned to the text when requested. Returns
 /// whether destRect actually moved.
 pub(super) fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, pinned: bool) -> bool {

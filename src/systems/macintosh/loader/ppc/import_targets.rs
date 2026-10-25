@@ -232,6 +232,11 @@ pub enum PpcImportDispatcherTarget {
     ClipRect,
     GetClip,
     GetPortVisibleRegion,
+    SaveFore,
+    SaveBack,
+    RestoreFore,
+    RestoreBack,
+    GetPortClipRegion,
     SetClip,
     GetPen,
     HidePen,
@@ -708,6 +713,9 @@ pub enum PpcImportDispatcherTarget {
     TEGetHeight,
     TEGetPoint,
     TEScroll { pinned: bool },
+    TESelView,
+    TEGetOffset,
+    TEGetStyle,
     TEAutoView,
     TEFeatureFlag,
     TECopy { cut: bool, dialog: bool },
@@ -724,6 +732,7 @@ pub enum PpcImportDispatcherTarget {
     OpenDeskAcc,
     CloseDeskAcc,
     AEInstallEventHandler,
+    AERemoveEventHandler,
     AEInstallSpecialHandler,
     AEProcessAppleEvent,
     LNew,
@@ -2617,6 +2626,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEInstallEventHandler") => {
             PpcImportDispatcherTarget::AEInstallEventHandler
         }
+        ("InterfaceLib", "AERemoveEventHandler") => PpcImportDispatcherTarget::AERemoveEventHandler,
         ("DrawSprocketLib", "DSpStartup") => PpcImportDispatcherTarget::DSpStartup,
         ("DrawSprocketLib", "DSpSetDebugMode") => PpcImportDispatcherTarget::DSpSetDebugMode,
         ("DrawSprocketLib", "DSpGetVersion") => PpcImportDispatcherTarget::DSpGetVersion,
@@ -2826,6 +2836,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TickCount") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "GetZone") => PpcImportDispatcherTarget::GetZone,
         ("InterfaceLib", "SetZone") => PpcImportDispatcherTarget::SetZone,
+        // The ApplZone and SysZone low-memory globals hold the zones that
+        // ApplicationZone and SystemZone return.
+        ("InterfaceLib", "LMGetApplZone") => PpcImportDispatcherTarget::ApplicationZone,
+        ("InterfaceLib", "LMGetSysZone") => PpcImportDispatcherTarget::SystemZone,
         ("InterfaceLib", "InitZone") => PpcImportDispatcherTarget::InitZone,
         ("InterfaceLib", "SystemZone") => PpcImportDispatcherTarget::SystemZone,
         ("InterfaceLib", "ApplicZone") | ("InterfaceLib", "ApplicationZone") => {
@@ -2856,7 +2870,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenRFPerm") => PpcImportDispatcherTarget::OpenRFPerm,
         ("InterfaceLib", "HOpenResFile") => PpcImportDispatcherTarget::HOpenResFile,
         ("InterfaceLib", "ResError" | "LMGetResErr") => PpcImportDispatcherTarget::ResError,
-        ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
+        ("InterfaceLib", "SetResLoad" | "LMSetResLoad") => PpcImportDispatcherTarget::SetResLoad,
         ("InterfaceLib", "LMGetResLoad") => PpcImportDispatcherTarget::LMGetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
         ("InterfaceLib", "GetIndString") | ("InterfaceLib", "getindstring") => {
@@ -2977,6 +2991,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "BackColor") => PpcImportDispatcherTarget::BackColor,
         ("InterfaceLib" | "AppearanceLib", "SetThemePen") => PpcImportDispatcherTarget::SetThemePen,
         ("InterfaceLib", "RGBForeColor") => PpcImportDispatcherTarget::RGBForeColor,
+        ("InterfaceLib", "SaveFore") => PpcImportDispatcherTarget::SaveFore,
+        ("InterfaceLib", "SaveBack") => PpcImportDispatcherTarget::SaveBack,
+        ("InterfaceLib", "RestoreFore") => PpcImportDispatcherTarget::RestoreFore,
+        ("InterfaceLib", "RestoreBack") => PpcImportDispatcherTarget::RestoreBack,
         ("InterfaceLib", "RGBBackColor") => PpcImportDispatcherTarget::RGBBackColor,
         ("InterfaceLib", "OpColor") => PpcImportDispatcherTarget::OpColor,
         ("InterfaceLib", "HiliteColor") => PpcImportDispatcherTarget::HiliteColor,
@@ -3326,6 +3344,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "GetPortVisibleRegion" | "getportvisibleregion") => {
             PpcImportDispatcherTarget::GetPortVisibleRegion
         }
+        ("InterfaceLib", "GetPortClipRegion") => PpcImportDispatcherTarget::GetPortClipRegion,
         ("InterfaceLib", "SetClip") => PpcImportDispatcherTarget::SetClip,
         ("InterfaceLib", "GetPen") => PpcImportDispatcherTarget::GetPen,
         ("InterfaceLib", "HidePen") => PpcImportDispatcherTarget::HidePen,
@@ -3601,6 +3620,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetPt") => PpcImportDispatcherTarget::SetPt,
         ("InterfaceLib", "EqualPt") => PpcImportDispatcherTarget::EqualPt,
         ("InterfaceLib", "PtInRect") => PpcImportDispatcherTarget::PtInRect,
+        // PtInIconID(Point, const Rect *, alignment, IconID) shares
+        // PtInRect's registers; the hit test uses the icon's whole rect
+        // rather than its mask.
+        ("InterfaceLib", "PtInIconID") => PpcImportDispatcherTarget::PtInRect,
         ("InterfaceLib", "SetOrigin") => PpcImportDispatcherTarget::SetOrigin,
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
@@ -3657,6 +3680,30 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPortTextSize") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortTextSize)
         }
+        ("InterfaceLib", "GetPortTextFace") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortTextFace)
+        }
+        ("InterfaceLib", "GetPortTextMode") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortTextMode)
+        }
+        ("InterfaceLib", "GetPortPenMode") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortPenMode)
+        }
+        ("InterfaceLib", "GetPortPenSize") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortPenSize)
+        }
+        ("InterfaceLib", "GetPortGrafProcs") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortGrafProcs)
+        }
+        ("InterfaceLib", "GetPortForeColor") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortForeColor)
+        }
+        ("InterfaceLib", "GetPortBackColor") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPortBackColor)
+        }
+        ("InterfaceLib", "GetPixBounds") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPixBounds)
+        }
         ("InterfaceLib", "SetWindowContentColor") => PpcImportDispatcherTarget::ToolboxCompat(
             PpcToolboxCompatOperation::SetWindowContentColor,
         ),
@@ -3678,6 +3725,32 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FollowFinderAlias") => PpcImportDispatcherTarget::FollowFinderAlias,
         // No removable media is mounted, so there is nothing to eject.
         ("InterfaceLib", "Eject") => PpcImportDispatcherTarget::ReturnNoErr,
+        // The only volume is the startup volume, which is always in use:
+        // fBsyErr (Inside Macintosh: Files (1992), p. 2-150).
+        ("InterfaceLib", "UnmountVol" | "PBUnmountVol" | "PBUnmountVolImmed") => {
+            PpcImportDispatcherTarget::ReturnError(-47)
+        }
+        // Files are never locked, so clearing the lock has nothing to do.
+        ("InterfaceLib", "HRstFLock" | "FSpRstFLock") => PpcImportDispatcherTarget::ReturnNoErr,
+        // AppleTalk is not open: IsMPPOpen and LMGetKbdLast (no ADB
+        // keyboard) report false and zero.
+        ("InterfaceLib", "IsMPPOpen" | "LMGetKbdLast") => PpcImportDispatcherTarget::ReturnNoErr,
+        // A machine without ADB: CountADBs finds no devices, and the
+        // per-device calls fail.
+        ("InterfaceLib", "CountADBs") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "GetIndADB" | "GetADBInfo" | "SetADBInfo" | "ADBOp") => {
+            PpcImportDispatcherTarget::ReturnError(-1)
+        }
+        // Font rendering is the same either way.
+        ("InterfaceLib", "SetOutlinePreferred") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "DisposeNavEventUPP") => PpcImportDispatcherTarget::ReturnNoErr,
+        // There is a single display, so it is already the main display.
+        ("InterfaceLib" | "DisplayLib", "DMSetMainDisplay") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        // The Communications Toolbox with no connection tools installed:
+        // InitCM reports cmNoTools (8).
+        ("InterfaceLib", "InitCM") => PpcImportDispatcherTarget::ReturnError(8),
         // The Communications Toolbox with no connection tools installed.
         ("InterfaceLib", "CMNew" | "CRMSearch") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxNil)
@@ -3748,7 +3821,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetScrap") => PpcImportDispatcherTarget::GetScrap,
         ("InterfaceLib", "InfoScrap") => PpcImportDispatcherTarget::InfoScrap,
         ("InterfaceLib", "PutScrap") => PpcImportDispatcherTarget::PutScrap,
-        ("InterfaceLib", "ZeroScrap") => PpcImportDispatcherTarget::ZeroScrap,
+        ("InterfaceLib", "ZeroScrap" | "ClearCurrentScrap") => PpcImportDispatcherTarget::ZeroScrap,
         ("InterfaceLib", "LoadScrap") => PpcImportDispatcherTarget::LoadScrap,
         ("InterfaceLib", "UnloadScrap") => PpcImportDispatcherTarget::UnloadScrap,
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
@@ -4244,6 +4317,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TEGetPoint") => PpcImportDispatcherTarget::TEGetPoint,
         ("InterfaceLib", "TEScroll") => PpcImportDispatcherTarget::TEScroll { pinned: false },
         ("InterfaceLib", "TEPinScroll") => PpcImportDispatcherTarget::TEScroll { pinned: true },
+        ("InterfaceLib", "TESelView") => PpcImportDispatcherTarget::TESelView,
+        ("InterfaceLib", "TEGetOffset") => PpcImportDispatcherTarget::TEGetOffset,
+        ("InterfaceLib", "TEGetStyle") => PpcImportDispatcherTarget::TEGetStyle,
         ("InterfaceLib", "TEAutoView") => PpcImportDispatcherTarget::TEAutoView,
         ("InterfaceLib", "TEFeatureFlag") => PpcImportDispatcherTarget::TEFeatureFlag,
         ("InterfaceLib", "TECopy") => PpcImportDispatcherTarget::TECopy {
@@ -6476,6 +6552,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "MCSetControllerBoundsRect") => {
             PpcImportDispatcherTarget::QuickTimeCompatibility(
                 PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect,
+            )
+        }
+        ("QuickTimeLib", "MCSetControllerPort") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::MCSetControllerPort,
+            )
+        }
+        ("QuickTimeLib", "MCGetControllerPort") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::MCGetControllerPort,
             )
         }
         ("QuickTimeLib", "MCIdle") => PpcImportDispatcherTarget::QuickTimeCompatibility(

@@ -4589,3 +4589,32 @@ fn movie_color_table_is_nil_and_component_version_rejects_instances() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(out), Some(0));
 }
+
+#[test]
+fn quicktime_mc_controller_port_round_trips() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCSetControllerPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let controller = PPC_QT_MOVIE + 0x1_0000;
+    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
+        handle: controller,
+        movie: PPC_QT_MOVIE,
+        rect: (0, 0, 100, 100),
+        flags: 0,
+        window: 0,
+        origin: 0,
+        action_filter: 0,
+        action_ref_con: 0,
+    });
+    loaded.cpu.gpr[3] = controller;
+    loaded.cpu.gpr[4] = 0x0204_0000;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QuickTimeCompatibility(
+        PpcQuickTimeCompatibilityOperation::MCGetControllerPort,
+    );
+    loaded.cpu.gpr[3] = controller;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], 0x0204_0000);
+}
