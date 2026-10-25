@@ -3243,17 +3243,20 @@ fn ppc_character_byte_type_character_type_and_keytrans_compatibility() {
 
 #[test]
 fn ppc_debugstr_glue_returns_like_debugstr() {
-    for symbol in ["DebugStr", "debugstr"] {
+    for (symbol, c_string) in [("DebugStr", false), ("debugstr", true)] {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", symbol),
-            PpcImportDispatcherTarget::MenuNoop,
+            PpcImportDispatcherTarget::DebugStr { c_string },
             "{symbol}"
         );
     }
     let pef = synthetic_pef_with_import(b"debugstr");
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.cpu.gpr[3] = 0x1234_5678;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuNoop);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DebugStr { c_string: true },
+    );
     assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
 }
 
