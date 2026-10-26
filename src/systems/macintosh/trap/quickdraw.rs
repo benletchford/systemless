@@ -17457,6 +17457,11 @@ impl super::TrapDispatcher {
             }
         }
 
+        // No changed device cells means no guest ColorTable update or seed change.
+        if !color_environment_changed {
+            return;
+        }
+
         let gdh = if *self.current_gdevice != 0 {
             *self.current_gdevice
         } else {

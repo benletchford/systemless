@@ -18156,6 +18156,11 @@ fn copy_bits_converts_between_direct_color_depths() {
         d.front_window = window;
         let logical = *d.color_manager_clut;
         assert_ne!(logical, [[0; 3]; 256]);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        let table_size = 8 + u32::from(bus.read_word(ctab + 6) + 1) * 8;
+        let table_before = bus.read_bytes(ctab, table_size as usize);
         // SetEntries fades hardware while retaining the logical drawing table.
         d.device_clut.replace([[0; 3]; 256]);
 
@@ -18163,6 +18168,7 @@ fn copy_bits_converts_between_direct_color_depths() {
 
         assert_eq!(*d.device_clut, [[0; 3]; 256]);
         assert_eq!(*d.color_manager_clut, logical);
+        assert_eq!(bus.read_bytes(ctab, table_size as usize), table_before);
         let palette = d.window_palette_handle(window);
         assert_ne!(palette, 0);
         assert!(d.palette_device_indices.contains_key(&(palette, 0)));
