@@ -99,3 +99,52 @@ fn usb_unknown_pipes_do_not_fabricate_state_or_modify_outputs() {
         }
     }
 }
+
+#[test]
+fn usb_allocation_rejects_bad_parameter_blocks_and_nonexistent_devices() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBAllocMem",
+    ))
+    .unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 80]);
+    loaded.memory.write_u16_be(pb + 6, 72).unwrap();
+    loaded.memory.write_u16_be(pb + 8, 0x0100).unwrap();
+    loaded.memory.write_u32_be(pb + 20, 0x12345678).unwrap();
+    loaded.memory.write_u32_be(pb + 28, 0x1234).unwrap();
+    loaded.memory.write_u32_be(pb + 32, 0xa5a5a5a5).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 1024).unwrap();
+    let before = ppc_memory_read_bytes(&mut loaded.memory, pb, 80).unwrap();
+    let heap_before = *loaded.process_memory_manager.heap_cursor_mut();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBAllocMem);
+    assert_eq!(loaded.cpu.gpr[3], (-6998i32) as u32);
+    assert_eq!(
+        *loaded.process_memory_manager.heap_cursor_mut(),
+        heap_before
+    );
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, pb, 80),
+        Some(before)
+    );
+    for (offset, value, error) in [
+        (20, 0, -6984),
+        (20, u32::MAX, -6984),
+        (44, 0x80000000, -6983),
+    ] {
+        loaded.memory.write_u32_be(pb + 20, 0x12345678).unwrap();
+        loaded.memory.write_u32_be(pb + offset, value).unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::USBAllocMem);
+        assert_eq!(loaded.cpu.gpr[3], error as u32);
+    }
+    loaded.memory.write_u16_be(pb + 8, 0xffff).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBAllocMem);
+    assert_eq!(loaded.cpu.gpr[3], (-6986i32) as u32);
+    loaded.memory.write_u16_be(pb + 6, 70).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBAllocMem);
+    assert_eq!(loaded.cpu.gpr[3], (-6985i32) as u32);
+}

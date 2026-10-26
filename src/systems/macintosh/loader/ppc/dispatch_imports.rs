@@ -3395,6 +3395,26 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
+        PpcImportDispatcherTarget::USBAllocMem => {
+            // USB DDK rev. 26, pp. 99 and 150–151. USBPB is 72 bytes
+            // with mac68k alignment. Allocation requires a live USB reference;
+            // immediate errors do not schedule the completion routine.
+            let pb = cpu.gpr[3];
+            let error: i32 = if pb == 0 || !ppc_memory_can_read_bytes(memory, pb, 72) {
+                -6985
+            } else if memory.read_u16_be(pb + 6).unwrap_or(0) < 72 {
+                -6985
+            } else if memory.read_u16_be(pb + 8) != Some(0x0100) {
+                -6986
+            } else if matches!(memory.read_u32_be(pb + 20), Some(0 | u32::MAX)) {
+                -6984
+            } else if memory.read_u32_be(pb + 44).unwrap_or(0) & !32 != 0 {
+                -6983
+            } else {
+                -6998
+            };
+            Some(PpcImportAction::Return(error as u32))
+        }
         // No USB device or pipe references exist in this machine profile.
         // USB DDK rev. 26, pp. 135–136: an unknown-pipe error leaves the
         // GetPipeStatus output untouched, rather than inventing an idle pipe.
