@@ -7097,3 +7097,125 @@ fn draw_picture_reads_guest_get_pic_proc_until_end_without_overreading() {
         Some(picture[..10].to_vec())
     );
 }
+
+
+#[test]
+fn paintrect_uses_color_pen_pattern_clipping_modes_and_resets() {
+    for depth in [8, 16] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"PaintRect"),
+            PpcLoadConfig {
+                screen_depth: depth,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let scratch = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+        let pattern = scratch + 16;
+        let map = pattern + 28;
+        loaded.memory.write_u32_be(scratch, pattern).unwrap();
+        loaded.memory.write_u16_be(pattern, 1).unwrap();
+        loaded.memory.write_u32_be(pattern + 2, 28).unwrap();
+        loaded.memory.write_u32_be(pattern + 6, 78).unwrap();
+        loaded.memory.write_u16_be(map + 4, 0x8004).unwrap();
+        loaded.memory.write_u16_be(map + 10, 2).unwrap();
+        loaded.memory.write_u16_be(map + 12, 2).unwrap();
+        loaded.memory.write_u16_be(map + 32, 16).unwrap();
+        loaded
+            .memory
+            .write_bytes(pattern + 78, &[0x7f, 0xff, 0, 0, 0, 0, 0x7f, 0xff])
+            .unwrap();
+        let rect = scratch + 0x200;
+        loaded.memory.write_u16_be(rect + 4, 4).unwrap();
+        loaded.memory.write_u16_be(rect + 6, 4).unwrap();
+        let clip = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip, 1, 1, 3, 3).unwrap();
+        let front =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap()
+                .front_buffer;
+        for y in 0..4 {
+            for x in 0..4 {
+                ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+            }
+        }
+        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0xff; 8]);
+        loaded.cpu.gpr[3] = scratch;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenPixPat);
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        let white = if depth == 8 { 0 } else { 0x7fff };
+        let black = if depth == 8 { 255 } else { 0 };
+        for y in 0..4 {
+            for x in 0..4 {
+                let expected = if !(1..3).contains(&x) || !(1..3).contains(&y) {
+                    17
+                } else if (x + y) % 2 == 0 {
+                    white
+                } else {
+                    black
+                };
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(expected),
+                    "depth={depth}, ({x},{y})"
+                );
+            }
+        }
+        // Applying patXor to the same tile clears the painted pixels only.
+        loaded.cpu.gpr[3] = 10;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 1)),
+            Some(0)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+            Some(0)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+            Some(17)
+        );
+        loaded.cpu.gpr[3] = 8;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+        loaded.cpu.gpr[3] = scratch + 0x300; // all-zero monochrome pattern
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::PenPat,
+            ),
+        );
+        assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 58), Some(0));
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 1)),
+            Some(white)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+            Some(white)
+        );
+        loaded.cpu.gpr[3] = scratch;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenPixPat);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenNormal);
+        assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 58), Some(0));
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 1)),
+            Some(black)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+            Some(black)
+        );
+    }
+}

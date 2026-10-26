@@ -2934,6 +2934,12 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 // shape operations. A set bit selects the foreground color;
                 // a clear bit selects the background color.
                 toolbox_startup.quickdraw_pen_pattern = pattern;
+                if memory
+                    .read_u16_be(current_gworld.wrapping_add(6))
+                    .is_some_and(|v| v & 0xc000 == 0xc000)
+                {
+                    let _ = memory.write_u32_be(current_gworld.wrapping_add(58), 0);
+                }
             }
             PpcImportAction::ReturnPreserve
         }
