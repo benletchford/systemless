@@ -22,11 +22,11 @@ compatibility:
       Native optimized candidate combining streamed pictures #5072, zero-base
       store updates #5077 and port picture clipping #5078. Executable SHA-256
       e02385344b48e7951d1cb046acc5eeb5f84c24a1103db37ebcad89e679c268da.
-      Untouched original archive, exact executable below, default display and
+      Untouched Tucows original archive, exact executable below, default display and
       fixed default startup time. Dismiss the original trial notice, choose Play
       Barrack, move the gun and fire a barrier near the bottom of the field.
       Fresh replay passes eight measured pixel checks and one non-silent audio
-      check at 1632 frontend / 1862 guest ticks, zero exhausted frames. Captures
+      check plus six exact screenshot comparisons at 1632 frontend / 1862 guest ticks, zero exhausted frames. Captures
       inspected: firing clears 9 percent and scores 90 points; the matched
       no-fire control passes its separate check and remains at zero percent.
       This is bounded input and barrier play, not full levels, sustained play,
@@ -36,20 +36,22 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5080
 runtime:
-  executable_path: Barrack 1.0.4/Barrack 1.0.4 ƒ/Barrack
+  executable_path: Barrack Installer/Barrack 1.0.4 ƒ/Barrack
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Barrack%201.0.4.sit
-    expected_sha256: 83e99f16e5d3f368247dbc31c8db8ccbe4ea63e0ab854f0a1a16da83e1c366f3
-    expected_size: 3081805
+    url: https://archive.org/download/tucows_205647_Barrack/barrack.sit
+    expected_sha256: 1d02dfb509546b8fc2962823537119c95a835a7621dbdd9abab192c656677974
+    expected_size: 3081907
   provenance:
     redistribution: permitted
     original: true
     sources:
+    - https://archive.org/details/tucows_205647_Barrack
+    - https://archive.org/download/tucows_205647_Barrack/barrack.sit
     - https://www.vintageapplemac.com/files/games/Barrack%201.0.4.sit
     - https://github.com/benletchford/systemless/issues/5080
     license: Ambrosia Software nonprofit distribution licence
@@ -59,7 +61,13 @@ artifacts:
       without prior written notice when the software is unchanged and the complete
       works are included. Distribution for profit requires written permission.
     notes: >-
-      Complete original 1.0.4 StuffIt installer archive, served without alteration.
+      Complete original Tucows 1.0.4 StuffIt installer archive, served without alteration.
+      Independent unar extraction confirms identical installer data/resource forks and
+      FinderInfo to the initially tested Vintage Apple Mac archive. All nineteen expanded
+      records, both forks and supported metadata match after removing the outer folder
+      name. Fresh native replay passes nine gameplay/audio checks and all six full-frame
+      comparisons to that initial source. These comparisons are not an independent
+      emulator oracle.
       Retains the game, registration application, licence, release notes, FAQs,
       web references, icons and media. The original 30-day shareware trial remains
       intact; no registration code or bypass. Production expansion yields nineteen
