@@ -7219,3 +7219,135 @@ fn paintrect_uses_color_pen_pattern_clipping_modes_and_resets() {
         );
     }
 }
+
+#[test]
+fn draw_picture_obeys_translated_port_clip_and_visibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawPicture")).unwrap();
+    let port = PPC_MAIN_GWORLD;
+    ppc_set_port_origin(&mut loaded.memory, port, -80, -60).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let scratch = 0x1800_0000;
+    loaded.memory.add_region(scratch, vec![0; 0x1000]);
+    let clip_handle = scratch + 0x100;
+    loaded
+        .memory
+        .write_u32_be(clip_handle, scratch + 0x110)
+        .unwrap();
+    let rows = vec![vec![-70, -69, -68, -66]; 4];
+    let storage = ppc_region_storage_from_rows(-50, &rows).unwrap();
+    loaded
+        .memory
+        .write_bytes(scratch + 0x110, &storage)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, clip_handle)
+        .unwrap();
+    ppc_write_rgn_bbox(
+        &mut loaded.memory,
+        PPC_MAIN_VIS_RGN_HANDLE,
+        -49,
+        -70,
+        -47,
+        -67,
+    )
+    .unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch, -50, -70, -46, -66).unwrap();
+    let picture = [
+        0, 0, 0, 0, 0, 0, 0, 4, 0, 4, 0x11, 1, 0x31, 0, 0, 0, 0, 0, 4, 0, 4, 0xff,
+    ];
+    for y in 10..14 {
+        for x in 10..14 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, surface.front_buffer, (x, y), 0);
+        }
+    }
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    assert!(with_test_color_manager_clut!(
+        loaded,
+        |color_manager_clut| ppc_draw_picture_bytes(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.process_file_system.vfs_resources,
+            &loaded.gworlds,
+            port,
+            &loaded.screen_clut,
+            color_manager_clut,
+            &picture
+        )
+    ));
+    for y in 10..14 {
+        for x in 10..14 {
+            let expected = if (11..13).contains(&y) && (x == 10 || x == 12) {
+                255
+            } else {
+                0
+            };
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (x, y)),
+                Some(expected),
+                "pixel ({x},{y})"
+            );
+        }
+    }
+}
+
+#[test]
+fn picture_renderer_preserves_pixels_outside_clip_for_indexed_direct_and_quilt() {
+    for depth in [8, 16] {
+        for raw_quilt in [false, true] {
+            let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+            let pixels = 0x1800_0000;
+            loaded.memory.add_region(pixels, vec![0; 128]);
+            let front = PpcFrontBuffer {
+                base_addr: pixels,
+                row_bytes: 4 * depth / 8,
+                width: 4,
+                height: 4,
+                depth,
+            };
+            let white = if depth == 8 { 0 } else { 0x7fff };
+            let black = if depth == 8 { 255 } else { 0 };
+            let mut picture = vec![0, 0, 0, 0, 0, 0, 0, 4, 0, 4];
+            if raw_quilt {
+                picture.resize(24, 0);
+                picture.extend_from_slice(&[255; 16]);
+            } else {
+                picture.extend_from_slice(&[0x11, 1, 0x31, 0, 0, 0, 0, 0, 4, 0, 4, 0xff]);
+            }
+            for empty in [false, true] {
+                for y in 0..4 {
+                    for x in 0..4 {
+                        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), white);
+                    }
+                }
+                let clip =
+                    pict::DstClip::new(if empty { (0, 0, 0, 0) } else { (1, 1, 3, 3) }, vec![]);
+                assert!(ppc_draw_pict_bytes_clipped(
+                    &mut loaded.memory,
+                    front,
+                    &picture,
+                    (0, 0, 4, 4),
+                    &loaded.screen_clut,
+                    0,
+                    false,
+                    Some(&clip)
+                ));
+                for y in 0..4 {
+                    for x in 0..4 {
+                        let expected = if !empty && (1..3).contains(&x) && (1..3).contains(&y) {
+                            black
+                        } else {
+                            white
+                        };
+                        assert_eq!(
+                            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                            Some(expected),
+                            "depth={depth} quilt={raw_quilt} empty={empty} ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

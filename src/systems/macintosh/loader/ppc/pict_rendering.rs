@@ -28,6 +28,7 @@ pub(crate) fn ppc_draw_raw_quilt_frame(
     dst_rect: (i16, i16, i16, i16),
     clut: &[[u16; 3]; 256],
     zero_is_opaque: bool,
+    dst_clip: Option<&pict::DstClip>,
 ) -> bool {
     if data.len() < 24 || data[10..24].iter().any(|byte| *byte != 0) {
         return false;
@@ -70,6 +71,9 @@ pub(crate) fn ppc_draw_raw_quilt_frame(
         let src_y =
             ((y - i32::from(dst_top)) * src_height / dst_height).clamp(0, src_height - 1) as usize;
         for x in copy_left..copy_right {
+            if dst_clip.is_some_and(|clip| !clip.contains(x, y)) {
+                continue;
+            }
             let src_x = ((x - i32::from(dst_left)) * src_width / dst_width).clamp(0, src_width - 1)
                 as usize;
             let Some(mut color_index) = raw
@@ -115,6 +119,28 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
     device_ct_seed: u32,
     quilt_zero_is_opaque: bool,
 ) -> bool {
+    ppc_draw_pict_bytes_clipped(
+        memory,
+        front_buffer,
+        data,
+        dst_rect,
+        clut,
+        device_ct_seed,
+        quilt_zero_is_opaque,
+        None,
+    )
+}
+
+pub(crate) fn ppc_draw_pict_bytes_clipped(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    data: &[u8],
+    dst_rect: (i16, i16, i16, i16),
+    clut: &[[u16; 3]; 256],
+    device_ct_seed: u32,
+    quilt_zero_is_opaque: bool,
+    dst_clip: Option<&pict::DstClip>,
+) -> bool {
     if front_buffer.base_addr == 0 || front_buffer.width == 0 || front_buffer.height == 0 {
         return false;
     }
@@ -141,6 +167,7 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
             dst_rect,
             clut,
             quilt_zero_is_opaque,
+            dst_clip,
         )
     {
         return true;
@@ -238,7 +265,7 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
             ),
             draw_clut,
             device_ct_seed,
-            None,
+            dst_clip,
         );
         if !rendered {
             return false;
@@ -248,7 +275,8 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
     }
 
     if !matches!(front_buffer.depth, 16 | 32)
-        || front_buffer.row_bytes < front_buffer.width.saturating_mul(front_buffer.depth / 8) {
+        || front_buffer.row_bytes < front_buffer.width.saturating_mul(front_buffer.depth / 8)
+    {
         return false;
     }
     let row_bytes = front_buffer.row_bytes;
@@ -307,10 +335,16 @@ pub(crate) fn ppc_draw_pict_bytes_to_16bpp(
         dst_left,
         dst_bottom,
         dst_right,
-        (screen_base, row_bytes, width, height, front_buffer.depth as u16),
+        (
+            screen_base,
+            row_bytes,
+            width,
+            height,
+            front_buffer.depth as u16,
+        ),
         clut,
         device_ct_seed,
-        None,
+        dst_clip,
     );
     if !rendered {
         return false;
@@ -354,7 +388,11 @@ pub(crate) fn minimal_pict_bytes() -> [u8; 12] {
     ]
 }
 
-pub(crate) fn ppc_get_pict_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) -> i16 {
+pub(crate) fn ppc_get_pict_info(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+) -> i16 {
     let pict_info_ptr = cpu.gpr[4];
     if pict_info_ptr == 0 || !ppc_memory_can_write_bytes(memory, pict_info_ptr, PPC_PICT_INFO_SIZE)
     {
@@ -503,4 +541,65 @@ pub(crate) fn ppc_dispose_pixmap(
         handles,
         pixmap_handle,
     );
+}
+
+/// Convert the port's clip and visibility regions to framebuffer coordinates.
+/// Keep region holes intact and bound decoded rows to the destination surface.
+pub(super) fn ppc_picture_port_clip(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    surface: PpcQuickDrawSurface,
+) -> pict::DstClip {
+    let bounds = (
+        0,
+        0,
+        surface.front_buffer.height as i32,
+        surface.front_buffer.width as i32,
+    );
+    let mut clip = pict::DstClip::new(bounds, vec![]);
+    let mut regions = Vec::new();
+    for offset in [
+        PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
+        PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+    ] {
+        let Some(storage) = memory
+            .read_u32_be(port.wrapping_add(offset))
+            .and_then(|handle| ppc_region_storage(memory, handle))
+        else {
+            continue;
+        };
+        let Some(bbox) = ppc_region_storage_bbox(&storage) else {
+            clip.intersect_rect((0, 0, 0, 0));
+            continue;
+        };
+        let (top, left, bottom, right) = surface.local_rect(bbox);
+        clip.intersect_rect((top, left, bottom, right));
+        if storage.len() == 10 {
+            continue;
+        }
+        let band_top = i32::from(bbox.0).max(i32::from(surface.top));
+        let band_bottom = i32::from(bbox.2).min(i32::from(surface.top) + bounds.2);
+        if band_bottom <= band_top {
+            continue;
+        }
+        let Some(rows) = ppc_region_rows_for_band(&storage, band_top as i16, band_bottom as i16)
+        else {
+            clip.intersect_rect((0, 0, 0, 0));
+            continue;
+        };
+        regions.push(pict::DstClipRegion::complex(
+            band_top - i32::from(surface.top),
+            left,
+            band_bottom - i32::from(surface.top),
+            right,
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|edge| i32::from(edge) - i32::from(surface.left))
+                        .collect()
+                })
+                .collect(),
+        ));
+    }
+    pict::DstClip::new(clip.rect(), regions)
 }
