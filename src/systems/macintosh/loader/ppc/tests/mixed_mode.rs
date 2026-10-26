@@ -4264,3 +4264,65 @@ fn new_te_click_loop_upp_builds_a_register_based_descriptor() {
         Some(callback)
     );
 }
+
+#[test]
+fn theme_callback_upps_bind_weak_imports_and_own_typed_descriptors() {
+    for (name, dispose, info) in [
+        (
+            "NewThemeButtonDrawUPP",
+            "DisposeThemeButtonDrawUPP",
+            0x0001_BEC0,
+        ),
+        ("NewThemeEraseUPP", "DisposeThemeEraseUPP", 0x0000_1BC0),
+    ] {
+        let target = dispatcher_target_for_import("CarbonLib", name);
+        assert_ne!(target, PpcImportDispatcherTarget::Unsupported);
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib",
+            name.as_bytes(),
+            0x82,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let loaded = load_pef_application(&pef).unwrap();
+        assert_ne!(loaded.imports[0].address, 0);
+        assert_eq!(loaded.imports[0].dispatcher_target, target);
+        // The weak-import fixture checks relocation only; use the executable
+        // import fixture to exercise constructor and disposal dispatch.
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(name.as_bytes())).unwrap();
+        let callback = PPC_CODE_BASE;
+        let original_code = ppc_memory_read_bytes(&mut loaded.memory, callback, 8).unwrap();
+        loaded.cpu.gpr[3] = callback;
+        run_test_import(&mut loaded, target);
+        let descriptor = loaded.cpu.gpr[3];
+        assert_ne!(descriptor, 0);
+        assert_ne!(descriptor, callback);
+        assert_eq!(
+            loaded.memory.read_u16_be(descriptor),
+            Some(PPC_MIXED_MODE_TRAP)
+        );
+        let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        assert_eq!(loaded.memory.read_u32_be(record), Some(info));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+            Some(callback)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET),
+            Some(PPC_ROUTINE_RECORD_POWERPC_ISA)
+        );
+        loaded.cpu.gpr[3] = descriptor;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("CarbonLib", dispose),
+        );
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, callback, 8),
+            Some(original_code)
+        );
+    }
+}

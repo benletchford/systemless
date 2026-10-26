@@ -6,6 +6,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcToolboxStartupState {
     pub(super) descriptors: dispatch_descriptor::PpcDescriptorState,
+    pub(super) theme_buttons: dispatch_theme_button::PpcThemeButtonState,
     pub(super) input_sprocket_drivers: inputsprocket_drivers::PpcInputSprocketDriverState,
     pub(crate) gestalt_values: HashMap<u32, u32>,
     /// Installed physical memory of the process's machine.
@@ -137,6 +138,7 @@ impl Default for PpcToolboxStartupState {
     fn default() -> Self {
         Self {
             descriptors: Default::default(),
+            theme_buttons: Default::default(),
             input_sprocket_drivers: Default::default(),
             gestalt_values: HashMap::new(),
             physical_ram_size: REFERENCE_MACHINE_PROFILE.ram_size_bytes,

@@ -110,6 +110,7 @@ use dispatch_cfm::*;
 mod dispatch_apple_events;
 use dispatch_apple_events::*;
 mod dispatch_appearance;
+mod dispatch_theme_button;
 mod dispatch_appletalk;
 mod dispatch_text_encoding;
 mod math_fp;

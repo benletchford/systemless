@@ -943,3 +943,5 @@ mod copy_pixpat;
 mod highlight_preferences;
 
 mod usb;
+
+mod theme_button;

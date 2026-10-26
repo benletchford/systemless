@@ -3044,18 +3044,6 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
             if transparent == Some(rgb) {
                 continue;
             }
-            let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
-                ppc_quickdraw_surface_color_pixel(
-                    memory,
-                    surface,
-                    PpcRgbColor {
-                        red: u16::from(rgb.r) * 0x0101,
-                        green: u16::from(rgb.g) * 0x0101,
-                        blue: u16::from(rgb.b) * 0x0101,
-                    },
-                )
-                .unwrap_or(0)
-            });
             let port_h = i32::from(left) + x as i32;
             let port_v = i32::from(top) + y as i32;
             let point = surface.local_point((port_h, port_v));
@@ -3065,7 +3053,48 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
                 vis_storage.as_deref(),
                 clip_storage.as_deref(),
             ) {
-                wrote |= ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, point, pixel);
+                if surface.front_buffer.depth == 32 {
+                    let frame = surface.front_buffer;
+                    let (Ok(px), Ok(py)) = (u32::try_from(point.0), u32::try_from(point.1)) else {
+                        continue;
+                    };
+                    if px >= frame.width || py >= frame.height {
+                        continue;
+                    }
+                    let Some(column) = px.checked_mul(4).filter(|column| {
+                        column
+                            .checked_add(4)
+                            .is_some_and(|end| end <= frame.row_bytes)
+                    }) else {
+                        continue;
+                    };
+                    let Some(address) = py
+                        .checked_mul(frame.row_bytes)
+                        .and_then(|row| row.checked_add(column))
+                        .and_then(|offset| frame.base_addr.checked_add(offset))
+                    else {
+                        continue;
+                    };
+                    // QuickDraw direct pixels are big-endian 0RGB, not RGB555.
+                    let pixel =
+                        (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b);
+                    wrote |= memory.write_u32_be(address, pixel).is_some();
+                } else {
+                    let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
+                        ppc_quickdraw_surface_color_pixel(
+                            memory,
+                            surface,
+                            PpcRgbColor {
+                                red: u16::from(rgb.r) * 0x0101,
+                                green: u16::from(rgb.g) * 0x0101,
+                                blue: u16::from(rgb.b) * 0x0101,
+                            },
+                        )
+                        .unwrap_or(0)
+                    });
+                    wrote |=
+                        ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, point, pixel);
+                }
             }
         }
     }
