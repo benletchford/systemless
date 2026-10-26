@@ -14,6 +14,7 @@ struct Script {
     version: u32,
     clock: String,
     max_ticks: u32,
+    application_partition_size: Option<u32>,
     #[serde(default)]
     reference_tolerance: u8,
     actions: Vec<Action>,
@@ -92,6 +93,12 @@ impl Script {
         if script.max_ticks == 0 || script.actions.is_empty() {
             return Err("max_ticks and actions must be nonempty".into());
         }
+        if script
+            .application_partition_size
+            .is_some_and(|bytes| bytes < 128 * 1024)
+        {
+            return Err("application_partition_size must be at least 128 KiB".into());
+        }
         let mut names = HashSet::new();
         for action in &script.actions {
             match action {
@@ -132,6 +139,7 @@ struct Report {
     script: String,
     reference_directory: Option<String>,
     mac_time_secs: u32,
+    application_partition_size: Option<u32>,
     architecture: Option<String>,
     status: String,
     error: Option<String>,
@@ -403,6 +411,8 @@ pub(super) fn run(
             Some(d) => game::new_runner_with_configuration(!addressing_24_bit, d),
             None => game::new_runner_with_addressing(!addressing_24_bit),
         };
+        runner.set_application_partition_size(script.application_partition_size);
+        report.application_partition_size = script.application_partition_size;
         runner.set_ui_theme(theme);
         if gpu {
             runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
@@ -506,5 +516,23 @@ mod tests {
         assert_eq!(compare(&a, &path, 1).unwrap(), 0);
         RgbImage::new(1, 1).save(&path).unwrap();
         assert!(compare(&a, &path, 0).is_err());
+    }
+
+    #[test]
+    fn scripts_validate_optional_application_partitions() {
+        let script = r#"{"version":1,"clock":"frontend_ticks","max_ticks":1,"actions":[{"type":"run","ticks":1}]}"#;
+        assert_eq!(
+            Script::parse(script).unwrap().application_partition_size,
+            None
+        );
+        let configured = script.replacen("{", "{\"application_partition_size\":134217728,", 1);
+        assert_eq!(
+            Script::parse(&configured)
+                .unwrap()
+                .application_partition_size,
+            Some(134217728)
+        );
+        assert!(Script::parse(&configured.replace("134217728", "131071")).is_err());
+        assert!(Script::parse(&configured.replace("134217728", "4294967296")).is_err());
     }
 }

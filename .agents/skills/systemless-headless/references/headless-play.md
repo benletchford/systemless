@@ -58,6 +58,12 @@ frontend ticks, including waits and audio assertions. A frontend tick is about
 The Mac startup time is fixed; use `--headless-start-time SECONDS` to override
 Mac-epoch seconds (since 1904). Host time is not an input pacing clock.
 
+The optional `application_partition_size` field sets the guest application's preferred
+memory partition in bytes before loading it (minimum 131072 bytes). For example,
+use `"application_partition_size": 134217728` to reproduce a catalogue entry's
+128 MiB override. When omitted, the application's existing SIZE preference applies.
+The requested override is recorded in `report.json`.
+
 The `clock` field is required. Old guest-tick/instruction-count scenarios are
 not accepted implicitly. Re-author their timing and verify checkpoints after
 conversion. Unknown fields are errors, preventing silently ignored assertions
