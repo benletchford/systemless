@@ -86,6 +86,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieTrackCount,
     GetMovieIndTrack,
     GetMovieRate,
+    SetMovieRate,
     SetMoviePreferredRate,
     SetMovieTimeScale,
     GetMovieSelection,
@@ -762,6 +763,16 @@ pub(super) fn dispatch_quicktime_compatibility(
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::ReturnPreserve
         }
+        PpcQuickTimeCompatibilityOperation::SetMovieRate => {
+            let rate = cpu.gpr[4] as i32;
+            let error = if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                ppc_qt_set_movie_rate(cpu, memory, gworlds, current_gworld, quicktime, sound, rate)
+            } else {
+                -2010 // invalidMovie
+            };
+            ppc_qt_record_error(quicktime, error);
+            PpcImportAction::ReturnPreserve
+        }
         PpcQuickTimeCompatibilityOperation::MCDoAction => {
             // Inside Macintosh: QuickTime Components (1993), pp. 2-15, 2-46.
             let Some(movie) = quicktime
@@ -792,17 +803,10 @@ pub(super) fn dispatch_quicktime_compatibility(
                     }
                     let controller = cpu.gpr[3];
                     cpu.gpr[3] = movie;
-                    let error = if cpu.gpr[5] == 0 {
-                        ppc_qt_stop_movie(cpu, quicktime, sound)
-                    } else {
-                        let result = ppc_qt_start_movie(
-                            cpu, memory, gworlds, current_gworld, quicktime, sound,
-                        );
-                        if result == PPC_NO_ERR {
-                            quicktime.movie_playback_rate = cpu.gpr[5] as i32;
-                        }
-                        result
-                    };
+                    let rate = cpu.gpr[5] as i32;
+                    let error = ppc_qt_set_movie_rate(
+                        cpu, memory, gworlds, current_gworld, quicktime, sound, rate,
+                    );
                     cpu.gpr[3] = controller;
                     PpcImportAction::Return(ppc_i16_result(error))
                 }
@@ -4088,11 +4092,28 @@ pub(crate) fn ppc_qt_start_movie(
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
 ) -> i16 {
+    let rate = quicktime.movie_preferred_rate;
+    ppc_qt_set_movie_rate(cpu, memory, gworlds, current_gworld, quicktime, sound, rate)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_qt_set_movie_rate(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    rate: i32,
+) -> i16 {
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return PPC_PARAM_ERR;
     }
+    quicktime.movie_playback_rate = rate;
+    if rate == 0 {
+        return ppc_qt_stop_movie(cpu, quicktime, sound);
+    }
     quicktime.movie_started = true;
-    quicktime.movie_playback_rate = quicktime.movie_preferred_rate;
     quicktime.movie_at_beginning = false;
     if !quicktime.movie_active {
         return PPC_NO_ERR;
@@ -4263,6 +4284,27 @@ pub(crate) fn ppc_qt_start_movie_audio(
         return false;
     };
 
+    let source_rate = decoded_sound.summary.sample_rate_fixed;
+    let time = super::dispatch_quicktime::quicktime_callback_time(quicktime).max(0) as u64;
+    let offset = ((u128::from(time) * u128::from(source_rate))
+        / (u128::from(quicktime.movie_time_scale.max(1)) << 16))
+        .min(decoded_sound.samples.len() as u128) as usize;
+    let mut samples = decoded_sound.samples;
+    if quicktime.movie_playback_rate < 0 {
+        samples.truncate(offset);
+        samples.reverse();
+    } else {
+        samples.drain(..offset);
+    }
+    let rate = ((u64::from(source_rate) * u64::from(quicktime.movie_playback_rate.unsigned_abs()))
+        >> 16)
+        .min(u64::from(u32::MAX)) as u32;
+    if rate == 0 || samples.is_empty() {
+        return false;
+    }
+    let Some(decoded_sound) = ppc_decoded_sound_data(samples, rate) else {
+        return false;
+    };
     let summary = decoded_sound.summary;
     let samples = decoded_sound.samples;
     if qt_trace_enabled() {

@@ -5187,3 +5187,66 @@ fn quicktime_toolbox_movies_task_obeys_fractional_reverse_and_stopped_rates() {
     task(&mut loaded);
     assert_eq!(loaded.quicktime.movie_task_count, 0);
 }
+
+#[test]
+fn quicktime_toolbox_set_movie_rate_seeks_audio_and_preserves_preferred_rate() {
+    let mut loaded = movie_toolbox_fixture();
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_file_duration = 600;
+    loaded.quicktime.movie_tasks_until_done = 120;
+    loaded.quicktime.movie_task_count = 60;
+    loaded.quicktime.movie_preferred_rate = 0x8000;
+    let mut data = vec![0; 12];
+    data.extend_from_slice(&[0, 0, 0x40, 0, 0xC0, 0, 0x10, 0, 0x20, 0, 0x30, 0]);
+    loaded.quicktime.movie_file_data = data;
+    loaded.quicktime.movie_audio_track = Some(PpcQuickTimeAudioTrackRecord {
+        media_time_scale: 6,
+        media_duration: 6,
+        sample_count: 6,
+        first_sample_duration: 1,
+        first_sample_size: 1,
+        first_chunk_offset: 12,
+        first_sample_data_len: 1,
+        first_sample_checksum: 0,
+        first_sample_preview_len: 0,
+        first_sample_preview: [0; 16],
+        first_samples_per_chunk: 6,
+        sample_description_id: 1,
+        codec: u32::from_be_bytes(*b"twos"),
+        channel_count: 1,
+        sample_size_bits: 16,
+        sample_rate_fixed: 6 << 16,
+    });
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0x20000]);
+    assert_eq!(loaded.quicktime.movie_error, 0);
+    assert_eq!(loaded.quicktime.movie_preferred_rate, 0x8000);
+    assert_eq!(loaded.quicktime.movie_task_count, 60);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieRate", &[PPC_QT_MOVIE]),
+        0x20000
+    );
+    let audio = loaded.sound.decoded_file_playbacks.last().unwrap();
+    assert_eq!(audio.samples, [0x90, 0xA0, 0xB0]);
+    assert_eq!(audio.sample_rate_fixed, 12 << 16);
+
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieRate",
+        &[PPC_QT_MOVIE, (-0x10000i32) as u32],
+    );
+    let audio = loaded.sound.decoded_file_playbacks.last().unwrap();
+    assert_eq!(audio.samples, [0x40, 0xC0, 0x80]);
+    assert_eq!(audio.sample_rate_fixed, 6 << 16);
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0]);
+    assert!(!loaded.quicktime.movie_started);
+    assert_eq!(loaded.quicktime.movie_task_count, 60);
+    assert_eq!(
+        loaded.sound.manager.file_playback_paused(PPC_QT_MOVIE),
+        None
+    );
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[0, 0x10000]);
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+    assert!(!loaded.quicktime.movie_started);
+}

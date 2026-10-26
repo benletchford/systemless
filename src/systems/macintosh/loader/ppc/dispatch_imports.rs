@@ -3120,6 +3120,7 @@ pub(crate) fn dispatch_supported_import(
                 operation,
                 PpcQuickTimeCompatibilityOperation::MCIdle
                     | PpcQuickTimeCompatibilityOperation::MCDoAction
+                    | PpcQuickTimeCompatibilityOperation::SetMovieRate
             );
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
             let action = dispatch_quicktime_compatibility(
