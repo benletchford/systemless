@@ -3,7 +3,8 @@
 //! TextEncodingConverter.h and TextCommon.h (Universal Interfaces 3.4,
 //! CarbonLib): converter objects are opaque, and the Unicode side is
 //! UTF-16 UniChar arrays. The runtime's text is Mac OS Roman, so that is the
-//! only text encoding converters accept.
+//! only encoding supported by the older Unicode Converter entry points.
+//! TEC objects also support stateless Unicode and Western single-byte codecs.
 
 use super::*;
 
@@ -20,6 +21,11 @@ const UNICODE_TO_TEXT_INFO: u32 = 0x5445_4355; // 'TECU'
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcTextEncodingOperation {
+    CreateEncoding,
+    CreateConverter,
+    DisposeConverter,
+    ConvertText,
+    FlushText,
     CreateTextToUnicodeInfo,
     CreateUnicodeToTextInfo,
     DisposeTextToUnicodeInfo,
@@ -32,6 +38,11 @@ pub enum PpcTextEncodingOperation {
 impl PpcTextEncodingOperation {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
+            "CreateTextEncoding" => Self::CreateEncoding,
+            "TECCreateConverter" => Self::CreateConverter,
+            "TECDisposeConverter" => Self::DisposeConverter,
+            "TECConvertText" => Self::ConvertText,
+            "TECFlushText" => Self::FlushText,
             "CreateTextToUnicodeInfoByEncoding" => Self::CreateTextToUnicodeInfo,
             "CreateUnicodeToTextInfoByEncoding" => Self::CreateUnicodeToTextInfo,
             "DisposeTextToUnicodeInfo" => Self::DisposeTextToUnicodeInfo,
@@ -58,14 +69,233 @@ fn write_optional(memory: &mut PpcSectionMem, address: u32, value: u32) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TecCodec {
+    MacRoman,
+    Latin1,
+    Windows1252,
+    Ascii,
+    Utf8,
+    Utf16,
+    Utf32,
+}
+
+impl TecCodec {
+    fn from_encoding(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::MacRoman),
+            0x201 => Some(Self::Latin1),
+            0x500 => Some(Self::Windows1252),
+            0x600 => Some(Self::Ascii),
+            0x100 => Some(Self::Utf16),
+            0x0800_0100 => Some(Self::Utf8),
+            0x0c00_0100 => Some(Self::Utf32),
+            _ => None,
+        }
+    }
+
+    fn decode(self, bytes: &[u8]) -> Result<(char, usize), i32> {
+        let partial = -8753;
+        let malformed = -8739;
+        match self {
+            Self::Utf8 => {
+                let width = match bytes[0] {
+                    0..=0x7f => 1,
+                    0xc2..=0xdf => 2,
+                    0xe0..=0xef => 3,
+                    0xf0..=0xf4 => 4,
+                    _ => return Err(malformed),
+                };
+                let token = bytes.get(..width).ok_or(partial)?;
+                let text = std::str::from_utf8(token).map_err(|_| malformed)?;
+                Ok((text.chars().next().ok_or(malformed)?, width))
+            }
+            Self::Utf16 => {
+                let word = |offset| {
+                    bytes
+                        .get(offset..offset + 2)
+                        .map(|b| u16::from_be_bytes([b[0], b[1]]))
+                        .ok_or(partial)
+                };
+                let first = word(0)?;
+                if (0xd800..=0xdbff).contains(&first) {
+                    let second = word(2)?;
+                    if !(0xdc00..=0xdfff).contains(&second) {
+                        return Err(malformed);
+                    }
+                    Ok((
+                        char::from_u32(
+                            0x10000 + ((u32::from(first) - 0xd800) << 10) + u32::from(second)
+                                - 0xdc00,
+                        )
+                        .ok_or(malformed)?,
+                        4,
+                    ))
+                } else {
+                    Ok((char::from_u32(u32::from(first)).ok_or(malformed)?, 2))
+                }
+            }
+            Self::Utf32 => {
+                let b = bytes.get(..4).ok_or(partial)?;
+                Ok((
+                    char::from_u32(u32::from_be_bytes(b.try_into().unwrap())).ok_or(malformed)?,
+                    4,
+                ))
+            }
+            Self::MacRoman => Ok((decode_mac_roman(&bytes[..1]).chars().next().unwrap(), 1)),
+            Self::Ascii if bytes[0] > 0x7f => Err(-8740),
+            Self::Windows1252 if (0x80..0xa0).contains(&bytes[0]) => {
+                char::from_u32(u32::from(WINDOWS_1252_HIGH[usize::from(bytes[0] - 0x80)]))
+                    .filter(|&ch| ch != '\0')
+                    .map(|ch| (ch, 1))
+                    .ok_or(-8740)
+            }
+            _ => Ok((char::from(bytes[0]), 1)),
+        }
+    }
+
+    fn encode(self, ch: char) -> Option<Vec<u8>> {
+        match self {
+            Self::Utf8 => Some(ch.encode_utf8(&mut [0; 4]).as_bytes().to_vec()),
+            Self::Utf16 => Some(
+                ch.encode_utf16(&mut [0; 2])
+                    .iter()
+                    .flat_map(|unit| unit.to_be_bytes())
+                    .collect(),
+            ),
+            Self::Utf32 => Some((ch as u32).to_be_bytes().to_vec()),
+            Self::MacRoman => crate::mac_roman::encode_mac_roman_char(ch).map(|byte| vec![byte]),
+            Self::Ascii => ((ch as u32) < 128).then(|| vec![ch as u8]),
+            Self::Latin1 => ((ch as u32) < 256).then(|| vec![ch as u8]),
+            Self::Windows1252 => {
+                let value = ch as u32;
+                if value < 128 || (160..256).contains(&value) {
+                    return Some(vec![value as u8]);
+                }
+                WINDOWS_1252_HIGH
+                    .iter()
+                    .position(|&unit| unit != 0 && u32::from(unit) == value)
+                    .map(|index| vec![index as u8 + 0x80])
+            }
+        }
+    }
+}
+
+const WINDOWS_1252_HIGH: [u16; 32] = [
+    0x20ac, 0, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160, 0x2039,
+    0x0152, 0, 0x017d, 0, 0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc,
+    0x2122, 0x0161, 0x203a, 0x0153, 0, 0x017e, 0x0178,
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PpcTecState {
+    next_id: u32,
+    converters: std::collections::BTreeMap<u32, (TecCodec, TecCodec)>,
+}
+
+fn convert_tec(cpu: &PpcCpu, memory: &mut PpcSectionMem, state: &PpcTecState) -> i32 {
+    let Some(&(source_codec, destination_codec)) = state.converters.get(&cpu.gpr[3]) else {
+        return -8748;
+    };
+    let (source, source_length, read_out, output, capacity, written_out) = (
+        cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[8], cpu.gpr[9],
+    );
+    if read_out == 0
+        || written_out == 0
+        || !ppc_memory_can_write_bytes(memory, read_out, 4)
+        || !ppc_memory_can_write_bytes(memory, written_out, 4)
+        || !ppc_memory_can_write_bytes(memory, output, capacity)
+    {
+        return i32::from(PPC_PARAM_ERR);
+    }
+    let Some(input) = ppc_memory_read_bytes(memory, source, source_length) else {
+        return i32::from(PPC_PARAM_ERR);
+    };
+    let mut consumed = 0;
+    let mut result = Vec::new();
+    let mut error = 0;
+    while consumed < input.len() {
+        let (ch, width) = match source_codec.decode(&input[consumed..]) {
+            Ok(value) => value,
+            Err(code) => {
+                error = code;
+                break;
+            }
+        };
+        let Some(encoded) = destination_codec.encode(ch) else {
+            error = -8754;
+            break;
+        };
+        if encoded.len() > capacity as usize - result.len() {
+            error = if consumed == 0 {
+                -8750
+            } else {
+                TEC_OUTPUT_BUFFER_FULL_STATUS
+            };
+            break;
+        }
+        result.extend(encoded);
+        consumed += width;
+    }
+    let _ = memory.write_bytes(output, &result);
+    write_optional(memory, read_out, consumed as u32);
+    write_optional(memory, written_out, result.len() as u32);
+    error
+}
+
 pub(crate) fn ppc_dispatch_text_encoding(
     operation: PpcTextEncodingOperation,
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
+    state: &mut PpcTecState,
 ) -> PpcImportAction {
     use PpcTextEncodingOperation as Op;
     let status = |value: i32| PpcImportAction::Return(value as u32);
     match operation {
+        Op::CreateEncoding => status(
+            ((cpu.gpr[3] & 0xffff) | ((cpu.gpr[4] & 0x3ff) << 16) | ((cpu.gpr[5] & 0xf) << 26))
+                as i32,
+        ),
+        Op::CreateConverter => {
+            if cpu.gpr[3] == 0 || memory.write_u32_be(cpu.gpr[3], 0).is_none() {
+                return status(i32::from(PPC_PARAM_ERR));
+            }
+            let Some(codecs) =
+                TecCodec::from_encoding(cpu.gpr[4]).zip(TecCodec::from_encoding(cpu.gpr[5]))
+            else {
+                return status(-8749);
+            };
+            let Some(next) = state
+                .next_id
+                .checked_add(1)
+                .filter(|value| *value < 0x10000)
+            else {
+                return status(i32::from(PPC_MEM_FULL_ERR));
+            };
+            let handle = 0x5443_0000 + next;
+            state.next_id = next;
+            state.converters.insert(handle, codecs);
+            let _ = memory.write_u32_be(cpu.gpr[3], handle);
+            status(0)
+        }
+        Op::DisposeConverter => status(if state.converters.remove(&cpu.gpr[3]).is_some() {
+            0
+        } else {
+            -8748
+        }),
+        Op::ConvertText => status(convert_tec(cpu, memory, state)),
+        Op::FlushText => {
+            if !state.converters.contains_key(&cpu.gpr[3]) {
+                return status(-8748);
+            }
+            // These codecs have no shift state or buffered suffix. Partial
+            // source characters remain unconsumed for the caller to resubmit.
+            if cpu.gpr[6] == 0 || memory.write_u32_be(cpu.gpr[6], 0).is_none() {
+                return status(i32::from(PPC_PARAM_ERR));
+            }
+            status(0)
+        }
+
         Op::CreateTextToUnicodeInfo | Op::CreateUnicodeToTextInfo => {
             // (TextEncoding encoding, …Info *outInfo). For Unicode-to-text the
             // argument names the target text encoding.
