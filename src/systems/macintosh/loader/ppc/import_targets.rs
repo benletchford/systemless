@@ -1375,6 +1375,10 @@ pub enum PpcImportDispatcherTarget {
     SystemCompatibility(PpcSystemCompatibilityOperation),
     FileCompatibility(PpcFileCompatibilityOperation),
     FileManager(PpcFileManagerOperation),
+    LowMemoryAccessor(PpcLowMemoryAccessor),
+    DateToSeconds,
+    DeferUserFn,
+    ReplaceGestaltValue,
     FsRef(PpcFsRefOperation),
     AppleTalkCompatibility(PpcAppleTalkCompatibilityOperation),
     TextEncoding(PpcTextEncodingOperation),
@@ -3869,14 +3873,21 @@ pub(crate) fn dispatcher_target_for_import(
         // InitCM reports cmNoTools (8).
         ("InterfaceLib", "InitCM") => PpcImportDispatcherTarget::ReturnError(8),
         // The Communications Toolbox with no connection tools installed.
-        ("InterfaceLib", "CMNew" | "CRMSearch") => {
+        // With no connection record CMNew could have returned, the
+        // procedures that act on one have nothing to do and CMGetUserData
+        // reads zero.
+        (
+            "InterfaceLib",
+            "CMNew" | "CRMSearch" | "CMAbort" | "CMActivate" | "CMEvent" | "CMGetUserData"
+            | "CMReset" | "CMResume" | "CMSetUserData",
+        ) => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxNil)
         }
         (
             "InterfaceLib",
             "CMChoose" | "CMOpen" | "CMClose" | "CMRead" | "CMWrite" | "CMStatus" | "CMListen"
             | "CMAccept" | "CMIOKill" | "CMGetProcID" | "CRMGetIndToolName" | "CMIdle"
-            | "CMDispose",
+            | "CMDispose" | "CMGetConnEnvirons",
         ) => PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxError),
         ("InterfaceLib", "PtToAngle") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::PtToAngle)
@@ -3923,6 +3934,112 @@ pub(crate) fn dispatcher_target_for_import(
         // custom search procedures, which is the result every installed
         // procedure gets when it declines a colour.
         ("InterfaceLib", "AddSearch" | "DelSearch") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "CMGetToolName") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::CommToolboxToolName)
+        }
+        ("InterfaceLib", "GetPageState") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetPageState)
+        }
+        ("InterfaceLib", "LMGetWMgrPort") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::WMgrPort)
+        }
+        ("InterfaceLib", "OpenSlot") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::OpenSlot)
+        }
+        // Neither a serial port driver nor an Ethernet driver is open.
+        ("InterfaceLib", "SerStatus" | "EGetInfo") => {
+            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::UnopenedDriver)
+        }
+        // The single display is always enabled. Display Manager keeps the
+        // last active display, so disabling it fails with kDMGenErr.
+        ("InterfaceLib" | "DisplayLib", "DMEnableDisplay") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        ("InterfaceLib" | "DisplayLib", "DMDisableDisplay") => {
+            PpcImportDispatcherTarget::ReturnError(-6220)
+        }
+        // The power manager never puts this machine to sleep, so a sleep
+        // queue entry is never called; installing or removing one has no
+        // other effect.
+        ("InterfaceLib", "SleepQInstall" | "SleepQRemove") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        // Inside Macintosh: Macintosh Toolbox Essentials (SystemEvent): the
+        // Process Manager handles desk accessory events, so the call
+        // reports that the event is the application's (false).
+        ("InterfaceLib", "SystemEvent") => PpcImportDispatcherTarget::ReturnNoErr,
+        // System heap requests share the process heap, as NewHandleSys and
+        // PurgeMemSys do; the inline glue for GetHandleSize is the same call.
+        ("InterfaceLib", "MaxMemSys") => PpcImportDispatcherTarget::MaxMem,
+        ("InterfaceLib", "InlineGetHandleSize") => PpcImportDispatcherTarget::GetHandleSize,
+        ("InterfaceLib", "LMGetApplLimit") => PpcImportDispatcherTarget::GetApplLimit,
+        ("InterfaceLib", "LMGetEventQueue") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetEvQHdr,
+        ),
+        // SysBreak enters the low-level debugger; none is installed, so the
+        // call returns, as Debugger does.
+        ("InterfaceLib", "SysBreak") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Debugger,
+        ),
+        ("InterfaceLib", "LMGetROM85") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetRom85)
+        }
+        ("InterfaceLib", "LMSetCursorNew") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetCursorNew)
+        }
+        ("InterfaceLib", "LMSetMouseTemp") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetMouseTemp)
+        }
+        ("InterfaceLib", "LMSetRawMouseLocation") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetRawMouseLocation)
+        }
+        ("InterfaceLib", "DateToSeconds") => PpcImportDispatcherTarget::DateToSeconds,
+        ("InterfaceLib", "DeferUserFn") => PpcImportDispatcherTarget::DeferUserFn,
+        ("InterfaceLib", "ReplaceGestaltValue") => PpcImportDispatcherTarget::ReplaceGestaltValue,
+        ("InterfaceLib", "CountComponents") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CountComponents,
+        ),
+        ("InterfaceLib", "GetComponentInfo") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetComponentInfo,
+        ),
+        ("InterfaceLib", "CrsrDevNewDevice") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceNew,
+        ),
+        ("InterfaceLib", "CrsrDevDisposeDevice") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceDispose,
+        ),
+        ("InterfaceLib", "CrsrDevMove") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceMove,
+        ),
+        ("InterfaceLib", "CrsrDevButtons") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceButtons,
+        ),
+        ("InterfaceLib", "CrsrDevSetButtons") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceSetButtons,
+        ),
+        ("InterfaceLib", "CrsrDevUnitsPerInch") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceUnitsPerInch,
+        ),
+        ("InterfaceLib", "CrsrDevFlush") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CursorDeviceFlush,
+        ),
+        ("InterfaceLib", "AECoercePtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::CoercePtr,
+        ),
+        ("InterfaceLib", "AESizeOfNthItem") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::SizeOfNthItem,
+        ),
+        ("InterfaceLib", "AEGetTheCurrentEvent") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::GetTheCurrentEvent,
+            )
+        }
+        ("InterfaceLib", "PrDlgMain") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrDlgMain,
+        ),
+        ("InterfaceLib", "PrJobInit") => PpcImportDispatcherTarget::PrintingCompatibility(
+            PpcPrintingCompatibilityOperation::PrJobInit,
+        ),
         ("InterfaceLib", "MatchAlias") => PpcImportDispatcherTarget::MatchAlias,
         ("InterfaceLib", "ResolveAliasFile") => PpcImportDispatcherTarget::ResolveAliasFile,
         ("InterfaceLib", "ResolveAliasFileWithMountFlags") => {
@@ -6462,9 +6579,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LaunchApplication") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::LaunchApplication,
         ),
-        ("InterfaceLib", "MIDIAddPort") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::MidiAddPort,
-        ),
+        ("InterfaceLib", "MIDIAddPort" | "MIDIConnectData") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::MidiAddPort,
+            )
+        }
         ("InterfaceLib", "MIDIRemovePort") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::MidiRemovePort,
         ),

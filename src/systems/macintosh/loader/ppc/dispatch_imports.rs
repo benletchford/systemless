@@ -1687,6 +1687,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::VRemove
         | PpcImportDispatcherTarget::SlotVInstall
         | PpcImportDispatcherTarget::DTInstall
+        | PpcImportDispatcherTarget::DeferUserFn
         | PpcImportDispatcherTarget::SlotVRemove => {
             unreachable!("time and vbl imports return through dispatch_time_import")
         }
@@ -2196,7 +2197,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PBStatus => {
             unreachable!("Device Manager imports return through dispatch_device_import")
         }
-        PpcImportDispatcherTarget::Gestalt | PpcImportDispatcherTarget::NewGestaltValue => {
+        PpcImportDispatcherTarget::Gestalt
+        | PpcImportDispatcherTarget::NewGestaltValue
+        | PpcImportDispatcherTarget::ReplaceGestaltValue => {
             unreachable!("Gestalt imports return through dispatch_gestalt_import")
         }
         PpcImportDispatcherTarget::GetSharedLibrary
@@ -3178,6 +3181,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetCurDeactive
         | PpcImportDispatcherTarget::LMGetMenuFlash
         | PpcImportDispatcherTarget::LMGetKeyThresh
+        | PpcImportDispatcherTarget::LowMemoryAccessor(_)
         | PpcImportDispatcherTarget::LMSetKeyThresh
         | PpcImportDispatcherTarget::LMGetKeyRepThresh
         | PpcImportDispatcherTarget::LMSetKeyRepThresh
@@ -3237,6 +3241,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetDblTime
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
+        | PpcImportDispatcherTarget::DateToSeconds
         | PpcImportDispatcherTarget::Microseconds
         | PpcImportDispatcherTarget::OtElapsed { .. }
         | PpcImportDispatcherTarget::AbsoluteToNanoseconds

@@ -271,6 +271,7 @@ mod internet_config;
 mod text_encoding;
 mod open_transport;
 mod toolbox_compat;
+mod system_extras;
 mod icon_services;
 pub(crate) use mixed_mode::*;
 mod quicktime;

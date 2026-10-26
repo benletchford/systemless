@@ -2,6 +2,18 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpcLowMemoryAccessor {
+    /// LMGetROM85: the ROM85 word at $028E.
+    GetRom85,
+    /// LMSetCursorNew: the CrsrNew byte at $08CE.
+    SetCursorNew,
+    /// LMSetMouseTemp: the MTemp Point at $0828.
+    SetMouseTemp,
+    /// LMSetRawMouseLocation: the RawMouse Point at $082C.
+    SetRawMouseLocation,
+}
+
 pub(super) struct PpcLowMemoryDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
     pub(super) cpu: &'a PpcCpu,
@@ -21,6 +33,31 @@ pub(super) fn dispatch_low_memory_import(
         default_dir_id,
     } = context;
     match target {
+        PpcImportDispatcherTarget::LowMemoryAccessor(accessor) => {
+            // LowMem.h: plain accessors for the named low-memory globals.
+            // The mouse globals feed the cursor task and are refreshed from
+            // the host mouse with each input snapshot.
+            use crate::memory::globals::addr;
+            let written = match accessor {
+                PpcLowMemoryAccessor::GetRom85 => {
+                    return Some(
+                        memory
+                            .read_u16_be(addr::ROM85)
+                            .map_or(PpcImportAction::Halt, |value| {
+                                PpcImportAction::Return(ppc_i16_result(value as i16))
+                            }),
+                    );
+                }
+                PpcLowMemoryAccessor::SetCursorNew => {
+                    memory.write_u8(addr::CRSR_NEW, cpu.gpr[3] as u8)
+                }
+                PpcLowMemoryAccessor::SetMouseTemp => memory.write_u32_be(addr::M_TEMP, cpu.gpr[3]),
+                PpcLowMemoryAccessor::SetRawMouseLocation => {
+                    memory.write_u32_be(addr::MOUSE_LOC, cpu.gpr[3])
+                }
+            };
+            Some(written.map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve))
+        }
         PpcImportDispatcherTarget::LMGetKeyThresh
         | PpcImportDispatcherTarget::LMGetKeyRepThresh => {
             // Events.h: these accessors return SInt16 values in ticks.

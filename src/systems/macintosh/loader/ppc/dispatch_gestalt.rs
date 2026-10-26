@@ -44,6 +44,24 @@ pub(super) fn dispatch_gestalt_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }
+        PpcImportDispatcherTarget::ReplaceGestaltValue => {
+            // Inside Macintosh: Operating System Utilities
+            // (ReplaceGestaltValue): replaces the value of a selector that
+            // already exists, built in or added, and reports
+            // gestaltUndefSelectorErr for any other.
+            let (selector, value) = (cpu.gpr[3], cpu.gpr[4]);
+            let eval_context =
+                GestaltEvaluationContext::for_powerpc(toolbox_startup.physical_ram_size);
+            let error = if is_builtin_gestalt_selector(selector, &eval_context)
+                || toolbox_startup.gestalt_values.contains_key(&selector)
+            {
+                toolbox_startup.gestalt_values.insert(selector, value);
+                PPC_NO_ERR
+            } else {
+                PPC_GESTALT_UNDEF_SELECTOR_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(error)))
+        }
         _ => None,
     }
 }
@@ -62,6 +80,12 @@ fn ppc_gestalt(
     let eval_context = GestaltEvaluationContext::for_powerpc(toolbox_startup.physical_ram_size);
     let dynamic_value = toolbox_startup.gestalt_values.get(&selector).copied();
     let mut query_eval = evaluate_gestalt_query(params.selector, &eval_context, dynamic_value);
+    if let Some(value) = dynamic_value {
+        // A value added with NewGestaltValue or ReplaceGestaltValue answers
+        // in place of the built-in one.
+        query_eval.response = value;
+        query_eval.error_code = PPC_NO_ERR;
+    }
     if selector == u32::from_be_bytes(*b"drag") {
         // Gestalt.h: basic Drag Manager, native DragLib and image feedback.
         // Floating-window extensions and image-update capability remain unadvertised.

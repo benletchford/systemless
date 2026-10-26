@@ -1140,6 +1140,9 @@ pub enum PpcAppleEventCompatibilityOperation {
     /// Navigation Services NavDisposeReply(NavReplyRecord *), which releases
     /// the reply's selection AEDescList.
     NavDisposeReply,
+    CoercePtr,
+    SizeOfNthItem,
+    GetTheCurrentEvent,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1557,6 +1560,94 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                         result
                     }
                 }
+            }
+        }
+        PpcAppleEventCompatibilityOperation::CoercePtr => {
+            // AECoercePtr(DescType, const void *, Size, DescType toType,
+            // AEDesc *result). Inside Macintosh: Interapplication
+            // Communication (AECoercePtr). Only identity coercions are
+            // installed, as for AECoerceDesc.
+            let (type_code, data, size) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            let (to_type, result_ptr) = (cpu.gpr[6], cpu.gpr[7]);
+            let bytes =
+                ppc_memory_read_bytes(memory, data, size).or_else(|| (size == 0).then(Vec::new));
+            if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
+                PPC_PARAM_ERR
+            } else if to_type != PPC_TYPE_WILDCARD && to_type != type_code {
+                let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+                PPC_ERR_AE_COERCION_FAIL
+            } else if let Some(bytes) = bytes {
+                ppc_create_process_owned_ae_desc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    Some(&apple_events.descriptors),
+                    result_ptr,
+                    type_code,
+                    &bytes,
+                )
+            } else {
+                PPC_PARAM_ERR
+            }
+        }
+        PpcAppleEventCompatibilityOperation::SizeOfNthItem => {
+            // AESizeOfNthItem(const AEDescList *, long index, DescType *,
+            // Size *). Inside Macintosh: Interapplication Communication
+            // (AESizeOfNthItem): the item's type and data size, without
+            // copying it.
+            let index = cpu.gpr[4] as usize;
+            let value = (index != 0)
+                .then(|| {
+                    apple_events
+                        .descriptors
+                        .events
+                        .get(&cpu.gpr[3])
+                        .and_then(|event| event.items.get(index - 1).cloned())
+                        .or_else(|| {
+                            ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                                .and_then(|descriptor| descriptor.items.get(index - 1).cloned())
+                        })
+                })
+                .flatten();
+            if let Some((_, value)) = value {
+                if cpu.gpr[5] != 0 {
+                    let _ = memory.write_u32_be(cpu.gpr[5], value.desc_type);
+                }
+                if cpu.gpr[6] != 0 {
+                    let size = u32::try_from(value.data.len()).unwrap_or(u32::MAX);
+                    let _ = memory.write_u32_be(cpu.gpr[6], size);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_ERR_AE_DESC_NOT_FOUND
+            }
+        }
+        PpcAppleEventCompatibilityOperation::GetTheCurrentEvent => {
+            // AEGetTheCurrentEvent(AppleEvent *). Inside Macintosh:
+            // Interapplication Communication (AEGetTheCurrentEvent): the
+            // descriptor of the event a handler is processing, or a null
+            // descriptor when none is.
+            const TYPE_NULL: u32 = u32::from_be_bytes(*b"null");
+            let out = cpu.gpr[3];
+            if out == 0 || !ppc_memory_can_write_bytes(memory, out, 8) {
+                PPC_PARAM_ERR
+            } else {
+                let current = apple_events
+                    .pending_dispatches
+                    .last()
+                    .and_then(|dispatch| ppc_memory_read_bytes(memory, dispatch.descriptors, 8));
+                match current {
+                    Some(descriptor) => {
+                        let _ = memory.write_bytes(out, &descriptor);
+                    }
+                    None => {
+                        let _ = ppc_write_ae_desc(memory, out, TYPE_NULL, 0);
+                    }
+                }
+                PPC_NO_ERR
             }
         }
         PpcAppleEventCompatibilityOperation::GetNthDesc => {
