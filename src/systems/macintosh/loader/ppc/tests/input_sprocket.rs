@@ -2630,6 +2630,20 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
     loaded.set_heap_limit(old_limit);
+    // Device disposal removes every occurrence while preserving other members.
+    loaded.memory.write_u32_be(queries + 160, element).unwrap();
+    loaded
+        .memory
+        .write_u32_be(queries + 164, PPC_ISP_MOUSE_BUTTON_ELEMENT)
+        .unwrap();
+    loaded.memory.write_u32_be(queries + 168, element).unwrap();
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[4] = queries + 160;
+    loaded.cpu.gpr[5] = queries + 172;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let surviving_list = loaded.memory.read_u32_be(queries + 172).unwrap();
     loaded.cpu.gpr[3] = device;
     run_test_import(
         &mut loaded,
@@ -2638,6 +2652,20 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = surviving_list;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = queries + 176;
+    loaded.cpu.gpr[6] = queries + 180;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListExtract,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(queries + 176), Some(1));
+    assert_eq!(
+        loaded.memory.read_u32_be(queries + 180),
+        Some(PPC_ISP_MOUSE_BUTTON_ELEMENT)
+    );
     loaded.cpu.gpr[3] = element;
     run_test_import(
         &mut loaded,

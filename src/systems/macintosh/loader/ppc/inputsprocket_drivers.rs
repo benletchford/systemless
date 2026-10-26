@@ -359,6 +359,7 @@ pub(super) fn dispatch_driver_import(
                     if let Some(mut record) = state.elements.remove(&element) {
                         clear_events(&mut record, manager);
                         remove_list_events(&mut state.lists, element, manager);
+                        remove_list_memberships(&state.lists, element, memory);
                     }
                     manager.dispose_native_ptr(element);
                 }
@@ -507,6 +508,7 @@ pub(super) fn dispatch_driver_import(
             if let Some(mut element) = state.elements.remove(&reference) {
                 clear_events(&mut element, manager);
                 remove_list_events(&mut state.lists, reference, manager);
+                remove_list_memberships(&state.lists, reference, memory);
                 manager.dispose_native_ptr(reference);
                 PPC_NO_ERR
             } else {
@@ -919,6 +921,38 @@ fn remove_list_events(
                 true
             }
         });
+    }
+}
+
+// References can be reused by the guest allocator. Remove disposed elements
+// from subscriptions as well as queues so a later element cannot inherit them.
+fn remove_list_memberships(
+    lists: &BTreeMap<u32, VecDeque<DriverEvent>>,
+    element: u32,
+    memory: &mut PpcSectionMem,
+) {
+    for reference in lists.keys().copied() {
+        let Some(count) = ppc_isp_owned_element_list_count(memory, reference) else {
+            continue;
+        };
+        if !ppc_memory_can_write_bytes(memory, reference, PPC_ISP_ELEMENT_LIST_RECORD_SIZE) {
+            continue;
+        }
+        let mut retained = 0;
+        for index in 0..count {
+            let (candidate, ref_con, previous) =
+                ppc_isp_element_list_read_entry(memory, reference, index).unwrap();
+            if candidate != element {
+                ppc_isp_element_list_write_entry(
+                    memory, reference, retained, candidate, ref_con, previous,
+                );
+                retained += 1;
+            }
+        }
+        for index in retained..count {
+            ppc_isp_element_list_write_entry(memory, reference, index, 0, 0, 0);
+        }
+        let _ = memory.write_u32_be(reference, retained);
     }
 }
 
