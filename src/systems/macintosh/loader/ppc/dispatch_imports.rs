@@ -2510,6 +2510,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ICGetSeed
         | PpcImportDispatcherTarget::ICGetComponentInstance
         | PpcImportDispatcherTarget::ICGetPref
+        | PpcImportDispatcherTarget::ICCountMapEntries
+        | PpcImportDispatcherTarget::ICGetIndMapEntry
+        | PpcImportDispatcherTarget::ICGetMapEntry
         | PpcImportDispatcherTarget::ICFindPrefHandle
         | PpcImportDispatcherTarget::ICSetPref
         | PpcImportDispatcherTarget::ICBegin

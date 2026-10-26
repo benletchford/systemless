@@ -1,6 +1,8 @@
 //! Process-owned Internet Config instances for Carbon applications.
 
 use super::*;
+#[path = "internet_config_mappings.rs"]
+mod mappings;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +50,20 @@ pub(super) fn dispatch_internet_config_import(
     // ICStart(ICInstance *, OSType), ICStop(ICInstance), and
     // ICGetSeed(ICInstance, long *) return a 32-bit OSStatus in r3.
     let result: i32 = match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ICCountMapEntries
+        | PpcImportDispatcherTarget::ICGetIndMapEntry
+        | PpcImportDispatcherTarget::ICGetMapEntry => {
+            if !state.instances.contains_key(&cpu.gpr[3]) {
+                i32::from(PPC_PARAM_ERR)
+            } else {
+                i32::from(mappings::dispatch(
+                    &binding.dispatcher_target,
+                    cpu,
+                    memory,
+                    process_memory_manager,
+                ))
+            }
+        }
         PpcImportDispatcherTarget::ICStart => {
             let output = cpu.gpr[3];
             if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {

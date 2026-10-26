@@ -610,3 +610,108 @@ fn internet_config_folder_selection_keeps_databases_and_seeds_separate() {
         }
     }
 }
+
+#[test]
+fn internet_config_mapping_entries_expand_strings_and_reject_zero_length_records() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ICStart")).unwrap();
+    let p = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(p, vec![0xaa; 2048]);
+    loaded.cpu.gpr[3] = p;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ICStart);
+    let instance = loaded.memory.read_u32_be(p).unwrap();
+    let mut entry = vec![0; 22];
+    entry[2..4].copy_from_slice(&22u16.to_be_bytes());
+    entry[4..6].copy_from_slice(&1u16.to_be_bytes());
+    entry[6..10].copy_from_slice(b"TEXT");
+    let strings: [&[u8]; 5] = [b".txt", b"Editor", b"", b"text/plain", b"Text file"];
+    for string in strings {
+        entry.push(string.len() as u8);
+        entry.extend_from_slice(string);
+    }
+    entry.extend_from_slice(b"ignored user data");
+    let size = entry.len();
+    entry[..2].copy_from_slice(&(size as u16).to_be_bytes());
+    let bytes = [entry.as_slice(), entry.as_slice()].concat();
+    loaded.cpu.gpr[3] = bytes.len() as u32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: false },
+    );
+    let handle = loaded.cpu.gpr[3];
+    let pointer = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_bytes(pointer, &bytes).unwrap();
+    loaded.cpu.gpr[3] = instance;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = p + 8;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("ICAp;InternetConfigLib", "ICCountMapEntries"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(p + 8), Some(2));
+    loaded.cpu.gpr[3] = instance;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = p + 12;
+    loaded.cpu.gpr[7] = p + 128;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("ICAp;InternetConfigLib", "ICGetIndMapEntry"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(p + 12), Some(size as u32));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, p + 128, 22).unwrap(),
+        entry[..22]
+    );
+    for (index, string) in strings.into_iter().enumerate() {
+        let field = p + 128 + 22 + index as u32 * 256;
+        assert_eq!(loaded.memory.read_u8(field), Some(string.len() as u8));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, field + 1, string.len() as u32).unwrap(),
+            string
+        );
+        assert_eq!(
+            loaded.memory.read_u8(field + 1 + string.len() as u32),
+            Some(0xaa)
+        );
+    }
+    assert_eq!(loaded.memory.read_u8(p + 127), Some(0xaa));
+    assert_eq!(loaded.memory.read_u8(p + 128 + 1302), Some(0xaa));
+    loaded.memory.write_u32_be(p + 128 + 6, 0).unwrap();
+    loaded.cpu.gpr[3] = instance;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = size as u32;
+    loaded.cpu.gpr[6] = p + 128;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("ICAp;InternetConfigLib", "ICGetMapEntry"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(p + 128 + 6),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    let before = ppc_memory_read_bytes(&mut loaded.memory, p + 128, 1302).unwrap();
+    loaded
+        .memory
+        .write_u8(pointer + size as u32 + 22, 255)
+        .unwrap();
+    loaded.cpu.gpr[3] = instance;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = size as u32;
+    loaded.cpu.gpr[6] = p + 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ICGetMapEntry);
+    assert_eq!(loaded.cpu.gpr[3], (-185i32) as u32);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, p + 128, 1302).unwrap(),
+        before
+    );
+    loaded.memory.write_u16_be(pointer, 0).unwrap();
+    loaded.cpu.gpr[3] = instance;
+    loaded.cpu.gpr[4] = handle;
+    loaded.cpu.gpr[5] = p + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ICCountMapEntries);
+    assert_eq!(loaded.cpu.gpr[3], (-185i32) as u32);
+    assert_eq!(loaded.memory.read_u32_be(p + 8), Some(2));
+}
