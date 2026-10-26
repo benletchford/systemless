@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBToHostWord,
+    USBMakeBMRequestType,
     Collection(PpcCollectionOperation),
     Drag(PpcDragOperation),
     InstallExceptionHandler,
@@ -1609,6 +1611,12 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SpeechRecognition(
                 PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
             )
+        }
+        ("USBServicesLib", "USBToHostWord" | "HostToUSBWord") => {
+            PpcImportDispatcherTarget::USBToHostWord
+        }
+        ("USBServicesLib", "USBMakeBMRequestType") => {
+            PpcImportDispatcherTarget::USBMakeBMRequestType
         }
         ("SoundSprocketLib", symbol) if PpcSoundSprocketFunction::from_name(symbol).is_some() => {
             PpcImportDispatcherTarget::SoundSprocket(
