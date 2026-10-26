@@ -16751,6 +16751,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_DESIRED_CLASS,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_TYPE,
             data: docu.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16760,6 +16761,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_CONTAINER,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_NULL,
             data: Vec::new(),
             fields: HashMap::new(),
@@ -16769,6 +16771,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_KEY_FORM,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"enum"),
             data: form_absolute_position.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16778,6 +16781,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_KEY_DATA,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"long"),
             data: 1u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16785,6 +16789,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         },
     );
     let inner_object = AeDescriptor {
+        attributes: Default::default(),
         desc_type: AE_TYPE_OBJECT_SPECIFIER,
         data: Vec::new(),
         fields: inner_fields,
@@ -16795,6 +16800,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_DESIRED_CLASS,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_TYPE,
             data: cwin.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16805,6 +16811,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_KEY_FORM,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"enum"),
             data: form_absolute_position.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16814,6 +16821,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_KEY_DATA,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"long"),
             data: 1u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16824,6 +16832,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         object_specifier,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_OBJECT_SPECIFIER,
             data: Vec::new(),
             fields: outer_fields,
@@ -16866,6 +16875,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         first_state.current_token_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: token_type,
             data: 0x1111_2222u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16895,6 +16905,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         second_state.current_token_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: token_type,
             data: 0x3333_4444u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16973,6 +16984,7 @@ fn pack8_object_accessor_get_remove_and_direct_call_round_trip() {
         &mut bus,
         container_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: container_type,
             data: 0x1111_2222u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -17030,6 +17042,7 @@ fn pack8_object_accessor_get_remove_and_direct_call_round_trip() {
         &mut bus,
         final_token,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: container_type,
             data: 0x3333_4444u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -20982,4 +20995,53 @@ fn secs2date_and_date2secs_roundtrip() {
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
     assert_eq!(cpu.read_reg(Register::D0), secs);
+}
+
+#[test]
+fn apple_event_attribute_backing_survives_classic_descriptor_value_copies() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let descriptor = TEST_SP - 0x200;
+    let copy = descriptor + 8;
+    let output = descriptor + 0x40;
+    let actual_type = descriptor + 0x60;
+    let actual_size = descriptor + 0x64;
+    let keyword = u32::from_be_bytes(*b"rtid");
+    let mut event = AeDescriptor {
+        desc_type: AE_TYPE_APPLE_EVENT,
+        ..Default::default()
+    };
+    event.attributes.insert(
+        keyword,
+        AeDescriptor {
+            desc_type: u32::from_be_bytes(*b"shor"),
+            data: 17i16.to_be_bytes().to_vec(),
+            ..Default::default()
+        },
+    );
+    disp.write_ae_descriptor_value(&mut bus, descriptor, event);
+    let handle = bus.read_long(descriptor + 4);
+    assert_ne!(
+        handle, 0,
+        "attributes need backing even without raw payload bytes"
+    );
+    bus.write_long(copy, bus.read_long(descriptor));
+    bus.write_long(copy + 4, handle);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, 0x0E15); // AEGetAttributePtr
+    bus.write_long(TEST_SP, actual_size);
+    bus.write_long(TEST_SP + 4, 2);
+    bus.write_long(TEST_SP + 8, output);
+    bus.write_long(TEST_SP + 12, actual_type);
+    bus.write_long(TEST_SP + 16, u32::from_be_bytes(*b"shor"));
+    bus.write_long(TEST_SP + 20, keyword);
+    bus.write_long(TEST_SP + 24, copy);
+    bus.write_word(TEST_SP + 28, 0xBEEF);
+    assert!(disp
+        .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(TEST_SP + 28), 0);
+    assert_eq!(bus.read_long(actual_type), u32::from_be_bytes(*b"shor"));
+    assert_eq!(bus.read_long(actual_size), 2);
+    assert_eq!(bus.read_word(output), 17);
 }

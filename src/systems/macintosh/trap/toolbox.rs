@@ -1365,6 +1365,7 @@ impl super::TrapDispatcher {
         }
         if self.ae_descriptor_state.events.contains_key(&desc_ptr) {
             return Some(AeDescriptor {
+                attributes: Default::default(),
                 desc_type: AE_TYPE_APPLE_EVENT,
                 data: Vec::new(),
                 fields: HashMap::new(),
@@ -1384,6 +1385,7 @@ impl super::TrapDispatcher {
                 Vec::new()
             };
             Some(AeDescriptor {
+                attributes: Default::default(),
                 desc_type,
                 data,
                 fields: HashMap::new(),
@@ -1393,7 +1395,8 @@ impl super::TrapDispatcher {
     }
 
     fn ae_descriptor_needs_backing(desc: &AeDescriptor) -> bool {
-        !desc.fields.is_empty()
+        !desc.attributes.is_empty()
+            || !desc.fields.is_empty()
             || !desc.items.is_empty()
             || matches!(
                 desc.desc_type,
@@ -1403,6 +1406,7 @@ impl super::TrapDispatcher {
 
     fn ae_descriptor(desc_type: u32, data: Vec<u8>) -> AeDescriptor {
         AeDescriptor {
+            attributes: Default::default(),
             desc_type,
             data,
             fields: HashMap::new(),
@@ -1432,6 +1436,12 @@ impl super::TrapDispatcher {
         event_desc: u32,
         keyword: u32,
     ) -> Option<AeDescriptor> {
+        if let Some(attribute) = self
+            .read_ae_descriptor_value(bus, event_desc)
+            .and_then(|descriptor| descriptor.attributes.get(&keyword).cloned())
+        {
+            return Some(attribute);
+        }
         let value = self
             .ae_descriptor_state
             .events
@@ -1722,6 +1732,7 @@ impl super::TrapDispatcher {
             .get(&AE_KEY_CONTAINER)
             .cloned()
             .unwrap_or_else(|| AeDescriptor {
+                attributes: Default::default(),
                 desc_type: AE_TYPE_NULL,
                 data: Vec::new(),
                 fields: HashMap::new(),
@@ -7787,6 +7798,7 @@ impl super::TrapDispatcher {
                         bus,
                         result_desc,
                         AeDescriptor {
+                            attributes: Default::default(),
                             desc_type: if is_record {
                                 AE_TYPE_AE_RECORD
                             } else {
