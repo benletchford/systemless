@@ -88,7 +88,7 @@ fn download_with_referer(
             .no_proxy()
             .cookie_provider(cookies.clone())
             .https_only(true)
-            .user_agent("Mozilla/5.0")
+            .user_agent("Systemless-Catalogue/1.0 (+https://systemless.org)")
             .redirect(Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(600))
