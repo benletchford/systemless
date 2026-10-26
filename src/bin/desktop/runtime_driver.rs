@@ -365,7 +365,11 @@ impl GuiDriver {
             GuiCommand::KeyDown { key, character } => runner.push_key_down(key, character),
             GuiCommand::KeyUp { key, character } => runner.push_key_up(key, character),
             GuiCommand::Dialog(reply) => {
-                if let Some((v, h)) = runner.host_dialog_item_position(&reply) {
+                let point = runner.host_dialog_item_position(&reply);
+                if std::env::var_os("SYSTEMLESS_TRACE_ACCESSIBILITY").is_some() {
+                    eprintln!("[ACCESSIBILITY] runtime dialog reply={reply:?} point={point:?}");
+                }
+                if let Some((v, h)) = point {
                     runner.push_mouse_down(v, h);
                     mouse_release_latch.press();
                     if let Some((v, h)) = mouse_release_latch.release((v, h)) {
@@ -2002,6 +2006,37 @@ mod snapshot_tests {
                 assert!(
                     state.guest_surface.is_none(),
                     "host projection replaces the surface"
+                );
+            }
+            // Modal checkboxes must retain the application's toggle after
+            // the synthesized click and its deferred mouse-up have settled.
+            for expected in [1, 0] {
+                let view = state.dialog.clone().unwrap();
+                driver.apply_command(GuiCommand::Dialog(DialogReply {
+                    id: view.id,
+                    revision: view.revision,
+                    item: 4,
+                }));
+                for _ in 0..120 {
+                    let runner = driver.runner.as_mut().unwrap();
+                    let work = super::super::headless_time::frame(runner, 0);
+                    if work.foreground > 0 {
+                        driver.mouse_release_latch.observe_guest_progress();
+                    }
+                    if let Some((v, h)) = driver.mouse_release_latch.take_ready_release() {
+                        runner.push_mouse_up(v, h);
+                    }
+                }
+                driver.capture_state(&mut state, false);
+                let view = state.dialog.as_ref().expect("checkbox keeps dialog open");
+                assert_eq!(
+                    view.items
+                        .iter()
+                        .find(|item| item.number == 4)
+                        .unwrap()
+                        .value,
+                    expected,
+                    "modal checkbox toggles once, powerpc={powerpc}"
                 );
             }
             let source = state.dialog.clone().unwrap();

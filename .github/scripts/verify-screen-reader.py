@@ -131,6 +131,8 @@ $result = foreach ($node in $nodes) {
     role = $info.ControlType.ProgrammaticName
     name = $info.Name
     checked = ($toggle -ne $null -and $toggle.Current.ToggleState -eq 'On')
+    toggle = $(if ($toggle) { $toggle.Current.ToggleState.ToString() } else { "unsupported" })
+    toggle_property = $(if ($toggle) { $node.GetCurrentPropertyValue([System.Windows.Automation.TogglePattern]::ToggleStateProperty).ToString() } else { "unsupported" })
     enabled = $info.IsEnabled
     text = $(if ($value) { $value.Current.Value } else { $null })
   }
@@ -256,6 +258,8 @@ def main():
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 now = wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration")
+                if sys.platform == "win32":
+                    record(f"checkbox state: checked={now['checked']}, pattern={now.get('toggle')}, property={now.get('toggle_property')}")
                 if now["checked"] != before:
                     break
                 time.sleep(0.5)

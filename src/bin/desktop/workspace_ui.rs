@@ -146,6 +146,18 @@ impl WorkspaceUi {
             .retain(|id, _| live_dialogs.contains(id));
         self.dialog_editors.sync(dialog.as_deref(), live_dialogs);
         if self.dialog != dialog {
+            if std::env::var_os("SYSTEMLESS_TRACE_ACCESSIBILITY").is_some() {
+                if let Some(snapshot) = dialog.as_ref() {
+                    let controls: Vec<_> = snapshot
+                        .items
+                        .iter()
+                        .filter(|item| matches!(item.kind, 5 | 6))
+                        .map(|item| (item.number, item.value))
+                        .collect();
+                    eprintln!("[ACCESSIBILITY] dialog snapshot id={} revision={} busy={} controls={controls:?}",
+                        snapshot.id, snapshot.revision, snapshot.busy);
+                }
+            }
             if self
                 .dialog
                 .as_deref()
@@ -1582,6 +1594,12 @@ impl WorkspaceUi {
                     self.dialog_editors.active.action = Some(item);
                 }
                 let (text, action) = self.dialog_editors.active.flush(&dialog);
+                if std::env::var_os("SYSTEMLESS_TRACE_ACCESSIBILITY").is_some()
+                    && (response.inner.action.is_some() || text.is_some() || action.is_some())
+                {
+                    eprintln!("[ACCESSIBILITY] form action={:?} text_reply={:?} dialog_reply={action:?}",
+                        response.inner.action, text.as_ref().map(|reply| (reply.serial, reply.item)));
+                }
                 if let Some(text) = text {
                     self.dialog_text_actions.push(text);
                 }
@@ -2675,6 +2693,48 @@ mod tests {
                     }]
                 );
                 ui.dialog_actions.clear();
+                // UI Automation focuses a checkbox before requesting its click.
+                ui.context.enable_accesskit();
+                let mut accessible = ui.build_frame(test_input());
+                let checkbox = accessible
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some("Sound Effects"))
+                    .unwrap()
+                    .0;
+                accessible.textures_delta.clear();
+                for action in [
+                    egui::accesskit::Action::Focus,
+                    egui::accesskit::Action::Click,
+                ] {
+                    let mut input = test_input();
+                    input.events.push(egui::Event::AccessKitActionRequest(
+                        egui::accesskit::ActionRequest {
+                            action,
+                            target_node: checkbox,
+                            target_tree: egui::accesskit::TreeId::ROOT,
+                            data: None,
+                        },
+                    ));
+                    let mut output = ui.build_frame(input);
+                    output.textures_delta.clear();
+                }
+                assert_eq!(ui.dialog_actions.len(), 1, "one accessibility click");
+                assert_eq!(
+                    ui.dialog_actions[0].item, 4,
+                    "checkbox action reaches runtime"
+                );
+                ui.dialog_actions.clear();
+                ui.context.memory_mut(|memory| {
+                    if let Some(focused) = memory.focused() {
+                        memory.surrender_focus(focused);
+                    }
+                });
+                ui.context.disable_accesskit();
                 let mut editable = (**ui.dialog.as_ref().unwrap()).clone();
                 editable.id = 44;
                 editable.edit_item = 6;
@@ -2730,6 +2790,62 @@ mod tests {
                         value: 0,
                     },
                 );
+                // Repeat the Windows action sequence with an active editor:
+                // selection acknowledgements must not swallow the checkbox action.
+                let mut accessible_ui =
+                    WorkspaceUi::headless(&device, wgpu::TextureFormat::Rgba8Unorm);
+                accessible_ui.context.enable_accesskit();
+                let mut accessible_dialog = editable.clone();
+                accessible_ui.set_modality(UiModality {
+                    owner: UiOwner::Dialog,
+                    menus_blocked: true,
+                });
+                accessible_ui.set_dialog(
+                    Some(std::sync::Arc::new(accessible_dialog.clone())),
+                    &[editable.id],
+                );
+                let mut checkbox = None;
+                for action in [
+                    None,
+                    None,
+                    None,
+                    Some(egui::accesskit::Action::Focus),
+                    Some(egui::accesskit::Action::Click),
+                    None,
+                    None,
+                ] {
+                    let mut input = test_input();
+                    if let Some(action) = action {
+                        input.events.push(egui::Event::AccessKitActionRequest(
+                            egui::accesskit::ActionRequest {
+                                action,
+                                target_node: checkbox.unwrap(),
+                                target_tree: egui::accesskit::TreeId::ROOT,
+                                data: None,
+                            },
+                        ));
+                    }
+                    let mut output = accessible_ui.build_frame(input);
+                    checkbox = output
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .find(|(_, node)| node.label() == Some("Sound Effects"))
+                        .map(|(id, _)| *id);
+                    output.textures_delta.clear();
+                    for reply in std::mem::take(&mut accessible_ui.dialog_text_actions) {
+                        accept_text(&mut accessible_ui, &mut accessible_dialog, reply);
+                    }
+                }
+                assert_eq!(
+                    accessible_ui.dialog_actions.len(),
+                    1,
+                    "accessibility click after text focus"
+                );
+                assert_eq!(accessible_ui.dialog_actions[0].item, 4);
                 ui.set_dialog(Some(std::sync::Arc::new(editable.clone())), &[editable.id]);
                 let image_texture = ui.artwork_textures[&8].texture.id();
                 let mut draw = |ui: &mut WorkspaceUi, events| {
