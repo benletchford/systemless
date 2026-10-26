@@ -2863,6 +2863,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NewUserItemUPP
         | PpcImportDispatcherTarget::DisposeUserItemUPP
         | PpcImportDispatcherTarget::NewSndCallBackUPP
+        | PpcImportDispatcherTarget::NewThemeButtonDrawUPP
+        | PpcImportDispatcherTarget::NewThemeEraseUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::NewTEClickLoopUPP
         | PpcImportDispatcherTarget::NewNavEventUPP

@@ -284,6 +284,26 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewThemeButtonDrawUPP
+        | PpcImportDispatcherTarget::NewThemeEraseUPP => {
+            // Appearance.h 3.4.1: Pascal void callbacks with six/four parameters.
+            let info =
+                if binding.dispatcher_target == PpcImportDispatcherTarget::NewThemeButtonDrawUPP {
+                    0x0001_BEC0
+                } else {
+                    0x0000_1BC0
+                };
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                info,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewSndCallBackUPP => {
             // Apple Sound.h: Pascal void callback, SndChannelPtr and
             // SndCommandPtr. A real owned Mixed Mode descriptor is required.
