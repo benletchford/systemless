@@ -4618,3 +4618,178 @@ fn quicktime_mc_controller_port_round_trips() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], 0x0204_0000);
 }
+
+fn quicktime_audio_file_fixture(compressed: bool) -> Vec<u8> {
+    let (channels, frames, bits, rate, samples) = if compressed {
+        let mut packet = vec![0x77; 34];
+        packet[..2].copy_from_slice(&0i16.to_be_bytes());
+        (
+            2u16,
+            2u32,
+            16u16,
+            [0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0],
+            packet.repeat(4),
+        )
+    } else {
+        (
+            1u16,
+            8000u32,
+            8u16,
+            [0x40, 0x0b, 0xfa, 0, 0, 0, 0, 0, 0, 0],
+            vec![0x40; 8000],
+        )
+    };
+    let mut comm = Vec::new();
+    comm.extend_from_slice(&channels.to_be_bytes());
+    comm.extend_from_slice(&frames.to_be_bytes());
+    comm.extend_from_slice(&bits.to_be_bytes());
+    comm.extend_from_slice(&rate);
+    if compressed {
+        comm.extend_from_slice(b"ima4\0\0");
+    }
+    let mut body = if compressed {
+        b"AIFC".to_vec()
+    } else {
+        b"AIFF".to_vec()
+    };
+    body.extend_from_slice(b"COMM");
+    body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+    body.extend_from_slice(&comm);
+    body.extend_from_slice(b"SSND");
+    body.extend_from_slice(&(samples.len() as u32 + 8).to_be_bytes());
+    body.extend_from_slice(&[0; 8]);
+    body.extend_from_slice(&samples);
+    let mut file = b"FORM".to_vec();
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    file.extend_from_slice(&body);
+    file
+}
+
+#[test]
+fn quicktime_imports_aiff_and_compressed_aifc_as_audio_movies() {
+    for compressed in [false, true] {
+        let data = quicktime_audio_file_fixture(compressed);
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"QuickTimeLib",
+            b"OpenMovieFile",
+        ))
+        .unwrap();
+        const SCRATCH: u32 = PPC_HEAP_BASE + 0x1000;
+        loaded.memory.add_region(SCRATCH, vec![0; 128]);
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Music.aif".into(),
+            data: data.into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"AIFF"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        write_ppc_fsspec(
+            &mut loaded.memory,
+            SCRATCH,
+            PPC_BOOT_VOLUME_REF_NUM,
+            PPC_ROOT_DIR_ID,
+            b"Music.aif",
+        );
+        loaded.cpu.gpr[3] = SCRATCH;
+        loaded.cpu.gpr[4] = SCRATCH + 80;
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtOpenMovieFile);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let file_ref = loaded.memory.read_u16_be(SCRATCH + 80).unwrap();
+        loaded.cpu.gpr[3] = SCRATCH + 84;
+        loaded.cpu.gpr[4] = u32::from(file_ref);
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 1;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtNewMovieFromFile);
+        assert_eq!(loaded.cpu.gpr[3], 0, "compressed={compressed}");
+        assert_eq!(loaded.memory.read_u32_be(SCRATCH + 84), Some(PPC_QT_MOVIE));
+        let (rate, count) = if compressed {
+            (44_100, 128)
+        } else {
+            (8000, 8000)
+        };
+        assert_eq!(loaded.quicktime.movie_time_scale, rate);
+        assert_eq!(loaded.quicktime.movie_file_duration, count);
+        assert!(loaded.quicktime.movie_video_track.is_none());
+        assert_eq!(loaded.quicktime.movie_tracks.len(), 1);
+        assert_eq!(
+            loaded.quicktime.movie_tracks[0].media_type,
+            u32::from_be_bytes(*b"soun")
+        );
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtStartMovie);
+        let playback = loaded
+            .sound
+            .decoded_file_playbacks
+            .last()
+            .expect("audio playback");
+        assert_eq!(playback.samples.len(), count as usize);
+        assert_eq!(playback.sample_rate_fixed, rate << 16);
+        assert!(playback.samples.iter().any(|sample| *sample != 128));
+        let base = SCRATCH + 0x200;
+        let port = SCRATCH + 0x400;
+        loaded.memory.add_region(base, vec![0xee; 32]);
+        loaded.gworlds = vec![PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: base,
+            gdevice: 0,
+            width: 4,
+            height: 4,
+            depth: 16,
+            row_bytes: 8,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        }];
+        loaded.quicktime.movie_box = (0, 0, 4, 4);
+        assert!(
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, port).is_some()
+        );
+        assert!(!ppc_qt_draw_movie_frame(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            port,
+            &mut loaded.quicktime,
+            0
+        ));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, base, 32),
+            Some(vec![0xee; 32])
+        );
+    }
+}
+
+#[test]
+fn quicktime_aiff_import_preserves_resource_selection_and_rejects_bad_data() {
+    let original = quicktime_audio_file_fixture(true);
+    for requested in [None, Some(0), Some(-1)] {
+        let mut data = original.clone();
+        assert_eq!(
+            ppc_qt_append_movie_resource(&mut data, &[], &[], "Music.aif", requested),
+            Some(-1)
+        );
+        assert_eq!(data, original);
+    }
+    let mut data = original.clone();
+    assert_eq!(
+        ppc_qt_append_movie_resource(&mut data, &[], &[], "Music.aif", Some(128)),
+        None
+    );
+    assert_eq!(data, original);
+    let mut truncated = original.clone();
+    truncated.pop();
+    let mut unknown_codec = original.clone();
+    unknown_codec[38..42].copy_from_slice(b"????");
+    for mut invalid in [truncated, unknown_codec, b"FORM\0\0\0\x04AIFF".to_vec()] {
+        assert_eq!(
+            ppc_qt_append_movie_resource(&mut invalid, &[], &[], "Music.aif", None),
+            None
+        );
+        assert!(ppc_qt_movie_first_audio_track(&invalid).is_none());
+    }
+}

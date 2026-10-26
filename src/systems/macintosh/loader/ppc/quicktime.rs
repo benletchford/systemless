@@ -6,11 +6,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{
-    format_ppc_fourcc, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
+    format_ppc_fourcc, ppc_decode_aiff_samples, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
     ppc_existing_path_for_fsspec, ppc_i16_result, ppc_live_front_buffer_for_gworld,
-    ppc_live_quickdraw_surface, ppc_memory_can_write_bytes, ppc_process_alloc_handle_with_bytes,
+    ppc_live_quickdraw_surface, ppc_memory_can_write_bytes, ppc_parse_aiff_metadata,
+    ppc_process_alloc_handle_with_bytes,
     ppc_q3_write_software_pixel, ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel,
-    ppc_read_be_u32_from_slice, ppc_read_rect, ppc_write_rect, qt_trace_enabled, PpcCpu,
+    ppc_read_be_u32_from_slice, ppc_read_rect, ppc_sound_codec, ppc_write_rect, qt_trace_enabled, PpcCpu,
     PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer,
     PpcGWorldRecord, PpcHandleRecord, PpcImportAction, PpcProcessAllocatorView,
     PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState,
@@ -1714,7 +1715,9 @@ pub(crate) fn ppc_qt_movie_bounds(data: &[u8]) -> Option<(i16, i16, i16, i16)> {
 }
 
 pub(crate) fn ppc_qt_movie_duration(data: &[u8]) -> Option<(u32, u64)> {
-    ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_duration)
+    ppc_qt_aiff_audio_track(data)
+        .map(|track| (track.media_time_scale, track.media_duration))
+        .or_else(|| ppc_qt_scan_movie_header(data, 0, data.len(), 0, ppc_qt_mvhd_duration))
 }
 
 pub(crate) fn ppc_qt_movie_preferred_rate(data: &[u8]) -> Option<i32> {
@@ -1772,6 +1775,14 @@ fn ppc_qt_movie_user_data_item(data: &[u8], kind: u32, index: u32) -> Option<&[u
 }
 
 pub(crate) fn ppc_qt_movie_tracks(data: &[u8]) -> Vec<PpcQuickTimeTrackRecord> {
+    if ppc_qt_aiff_audio_track(data).is_some() {
+        return vec![PpcQuickTimeTrackRecord {
+            handle: PPC_QT_MOVIE + 0x110,
+            id: 1,
+            media_type: u32::from_be_bytes(*b"soun"),
+            enabled: true,
+        }];
+    }
     // Inside Macintosh: QuickTime (1993), pp. 4-13–4-19: each trak owns a
     // tkhd header and an mdia/hdlr media subtype.
     let mut offset = 0;
@@ -1949,7 +1960,52 @@ pub(crate) fn ppc_qt_movie_video_samples(
 }
 
 pub(crate) fn ppc_qt_movie_first_audio_track(data: &[u8]) -> Option<PpcQuickTimeAudioTrackRecord> {
-    ppc_qt_scan_movie_audio_track(data, 0, data.len(), 0)
+    ppc_qt_aiff_audio_track(data)
+        .or_else(|| ppc_qt_scan_movie_audio_track(data, 0, data.len(), 0))
+}
+
+// Import the source audio without inventing a moov atom or changing the file.
+// Decoding supplies the actual frame count, including compressed packet expansion.
+fn ppc_qt_aiff_audio_track(data: &[u8]) -> Option<PpcQuickTimeAudioTrackRecord> {
+    let metadata = ppc_parse_aiff_metadata(data)?;
+    let form_size = usize::try_from(ppc_read_be_u32_from_slice(data, 4)?).ok()?;
+    if form_size.checked_add(8)? > data.len() {
+        return None;
+    }
+    let decoded = ppc_decode_aiff_samples(data)?;
+    let codec = ppc_sound_codec(-1, metadata.compression_type, metadata.sample_size)?;
+    let (frames_per_packet, bytes_per_channel, _) = codec.packet_geometry();
+    let packet_size =
+        u32::from(bytes_per_channel).checked_mul(u32::from(metadata.channel_count))?;
+    let packet_count = decoded
+        .summary
+        .sample_count
+        .checked_div(u32::from(frames_per_packet))?;
+    let start = usize::try_from(metadata.sound_data_offset).ok()?;
+    let packet = data.get(start..start.checked_add(packet_size as usize)?)?;
+    let mut preview = [0; 16];
+    let preview_len = packet.len().min(preview.len());
+    preview[..preview_len].copy_from_slice(&packet[..preview_len]);
+    Some(PpcQuickTimeAudioTrackRecord {
+        media_time_scale: decoded.summary.sample_rate_fixed >> 16,
+        media_duration: u64::from(decoded.summary.sample_count),
+        sample_count: packet_count,
+        first_sample_duration: u32::from(frames_per_packet),
+        first_sample_size: packet_size,
+        first_chunk_offset: u64::from(metadata.sound_data_offset),
+        first_sample_data_len: packet_size,
+        first_sample_checksum: packet
+            .iter()
+            .fold(0u32, |sum, byte| sum.wrapping_add(u32::from(*byte))),
+        first_sample_preview_len: preview_len as u8,
+        first_sample_preview: preview,
+        first_samples_per_chunk: packet_count,
+        sample_description_id: 1,
+        codec: metadata.compression_type,
+        channel_count: metadata.channel_count,
+        sample_size_bits: metadata.sample_size,
+        sample_rate_fixed: decoded.summary.sample_rate_fixed,
+    })
 }
 
 fn ppc_qt_atom_range(data: &[u8], offset: usize, end: usize) -> Option<(&[u8], usize, usize)> {
@@ -2407,7 +2463,8 @@ fn ppc_qt_parse_audio_track(
 }
 
 pub(crate) fn ppc_qt_movie_audio_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
-    ppc_qt_scan_movie_audio_samples(data, 0, data.len(), 0)
+    ppc_decode_aiff_samples(data)
+        .or_else(|| ppc_qt_scan_movie_audio_samples(data, 0, data.len(), 0))
         .or_else(|| ppc_qt_scan_movie_music_samples(data, 0, data.len(), 0))
 }
 
@@ -3677,6 +3734,11 @@ pub(crate) fn ppc_qt_append_movie_resource(
     path: &str,
     requested_res_id: Option<i16>,
 ) -> Option<i16> {
+    if matches!(requested_res_id, None | Some(0) | Some(-1))
+        && ppc_qt_aiff_audio_track(movie_file_data).is_some()
+    {
+        return Some(-1);
+    }
     // Inside Macintosh: QuickTime (1993), pp. 4-3–4-6.
     let data_movie_range = ppc_qt_top_level_atom_offsets(movie_file_data, b"moov");
     if data_movie_range.is_some() && !matches!(requested_res_id, Some(1..=i16::MAX)) {
@@ -5242,6 +5304,9 @@ pub(crate) fn ppc_qt_draw_movie_frame(
     quicktime: &mut PpcQuickTimeState,
     salt: u32,
 ) -> bool {
+    if quicktime.movie_audio_track.is_some() && quicktime.movie_video_track.is_none() {
+        return false;
+    }
     let gworld = if quicktime.movie_gworld != 0 {
         quicktime.movie_gworld
     } else {
