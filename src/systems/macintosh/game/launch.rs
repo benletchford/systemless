@@ -3683,7 +3683,8 @@ fn vfs_path_shares_parent(path: &str, application_path: Option<&str>) -> bool {
 
 /// True when a library file supplies a library the runtime provides and lies
 /// outside the application's folder, so CFM would bind the installed system
-/// copy instead of it.
+/// copy instead of that fragment. Other fragments in the same file may still
+/// supply helper libraries that the runtime does not provide.
 pub(super) fn ppc_cfrg_is_runtime_library_installer(
     cfrg: &crate::loader::cfrg::CfrgResource,
     path: &str,
@@ -3735,11 +3736,17 @@ pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
         let Some(cfrg) = parse_cfrg_resource(&cfrg_resource.data) else {
             continue;
         };
-        if ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application_path) {
-            continue;
-        }
+        let uses_runtime_library =
+            ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application_path);
 
         for (fragment_index, fragment) in cfrg.fragments.into_iter().enumerate() {
+            // A multi-fragment system container can also supply helper libraries
+            // that HLE does not implement (for example InputSprocketDeferLib).
+            if uses_runtime_library
+                && crate::loader::ppc::ppc_runtime_provides_cfm_library(&fragment.name)
+            {
+                continue;
+            }
             if fragment.architecture != ARCH_POWERPC
                 || fragment.usage != USAGE_LIB
                 || fragment.location != LOCATION_ON_DISK_FLAT
@@ -6652,6 +6659,58 @@ mod tests {
         assert_eq!(
             discovered_names(&vfs, Some("Disk/Game ƒ/Game")),
             vec!["GameEngineLib".to_string()]
+        );
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_retains_non_replaced_siblings_in_runtime_containers() {
+        let path = "Disk/Items for Extensions folder/InputSprocketLib";
+        let (mut vfs, pef) = library_vfs(&[(path, b"InputSprocketLib")]);
+        let mut cfrg = make_library_cfrg(
+            ARCH_POWERPC,
+            USAGE_LIB,
+            LOCATION_ON_DISK_FLAT,
+            0,
+            pef.len() as u32,
+            b"InputSprocketLib",
+        );
+        for (index, name) in [
+            b"InputSprocketGlobals".as_slice(),
+            b"InputSprocketDeferLib".as_slice(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let helper = make_library_cfrg(
+                ARCH_POWERPC,
+                USAGE_LIB,
+                LOCATION_ON_DISK_FLAT,
+                (pef.len() * (index + 1)) as u32,
+                pef.len() as u32,
+                name,
+            );
+            cfrg.extend_from_slice(&helper[32..]);
+        }
+        cfrg[28..32].copy_from_slice(&3u32.to_be_bytes());
+        vfs.files[0].data = pef.repeat(3).into();
+        vfs.resource_files[0].raw_data =
+            Some(make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg).into());
+        let (fragments, _) =
+            discover_ppc_cfm_library_fragments_with_locations(&vfs, Some("Disk/Game/Game"));
+        let mut names: Vec<_> = fragments
+            .iter()
+            .map(|fragment| fragment.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["InputSprocketDeferLib", "InputSprocketGlobals"]);
+        assert!(fragments
+            .iter()
+            .all(|fragment| fragment.bytes.as_slice() == pef.as_slice()));
+        // CFM still permits an application's own sibling container to shadow
+        // the installed runtime, without hiding either helper.
+        assert_eq!(
+            discovered_names(&vfs, Some("Disk/Items for Extensions folder/Game")).len(),
+            3
         );
     }
 
