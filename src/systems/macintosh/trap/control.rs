@@ -311,7 +311,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn control_uses_application_def_proc(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> bool {
+    pub(crate) fn control_uses_application_def_proc(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> bool {
         let proc_id = self.control_manager.proc_id(ctrl_ptr);
         let proc_addr = Self::control_def_proc_addr(bus, ctrl_ptr);
         let callable = Self::control_def_entry_looks_callable(bus, proc_addr);
