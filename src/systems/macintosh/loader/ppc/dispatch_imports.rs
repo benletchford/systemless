@@ -2509,6 +2509,12 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ICStop
         | PpcImportDispatcherTarget::ICGetSeed
         | PpcImportDispatcherTarget::ICGetComponentInstance
+        | PpcImportDispatcherTarget::ICGetPref
+        | PpcImportDispatcherTarget::ICFindPrefHandle
+        | PpcImportDispatcherTarget::ICSetPref
+        | PpcImportDispatcherTarget::ICBegin
+        | PpcImportDispatcherTarget::ICEnd
+        | PpcImportDispatcherTarget::ICFindConfigFile
         | PpcImportDispatcherTarget::ICParseURL => {
             dispatch_internet_config::dispatch_internet_config_import(
                 binding,
@@ -2518,6 +2524,11 @@ pub(crate) fn dispatch_supported_import(
                 heap_cursor,
                 last_mem_error,
                 toolbox_startup,
+                vfs_files,
+                vfs_resource_files,
+                vfs_directories,
+                default_dir_id,
+                vfs_resources,
             )
         }
         PpcImportDispatcherTarget::GetCurrentProcess
