@@ -935,3 +935,110 @@ fn stdclib_ctype_classification_and_conversion_conforms_to_universal_interfaces(
         }
     }
 }
+
+#[test]
+fn stdio_character_io_pushback_interoperates_with_reads_seeks_and_eof() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"fgetc")).unwrap();
+    let stream = 0x4000;
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Volume/chars".into(),
+        data: vec![0xff, b'b', b'c'].into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.insert_test_stdio_stream(
+        stream,
+        PpcStdioStreamRecord {
+            pushback: None,
+            ref_num: None,
+            path: Some("Volume/chars".into()),
+            position: 0,
+            standard: false,
+            readable: true,
+            writable: true,
+            append: false,
+            closed: false,
+            eof: false,
+            error: false,
+        },
+    );
+    let output = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(output, vec![0; 16]);
+    let call = |loaded: &mut PpcLoadedApp, name: &str, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, dispatcher_target_for_import("StdCLib", name));
+        loaded.cpu.gpr[3]
+    };
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), 255);
+    assert_eq!(
+        call(&mut loaded, "ungetc", &[b'X' as u32, stream]),
+        b'X' as u32
+    );
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 0);
+    assert_eq!(
+        call(&mut loaded, "ungetc", &[b'Y' as u32, stream]),
+        u32::MAX
+    );
+    assert_eq!(call(&mut loaded, "fread", &[0xfffffff0, 1, 2, stream]), 0);
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 0);
+    assert_eq!(call(&mut loaded, "fread", &[output, 1, 2, stream]), 2);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, output, 2),
+        Some(b"Xb".to_vec())
+    );
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 2);
+    assert_eq!(call(&mut loaded, "getc", &[stream]), b'c' as u32);
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), u32::MAX);
+    assert_eq!(call(&mut loaded, "feof", &[stream]), 1);
+    assert_eq!(call(&mut loaded, "ungetc", &[0x1ff, stream]), 255);
+    assert_eq!(call(&mut loaded, "feof", &[stream]), 0);
+    assert_eq!(call(&mut loaded, "fseek", &[stream, 0, 1]), 0);
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), b'c' as u32);
+    assert_eq!(call(&mut loaded, "ungetc", &[u32::MAX, stream]), u32::MAX);
+    assert_eq!(call(&mut loaded, "fseek", &[stream, 0, 0]), 0);
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), 255);
+    assert_eq!(
+        call(&mut loaded, "ungetc", &[b'Q' as u32, stream]),
+        b'Q' as u32
+    );
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), b'Q' as u32);
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 1);
+    assert_eq!(call(&mut loaded, "fseek", &[stream, 1, 0]), 0);
+    assert_eq!(call(&mut loaded, "fputc", &[0x158, stream]), b'X' as u32);
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 2);
+    loaded.process_file_system.with_mut(|fs| {
+        assert_eq!(fs.vfs_files[0].data.as_slice(), &[255, b'X', b'c']);
+        assert!(fs.vfs_files[0].dirty);
+        fs.stdio_streams.get_mut(&stream).unwrap().append = true;
+    });
+    assert_eq!(call(&mut loaded, "fseek", &[stream, 0, 0]), 0);
+    assert_eq!(
+        call(&mut loaded, "putc", &[b'Z' as u32, stream]),
+        b'Z' as u32
+    );
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 4);
+    loaded.process_file_system.with_mut(|fs| {
+        fs.stdio_streams.get_mut(&stream).unwrap().writable = false;
+    });
+    assert_eq!(call(&mut loaded, "fputc", &[b'Z' as u32, stream]), u32::MAX);
+    assert_eq!(call(&mut loaded, "ferror", &[stream]), 1);
+    assert_eq!(
+        call(&mut loaded, "ungetc", &[b'Q' as u32, stream]),
+        b'Q' as u32
+    );
+    call(&mut loaded, "rewind", &[stream]);
+    assert_eq!(call(&mut loaded, "ftell", &[stream]), 0);
+    assert_eq!(call(&mut loaded, "ferror", &[stream]), 0);
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), 255);
+    assert_eq!(call(&mut loaded, "fclose", &[stream]), 0);
+    assert_eq!(call(&mut loaded, "fgetc", &[stream]), u32::MAX);
+    assert_eq!(call(&mut loaded, "fputc", &[b'Z' as u32, stream]), u32::MAX);
+    assert_eq!(
+        call(&mut loaded, "ungetc", &[b'Z' as u32, stream]),
+        u32::MAX
+    );
+    assert_eq!(call(&mut loaded, "fputc", &[b'Z' as u32, 0]), u32::MAX);
+}

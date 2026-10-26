@@ -620,6 +620,8 @@ impl SharedProcessOpenFilePositions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessStdioStreamRecord {
+    /// A byte to return before reading at the physical file position.
+    pub(crate) pushback: Option<u8>,
     pub(crate) ref_num: Option<i16>,
     pub(crate) path: Option<String>,
     pub(crate) position: u32,
@@ -13498,6 +13500,7 @@ mod tests {
             file_system.stdio_streams.insert(
                 0x1000,
                 ProcessStdioStreamRecord {
+                    pushback: None,
                     ref_num: Some(7),
                     path: Some("Classic/first.bin".to_string()),
                     position: 3,
@@ -13538,6 +13541,7 @@ mod tests {
             file_system.stdio_streams.insert(
                 0x2000,
                 ProcessStdioStreamRecord {
+                    pushback: None,
                     ref_num: Some(8),
                     path: Some("Native/second.bin".to_string()),
                     position: 11,

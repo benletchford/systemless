@@ -2640,8 +2640,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "clearerr") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::ClearErr)
         }
-        ("StdCLib", "_filbuf") => {
+        ("StdCLib", "_filbuf" | "fgetc" | "getc") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileBuffer)
+        }
+        ("StdCLib", "fputc" | "putc") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FilePutChar)
+        }
+        ("StdCLib", "ungetc") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileUngetChar)
         }
         ("StdCLib", "fclose") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileClose)
@@ -2663,6 +2669,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("StdCLib", "fread") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileRead)
+        }
+        ("StdCLib", "rewind") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileRewind)
         }
         ("StdCLib", "fseek") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileSeek)
