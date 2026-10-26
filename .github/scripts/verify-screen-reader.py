@@ -254,18 +254,21 @@ def main():
             for name in ("OK", "Cancel"):
                 wait_for(backend, "button", name)
             record("dialog buttons exposed")
-            backend.activate(checkbox)
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                now = wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration")
-                if sys.platform == "win32":
-                    record(f"checkbox state: checked={now['checked']}, pattern={now.get('toggle')}, property={now.get('toggle_property')}")
-                if now["checked"] != before:
-                    break
-                time.sleep(0.5)
-            else:
-                raise SystemExit("toggling the checkbox through the accessibility API had no effect")
-            record(f"checkbox toggled to checked={now['checked']}")
+            for expected in (not before, before):
+                backend.activate(wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration"))
+                deadline = time.monotonic() + 30
+                stable = 0
+                while time.monotonic() < deadline:
+                    now = wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration")
+                    if sys.platform == "win32":
+                        record(f"checkbox state: checked={now['checked']}, pattern={now.get('toggle')}, property={now.get('toggle_property')}")
+                    stable = stable + 1 if now["checked"] == expected else 0
+                    if stable == 2:
+                        break
+                    time.sleep(0.5)
+                else:
+                    raise SystemExit(f"accessibility checkbox did not retain checked={expected}")
+                record(f"checkbox retained checked={expected}")
             backend.activate(wait_for(backend, "button", "Cancel"))
             wait_for(backend, "checkbox", "Enable 3D Hardware Acceleration", gone=True)
             record("Cancel dismissed the dialog")
