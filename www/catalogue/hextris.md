@@ -69,12 +69,15 @@ artifacts:
       resources. The original 30-day trial and registration requirement remain intact;
       unregistered play is limited to level 3. No standalone game resource, picture, sound
       or music is separately redistributed. Independent unar inspection verifies the
-      outer installer forks; independent inner-VISE extraction parity remains pending.
+      outer installer forks. Original-installer execution now independently verifies all
+      18 payload paths and 36 forks from the corrected VISE parser in #5143; Finder
+      flags are recorded separately. The original installer final alert remains blank.
       Production expansion yields 18 records. The game contains both 68K CODE resources
       and PowerPC PEF/cfrg code. This source adds a StuffIt wrapper around the intact
       installer distribution. Its installer data fork, resource data and resource map
       match the initially tested download; only 24 bytes in the resource-file header area
-      differ. Production expansion is byte-identical across all 18 records (KPK2 SHA-256
+      differ. Before directory repair #5143, production expansion was byte-identical
+      across all 18 records but collapsed eleven space-named sibling paths (KPK2 SHA-256
       1e78c7f6fec506fbf1581c701046d6fb8a23d0691efe82d66998367cd99f6b7c). Fresh replays
       of this exact wrapped download pass five gameplay assertions on each CPU at the
       same clocks recorded above, with zero exhausted frames; final captures are
