@@ -265,6 +265,35 @@ impl PictureRegion {
     }
 }
 
+fn intersect_picture_regions(first: &PictureRegion, second: &PictureRegion) -> PictureRegion {
+    let top = first.top.max(second.top);
+    let left = first.left.max(second.left);
+    let bottom = first.bottom.min(second.bottom);
+    let right = first.right.min(second.right);
+    let mut region = PictureRegion {
+        top,
+        left,
+        bottom,
+        right,
+        rows: Vec::new(),
+    };
+    if top >= bottom || left >= right || (first.rows.is_empty() && second.rows.is_empty()) {
+        return region;
+    }
+    for y in i32::from(top)..i32::from(bottom) {
+        let mut spans = vec![(i32::from(left), i32::from(right))];
+        intersect_spans_with_picture_region_row(&mut spans, first, y, 0);
+        intersect_spans_with_picture_region_row(&mut spans, second, y, 0);
+        region.rows.push(
+            spans
+                .into_iter()
+                .flat_map(|(left, right)| [left as i16, right as i16])
+                .collect(),
+        );
+    }
+    region
+}
+
 fn parse_picture_region(bus: &MacMemoryBus, region_ptr: u32) -> Option<PictureRegion> {
     let region_size = u32::from(bus.read_word(region_ptr));
     if region_size < REGION_HEADER_SIZE {
@@ -5340,11 +5369,30 @@ fn parse_indexed_bits_rect(
         );
     }
 
-    if has_rgn {
+    // BitsRgn and PackBitsRgn carry an operation-local mask in picture
+    // coordinates. It restricts the picture clip; it does not replace it.
+    let mask_region = if has_rgn {
+        let region = parse_picture_region(bus, pos).unwrap_or(PictureRegion {
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: 0,
+            rows: Vec::new(),
+        });
         let rgn_size = bus.read_word(pos) as u32;
         pos += rgn_size;
-    }
-
+        Some(region)
+    } else {
+        None
+    };
+    let combined_clip = mask_region
+        .as_ref()
+        .zip(clip_region)
+        .map(|(mask, clip)| intersect_picture_regions(mask, clip));
+    let clip_region = combined_clip
+        .as_ref()
+        .or(mask_region.as_ref())
+        .or(clip_region);
     let height = (pm.bounds_bottom - pm.bounds_top) as u32;
     let (screen_base, screen_rb, screen_w, screen_h, scrn_ps) = (
         screen_mode.0,
