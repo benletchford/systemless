@@ -1053,9 +1053,12 @@ pub(super) fn dispatch_movie_toolbox(
                 .iter()
                 .any(|track| track.enabled && is_visual_media(track.media_type));
             let saved_task_count = quicktime.movie_task_count;
+            let saved_fraction = quicktime.movie_task_fraction;
+            quicktime.movie_task_fraction = 0;
             quicktime.movie_task_count = task_count_for_time(quicktime, i64::from(gpr[4] as i32));
             let frame = ppc_qt_decode_current_movie_video_frame(quicktime);
             quicktime.movie_task_count = saved_task_count;
+            quicktime.movie_task_fraction = saved_fraction;
             let pict = match frame {
                 Some(frame) => direct_bits_pict(&frame, quicktime.movie_box),
                 None if !has_video => Some(empty_pict(quicktime.movie_box)),

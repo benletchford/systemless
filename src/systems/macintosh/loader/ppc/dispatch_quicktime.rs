@@ -319,14 +319,7 @@ pub(super) fn dispatch_quicktime_import(
 
 pub(super) fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
     let duration = ppc_qt_movie_duration_value(quicktime);
-    let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
-    i64::try_from(
-        u64::from(quicktime.movie_task_count)
-            .min(tasks)
-            .saturating_mul(duration)
-            / tasks,
-    )
-    .unwrap_or(i64::MAX)
+    i64::try_from(ppc_qt_movie_position_in_scale(quicktime, duration)).unwrap_or(i64::MAX)
 }
 
 fn quicktime_callback_rate(quicktime: &PpcQuickTimeState) -> i32 {

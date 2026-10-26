@@ -3670,6 +3670,12 @@ fn quicktime_mc_idle_services_attached_movie() {
     let probe = loaded.run_with_hle_imports(64);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_task_count, 0);
+
+    loaded.quicktime.movie_started = true;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.gpr[3] = controller;
+    loaded.run_with_hle_imports(64);
     assert_eq!(loaded.quicktime.movie_task_count, 1);
 
     loaded.quicktime.movie_controllers[0].movie = 0;
@@ -5124,4 +5130,60 @@ fn quicktime_toolbox_preferred_rate_does_not_change_current_playback_rate() {
         call_movie_toolbox(&mut loaded, "GetMovieRate", &[PPC_QT_MOVIE]),
         0
     );
+}
+
+#[test]
+fn quicktime_toolbox_movies_task_obeys_fractional_reverse_and_stopped_rates() {
+    let mut loaded = movie_toolbox_fixture();
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_tasks_until_done = 120;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_file_duration = 120;
+    let task = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+        run_test_import(loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    };
+    task(&mut loaded);
+    assert_eq!(loaded.quicktime.movie_task_count, 0);
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_playback_rate = 0x8000;
+    task(&mut loaded);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        5
+    );
+    task(&mut loaded);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        10
+    );
+    loaded.quicktime.movie_playback_rate = 0x20000;
+    task(&mut loaded);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        30
+    );
+    loaded.quicktime.movie_playback_rate = 0;
+    task(&mut loaded);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        30
+    );
+    loaded.quicktime.movie_playback_rate = -0x8000;
+    task(&mut loaded);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        25
+    );
+    for _ in 0..5 {
+        task(&mut loaded);
+    }
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        0
+    );
+    assert!(!loaded.quicktime.movie_started);
+    assert!(loaded.quicktime.movie_at_beginning);
+    task(&mut loaded);
+    assert_eq!(loaded.quicktime.movie_task_count, 0);
 }
