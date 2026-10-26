@@ -411,7 +411,8 @@ pub const PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE: u32 = 16 + PPC_ISP_NEED_SIZE;
 pub const PPC_ISP_ELEMENT_NEED_INDEX_OFFSET: u32 = 8;
 pub const PPC_ISP_ELEMENT_NEED_SOURCE_OFFSET: u32 = 12;
 pub const PPC_ISP_ELEMENT_NEED_RECORD_OFFSET: u32 = 16;
-pub const PPC_ISP_ELEMENT_LIST_HEADER_SIZE: u32 = 8;
+pub const PPC_ISP_ELEMENT_LIST_HEADER_SIZE: u32 = 12;
+const PPC_ISP_ELEMENT_LIST_MAGIC: u32 = u32::from_be_bytes(*b"ISpL");
 pub const PPC_ISP_ELEMENT_LIST_ENTRY_SIZE: u32 = 12;
 pub const PPC_ISP_ELEMENT_LIST_CAPACITY: u32 = 64;
 pub const PPC_ISP_ELEMENT_LIST_RECORD_SIZE: u32 = PPC_ISP_ELEMENT_LIST_HEADER_SIZE
@@ -2472,18 +2473,23 @@ pub(crate) fn ppc_isp_element_list_new(
     // supplied elements. The host-private tail tracks each member's refCon
     // and last state so event transitions can be delivered deterministically.
     let _ = memory.write_u32_be(out_list_ptr, 0);
-    let list = ppc_process_heap_alloc(
+    let list =
+        process_memory_manager.new_native_ptr(memory, PPC_ISP_ELEMENT_LIST_RECORD_SIZE, true);
+    let mut last_mem_error = PPC_NO_ERR;
+    ppc_apply_process_native_allocator(
         process_memory_manager,
         memory,
         heap_cursor,
-        PPC_ISP_ELEMENT_LIST_RECORD_SIZE,
-        true,
+        &mut last_mem_error,
     );
     if list == 0 {
         return PPC_MEM_FULL_ERR;
     }
     if memory.write_u32_be(list, count).is_none()
         || memory.write_u32_be(list + 4, flags).is_none()
+        || memory
+            .write_u32_be(list + 8, PPC_ISP_ELEMENT_LIST_MAGIC)
+            .is_none()
         || memory.write_u32_be(out_list_ptr, list).is_none()
     {
         return PPC_MEM_FULL_ERR;
@@ -2506,6 +2512,44 @@ pub(crate) fn ppc_isp_element_list_new(
     PPC_NO_ERR
 }
 
+// Owned list references carry a private lifetime tag. System-owned device/global
+// lists use their synthetic identities and are never released by this path.
+fn ppc_isp_owned_element_list_count(memory: &mut PpcSectionMem, list: u32) -> Option<u32> {
+    if list == 0
+        || !ppc_memory_can_read_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE)
+        || memory.read_u32_be(list + 8) != Some(PPC_ISP_ELEMENT_LIST_MAGIC)
+    {
+        return None;
+    }
+    memory
+        .read_u32_be(list)
+        .filter(|count| *count <= PPC_ISP_ELEMENT_LIST_CAPACITY)
+}
+
+pub(crate) fn ppc_isp_element_list_dispose(
+    cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+) -> i16 {
+    let list = cpu.gpr[3];
+    if ppc_isp_owned_element_list_count(memory, list).is_none()
+        || process_memory_manager.native_ptr_size(list) != PPC_ISP_ELEMENT_LIST_RECORD_SIZE
+    {
+        return PPC_PARAM_ERR;
+    }
+    let _ = memory.write_u32_be(list + 8, 0);
+    let _ = process_memory_manager.dispose_native_ptr(list);
+    let mut last_mem_error = PPC_NO_ERR;
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        &mut last_mem_error,
+    );
+    last_mem_error
+}
+
 pub(crate) fn ppc_isp_element_list_add_elements(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -2526,7 +2570,7 @@ pub(crate) fn ppc_isp_element_list_add_elements(
     {
         return PPC_PARAM_ERR;
     }
-    let Some(existing_count) = memory.read_u32_be(list) else {
+    let Some(existing_count) = ppc_isp_owned_element_list_count(memory, list) else {
         return PPC_PARAM_ERR;
     };
     let Some(new_count) = existing_count.checked_add(count) else {
@@ -2581,10 +2625,9 @@ pub(crate) fn ppc_isp_element_list_get_next_event(
     // Apple Game Sprockets Legacy Reference (2003),
     // ISpElementList_GetNextEvent: events contain AbsoluteTime, element,
     // refCon, and data. Button data is 1 on press and 0 on release.
-    let count = memory
-        .read_u32_be(list)
-        .unwrap_or(0)
-        .min(PPC_ISP_ELEMENT_LIST_CAPACITY);
+    let Some(count) = ppc_isp_owned_element_list_count(memory, list) else {
+        return PPC_PARAM_ERR;
+    };
     for index in 0..count {
         let Some((element, ref_con, previous_state)) =
             ppc_isp_element_list_read_entry(memory, list, index)
@@ -2688,10 +2731,9 @@ pub(crate) fn ppc_isp_element_list_flush(
     if list == 0 || !ppc_memory_can_write_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE) {
         return PPC_PARAM_ERR;
     }
-    let count = memory
-        .read_u32_be(list)
-        .unwrap_or(0)
-        .min(PPC_ISP_ELEMENT_LIST_CAPACITY);
+    let Some(count) = ppc_isp_owned_element_list_count(memory, list) else {
+        return PPC_PARAM_ERR;
+    };
     for index in 0..count {
         let Some((element, _, _)) = ppc_isp_element_list_read_entry(memory, list, index) else {
             return PPC_PARAM_ERR;
@@ -3564,6 +3606,7 @@ pub(crate) fn ppc_isp_element_list_extract(cpu: &PpcCpu, memory: &mut PpcSection
     let buffer_count = cpu.gpr[4];
     let out_count_ptr = cpu.gpr[5];
     let buffer_ptr = cpu.gpr[6];
+    let owned_elements;
     let elements: &[u32] = match element_list {
         PPC_ISP_GLOBAL_ELEMENT_LIST => &[
             PPC_ISP_KEYBOARD_ELEMENT,
@@ -3577,7 +3620,20 @@ pub(crate) fn ppc_isp_element_list_extract(cpu: &PpcCpu, memory: &mut PpcSection
             PPC_ISP_MOUSE_Y_ELEMENT,
             PPC_ISP_MOUSE_BUTTON_ELEMENT,
         ],
-        _ => return PPC_PARAM_ERR,
+        _ => {
+            let Some(count) = ppc_isp_owned_element_list_count(memory, element_list) else {
+                return PPC_PARAM_ERR;
+            };
+            owned_elements = (0..count)
+                .map(|index| {
+                    memory.read_u32_be(ppc_isp_element_list_entry_address(element_list, index))
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(elements) = owned_elements.as_deref() else {
+                return PPC_PARAM_ERR;
+            };
+            elements
+        }
     };
     if out_count_ptr == 0
         || !ppc_memory_can_write_bytes(memory, out_count_ptr, 4)

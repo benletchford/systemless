@@ -1,5 +1,31 @@
 use super::*;
 
+fn create_test_input_sprocket_list(loaded: &mut PpcLoadedApp, elements: &[u32]) -> u32 {
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded
+        .memory
+        .add_region(scratch, vec![0; elements.len() * 4 + 4]);
+    for (index, element) in elements.iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(scratch + index as u32 * 4, *element)
+            .unwrap();
+    }
+    let output = scratch + elements.len() as u32 * 4;
+    let saved_cpu = loaded.cpu.clone();
+    let saved_target = loaded.imports[0].dispatcher_target.clone();
+    loaded.cpu.gpr[3] = elements.len() as u32;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = output;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let list = loaded.memory.read_u32_be(output).unwrap();
+    loaded.cpu = saved_cpu;
+    loaded.imports[0].dispatcher_target = saved_target;
+    list
+}
+
 #[test]
 fn global_input_sprocket_element_list_resolves_and_enumerates_the_supported_devices() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetGlobalElementList");
@@ -106,13 +132,9 @@ fn hle_import_runner_creates_input_sprocket_element_list() {
 fn hle_import_runner_adds_input_sprocket_elements_to_list() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_AddElements");
     let mut loaded = load_pef_application(&pef).unwrap();
-    let list = PPC_DATA_BASE + 0x1000;
+    let list = create_test_input_sprocket_list(&mut loaded, &[0, 0]);
     let elements_ptr = PPC_DATA_BASE + 0x1100;
-    loaded
-        .memory
-        .add_region(list, vec![0; PPC_ISP_ELEMENT_LIST_RECORD_SIZE as usize]);
     loaded.memory.add_region(elements_ptr, vec![0; 8]);
-    loaded.memory.write_u32_be(list, 2).unwrap();
     loaded.memory.write_u32_be(elements_ptr, 0x1111).unwrap();
     loaded
         .memory
@@ -146,7 +168,7 @@ fn hle_import_runner_polls_empty_input_sprocket_element_list() {
     let mut loaded = load_pef_application(&pef).unwrap();
     let was_event_ptr = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(was_event_ptr, vec![0xff]);
-    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+    loaded.cpu.gpr[3] = create_test_input_sprocket_list(&mut loaded, &[]);
     loaded.cpu.gpr[6] = was_event_ptr;
 
     let probe = loaded.run_with_hle_imports(64);
@@ -183,16 +205,12 @@ fn hle_import_runner_polls_empty_input_sprocket_element_without_writing_size() {
 fn input_sprocket_element_list_delivers_button_press_and_release_once() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetVersion");
     let mut loaded = load_pef_application(&pef).unwrap();
-    let list = PPC_DATA_BASE + 0x1000;
     let event_ptr = PPC_DATA_BASE + 0x2000;
     let was_event_ptr = PPC_DATA_BASE + 0x2100;
     let element = 0x0300_1000;
-    loaded
-        .memory
-        .add_region(list, vec![0; PPC_ISP_ELEMENT_LIST_RECORD_SIZE as usize]);
+    let list = create_test_input_sprocket_list(&mut loaded, &[element]);
     loaded.memory.add_region(event_ptr, vec![0; 20]);
     loaded.memory.add_region(was_event_ptr, vec![0; 1]);
-    loaded.memory.write_u32_be(list, 1).unwrap();
     assert!(ppc_isp_element_list_write_entry(
         &mut loaded.memory,
         list,
@@ -280,7 +298,7 @@ fn input_sprocket_element_list_delivers_button_press_and_release_once() {
 fn hle_import_runner_flushes_input_sprocket_element_list() {
     let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_Flush");
     let mut loaded = load_pef_application(&pef).unwrap();
-    loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+    loaded.cpu.gpr[3] = create_test_input_sprocket_list(&mut loaded, &[]);
 
     let probe = loaded.run_with_hle_imports(64);
 
@@ -1971,6 +1989,125 @@ fn inputsprocket_uptime_returns_the_virtual_absolute_clock() {
         loaded.memory.read_u64_be(time_ptr + 8),
         Some(absolute * 1_000)
     );
+}
+
+#[test]
+fn owned_input_sprocket_lists_extract_and_dispose() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_Dispose");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0xaa; 64]);
+    loaded
+        .memory
+        .write_u32_be(scratch, PPC_ISP_MOUSE_X_ELEMENT)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(scratch + 4, PPC_ISP_MOUSE_BUTTON_ELEMENT)
+        .unwrap();
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let list = loaded.memory.read_u32_be(scratch + 8).unwrap();
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = scratch + 12;
+    loaded.cpu.gpr[6] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListExtract,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 12), Some(2));
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch + 16),
+        Some(PPC_ISP_MOUSE_X_ELEMENT)
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 20), Some(0xaaaa_aaaa));
+
+    // A zero-capacity query still returns the full count.
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = scratch + 12;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListExtract,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 12), Some(2));
+
+    loaded.cpu.gpr[3] = list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListDispose,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    for reference in [
+        list,
+        0,
+        scratch,
+        PPC_ISP_MOUSE_DEVICE,
+        PPC_ISP_GLOBAL_ELEMENT_LIST,
+    ] {
+        loaded.cpu.gpr[3] = reference;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListDispose,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    }
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = scratch + 12;
+    loaded.cpu.gpr[6] = 0;
+    loaded
+        .memory
+        .write_u32_be(scratch + 12, 0x1234_5678)
+        .unwrap();
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListExtract,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 12), Some(0x1234_5678));
+
+    // Other list operations must reject the disposed reference too.
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListAddElements,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    loaded.cpu.gpr[3] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListFlush);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 20;
+    loaded.cpu.gpr[5] = scratch + 24;
+    loaded.cpu.gpr[6] = scratch + 48;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u8(scratch + 48), Some(0xaa));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 24), Some(0xaaaa_aaaa));
+
+    // The released allocation is reusable by the next list.
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 8), Some(list));
 }
 
 #[test]

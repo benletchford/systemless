@@ -1269,6 +1269,7 @@ pub enum PpcImportDispatcherTarget {
     QAEngineGestalt,
     ISpElementNewVirtualFromNeeds,
     ISpElementListNew,
+    ISpElementListDispose,
     ISpElementListAddElements,
     ISpElementListGetNextEvent,
     ISpElementListFlush,
@@ -2854,6 +2855,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
         ("InputSprocketLib", "ISpElementList_New") => PpcImportDispatcherTarget::ISpElementListNew,
+        ("InputSprocketLib", "ISpElementList_Dispose") => {
+            PpcImportDispatcherTarget::ISpElementListDispose
+        }
         ("InputSprocketLib", "ISpElementList_AddElements") => {
             PpcImportDispatcherTarget::ISpElementListAddElements
         }

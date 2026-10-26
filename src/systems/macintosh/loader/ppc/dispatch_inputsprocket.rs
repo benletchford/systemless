@@ -56,6 +56,11 @@ pub(super) fn dispatch_inputsprocket_import(
                 input_sprocket_virtual_elements,
             )),
         )),
+        PpcImportDispatcherTarget::ISpElementListDispose => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_isp_element_list_dispose(cpu, process_memory_manager, memory, heap_cursor),
+            )))
+        }
         PpcImportDispatcherTarget::ISpElementListAddElements => {
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_isp_element_list_add_elements(cpu, memory, input_sprocket_virtual_elements),
