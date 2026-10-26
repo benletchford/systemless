@@ -45,6 +45,17 @@ pub enum PpcOpenTransportFunction {
     InetStringToHost,
     InitInetAddress,
     InitDnsAddress,
+    InitDdpAddress,
+    InitNbpEntity,
+    SetNbpEntityFromAddress,
+    SetNbpPart {
+        index: u32,
+    },
+    ExtractNbpPart {
+        index: u32,
+    },
+    NbpAddressLength,
+    AddressFromNbpEntity,
     AtomicAdd {
         width: u8,
     },
@@ -171,6 +182,17 @@ impl PpcOpenTransportFunction {
             "OTInetStringToHost" => Self::InetStringToHost,
             "OTInitInetAddress" => Self::InitInetAddress,
             "OTInitDNSAddress" => Self::InitDnsAddress,
+            "OTInitDDPAddress" => Self::InitDdpAddress,
+            "OTInitNBPEntity" => Self::InitNbpEntity,
+            "OTSetNBPEntityFromAddress" => Self::SetNbpEntityFromAddress,
+            "OTSetNBPName" => Self::SetNbpPart { index: 0 },
+            "OTSetNBPType" => Self::SetNbpPart { index: 1 },
+            "OTSetNBPZone" => Self::SetNbpPart { index: 2 },
+            "OTExtractNBPName" => Self::ExtractNbpPart { index: 0 },
+            "OTExtractNBPType" => Self::ExtractNbpPart { index: 1 },
+            "OTExtractNBPZone" => Self::ExtractNbpPart { index: 2 },
+            "OTGetNBPEntityLengthAsAddress" => Self::NbpAddressLength,
+            "OTSetAddressFromNBPEntity" => Self::AddressFromNbpEntity,
             "OTAtomicAdd32" => Self::AtomicAdd { width: 4 },
             "OTAtomicAdd16" => Self::AtomicAdd { width: 2 },
             "OTAtomicAdd8" => Self::AtomicAdd { width: 1 },
@@ -196,6 +218,49 @@ impl PpcOpenTransportFunction {
             _ => return None,
         })
     }
+}
+
+// NBPEntity is opaque to clients. Keep each component as a length byte
+// followed by up to 32 bytes within its 99-byte storage.
+fn nbp_part(memory: &mut PpcSectionMem, entity: u32, index: u32) -> Vec<u8> {
+    let address = entity.wrapping_add(index * 33);
+    let len = memory.read_u8(address).unwrap_or(0).min(32);
+    (0..u32::from(len))
+        .map(|offset| {
+            memory
+                .read_u8(address.wrapping_add(1 + offset))
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn nbp_store_part(memory: &mut PpcSectionMem, entity: u32, index: u32, bytes: &[u8]) -> bool {
+    let address = entity.wrapping_add(index * 33);
+    let len = bytes.len().min(32);
+    let mut part = [0u8; 33];
+    part[0] = len as u8;
+    part[1..1 + len].copy_from_slice(&bytes[..len]);
+    memory.write_bytes(address, &part).is_some() && bytes.len() <= 32
+}
+
+fn nbp_escape(bytes: &[u8]) -> Vec<u8> {
+    let mut escaped = Vec::new();
+    for &byte in bytes {
+        if matches!(byte, b'\\' | b':' | b'@') {
+            escaped.push(b'\\');
+        }
+        escaped.push(byte);
+    }
+    escaped
+}
+
+fn nbp_address(memory: &mut PpcSectionMem, entity: u32) -> Vec<u8> {
+    let mut address = nbp_escape(&nbp_part(memory, entity, 0));
+    address.push(b':');
+    address.extend(nbp_escape(&nbp_part(memory, entity, 1)));
+    address.push(b'@');
+    address.extend(nbp_escape(&nbp_part(memory, entity, 2)));
+    address
 }
 
 fn read_u32(memory: &mut PpcSectionMem, address: u32) -> u32 {
@@ -293,6 +358,75 @@ pub(crate) fn ppc_dispatch_open_transport(
             let _ = memory.write_u32_be(address + 4, args[5]);
             let _ = memory.write_bytes(address + 8, &[0; 8]);
             PpcImportAction::ReturnPreserve
+        }
+        F::InitDdpAddress => {
+            // Universal Interfaces DDPAddress: 16-bit type/network then
+            // 8-bit node, socket, protocol type, and padding.
+            let mut address = [0u8; 8];
+            address[..2].copy_from_slice(&0x0100u16.to_be_bytes());
+            address[2..4].copy_from_slice(&(args[4] as u16).to_be_bytes());
+            address[4] = args[5] as u8;
+            address[5] = args[6] as u8;
+            address[6] = args[7] as u8;
+            let _ = memory.write_bytes(args[3], &address);
+            PpcImportAction::ReturnPreserve
+        }
+        F::InitNbpEntity => {
+            let _ = memory.write_bytes(args[3], &[0; 99]);
+            PpcImportAction::ReturnPreserve
+        }
+        F::SetNbpPart { index } => {
+            let bytes = super::dispatch_stdc::ppc_std_c_string(memory, args[4], 33);
+            PpcImportAction::Return(u32::from(nbp_store_part(memory, args[3], index, &bytes)))
+        }
+        F::ExtractNbpPart { index } => {
+            let mut bytes = nbp_escape(&nbp_part(memory, args[3], index));
+            bytes.push(0);
+            let _ = memory.write_bytes(args[4], &bytes);
+            PpcImportAction::ReturnPreserve
+        }
+        F::SetNbpEntityFromAddress => {
+            // The pointer is the string portion of the NBP/DDPNBP address,
+            // not its address-family header (OpenTransportProviders.h).
+            let mut parts: [Vec<u8>; 3] = Default::default();
+            let mut index = 0;
+            let mut escaped = false;
+            let mut complete = args[5] <= 0x10000;
+            for offset in 0..args[5].min(0x10000) {
+                let Some(byte) = args[4].checked_add(offset).and_then(|p| memory.read_u8(p)) else {
+                    complete = false;
+                    break;
+                };
+                if !escaped && byte == b'\\' {
+                    escaped = true;
+                    continue;
+                }
+                if !escaped && ((index == 0 && byte == b':') || (index < 2 && byte == b'@')) {
+                    index = if byte == b':' { 1 } else { 2 };
+                } else if parts[index].len() < 32 {
+                    parts[index].push(byte);
+                } else {
+                    complete = false;
+                }
+                escaped = false;
+            }
+            if escaped {
+                if parts[index].len() < 32 {
+                    parts[index].push(b'\\');
+                } else {
+                    complete = false;
+                }
+            }
+            for (index, part) in parts.iter().enumerate() {
+                complete &= nbp_store_part(memory, args[3], index as u32, part);
+            }
+            PpcImportAction::Return(u32::from(complete))
+        }
+        F::NbpAddressLength => PpcImportAction::Return(nbp_address(memory, args[3]).len() as u32),
+        F::AddressFromNbpEntity => {
+            let address = nbp_address(memory, args[4]);
+            let _ = memory.write_bytes(args[3], &address);
+            PpcImportAction::Return(address.len() as u32)
         }
         F::InitDnsAddress => {
             // DNSAddress: fAddressType then the NUL-terminated name; the
