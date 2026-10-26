@@ -3395,6 +3395,37 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
+        PpcImportDispatcherTarget::USBExpertStatus
+        | PpcImportDispatcherTarget::USBExpertFatalError => {
+            // USB DDK rev. 26, pp. 154 and 157: reporting does not validate
+            // the device reference or unload the driver. The message is a P-string.
+            let fatal = binding.dispatcher_target == PpcImportDispatcherTarget::USBExpertFatalError;
+            let pointer = cpu.gpr[if fatal { 5 } else { 4 }];
+            let message = if pointer == 0 {
+                Some(Vec::new())
+            } else {
+                memory.read_u8(pointer).and_then(|length| {
+                    pointer.checked_add(1).and_then(|bytes| {
+                        ppc_memory_read_bytes(memory, bytes, usize::from(length))
+                    })
+                })
+            };
+            if let Some(message) = message {
+                let log = &mut toolbox_startup.usb_expert_log;
+                if log.len() == 256 {
+                    log.remove(0);
+                }
+                log.push((
+                    cpu.gpr[3],
+                    if fatal { cpu.gpr[4] as i32 } else { 0 },
+                    message,
+                    cpu.gpr[if fatal { 6 } else { 5 }],
+                ));
+                Some(PpcImportAction::Return(0))
+            } else {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            }
+        }
         PpcImportDispatcherTarget::USBAllocMem
         | PpcImportDispatcherTarget::USBIntRead
         | PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => {

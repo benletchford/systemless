@@ -182,3 +182,38 @@ fn usb_read_and_descriptor_requests_fail_immediately_without_touching_buffers() 
         );
     }
 }
+
+#[test]
+fn usb_expert_reports_copy_pascal_messages_without_requiring_a_device() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBExpertStatus",
+    ))
+    .unwrap();
+    let message = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(message, vec![3, b'U', b'S', b'B']);
+    loaded.cpu.gpr[3] = u32::MAX;
+    loaded.cpu.gpr[4] = message;
+    loaded.cpu.gpr[5] = 42;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBExpertStatus);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = (-6998i32) as u32;
+    loaded.cpu.gpr[5] = message;
+    loaded.cpu.gpr[6] = 77;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBExpertFatalError);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.memory.write_u8(message + 1, b'X').unwrap();
+    assert_eq!(
+        loaded.toolbox_startup.usb_expert_log,
+        vec![
+            (u32::MAX, 0, b"USB".to_vec(), 42),
+            (0, -6998, b"USB".to_vec(), 77),
+        ]
+    );
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::USBExpertStatus);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.toolbox_startup.usb_expert_log.len(), 2);
+}
