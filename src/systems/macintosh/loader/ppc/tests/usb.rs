@@ -261,3 +261,176 @@ fn usb_discovery_and_configuration_validate_reserved_fields_and_direction_flags(
         }
     }
 }
+
+#[test]
+fn usb_notification_tokens_own_registration_data_until_removed() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBManagerLib",
+        b"USBInstallDeviceNotification",
+    ))
+    .unwrap();
+    let area = PPC_DATA_BASE + 0x1000;
+    let pb = area + 4;
+    loaded.memory.add_region(area, vec![0xa5; 44]);
+    // Real InputSprocket callers leave the first four bytes uninitialized.
+    loaded.memory.write_u8(pb + 4, 3).unwrap();
+    loaded.memory.write_u32_be(pb + 28, 0x12345678).unwrap();
+    loaded.memory.write_u32_be(pb + 32, 77).unwrap();
+    let original = ppc_memory_read_bytes(&mut loaded.memory, pb, 36).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    assert_eq!(loaded.cpu.gpr[3], pb); // void API
+    assert_eq!(loaded.memory.read_u32_be(pb + 20), Some(0));
+    let first = loaded.memory.read_u32_be(pb + 24).unwrap();
+    assert_ne!(first, 0);
+    assert_eq!(
+        loaded.toolbox_startup.usb_notifications,
+        vec![(first, original)]
+    );
+    loaded.memory.write_u32_be(pb + 32, 88).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    let second = loaded.memory.read_u32_be(pb + 24).unwrap();
+    assert_ne!(first, second);
+    assert_ne!(second, 0);
+    assert_eq!(loaded.toolbox_startup.usb_notifications.len(), 2);
+    for token in [first, second] {
+        loaded.cpu.gpr[3] = token;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::USBRemoveDeviceNotification,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        loaded.cpu.gpr[3] = token;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::USBRemoveDeviceNotification,
+        );
+        assert_ne!(loaded.cpu.gpr[3], 0);
+    }
+    assert!(loaded.toolbox_startup.usb_notifications.is_empty());
+    assert_eq!(loaded.memory.read_u32_be(area), Some(0xa5a5a5a5));
+    assert_eq!(loaded.memory.read_u32_be(area + 40), Some(0xa5a5a5a5));
+    loaded.memory.write_u32_be(pb + 28, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 20),
+        Some(ppc_i16_result(PPC_PARAM_ERR))
+    );
+    assert_eq!(loaded.memory.read_u32_be(pb + 24), Some(0));
+    assert!(loaded.toolbox_startup.usb_notifications.is_empty());
+}
+
+#[test]
+fn usb_device_descriptor_lookup_rejects_unknown_references_without_writing_output() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBManagerLib",
+        b"USBGetDeviceDescriptor",
+    ))
+    .unwrap();
+    let area = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(area, vec![0xa5; 32]);
+    for reference in [0, 1, u32::MAX] {
+        loaded.memory.write_u32_be(area, reference).unwrap();
+        for size in [0, 1, 18, 20, u32::MAX] {
+            let before = ppc_memory_read_bytes(&mut loaded.memory, area, 32).unwrap();
+            loaded.cpu.gpr[3] = area;
+            loaded.cpu.gpr[4] = area + 8;
+            loaded.cpu.gpr[5] = size;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::USBGetDeviceDescriptor,
+            );
+            assert_eq!(loaded.cpu.gpr[3], (-6998i32) as u32);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, area, 32),
+                Some(before)
+            );
+        }
+    }
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBGetDeviceDescriptor,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn usb_deallocation_never_frees_non_usb_memory_or_calls_a_completion() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBDeallocMem",
+    ))
+    .unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 80]);
+    loaded.memory.write_u16_be(pb + 6, 72).unwrap();
+    loaded.memory.write_u16_be(pb + 8, 0x100).unwrap();
+    loaded.memory.write_u32_be(pb + 72, 0xa5a5a5a5).unwrap();
+    for (completion, expected) in [(0, -6984i32), (0x12345678, -6998), (u32::MAX, -6975)] {
+        for buffer in [0, pb + 72, u32::MAX] {
+            loaded.memory.write_u32_be(pb + 20, completion).unwrap();
+            loaded.memory.write_u32_be(pb + 32, buffer).unwrap();
+            let before = ppc_memory_read_bytes(&mut loaded.memory, pb, 80).unwrap();
+            loaded.cpu.gpr[3] = pb;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::USBDeallocMem);
+            assert_eq!(loaded.cpu.gpr[3], expected as u32);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, pb, 80),
+                Some(before)
+            );
+        }
+    }
+}
+
+#[test]
+fn usb_notification_validation_does_not_allocate_tokens_on_failure() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBManagerLib",
+        b"USBInstallDeviceNotification",
+    ))
+    .unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 36]);
+    loaded.memory.write_u32_be(pb + 28, 0x12345678).unwrap();
+    loaded.memory.write_u8(pb + 4, 4).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    assert_eq!(loaded.memory.read_u32_be(pb + 20), Some((-6949i32) as u32));
+    assert_eq!(loaded.memory.read_u32_be(pb + 24), Some(0));
+    assert!(loaded.toolbox_startup.usb_notifications.is_empty());
+    assert_eq!(loaded.toolbox_startup.usb_next_notification_token, 1);
+    loaded.memory.write_u8(pb + 4, 0xff).unwrap();
+    loaded.toolbox_startup.usb_next_notification_token = u32::MAX;
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    assert_eq!(loaded.memory.read_u32_be(pb + 24), Some(u32::MAX));
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::USBInstallDeviceNotification,
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 20),
+        Some(ppc_i16_result(PPC_MEM_FULL_ERR))
+    );
+    assert_eq!(loaded.memory.read_u32_be(pb + 24), Some(0));
+    assert_eq!(loaded.toolbox_startup.usb_notifications.len(), 1);
+}

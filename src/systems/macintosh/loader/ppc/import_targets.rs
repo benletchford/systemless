@@ -4,6 +4,9 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBGetDeviceDescriptor,
+    USBInstallDeviceNotification,
+    USBRemoveDeviceNotification,
     USBExpertStatus,
     USBExpertFatalError,
     USBConfigureInterface,
@@ -12,6 +15,7 @@ pub enum PpcImportDispatcherTarget {
     USBIntRead,
     USBFindNextAssociatedDescriptor,
     USBAllocMem,
+    USBDeallocMem,
     USBUnknownPipe,
     USBGetNextDeviceByClass,
     USBToHostWord,
@@ -1620,6 +1624,15 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("USBServicesLib", "USBFindNextPipe") => PpcImportDispatcherTarget::USBFindNextPipe,
         ("USBServicesLib", "USBDeviceRequest") => PpcImportDispatcherTarget::USBDeviceRequest,
+        ("USBManagerLib", "USBGetDeviceDescriptor") => {
+            PpcImportDispatcherTarget::USBGetDeviceDescriptor
+        }
+        ("USBManagerLib", "USBInstallDeviceNotification") => {
+            PpcImportDispatcherTarget::USBInstallDeviceNotification
+        }
+        ("USBManagerLib", "USBRemoveDeviceNotification") => {
+            PpcImportDispatcherTarget::USBRemoveDeviceNotification
+        }
         ("USBServicesLib", "USBExpertStatus") => PpcImportDispatcherTarget::USBExpertStatus,
         ("USBServicesLib", "USBExpertFatalError") => PpcImportDispatcherTarget::USBExpertFatalError,
         ("USBServicesLib", "USBIntRead") => PpcImportDispatcherTarget::USBIntRead,
@@ -1627,6 +1640,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor
         }
         ("USBServicesLib", "USBAllocMem") => PpcImportDispatcherTarget::USBAllocMem,
+        ("USBServicesLib", "USBDeallocMem") => PpcImportDispatcherTarget::USBDeallocMem,
         (
             "USBServicesLib",
             "USBAbortPipeByReference"
