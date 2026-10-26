@@ -4547,7 +4547,10 @@ fn multiline_control_titles_draw_two_separate_text_bands() {
             0,
         ));
         loaded.cpu.gpr[3] = handle;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::Draw1Control);
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "Draw1Control"),
+        );
         let mut bands = 0;
         let mut previous_ink = false;
         for y in 22..58 {
