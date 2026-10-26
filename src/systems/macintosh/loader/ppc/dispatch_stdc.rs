@@ -701,6 +701,15 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
 /// Consume a complete floating token or its longest valid prefix. Incomplete
 /// exponents are consumed and fail conversion instead of being put back.
 pub(super) fn ppc_scan_float(input: &[u8], start: usize, width: usize) -> (Option<f64>, usize) {
+    ppc_scan_float_precision(input, start, width, false)
+}
+
+fn ppc_scan_float_precision(
+    input: &[u8],
+    start: usize,
+    width: usize,
+    single: bool,
+) -> (Option<f64>, usize) {
     let limit = input.len().min(start.saturating_add(width));
     let token = &input[start..limit];
     let mut cursor = usize::from(matches!(token.first(), Some(b'+' | b'-')));
@@ -821,11 +830,16 @@ pub(super) fn ppc_scan_float(input: &[u8], start: usize, width: usize) -> (Optio
             exponent,
             fractional_digits,
             negative,
+            single,
         ))
     } else {
-        std::str::from_utf8(&token[..cursor])
-            .ok()
-            .and_then(|text| text.parse().ok())
+        std::str::from_utf8(&token[..cursor]).ok().and_then(|text| {
+            if single {
+                text.parse::<f32>().ok().map(f64::from)
+            } else {
+                text.parse::<f64>().ok()
+            }
+        })
     };
     (value, start + cursor)
 }
@@ -835,8 +849,22 @@ fn ppc_scan_hex_value(
     exponent: i32,
     fractional_digits: i32,
     negative: bool,
+    single: bool,
 ) -> f64 {
-    let sign = u64::from(negative) << 63;
+    let (fraction, bias, min_normal, min_subnormal, max_normal, sign_shift) = if single {
+        (23usize, 127i64, -126i64, -149i64, 127i64, 31)
+    } else {
+        (52usize, 1023i64, -1022i64, -1074i64, 1023i64, 63)
+    };
+    let decode = |bits: u64| {
+        if single {
+            f64::from(f32::from_bits(bits as u32))
+        } else {
+            f64::from_bits(bits)
+        }
+    };
+    let infinity = ((bias * 2 + 1) as u64) << fraction;
+    let sign = u64::from(negative) << sign_shift;
     let mut bits = Vec::new();
     for byte in mantissa.iter().filter(|byte| **byte != b'.') {
         let digit = (*byte as char).to_digit(16).unwrap();
@@ -845,22 +873,22 @@ fn ppc_scan_hex_value(
         }
     }
     let Some(first) = bits.iter().position(|bit| *bit) else {
-        return f64::from_bits(sign);
+        return decode(sign);
     };
     let bits = &bits[first..];
     let scale = i64::from(exponent) - i64::from(fractional_digits) * 4;
     let mut top = bits.len() as i64 - 1 + scale;
-    if top > 1023 {
-        return f64::from_bits(sign | (0x7ff << 52));
+    if top > max_normal {
+        return decode(sign | infinity);
     }
-    if top < -1075 {
-        return f64::from_bits(sign);
+    if top < min_subnormal - 1 {
+        return decode(sign);
     }
-    let normal = top >= -1022;
+    let normal = top >= min_normal;
     let kept = if normal {
-        53
+        fraction + 1
     } else {
-        (bits.len() as i64 + scale + 1074).max(0) as usize
+        (bits.len() as i64 + scale - min_subnormal).max(0) as usize
     };
     let mut significand = 0u64;
     for index in 0..kept {
@@ -874,16 +902,16 @@ fn ppc_scan_hex_value(
         significand += 1;
     }
     if !normal {
-        return f64::from_bits(sign | significand);
+        return decode(sign | significand);
     }
-    if significand == 1 << 53 {
+    if significand == 1 << (fraction + 1) {
         significand >>= 1;
         top += 1;
     }
-    if top > 1023 {
-        return f64::from_bits(sign | (0x7ff << 52));
+    if top > max_normal {
+        return decode(sign | infinity);
     }
-    f64::from_bits(sign | (((top + 1023) as u64) << 52) | (significand & ((1 << 52) - 1)))
+    decode(sign | (((top + bias) as u64) << fraction) | (significand & ((1 << fraction) - 1)))
 }
 
 pub(super) struct PpcScanResult {
@@ -990,7 +1018,8 @@ pub(super) fn ppc_scan_formatted(
                 }
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let (parsed, end) = ppc_scan_float(input, input_cursor, width);
+                let single = !matches!(length, PpcPrintfLength::Long | PpcPrintfLength::LongDouble);
+                let (parsed, end) = ppc_scan_float_precision(input, input_cursor, width, single);
                 input_cursor = end;
                 if let Some(value) = parsed {
                     suppress

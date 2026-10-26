@@ -794,3 +794,30 @@ fn stdclib_scanner_floats_stop_at_token_boundaries() {
     assert!(value.unwrap().is_nan());
     assert_eq!(consumed, 12);
 }
+
+#[test]
+fn stdclib_scanner_rounds_float_destinations_without_a_double_rounding_step() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"sscanf")).unwrap();
+    let destination = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(destination, vec![0; 8]);
+    loaded.cpu.gpr[5] = destination;
+    for (input, bits) in [
+        (&b"1.0000000596046448"[..], 1f32.to_bits() + 1),
+        (&b"0x1.0000010000000001p0"[..], 1f32.to_bits() + 1),
+        (&b"0x1.000001p0"[..], 1f32.to_bits()),
+        (&b"0x1p-149"[..], 1),
+        (&b"0x1p-150"[..], 0),
+        (&b"0x1.8p-150"[..], 1),
+        (&b"0x1p128"[..], f32::INFINITY.to_bits()),
+    ] {
+        let result =
+            dispatch_stdc::ppc_scan_formatted(&loaded.cpu, &mut loaded.memory, input, b"%f");
+        assert_eq!(result.value, 1);
+        assert_eq!(
+            loaded.memory.read_u32_be(destination),
+            Some(bits),
+            "{input:?}"
+        );
+    }
+}
