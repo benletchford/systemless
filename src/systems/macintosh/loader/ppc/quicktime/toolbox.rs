@@ -491,6 +491,28 @@ fn movie_matrix(quicktime: &PpcQuickTimeState) -> [f64; 9] {
     )
 }
 
+/// Inverse display transform for sampling a decoded frame. Controller bounds
+/// resize the movie's transformed box without discarding rotation or shear.
+pub(super) fn movie_sampling_transform(
+    quicktime: &PpcQuickTimeState,
+    draw_rect: Rect,
+) -> Option<([f64; 9], Rect)> {
+    let matrix = movie_matrix(quicktime);
+    let resize = rect_matrix(quicktime.movie_box, draw_rect);
+    let composed = std::array::from_fn(|index| {
+        let (row, column) = (index / 3, index % 3);
+        (0..3)
+            .map(|k| matrix[row * 3 + k] * resize[k * 3 + column])
+            .sum()
+    });
+    Some((invert_matrix(&composed)?, natural_bounds(quicktime)))
+}
+
+pub(super) fn movie_sample_point(inverse: &[f64; 9], x: f64, y: f64) -> Option<(f64, f64)> {
+    let point = transform_point(inverse, x, y)?;
+    (point.0.is_finite() && point.1.is_finite()).then_some(point)
+}
+
 /// SetMovieBox composes a display-space resize with the current matrix,
 /// preserving any existing track rotation or shear.
 pub(crate) fn ppc_qt_resize_movie_matrix(quicktime: &mut PpcQuickTimeState, rect: Rect) -> bool {

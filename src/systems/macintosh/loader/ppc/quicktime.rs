@@ -5554,8 +5554,8 @@ pub(crate) fn ppc_qt_draw_movie_frame(
         .rev()
         .find(|controller| controller.movie == PPC_QT_MOVIE && controller.window == gworld)
         .map_or(quicktime.movie_box, |controller| controller.rect);
-    if ppc_qt_draw_decoded_movie_frame(memory, surface, quicktime, draw_rect) {
-        return true;
+    if let Some(drawn) = ppc_qt_draw_decoded_movie_frame(memory, surface, quicktime, draw_rect) {
+        return drawn;
     }
     if front_buffer.depth != 16 {
         return false;
@@ -5573,7 +5573,7 @@ fn ppc_qt_draw_decoded_movie_frame(
     surface: PpcQuickDrawSurface,
     quicktime: &mut PpcQuickTimeState,
     draw_rect: (i16, i16, i16, i16),
-) -> bool {
+) -> Option<bool> {
     let front_buffer = surface.front_buffer;
     if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16 | 32)
         || front_buffer.base_addr == 0
@@ -5586,16 +5586,22 @@ fn ppc_qt_draw_decoded_movie_frame(
                 .saturating_add(7)
                 / 8
     {
-        return false;
+        return Some(false);
     }
-    let Some(frame) = ppc_qt_decode_current_movie_video_frame(quicktime) else {
-        return false;
+    let frame = ppc_qt_decode_current_movie_video_frame(quicktime)?;
+    let Some((inverse, natural)) = toolbox::movie_sampling_transform(quicktime, draw_rect) else {
+        return Some(false);
     };
+    let natural_width = f64::from(natural.3) - f64::from(natural.1);
+    let natural_height = f64::from(natural.2) - f64::from(natural.0);
+    if natural_width <= 0.0 || natural_height <= 0.0 {
+        return Some(false);
+    }
     let (top, left, bottom, right) = draw_rect;
     let box_width = i32::from(right) - i32::from(left);
     let box_height = i32::from(bottom) - i32::from(top);
     if box_width <= 0 || box_height <= 0 {
-        return false;
+        return Some(false);
     }
     let surface_left = i32::from(surface.left);
     let surface_top = i32::from(surface.top);
@@ -5606,28 +5612,26 @@ fn ppc_qt_draw_decoded_movie_frame(
     let dst_right = i32::from(right).clamp(surface_left, surface_right);
     let dst_bottom = i32::from(bottom).clamp(surface_top, surface_bottom);
     if dst_left >= dst_right || dst_top >= dst_bottom {
-        return false;
+        return Some(false);
     }
 
     let mut wrote_any = false;
     for dst_y in dst_top..dst_bottom {
-        let src_y = usize::try_from(
-            ((dst_y - i32::from(top)) as i64)
-                .saturating_mul(frame.height as i64)
-                .checked_div(i64::from(box_height))
-                .unwrap_or(0)
-                .clamp(0, frame.height.saturating_sub(1) as i64),
-        )
-        .unwrap_or(0);
         for dst_x in dst_left..dst_right {
-            let src_x = usize::try_from(
-                ((dst_x - i32::from(left)) as i64)
-                    .saturating_mul(frame.width as i64)
-                    .checked_div(i64::from(box_width))
-                    .unwrap_or(0)
-                    .clamp(0, frame.width.saturating_sub(1) as i64),
-            )
-            .unwrap_or(0);
+            let Some((x, y)) = toolbox::movie_sample_point(
+                &inverse,
+                f64::from(dst_x) + 0.5,
+                f64::from(dst_y) + 0.5,
+            ) else {
+                continue;
+            };
+            let x = (x - f64::from(natural.1)) / natural_width;
+            let y = (y - f64::from(natural.0)) / natural_height;
+            if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+                continue;
+            }
+            let src_x = (x * frame.width as f64).floor() as usize;
+            let src_y = (y * frame.height as f64).floor() as usize;
             let Some(rgb_offset) = src_y
                 .checked_mul(frame.width)
                 .and_then(|base| base.checked_add(src_x))
@@ -5659,7 +5663,7 @@ fn ppc_qt_draw_decoded_movie_frame(
             }
         }
     }
-    wrote_any
+    Some(wrote_any)
 }
 
 pub(crate) fn ppc_qt_rgb555_from_u8(red: u8, green: u8, blue: u8) -> u16 {

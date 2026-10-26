@@ -1970,6 +1970,62 @@ fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
         0x21
     ));
     assert_eq!(loaded.memory.read_u8(destination + 15), Some(7));
+    // Rotate the four known Cinepak quadrants clockwise about the movie box.
+    loaded.memory.write_u16_be(pixmap + 32, 32).unwrap();
+    loaded.memory.write_u16_be(pixmap + 4, 0x8010).unwrap();
+    loaded.quicktime.movie_file_bounds = Some((0, 0, 4, 4));
+    loaded.quicktime.movie_matrix = Some([
+        0,
+        0x0001_0000,
+        0,
+        0xffff_0000,
+        0,
+        0,
+        24 << 16,
+        10 << 16,
+        0x4000_0000,
+    ]);
+    assert!(ppc_qt_draw_movie_frame(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        gworld,
+        &mut loaded.quicktime,
+        0x21
+    ));
+    assert_eq!(loaded.memory.read_u32_be(destination), Some(0x00aa_aaaa));
+    assert_eq!(loaded.memory.read_u32_be(destination + 12), Some(0));
+    assert_eq!(
+        loaded.memory.read_u32_be(destination + 48),
+        Some(0x00ff_ffff)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(destination + 60),
+        Some(0x0055_5555)
+    );
+
+    // A valid decoded frame with no visible pixels must not paint a fallback.
+    loaded.memory.write_u16_be(pixmap + 32, 16).unwrap();
+    loaded.memory.write_u16_be(pixmap + 4, 0x8008).unwrap();
+    loaded.quicktime.movie_display_clip = Some(vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+    for index in 0..16 {
+        loaded
+            .memory
+            .write_u16_be(destination + index * 2, 0x1234)
+            .unwrap();
+    }
+    assert!(!ppc_qt_draw_movie_frame(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        gworld,
+        &mut loaded.quicktime,
+        0x21
+    ));
+    for index in 0..16 {
+        assert_eq!(
+            loaded.memory.read_u16_be(destination + index * 2),
+            Some(0x1234)
+        );
+    }
 }
 
 #[test]
