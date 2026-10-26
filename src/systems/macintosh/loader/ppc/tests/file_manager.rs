@@ -11067,3 +11067,58 @@ fn rename_and_c_string_finfo_glue_use_the_default_directory() {
         Some(b"New Log\0".to_vec())
     );
 }
+
+#[test]
+fn pb_write_preserves_unwritten_tail_and_extends_only_past_eof() {
+    for (offset, count, expected) in [
+        (0u32, 2u32, b"XYcdefghij".as_slice()),
+        (4, 2, b"abcdXYghij".as_slice()),
+        (4, 0, b"abcdefghij".as_slice()),
+        (12, 2, b"abcdefghij\0\0XY".as_slice()),
+    ] {
+        let pef = synthetic_pef_with_import(b"PBWriteSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        let buffer = pb + 0x80;
+        loaded.memory.add_region(pb, vec![0; 0x100]);
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Data/record".to_string(),
+            data: b"abcdefghij".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Data/record".to_string(),
+            position: 0,
+        });
+        loaded
+            .writable_refnums
+            .insert(PPC_FIRST_FILE_REF_NUM as u16);
+        loaded.memory.write_u8(buffer, b'X').unwrap();
+        loaded.memory.write_u8(buffer + 1, b'Y').unwrap();
+        loaded
+            .memory
+            .write_u16_be(pb + 24, PPC_FIRST_FILE_REF_NUM as u16)
+            .unwrap();
+        loaded.memory.write_u32_be(pb + 32, buffer).unwrap();
+        loaded.memory.write_u32_be(pb + 36, count).unwrap();
+        loaded.memory.write_u16_be(pb + 44, 1).unwrap();
+        loaded.memory.write_u32_be(pb + 46, offset).unwrap();
+        loaded.cpu.gpr[3] = pb;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.vfs_files[0].data.as_slice(),
+            expected,
+            "offset={offset}, count={count}"
+        );
+        assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(count));
+        assert_eq!(loaded.memory.read_u32_be(pb + 46), Some(offset + count));
+        assert_eq!(loaded.files[0].position, offset + count);
+    }
+}

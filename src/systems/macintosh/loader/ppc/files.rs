@@ -3705,7 +3705,9 @@ pub(super) fn ppc_pb_write(
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
     let write_result = vfs_files[vfs_file_index].data.with_mut(|data| {
-        data.resize(end, 0);
+        if end > data.len() {
+            data.resize(end, 0);
+        }
         for offset in 0..write_len {
             let Some(byte) = memory.read_u8(buffer_ptr + offset as u32) else {
                 return Err(());
