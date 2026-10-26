@@ -2437,6 +2437,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StdSrand
         | PpcImportDispatcherTarget::StdRand
         | PpcImportDispatcherTarget::StdTime
+        | PpcImportDispatcherTarget::StdLocaltime
         | PpcImportDispatcherTarget::P2CStr
         | PpcImportDispatcherTarget::P2CStrCpy
         | PpcImportDispatcherTarget::C2PStrCpy

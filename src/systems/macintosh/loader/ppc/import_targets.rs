@@ -948,6 +948,7 @@ pub enum PpcImportDispatcherTarget {
     StdSrand,
     StdRand,
     StdTime,
+    StdLocaltime,
     P2CStr,
     C2PStr,
     P2CStrCpy,
@@ -2707,6 +2708,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "srand") => PpcImportDispatcherTarget::StdSrand,
         ("StdCLib", "rand") => PpcImportDispatcherTarget::StdRand,
         ("StdCLib", "time") => PpcImportDispatcherTarget::StdTime,
+        ("StdCLib", "localtime") => PpcImportDispatcherTarget::StdLocaltime,
         (
             "StdCLib",
             "_IntEnv" | "__C_phase" | "__p_CType" | "__target_for_exit" | "_exit_status",

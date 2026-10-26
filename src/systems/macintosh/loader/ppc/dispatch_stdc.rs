@@ -397,6 +397,9 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             }
             Some(PpcImportAction::Return(seconds))
         }
+        PpcImportDispatcherTarget::StdLocaltime => {
+            Some(PpcImportAction::Return(ppc_std_localtime(cpu, memory)))
+        }
         PpcImportDispatcherTarget::P2CStr => {
             ppc_p2cstr(cpu, memory);
             Some(PpcImportAction::Return(cpu.gpr[3]))
@@ -891,6 +894,73 @@ pub(super) struct PpcCTm {
     year: i32,
     week_day: i32,
     year_day: i32,
+}
+
+// Match StdTime's classic MSL epoch. ReadLocation currently reports zero
+// GMT/DST offset, so the emulated local calendar is UTC. Each call overwrites
+// the same per-process struct tm, as required by the C library ABI.
+pub(super) fn ppc_std_localtime(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
+    if cpu.gpr[3] == 0 {
+        return 0;
+    }
+    let Some(seconds) = memory.read_u32_be(cpu.gpr[3]) else {
+        return 0;
+    };
+    let total_days = seconds / 86_400;
+    let mut days = total_days;
+    let mut year = 1900;
+    loop {
+        let year_days = if ppc_c_tm_is_leap_year(year) {
+            366
+        } else {
+            365
+        };
+        if days < year_days {
+            break;
+        }
+        days -= year_days;
+        year += 1;
+    }
+    let year_day = days;
+    let month_lengths = [
+        31,
+        if ppc_c_tm_is_leap_year(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 0;
+    while days >= month_lengths[month] {
+        days -= month_lengths[month];
+        month += 1;
+    }
+    let fields = [
+        seconds % 60,
+        seconds / 60 % 60,
+        seconds / 3600 % 24,
+        days + 1,
+        month as u32,
+        (year - 1900) as u32,
+        (total_days + 1) % 7,
+        year_day,
+        0,
+    ];
+    for (index, value) in fields.into_iter().enumerate() {
+        if memory
+            .write_u32_be(PPC_IMPORT_STD_TM + index as u32 * 4, value)
+            .is_none()
+        {
+            return 0;
+        }
+    }
+    PPC_IMPORT_STD_TM
 }
 
 pub(super) fn ppc_read_c_tm(memory: &mut PpcSectionMem, address: u32) -> Option<PpcCTm> {
