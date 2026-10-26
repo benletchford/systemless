@@ -655,6 +655,13 @@ pub(crate) fn dispatch_supported_import(
             binding,
             cpu,
             memory,
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            vfs_resources,
+            current_resource_refnum,
             gworlds,
             window_list,
             current_gdevice: *current_gdevice,
@@ -2111,7 +2118,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SelectWindow => {
             unreachable!("window imports return through dispatch_window_import")
         }
-        PpcImportDispatcherTarget::ActivatePalette
+        PpcImportDispatcherTarget::InitPalettes
+        | PpcImportDispatcherTarget::ActivatePalette
         | PpcImportDispatcherTarget::NSetPalette
         | PpcImportDispatcherTarget::GetPalette => {
             unreachable!("palette imports return through dispatch_palette_import")

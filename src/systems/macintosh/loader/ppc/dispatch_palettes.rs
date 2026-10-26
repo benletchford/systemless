@@ -6,6 +6,13 @@ pub(super) struct PpcPaletteDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
+    pub(super) heap_cursor: &'a mut u32,
+    pub(super) heap_limit: u32,
+    pub(super) last_mem_error: &'a mut i16,
+    pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
+    pub(super) current_resource_refnum: &'a i16,
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) window_list: &'a SharedProcessWindowList,
     pub(super) current_gdevice: u32,
@@ -24,6 +31,13 @@ pub(super) fn dispatch_palette_import(
         binding,
         cpu,
         memory,
+        process_memory_manager,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        vfs_resources,
+        current_resource_refnum,
         gworlds,
         window_list,
         current_gdevice,
@@ -36,6 +50,25 @@ pub(super) fn dispatch_palette_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InitPalettes | PpcImportDispatcherTarget::InitWindows => {
+            ppc_initialize_application_palette(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                *current_resource_refnum,
+                toolbox_startup,
+            );
+            if binding.dispatcher_target == PpcImportDispatcherTarget::InitPalettes {
+                Some(PpcImportAction::ReturnPreserve)
+            } else {
+                // InitWindows must still initialize the Window Manager below.
+                None
+            }
+        }
         PpcImportDispatcherTarget::ActivatePalette => {
             let window_ptr = cpu.gpr[3];
             // Inside Macintosh Volume VI (1991), p. 20-19: an explicit
@@ -132,8 +165,7 @@ pub(super) fn dispatch_palette_import(
             } else {
                 window_ptr == PPC_MAIN_GWORLD || front_window == Some(window_ptr)
             };
-            let gdevice =
-                ppc_gworld_device(gworlds, activation_window).unwrap_or(current_gdevice);
+            let gdevice = ppc_gworld_device(gworlds, activation_window).unwrap_or(current_gdevice);
             let applied = activation_window != 0
                 && applies_now
                 && ppc_activate_window_palette(
@@ -171,5 +203,70 @@ pub(super) fn dispatch_palette_import(
             Some(PpcImportAction::Return(palette))
         }
         _ => None,
+    }
+}
+
+/// Advanced Color Imaging, "Designating a Default Palette for Your Application":
+/// InitWindows calls InitPalettes; pltt 0 is searched in the current resource file
+/// only, then in the System file, finally falling back to black and white.
+fn ppc_initialize_application_palette(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    resources: &[PpcVfsResourceRecord],
+    current_refnum: i16,
+    startup: &mut PpcToolboxStartupState,
+) {
+    // Repeated initialization must not replace an application-selected palette
+    // or leak the palette installed by the implicit InitWindows call.
+    if startup.application_palette != 0 {
+        return;
+    }
+    let valid_palette = |bytes: &[u8]| {
+        bytes
+            .get(..2)
+            .map(|count| u16::from_be_bytes([count[0], count[1]]))
+            .filter(|count| bytes.len() >= 16 + usize::from(*count) * 16)
+    };
+    let resource = [current_refnum, 0].into_iter().find_map(|refnum| {
+        resources.iter().find(|resource| {
+            resource.ref_num == refnum
+                && resource.res_type == u32::from_be_bytes(*b"pltt")
+                && resource.res_id == 0
+                && valid_palette(&resource.data).is_some()
+        })
+    });
+    let mut bytes = if let Some(resource) = resource {
+        let count = valid_palette(&resource.data).unwrap();
+        resource.data[..16 + usize::from(count) * 16].to_vec()
+    } else {
+        let mut bytes = vec![0; 48];
+        bytes[..2].copy_from_slice(&2u16.to_be_bytes());
+        bytes[16..22].fill(0xff); // white, then black; courteous entries
+        bytes
+    };
+    let count = u16::from_be_bytes([bytes[0], bytes[1]]);
+    bytes[2..16].fill(0);
+    for entry in 0..usize::from(count) {
+        bytes[16 + entry * 16 + 10..16 + (entry + 1) * 16].fill(0);
+    }
+    let mut allocator = PpcProcessAllocatorView {
+        memory_manager: process_memory_manager,
+    };
+    let handle = ppc_allocator_view_allocate_handle_with_bytes(
+        Some(&mut allocator),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        &bytes,
+    );
+    if handle != 0 {
+        startup.application_palette = handle;
+        startup.application_palette_updates = 0;
     }
 }
