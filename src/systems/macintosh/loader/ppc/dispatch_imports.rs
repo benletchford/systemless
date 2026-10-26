@@ -2497,7 +2497,9 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ICStart
         | PpcImportDispatcherTarget::ICStop
-        | PpcImportDispatcherTarget::ICGetSeed => {
+        | PpcImportDispatcherTarget::ICGetSeed
+        | PpcImportDispatcherTarget::ICGetComponentInstance
+        | PpcImportDispatcherTarget::ICParseURL => {
             dispatch_internet_config::dispatch_internet_config_import(
                 binding,
                 cpu,
