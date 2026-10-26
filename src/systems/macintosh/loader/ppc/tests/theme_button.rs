@@ -202,3 +202,218 @@ fn theme_button_rendering_distinguishes_shapes_values_and_pressed_halves() {
         );
     }
 }
+
+#[test]
+fn theme_button_label_can_draw_another_button_with_a_nested_label_callback() {
+    let (mut loaded, scratch) = theme_button_fixture();
+    let output = scratch + 64;
+    let outer = scratch + 256;
+    let inner = scratch + 640;
+    let outer_vector = scratch + 768;
+    let inner_vector = scratch + 776;
+    let port = *loaded.current_gworld;
+    let clip = loaded
+        .memory
+        .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    let sp = loaded.cpu.gpr[1];
+    let rtoc = loaded.cpu.gpr[2];
+    let saved_r31 = loaded.cpu.gpr[31];
+    for (offset, value) in [
+        (4, port),
+        (16, scratch + 192),
+        (20, scratch + 200),
+        (24, loaded.imports[0].trap_pc),
+        (28, inner_vector),
+        (32, output + 96),
+    ] {
+        loaded.memory.write_u32_be(output + offset, value).unwrap();
+    }
+    for (offset, value) in [(0, 36), (2, 50), (4, 48), (6, 90)] {
+        loaded
+            .memory
+            .write_u16_be(scratch + 192 + offset, value)
+            .unwrap();
+    }
+    loaded.memory.write_u32_be(scratch + 200, 1).unwrap();
+    let words = [
+        d_form(37, 1, 1, -64),
+        xfx_form(31, 0, 8, 339),
+        d_form(36, 0, 1, 68),
+        d_form(36, 31, 1, 60),
+        x_form(31, 6, 31, 6, 444, false),
+        d_form(32, 10, 31, 4),
+        d_form(32, 9, 10, PPC_CGRAF_PORT_CLIP_RGN_OFFSET as i16),
+        d_form(36, 9, 31, 8),
+        d_form(32, 3, 31, 16),
+        d_form(14, 4, 0, 1),
+        d_form(32, 5, 31, 20),
+        d_form(14, 6, 0, 0),
+        d_form(14, 7, 0, 0),
+        d_form(32, 8, 31, 28),
+        d_form(32, 9, 31, 32),
+        d_form(32, 12, 31, 24),
+        xfx_form(31, 12, 9, 467),
+        xl_form(19, 20, 0, 528, true),
+        d_form(36, 3, 31, 0),
+        d_form(32, 10, 31, 4),
+        d_form(32, 9, 10, PPC_CGRAF_PORT_CLIP_RGN_OFFSET as i16),
+        d_form(36, 9, 31, 12),
+        d_form(32, 31, 1, 60),
+        d_form(32, 0, 1, 68),
+        xfx_form(31, 0, 8, 467),
+        d_form(14, 1, 1, 64),
+        BLR,
+    ];
+    for (i, word) in words.into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(outer + i as u32 * 4, word)
+            .unwrap();
+    }
+    for (i, word) in [d_form(14, 0, 0, 3), d_form(36, 0, 6, 0), BLR]
+        .into_iter()
+        .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(inner + i as u32 * 4, word)
+            .unwrap();
+    }
+    for (vector, entry) in [(outer_vector, outer), (inner_vector, inner)] {
+        loaded.memory.write_u32_be(vector, entry).unwrap();
+        loaded.memory.write_u32_be(vector + 4, rtoc).unwrap();
+    }
+    loaded.cpu.gpr[8] = outer_vector;
+    loaded.cpu.lr = PPC_HALT_PC;
+    let result = loaded.run_with_hle_imports(1024);
+    assert_eq!(result.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(output + 96), Some(3));
+    let outer_clip = loaded.memory.read_u32_be(output + 8).unwrap();
+    assert_ne!(outer_clip, clip);
+    assert_eq!(loaded.memory.read_u32_be(output + 12), Some(outer_clip));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+        Some(clip)
+    );
+    assert_eq!(loaded.cpu.gpr[1], sp);
+    assert_eq!(loaded.cpu.gpr[2], rtoc);
+    assert_eq!(loaded.cpu.gpr[31], saved_r31);
+}
+
+#[test]
+fn theme_button_header_shadow_passes_preserve_each_other_in_either_order() {
+    let (mut loaded, scratch) = theme_button_fixture();
+    let port = *loaded.current_gworld;
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let frame = surface.front_buffer;
+    let initial = vec![0x55; (frame.row_bytes * frame.height) as usize];
+    let draw = |loaded: &mut PpcLoadedApp, adornment| {
+        loaded.memory.write_u16_be(scratch + 12, 1).unwrap();
+        loaded.memory.write_u16_be(scratch + 14, adornment).unwrap();
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = 10;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(loaded, PpcImportDispatcherTarget::DrawThemeButton);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    };
+    for adornment in [0, 1 << 6, 1 << 7, 1 << 8, 1 << 9] {
+        loaded
+            .memory
+            .write_bytes(frame.base_addr, &initial)
+            .unwrap();
+        draw(&mut loaded, adornment);
+        let whole =
+            ppc_memory_read_bytes(&mut loaded.memory, frame.base_addr, initial.len() as u32)
+                .unwrap();
+        assert_ne!(whole, initial);
+        for order in [[0x0400, 0x0800], [0x0800, 0x0400]] {
+            loaded
+                .memory
+                .write_bytes(frame.base_addr, &initial)
+                .unwrap();
+            for flag in order {
+                draw(&mut loaded, adornment | flag);
+            }
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, frame.base_addr, initial.len() as u32),
+                Some(whole.clone()),
+                "header adornment {adornment:#x}, order {order:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn theme_button_draws_at_each_depth_without_touching_pixels_outside_the_port_clip() {
+    for depth in [1, 2, 4, 8, 16, 32] {
+        let (mut loaded, scratch) = theme_button_fixture();
+        ppc_write_rect(&mut loaded.memory, scratch + 64, -5, -7, 27, 41).unwrap();
+        loaded.cpu.gpr[3] = scratch + 48;
+        loaded.cpu.gpr[4] = depth;
+        loaded.cpu.gpr[5] = scratch + 64;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let port = loaded.memory.read_u32_be(scratch + 48).unwrap();
+        loaded.cpu.gpr[3] = port;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetGWorld);
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+        let frame = surface.front_buffer;
+        let initial = vec![0x55; (frame.row_bytes * frame.height) as usize];
+        loaded
+            .memory
+            .write_bytes(frame.base_addr, &initial)
+            .unwrap();
+        // In surface coordinates this is x=8..24, y=4..20. Even at one bit
+        // per pixel, both horizontal boundaries fall on complete bytes.
+        ppc_write_rect(&mut loaded.memory, scratch + 80, -1, 1, 15, 17).unwrap();
+        loaded.cpu.gpr[3] = scratch + 80;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+        ppc_write_rect(&mut loaded.memory, scratch, -3, -5, 23, 37).unwrap();
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawThemeButton);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let actual =
+            ppc_memory_read_bytes(&mut loaded.memory, frame.base_addr, initial.len() as u32)
+                .unwrap();
+        assert!(actual != initial, "button did not draw at depth {depth}");
+        if depth == 32 {
+            let color = ppc_ui_theme(&loaded.gworlds)
+                .provider()
+                .palette()
+                .frame_light;
+            let expected =
+                (u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b);
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(frame.base_addr + 8 * frame.row_bytes + 12 * 4),
+                Some(expected)
+            );
+        }
+        for (i, (&before, &after)) in initial.iter().zip(&actual).enumerate() {
+            let y = i as u32 / frame.row_bytes;
+            let column = i as u32 % frame.row_bytes;
+            if !(4..20).contains(&y) || !(depth..3 * depth).contains(&column) {
+                assert_eq!(after, before, "depth {depth}, row {y}, byte {column}");
+            }
+        }
+    }
+}

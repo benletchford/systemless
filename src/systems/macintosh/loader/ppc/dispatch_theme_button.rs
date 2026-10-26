@@ -72,7 +72,7 @@ fn write_bounds(memory: &mut PpcSectionMem, address: u32, bounds: Bounds) {
     }
 }
 
-fn content_bounds(bounds: Bounds, kind: u16, adornment: u16) -> Bounds {
+fn content_bounds(bounds: Bounds, kind: u16, value: u16, adornment: u16) -> Bounds {
     let (top, left, bottom, right) = bounds;
     if matches!(kind, 1 | 2 | 6 | 13 | 14) {
         let width = if kind >= 13 { 12 } else { 16 };
@@ -83,13 +83,20 @@ fn content_bounds(bounds: Bounds, kind: u16, adornment: u16) -> Bounds {
         };
     }
     let inset = if matches!(kind, 8 | 10) { 2 } else { 4 };
+    let trailing = if kind == 5 {
+        18
+    } else if kind == 10 && (value == 1 || adornment & 0x0200 != 0) {
+        14
+    } else {
+        inset
+    };
+    let inner_top = top.saturating_add(inset).min(bottom);
+    let inner_left = left.saturating_add(inset).min(right);
     (
-        top.saturating_add(inset).min(bottom),
-        left.saturating_add(inset).min(right),
-        bottom.saturating_sub(inset).max(top),
-        right
-            .saturating_sub(if kind == 5 { 18 } else { inset })
-            .max(left),
+        inner_top,
+        inner_left,
+        bottom.saturating_sub(inset).max(inner_top),
+        right.saturating_sub(trailing).max(inner_left),
     )
 }
 
@@ -168,6 +175,14 @@ fn begin_button(context: &mut ThemeButtonContext<'_>) -> Result<(), i16> {
     } else {
         0
     };
+    let width = i32::from(bounds.3) - i32::from(bounds.1) + 2 * i32::from(padding);
+    let height = i32::from(bounds.2) - i32::from(bounds.0) + 2 * i32::from(padding);
+    if width > i32::from(i16::MAX)
+        || height > i32::from(i16::MAX)
+        || i64::from(width) * i64::from(height) > 16_777_216
+    {
+        return Err(PPC_PARAM_ERR);
+    }
     let mut background = (
         bounds.0.saturating_sub(padding),
         bounds.1.saturating_sub(padding),
@@ -187,7 +202,7 @@ fn begin_button(context: &mut ThemeButtonContext<'_>) -> Result<(), i16> {
         return Err(PPC_MEM_FULL_ERR);
     }
     write_bounds(context.memory, scratch, background);
-    let content = content_bounds(bounds, kind, adornment);
+    let content = content_bounds(bounds, kind, value, adornment);
     write_bounds(context.memory, scratch + 8, content);
     for (i, byte) in info.into_iter().enumerate() {
         let _ = context.memory.write_u8(scratch + 16 + i as u32, byte);
@@ -267,7 +282,22 @@ fn callback(context: &mut ThemeButtonContext<'_>, label: bool) -> Option<PpcImpo
         return None;
     }
     let bounds = if label { call.content } else { call.background };
-    let clip = ppc_port_clip_storage(context.memory, call.port, Some(bounds))?;
+    let mut clip = ppc_port_clip_storage(context.memory, call.port, Some(bounds))?;
+    if !label && call.kind == 10 && call.adornment & 0x0c00 != 0 {
+        let (top, _, bottom, _) = call.background;
+        let rows = ppc_region_rows_for_band(&clip, top, bottom)?;
+        let rows: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let span = header_draw_span(call.bounds, call.adornment, i32::from(top) + i as i32);
+                span.map_or_else(Vec::new, |(left, right)| {
+                    ppc_region_intersect_rows(row, &[left, right])
+                })
+            })
+            .collect();
+        clip = ppc_region_storage_from_rows(top, &rows)?;
+    }
     call.temporary_clip = context
         .manager
         .copy_bytes_to_new_native_handle(context.memory, &clip);
@@ -357,7 +387,7 @@ fn advance_button(context: &mut ThemeButtonContext<'_>) -> PpcImportAction {
                 if i64::from(width) * i64::from(height) > 16_777_216 {
                     return finish_button(context, PPC_MEM_FULL_ERR);
                 }
-                let bitmap = ThemeBitmap::new(
+                let mut bitmap = ThemeBitmap::new(
                     width as u32,
                     height as u32,
                     ppc_ui_theme(context.gworlds)
@@ -365,13 +395,25 @@ fn advance_button(context: &mut ThemeButtonContext<'_>) -> PpcImportAction {
                         .palette()
                         .window_background,
                 );
-                dispatch_control::ppc_blit_theme_bitmap(
+                let transparent = Rgb8 { r: 1, g: 2, b: 3 };
+                if call.kind == 10 && call.adornment & 0x0c00 != 0 {
+                    mask_header_bitmap(
+                        &mut bitmap,
+                        i32::from(top),
+                        i32::from(left),
+                        call.bounds,
+                        call.adornment,
+                        transparent,
+                    );
+                }
+                dispatch_control::ppc_blit_theme_bitmap_masked(
                     context.memory,
                     context.gworlds,
                     call.port,
                     top,
                     left,
                     &bitmap,
+                    Some(transparent),
                 );
             }
             1 => {
@@ -399,6 +441,7 @@ fn advance_button(context: &mut ThemeButtonContext<'_>) -> PpcImportAction {
                 );
                 if call.label != 0
                     && !matches!(call.kind, 4 | 7)
+                    && !(call.kind == 10 && call.adornment & 0x0800 != 0)
                     && !(matches!(call.kind, 1 | 2 | 6 | 13 | 14) && call.adornment & 32 != 0)
                 {
                     return callback(context, true)
@@ -632,7 +675,7 @@ pub(super) fn theme_button_bitmap(
                 &mut ctx,
                 rect,
                 bevel,
-                pressed,
+                pressed || (kind == 10 && value == 1),
                 palette.window_background,
                 palette.frame_light,
                 ink,
@@ -669,16 +712,36 @@ pub(super) fn theme_button_bitmap(
                     theme_button_triangle(&mut ctx, rect, direction, ink);
                 }
             } else if kind == 10 {
-                let r = ThemeRect {
-                    left: (rect.right - 12).max(rect.left),
-                    ..rect
-                };
-                theme_button_triangle(
-                    &mut ctx,
-                    r,
-                    if adornment & (1 << 8) != 0 { 3 } else { 1 },
-                    ink,
-                );
+                if adornment & (1 << 6) != 0 {
+                    ctx.fill_rect(
+                        ThemeRect {
+                            right: rect.left + 1,
+                            ..rect
+                        },
+                        ink,
+                    );
+                }
+                if adornment & (1 << 7) != 0 {
+                    ctx.fill_rect(
+                        ThemeRect {
+                            left: rect.right - 1,
+                            ..rect
+                        },
+                        palette.frame_light,
+                    );
+                }
+                if value == 1 || adornment & (1 << 9) != 0 {
+                    let r = ThemeRect {
+                        left: (rect.right - 12).max(rect.left),
+                        ..rect
+                    };
+                    let direction = if adornment & (1 << 9) == 0 && adornment & (1 << 8) != 0 {
+                        3
+                    } else {
+                        1
+                    };
+                    theme_button_triangle(&mut ctx, r, direction, ink);
+                }
             }
         }
     }
@@ -691,6 +754,16 @@ pub(super) fn theme_button_bitmap(
                 right: total_width as i16,
             },
             palette.accent,
+        );
+    }
+    if kind == 10 && adornment & 0x0c00 != 0 {
+        mask_header_bitmap(
+            &mut bitmap,
+            -i32::from(pad),
+            -i32::from(pad),
+            (0, 0, height, width),
+            adornment,
+            transparent,
         );
     }
     Some((bitmap, pad, transparent))
@@ -823,6 +896,72 @@ fn theme_button_bevel(
                 ..r
             },
             dark,
+        );
+    }
+}
+
+// The two Appearance header flags partition the same bevel, so composing their
+// drawing passes produces the normal header without erasing the other pass.
+fn header_draw_span(bounds: Bounds, adornment: u16, y: i32) -> Option<(i16, i16)> {
+    let (top, left, bottom, right) = bounds;
+    if y < i32::from(top) || y >= i32::from(bottom) {
+        return None;
+    }
+    let edge = 2
+        .min(right.saturating_sub(left))
+        .min(bottom.saturating_sub(top));
+    if adornment & 0x0800 != 0 {
+        Some((
+            if y >= i32::from(bottom - edge) {
+                left
+            } else {
+                right - edge
+            },
+            right,
+        ))
+    } else if y < i32::from(bottom - edge) && right - edge > left {
+        Some((left, right - edge))
+    } else {
+        None
+    }
+}
+
+fn mask_header_bitmap(
+    bitmap: &mut ThemeBitmap,
+    top: i32,
+    left: i32,
+    bounds: Bounds,
+    adornment: u16,
+    transparent: Rgb8,
+) {
+    let width = bitmap.width() as i16;
+    let height = bitmap.height() as i16;
+    let mut ctx = ThemeDrawCtx::new(bitmap);
+    for y in 0..height {
+        let span = header_draw_span(bounds, adornment, top + i32::from(y));
+        let (start, end) = span.map_or((0, 0), |(start, end)| {
+            (
+                (i32::from(start) - left).clamp(0, i32::from(width)) as i16,
+                (i32::from(end) - left).clamp(0, i32::from(width)) as i16,
+            )
+        });
+        ctx.fill_rect(
+            ThemeRect {
+                top: y,
+                bottom: y + 1,
+                left: 0,
+                right: start,
+            },
+            transparent,
+        );
+        ctx.fill_rect(
+            ThemeRect {
+                top: y,
+                bottom: y + 1,
+                left: end,
+                right: width,
+            },
+            transparent,
         );
     }
 }
