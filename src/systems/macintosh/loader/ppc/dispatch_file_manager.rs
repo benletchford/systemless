@@ -21,6 +21,8 @@ pub enum PpcFileManagerOperation {
     CloseWd,
     /// CreateResFile(fileName)
     CreateResFile,
+    /// CatMove(vRefNum, dirID, oldName, newDirID, newName)
+    CatMove,
     /// FSpCatMove(source, dest)
     FSpCatMove,
     /// FSpExchangeFiles(source, dest)
@@ -120,6 +122,64 @@ pub(super) fn ppc_dispatch_file_manager(
                 last_resource_error,
             );
             return PpcImportAction::ReturnPreserve;
+        }
+        PpcFileManagerOperation::CatMove => {
+            // Inside Macintosh: Files, CatMove. Empty names identify the
+            // directory itself; otherwise dirID names the parent directory.
+            let mut resolve = |dir_id: u32, name_ptr: u32| -> Result<(i16, String), i16> {
+                let (volume, directory) = ppc_volume_and_directory(
+                    cpu.gpr[3] as u16 as i16,
+                    dir_id,
+                    vfs_volumes,
+                    default_dir_id,
+                    *application_working_directory_ref_num,
+                    working_directories,
+                )?;
+                if ppc_directory_path_for_id(vfs_directories, directory).is_none() {
+                    return Err(PPC_DIR_NF_ERR);
+                }
+                let name = if name_ptr == 0 {
+                    Vec::new()
+                } else {
+                    ppc_read_pstring_bytes(memory, name_ptr).ok_or(PPC_PARAM_ERR)?
+                };
+                let path = ppc_resolved_fsspec_target_path(
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    directory,
+                    &name,
+                )
+                .ok_or(PPC_FNF_ERR)?;
+                Ok((volume, path))
+            };
+            let source = resolve(cpu.gpr[4], cpu.gpr[5]);
+            let dest = resolve(cpu.gpr[6], cpu.gpr[7]);
+            match (source, dest) {
+                (Err(error), _) => error,
+                (_, Err(PPC_FNF_ERR)) => PPC_DIR_NF_ERR,
+                (_, Err(error)) => error,
+                (Ok(_), Ok((_, dest_path)))
+                    if ppc_directory_id_for_path(vfs_directories, &dest_path).is_none() =>
+                {
+                    PPC_BD_NAM_ERR
+                }
+                (Ok((source_vref, source_path)), Ok((dest_vref, dest_path))) => {
+                    ppc_move_catalog_entry(
+                        source_vref,
+                        &source_path,
+                        dest_vref,
+                        &dest_path,
+                        vfs_directories,
+                        vfs_files,
+                        deleted_vfs_file_paths,
+                        files,
+                        vfs_resource_files,
+                        resource_files,
+                        vfs_resources,
+                    )
+                }
+            }
         }
         PpcFileManagerOperation::FSpCatMove => ppc_fsp_cat_move(
             cpu.gpr[3],
@@ -605,18 +665,47 @@ fn ppc_fsp_cat_move(
         Err(PPC_FNF_ERR) => return PPC_DIR_NF_ERR,
         Err(error) => return error,
     };
+    ppc_move_catalog_entry(
+        source_vref,
+        &source_path,
+        dest_vref,
+        &dest_path,
+        vfs_directories,
+        vfs_files,
+        deleted_vfs_file_paths,
+        files,
+        vfs_resource_files,
+        resource_files,
+        vfs_resources,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_move_catalog_entry(
+    source_vref: i16,
+    source_path: &str,
+    dest_vref: i16,
+    dest_path: &str,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &mut ProcessVfsFileRecords,
+    deleted_vfs_file_paths: &mut Vec<String>,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+) -> i16 {
     if !ppc_same_volume(source_vref, dest_vref) {
         return PPC_DIFF_VOL_ERR;
     }
-    let Some(dest_dir_id) = ppc_directory_id_for_path(vfs_directories, &dest_path) else {
+    let Some(dest_dir_id) = ppc_directory_id_for_path(vfs_directories, dest_path) else {
         return PPC_DIR_NF_ERR;
     };
-    if ppc_renamed_path(&dest_path, &source_path, "").is_some() {
+    if ppc_renamed_path(dest_path, source_path, "").is_some() {
         return PPC_BAD_MOV_ERR;
     }
-    let leaf = ppc_vfs_basename(&source_path).to_string();
-    let new_path = ppc_join_vfs_path(&dest_path, &leaf);
-    if new_path.eq_ignore_ascii_case(&source_path) {
+    let leaf = ppc_vfs_basename(source_path).to_string();
+    let new_path = ppc_join_vfs_path(dest_path, &leaf);
+    if new_path.eq_ignore_ascii_case(source_path) {
         return PPC_NO_ERR;
     }
     if ppc_vfs_file_or_resource_path(vfs_files, vfs_resource_files, &new_path).is_some()
@@ -624,9 +713,9 @@ fn ppc_fsp_cat_move(
     {
         return PPC_DUP_FN_ERR;
     }
-    let moved_dir_id = ppc_directory_id_for_path(vfs_directories, &source_path);
+    let moved_dir_id = ppc_directory_id_for_path(vfs_directories, source_path);
     ppc_move_vfs_path(
-        &source_path,
+        source_path,
         &new_path,
         vfs_directories,
         vfs_files,
