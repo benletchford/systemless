@@ -3591,7 +3591,8 @@ pub(crate) fn ppc_draw_picture_bytes(
         .and_then(|ctable| memory.read_u32_be(ctable))
         .unwrap_or(0);
     let quilt_zero_is_opaque = ppc_quilt_picture_zero_is_opaque(vfs_resources, pic_handle);
-    let drawn = ppc_draw_pict_bytes_to_16bpp(
+    let dst_clip = ppc_picture_port_clip(memory, current_gworld, surface);
+    let drawn = ppc_draw_pict_bytes_clipped(
         memory,
         front_buffer,
         bytes,
@@ -3599,6 +3600,7 @@ pub(crate) fn ppc_draw_picture_bytes(
         &draw_clut,
         device_ct_seed,
         quilt_zero_is_opaque,
+        Some(&dst_clip),
     );
     if ppc_hle_trace_enabled() {
         let (top, left, bottom, right) = dst_rect;
