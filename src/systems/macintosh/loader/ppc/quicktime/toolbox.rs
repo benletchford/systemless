@@ -1440,7 +1440,16 @@ fn dispatch_movie_controller(
             PpcImportAction::Return(0)
         }
         Op::MCDraw => {
-            if movie_valid && quicktime.movie_active {
+            // QuickTime Components, MCDraw: the update belongs only to the
+            // movie/controller in the supplied window. A detached controller
+            // may occupy a different port from its movie.
+            let movie_port = if quicktime.movie_gworld != 0 {
+                quicktime.movie_gworld
+            } else {
+                current_gworld
+            };
+            let movie_update = movie_valid && gpr[4] == movie_port;
+            if movie_update && quicktime.movie_active {
                 let _ = ppc_qt_draw_movie_frame(
                     context.memory,
                     gworlds,
@@ -1449,7 +1458,9 @@ fn dispatch_movie_controller(
                     0x40,
                 );
             }
-            PpcImportAction::Return(0)
+            // Handling an update is independent of whether clipping leaves
+            // any visible pixels. Controller-bar drawing remains separate.
+            PpcImportAction::Return(u32::from(movie_update))
         }
         Op::MCGetClip => {
             let (controller_clip, movie_clip) = quicktime

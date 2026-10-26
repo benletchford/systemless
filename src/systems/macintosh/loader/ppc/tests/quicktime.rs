@@ -1796,8 +1796,7 @@ fn quicktime_draws_boot_picts_from_external_archive_when_configured() {
     }
 }
 
-#[test]
-fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
+fn cinepak_movie_draw_fixture() -> (PpcLoadedApp, u32, u32) {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"StartMovie");
     let mut loaded = load_pef_application(&pef).unwrap();
     let gworld = 0x0600_3000;
@@ -1826,6 +1825,7 @@ fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
         movie_file_data,
         movie_box: (0, 0, 4, 4),
         movie_tasks_until_done: 1,
+        movie_active: true,
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
             media_time_scale: 1,
             media_duration: 1,
@@ -1844,6 +1844,13 @@ fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
         }),
         ..PpcQuickTimeState::default()
     };
+
+    (loaded, gworld, base)
+}
+
+#[test]
+fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
+    let (mut loaded, gworld, base) = cinepak_movie_draw_fixture();
 
     assert!(ppc_qt_draw_movie_frame(
         &mut loaded.memory,
@@ -5544,4 +5551,68 @@ fn advance_quicktime_test_clock(loaded: &mut PpcLoadedApp, elapsed: u64) {
     loaded
         .callback_scheduling
         .set_current_subtick(now + elapsed);
+}
+
+#[test]
+fn quicktime_controller_draw_handles_only_its_movie_window() {
+    let (mut loaded, gworld, pixels) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = gworld;
+    let rect = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 4, 4).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    call_movie_toolbox(&mut loaded, "MCSetControllerPort", &[controller, gworld]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, gworld + 0x100]),
+        0
+    );
+    for offset in 0..32 {
+        assert_eq!(loaded.memory.read_u8(pixels + offset), Some(0xee));
+    }
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, gworld]),
+        1
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(pixels + 30), Some(0x7fff));
+
+    // An update is still consumed when the movie is completely clipped.
+    loaded.quicktime.movie_display_clip = Some(vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+    loaded.memory.write_bytes(pixels, &[0xee; 32]).unwrap();
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, gworld]),
+        1
+    );
+    for offset in 0..32 {
+        assert_eq!(loaded.memory.read_u8(pixels + offset), Some(0xee));
+    }
+}
+
+#[test]
+fn quicktime_detached_controller_bounds_do_not_resize_the_movie() {
+    let (mut loaded, gworld, pixels) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = gworld;
+    let rect = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 2).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    call_movie_toolbox(&mut loaded, "MCSetControllerPort", &[controller, gworld]);
+    call_movie_toolbox(&mut loaded, "MCSetControllerAttached", &[controller, 0]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, gworld]),
+        1
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(pixels + 4),
+        Some(ppc_qt_rgb555_from_u8(85, 85, 85))
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(pixels + 16),
+        Some(ppc_qt_rgb555_from_u8(170, 170, 170))
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels + 30), Some(0x7fff));
+    assert_eq!(loaded.quicktime.movie_box, (0, 0, 4, 4));
+    assert_eq!(loaded.quicktime.movie_controllers[0].rect, (0, 0, 2, 2));
 }

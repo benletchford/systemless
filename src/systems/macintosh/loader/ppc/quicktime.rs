@@ -5555,7 +5555,13 @@ pub(crate) fn ppc_qt_draw_movie_frame(
         .movie_controllers
         .iter()
         .rev()
-        .find(|controller| controller.movie == PPC_QT_MOVIE && controller.window == gworld)
+        .find(|controller| {
+            controller.movie == PPC_QT_MOVIE
+                && controller.window == gworld
+                && !quicktime
+                    .detached_movie_controllers
+                    .contains(&controller.handle)
+        })
         .map_or(quicktime.movie_box, |controller| controller.rect);
     if let Some(drawn) = ppc_qt_draw_decoded_movie_frame(memory, surface, quicktime, draw_rect) {
         return drawn;
