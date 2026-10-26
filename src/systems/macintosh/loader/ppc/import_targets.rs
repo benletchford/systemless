@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBUnknownPipe,
     USBGetNextDeviceByClass,
     USBToHostWord,
     USBMakeBMRequestType,
@@ -1606,13 +1607,10 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
-        ("SpeechRecognitionLib", symbol)
-            if PpcSpeechRecognitionOperation::from_name(symbol).is_some() =>
-        {
-            PpcImportDispatcherTarget::SpeechRecognition(
-                PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
-            )
-        }
+        (
+            "USBServicesLib",
+            "USBAbortPipeByReference" | "USBClearPipeStallByReference" | "USBGetPipeStatusByReference",
+        ) => PpcImportDispatcherTarget::USBUnknownPipe,
         ("USBManagerLib", "USBGetNextDeviceByClass") => {
             PpcImportDispatcherTarget::USBGetNextDeviceByClass
         }
@@ -1621,6 +1619,13 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("USBServicesLib", "USBMakeBMRequestType") => {
             PpcImportDispatcherTarget::USBMakeBMRequestType
+        }
+        ("SpeechRecognitionLib", symbol)
+            if PpcSpeechRecognitionOperation::from_name(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::SpeechRecognition(
+                PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
+            )
         }
         ("SoundSprocketLib", symbol) if PpcSoundSprocketFunction::from_name(symbol).is_some() => {
             PpcImportDispatcherTarget::SoundSprocket(

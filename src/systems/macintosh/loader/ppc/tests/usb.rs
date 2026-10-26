@@ -69,3 +69,33 @@ fn usb_enumeration_exhaustion_keeps_the_device_reference_and_outputs_unchanged()
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     assert_eq!(loaded.memory.read_u16_be(output + 14), Some(0xa5a5));
 }
+
+#[test]
+fn usb_unknown_pipes_do_not_fabricate_state_or_modify_outputs() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBGetPipeStatusByReference",
+    ))
+    .unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xa5; 12]);
+    for symbol in [
+        "USBGetPipeStatusByReference",
+        "USBAbortPipeByReference",
+        "USBClearPipeStallByReference",
+    ] {
+        for reference in [0, u32::MAX, 0x1234] {
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = output + 4;
+            run_test_import(
+                &mut loaded,
+                dispatcher_target_for_import("USBServicesLib", symbol),
+            );
+            assert_eq!(loaded.cpu.gpr[3], (-6997i32) as u32);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, output, 12),
+                Some(vec![0xa5; 12])
+            );
+        }
+    }
+}

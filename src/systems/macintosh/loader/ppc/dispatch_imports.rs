@@ -3395,6 +3395,12 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
+        // No USB device or pipe references exist in this machine profile.
+        // USB DDK rev. 26, pp. 135–136: an unknown-pipe error leaves the
+        // GetPipeStatus output untouched, rather than inventing an idle pipe.
+        PpcImportDispatcherTarget::USBUnknownPipe => {
+            Some(PpcImportAction::Return((-6997i32) as u32))
+        }
         PpcImportDispatcherTarget::USBGetNextDeviceByClass => {
             // USB DDK API Reference rev. 26, p. 179: exhaustion returns
             // -43 and leaves deviceRef unchanged. This profile has no USB
