@@ -364,3 +364,103 @@ fn open_transport_buffer_read_rejects_cycles_and_unmapped_payloads() {
         assert_eq!(loaded.memory.read_u8(base + 64), Some(0x5a));
     }
 }
+
+#[test]
+fn open_transport_nbp_string_addresses_preserve_exact_bytes_and_lengths() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OTInitNBPAddress")).unwrap();
+    let source = PPC_STACK_TOP - 512;
+    let destination = source + 128;
+    let name = b"Game\\:One:Type@Zone";
+    loaded.memory.write_bytes(source, name).unwrap();
+    loaded
+        .memory
+        .write_u8(source + name.len() as u32, 0)
+        .unwrap();
+    loaded
+        .memory
+        .write_bytes(destination - 1, &[0xa5; 64])
+        .unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[destination, source]);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("OTATalkSharedLib", "OTInitNBPAddress"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], name.len() as u32 + 2);
+    assert_eq!(loaded.memory.read_u16_be(destination), Some(0x0102));
+    for (offset, &byte) in name.iter().enumerate() {
+        assert_eq!(
+            loaded.memory.read_u8(destination + 2 + offset as u32),
+            Some(byte)
+        );
+    }
+    assert_eq!(loaded.memory.read_u8(destination - 1), Some(0xa5));
+    assert_eq!(
+        loaded.memory.read_u8(destination + 2 + name.len() as u32),
+        Some(0xa5)
+    );
+    // An explicit length copies embedded NULs and does not append a terminator.
+    loaded.memory.write_bytes(source, b"A\0BC").unwrap();
+    loaded.cpu.gpr[3..6].copy_from_slice(&[destination, source, 4]);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("OTATalkSharedLib", "OTSetAddressFromNBPString"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 4);
+    assert_eq!(
+        loaded.memory.read_u32_be(destination),
+        Some(u32::from_be_bytes(*b"A\0BC"))
+    );
+    // The -1 form uses strlen, and snapshotting supports overlapping buffers.
+    loaded.cpu.gpr[3..6].copy_from_slice(&[source + 1, source, u32::MAX]);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("OTATalkSharedLib", "OTSetAddressFromNBPString"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u8(source + 1), Some(b'A'));
+    loaded.cpu.gpr[3..6].copy_from_slice(&[destination, source, 0xffff_fffe]);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("OTATalkSharedLib", "OTSetAddressFromNBPString"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn open_transport_ddp_comparison_uses_field_wildcards_and_rejects_other_families() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"OTCompareDDPAddresses")).unwrap();
+    let left = PPC_STACK_TOP - 64;
+    let right = left + 16;
+    let address = [1, 0, 0x12, 0x34, 5, 6, 7, 0];
+    for (offset, replacement, expected) in [
+        (7, 99, 1),
+        (4, 0, 1),
+        (5, 0, 1),
+        (6, 0, 1),
+        (4, 8, 0),
+        (3, 0, 0),
+        (1, 1, 0),
+        (1, 2, 0),
+    ] {
+        loaded.memory.write_bytes(left, &address).unwrap();
+        loaded.memory.write_bytes(right, &address).unwrap();
+        loaded.memory.write_u8(right + offset, replacement).unwrap();
+        for (a, b) in [(left, right), (right, left)] {
+            loaded.cpu.gpr[3..5].copy_from_slice(&[a, b]);
+            run_test_import(
+                &mut loaded,
+                dispatcher_target_for_import("OTATalkSharedLib", "OTCompareDDPAddresses"),
+            );
+            assert_eq!(loaded.cpu.gpr[3], expected, "field {offset}");
+        }
+    }
+    loaded.memory.write_bytes(right, &address).unwrap();
+    loaded.memory.write_u16_be(right + 2, 0).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[left, right]);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("OTATalkSharedLib", "OTCompareDDPAddresses"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+}
