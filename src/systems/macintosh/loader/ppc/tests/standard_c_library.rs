@@ -867,3 +867,425 @@ fn stdclib_scanner_writes_both_long_double_components() {
         );
     }
 }
+
+#[test]
+fn stdclib_descriptors_share_bytes_but_keep_independent_positions() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    loaded
+        .memory
+        .write_bytes(base, b"descriptor-test\0")
+        .unwrap();
+    loaded.memory.write_bytes(base + 128, b"abc").unwrap();
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, PpcImportDispatcherTarget::StdDescriptor(operation));
+        loaded.cpu.gpr[3]
+    };
+    use PpcDescriptorOperation as Op;
+    let first = call(&mut loaded, Op::Open, &[base, 2 | 256 | 2048]);
+    assert_eq!(first, 3);
+    assert_eq!(call(&mut loaded, Op::Write, &[first, base + 128, 3]), 3);
+    let second = call(&mut loaded, Op::Open, &[base, 2048]);
+    assert_eq!(second, 4);
+    assert_eq!(call(&mut loaded, Op::Read, &[second, base + 256, 8]), 3);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, base + 256, 3).unwrap(),
+        b"abc"
+    );
+    assert_eq!(call(&mut loaded, Op::Read, &[second, base + 256, 8]), 0);
+    assert_eq!(
+        call(&mut loaded, Op::Write, &[second, base + 128, 1]),
+        u32::MAX
+    );
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(9));
+    assert_eq!(call(&mut loaded, Op::Seek, &[first, 5, 0]), 5);
+    assert_eq!(call(&mut loaded, Op::Write, &[first, base + 128, 1]), 1);
+    assert_eq!(call(&mut loaded, Op::Seek, &[second, 0, 0]), 0);
+    assert_eq!(call(&mut loaded, Op::Read, &[second, base + 256, 8]), 6);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, base + 256, 6).unwrap(),
+        b"abc\0\0a"
+    );
+    assert_eq!(call(&mut loaded, Op::Close, &[first]), 0);
+    assert_eq!(
+        call(&mut loaded, Op::Read, &[first, base + 256, 1]),
+        u32::MAX
+    );
+    let append = call(&mut loaded, Op::Open, &[base, 1 | 8 | 2048]);
+    assert_eq!(append, first);
+    assert_eq!(call(&mut loaded, Op::Seek, &[append, 0, 0]), 0);
+    assert_eq!(call(&mut loaded, Op::Write, &[append, base + 129, 1]), 1);
+    assert_eq!(call(&mut loaded, Op::Seek, &[second, -1i32 as u32, 2]), 6);
+    assert_eq!(call(&mut loaded, Op::Read, &[second, base + 256, 1]), 1);
+    assert_eq!(loaded.memory.read_u8(base + 256), Some(b'b'));
+    assert_eq!(
+        call(&mut loaded, Op::Open, &[base, 1 | 256 | 1024 | 512]),
+        u32::MAX
+    );
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(17));
+    assert_eq!(call(&mut loaded, Op::Seek, &[second, 0, 2]), 7);
+}
+
+#[test]
+fn stdclib_descriptors_preserve_resource_forks_and_reject_failed_io_without_mutation() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    loaded.memory.write_bytes(base, b"fork-test\0").unwrap();
+    loaded
+        .memory
+        .write_bytes(base + 64, b"absent-parent/child\0")
+        .unwrap();
+    loaded.memory.write_bytes(base + 128, b"fork").unwrap();
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, PpcImportDispatcherTarget::StdDescriptor(operation));
+        loaded.cpu.gpr[3]
+    };
+    use PpcDescriptorOperation as Op;
+    assert_eq!(
+        call(&mut loaded, Op::Open, &[base + 64, 2 | 256 | 2048]),
+        u32::MAX
+    );
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(2));
+    let first = call(&mut loaded, Op::Open, &[base, 2 | 16 | 256 | 2048]);
+    assert_eq!(first, 3);
+    assert_eq!(call(&mut loaded, Op::Write, &[first, base + 128, 4]), 4);
+    let second = call(&mut loaded, Op::Open, &[base, 16 | 2048]);
+    assert_eq!(second, 4);
+    assert_eq!(
+        call(&mut loaded, Op::Read, &[second, 0xffff_fffe, 4]),
+        u32::MAX
+    );
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(14));
+    assert_eq!(call(&mut loaded, Op::Seek, &[second, 0, 1]), 0);
+    assert_eq!(call(&mut loaded, Op::Close, &[first]), 0);
+    assert_eq!(call(&mut loaded, Op::Read, &[second, base + 256, 4]), 4);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, base + 256, 4).unwrap(),
+        b"fork"
+    );
+    assert_eq!(call(&mut loaded, Op::Close, &[second]), 0);
+    let reopened = call(&mut loaded, Op::Open, &[base, 16 | 2048]);
+    assert_eq!(call(&mut loaded, Op::Read, &[reopened, base + 256, 4]), 4);
+    let data = call(&mut loaded, Op::Open, &[base, 2048]);
+    assert_eq!(call(&mut loaded, Op::Read, &[data, base + 256, 4]), 0);
+    assert_eq!(call(&mut loaded, Op::Close, &[0]), 0);
+    let reused = call(&mut loaded, Op::Open, &[base, 2048]);
+    assert_eq!(reused, 0);
+    loaded.cpu.gpr[3] = dispatch_stdio::PPC_STDIO_IOB_ADDR + dispatch_stdio::PPC_STDIO_FILE_SIZE;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileClose),
+    );
+    assert_eq!(call(&mut loaded, Op::Write, &[1, base + 128, 4]), u32::MAX);
+}
+
+#[test]
+fn stdclib_reopened_stdout_shares_position_with_descriptor_writes() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    loaded
+        .memory
+        .write_bytes(base, b"redirected-output\0")
+        .unwrap();
+    loaded.memory.write_bytes(base + 128, b"AC").unwrap();
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, PpcImportDispatcherTarget::StdDescriptor(operation));
+        loaded.cpu.gpr[3]
+    };
+    use PpcDescriptorOperation as Op;
+    let stdout = dispatch_stdio::PPC_STDIO_IOB_ADDR + dispatch_stdio::PPC_STDIO_FILE_SIZE;
+    loaded.cpu.gpr[3] = stdout;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileClose),
+    );
+    assert_eq!(call(&mut loaded, Op::Open, &[base, 2 | 256 | 2048]), 1);
+    assert_eq!(call(&mut loaded, Op::Write, &[1, base + 128, 1]), 1);
+    loaded.cpu.gpr[3] = u32::from(b'B');
+    loaded.cpu.gpr[4] = stdout;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FilePutChar),
+    );
+    assert_eq!(loaded.cpu.gpr[3], u32::from(b'B'));
+    assert_eq!(call(&mut loaded, Op::Write, &[1, base + 129, 1]), 1);
+    assert_eq!(call(&mut loaded, Op::Seek, &[1, 0, 0]), 0);
+    assert_eq!(call(&mut loaded, Op::Read, &[1, base + 256, 3]), 3);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, base + 256, 3).unwrap(),
+        b"ABC"
+    );
+    assert_eq!(call(&mut loaded, Op::Close, &[1]), 0);
+    loaded.cpu.gpr[3] = u32::from(b'D');
+    loaded.cpu.gpr[4] = stdout;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FilePutChar),
+    );
+    assert_eq!(loaded.cpu.gpr[3], u32::MAX);
+}
+
+#[test]
+fn stdclib_descriptor_paths_resolve_hfs_parents_and_volume_roots() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    for (dir_id, parent_dir_id, path) in
+        [(42, PPC_ROOT_DIR_ID, "Folder"), (43, 42, "Folder/Nested")]
+    {
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id,
+            parent_dir_id,
+            path: path.to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    loaded.default_dir_id.with_mut(|directory| *directory = 43);
+    loaded
+        .memory
+        .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, 43)
+        .unwrap();
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    let absolute = format!(
+        "{}:Folder:Sibling",
+        crate::trap::TrapDispatcher::boot_volume_name()
+    );
+    for (requested, expected) in [
+        ("::Sibling", Some("Folder/Sibling")),
+        (absolute.as_str(), Some("Folder/Sibling")),
+        ("../Sibling", Some("Folder/Sibling")),
+        (":Local", Some("Folder/Nested/Local")),
+        (":::RootFile", Some("RootFile")),
+        ("::::Beyond", None),
+        ("NoSuchVolume:File", None),
+        (":Missing::Sibling", None),
+    ] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, 2 | 256 | 2048]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        let descriptor = loaded.cpu.gpr[3];
+        if let Some(expected) = expected {
+            assert_ne!(descriptor, u32::MAX, "{requested}");
+            let record = &loaded.toolbox_startup.descriptors.records[&descriptor];
+            assert_eq!(
+                loaded
+                    .files
+                    .iter()
+                    .find(|file| file.ref_num == record.ref_num)
+                    .unwrap()
+                    .path,
+                expected
+            );
+            loaded.cpu.gpr[3] = descriptor;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Close),
+            );
+        } else {
+            assert_eq!(descriptor, u32::MAX, "{requested}");
+            assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(2));
+        }
+    }
+
+    // A mounted volume's parent is not the synthetic host VFS root.
+    loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+        ref_num: -2,
+        name: "Mounted".to_string(),
+        root_dir_id: 42,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: 400,
+        allocation_block_size: 2048,
+        clump_size: 4096,
+        free_blocks: 12,
+        bitmap_start: 3,
+        allocation_pointer: 4,
+        allocation_start: 5,
+        next_catalog_id: 81,
+        created_date: 0,
+        modified_date: 0,
+    }]);
+    for requested in [":::Outside", "../../Outside", "Mounted::Outside"] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, 2 | 256 | 2048]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        assert_eq!(loaded.cpu.gpr[3], u32::MAX, "{requested}");
+        assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(2));
+    }
+
+    loaded
+        .vfs_volumes
+        .with_mut(|volumes| volumes[0].attributes = 0x8080);
+    for (requested, flags, succeeds) in [
+        ("Mounted:Sibling", 2048, true),
+        ("Mounted:Sibling", 2 | 512 | 2048, false),
+        ("Mounted:NewFile", 256 | 2048, false),
+    ] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, flags]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        if succeeds {
+            assert_ne!(loaded.cpu.gpr[3], u32::MAX);
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Close),
+            );
+        } else {
+            assert_eq!(loaded.cpu.gpr[3], u32::MAX, "{requested}");
+            assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(30));
+        }
+    }
+    assert!(ppc_vfs_file_index(&loaded.vfs_files, "Folder/NewFile").is_none());
+}
+
+#[test]
+fn stdclib_descriptors_follow_directory_aliases_and_reject_cycles() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    loaded.vfs_directories.push(PpcVfsDirectory {
+        dir_id: 42,
+        parent_dir_id: PPC_ROOT_DIR_ID,
+        path: "Target".to_string(),
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: false,
+    });
+    for (path, target_dir, target_name) in [
+        ("Shortcut", 42, &b""[..]),
+        ("Loop", PPC_ROOT_DIR_ID, &b"Loop"[..]),
+        ("Dangling", PPC_ROOT_DIR_ID, &b"Missing"[..]),
+    ] {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.to_string(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"alis"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: 0,
+                path: path.to_string(),
+                res_type: u32::from_be_bytes(*b"alis"),
+                res_id: 0,
+                name: Vec::new(),
+                data: ppc_alias_record_bytes(PPC_BOOT_VOLUME_REF_NUM, target_dir, target_name)
+                    .unwrap()
+                    .into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    use PpcDescriptorOperation as Op;
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, PpcImportDispatcherTarget::StdDescriptor(operation));
+        loaded.cpu.gpr[3]
+    };
+    for (name, flags, expected) in [
+        (":Shortcut:File", 2 | 256, Some("Target/File")),
+        ("Shortcut/../AtRoot", 2 | 256, Some("AtRoot")),
+        ("Shortcut/File", 16384, None),
+        ("Shortcut/File", 32, None),
+        ("Loop/File", 0, None),
+        ("Dangling/File", 0, None),
+    ] {
+        loaded.memory.write_bytes(base, name.as_bytes()).unwrap();
+        loaded.memory.write_u8(base + name.len() as u32, 0).unwrap();
+        let descriptor = call(&mut loaded, Op::Open, &[base, flags]);
+        if let Some(expected) = expected {
+            assert_ne!(descriptor, u32::MAX, "{name}");
+            let record = &loaded.toolbox_startup.descriptors.records[&descriptor];
+            assert_eq!(
+                loaded
+                    .files
+                    .iter()
+                    .find(|file| file.ref_num == record.ref_num)
+                    .unwrap()
+                    .path,
+                expected
+            );
+            let file = loaded
+                .vfs_files
+                .iter()
+                .find(|file| file.path == expected)
+                .unwrap();
+            assert_eq!(file.file_type, u32::from_be_bytes(*b"TEXT"));
+            assert_eq!(file.creator, u32::from_be_bytes(*b"ttxt"));
+            // MPW descriptor I/O passes CR, LF and control-Z through unchanged.
+            loaded
+                .memory
+                .write_bytes(base + 128, b"a\r\n\x1ab")
+                .unwrap();
+            assert_eq!(
+                call(&mut loaded, Op::Write, &[descriptor, base + 128, 5]),
+                5
+            );
+            assert_eq!(call(&mut loaded, Op::Seek, &[descriptor, 0, 0]), 0);
+            assert_eq!(call(&mut loaded, Op::Read, &[descriptor, base + 256, 5]), 5);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, base + 256, 5).unwrap(),
+                b"a\r\n\x1ab"
+            );
+            assert_eq!(call(&mut loaded, Op::Close, &[descriptor]), 0);
+        } else {
+            assert_eq!(descriptor, u32::MAX, "{name}");
+        }
+    }
+    loaded.memory.write_bytes(base, b"Shortcut\0").unwrap();
+    let alias = call(&mut loaded, Op::Open, &[base, 32]);
+    assert_ne!(alias, u32::MAX);
+    assert_eq!(call(&mut loaded, Op::Read, &[alias, base + 256, 5]), 0);
+    assert_eq!(call(&mut loaded, Op::Close, &[alias]), 0);
+    assert_eq!(call(&mut loaded, Op::Open, &[base, 32 | 256]), u32::MAX);
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(22));
+}

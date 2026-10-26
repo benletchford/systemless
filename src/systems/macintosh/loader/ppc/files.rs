@@ -3152,8 +3152,41 @@ pub(super) fn ppc_open_resource_fork_path(
     if ref_num_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, ref_num_out_ptr, 2) {
         return PPC_PARAM_ERR;
     }
+    match ppc_open_resource_fork_access(
+        path,
+        permission,
+        vfs_files,
+        vfs_resource_files,
+        vfs_resources,
+        files,
+        writable_refnums,
+        next_file_ref_num,
+    ) {
+        Ok(ref_num) => {
+            let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
+            PPC_NO_ERR
+        }
+        Err(error) => error,
+    }
+}
+
+/// Opens the canonical resource-fork byte stream without requiring guest
+/// scratch memory. Toolbox calls and StdCLib descriptors share this access path.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_open_resource_fork_access(
+    path: &str,
+    permission: u8,
+    vfs_files: &mut ProcessVfsFileRecords,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    files: &mut Vec<PpcFileRecord>,
+    writable_refnums: &mut HashSet<u16>,
+    next_file_ref_num: &mut i16,
+) -> Result<i16, i16> {
+    let ref_num = *next_file_ref_num;
+    let next_ref_num = next_file_ref_num.checked_add(1).ok_or(PPC_PARAM_ERR)?;
     let Some(resource_index) = ppc_vfs_resource_file_index(vfs_resource_files, path) else {
-        return PPC_FNF_ERR;
+        return Err(PPC_FNF_ERR);
     };
     let path = vfs_resource_files[resource_index].path.clone();
     let open_path = format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}");
@@ -3172,11 +3205,6 @@ pub(super) fn ppc_open_resource_fork_path(
             dirty: false,
         });
     }
-    let ref_num = *next_file_ref_num;
-    let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
-        return PPC_PARAM_ERR;
-    };
-    let _ = memory.write_u16_be(ref_num_out_ptr, ref_num as u16);
     files.push(PpcFileRecord {
         ref_num,
         path: open_path,
@@ -3192,7 +3220,7 @@ pub(super) fn ppc_open_resource_fork_path(
             path, permission, ref_num
         );
     }
-    PPC_NO_ERR
+    Ok(ref_num)
 }
 
 pub(super) fn ppc_h_open(
