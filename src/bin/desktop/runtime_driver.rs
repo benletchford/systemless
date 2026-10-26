@@ -779,6 +779,9 @@ impl GuiDriver {
             return;
         };
         if let Some(runner) = self.runner.as_mut() {
+            if std::env::var_os("SYSTEMLESS_TRACE_ACCESSIBILITY").is_some() {
+                eprintln!("[ACCESSIBILITY] runtime mouse release point=({v}, {h})");
+            }
             runner.push_mouse_up(v, h);
         }
     }
