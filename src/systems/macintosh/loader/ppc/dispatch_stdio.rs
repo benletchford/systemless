@@ -18,6 +18,7 @@ pub enum PpcStdIoOperation {
     FileFlush,
     FileOpen,
     FilePrintf,
+    Printf,
     FileRead,
     FileSeek,
     FileRewind,
@@ -171,7 +172,11 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
-    let stream = cpu.gpr[3];
+    let stream = if operation == PpcStdIoOperation::Printf {
+        PPC_STDIO_IOB_ADDR + PPC_STDIO_FILE_SIZE
+    } else {
+        cpu.gpr[3]
+    };
     match operation {
         PpcStdIoOperation::FileUngetChar => {
             let character = cpu.gpr[3];
@@ -199,6 +204,10 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
                 return PpcImportAction::Return(u32::MAX);
             }
             if record.standard {
+                if !ppc_stdio_write_standard(stream, &[character]) {
+                    ppc_stdio_set_error(stream, stdio_streams);
+                    return PpcImportAction::Return(u32::MAX);
+                }
                 return PpcImportAction::Return(u32::from(character));
             }
             let Some(file) = record
@@ -377,6 +386,11 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             };
             if standard && operation == PpcStdIoOperation::FileWrite {
                 if !ppc_memory_can_read_bytes(memory, destination, total) {
+                    ppc_stdio_set_error(stream, stdio_streams);
+                    return PpcImportAction::Return(0);
+                }
+                let bytes = ppc_memory_read_bytes(memory, destination, total).unwrap_or_default();
+                if !ppc_stdio_write_standard(stream, &bytes) {
                     ppc_stdio_set_error(stream, stdio_streams);
                     return PpcImportAction::Return(0);
                 }
@@ -569,8 +583,7 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             ppc_stdio_set_position(stream, new_position, stdio_streams, files);
             PpcImportAction::Return(u32::from(byte))
         }
-        PpcStdIoOperation::FilePrintf => {
-            const SCRATCH_SIZE: u32 = 16 * 1024;
+        PpcStdIoOperation::FilePrintf | PpcStdIoOperation::Printf => {
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(u32::MAX);
             };
@@ -578,36 +591,36 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
                 ppc_stdio_set_error(stream, stdio_streams);
                 return PpcImportAction::Return(u32::MAX);
             }
-            let saved_heap_cursor = *heap_cursor;
-            let process_scratch = process_memory_manager.is_some();
-            let scratch = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
-                memory_manager.native_scratch_bytes(memory, SCRATCH_SIZE, true)
-            } else {
-                ppc_heap_alloc(memory, heap_cursor, heap_limit, SCRATCH_SIZE, true)
-            };
-            if scratch == 0 {
-                return PpcImportAction::Return(u32::MAX);
-            }
-            let mut sprintf_cpu = cpu.clone();
-            sprintf_cpu.gpr[3] = scratch;
-            let length = ppc_std_sprintf(&sprintf_cpu, memory);
-            if !process_scratch {
-                *heap_cursor = saved_heap_cursor;
-            }
-            if length >= SCRATCH_SIZE {
-                ppc_stdio_set_error(stream, stdio_streams);
-                return PpcImportAction::Return(u32::MAX);
-            }
-            let Some(bytes) = ppc_memory_read_bytes(memory, scratch, length) else {
-                ppc_stdio_set_error(stream, stdio_streams);
-                return PpcImportAction::Return(u32::MAX);
-            };
+            let printf = operation == PpcStdIoOperation::Printf;
+            // Classic PPC uses eight argument words in r3-r10; subsequent
+            // words follow the 24-byte linkage area and 32-byte save area.
+            let named_words = if printf { 1usize } else { 2usize };
+            let bytes = ppc_std_format_bytes(
+                memory,
+                cpu.gpr[if printf { 3 } else { 4 }],
+                |memory, index| {
+                    let slot = named_words + index;
+                    if slot < 8 {
+                        cpu.gpr[3 + slot]
+                    } else {
+                        cpu.gpr[1]
+                            .checked_add(24 + slot as u32 * 4)
+                            .and_then(|address| memory.read_u32_be(address))
+                            .unwrap_or(0)
+                    }
+                },
+            );
+            let length = bytes.len() as u32;
             let Some((standard, _ref_num, position, _path, _data_len)) =
                 ppc_stdio_stream_info(stream, stdio_streams, vfs_files)
             else {
                 return PpcImportAction::Return(u32::MAX);
             };
             if standard {
+                if !ppc_stdio_write_standard(stream, &bytes) {
+                    ppc_stdio_set_error(stream, stdio_streams);
+                    return PpcImportAction::Return(u32::MAX);
+                }
                 return PpcImportAction::Return(length);
             }
             let Some(path) = stdio_streams
@@ -678,5 +691,16 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             PpcImportAction::ReturnPreserve
         }
         PpcStdIoOperation::IoBuffer => PpcImportAction::Return(PPC_STDIO_IOB_ADDR),
+    }
+}
+
+fn ppc_stdio_write_standard(stream: u32, bytes: &[u8]) -> bool {
+    use std::io::Write;
+    if stream == PPC_STDIO_IOB_ADDR + PPC_STDIO_FILE_SIZE {
+        std::io::stdout().lock().write_all(bytes).is_ok()
+    } else if stream == PPC_STDIO_IOB_ADDR + 2 * PPC_STDIO_FILE_SIZE {
+        std::io::stderr().lock().write_all(bytes).is_ok()
+    } else {
+        false
     }
 }

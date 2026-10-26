@@ -547,9 +547,12 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
             &mut next_file_ref_num,
             &mut stdio_streams,
         ),
-        PpcImportAction::Return(u32::MAX)
+        PpcImportAction::Return(20000)
     );
-    assert_eq!(vfs_files[0].data, b"XYcdef");
+    let mut expected_file = b"XY".to_vec();
+    expected_file.extend(vec![b' '; 19999]);
+    expected_file.push(b'0');
+    assert_eq!(vfs_files[0].data.as_slice(), expected_file.as_slice());
 
     loaded.memory.write_bytes(mode, b"invalid\0").unwrap();
     cpu.gpr[3] = path;
@@ -569,7 +572,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         PpcImportAction::Return(0)
     );
     assert_eq!(vfs_files.len(), 1);
-    assert_eq!(vfs_files[0].data, b"XYcdef");
+    assert_eq!(vfs_files[0].data.as_slice(), expected_file.as_slice());
 
     loaded.memory.write_bytes(path, b"missing.bin\0").unwrap();
     loaded.memory.write_bytes(mode, b"r+\0").unwrap();
@@ -612,7 +615,7 @@ fn stdclib_stdio_uses_host_metadata_and_preserves_the_guest_iob_layout() {
         PpcImportAction::Return(0)
     );
     loaded.set_heap_cursor(saved_heap_cursor);
-    assert_eq!(vfs_files[0].data, b"XYcdef");
+    assert_eq!(vfs_files[0].data.as_slice(), expected_file.as_slice());
 
     cpu.gpr[3] = destination;
     cpu.gpr[4] = 1;
@@ -1041,4 +1044,106 @@ fn stdio_character_io_pushback_interoperates_with_reads_seeks_and_eof() {
         u32::MAX
     );
     assert_eq!(call(&mut loaded, "fputc", &[b'Z' as u32, 0]), u32::MAX);
+}
+
+#[test]
+fn stdio_printf_reads_stack_varargs_and_fprintf_handles_large_output() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"printf")).unwrap();
+    let stdout = PPC_STDIO_IOB_ADDR + PPC_STDIO_FILE_SIZE;
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Volume/stdout".into(),
+        data: Vec::new().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    // Redirect the process-owned standard output record to a file to inspect
+    // the same formatting/write path without depending on host test capture.
+    loaded.insert_test_stdio_stream(
+        stdout,
+        PpcStdioStreamRecord {
+            pushback: None,
+            ref_num: None,
+            path: Some("Volume/stdout".into()),
+            position: 0,
+            standard: false,
+            readable: false,
+            writable: true,
+            append: false,
+            closed: false,
+            eof: false,
+            error: false,
+        },
+    );
+    let format = PPC_DATA_BASE + 0x3000;
+    let count = format + 128;
+    loaded.memory.add_region(format, vec![0; 256]);
+    loaded
+        .memory
+        .write_bytes(format, b"%u %u %u %u %u %u %u %u %.1f%n\0")
+        .unwrap();
+    loaded.cpu.gpr[1] = PPC_STACK_TOP - 256;
+    loaded.cpu.gpr[3] = format;
+    for (index, value) in (1..=7u32).enumerate() {
+        loaded.cpu.gpr[4 + index] = value;
+    }
+    loaded
+        .memory
+        .write_u32_be(loaded.cpu.gpr[1] + 56, 8)
+        .unwrap();
+    let bits = 1.5f64.to_bits();
+    loaded
+        .memory
+        .write_u32_be(loaded.cpu.gpr[1] + 60, (bits >> 32) as u32)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(loaded.cpu.gpr[1] + 64, bits as u32)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(loaded.cpu.gpr[1] + 68, count)
+        .unwrap();
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("StdCLib", "printf"),
+    );
+    let expected = b"1 2 3 4 5 6 7 8 1.5";
+    assert_eq!(loaded.cpu.gpr[3], expected.len() as u32);
+    assert_eq!(
+        loaded.memory.read_u32_be(count),
+        Some(expected.len() as u32)
+    );
+    loaded
+        .process_file_system
+        .with_mut(|fs| assert_eq!(fs.vfs_files[0].data.as_slice(), expected));
+    loaded.memory.write_bytes(format, b"%20000u\0").unwrap();
+    loaded.cpu.gpr[3] = stdout;
+    loaded.cpu.gpr[4] = format;
+    loaded.cpu.gpr[5] = 7;
+    let before = *test_heap_cursor!(loaded);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("StdCLib", "fprintf"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 20000);
+    assert_eq!(*test_heap_cursor!(loaded), before);
+    loaded.process_file_system.with_mut(|fs| {
+        let bytes = fs.vfs_files[0].data.as_slice();
+        assert_eq!(bytes.len(), expected.len() + 20000);
+        assert!(bytes[expected.len()..bytes.len() - 1]
+            .iter()
+            .all(|byte| *byte == b' '));
+        assert_eq!(bytes.last(), Some(&b'7'));
+        assert!(fs.vfs_files[0].dirty);
+        fs.stdio_streams.get_mut(&stdout).unwrap().closed = true;
+    });
+    loaded.cpu.gpr[3] = format;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("StdCLib", "printf"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], u32::MAX);
 }

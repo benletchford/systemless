@@ -501,6 +501,7 @@ fn stdio_imports_pre_resolve_to_typed_operations() {
         ("fflush", PpcStdIoOperation::FileFlush),
         ("fopen", PpcStdIoOperation::FileOpen),
         ("fprintf", PpcStdIoOperation::FilePrintf),
+        ("printf", PpcStdIoOperation::Printf),
         ("fread", PpcStdIoOperation::FileRead),
         ("fseek", PpcStdIoOperation::FileSeek),
         ("rewind", PpcStdIoOperation::FileRewind),
