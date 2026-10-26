@@ -3162,6 +3162,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ObjectSupportResolve => {
             unreachable!("object support imports return through Apple Event dispatch")
         }
+        PpcImportDispatcherTarget::Glide(operation) => {
+            Some(dispatch_glide::dispatch(operation, cpu, memory))
+        }
         PpcImportDispatcherTarget::GlideSstQueryBoards => {
             // 3Dfx Glide 2.4 Reference Manual, grSstQueryBoards: the routine
             // returns FXFALSE when it detects no Voodoo Graphics subsystem.

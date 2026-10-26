@@ -1301,6 +1301,7 @@ pub enum PpcImportDispatcherTarget {
     ISpDevicesDeactivate,
     ISpConfigure,
     GlideSstQueryBoards,
+    Glide(PpcGlideOperation),
     QtBeginFullScreen,
     QtEndFullScreen,
     QtEnterMovies,
@@ -2922,6 +2923,44 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InputSprocketLib", "ISpConfigure") => PpcImportDispatcherTarget::ISpConfigure,
         ("3DfxGlideLib2.x", "grSstQueryBoards") => PpcImportDispatcherTarget::GlideSstQueryBoards,
+        ("3DfxGlideLib2.x", "grSstQueryHardware") => {
+            PpcImportDispatcherTarget::Glide(PpcGlideOperation::QueryHardware)
+        }
+        ("3DfxGlideLib2.x", "grSstWinOpen" | "grLfbLock" | "grLfbUnlock") => {
+            PpcImportDispatcherTarget::Glide(PpcGlideOperation::Unavailable)
+        }
+        ("3DfxGlideLib2.x", "grBufferNumPending" | "grTexMinAddress" | "grTexMaxAddress") => {
+            PpcImportDispatcherTarget::Glide(PpcGlideOperation::EmptyDeviceValue)
+        }
+        ("3DfxGlideLib2.x", "grTexCalcMemRequired") => {
+            PpcImportDispatcherTarget::Glide(PpcGlideOperation::TextureMemoryRequired)
+        }
+        ("3DfxGlideLib2.x", "grTexTextureMemRequired") => {
+            PpcImportDispatcherTarget::Glide(PpcGlideOperation::TextureInfoMemoryRequired)
+        }
+        (
+            "3DfxGlideLib2.x",
+            "grGlideInit"
+            | "grGlideShutdown"
+            | "grSstSelect"
+            | "grSstWinClose"
+            | "grAlphaBlendFunction"
+            | "grAlphaCombine"
+            | "grBufferSwap"
+            | "grColorCombine"
+            | "grConstantColorValue"
+            | "grDrawLine"
+            | "grDrawPolygonVertexList"
+            | "grDrawTriangle"
+            | "grFogMode"
+            | "grGammaCorrectionValue"
+            | "grTexClampMode"
+            | "grTexCombine"
+            | "grTexDownloadMipMap"
+            | "grTexDownloadTable"
+            | "grTexFilterMode"
+            | "grTexSource",
+        ) => PpcImportDispatcherTarget::Glide(PpcGlideOperation::NoDeviceStateChange),
         ("InterfaceLib", "NewPtr") | ("InterfaceLib", "NewPtrSys") => {
             PpcImportDispatcherTarget::NewPtr { clear: false }
         }

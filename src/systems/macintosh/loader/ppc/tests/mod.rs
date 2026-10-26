@@ -259,6 +259,7 @@ mod drag_manager;
 mod draw_sprocket;
 
 mod input_sprocket;
+mod glide;
 mod qd3d;
 mod menu_manager;
 mod menu_item_enabled;
