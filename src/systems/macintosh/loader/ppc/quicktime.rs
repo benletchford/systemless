@@ -44,6 +44,8 @@ pub fn ppc_main_screen_height() -> u32 {
     u32::from(crate::machine_profile::reference_machine_profile().screen_height)
 }
 
+const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieTime,
@@ -312,6 +314,8 @@ pub struct PpcQuickTimeState {
     pub movie_preferred_volume: i16,
     pub movie_task_count: u32,
     pub movie_task_fraction: u16,
+    pub movie_clock_subtick: Option<u64>,
+    pub movie_clock_remainder: i128,
     pub movie_tasks_until_done: u32,
     pub movie_video_track: Option<PpcQuickTimeVideoTrackRecord>,
     pub movie_video_samples: Option<PpcQuickTimeVideoSampleTableRecord>,
@@ -390,6 +394,8 @@ impl Default for PpcQuickTimeState {
             movie_preferred_volume: 0x0100,
             movie_task_count: 0,
             movie_task_fraction: 0,
+            movie_clock_subtick: None,
+            movie_clock_remainder: 0,
             movie_tasks_until_done: PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE,
             movie_video_track: None,
             movie_video_samples: None,
@@ -457,7 +463,6 @@ pub(super) fn dispatch_quicktime_compatibility(
     files: &[PpcFileRecord],
     vfs_files: &[PpcVfsFileRecord],
 ) -> PpcImportAction {
-    const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
     match operation {
         PpcQuickTimeCompatibilityOperation::NewCallBack => {
             let time_base = cpu.gpr[3];
@@ -558,6 +563,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 (u128::from(time) * u128::from(tasks) * 65536 / u128::from(duration.max(1))) as u64;
             quicktime.movie_task_count = (position >> 16) as u32;
             quicktime.movie_task_fraction = position as u16;
+            quicktime.movie_clock_remainder = 0;
             quicktime.movie_at_beginning = time == 0;
             ppc_qt_reset_movie_video_decode_cache(quicktime);
             ppc_qt_stop_movie_audio(sound);
@@ -981,14 +987,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             {
                 return PpcImportAction::Return(0);
             }
-            let time = u64::from(quicktime.movie_task_count).saturating_mul(u64::from(scale))
-                / PPC_QT_MOVIE_TASKS_PER_SECOND;
-            let duration = quicktime.movie_file_duration;
-            let time = if duration == 0 {
-                time
-            } else {
-                time.min(duration)
-            };
+            let time = super::dispatch_quicktime::quicktime_callback_time(quicktime).max(0) as u64;
             PpcImportAction::Return(time.min(i32::MAX as u64) as u32)
         }
         PpcQuickTimeCompatibilityOperation::GetMovieVolume => {
@@ -1111,6 +1110,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             quicktime.movie_active = cpu.gpr[6] & 1 != 0;
             quicktime.movie_task_count = 0;
             quicktime.movie_task_fraction = 0;
+            quicktime.movie_clock_remainder = 0;
             quicktime.movie_disposed = false;
             quicktime.movie_controllers.clear();
             quicktime.movie_at_beginning = true;
@@ -3738,6 +3738,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
     quicktime.movie_active = cpu.gpr[7] & 1 != 0;
     quicktime.movie_task_count = 0;
     quicktime.movie_task_fraction = 0;
+    quicktime.movie_clock_remainder = 0;
     quicktime.movie_disposed = false;
     quicktime.movie_controllers.clear();
     quicktime.movie_at_beginning = true;
@@ -4044,6 +4045,7 @@ pub(crate) fn ppc_qt_go_to_beginning_of_movie(
     quicktime.movie_started = false;
     quicktime.movie_task_count = 0;
     quicktime.movie_task_fraction = 0;
+    quicktime.movie_clock_remainder = 0;
     ppc_qt_reset_movie_video_decode_cache(quicktime);
     ppc_qt_stop_movie_audio(sound);
     PPC_NO_ERR
@@ -4061,6 +4063,7 @@ pub(crate) fn ppc_qt_go_to_end_of_movie(
     quicktime.movie_started = false;
     quicktime.movie_task_count = quicktime.movie_tasks_until_done.max(1);
     quicktime.movie_task_fraction = 0;
+    quicktime.movie_clock_remainder = 0;
     ppc_qt_reset_movie_video_decode_cache(quicktime);
     ppc_qt_stop_movie_audio(sound);
     PPC_NO_ERR
@@ -4156,19 +4159,67 @@ pub(crate) fn ppc_qt_stop_movie(
     PPC_NO_ERR
 }
 
-// Keep fractional task positions so slow and reverse playback do not round
-// away movement. The service cadence still comes from the runtime's task clock.
-pub(crate) fn ppc_qt_advance_movie_position(quicktime: &mut PpcQuickTimeState) {
-    if !quicktime.movie_started || !quicktime.movie_active {
+/// Advance the movie from the canonical guest clock, not the number of calls
+/// to MoviesTask. Retain division remainders across frequent clock reads.
+pub(crate) fn ppc_qt_service_clock(
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    now: u64,
+) {
+    let Some(previous) = quicktime.movie_clock_subtick.replace(now) else {
+        return;
+    };
+    quicktime.movie_clock_subtick = Some(now.max(previous));
+    if !quicktime.movie_started || !quicktime.movie_active || quicktime.movie_disposed {
         return;
     }
-    let limit = i64::from(quicktime.movie_tasks_until_done.max(1)) << 16;
-    let position = ((i64::from(quicktime.movie_task_count) << 16)
-        + i64::from(quicktime.movie_task_fraction)
-        + i64::from(quicktime.movie_playback_rate))
+    let elapsed = now.saturating_sub(previous);
+    if elapsed == 0 {
+        return;
+    }
+    let before = super::dispatch_quicktime::quicktime_callback_time(quicktime);
+    let rate = quicktime.movie_playback_rate;
+    let duration = i128::from(ppc_qt_movie_duration_value(quicktime).max(1));
+    let tasks = i128::from(quicktime.movie_tasks_until_done.max(1));
+    let denominator = 60 * i128::from(crate::time_manager::SUBTICKS_PER_TICK) * duration;
+    let numerator = i128::from(elapsed)
+        .saturating_mul(i128::from(quicktime.movie_time_scale.max(1)))
+        .saturating_mul(tasks)
+        .saturating_mul(i128::from(rate))
+        .saturating_add(quicktime.movie_clock_remainder);
+    let delta = numerator / denominator;
+    quicktime.movie_clock_remainder = numerator % denominator;
+    let limit = tasks << 16;
+    let position = ((i128::from(quicktime.movie_task_count) << 16)
+        + i128::from(quicktime.movie_task_fraction))
+    .saturating_add(delta)
     .clamp(0, limit);
     quicktime.movie_task_count = (position >> 16) as u32;
     quicktime.movie_task_fraction = position as u16;
+    quicktime.movie_at_beginning = position == 0;
+    let after = super::dispatch_quicktime::quicktime_callback_time(quicktime);
+    quicktime
+        .callbacks
+        .mark_time_due(PPC_QT_TIME_BASE, before, after, quicktime.movie_time_scale);
+    if (rate > 0 && position == limit) || (rate < 0 && position == 0) {
+        quicktime.movie_started = false;
+        quicktime.movie_clock_remainder = 0;
+        ppc_qt_stop_movie_audio(sound);
+        quicktime.callbacks.mark_event(
+            PPC_QT_TIME_BASE,
+            callbacks::Event::Rate {
+                before: rate,
+                after: 0,
+            },
+        );
+        quicktime.callbacks.mark_event(
+            PPC_QT_TIME_BASE,
+            callbacks::Event::Extremes {
+                start: position == 0,
+                stop: position == limit,
+            },
+        );
+    }
 }
 
 pub(crate) fn ppc_qt_movie_position_in_scale(quicktime: &PpcQuickTimeState, duration: u64) -> u64 {
@@ -4185,7 +4236,7 @@ pub(crate) fn ppc_qt_movies_task(
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     quicktime: &mut PpcQuickTimeState,
-    sound: &mut PpcSoundState,
+    _sound: &mut PpcSoundState,
 ) -> i16 {
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return PPC_PARAM_ERR;
@@ -4193,8 +4244,7 @@ pub(crate) fn ppc_qt_movies_task(
     if !quicktime.movie_active {
         return PPC_NO_ERR;
     }
-    ppc_qt_advance_movie_position(quicktime);
-    if quicktime.movie_started {
+    {
         quicktime.movie_at_beginning =
             quicktime.movie_task_count == 0 && quicktime.movie_task_fraction == 0;
         let cache_before = quicktime
@@ -4222,15 +4272,6 @@ pub(crate) fn ppc_qt_movies_task(
                 cache_before,
                 cache_after
             );
-        }
-        if (quicktime.movie_playback_rate > 0
-            && quicktime.movie_task_count >= quicktime.movie_tasks_until_done.max(1))
-            || (quicktime.movie_playback_rate < 0
-                && quicktime.movie_task_count == 0
-                && quicktime.movie_task_fraction == 0)
-        {
-            quicktime.movie_started = false;
-            ppc_qt_stop_movie_audio(sound);
         }
     }
     PPC_NO_ERR

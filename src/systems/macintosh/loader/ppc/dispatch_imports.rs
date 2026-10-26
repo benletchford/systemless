@@ -994,6 +994,13 @@ pub(crate) fn dispatch_supported_import(
     ) {
         return Some(action);
     }
+    ppc_qt_service_clock(
+        quicktime,
+        sound,
+        callback_scheduling
+            .current_subtick()
+            .max(u64::from(*tick_count) * crate::time_manager::SUBTICKS_PER_TICK),
+    );
     if let Some(action) = dispatch_quicktime::dispatch_quicktime_import(
         dispatch_quicktime::PpcQuickTimeDispatchContext {
             binding,

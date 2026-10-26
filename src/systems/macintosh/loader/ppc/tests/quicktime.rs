@@ -2649,6 +2649,7 @@ fn hle_import_runner_tracks_quicktime_gworld_targets_and_visible_draws() {
     );
 
     loaded.cpu.pc = loaded.entry_pc;
+    advance_quicktime_test_clock(&mut loaded, 20_000_000);
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
 
@@ -2676,6 +2677,7 @@ fn hle_import_runner_tracks_quicktime_gworld_targets_and_visible_draws() {
 
     for expected_count in 2..=PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE {
         loaded.cpu.pc = loaded.entry_pc;
+        advance_quicktime_test_clock(&mut loaded, 20_000_000);
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtMoviesTask;
         loaded.cpu.gpr[3] = PPC_QT_MOVIE;
 
@@ -3431,6 +3433,7 @@ fn quicktime_mc_do_action_idle_tasks_associated_movie() {
         loaded.cpu.gpr[4] = 1; // mcActionIdle
         loaded.cpu.gpr[5] = 0;
 
+        advance_quicktime_test_clock(&mut loaded, 6_000_000);
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.unsupported_import_index, None);
@@ -3673,6 +3676,7 @@ fn quicktime_mc_idle_services_attached_movie() {
     assert_eq!(loaded.quicktime.movie_task_count, 0);
 
     loaded.quicktime.movie_started = true;
+    advance_quicktime_test_clock(&mut loaded, 20_000_000);
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = controller;
     loaded.run_with_hle_imports(64);
@@ -3707,6 +3711,7 @@ fn quicktime_mc_get_current_time_returns_value_and_scale() {
     });
     loaded.quicktime.movie_time_scale = 600;
     loaded.quicktime.movie_file_duration = 100;
+    loaded.quicktime.movie_tasks_until_done = 10;
     loaded.quicktime.movie_task_count = 5;
     let out = PPC_DATA_BASE + 0x1d00;
     loaded.memory.add_region(out, vec![0; 4]);
@@ -4314,12 +4319,14 @@ fn quicktime_callback_lifecycle_delivers_guest_arguments_and_honours_cancel_disp
     loaded.cpu.gpr[3] = callback;
     run_quicktime_callback_test_import(&mut loaded, operation(Op::CancelCallBack));
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    advance_quicktime_test_clock(&mut loaded, 10_000_000);
     run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
     assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
     loaded.quicktime.movie_task_count = 0;
     arm(&mut loaded);
     let original_rtoc = loaded.cpu.gpr[2];
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    advance_quicktime_test_clock(&mut loaded, 10_000_000);
     run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
     assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
     assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0xdeadbeef));
@@ -4332,6 +4339,7 @@ fn quicktime_callback_lifecycle_delivers_guest_arguments_and_honours_cancel_disp
     run_quicktime_callback_test_import(&mut loaded, operation(Op::DisposeCallBack));
     assert!(loaded.quicktime.callbacks.get(callback).is_none());
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    advance_quicktime_test_clock(&mut loaded, 10_000_000);
     run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
     assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
 }
@@ -4383,6 +4391,7 @@ fn quicktime_callback_end_delivers_all_due_events_and_disposal_callback() {
     loaded.quicktime.movie_tasks_until_done = 6;
     loaded.quicktime.movie_task_count = 5;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    advance_quicktime_test_clock(&mut loaded, 10_000_000);
     run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
     assert_eq!(loaded.memory.read_u32_be(observed), Some(2));
     assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(4));
@@ -4470,6 +4479,7 @@ fn quicktime_controller_idle_delivers_due_guest_callback_once() {
                 action_ref_con: 0,
             });
         let rtoc = loaded.cpu.gpr[2];
+        advance_quicktime_test_clock(&mut loaded, 10_000_000);
         for _ in 0..2 {
             loaded.cpu.gpr[3] = controller;
             loaded.cpu.gpr[4] = 1;
@@ -5140,6 +5150,7 @@ fn quicktime_toolbox_movies_task_obeys_fractional_reverse_and_stopped_rates() {
     loaded.quicktime.movie_time_scale = 600;
     loaded.quicktime.movie_file_duration = 120;
     let task = |loaded: &mut PpcLoadedApp| {
+        advance_quicktime_test_clock(loaded, 1_000_000);
         loaded.cpu.gpr[3] = PPC_QT_MOVIE;
         run_test_import(loaded, PpcImportDispatcherTarget::QtMoviesTask);
     };
@@ -5249,4 +5260,85 @@ fn quicktime_toolbox_set_movie_rate_seeks_audio_and_preserves_preferred_rate() {
     call_movie_toolbox(&mut loaded, "SetMovieRate", &[0, 0x10000]);
     assert_eq!(loaded.quicktime.movie_error, -2010);
     assert!(!loaded.quicktime.movie_started);
+}
+
+#[test]
+fn quicktime_toolbox_clock_progress_is_independent_of_poll_frequency() {
+    let state = PpcQuickTimeState {
+        movie_started: true,
+        movie_active: true,
+        movie_file_duration: 6000,
+        movie_creation_time_scale: 600,
+        movie_time_scale: 600,
+        movie_tasks_until_done: 600,
+        movie_playback_rate: 0x8000,
+        ..PpcQuickTimeState::default()
+    };
+    let mut sparse = state.clone();
+    let mut frequent = state;
+    let mut sound = PpcSoundState::default();
+    ppc_qt_service_clock(&mut sparse, &mut sound, 0);
+    ppc_qt_service_clock(&mut frequent, &mut sound, 0);
+    ppc_qt_service_clock(&mut sparse, &mut sound, 60_000_000);
+    for tick in 1..=1000 {
+        ppc_qt_service_clock(&mut frequent, &mut sound, tick * 60_000);
+    }
+    assert_eq!(dispatch_quicktime::quicktime_callback_time(&sparse), 300);
+    assert_eq!(dispatch_quicktime::quicktime_callback_time(&frequent), 300);
+    assert_eq!(frequent.movie_task_fraction, sparse.movie_task_fraction);
+    // Re-reading or temporarily regressing the clock cannot advance twice.
+    ppc_qt_service_clock(&mut frequent, &mut sound, 59_000_000);
+    ppc_qt_service_clock(&mut frequent, &mut sound, 60_000_000);
+    assert_eq!(dispatch_quicktime::quicktime_callback_time(&frequent), 300);
+    frequent.movie_playback_rate = -0x10000;
+    ppc_qt_service_clock(&mut frequent, &mut sound, 90_000_000);
+    assert_eq!(dispatch_quicktime::quicktime_callback_time(&frequent), 0);
+    assert!(!frequent.movie_started);
+    assert!(frequent.movie_at_beginning);
+}
+
+#[test]
+fn quicktime_toolbox_time_queries_follow_guest_clock_without_movies_task() {
+    let mut loaded = movie_toolbox_fixture();
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_tasks_until_done = 120;
+    loaded.set_tick_count(0);
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0x10000]);
+    let baseline = loaded.quicktime.movie_clock_subtick.unwrap();
+    loaded
+        .callback_scheduling
+        .set_current_subtick(baseline + 30_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        30
+    );
+    for _ in 0..4 {
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    }
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        30
+    );
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0]);
+    loaded
+        .callback_scheduling
+        .set_current_subtick(baseline + 60_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+        30
+    );
+}
+
+// Move time explicitly so service/poll frequency does not determine playback.
+fn advance_quicktime_test_clock(loaded: &mut PpcLoadedApp, elapsed: u64) {
+    let now = loaded
+        .callback_scheduling
+        .current_subtick()
+        .max(u64::from(loaded.current_tick()) * crate::time_manager::SUBTICKS_PER_TICK)
+        .max(loaded.quicktime.movie_clock_subtick.unwrap_or(0));
+    loaded.quicktime.movie_clock_subtick.get_or_insert(now);
+    loaded
+        .callback_scheduling
+        .set_current_subtick(now + elapsed);
 }
