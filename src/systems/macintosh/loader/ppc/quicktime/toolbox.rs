@@ -527,6 +527,12 @@ pub(crate) fn ppc_qt_resize_movie_matrix(quicktime: &mut PpcQuickTimeState, rect
     let Some(result) = matrix_from_f64(&result) else {
         return false;
     };
+    // Preserve the pre-transform coordinate space when a synthetic or newly
+    // created movie has no parsed file bounds. Moving its box must not also
+    // move the source pixels on the next draw or subsequent resize.
+    quicktime
+        .movie_file_bounds
+        .get_or_insert(quicktime.movie_box);
     quicktime.movie_matrix = Some(result);
     true
 }

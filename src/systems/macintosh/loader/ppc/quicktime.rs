@@ -857,22 +857,54 @@ pub(super) fn dispatch_quicktime_compatibility(
             PpcImportAction::ReturnPreserve
         }
         PpcQuickTimeCompatibilityOperation::MCSetMovie => {
-            // Inside Macintosh: QuickTime Components (1993), pp. 2-31–2-32.
-            let Some(controller) = quicktime
+            // QuickTime Components (1993), MCSetMovie: use the current port
+            // for a nil window and move the existing movie box to `where`.
+            let Some(index) = quicktime
                 .movie_controllers
-                .iter_mut()
-                .find(|controller| controller.handle == cpu.gpr[3])
+                .iter()
+                .position(|controller| controller.handle == cpu.gpr[3])
             else {
                 return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
             };
             let movie = cpu.gpr[4];
-            if movie != 0 && (movie != PPC_QT_MOVIE || quicktime.movie_disposed) {
+            if movie == 0 {
+                quicktime.movie_controllers[index].movie = 0;
+                return PpcImportAction::Return(0);
+            }
+            if movie != PPC_QT_MOVIE || quicktime.movie_disposed {
                 return PpcImportAction::Return(ppc_i16_result(-2010)); // invalidMovie
             }
+            let port = if cpu.gpr[5] == 0 {
+                current_gworld
+            } else {
+                cpu.gpr[5]
+            };
+            let top = (cpu.gpr[6] >> 16) as u16 as i16;
+            let left = cpu.gpr[6] as u16 as i16;
+            let old = quicktime.movie_box;
+            let bottom = i32::from(top) + i32::from(old.2) - i32::from(old.0);
+            let right = i32::from(left) + i32::from(old.3) - i32::from(old.1);
+            let (Ok(bottom), Ok(right)) = (i16::try_from(bottom), i16::try_from(right)) else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            };
+            let rect = (top, left, bottom, right);
+            if !toolbox::ppc_qt_resize_movie_matrix(quicktime, rect) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            quicktime.movie_box = rect;
+            quicktime.movie_gworld = port;
+            quicktime.movie_gdevice = 0;
+            let controller = &mut quicktime.movie_controllers[index];
             controller.movie = movie;
-            controller.window = cpu.gpr[5];
             controller.origin = cpu.gpr[6];
-            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+            if !quicktime
+                .detached_movie_controllers
+                .contains(&controller.handle)
+            {
+                controller.window = port;
+                controller.rect = rect;
+            }
+            PpcImportAction::Return(0)
         }
         PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRect => {
             // Inside Macintosh: QuickTime Components (1993), pp. 2-38–2-39.

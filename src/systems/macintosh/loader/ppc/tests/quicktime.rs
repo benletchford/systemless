@@ -5616,3 +5616,100 @@ fn quicktime_detached_controller_bounds_do_not_resize_the_movie() {
     assert_eq!(loaded.quicktime.movie_box, (0, 0, 4, 4));
     assert_eq!(loaded.quicktime.movie_controllers[0].rect, (0, 0, 2, 2));
 }
+
+#[test]
+fn quicktime_mc_set_movie_moves_pixels_and_preserves_detached_controller() {
+    let (mut loaded, old_port, old_pixels) = cinepak_movie_draw_fixture();
+    let port = old_port + 0x2000;
+    let pixels = old_pixels + 0x8000;
+    let mut world = loaded.gworlds[0].clone();
+    world.port = port;
+    world.base_addr = pixels;
+    world.width = 8;
+    world.height = 8;
+    world.row_bytes = 16;
+    loaded.gworlds.push(world);
+    loaded.memory.add_region(pixels, vec![0xee; 128]);
+    let rect = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 4, 4).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetMovie",
+            &[controller, PPC_QT_MOVIE, port, 0x0002_0003]
+        ),
+        0
+    );
+    assert_eq!(loaded.quicktime.movie_gworld, port);
+    assert_eq!(loaded.quicktime.movie_box, (2, 3, 6, 7));
+    assert_eq!(loaded.quicktime.movie_controllers[0].rect, (2, 3, 6, 7));
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, port]),
+        1
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels + 2 * 16 + 3 * 2), Some(0));
+    assert_eq!(
+        loaded.memory.read_u16_be(pixels + 5 * 16 + 6 * 2),
+        Some(0x7fff)
+    );
+    for offset in 0..32 {
+        assert_eq!(loaded.memory.read_u8(old_pixels + offset), Some(0xee));
+    }
+    // A second placement uses the same natural source coordinates.
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetMovie",
+            &[controller, PPC_QT_MOVIE, port, 0]
+        ),
+        0
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDraw", &[controller, port]),
+        1
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    assert_eq!(
+        loaded.memory.read_u16_be(pixels + 3 * 16 + 3 * 2),
+        Some(0x7fff)
+    );
+    assert_eq!(loaded.quicktime.movie_file_bounds, Some((0, 0, 4, 4)));
+
+    call_movie_toolbox(&mut loaded, "MCSetControllerAttached", &[controller, 0]);
+    loaded.cpu.gpr[3] = old_port;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetGWorld);
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetMovie",
+            &[controller, PPC_QT_MOVIE, 0, 0xfffe_fffd]
+        ),
+        0
+    );
+    assert_eq!(loaded.quicktime.movie_gworld, old_port);
+    assert_eq!(loaded.quicktime.movie_box, (-2, -3, 2, 1));
+    assert_eq!(loaded.quicktime.movie_controllers[0].window, port);
+    assert_eq!(loaded.quicktime.movie_controllers[0].rect, (0, 0, 4, 4));
+    let matrix = loaded.quicktime.movie_matrix;
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetMovie",
+            &[controller, PPC_QT_MOVIE, port, 0x7fff_7fff]
+        ) as i32,
+        -50
+    );
+    assert_eq!(loaded.quicktime.movie_matrix, matrix);
+    assert_eq!(loaded.quicktime.movie_gworld, old_port);
+    assert_eq!(loaded.quicktime.movie_box, (-2, -3, 2, 1));
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCSetMovie", &[controller, 0, 0, 0]),
+        0
+    );
+    assert_eq!(loaded.quicktime.movie_controllers[0].movie, 0);
+    assert_eq!(loaded.quicktime.movie_box, (-2, -3, 2, 1));
+}
