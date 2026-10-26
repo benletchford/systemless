@@ -148,3 +148,37 @@ fn usb_allocation_rejects_bad_parameter_blocks_and_nonexistent_devices() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::USBAllocMem);
     assert_eq!(loaded.cpu.gpr[3], (-6985i32) as u32);
 }
+
+#[test]
+fn usb_read_and_descriptor_requests_fail_immediately_without_touching_buffers() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBIntRead",
+    ))
+    .unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 96]);
+    loaded.memory.write_u16_be(pb + 6, 72).unwrap();
+    loaded.memory.write_u16_be(pb + 8, 0x0100).unwrap();
+    loaded.memory.write_u32_be(pb + 20, 0x12345678).unwrap();
+    loaded.memory.write_u32_be(pb + 28, 0x1234).unwrap();
+    loaded.memory.write_u32_be(pb + 32, pb + 80).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 8).unwrap();
+    loaded.memory.write_u32_be(pb + 80, 0xa5a5a5a5).unwrap();
+    let before = ppc_memory_read_bytes(&mut loaded.memory, pb, 96).unwrap();
+    for (symbol, error) in [
+        ("USBIntRead", -6997i32),
+        ("USBFindNextAssociatedDescriptor", -6978),
+    ] {
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("USBServicesLib", symbol),
+        );
+        assert_eq!(loaded.cpu.gpr[3], error as u32);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, pb, 96),
+            Some(before.clone())
+        );
+    }
+}

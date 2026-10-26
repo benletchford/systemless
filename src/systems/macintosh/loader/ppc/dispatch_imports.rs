@@ -3395,7 +3395,9 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
-        PpcImportDispatcherTarget::USBAllocMem => {
+        PpcImportDispatcherTarget::USBAllocMem
+        | PpcImportDispatcherTarget::USBIntRead
+        | PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => {
             // USB DDK rev. 26, pp. 99 and 150–151. USBPB is 72 bytes
             // with mac68k alignment. Allocation requires a live USB reference;
             // immediate errors do not schedule the completion routine.
@@ -3411,7 +3413,11 @@ pub(crate) fn dispatch_supported_import(
             } else if memory.read_u32_be(pb + 44).unwrap_or(0) & !32 != 0 {
                 -6983
             } else {
-                -6998
+                match binding.dispatcher_target {
+                    PpcImportDispatcherTarget::USBIntRead => -6997,
+                    PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => -6978,
+                    _ => -6998,
+                }
             };
             Some(PpcImportAction::Return(error as u32))
         }

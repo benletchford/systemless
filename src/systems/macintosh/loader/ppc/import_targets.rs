@@ -4,6 +4,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBIntRead,
+    USBFindNextAssociatedDescriptor,
     USBAllocMem,
     USBUnknownPipe,
     USBGetNextDeviceByClass,
@@ -1608,6 +1610,10 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
+        ("USBServicesLib", "USBIntRead") => PpcImportDispatcherTarget::USBIntRead,
+        ("USBServicesLib", "USBFindNextAssociatedDescriptor") => {
+            PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor
+        }
         ("USBServicesLib", "USBAllocMem") => PpcImportDispatcherTarget::USBAllocMem,
         (
             "USBServicesLib",
