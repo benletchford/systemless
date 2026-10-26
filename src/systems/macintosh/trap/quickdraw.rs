@@ -5342,33 +5342,13 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // InitPalettes ($AA90)
-            // Per IM:V V-167 + IM:VI 20-18: "InitPalettes
-            // initializes the Palette Manager. It searches for
-            // devices that support a CLUT and initializes an
-            // internal data structure for each one. This procedure
-            // is called by InitWindows and does not have to be
-            // called by your application."
-            // PROCEDURE InitPalettes;
-            // Inside Macintosh Volume V, V-167
-            // Inside Macintosh Volume VI, 20-18
-            //
-            // No args, no result. Pop 0 bytes.
-            //
-            // HLE compromise: Systemless models a single GDevice
-            // (the boot screen) with no CLUT-search side effect
-            // — the Palette Manager's "internal data structure for
-            // each CLUT device" is a single fixed entry baked in
-            // at TrapDispatcher::new() time. NewPalette ($AA91) /
-            // GetNewPalette ($AA92) / SetPalette ($AA94) etc.
-            // operate against this single device without needing
-            // an init call. Per IM:V the trap is implicitly called
-            // by InitWindows ($A912) so apps that call only
-            // InitWindows still get correct Palette Mgr behaviour
-            // — both implicit + explicit dispatch paths reach the
-            // same no-op contract here.
-            // InitPalettes ($AA90): No args / no result per IM:V V-167 + IM:VI 20-18 PROCEDURE sig; Palette Mgr state is statically baked at TrapDispatcher::new() time (single GDevice, no CLUT-device search side effect). Per IM:V V-167 "called by InitWindows and does not have to be called by your application" — implicit + explicit dispatch paths share the no-op contract.
-            (true, 0x290) => Ok(()),
+            // InitPalettes ($AA90): establish the application's default palette.
+            // Advanced Color Imaging, "Designating a Default Palette for Your Application".
+            // PROCEDURE InitPalettes; no stack parameters or result.
+            (true, 0x290) => {
+                self.initialize_application_palette(bus);
+                Ok(())
+            }
 
             // NewPalette ($AA91)
             // Allocates a palette from a color table or fills it with black.
@@ -17242,6 +17222,43 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
             .unwrap_or(0);
         self.copy_palette_resource_from_ptr(bus, palette_id, resource_ptr)
+    }
+
+    pub(crate) fn initialize_application_palette(&mut self, bus: &mut MacMemoryBus) {
+        if self.window_palette_handle_exact(PALETTE_DEFAULT_WINDOW) != 0 {
+            return;
+        }
+        // Get1Resource semantics: never pick a palette from an unrelated open file.
+        let mut palette = 0;
+        for refnum in [self.current_resource_refnum(), 0] {
+            if let Some((_, ptr)) = self.find_or_load_resource_in_file(bus, refnum, *b"pltt", 0) {
+                let entries = u32::from(bus.read_word(ptr));
+                let size = PALETTE_HEADER_SIZE + entries * PALETTE_COLOR_INFO_SIZE;
+                if bus
+                    .get_alloc_size(ptr)
+                    .is_some_and(|available| available >= size)
+                {
+                    palette = self.copy_palette_resource_from_ptr(bus, 0, ptr);
+                    let palette_ptr = Self::palette_ptr(bus, palette);
+                    for index in 0..entries {
+                        let entry = Self::palette_color_info_ptr(palette_ptr, index);
+                        for offset in [10, 12, 14] {
+                            bus.write_word(entry + offset, 0);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if palette == 0 {
+            palette = self.create_palette_from_ctab(bus, 2, 0, 0, 0);
+            let ptr = Self::palette_ptr(bus, palette);
+            Self::write_palette_color_info(bus, ptr, 0, [0xffff; 3], 0, 0);
+        }
+        if palette != 0 {
+            self.window_palettes
+                .insert(PALETTE_DEFAULT_WINDOW, (palette, PM_ALL_UPDATES));
+        }
     }
 
     fn window_palette_handle(&self, window: u32) -> u32 {

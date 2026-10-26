@@ -17476,10 +17476,84 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
-    fn test_init_palettes() {
-        let (mut d, mut cpu, mut bus) = setup();
-        let result = d.dispatch_quickdraw(true, 0x290, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
+    fn init_palettes_default_resource_priority_lazy_loading_and_fallback() {
+        for implicit in [false, true] {
+            for (current, system, malformed) in [
+                (false, false, false),
+                (false, true, false),
+                (true, true, false),
+                (true, true, true),
+            ] {
+                let (mut d, mut cpu, mut bus) = setup();
+                for (refnum, red) in [(42, 0x9999u16), (0, 0x2222), (41, 0x1111)] {
+                    if (refnum == 0 && !system) || (refnum == 41 && !current) {
+                        continue;
+                    }
+                    let mut bytes = vec![0x77; 32];
+                    bytes[..2].copy_from_slice(&1u16.to_be_bytes());
+                    bytes[16..18].copy_from_slice(&red.to_be_bytes());
+                    if refnum == 41 && malformed {
+                        bytes.truncate(2);
+                    }
+                    let original =
+                        d.install_test_resource_in_file(&mut bus, refnum, *b"pltt", 0, &bytes);
+                    // Exercise lazy resource loading rather than only resident data.
+                    d.with_resource_file_mut_for_test(refnum, |file| {
+                        file.loaded.insert((*b"pltt", 0), 0);
+                    })
+                    .unwrap();
+                    bus.free(original);
+                }
+                // Keep the current file open even when it contains no pltt 0.
+                d.install_test_resource_in_file(&mut bus, 41, *b"DATA", 1, &[0]);
+                d.set_current_resource_refnum(&mut bus, 41);
+                cpu.write_reg(Register::A7, TEST_SP);
+                cpu.write_reg(Register::D0, 0x1234abcd);
+                let result = if implicit {
+                    d.dispatch_window(true, 0x112, &mut cpu, &mut bus)
+                } else {
+                    d.dispatch_quickdraw(true, 0x290, &mut cpu, &mut bus)
+                };
+                assert!(result.unwrap().is_ok());
+                assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+                assert_eq!(cpu.read_reg(Register::D0), 0x1234abcd);
+                bus.write_long(TEST_SP, u32::MAX);
+                assert!(d
+                    .dispatch_quickdraw(true, 0x296, &mut cpu, &mut bus)
+                    .unwrap()
+                    .is_ok());
+                let handle = bus.read_long(TEST_SP + 4);
+                assert_ne!(handle, 0);
+                let ptr = bus.read_long(handle);
+                let has_resource = (current && !malformed) || system;
+                assert_eq!(bus.read_word(ptr), if has_resource { 1 } else { 2 });
+                let expected = if current && !malformed {
+                    0x1111
+                } else if system {
+                    0x2222
+                } else {
+                    0xffff
+                };
+                assert_eq!(bus.read_word(ptr + 16), expected);
+                for offset in 2..16 {
+                    assert_eq!(bus.read_byte(ptr + offset), 0);
+                }
+                for offset in 26..32 {
+                    assert_eq!(bus.read_byte(ptr + offset), 0);
+                }
+                if !has_resource {
+                    for offset in [16, 18, 20] {
+                        assert_eq!(bus.read_word(ptr + offset), 0xffff);
+                    }
+                    for offset in [32, 34, 36] {
+                        assert_eq!(bus.read_word(ptr + offset), 0);
+                    }
+                }
+                d.initialize_application_palette(&mut bus);
+                assert_eq!(d.window_palette_handle_exact(u32::MAX), handle);
+                assert_eq!(d.current_resource_refnum(), 41);
+            }
+        }
     }
 
     #[test]

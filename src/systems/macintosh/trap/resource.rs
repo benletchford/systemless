@@ -1035,8 +1035,17 @@ impl super::TrapDispatcher {
         res_type: [u8; 4],
         res_id: i16,
     ) -> Option<(u16, u32)> {
+        self.find_or_load_resource_in_file(bus, self.current_resource_refnum(), res_type, res_id)
+    }
+
+    pub(crate) fn find_or_load_resource_in_file(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        refnum: u16,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) -> Option<(u16, u32)> {
         let res_type = super::TrapDispatcher::normalize_ostype(res_type);
-        let refnum = self.current_resource_refnum();
         let live_ptr = self
             .resources
             .as_ref()
