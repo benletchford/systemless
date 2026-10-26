@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.100.0](https://github.com/benletchford/systemless/compare/v0.99.0...v0.100.0) (2026-10-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* remove deprecated crate-root module aliases
+
+### Features
+
+* **ppc:** add a static PowerPC import gap audit ([6b4c15a](https://github.com/benletchford/systemless/commit/6b4c15a68a68fd3abb62484bf54a793134a1d792))
+* **ppc:** audit every PowerPC container embedded in a data fork ([#4955](https://github.com/benletchford/systemless/issues/4955)) ([e189419](https://github.com/benletchford/systemless/commit/e18941928b04f7c2edc3cc0efbc29e0c20bd91f8))
+* **ppc:** convert between Mac OS Roman and Unicode with the Text Encoding Converter ([#4996](https://github.com/benletchford/systemless/issues/4996)) ([311e86e](https://github.com/benletchford/systemless/commit/311e86ea4fce3d8b3b68cc038a06343e55d3f9e1))
+* **ppc:** emulate the POWER instructions the PowerPC 601 retains ([#4975](https://github.com/benletchford/systemless/issues/4975)) ([ecdec22](https://github.com/benletchford/systemless/commit/ecdec222fc9c7ffd4707d1443c1e4f4c56d0d4b7))
+* **ppc:** implement CFBundle resource URLs and CFURL FSRef conversion ([#5000](https://github.com/benletchford/systemless/issues/5000)) ([bc3491c](https://github.com/benletchford/systemless/commit/bc3491ce4b8f3969d4c622c17be0114405f723f2))
+* **ppc:** implement Open Transport for a machine with no network configured ([#4963](https://github.com/benletchford/systemless/issues/4963)) ([30b6ba5](https://github.com/benletchford/systemless/commit/30b6ba512ae03548aec2466e741001bf38920295))
+* **ppc:** implement SoundSprocket 3-D sound localization ([#4982](https://github.com/benletchford/systemless/issues/4982)) ([88c30d6](https://github.com/benletchford/systemless/commit/88c30d6ea5535ebe125ca70a6dcbdd48724a1058))
+* **ppc:** implement the Carbon FSRef File Manager ([#4992](https://github.com/benletchford/systemless/issues/4992)) ([029fdad](https://github.com/benletchford/systemless/commit/029fdad1acd3def78f701fc412742b334f9f862e))
+* **ppc:** implement the QuickDraw 3D RAVE drawing engine ([#4953](https://github.com/benletchford/systemless/issues/4953)) ([062df77](https://github.com/benletchford/systemless/commit/062df77a09b99c0895418d5f33aa7cce9dda6fe5))
+* **ppc:** implement the remaining MathLib fp.h functions ([#4990](https://github.com/benletchford/systemless/issues/4990)) ([53f4142](https://github.com/benletchford/systemless/commit/53f414218b01a5e0f7bd17e8da7633d70417fc45))
+* **ppc:** present the native OpenGL as versioned Extensions folder libraries ([#4978](https://github.com/benletchford/systemless/issues/4978)) ([2dc6e1b](https://github.com/benletchford/systemless/commit/2dc6e1bfc378ae1ce1f373445f02b98361e3d5f9))
+* **ppc:** render classic Mac OpenGL 1.2 through a native fixed-function pipeline ([#4944](https://github.com/benletchford/systemless/issues/4944)) ([168c3de](https://github.com/benletchford/systemless/commit/168c3de60713a349ceb8ca1bd610772704e4bb27))
+* **ppc:** report the application package from GetProcessBundleLocation ([#4998](https://github.com/benletchford/systemless/issues/4998)) ([8cf4159](https://github.com/benletchford/systemless/commit/8cf415974712760e432a4d2a2eb81a8b7fef54cd))
+* **ppc:** share texture objects and display lists between AGL contexts ([#5006](https://github.com/benletchford/systemless/issues/5006)) ([ac97a18](https://github.com/benletchford/systemless/commit/ac97a188e21aefab6439273708ea5212fa3625a8))
+* **ppc:** trace DebugStr messages ([#4986](https://github.com/benletchford/systemless/issues/4986)) ([bf87749](https://github.com/benletchford/systemless/commit/bf877497f547db349b4b069aebece1c4493d1834))
+
+
+### Bug Fixes
+
+* **launch:** prefer a demo over an unrelated bundled helper application ([#4961](https://github.com/benletchford/systemless/issues/4961)) ([a7c974c](https://github.com/benletchford/systemless/commit/a7c974c81deaf06e3ce46a14661dade4fd3e38c8))
+* **ppc:** accept Display Manager notification procedures ([#4973](https://github.com/benletchford/systemless/issues/4973)) ([c9d93e6](https://github.com/benletchford/systemless/commit/c9d93e600cc568a6ca17a41ba634ecb070a59a6a))
+* **ppc:** answer component refcon calls for unregistered components ([#4946](https://github.com/benletchford/systemless/issues/4946)) ([67a7cda](https://github.com/benletchford/systemless/commit/67a7cdac2486d4be1b1e2c233c34ee164ae3dd59))
+* **ppc:** bind every Carbon multimedia import through QuickTimeLib ([#4949](https://github.com/benletchford/systemless/issues/4949)) ([51ce15b](https://github.com/benletchford/systemless/commit/51ce15b1f875faf7ef63aa0068accd5c22705001))
+* **ppc:** draw through screen BitMaps at the screen depth ([#4980](https://github.com/benletchford/systemless/issues/4980)) ([b73ab4e](https://github.com/benletchford/systemless/commit/b73ab4eea2d5c11a7fe08711d1f243f687db0a05))
+* **ppc:** implement Apple Event descriptor copies, LNextCell and audit component calls ([#4971](https://github.com/benletchford/systemless/issues/4971)) ([f4cd5dd](https://github.com/benletchford/systemless/commit/f4cd5dd0d4ed4b5c1d87eaa69be4747b41f5d789))
+* **ppc:** implement Carbon port accessors, TEGetOffset, TEGetStyle, TESelView and ADB-free environment queries ([#5014](https://github.com/benletchford/systemless/issues/5014)) ([4f10b43](https://github.com/benletchford/systemless/commit/4f10b436d2c0d1e690f3658daa9133b79245a48a))
+* **ppc:** implement Carbon port setters, Appearance backgrounds and frames, menu bar hiding, LAddToCell, LDraw and single-precision math ([#5031](https://github.com/benletchford/systemless/issues/5031)) ([3516779](https://github.com/benletchford/systemless/commit/3516779d597941cf541c39c50f34e6b2c1bae7d6))
+* **ppc:** implement CFArray, CFDictionary and CFNumber getters and CFURL file system path conversion ([#5023](https://github.com/benletchford/systemless/issues/5023)) ([fd2e26b](https://github.com/benletchford/systemless/commit/fd2e26b586d59c5701935f015aa5b04358fd75c0))
+* **ppc:** implement FSGetVolumeInfo, PBGetVolumeInfoSync and NewTEClickLoopUPP ([#4959](https://github.com/benletchford/systemless/issues/4959)) ([064aa9c](https://github.com/benletchford/systemless/commit/064aa9c11b4aab3a57947115d500e805e6c6f964))
+* **ppc:** implement MapRgn, FollowFinderAlias, Eject, kCFAllocatorDefault and an empty Communications Toolbox ([#5008](https://github.com/benletchford/systemless/issues/5008)) ([ea0d599](https://github.com/benletchford/systemless/commit/ea0d5998231187cf3d37abb745c0aae5ca0f7cd1))
+* **ppc:** implement MathLib x80tod with round-to-nearest narrowing ([#4937](https://github.com/benletchford/systemless/issues/4937)) ([6e4f1cb](https://github.com/benletchford/systemless/commit/6e4f1cb25f76b2a38e19abd1e37459d284e46418))
+* **ppc:** implement QuickTime GetMovieTime and SetMovieTimeValue ([#4969](https://github.com/benletchford/systemless/issues/4969)) ([e2c955b](https://github.com/benletchford/systemless/commit/e2c955bda2d04150a4e11b6298cb75cfa49a04b2))
+* **ppc:** implement ReallocateHandle, DTInstall and TEGetStyleScrapHandle ([#5012](https://github.com/benletchford/systemless/issues/5012)) ([bfb0978](https://github.com/benletchford/systemless/commit/bfb0978676cc8bdc75281814bda217e4dc2fce26))
+* **ppc:** implement Rename, SetFInfo, C-string getfinfo and setfinfo, and GetPixel ([#5016](https://github.com/benletchford/systemless/issues/5016)) ([7f00f04](https://github.com/benletchford/systemless/commit/7f00f0469dfdb2f5315cf6c829edaf52fb2f613c))
+* **ppc:** implement resource-fork opens by name, FSpCatMove, FSpExchangeFiles, PBHCopyFile, sfputfile and remaining File Manager calls ([#5025](https://github.com/benletchford/systemless/issues/5025)) ([2f03efc](https://github.com/benletchford/systemless/commit/2f03efccf496aaa0aa6bb97281dc0c55bd3ed134))
+* **ppc:** implement the Carbon p2cstrcpy and c2pstrcpy string copies ([#4950](https://github.com/benletchford/systemless/issues/4950)) ([b4e410c](https://github.com/benletchford/systemless/commit/b4e410c2ced96f9e9d5dc29cfdeeb1dff92f2fc7))
+* **ppc:** implement widely imported toolbox calls from the import audit ([#4965](https://github.com/benletchford/systemless/issues/4965)) ([8760a13](https://github.com/benletchford/systemless/commit/8760a138f2527bb029e526dee016bdad6b4bcd5f))
+* **ppc:** keep a colour table on direct-depth screen pixmaps ([#5017](https://github.com/benletchford/systemless/issues/5017)) ([c0ea264](https://github.com/benletchford/systemless/commit/c0ea264d376724e246d3b510979b001b36582113))
+* **ppc:** keep bundled system-library installers from shadowing the runtime ([#4940](https://github.com/benletchford/systemless/issues/4940)) ([a5cb793](https://github.com/benletchford/systemless/commit/a5cb7939a96435b0fca7ae8df1be844589a72ff3))
+* **ppc:** map oversized application data sections clear of the toolbox area ([#5004](https://github.com/benletchford/systemless/issues/5004)) ([bf86263](https://github.com/benletchford/systemless/commit/bf86263364df637a325c8d9fb82fe056a83b499f))
+* **ppc:** name the root directory after its volume in PBGetCatInfo ([#5002](https://github.com/benletchford/systemless/issues/5002)) ([be5e5f1](https://github.com/benletchford/systemless/commit/be5e5f1ddc8997897105e2619d34c402c6c1a240))
+* **ppc:** report CarbonLib 1.4 and close the Otto Matic import gaps ([#4976](https://github.com/benletchford/systemless/issues/4976)) ([473a06c](https://github.com/benletchford/systemless/commit/473a06cf411308d8a9c50f7b7cc502db13ba734f))
+* **ppc:** report InputSprocket 1.7.3 and bind CodeFragmentMgr fragment loaders ([#4957](https://github.com/benletchford/systemless/issues/4957)) ([88e016b](https://github.com/benletchford/systemless/commit/88e016b2b8439d292e9e553b906ae1d2541e8c46))
+* **ppc:** report InputSprocket mouse device element events ([#5021](https://github.com/benletchford/systemless/issues/5021)) ([31abc24](https://github.com/benletchford/systemless/commit/31abc24dfdf75c5012bad944e4f5bd329bc242e7))
+* **ppc:** resolve CarbonLib math exports through MathLib ([#4952](https://github.com/benletchford/systemless/issues/4952)) ([4deb29f](https://github.com/benletchford/systemless/commit/4deb29fce932a3d2653e67e5ce00a6b5c7e04f87))
+* **ppc:** return from the debugstr glue like DebugStr ([#4941](https://github.com/benletchford/systemless/issues/4941)) ([27c82b3](https://github.com/benletchford/systemless/commit/27c82b3257bf9d3467d2ccc904ee2fade4bda6e2))
+* **ppc:** seed BootDrive and add its PowerPC low-memory accessors ([#4939](https://github.com/benletchford/systemless/issues/4939)) ([5c9877b](https://github.com/benletchford/systemless/commit/5c9877b5950914953ad5d693e33c21d1890ab6d1))
+* **web:** give sample refill callbacks enough execution time ([5d4614f](https://github.com/benletchford/systemless/commit/5d4614f92cd8e8d3e36e10ee8b22eef503d236e7))
+
+
+### Performance Improvements
+
+* **ppc:** refuse full sound queues before decoding and copy guest ranges in bulk ([#4943](https://github.com/benletchford/systemless/issues/4943)) ([5faa817](https://github.com/benletchford/systemless/commit/5faa8170f8ddd1693c445cf6b9293d2e87403092))
+* **ppc:** skip hidden fragments and unneeded LOD in the software GL rasterizer ([#4994](https://github.com/benletchford/systemless/issues/4994)) ([48556e5](https://github.com/benletchford/systemless/commit/48556e52f326fcfa3350b749eed2753f54d7484d))
+
+
+### Code Refactoring
+
+* remove deprecated crate-root module aliases ([0447fcc](https://github.com/benletchford/systemless/commit/0447fcc684e33091f7bfbb4a0cbad8effc55d67a))
+
 ## [0.99.0](https://github.com/benletchford/systemless/compare/v0.98.1...v0.99.0) (2026-10-21)
 
 
