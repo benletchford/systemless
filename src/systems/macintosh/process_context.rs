@@ -2026,6 +2026,8 @@ pub(crate) struct ProcessAppleEventLaunchState {
 /// the classic and native CPU gateways.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessAeDescriptor {
+    /// Apple-event attributes are distinct from parameter and record fields.
+    pub(crate) attributes: HashMap<u32, ProcessAeDescriptor>,
     pub(crate) desc_type: u32,
     pub(crate) data: Vec<u8>,
     pub(crate) fields: HashMap<u32, ProcessAeDescriptor>,
@@ -13119,12 +13121,14 @@ mod tests {
         let handle = 0x2000;
         let keyword = u32::from_be_bytes(*b"----");
         let value = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"TEXT"),
             data: b"shared".to_vec(),
             fields: HashMap::new(),
             items: Vec::new(),
         };
         let mut list = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"list"),
             data: Vec::new(),
             fields: HashMap::new(),
@@ -13140,6 +13144,7 @@ mod tests {
         list.items.push((
             u32::from_be_bytes(*b"pnam"),
             ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: u32::from_be_bytes(*b"long"),
                 data: 42u32.to_be_bytes().to_vec(),
                 fields: HashMap::new(),
@@ -15344,6 +15349,7 @@ mod tests {
             items: Vec::new(),
         };
         let desc = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: 0x54455854,
             data: b"hello".to_vec(),
             fields: HashMap::new(),
@@ -15390,6 +15396,7 @@ mod tests {
         assert!(classic.ptr_eq(context.apple_event_descriptors()));
 
         let desc = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: 0x54455854,
             data: b"cross-isa".to_vec(),
             fields: HashMap::new(),

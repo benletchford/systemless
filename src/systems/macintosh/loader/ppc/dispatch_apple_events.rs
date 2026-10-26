@@ -121,6 +121,7 @@ pub struct PpcAppleEventState {
     pub(super) handlers: SharedProcessAppleEventHandlers,
     pub(super) descriptors: SharedProcessAppleEventDescriptors,
     pub(super) pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
+    pub(super) next_return_id: i16,
     pub(super) pending_resolutions: Vec<PpcAeResolvePending>,
     pub(super) pending_resolve_cleanups: Vec<PpcAeResolveCleanupPending>,
     pub(super) pending_token_disposals: Vec<PpcAeTokenDisposalPending>,
@@ -952,6 +953,7 @@ pub(super) fn ppc_ae_descriptor(
                 .events
                 .contains_key(&address)
                 .then_some(ProcessAeDescriptor {
+                    attributes: Default::default(),
                     desc_type,
                     data: Vec::new(),
                     fields: HashMap::new(),
@@ -1013,6 +1015,7 @@ fn ppc_sync_event_descriptor_backing(
                 .get(&address)
                 .cloned()
                 .unwrap_or(ProcessAeDescriptor {
+                    attributes: Default::default(),
                     desc_type: PPC_CORE_EVENT_CLASS,
                     data: Vec::new(),
                     fields: HashMap::new(),
@@ -1106,6 +1109,7 @@ pub(super) fn ppc_create_process_owned_ae_desc(
     if let Some(state) = descriptor_state {
         state.with_mut(|state| {
             let descriptor = ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: descriptor_type,
                 data: bytes.to_vec(),
                 fields: HashMap::new(),
@@ -1221,10 +1225,18 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
             }
         }
         PpcAppleEventCompatibilityOperation::CreateAppleEvent => {
+            // AEDataModel.h: the target, return ID and transaction ID become
+            // event attributes, separate from the subsequently added parameters.
+            // Capture the target before writing a potentially aliased result.
             let result_ptr = cpu.gpr[8];
             if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
                 PPC_PARAM_ERR
             } else {
+                let address = if cpu.gpr[5] != 0 && cpu.gpr[5].checked_add(8).is_some() {
+                    ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[5])
+                } else {
+                    None
+                };
                 let mut event_data = Vec::with_capacity(8);
                 event_data.extend_from_slice(&cpu.gpr[3].to_be_bytes());
                 event_data.extend_from_slice(&cpu.gpr[4].to_be_bytes());
@@ -1241,6 +1253,43 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                     &event_data,
                 );
                 if result == PPC_NO_ERR {
+                    let return_id = if cpu.gpr[6] as u16 == u16::MAX {
+                        apple_events.next_return_id = apple_events.next_return_id.wrapping_add(1);
+                        if apple_events.next_return_id == -1 {
+                            apple_events.next_return_id = 0;
+                        }
+                        apple_events.next_return_id
+                    } else {
+                        cpu.gpr[6] as u16 as i16
+                    };
+                    let mut attributes = HashMap::new();
+                    if let Some(address) = address {
+                        attributes.insert(u32::from_be_bytes(*b"addr"), address);
+                    }
+                    for (keyword, desc_type, data) in [
+                        (*b"rtid", *b"shor", return_id.to_be_bytes().to_vec()),
+                        (*b"tran", *b"long", cpu.gpr[7].to_be_bytes().to_vec()),
+                    ] {
+                        attributes.insert(
+                            u32::from_be_bytes(keyword),
+                            ProcessAeDescriptor {
+                                desc_type: u32::from_be_bytes(desc_type),
+                                data,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    if let Some(mut descriptor) =
+                        ppc_ae_descriptor(memory, &apple_events.descriptors, result_ptr)
+                    {
+                        descriptor.attributes = attributes;
+                        ppc_store_ae_descriptor_semantics(
+                            memory,
+                            &apple_events.descriptors,
+                            result_ptr,
+                            descriptor,
+                        );
+                    }
                     apple_events.descriptors.with_mut(|state| {
                         state.events.insert(
                             result_ptr,
@@ -1427,19 +1476,24 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                         )
                     })
                 });
-            let value = event_identity.and_then(|event_identity| {
-                let value = match cpu.gpr[4] {
-                    PPC_KEY_EVENT_CLASS_ATTR => event_identity.0,
-                    PPC_KEY_EVENT_ID_ATTR => event_identity.1,
-                    _ => return None,
-                };
-                Some(ProcessAeDescriptor {
-                    desc_type: PPC_TYPE_TYPE,
-                    data: value.to_be_bytes().to_vec(),
-                    fields: HashMap::new(),
-                    items: Vec::new(),
-                })
-            });
+            let value = ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[3])
+                .and_then(|descriptor| descriptor.attributes.get(&cpu.gpr[4]).cloned())
+                .or_else(|| {
+                    event_identity.and_then(|event_identity| {
+                        let value = match cpu.gpr[4] {
+                            PPC_KEY_EVENT_CLASS_ATTR => event_identity.0,
+                            PPC_KEY_EVENT_ID_ATTR => event_identity.1,
+                            _ => return None,
+                        };
+                        Some(ProcessAeDescriptor {
+                            attributes: Default::default(),
+                            desc_type: PPC_TYPE_TYPE,
+                            data: value.to_be_bytes().to_vec(),
+                            fields: HashMap::new(),
+                            items: Vec::new(),
+                        })
+                    })
+                });
             if let Some(value) = value {
                 if cpu.gpr[5] != PPC_TYPE_WILDCARD && cpu.gpr[5] != value.desc_type {
                     PPC_ERR_AE_COERCION_FAIL
@@ -1771,6 +1825,7 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                 ppc_memory_read_bytes(memory, cpu.gpr[6], cpu.gpr[7])
                     .or_else(|| (cpu.gpr[7] == 0).then(Vec::new))
                     .map(|data| ProcessAeDescriptor {
+                        attributes: Default::default(),
                         desc_type: cpu.gpr[5],
                         data,
                         fields: HashMap::new(),
@@ -1975,12 +2030,14 @@ pub(super) fn ppc_process_apple_event(
     ppc_apply_process_native_handle(process_memory_manager, handles, reply_handle);
     apple_events.descriptors.with_mut(|state| {
         let event_descriptor = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: PPC_CORE_EVENT_CLASS,
             data: event_data,
             fields: HashMap::new(),
             items: Vec::new(),
         };
         let reply_descriptor = ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: PPC_CORE_EVENT_CLASS,
             data: Vec::new(),
             fields: HashMap::new(),
