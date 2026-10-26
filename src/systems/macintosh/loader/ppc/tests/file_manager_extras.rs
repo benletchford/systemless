@@ -47,6 +47,7 @@ fn file_manager_imports_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("CloseWD", PpcFileManagerOperation::CloseWd),
         ("CreateResFile", PpcFileManagerOperation::CreateResFile),
+        ("CatMove", PpcFileManagerOperation::CatMove),
         ("FSpCatMove", PpcFileManagerOperation::FSpCatMove),
         (
             "FSpExchangeFiles",
@@ -473,4 +474,123 @@ fn sfputfile_reads_c_strings_and_returns_a_c_string_file_name() {
         ppc_std_c_string(&mut loaded.memory, reply + 10, 64),
         b"Game 1"
     );
+}
+
+#[test]
+fn cat_move_resolves_named_and_empty_destinations_and_keeps_both_forks() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "CatMove"),
+        PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CatMove),
+    );
+    let mut loaded = loaded_with(b"CatMove");
+    loaded.push_test_vfs_file(data_file("Notes", b"notes", b"ttxt"));
+    loaded.push_vfs_resource_file(resource_fork("Notes", b"fork"));
+    write_ppc_pstring(&mut loaded.memory, SCRATCH, b"Notes");
+    write_ppc_pstring(&mut loaded.memory, SCRATCH + 0x80, b"Preferences");
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        0,
+        PPC_ROOT_DIR_ID,
+        SCRATCH,
+        PPC_SYSTEM_FOLDER_DIR_ID,
+        SCRATCH + 0x80,
+    ]);
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let moved = "System Folder/Preferences/Notes";
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == moved && file.data.as_ref() == b"notes"));
+    assert!(loaded
+        .vfs_resource_files
+        .iter()
+        .any(|file| file.path == moved));
+    // Resolve a zero source directory ID through its working-directory ref.
+    loaded.working_directories.with_mut(|directories| {
+        directories.insert(
+            77,
+            ProcessWorkingDirectory {
+                ref_num: 77,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: PPC_PREFERENCES_DIR_ID,
+                proc_id: 0,
+            },
+        );
+    });
+    // A destination named by ID takes an empty Pascal string.
+    write_ppc_pstring(&mut loaded.memory, SCRATCH + 0x80, b"");
+    loaded.cpu.gpr[3..8].copy_from_slice(&[77, 0, SCRATCH, PPC_ROOT_DIR_ID, SCRATCH + 0x80]);
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert!(loaded.vfs_files.iter().any(|file| file.path == "Notes"));
+    assert!(loaded
+        .vfs_resource_files
+        .iter()
+        .any(|file| file.path == "Notes"));
+    assert!(!loaded.vfs_files.iter().any(|file| file.path == moved));
+}
+
+#[test]
+fn cat_move_moves_directory_descendants_and_rejects_collisions_without_mutation() {
+    let mut loaded = loaded_with(b"CatMove");
+    loaded.push_test_vfs_file(data_file(
+        "System Folder/Preferences/Settings",
+        b"settings",
+        b"TEST",
+    ));
+    loaded.push_vfs_resource_file(resource_fork(
+        "System Folder/Preferences/Settings",
+        b"resource",
+    ));
+    // Empty source and destination names identify both directories by ID.
+    write_ppc_pstring(&mut loaded.memory, SCRATCH, b"");
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        0,
+        PPC_PREFERENCES_DIR_ID,
+        SCRATCH,
+        PPC_ROOT_DIR_ID,
+        SCRATCH,
+    ]);
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let directory = loaded
+        .vfs_directories
+        .iter()
+        .find(|dir| dir.dir_id == PPC_PREFERENCES_DIR_ID)
+        .unwrap();
+    assert_eq!(directory.path, "Preferences");
+    assert_eq!(directory.parent_dir_id, PPC_ROOT_DIR_ID);
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Preferences/Settings"));
+    assert!(loaded
+        .vfs_resource_files
+        .iter()
+        .any(|file| file.path == "Preferences/Settings"));
+
+    loaded.push_test_vfs_file(data_file("Settings", b"original", b"TEST"));
+    write_ppc_pstring(&mut loaded.memory, SCRATCH + 0x80, b"Settings");
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        0,
+        PPC_ROOT_DIR_ID,
+        SCRATCH + 0x80,
+        PPC_PREFERENCES_DIR_ID,
+        SCRATCH,
+    ]);
+    assert_eq!(run(&mut loaded), PPC_DUP_FN_ERR);
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Settings" && file.data.as_ref() == b"original"));
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Preferences/Settings" && file.data.as_ref() == b"settings"));
+
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        0,
+        PPC_PREFERENCES_DIR_ID,
+        SCRATCH,
+        PPC_PREFERENCES_DIR_ID,
+        SCRATCH,
+    ]);
+    assert_eq!(run(&mut loaded), -122);
 }

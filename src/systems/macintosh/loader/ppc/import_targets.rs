@@ -3929,6 +3929,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CreateResFile") => {
             PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CreateResFile)
         }
+        ("InterfaceLib", "CatMove") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CatMove)
+        }
         ("InterfaceLib", "FSpCatMove") => {
             PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::FSpCatMove)
         }
