@@ -67,6 +67,8 @@ pub enum PpcOpenTransportFunction {
     LifoDequeue,
     LifoStealList,
     ReverseList,
+    BufferDataSize,
+    ReadBuffer,
     AddLast,
     RemoveLast,
     GetFirst,
@@ -204,6 +206,8 @@ impl PpcOpenTransportFunction {
             "OTLIFODequeue" | "OTRemoveFirst" => Self::LifoDequeue,
             "OTLIFOStealList" => Self::LifoStealList,
             "OTReverseList" => Self::ReverseList,
+            "OTBufferDataSize" => Self::BufferDataSize,
+            "OTReadBuffer" => Self::ReadBuffer,
             "OTAddLast" => Self::AddLast,
             "OTRemoveLast" => Self::RemoveLast,
             "OTGetFirst" => Self::GetFirst,
@@ -307,6 +311,19 @@ pub(crate) fn ppc_dispatch_open_transport(
     let status = |value: i32| PpcImportAction::Return(value as u32);
     let args = cpu.gpr;
     match function {
+        F::BufferDataSize => {
+            let size = ot_buffer_chain(memory, args[3])
+                .and_then(|blocks| {
+                    blocks
+                        .iter()
+                        .try_fold(0u32, |total, block| total.checked_add(block.2))
+                })
+                .unwrap_or(0);
+            PpcImportAction::Return(size)
+        }
+        F::ReadBuffer => PpcImportAction::Return(u32::from(ot_read_buffer(
+            memory, args[3], args[4], args[5],
+        ))),
         F::Succeed => status(0),
         F::Void => PpcImportAction::ReturnPreserve,
         F::ReturnFirst => PpcImportAction::Return(args[3]),
@@ -575,4 +592,67 @@ pub(crate) fn ppc_dispatch_open_transport(
             PpcImportAction::Return((if milliseconds { value / 1000 } else { value }) as u32)
         }
     }
+}
+
+// Universal Interfaces OpenTransport.h: OTBuffer.fNext/fData/fLen are at
+// offsets 8/12/16. The chain is read-only; only OTBufferInfo advances.
+fn ot_buffer_chain(memory: &mut PpcSectionMem, mut buffer: u32) -> Option<Vec<(u32, u32, u32)>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut blocks = Vec::new();
+    while buffer != 0 {
+        if blocks.len() == MAX_LIST_LINKS || !seen.insert(buffer) {
+            return None;
+        }
+        let next = memory.read_u32_be(buffer.checked_add(8)?)?;
+        let data = memory.read_u32_be(buffer.checked_add(12)?)?;
+        let length = memory.read_u32_be(buffer.checked_add(16)?)?;
+        blocks.push((buffer, data, length));
+        buffer = next;
+    }
+    Some(blocks)
+}
+
+fn ot_read_buffer(memory: &mut PpcSectionMem, info: u32, output: u32, length_ptr: u32) -> bool {
+    let read = |memory: &mut PpcSectionMem| -> Option<(Vec<u8>, u32, u32)> {
+        if !ppc_memory_can_write_bytes(memory, info, 8)
+            || !ppc_memory_can_write_bytes(memory, length_ptr, 4)
+        {
+            return None;
+        }
+        let buffer = memory.read_u32_be(info)?;
+        let mut offset = memory.read_u32_be(info.checked_add(4)?)?;
+        let requested = memory.read_u32_be(length_ptr)?;
+        let blocks = ot_buffer_chain(memory, buffer)?;
+        let mut bytes = Vec::new();
+        for (block, data, length) in blocks {
+            if offset > length {
+                return None;
+            }
+            let count = (length - offset).min(requested - bytes.len() as u32);
+            for index in 0..count {
+                bytes.push(memory.read_u8(data.checked_add(offset)?.checked_add(index)?)?);
+            }
+            offset += count;
+            if offset < length {
+                return Some((bytes, block, offset));
+            }
+            offset = 0;
+        }
+        Some((bytes, 0, 0))
+    };
+    let Some((bytes, buffer, offset)) = read(memory) else {
+        let _ = memory.write_u32_be(length_ptr, 0);
+        return true;
+    };
+    if !bytes.is_empty() && !ppc_memory_can_write_bytes(memory, output, bytes.len() as u32) {
+        let _ = memory.write_u32_be(length_ptr, 0);
+        return true;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let _ = memory.write_u8(output + index as u32, *byte);
+    }
+    let _ = memory.write_u32_be(info, buffer);
+    let _ = memory.write_u32_be(info + 4, offset);
+    let _ = memory.write_u32_be(length_ptr, bytes.len() as u32);
+    buffer == 0
 }
