@@ -3999,6 +3999,7 @@ impl super::TrapDispatcher {
             // low-memory globals exist for callers using GetWMgrPort or the
             // GetGrayRgn macro.
             (true, 0x112) => {
+                self.initialize_application_palette(bus);
                 let _ = self.ensure_window_manager_port(bus);
                 let (top, left, bottom, right) = self.desktop_gray_region_rect(bus);
                 self.fill_theme_desktop_rect(bus, top, left, bottom, right);
