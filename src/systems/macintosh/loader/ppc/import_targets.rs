@@ -7152,6 +7152,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "signal") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Signal)
         }
+        ("StdCLib", "fscanf") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileScanf)
+        }
         ("StdCLib", "sscanf") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Sscanf)
         }
