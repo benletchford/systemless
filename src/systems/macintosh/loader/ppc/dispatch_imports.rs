@@ -3405,9 +3405,9 @@ pub(crate) fn dispatch_supported_import(
                 Some(Vec::new())
             } else {
                 memory.read_u8(pointer).and_then(|length| {
-                    pointer.checked_add(1).and_then(|bytes| {
-                        ppc_memory_read_bytes(memory, bytes, usize::from(length))
-                    })
+                    pointer
+                        .checked_add(1)
+                        .and_then(|bytes| ppc_memory_read_bytes(memory, bytes, usize::from(length)))
                 })
             };
             if let Some(message) = message {
@@ -3427,12 +3427,26 @@ pub(crate) fn dispatch_supported_import(
             }
         }
         PpcImportDispatcherTarget::USBAllocMem
+        | PpcImportDispatcherTarget::USBConfigureInterface
+        | PpcImportDispatcherTarget::USBFindNextPipe
+        | PpcImportDispatcherTarget::USBDeviceRequest
         | PpcImportDispatcherTarget::USBIntRead
         | PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => {
             // USB DDK rev. 26, pp. 99 and 150–151. USBPB is 72 bytes
             // with mac68k alignment. Allocation requires a live USB reference;
             // immediate errors do not schedule the completion routine.
             let pb = cpu.gpr[3];
+            let allowed_flags = match binding.dispatcher_target {
+                PpcImportDispatcherTarget::USBFindNextPipe => 3,
+                PpcImportDispatcherTarget::USBDeviceRequest => 16 | 32 | 64 | 128 | 256,
+                PpcImportDispatcherTarget::USBConfigureInterface => 0,
+                _ => 32,
+            };
+            let reserved_buffer = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::USBConfigureInterface
+                    | PpcImportDispatcherTarget::USBFindNextPipe
+            );
             let error: i32 = if pb == 0 || !ppc_memory_can_read_bytes(memory, pb, 72) {
                 -6985
             } else if memory.read_u16_be(pb + 6).unwrap_or(0) < 72 {
@@ -3441,8 +3455,14 @@ pub(crate) fn dispatch_supported_import(
                 -6986
             } else if matches!(memory.read_u32_be(pb + 20), Some(0 | u32::MAX)) {
                 -6984
-            } else if memory.read_u32_be(pb + 44).unwrap_or(0) & !32 != 0 {
+            } else if memory.read_u32_be(pb + 44).unwrap_or(0) & !allowed_flags != 0 {
                 -6983
+            } else if reserved_buffer
+                && [32, 36, 40]
+                    .iter()
+                    .any(|offset| memory.read_u32_be(pb + offset) != Some(0))
+            {
+                i32::from(PPC_PARAM_ERR)
             } else {
                 match binding.dispatcher_target {
                     PpcImportDispatcherTarget::USBIntRead => -6997,

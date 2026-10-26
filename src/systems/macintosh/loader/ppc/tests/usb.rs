@@ -217,3 +217,47 @@ fn usb_expert_reports_copy_pascal_messages_without_requiring_a_device() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     assert_eq!(loaded.toolbox_startup.usb_expert_log.len(), 2);
 }
+
+#[test]
+fn usb_discovery_and_configuration_validate_reserved_fields_and_direction_flags() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"USBServicesLib",
+        b"USBFindNextPipe",
+    ))
+    .unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 72]);
+    loaded.memory.write_u16_be(pb + 6, 72).unwrap();
+    loaded.memory.write_u16_be(pb + 8, 0x0100).unwrap();
+    loaded.memory.write_u32_be(pb + 20, 0x12345678).unwrap();
+    for (symbol, flags) in [
+        ("USBFindNextPipe", 3),
+        ("USBConfigureInterface", 0),
+        ("USBDeviceRequest", 16 | 128),
+    ] {
+        loaded.memory.write_u32_be(pb + 44, flags).unwrap();
+        let before = ppc_memory_read_bytes(&mut loaded.memory, pb, 72).unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("USBServicesLib", symbol),
+        );
+        assert_eq!(loaded.cpu.gpr[3], (-6998i32) as u32);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, pb, 72),
+            Some(before)
+        );
+        if symbol != "USBDeviceRequest" {
+            for offset in [32, 36, 40] {
+                loaded.memory.write_u32_be(pb + offset, 1).unwrap();
+                loaded.cpu.gpr[3] = pb;
+                run_test_import(
+                    &mut loaded,
+                    dispatcher_target_for_import("USBServicesLib", symbol),
+                );
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+                loaded.memory.write_u32_be(pb + offset, 0).unwrap();
+            }
+        }
+    }
+}

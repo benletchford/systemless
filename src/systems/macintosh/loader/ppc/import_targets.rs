@@ -6,6 +6,9 @@ use super::*;
 pub enum PpcImportDispatcherTarget {
     USBExpertStatus,
     USBExpertFatalError,
+    USBConfigureInterface,
+    USBFindNextPipe,
+    USBDeviceRequest,
     USBIntRead,
     USBFindNextAssociatedDescriptor,
     USBAllocMem,
@@ -1612,6 +1615,11 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
+        ("USBServicesLib", "USBConfigureInterface") => {
+            PpcImportDispatcherTarget::USBConfigureInterface
+        }
+        ("USBServicesLib", "USBFindNextPipe") => PpcImportDispatcherTarget::USBFindNextPipe,
+        ("USBServicesLib", "USBDeviceRequest") => PpcImportDispatcherTarget::USBDeviceRequest,
         ("USBServicesLib", "USBExpertStatus") => PpcImportDispatcherTarget::USBExpertStatus,
         ("USBServicesLib", "USBExpertFatalError") => PpcImportDispatcherTarget::USBExpertFatalError,
         ("USBServicesLib", "USBIntRead") => PpcImportDispatcherTarget::USBIntRead,
