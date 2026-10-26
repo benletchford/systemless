@@ -85,6 +85,7 @@ class AtSpi:
 
 UIA_SCRIPT = r"""
 param([int]$Target, [string]$Invoke)
+$ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
 $condition = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $Target)
@@ -107,8 +108,8 @@ if ($Invoke) {
       if ($toggle) { $toggle.Toggle(); Write-Output "Toggle"; exit 0 }
       $expand = Pattern $node ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
       if ($expand -and $request.expand) { $expand.Expand(); Write-Output "ExpandCollapse"; exit 0 }
-      $invoke = Pattern $node ([System.Windows.Automation.InvokePattern]::Pattern)
-      if ($invoke) { $invoke.Invoke(); Write-Output "Invoke"; exit 0 }
+      $invokePattern = Pattern $node ([System.Windows.Automation.InvokePattern]::Pattern)
+      if ($invokePattern) { $invokePattern.Invoke(); Write-Output "Invoke"; exit 0 }
       if ($expand) { $expand.Expand(); Write-Output "ExpandCollapse"; exit 0 }
       Write-Error "no pattern"; exit 2
     }
