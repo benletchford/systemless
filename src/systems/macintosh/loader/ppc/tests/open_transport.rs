@@ -25,6 +25,8 @@ fn open_transport_resolves_in_every_client_namespace() {
         ("OTClientLib", "OTOpenEndpointPriv"),
         ("OTInetClientLib", "OTInetGetInterfaceInfo"),
         ("OTUtilityLib", "OTLIFOEnqueue"),
+        ("OTUtilityLib", "OTBufferDataSize"),
+        ("OTUtilityLib", "OTReadBuffer"),
         ("Apple;Carbon;Networking", "OTOpenEndpointInContext"),
         ("CarbonLib", "InitOpenTransportInContext"),
     ] {
@@ -280,4 +282,85 @@ fn open_transport_nbp_component_setters_and_initialization_preserve_boundaries()
         vec![b'X'; 32]
     );
     assert_eq!(loaded.memory.read_u8(entity + 99), Some(0xA5));
+}
+
+#[test]
+fn open_transport_buffer_reads_span_blocks_and_preserve_the_chain() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OTReadBuffer")).unwrap();
+    let base = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(base, vec![0; 512]);
+    for (block, next, data, length) in [
+        (base, base + 32, base + 128, 3),
+        (base + 32, base + 64, 0, 0),
+        (base + 64, 0, base + 131, 5),
+    ] {
+        loaded.memory.write_u32_be(block + 8, next).unwrap();
+        loaded.memory.write_u32_be(block + 12, data).unwrap();
+        loaded.memory.write_u32_be(block + 16, length).unwrap();
+    }
+    for (index, byte) in b"abcdefgh".iter().enumerate() {
+        loaded
+            .memory
+            .write_u8(base + 128 + index as u32, *byte)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = base;
+    assert_eq!(
+        returned(ot(ot_named("OTBufferDataSize"), &mut loaded)),
+        Some(8)
+    );
+    let info = base + 192;
+    let output = base + 224;
+    let length = base + 256;
+    loaded.memory.write_u32_be(info, base).unwrap();
+    loaded.memory.write_u8(info + 8, 0x5a).unwrap();
+    for (requested, expected, done, cursor, offset) in [
+        (0, b"".as_slice(), false, base, 0),
+        (4, b"abcd".as_slice(), false, base + 64, 1),
+        (8, b"efgh".as_slice(), true, 0, 0),
+        (8, b"".as_slice(), true, 0, 0),
+    ] {
+        loaded.memory.write_u32_be(length, requested).unwrap();
+        loaded.cpu.gpr[3] = info;
+        loaded.cpu.gpr[4] = output;
+        loaded.cpu.gpr[5] = length;
+        assert_eq!(
+            returned(ot(ot_named("OTReadBuffer"), &mut loaded)),
+            Some(u32::from(done))
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(length),
+            Some(expected.len() as u32)
+        );
+        assert_eq!(loaded.memory.read_u32_be(info), Some(cursor));
+        assert_eq!(loaded.memory.read_u32_be(info + 4), Some(offset));
+        assert_eq!(loaded.memory.read_u8(info + 8), Some(0x5a));
+        for (index, byte) in expected.iter().enumerate() {
+            assert_eq!(loaded.memory.read_u8(output + index as u32), Some(*byte));
+        }
+    }
+    assert_eq!(loaded.memory.read_u32_be(base + 8), Some(base + 32));
+    assert_eq!(loaded.memory.read_u32_be(base + 16), Some(3));
+}
+
+#[test]
+fn open_transport_buffer_read_rejects_cycles_and_unmapped_payloads() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OTReadBuffer")).unwrap();
+    let base = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(base, vec![0; 128]);
+    for next in [base, 0] {
+        loaded.memory.write_u32_be(base + 8, next).unwrap();
+        loaded.memory.write_u32_be(base + 12, 0xfffffff0).unwrap();
+        loaded.memory.write_u32_be(base + 16, 32).unwrap();
+        loaded.memory.write_u32_be(base + 32, base).unwrap();
+        loaded.memory.write_u32_be(base + 48, 32).unwrap();
+        loaded.memory.write_u8(base + 64, 0x5a).unwrap();
+        loaded.cpu.gpr[3] = base + 32;
+        loaded.cpu.gpr[4] = base + 64;
+        loaded.cpu.gpr[5] = base + 48;
+        assert_eq!(returned(ot(ot_named("OTReadBuffer"), &mut loaded)), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(base + 48), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(base + 32), Some(base));
+        assert_eq!(loaded.memory.read_u8(base + 64), Some(0x5a));
+    }
 }
