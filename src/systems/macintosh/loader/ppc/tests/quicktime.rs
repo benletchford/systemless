@@ -4908,6 +4908,46 @@ fn quicktime_imports_aiff_and_compressed_aifc_as_audio_movies() {
         assert_eq!(playback.samples.len(), count as usize);
         assert_eq!(playback.sample_rate_fixed, rate << 16);
         assert!(playback.samples.iter().any(|sample| *sample != 128));
+        let initial_samples = playback.samples.clone();
+        let midpoint = (count / 2) as u32;
+        call_movie_toolbox(&mut loaded, "SetMovieTimeValue", &[PPC_QT_MOVIE, midpoint]);
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+            midpoint
+        );
+        assert_eq!(
+            loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+            initial_samples[midpoint as usize..]
+        );
+        call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0x8000]);
+        assert_eq!(
+            loaded
+                .sound
+                .decoded_file_playbacks
+                .last()
+                .unwrap()
+                .sample_rate_fixed,
+            rate << 15
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetMovieRate",
+            &[PPC_QT_MOVIE, (-0x10000i32) as u32],
+        );
+        assert_eq!(
+            loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+            initial_samples[..midpoint as usize]
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+        );
+        advance_quicktime_test_clock(&mut loaded, 120_000_000);
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+            0
+        );
+        assert!(!loaded.quicktime.movie_started);
         let base = SCRATCH + 0x200;
         let port = SCRATCH + 0x400;
         loaded.memory.add_region(base, vec![0xee; 32]);

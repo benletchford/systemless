@@ -566,6 +566,9 @@ pub(super) fn dispatch_quicktime_compatibility(
             quicktime.movie_at_beginning = time == 0;
             ppc_qt_reset_movie_video_decode_cache(quicktime);
             ppc_qt_stop_movie_audio(sound);
+            if quicktime.movie_started && quicktime.movie_active {
+                let _ = ppc_qt_start_movie_audio(quicktime, sound);
+            }
             if before != super::dispatch_quicktime::quicktime_callback_time(quicktime) {
                 quicktime
                     .callbacks
