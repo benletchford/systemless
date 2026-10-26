@@ -4066,6 +4066,7 @@ fn ppc_dispatch_object_support_compatibility(
             fields.insert(
                 keyword,
                 ProcessAeDescriptor {
+                    attributes: Default::default(),
                     desc_type,
                     data: value.to_be_bytes().to_vec(),
                     fields: HashMap::new(),

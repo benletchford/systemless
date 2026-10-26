@@ -611,6 +611,7 @@ impl PpcLoadedApp {
                             return guest_calls.externalize_powerpc_action(cpu, action);
                         }
                         ppc_complete_apple_event_dispatch(
+                            cpu,
                             &mut apple_events,
                             guest_calls.depth(),
                             &mut *process_memory_manager,

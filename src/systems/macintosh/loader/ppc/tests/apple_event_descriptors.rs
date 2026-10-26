@@ -797,6 +797,7 @@ fn native_ppc_ae_resolve_collects_nested_containers_in_accessor_order() {
         fields.insert(
             u32::from_be_bytes(*b"want"),
             ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: PPC_TYPE_TYPE,
                 data: desired.to_vec(),
                 ..Default::default()
@@ -805,6 +806,7 @@ fn native_ppc_ae_resolve_collects_nested_containers_in_accessor_order() {
         fields.insert(
             u32::from_be_bytes(*b"form"),
             ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: PPC_TYPE_ENUMERATED,
                 data: b"name".to_vec(),
                 ..Default::default()
@@ -813,6 +815,7 @@ fn native_ppc_ae_resolve_collects_nested_containers_in_accessor_order() {
         fields.insert(
             u32::from_be_bytes(*b"seld"),
             ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: u32::from_be_bytes(*b"TEXT"),
                 data: b"Example".to_vec(),
                 ..Default::default()
@@ -820,6 +823,7 @@ fn native_ppc_ae_resolve_collects_nested_containers_in_accessor_order() {
         );
         fields.insert(u32::from_be_bytes(*b"from"), container);
         ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: PPC_TYPE_OBJECT_SPECIFIER,
             fields,
             ..Default::default()
@@ -864,6 +868,7 @@ fn native_ppc_ae_resolve_collects_nested_containers_in_accessor_order() {
 fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
     fn descriptor_u32(desc_type: u32, value: u32) -> ProcessAeDescriptor {
         ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type,
             data: value.to_be_bytes().to_vec(),
             ..Default::default()
@@ -883,12 +888,14 @@ fn native_ppc_ae_resolve_calls_nested_accessors_and_releases_scratch() {
         fields.insert(
             u32::from_be_bytes(*b"seld"),
             ProcessAeDescriptor {
+                attributes: Default::default(),
                 desc_type: u32::from_be_bytes(*b"TEXT"),
                 data: b"Room".to_vec(),
                 ..Default::default()
             },
         );
         ProcessAeDescriptor {
+            attributes: Default::default(),
             desc_type: PPC_TYPE_OBJECT_SPECIFIER,
             fields,
             ..Default::default()
@@ -2013,4 +2020,136 @@ fn native_ppc_ae_duplicate_coerce_and_get_nth_desc_copy_descriptors() {
     );
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_DESC_NOT_FOUND));
     assert_eq!(loaded.memory.read_u32_be(nth), Some(0));
+}
+
+#[test]
+fn apple_event_address_and_ids_survive_descriptor_copies_and_parameter_updates() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"AECreateAppleEvent")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    let address = scratch;
+    let event = scratch + 8;
+    let copied = scratch + 16;
+    let duplicate = scratch + 24;
+    let bytes = scratch + 0x40;
+    let actual_type = scratch + 0x80;
+    let actual_size = scratch + 0x84;
+    let output = scratch + 0x90;
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.memory.write_bytes(bytes, b"TEST").unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"sign");
+    loaded.cpu.gpr[4] = bytes;
+    loaded.cpu.gpr[5] = 4;
+    loaded.cpu.gpr[6] = address;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"GURL");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"GURL");
+    loaded.cpu.gpr[5] = address;
+    loaded.cpu.gpr[6] = 0x1234;
+    loaded.cpu.gpr[7] = 0x12345678;
+    loaded.cpu.gpr[8] = event;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    loaded.cpu.gpr[3] = address;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::DisposeDesc),
+    );
+    loaded.cpu.gpr[3] = event;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"----");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[6] = bytes;
+    loaded.cpu.gpr[7] = 4;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamPtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    let raw = ppc_memory_read_bytes(&mut loaded.memory, event, 8).unwrap();
+    loaded.memory.write_bytes(copied, &raw).unwrap();
+    loaded.cpu.gpr[3] = copied;
+    loaded.cpu.gpr[4] = duplicate;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::DuplicateDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    for descriptor in [event, copied, duplicate] {
+        for (key, kind, expected) in [
+            (*b"addr", *b"sign", b"TEST".to_vec()),
+            (*b"rtid", *b"shor", vec![0x12, 0x34]),
+            (*b"tran", *b"long", vec![0x12, 0x34, 0x56, 0x78]),
+        ] {
+            loaded.cpu.gpr[3] = descriptor;
+            loaded.cpu.gpr[4] = u32::from_be_bytes(key);
+            loaded.cpu.gpr[5] = PPC_TYPE_WILDCARD;
+            loaded.cpu.gpr[6] = actual_type;
+            loaded.cpu.gpr[7] = output;
+            loaded.cpu.gpr[8] = 16;
+            loaded.cpu.gpr[9] = actual_size;
+            run_test_import(
+                &mut loaded,
+                ae(PpcAppleEventCompatibilityOperation::GetAttributePtr),
+            );
+            assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(actual_type),
+                Some(u32::from_be_bytes(kind))
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(actual_size),
+                Some(expected.len() as u32)
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, output, expected.len() as u32),
+                Some(expected)
+            );
+        }
+    }
+}
+
+#[test]
+fn apple_event_automatic_return_ids_are_distinct() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"AECreateAppleEvent")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    let mut ids = Vec::new();
+    for event in [scratch, scratch + 8] {
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"GURL");
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"GURL");
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = u32::MAX;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = event;
+        run_test_import(
+            &mut loaded,
+            ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        loaded.cpu.gpr[3] = event;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"rtid");
+        loaded.cpu.gpr[5] = u32::from_be_bytes(*b"shor");
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = scratch + 0x40;
+        loaded.cpu.gpr[8] = 2;
+        loaded.cpu.gpr[9] = 0;
+        run_test_import(
+            &mut loaded,
+            ae(PpcAppleEventCompatibilityOperation::GetAttributePtr),
+        );
+        assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+        ids.push(loaded.memory.read_u16_be(scratch + 0x40).unwrap());
+    }
+    assert_ne!(ids[0], ids[1]);
+    assert!(!ids.contains(&u16::MAX));
 }
