@@ -422,3 +422,47 @@ fn hle_import_runner_discards_native_exception_state_after_terminal_handler_faul
     ));
     assert!(loaded.native_exception_stack.is_empty());
 }
+
+#[test]
+fn native_host_executes_zero_base_store_update_with_exact_slice_budget() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let word = d_form_u(45, 5, 0, 0x082c);
+    let pc = install_test_fault_words(&mut loaded, &[word, BLR]);
+    loaded.cpu.gpr[0] = 0x1234_5678;
+    loaded.cpu.gpr[5] = 0xabcd_1234;
+    loaded.cpu.lr = 0;
+    let time = loaded.cpu.time_base();
+    let first = loaded.run_with_hle_imports(1);
+    assert_eq!(first.result, PpcRunResult::CycleLimit { cycles: 1 });
+    assert_eq!(loaded.memory.read_u16_be(0x082c), Some(0x1234));
+    assert_eq!(loaded.cpu.gpr[0], 0x1234_5678);
+    assert_eq!(loaded.cpu.pc, pc + 4);
+    assert_eq!(loaded.cpu.time_base(), time + 1);
+    assert_eq!(
+        loaded.memory.read_u32_be(pc),
+        Some(word),
+        "guest code must remain unchanged"
+    );
+    // The core observes the halt address before the next fetch, after BLR.
+    assert!(matches!(
+        loaded.run_with_hle_imports(2).result,
+        PpcRunResult::Halted { pc: 0, cycles: 1 }
+    ));
+}
+
+#[test]
+fn native_host_zero_base_store_update_preserves_memory_fault_delivery() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let pc = install_test_fault_words(&mut loaded, &[d_form_u(45, 5, 0, 0xfffe), BLR]);
+    let probe = loaded.run_with_hle_imports(1);
+    assert_eq!(
+        probe.result,
+        PpcRunResult::MemoryFault {
+            pc,
+            addr: 0xffff_fffe,
+            was_write: true,
+            cycles: 0,
+        }
+    );
+    assert_eq!(loaded.cpu.pc, pc);
+}

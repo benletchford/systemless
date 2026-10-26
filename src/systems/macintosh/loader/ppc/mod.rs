@@ -104,6 +104,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+mod store_update_compat;
 mod dispatch_cfm;
 use dispatch_cfm::*;
 mod dispatch_apple_events;

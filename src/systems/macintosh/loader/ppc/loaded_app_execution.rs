@@ -2231,7 +2231,7 @@ impl PpcLoadedApp {
                         cycles: total_cycles,
                     };
                 }
-                let step_result = if let Some(range) = ppc_watch_range() {
+                let mut step_result = if let Some(range) = ppc_watch_range() {
                     let mut write_observer = PpcWatchObserver { range };
                     self.cpu.run_with_imports_and_observers_and_cycle_handler(
                         &mut self.memory,
@@ -2265,6 +2265,51 @@ impl PpcLoadedApp {
                     )
                 };
                 total_cycles = total_cycles.saturating_add(ppc_run_result_cycles(step_result));
+
+                if let PpcRunResult::Exception {
+                    pc,
+                    exception:
+                        PpcException::IllegalInstruction {
+                            word,
+                            reason: ppc::PpcIllegalInstructionReason::InvalidForm,
+                        },
+                    ..
+                } = step_result
+                {
+                    if let Some(store) = store_update_compat::zero_base_store_instruction(word) {
+                        let result = if let Some(range) = ppc_watch_range() {
+                            self.cpu.step_with_write_observer(
+                                &mut self.memory,
+                                store,
+                                &mut PpcWatchObserver { range },
+                            )
+                        } else {
+                            self.cpu.step(&mut self.memory, store)
+                        };
+                        match result {
+                            ppc::PpcStepResult::Stepped => {
+                                total_cycles = total_cycles.saturating_add(1);
+                                continue;
+                            }
+                            ppc::PpcStepResult::MemoryFault { addr, was_write } => {
+                                step_result = PpcRunResult::MemoryFault {
+                                    pc,
+                                    addr,
+                                    was_write,
+                                    cycles: total_cycles,
+                                };
+                            }
+                            ppc::PpcStepResult::Exception(exception) => {
+                                step_result = PpcRunResult::Exception {
+                                    pc,
+                                    exception,
+                                    cycles: total_cycles,
+                                };
+                            }
+                            ppc::PpcStepResult::Unimplemented(_) => {}
+                        }
+                    }
+                }
 
                 match step_result {
                     // A parked callback returned on its own frame:
