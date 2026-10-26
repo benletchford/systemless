@@ -4510,3 +4510,57 @@ fn appearance_theme_color_query_follows_theme_device_and_narrow_argument_abi() {
         }
     }
 }
+#[test]
+fn multiline_control_titles_draw_two_separate_text_bands() {
+    for proc_id in [0, 1, 2] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"Draw1Control"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        for y in 0..100 {
+            for x in 0..180 {
+                ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 0x7fff);
+            }
+        }
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            PPC_MAIN_GWORLD,
+            (20, 20, 60, 140),
+            b"TOP\rLOW",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        ));
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::Draw1Control);
+        let mut bands = 0;
+        let mut previous_ink = false;
+        for y in 22..58 {
+            let ink = (40..130)
+                .any(|x| ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(0));
+            if ink && !previous_ink {
+                bands += 1;
+            }
+            previous_ink = ink;
+        }
+        assert_eq!(
+            bands, 2,
+            "proc_id={proc_id}: both explicit lines must be visible"
+        );
+    }
+}

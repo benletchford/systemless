@@ -3128,6 +3128,38 @@ impl super::TrapDispatcher {
     ) -> i16 {
         // Resolve the text colour once per string, not once per pixel.
         let text_index = (pixel_size == 8).then(|| Self::logical_black_pixel_index(bus));
+        Self::fb_draw_string_clipped_with_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            s,
+            font_id,
+            font_size,
+            clip,
+            text_index,
+        )
+    }
+
+    pub(crate) fn fb_draw_string_clipped_with_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+        s: &str,
+        font_id: i16,
+        font_size: i16,
+        clip: (i16, i16, i16, i16),
+        text_index: Option<u8>,
+    ) -> i16 {
         let mut cx = x;
         for ch in s.chars() {
             cx += Self::fb_draw_char_clipped(

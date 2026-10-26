@@ -680,6 +680,42 @@ pub(crate) fn centered_control_label_origin(
     )
 }
 
+/// Position explicit CR-separated title lines using the control font's leading.
+/// Macintosh Toolbox Essentials, SetControlTitle: push-button lines are centered;
+/// checkbox/radio titles use the script's justification (left for Roman text).
+pub(crate) fn control_title_line_origins(
+    rect: (i16, i16, i16, i16),
+    widths: &[i16],
+    ascent: i16,
+    descent: i16,
+    leading: i16,
+    centered: bool,
+) -> Vec<(i16, i16)> {
+    let line_height = i32::from(ascent) + i32::from(descent) + i32::from(leading);
+    let extra_height = i32::try_from(widths.len().saturating_sub(1))
+        .unwrap_or(i32::MAX)
+        .saturating_mul(line_height.max(1));
+    let first_baseline = i32::from(centered_control_label_origin(rect, 0, ascent, descent).1)
+        .saturating_sub(extra_height / 2);
+    widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let x = if centered {
+                centered_control_label_origin(rect, *width, ascent, descent).0
+            } else {
+                rect.1
+            };
+            let y = first_baseline.saturating_add(
+                i32::try_from(index)
+                    .unwrap_or(i32::MAX)
+                    .saturating_mul(line_height.max(1)),
+            );
+            (x, y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16)
+        })
+        .collect()
+}
+
 /// Resolve the handles that `DrawControls` must present, in draw order.
 ///
 /// `NewControl` prepends records to `wControlList`. `DrawControls` draws in
@@ -853,4 +889,22 @@ fn track_control_start_point_fallback_requires_live_standard_button() {
     for proc in [16, 1008, -1] {
         assert_eq!(choose((130, 110), (130, 110), true, proc), (130, 110));
     }
+}
+#[cfg(test)]
+#[test]
+fn multiline_control_title_origins_preserve_single_lines_and_font_leading() {
+    let rect = (10, 20, 50, 120);
+    assert_eq!(
+        control_title_line_origins(rect, &[30, 10], 9, 3, 2, true),
+        vec![(55, 26), (65, 40)]
+    );
+    assert_eq!(
+        control_title_line_origins(rect, &[30, 10], 9, 3, 2, false),
+        vec![(20, 26), (20, 40)]
+    );
+    assert_eq!(
+        control_title_line_origins(rect, &[30], 9, 3, 2, true),
+        vec![centered_control_label_origin(rect, 30, 9, 3)]
+    );
+    assert!(control_title_line_origins(rect, &[], 9, 3, 2, true).is_empty());
 }
