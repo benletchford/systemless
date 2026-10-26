@@ -1972,3 +1972,246 @@ fn inputsprocket_uptime_returns_the_virtual_absolute_clock() {
         Some(absolute * 1_000)
     );
 }
+
+#[test]
+fn inputsprocket_device_activity_queries_follow_class_activation() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpDevice_IsActive",
+    ))
+    .unwrap();
+    let out = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(out, vec![0xaa; 16]);
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(operation),
+        );
+        loaded.cpu.gpr[3]
+    };
+    for class in [PPC_ISP_DEVICE_CLASS_KEYBOARD, PPC_ISP_DEVICE_CLASS_MOUSE] {
+        assert_eq!(call(&mut loaded, Op::DevicesDeactivateClass, &[class]), 0);
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            Op::DevicesActivateClass,
+            &[PPC_ISP_DEVICE_CLASS_KEYBOARD]
+        ),
+        0
+    );
+    for (device, expected) in [(PPC_ISP_KEYBOARD_DEVICE, 1), (PPC_ISP_MOUSE_DEVICE, 0)] {
+        assert_eq!(call(&mut loaded, Op::DeviceIsActive, &[device, out]), 0);
+        assert_eq!(loaded.memory.read_u8(out), Some(expected));
+        assert_eq!(loaded.memory.read_u8(out + 1), Some(0xaa));
+    }
+    // A class without a device must not activate unrelated classes.
+    assert_eq!(
+        call(
+            &mut loaded,
+            Op::DevicesActivateClass,
+            &[u32::from_be_bytes(*b"joys")]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            Op::DeviceIsActive,
+            &[PPC_ISP_MOUSE_DEVICE, out]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(out), Some(0));
+    assert_eq!(
+        call(
+            &mut loaded,
+            Op::DevicesActivateClass,
+            &[PPC_ISP_DEVICE_CLASS_MOUSE]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            Op::DevicesDeactivateClass,
+            &[PPC_ISP_DEVICE_CLASS_KEYBOARD]
+        ),
+        0
+    );
+    for (device, expected) in [(PPC_ISP_KEYBOARD_DEVICE, 0), (PPC_ISP_MOUSE_DEVICE, 1)] {
+        assert_eq!(call(&mut loaded, Op::DeviceIsActive, &[device, out]), 0);
+        assert_eq!(loaded.memory.read_u8(out), Some(expected));
+    }
+    loaded.memory.write_u8(out, 0x5a).unwrap();
+    assert_eq!(
+        call(&mut loaded, Op::DeviceIsActive, &[0, out]),
+        ppc_i16_result(PPC_PARAM_ERR)
+    );
+    assert_eq!(loaded.memory.read_u8(out), Some(0x5a));
+    for invalid in [0, 0xeeeeeeee] {
+        assert_eq!(
+            call(
+                &mut loaded,
+                Op::DeviceIsActive,
+                &[PPC_ISP_MOUSE_DEVICE, invalid]
+            ),
+            ppc_i16_result(PPC_PARAM_ERR)
+        );
+    }
+}
+
+#[test]
+fn inputsprocket_suspend_masks_raw_mouse_and_resume_drops_inactive_motion() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpDevice_IsActive",
+    ))
+    .unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    let event = base + 16;
+    let was_event = base + 40;
+    loaded.memory.add_region(base, vec![0xaa; 64]);
+    let call = |loaded: &mut PpcLoadedApp, target, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, target);
+        loaded.cpu.gpr[3]
+    };
+    let compat = PpcImportDispatcherTarget::InputSprocketCompatibility;
+    let input = |h, button| PpcInputSnapshot {
+        mouse_h: h,
+        mouse_v: 50,
+        mouse_button: button,
+        ..PpcInputSnapshot::default()
+    };
+    // Keep keyboard disabled so Resume must restore the prior choices.
+    assert_eq!(
+        call(
+            &mut loaded,
+            compat(Op::DevicesDeactivateClass),
+            &[PPC_ISP_DEVICE_CLASS_KEYBOARD]
+        ),
+        0
+    );
+    loaded.set_input_snapshot(input(100, false));
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementGetSimpleState,
+            &[PPC_ISP_MOUSE_X_ELEMENT, base]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(base), Some(0));
+    assert_eq!(
+        call(&mut loaded, PpcImportDispatcherTarget::ISpSuspend, &[]),
+        0
+    );
+    loaded.set_input_snapshot(input(500, true));
+    for device in [PPC_ISP_KEYBOARD_DEVICE, PPC_ISP_MOUSE_DEVICE] {
+        assert_eq!(
+            call(&mut loaded, compat(Op::DeviceIsActive), &[device, base]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u8(base), Some(0));
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementGetSimpleState,
+            &[PPC_ISP_MOUSE_BUTTON_ELEMENT, base]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(base), Some(0));
+    assert_eq!(
+        call(
+            &mut loaded,
+            compat(Op::ElementGetNextEvent),
+            &[
+                PPC_ISP_MOUSE_BUTTON_ELEMENT,
+                PPC_ISP_ELEMENT_EVENT_SIZE,
+                event,
+                was_event
+            ]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(event), Some(0xaaaaaaaa));
+    assert_eq!(
+        call(&mut loaded, PpcImportDispatcherTarget::ISpResume, &[]),
+        0
+    );
+    for (device, expected) in [(PPC_ISP_KEYBOARD_DEVICE, 0), (PPC_ISP_MOUSE_DEVICE, 1)] {
+        assert_eq!(
+            call(&mut loaded, compat(Op::DeviceIsActive), &[device, base]),
+            0
+        );
+        assert_eq!(loaded.memory.read_u8(base), Some(expected));
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementGetSimpleState,
+            &[PPC_ISP_MOUSE_X_ELEMENT, base]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(base), Some(0));
+    loaded.set_input_snapshot(input(503, true));
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementGetSimpleState,
+            &[PPC_ISP_MOUSE_X_ELEMENT, base]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(base), Some(3 << 16));
+    assert_eq!(
+        call(
+            &mut loaded,
+            compat(Op::ElementGetNextEvent),
+            &[
+                PPC_ISP_MOUSE_BUTTON_ELEMENT,
+                PPC_ISP_ELEMENT_EVENT_SIZE,
+                event,
+                was_event
+            ]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(1));
+
+    assert_eq!(
+        call(
+            &mut loaded,
+            compat(Op::DevicesDeactivateClass),
+            &[PPC_ISP_DEVICE_CLASS_MOUSE]
+        ),
+        0
+    );
+    loaded.set_input_snapshot(input(900, true));
+    assert_eq!(
+        call(
+            &mut loaded,
+            compat(Op::DevicesActivateClass),
+            &[PPC_ISP_DEVICE_CLASS_MOUSE]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementGetSimpleState,
+            &[PPC_ISP_MOUSE_X_ELEMENT, base]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(base), Some(0));
+}

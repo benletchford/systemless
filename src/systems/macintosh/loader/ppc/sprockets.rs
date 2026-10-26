@@ -2652,7 +2652,7 @@ pub(crate) fn ppc_isp_device_element_next_event(
     input: PpcInputSnapshot,
     input_sprocket: &mut PpcInputSprocketState,
 ) -> Option<u32> {
-    if !input_sprocket.mouse_active {
+    if ppc_isp_device_is_active(input_sprocket, PPC_ISP_MOUSE_DEVICE) != Some(true) {
         return None;
     }
     match element {
@@ -3342,6 +3342,7 @@ pub(crate) fn ppc_isp_init(
     input_sprocket.mouse_active = true;
     input_sprocket.keyboard_defaults = defaults;
     input_sprocket.keyboard_default_cursor = 0;
+    ppc_isp_clear_mouse_tracking(input_sprocket);
     PPC_NO_ERR
 }
 
@@ -3350,11 +3351,13 @@ pub(crate) fn ppc_isp_stop(input_sprocket: &mut PpcInputSprocketState) -> i16 {
     input_sprocket.suspended = false;
     input_sprocket.keyboard_active = false;
     input_sprocket.mouse_active = false;
+    ppc_isp_clear_mouse_tracking(input_sprocket);
     PPC_NO_ERR
 }
 
 pub(crate) fn ppc_isp_suspend(input_sprocket: &mut PpcInputSprocketState) -> i16 {
     input_sprocket.suspended = true;
+    ppc_isp_clear_mouse_tracking(input_sprocket);
     PPC_NO_ERR
 }
 
@@ -3448,6 +3451,24 @@ pub(crate) fn ppc_isp_known_device(device: u32) -> bool {
     matches!(device, PPC_ISP_KEYBOARD_DEVICE | PPC_ISP_MOUSE_DEVICE)
 }
 
+pub(crate) fn ppc_isp_device_is_active(
+    input_sprocket: &PpcInputSprocketState,
+    device: u32,
+) -> Option<bool> {
+    let enabled = match device {
+        PPC_ISP_KEYBOARD_DEVICE => input_sprocket.keyboard_active,
+        PPC_ISP_MOUSE_DEVICE => input_sprocket.mouse_active,
+        _ => return None,
+    };
+    Some(enabled && !input_sprocket.suspended)
+}
+
+fn ppc_isp_clear_mouse_tracking(input_sprocket: &mut PpcInputSprocketState) {
+    input_sprocket.device_mouse_h = None;
+    input_sprocket.device_mouse_v = None;
+    input_sprocket.device_mouse_button = false;
+}
+
 pub(crate) fn ppc_isp_set_device_active(
     input_sprocket: &mut PpcInputSprocketState,
     device: u32,
@@ -3459,6 +3480,9 @@ pub(crate) fn ppc_isp_set_device_active(
             true
         }
         PPC_ISP_MOUSE_DEVICE => {
+            if input_sprocket.mouse_active != active {
+                ppc_isp_clear_mouse_tracking(input_sprocket);
+            }
             input_sprocket.mouse_active = active;
             true
         }
@@ -3765,9 +3789,10 @@ pub(crate) fn ppc_isp_element_get_simple_state(
     // last read, shared with its events; the button reports whether it is
     // held.
     let device_state = match element {
-        PPC_ISP_MOUSE_BUTTON_ELEMENT => {
-            Some(u32::from(input_sprocket.mouse_active && input.mouse_button))
-        }
+        PPC_ISP_MOUSE_BUTTON_ELEMENT => Some(u32::from(
+            ppc_isp_device_is_active(input_sprocket, PPC_ISP_MOUSE_DEVICE) == Some(true)
+                && input.mouse_button,
+        )),
         PPC_ISP_MOUSE_X_ELEMENT | PPC_ISP_MOUSE_Y_ELEMENT => {
             Some(ppc_isp_device_element_next_event(element, input, input_sprocket).unwrap_or(0))
         }
