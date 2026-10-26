@@ -2598,3 +2598,32 @@ A fresh replay of the exact Tucows archive uses selector **`Barrack Installer/Ba
 
 
 The fresh Tucows no-fire control also passes its one field assertion and all six exact full-frame comparisons at the same 1,632 / 1,862 clocks, zero exhaustion (`ppc-tucows-control/`). [Managed promotion 40348054188](https://github.com/benletchford/systemless/actions/runs/40348054188) succeeds and commits immutable sources as `85acf8260`. Fresh public `curl` GETs of the managed archive and screenshot match the pinned **3,081,907-byte / `1d02dfb5…677974`** archive and **552,945-byte / `21e7e2a8…b21514`** screenshot. Local production validation passes for **220 staged records**. Browser qualification remains unavailable and launch remains disabled; neither asset promotion nor these HTTP checks constitute browser gameplay or a qualified-live increment.
+
+
+## Barrack 1.0.4 — native gameplay and dialog repairs, 27 October 2026
+
+This subsequent evidence supersedes the unresolved 68K startup and black PPC playfield observations above. All runs here use the unchanged, managed Tucows archive (3,081,907 bytes, SHA-256 `1d02dfb509546b8fc2962823537119c95a835a7621dbdd9abab192c656677974`), selector `Barrack Installer/Barrack 1.0.4 ƒ/Barrack`, default display and fixed default startup time. The original trial notice is dismissed through **Not Yet**; no registration bypass is used.
+
+### Merged compatibility repairs
+
+- [#5087](https://github.com/benletchford/systemless/pull/5087) resumes classic streamed-picture callbacks cooperatively and restores the 68K menu. [#5089](https://github.com/benletchford/systemless/pull/5089) consumes released m68k 0.14.7, resolving the observed default batched-execution startup halt. The upstream return-link repair is a strong match, but the version update contains other changes, so this is not a single-commit causal isolation.
+- [#5092](https://github.com/benletchford/systemless/pull/5092) makes PPC PaintRect use the selected color pen pattern. The original spiral playfield and cleared-area pattern now render, replacing the earlier solid-black field.
+- [#5095](https://github.com/benletchford/systemless/pull/5095) copies and applies dialog item text styles from the original resource. Setup now displays Sound volume, Music volume, both Low values, and the complete three-line small-text keybinding block. All 74 PPC Dialog Manager tests and four Standard File checks pass; six measured native setup assertions pass at 1,326 frontend / 1,556 guest ticks, zero exhausted frames. Captures were inspected.
+
+### Exact native candidates and bounded evidence
+
+| Candidate executable SHA-256 | Source | Slice and evidence |
+| --- | --- | --- |
+| `c123da2aaa3c2c5f6d039fd01dc68595527b34032acc0f9f28b38d0935a836f9` | `3ed1f22d129d6b3c6aeecd74ce22777e0677789a`, before the dependency PR was rebased | 68K normal batching: menu, gun movement, a scored barrier and non-silent audio; 10 assertions. Same-clock no-fire control: two assertions. Both reach 1,632 frontend / 2,232 guest ticks with zero exhausted frames. Actual captures show 9% / score 90 after firing and 0% / score 0 without firing. |
+| `9d8edc6c01caef335ddc494f3fbd56adeca914ee3e28500851c0f4962c0ea9de` | `9abe312a6`, pattern fix plus pending picture clipping | PPC restored backdrop, gun movement, scored barrier and non-silent audio: 12 assertions. Same-clock no-fire control: two assertions. Both reach 1,632 frontend / 1,862 guest ticks, zero exhausted frames. One stale solid-gray barrier expectation was corrected from the earlier inspected probe; the probe and first assertion replay frames were identical. |
+| `7b9fe085406124957b8f8cd46d743f79fb74c20ff838fa7fce75432588e606a6` | `ec0e9e9d8`, clean integration of clipping, backdrop, m68k update and dialog styles | PPC setup: six assertions as above. Full first-level clear and entry to level 2: seven assertions at 3,567 frontend / 3,861 guest ticks, zero exhausted frames. |
+
+The longer PPC replay first reaches 52% cleared using horizontal barriers, with collisions and life loss. Space changes the gun orientation; two vertical shots raise the cleared area to 73% and 78%. A final horizontal shot reaches **81%**, opens the completion bonus display, and awards **1,800 bonus points**. Dismissing that display enters **level 2 with score 2610**, a fresh arena and three visible balls. The fresh repeat passes six measured pixel assertions plus one non-silent audio assertion. Key checkpoint images were inspected. This verifies one complete level and the transition, not the full game or audio fidelity.
+
+Scripts, immutable binaries, reports and unedited PNGs remain outside the repository under `/Users/ben/.cache/systemless-catalogue-1000/barrack/`. Key receipts are `m68k-upgrade-verified/`, `m68k-upgrade-control/`, `ppc-pattern-verified-final/`, `ppc-pattern-control/`, `ppc-dialog-style-verified/`, `ppc-level-transition-verified/`, `setup-style-verified.json` and `level-transition-verified.json`. These are native Systemless observations, not independent emulator-oracle captures.
+
+### Remaining qualification
+
+Picture-port clipping [#5078](https://github.com/benletchford/systemless/pull/5078) remains an unmerged part of the native integration while its Linux dependency-installation CI step is still running. Multiline standard control titles remain under repair in [#5098](https://github.com/benletchford/systemless/pull/5098), tracked by [#5096](https://github.com/benletchford/systemless/issues/5096); this affects the setup radio titles on both CPU slices and is separate from the merged item-style repair. Do not treat either pending PR as a merged runtime guarantee.
+
+Independent inner-installer parity, settings persistence, browser input/pacing approval, refreshed public screenshot and released-route gameplay qualification remain pending. A fresh browser inventory still contains no connected browsers. The entry remains PPC-only and launch-disabled; the 68K evidence above does not silently change that manifest. The old promoted screenshot is a historical pre-pattern-repair capture and must be replaced before launch approval. Source stock is **220 records**, with **no qualified-live increment** from these native fixes or asset checks.
