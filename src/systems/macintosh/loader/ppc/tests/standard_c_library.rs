@@ -643,6 +643,10 @@ fn stdclib_atof_converts_decimal_prefixes_in_the_floating_point_return_register(
         for (index, byte) in text.bytes().chain(std::iter::once(0)).enumerate() {
             loaded.memory.write_u8(input + index as u32, byte).unwrap();
         }
+        loaded
+            .memory
+            .write_u32_be(PPC_IMPORT_STD_ERRNO, 33)
+            .unwrap();
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.gpr[3] = input;
         loaded.cpu.fpr[1] = 123f64.to_bits();
@@ -650,5 +654,13 @@ fn stdclib_atof_converts_decimal_prefixes_in_the_floating_point_return_register(
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.fpr[1], expected.to_bits(), "{text:?}");
         assert_eq!(loaded.cpu.gpr[3], input);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO),
+            Some(if matches!(text, "-1e-9999" | "1e9999") {
+                34
+            } else {
+                33
+            })
+        );
     }
 }

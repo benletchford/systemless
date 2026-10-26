@@ -2168,10 +2168,20 @@ pub(super) fn ppc_std_atof(memory: &mut PpcSectionMem, string: u32) -> f64 {
             token.truncate(mantissa_end);
         }
     }
-    std::str::from_utf8(&token)
+    let value: f64 = std::str::from_utf8(&token)
         .ok()
         .and_then(|text| text.parse().ok())
-        .unwrap_or(0.0)
+        .unwrap_or(0.0);
+    let nonzero_mantissa = token
+        .iter()
+        .take_while(|byte| **byte != b'e')
+        .any(|byte| matches!(byte, b'1'..=b'9'));
+    if value.is_infinite() || (value == 0.0 && nonzero_mantissa) {
+        // MSL C Reference, atof: range failures set errno. Universal
+        // Interfaces errno.h defines the classic StdCLib ERANGE as 34.
+        let _ = memory.write_u32_be(PPC_IMPORT_STD_ERRNO, 34);
+    }
+    value
 }
 
 pub(super) fn ppc_std_atoi(memory: &mut PpcSectionMem, string: u32) -> u32 {
