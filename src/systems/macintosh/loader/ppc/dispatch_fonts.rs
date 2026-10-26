@@ -279,6 +279,75 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::StdText => {
+            // Inside Macintosh: Imaging With QuickDraw (StdText): the text
+            // bottleneck draws byteCount bytes at the pen, scaled by
+            // numer/denom. Text is drawn at the vertically scaled size.
+            let count = u32::from((cpu.gpr[3] as u16 as i16).max(0) as u16);
+            let bytes = ppc_memory_read_bytes(memory, cpu.gpr[4], count).unwrap_or_default();
+            let (numer, denom) = (
+                (cpu.gpr[5] >> 16) as u16 as i16,
+                (cpu.gpr[6] >> 16) as u16 as i16,
+            );
+            let size = if numer > 0 && denom > 0 && numer != denom {
+                let size = i32::from(*quickdraw_text_size).max(1);
+                (size * i32::from(numer) / i32::from(denom)).clamp(1, i32::from(i16::MAX)) as i16
+            } else {
+                *quickdraw_text_size
+            };
+            let text_font = ppc_current_text_font(memory, current_gworld);
+            let text_style = ppc_current_text_style(memory, current_gworld);
+            let advance = ppc_draw_text_bytes_styled(
+                memory,
+                gworlds,
+                current_gworld,
+                (*quickdraw_pen_h, *quickdraw_pen_v),
+                text_font,
+                size,
+                *quickdraw_text_mode,
+                *quickdraw_fore_color,
+                quickdraw_fore_indices.get(&current_gworld).copied(),
+                text_style,
+                &bytes,
+            );
+            *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
+            ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::StdTxMeas => {
+            // Inside Macintosh: Imaging With QuickDraw (StdTxMeas): returns
+            // the unscaled width of byteCount bytes and fills FontInfo.
+            // numer and denom are left as the scaling the caller still has
+            // to apply.
+            let (count, text, info) = (cpu.gpr[3] as u16 as i16, cpu.gpr[4], cpu.gpr[7]);
+            let mut call = cpu.clone();
+            call.gpr[3] = text;
+            call.gpr[4] = 0;
+            call.gpr[5] = u32::from(count.max(0) as u16);
+            let text_font = ppc_current_text_font(memory, current_gworld);
+            let text_face = ppc_current_text_style(memory, current_gworld);
+            let width = ppc_text_width(
+                &mut call,
+                memory,
+                text_font,
+                *quickdraw_text_size,
+                text_face,
+                current_gworld,
+            );
+            ppc_get_font_info(memory, info, text_font, *quickdraw_text_size);
+            Some(PpcImportAction::Return(width))
+        }
+        // Inside Macintosh: Text (IsOutline, OutlineMetrics): the Font
+        // Manager gives applications bitmap strikes for each size, so the
+        // current font is never reported as an outline font, and the
+        // outline-only metrics call returns fontNotOutlineErr.
+        PpcImportDispatcherTarget::IsOutline => Some(PpcImportAction::Return(0)),
+        PpcImportDispatcherTarget::OutlineMetrics => {
+            const FONT_NOT_OUTLINE_ERR: i16 = -32615;
+            Some(PpcImportAction::Return(ppc_i16_result(
+                FONT_NOT_OUTLINE_ERR,
+            )))
+        }
         PpcImportDispatcherTarget::DrawString => {
             if let Some(bytes) = ppc_read_pascal_string(memory, cpu.gpr[3]) {
                 let text_font = ppc_current_text_font(memory, current_gworld);

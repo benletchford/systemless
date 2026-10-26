@@ -25,6 +25,22 @@ pub(crate) fn ppc_icon_suite_entries(
     Some(entries)
 }
 
+/// The member handles of an icon suite built by GetIconSuite, or None when
+/// `suite` is not such a suite.
+pub(crate) fn ppc_icon_suite_member_handles(
+    memory: &mut PpcSectionMem,
+    suite: u32,
+) -> Option<Vec<u32>> {
+    let suite_ptr = memory.read_u32_be(suite).filter(|ptr| *ptr != 0)?;
+    if memory.read_u32_be(suite_ptr)? != PPC_ICON_SUITE_MAGIC {
+        return None;
+    }
+    let count = u32::from(memory.read_u16_be(suite_ptr + 8)?).min(64);
+    (0..count)
+        .map(|index| memory.read_u32_be(suite_ptr + 10 + index * 8 + 4))
+        .collect()
+}
+
 pub(crate) fn ppc_set_current_resource_refnum(
     memory: &mut PpcSectionMem,
     current_resource_refnum: &mut i16,

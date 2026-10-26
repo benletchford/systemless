@@ -1488,6 +1488,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FlashMenuBar
         | PpcImportDispatcherTarget::HMGetHelpMenuHandle
         | PpcImportDispatcherTarget::HMGetBalloons
+        | PpcImportDispatcherTarget::HMShowBalloon
+        | PpcImportDispatcherTarget::SetMCEntries
         | PpcImportDispatcherTarget::HMIsBalloon
         | PpcImportDispatcherTarget::HMSetBalloons
         | PpcImportDispatcherTarget::HiliteMenu
@@ -1569,6 +1571,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TETransferScrap { .. }
         | PpcImportDispatcherTarget::TEScrapHandle
         | PpcImportDispatcherTarget::TEGetStyleScrapHandle
+        | PpcImportDispatcherTarget::TEGetStyleHandle
+        | PpcImportDispatcherTarget::TEReplaceStyle
         | PpcImportDispatcherTarget::TEScrapLength { .. } => {
             unreachable!("textedit imports return through dispatch_textedit_import")
         }
@@ -1843,6 +1847,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CloseResFile
         | PpcImportDispatcherTarget::GetPicture
         | PpcImportDispatcherTarget::GetIconSuite
+        | PpcImportDispatcherTarget::DisposeIconSuite
         | PpcImportDispatcherTarget::GetIcon
         | PpcImportDispatcherTarget::GetPattern
         | PpcImportDispatcherTarget::GetIndPattern
@@ -1974,7 +1979,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::FrameOval
         | PpcImportDispatcherTarget::PaintOval
         | PpcImportDispatcherTarget::EraseOval
-        | PpcImportDispatcherTarget::PaintArc => {
+        | PpcImportDispatcherTarget::PaintArc
+        | PpcImportDispatcherTarget::QuickDrawShape(_) => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::FrameRgn
@@ -2311,6 +2317,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LSetDrawingMode
         | PpcImportDispatcherTarget::LScroll
         | PpcImportDispatcherTarget::LSize
+        | PpcImportDispatcherTarget::LGetCellDataLocation
+        | PpcImportDispatcherTarget::LAddColumn
+        | PpcImportDispatcherTarget::LCellSize
+        | PpcImportDispatcherTarget::LRect
         | PpcImportDispatcherTarget::LUpdate
         | PpcImportDispatcherTarget::LAutoScroll
         | PpcImportDispatcherTarget::LSearch => {
@@ -2339,6 +2349,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StringWidth
         | PpcImportDispatcherTarget::CharWidth
         | PpcImportDispatcherTarget::GetFontInfo
+        | PpcImportDispatcherTarget::StdText
+        | PpcImportDispatcherTarget::StdTxMeas
+        | PpcImportDispatcherTarget::IsOutline
+        | PpcImportDispatcherTarget::OutlineMetrics
         | PpcImportDispatcherTarget::FontMetrics
         | PpcImportDispatcherTarget::FMSwapFont
         | PpcImportDispatcherTarget::GetFNum

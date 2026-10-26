@@ -943,6 +943,65 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 toolbox_startup.help_balloons_enabled,
             )))
         }
+        PpcImportDispatcherTarget::HMShowBalloon => {
+            // Inside Macintosh: More Macintosh Toolbox (HMShowBalloon): no
+            // balloon is shown while Balloon Help is off (hmHelpDisabled).
+            // The runtime does not draw help balloons, so when it is on the
+            // request ends as hmBalloonAborted, the result for a balloon that
+            // could not be kept on screen.
+            const HM_HELP_DISABLED: i16 = -850;
+            const HM_BALLOON_ABORTED: i16 = -853;
+            Some(PpcImportAction::Return(ppc_i16_result(
+                if toolbox_startup.help_balloons_enabled {
+                    HM_BALLOON_ABORTED
+                } else {
+                    HM_HELP_DISABLED
+                },
+            )))
+        }
+        PpcImportDispatcherTarget::SetMCEntries => {
+            // Inside Macintosh Volume V (SetMCEntries): copies numEntries
+            // MCEntry records into the menu color information table,
+            // replacing any entry with the same menu ID and item. The
+            // end-of-table marker (ID -99) is not an entry.
+            let count = usize::from((cpu.gpr[3] as u16 as i16).max(0) as u16);
+            let size = count * crate::menu_manager::MENU_COLOR_ENTRY_SIZE;
+            if let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[4], size as u32) {
+                let incoming = bytes
+                    .chunks_exact(crate::menu_manager::MENU_COLOR_ENTRY_SIZE)
+                    .filter(|entry| entry[..2] != (-99i16).to_be_bytes())
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>();
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let handle = ppc_ensure_menu_color_table_handle_with_allocator(
+                    Some(&mut allocator),
+                    None,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                );
+                if handle != 0 && !incoming.is_empty() {
+                    let current = ppc_menu_color_table_bytes(memory, handles);
+                    let merged = crate::menu_manager::merge_menu_color_entries(&current, &incoming);
+                    let _ = ppc_replace_menu_bytes_with_allocator(
+                        Some(&mut allocator),
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        handle,
+                        &merged,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::HMSetBalloons => {
             // HMSetBalloons (InterfaceLib)
             // Updates the modeled Balloon Help setting.

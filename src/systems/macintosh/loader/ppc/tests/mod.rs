@@ -230,6 +230,7 @@ mod current_key_modifiers;
 mod text_edit;
 mod scrap_manager;
 mod list_manager;
+mod interface_extras;
 
 mod standard_c_library;
 mod toolbox_utilities;

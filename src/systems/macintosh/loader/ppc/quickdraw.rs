@@ -524,6 +524,31 @@ pub(crate) fn ppc_paint_arc(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) -> bool {
+    ppc_draw_arc(
+        memory,
+        gworlds,
+        current_gworld,
+        rect_ptr,
+        (start_angle, arc_angle),
+        color,
+        explicit_index,
+        false,
+    )
+}
+
+/// PaintArc, or with `frame` set FrameArc, which draws only the part of the
+/// oval's outline (pen-sized, inside the rectangle) that the wedge covers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_draw_arc(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect_ptr: u32,
+    (start_angle, arc_angle): (i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    frame: bool,
+) -> bool {
     // Inside Macintosh: Imaging With QuickDraw, pp. 3-73–3-74: PaintArc
     // paints the wedge inside the oval, with zero at 12 o'clock and positive
     // angles proceeding clockwise.
@@ -566,6 +591,15 @@ pub(crate) fn ppc_paint_arc(
     let cy = (top as f64 + bottom as f64) / 2.0;
     let rx = width as f64 / 2.0;
     let ry = height as f64 / 2.0;
+    let mut pen = |offset: u32| {
+        f64::from(
+            memory
+                .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + offset))
+                .unwrap_or(1)
+                .max(1),
+        )
+    };
+    let (inner_rx, inner_ry) = (rx - pen(2), ry - pen(0));
 
     let covered = |x: i32, y: i32| {
         let dx = (x as f64 - cx + 0.5) / rx;
@@ -573,6 +607,13 @@ pub(crate) fn ppc_paint_arc(
         let dist_sq = dx * dx + dy * dy;
         if dist_sq > 1.0 {
             return false;
+        }
+        if frame && inner_rx > 0.0 && inner_ry > 0.0 {
+            let ix = (x as f64 - cx + 0.5) / inner_rx;
+            let iy = (y as f64 - cy + 0.5) / inner_ry;
+            if ix * ix + iy * iy < 1.0 {
+                return false;
+            }
         }
         let angle = (-(y as f64 - cy + 0.5)).atan2(x as f64 - cx + 0.5);
         let mut mac_angle = 90.0 - angle.to_degrees();
