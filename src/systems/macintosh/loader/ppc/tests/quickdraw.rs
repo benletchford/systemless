@@ -7019,3 +7019,81 @@ fn save_and_restore_fore_color_use_the_colorspec_rgb_field() {
     assert_eq!(loaded.memory.read_u16_be(color), Some(0xffff));
     assert_eq!(loaded.memory.read_u16_be(color + 2), Some(0x5678));
 }
+
+#[test]
+fn draw_picture_reads_guest_get_pic_proc_until_end_without_overreading() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawPicture")).unwrap();
+    let base = 0x1800_0000;
+    loaded.memory.add_region(base, vec![0; 0x1000]);
+    let descriptor = base + 0x1000;
+    let rtoc = base + 0x2000;
+    super::mixed_mode::install_test_powerpc_callback(
+        &mut loaded,
+        descriptor,
+        descriptor + 64,
+        base + 0x3000,
+        rtoc,
+        0x2c0,
+        &[
+            0x80a2_0000, // lwz r5,0(r2): persistent stream cursor
+            0x7c89_03a6, // mtctr r4: requested byte count
+            0x88c5_0000, // lbz r6,0(r5)
+            0x98c3_0000, // stb r6,0(r3)
+            0x38a5_0001, // addi r5,r5,1
+            0x3863_0001, // addi r3,r3,1
+            0x4200_fff0, // bdnz to lbz
+            0x90a2_0000, // stw r5,0(r2)
+            0x4e80_0020, // blr
+        ],
+    );
+    let mut picture = vec![0, 0, 0, 0, 0, 0, 0, 2, 0, 2];
+    picture.extend_from_slice(&[0x11, 1]);
+    // Two long comments exceed both the signed callback count and picSize.
+    // Their payload looks like EndOfPicture, but must be skipped as data.
+    for count in [40_000u16, 30_000] {
+        picture.extend_from_slice(&[0xa1, 0, 0]);
+        picture.extend_from_slice(&count.to_be_bytes());
+        picture.extend(std::iter::repeat_n(0xff, usize::from(count)));
+    }
+    picture.extend_from_slice(&[0x31, 0, 0, 0, 0, 0, 2, 0, 2, 0xff]);
+    let stream = base + 0x1_0000;
+    loaded.memory.add_region(stream, picture[10..].to_vec());
+    loaded.memory.write_u32_be(rtoc, stream).unwrap();
+    loaded.cpu.gpr[3] = 10;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let handle = loaded.cpu.gpr[3];
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_bytes(data, &picture[..10]).unwrap();
+    loaded.memory.write_u32_be(base + 44, descriptor).unwrap();
+    let port = *loaded.current_gworld;
+    loaded.memory.write_u32_be(port + 104, base).unwrap();
+    ppc_write_rect(&mut loaded.memory, base + 0x100, 0, 0, 2, 2).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(surface.front_buffer.depth, 8);
+    assert_eq!(loaded.screen_clut[0], [u16::MAX; 3]);
+    assert_eq!(loaded.screen_clut[255], [0; 3]);
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, surface.front_buffer, (0, 0), 0);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = base + 0x100;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawPicture;
+    let probe = loaded.run_with_hle_imports(1_000_000);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u32_be(rtoc),
+        Some(stream + picture.len() as u32 - 10)
+    );
+    assert!(loaded.picture_callback_stack.is_empty());
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (0, 0)),
+        Some(255)
+    );
+    assert_eq!(
+        ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle),
+        Some(picture[..10].to_vec())
+    );
+}

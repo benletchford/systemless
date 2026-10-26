@@ -120,6 +120,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
+        picture_callback_stack: Vec::new(),
         drag_tracking_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,

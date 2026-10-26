@@ -36,6 +36,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
+        picture_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,
         parked_interrupt_callback: None,

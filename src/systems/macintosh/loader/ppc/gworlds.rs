@@ -3511,6 +3511,30 @@ pub(crate) fn ppc_draw_picture(
         }
         return false;
     };
+    ppc_draw_picture_bytes(
+        cpu,
+        memory,
+        vfs_resources,
+        gworlds,
+        current_gworld,
+        screen_clut,
+        color_manager_clut,
+        &bytes,
+    )
+}
+
+pub(crate) fn ppc_draw_picture_bytes(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_resources: &[PpcVfsResourceRecord],
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    screen_clut: &[[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    bytes: &[u8],
+) -> bool {
+    let pic_handle = cpu.gpr[3];
+    let dst_rect_ptr = cpu.gpr[4];
     let Some(mut dst_rect) = ppc_read_rect(memory, dst_rect_ptr) else {
         if ppc_hle_trace_enabled() {
             eprintln!(
@@ -3520,7 +3544,7 @@ pub(crate) fn ppc_draw_picture(
         }
         return false;
     };
-    let Some((_pict_offset, pict_bounds)) = ppc_qt_pict_record_offset_and_bounds(&bytes) else {
+    let Some((_pict_offset, pict_bounds)) = ppc_qt_pict_record_offset_and_bounds(bytes) else {
         if ppc_hle_trace_enabled() {
             let head = bytes
                 .iter()
@@ -3570,7 +3594,7 @@ pub(crate) fn ppc_draw_picture(
     let drawn = ppc_draw_pict_bytes_to_16bpp(
         memory,
         front_buffer,
-        &bytes,
+        bytes,
         dst_rect,
         &draw_clut,
         device_ct_seed,

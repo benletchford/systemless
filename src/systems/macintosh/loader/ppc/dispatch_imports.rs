@@ -26,6 +26,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) stdc_qsort_stack: &'a mut Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: &'a mut Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: &'a mut Vec<PpcCollectionCallbackState>,
+    pub(crate) picture_callback_stack: &'a mut Vec<dispatch_picture::PpcPictureCallbackState>,
     pub(crate) drag_tracking_stack: &'a mut Vec<PpcDragTrackingState>,
     pub(crate) apple_events: &'a mut PpcAppleEventState,
     pub(crate) cfm_connections: &'a mut Vec<PpcCfmConnection>,
@@ -144,6 +145,7 @@ pub(crate) fn dispatch_supported_import(
         stdc_qsort_stack,
         dialog_callback_stack,
         collection_callback_stack,
+        picture_callback_stack,
         drag_tracking_stack,
         apple_events,
         cfm_connections,
@@ -732,6 +734,7 @@ pub(crate) fn dispatch_supported_import(
             current_gworld: *current_gworld,
             screen_clut,
             color_manager_clut,
+            callback_stack: picture_callback_stack,
         })
     {
         return Some(action);

@@ -2948,3 +2948,46 @@ fn pict_shape_erasure_preserves_background_pattern_bit_colors() {
         }
     }
 }
+
+#[test]
+fn streamed_picture_requests_stop_at_end_opcode() {
+    use super::{picture_stream_progress, PictureStreamProgress};
+    // A large v2 long-comment payload includes fake EndOfPicture bytes.
+    // picSize is deliberately zero, as permitted for large color pictures.
+    let mut picture = vec![0; 10];
+    picture.extend_from_slice(&[0x11, 2, 0xff, 0, 0x81, 0]);
+    picture.extend_from_slice(&70_000u32.to_be_bytes());
+    picture.extend(std::iter::repeat_n(0xff, 70_000));
+    picture.extend_from_slice(&[0, 0xff]);
+    let end = picture.len();
+    picture.extend_from_slice(&[0xaa; 16]);
+    let mut available = 10;
+    let mut requests = 0;
+    loop {
+        match picture_stream_progress(&picture[..available]) {
+            PictureStreamProgress::Need(next) => {
+                assert!(next > available && next <= end);
+                available = next;
+                requests += 1;
+                assert!(requests < 20, "payload must be requested as a block");
+            }
+            PictureStreamProgress::Complete(length) => {
+                assert_eq!(length, end);
+                assert_eq!(available, end);
+                break;
+            }
+            PictureStreamProgress::Invalid => panic!("valid streamed picture rejected"),
+        }
+    }
+    assert_eq!(super::picture_stream_len(&picture), Some(end));
+    assert_eq!(
+        picture_stream_progress(&[0; 9]),
+        PictureStreamProgress::Need(10)
+    );
+    let mut invalid = vec![0; 10];
+    invalid.push(0x17); // undefined v1 opcode
+    assert_eq!(
+        picture_stream_progress(&invalid),
+        PictureStreamProgress::Invalid
+    );
+}

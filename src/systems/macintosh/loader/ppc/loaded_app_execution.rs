@@ -253,6 +253,7 @@ impl PpcLoadedApp {
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
+        let mut picture_callback_stack = std::mem::take(&mut self.picture_callback_stack);
         let mut drag_tracking_stack = std::mem::take(&mut self.drag_tracking_stack);
         let mut pending_file_completions = std::mem::take(&mut self.pending_file_completions);
         let mut apple_events = std::mem::take(&mut self.apple_events);
@@ -1887,6 +1888,7 @@ impl PpcLoadedApp {
                                             stdc_qsort_stack: &mut stdc_qsort_stack,
                                             dialog_callback_stack: &mut dialog_callback_stack,
                                             collection_callback_stack: &mut collection_callback_stack,
+                                            picture_callback_stack: &mut picture_callback_stack,
                                             drag_tracking_stack: &mut drag_tracking_stack,
                                             apple_events: &mut apple_events,
                                             cfm_connections: &mut cfm_connections,
@@ -2384,6 +2386,7 @@ impl PpcLoadedApp {
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.collection_callback_stack = collection_callback_stack;
+        self.picture_callback_stack = picture_callback_stack;
         self.drag_tracking_stack = drag_tracking_stack;
         self.pending_file_completions = pending_file_completions;
         self.apple_events = apple_events;
