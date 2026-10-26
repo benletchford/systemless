@@ -3407,7 +3407,7 @@ pub(crate) fn dispatch_supported_import(
                 memory.read_u8(pointer).and_then(|length| {
                     pointer
                         .checked_add(1)
-                        .and_then(|bytes| ppc_memory_read_bytes(memory, bytes, usize::from(length)))
+                        .and_then(|bytes| ppc_memory_read_bytes(memory, bytes, u32::from(length)))
                 })
             };
             if let Some(message) = message {
