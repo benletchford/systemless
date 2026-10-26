@@ -3658,3 +3658,87 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
     }
+
+#[test]
+fn init_palettes_loads_only_current_or_system_default_and_preserves_repeated_calls() {
+    for (current, system) in [(false, false), (false, true), (true, true)] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InitPalettes")).unwrap();
+        loaded
+            .process_file_system
+            .current_resource_file
+            .with_mut(|value| *value = 41);
+        for (ref_num, red) in [(42, 0x9999u16), (0, 0x2222), (41, 0x1111)] {
+            if (ref_num == 0 && !system) || (ref_num == 41 && !current) {
+                continue;
+            }
+            let mut bytes = vec![0x77; 32];
+            bytes[..2].copy_from_slice(&1u16.to_be_bytes());
+            bytes[16..18].copy_from_slice(&red.to_be_bytes());
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(*b"pltt"),
+                    res_id: 0,
+                    name: Vec::new(),
+                    data: bytes.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.cpu.gpr[3] = 0x1234abcd;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234abcd, "void ABI preserves r3");
+        loaded.cpu.gpr[3] = u32::MAX;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPalette);
+        let handle = loaded.cpu.gpr[3];
+        assert_ne!(handle, 0);
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        let count = if current || system { 1 } else { 2 };
+        assert_eq!(loaded.memory.read_u16_be(ptr), Some(count));
+        let expected = if current {
+            0x1111
+        } else if system {
+            0x2222
+        } else {
+            0xffff
+        };
+        assert_eq!(loaded.memory.read_u16_be(ptr + 16), Some(expected));
+        if count == 2 {
+            for offset in [16, 18, 20] {
+                assert_eq!(loaded.memory.read_u16_be(ptr + offset), Some(0xffff));
+            }
+            for offset in [32, 34, 36] {
+                assert_eq!(loaded.memory.read_u16_be(ptr + offset), Some(0));
+            }
+        }
+        for offset in 2..16 {
+            assert_eq!(loaded.memory.read_u8(ptr + offset), Some(0));
+        }
+        for offset in 26..32 {
+            assert_eq!(loaded.memory.read_u8(ptr + offset), Some(0));
+        }
+        let allocated = test_handle_records!(loaded).len();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitWindows);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitPalettes);
+        assert!(loaded.toolbox_startup.windows_initialized);
+        assert_eq!(loaded.toolbox_startup.application_palette, handle);
+        assert_eq!(test_handle_records!(loaded).len(), allocated);
+    }
+}
+
+#[test]
+fn init_windows_also_initializes_a_queryable_default_palette() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InitWindows")).unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.toolbox_startup.windows_initialized);
+    loaded.cpu.gpr[3] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPalette);
+    assert_ne!(loaded.cpu.gpr[3], 0);
+}

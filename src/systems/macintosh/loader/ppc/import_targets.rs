@@ -314,6 +314,7 @@ pub enum PpcImportDispatcherTarget {
     GetMouse,
     GetGlobalMouse,
     GetCurrentKeyModifiers,
+    InitPalettes,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -3618,6 +3619,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::GetCurrentKeyModifiers
         }
         ("InterfaceLib", "GetGlobalMouse") => PpcImportDispatcherTarget::GetGlobalMouse,
+        ("InterfaceLib", "InitPalettes") => PpcImportDispatcherTarget::InitPalettes,
         ("InterfaceLib", "ActivatePalette") => PpcImportDispatcherTarget::ActivatePalette,
         ("InterfaceLib", "SetPalette") | ("InterfaceLib", "NSetPalette") => {
             PpcImportDispatcherTarget::NSetPalette
