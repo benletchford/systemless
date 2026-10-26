@@ -4,6 +4,22 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBGetDeviceDescriptor,
+    USBInstallDeviceNotification,
+    USBRemoveDeviceNotification,
+    USBExpertStatus,
+    USBExpertFatalError,
+    USBConfigureInterface,
+    USBFindNextPipe,
+    USBDeviceRequest,
+    USBIntRead,
+    USBFindNextAssociatedDescriptor,
+    USBAllocMem,
+    USBDeallocMem,
+    USBUnknownPipe,
+    USBGetNextDeviceByClass,
+    USBToHostWord,
+    USBMakeBMRequestType,
     Collection(PpcCollectionOperation),
     Drag(PpcDragOperation),
     InstallExceptionHandler,
@@ -1603,6 +1619,43 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
+        ("USBServicesLib", "USBConfigureInterface") => {
+            PpcImportDispatcherTarget::USBConfigureInterface
+        }
+        ("USBServicesLib", "USBFindNextPipe") => PpcImportDispatcherTarget::USBFindNextPipe,
+        ("USBServicesLib", "USBDeviceRequest") => PpcImportDispatcherTarget::USBDeviceRequest,
+        ("USBManagerLib", "USBGetDeviceDescriptor") => {
+            PpcImportDispatcherTarget::USBGetDeviceDescriptor
+        }
+        ("USBManagerLib", "USBInstallDeviceNotification") => {
+            PpcImportDispatcherTarget::USBInstallDeviceNotification
+        }
+        ("USBManagerLib", "USBRemoveDeviceNotification") => {
+            PpcImportDispatcherTarget::USBRemoveDeviceNotification
+        }
+        ("USBServicesLib", "USBExpertStatus") => PpcImportDispatcherTarget::USBExpertStatus,
+        ("USBServicesLib", "USBExpertFatalError") => PpcImportDispatcherTarget::USBExpertFatalError,
+        ("USBServicesLib", "USBIntRead") => PpcImportDispatcherTarget::USBIntRead,
+        ("USBServicesLib", "USBFindNextAssociatedDescriptor") => {
+            PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor
+        }
+        ("USBServicesLib", "USBAllocMem") => PpcImportDispatcherTarget::USBAllocMem,
+        ("USBServicesLib", "USBDeallocMem") => PpcImportDispatcherTarget::USBDeallocMem,
+        (
+            "USBServicesLib",
+            "USBAbortPipeByReference"
+            | "USBClearPipeStallByReference"
+            | "USBGetPipeStatusByReference",
+        ) => PpcImportDispatcherTarget::USBUnknownPipe,
+        ("USBManagerLib", "USBGetNextDeviceByClass") => {
+            PpcImportDispatcherTarget::USBGetNextDeviceByClass
+        }
+        ("USBServicesLib", "USBToHostWord" | "HostToUSBWord") => {
+            PpcImportDispatcherTarget::USBToHostWord
+        }
+        ("USBServicesLib", "USBMakeBMRequestType") => {
+            PpcImportDispatcherTarget::USBMakeBMRequestType
+        }
         ("SpeechRecognitionLib", symbol)
             if PpcSpeechRecognitionOperation::from_name(symbol).is_some() =>
         {

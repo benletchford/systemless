@@ -31,6 +31,11 @@ pub struct PpcToolboxStartupState {
     pub(crate) mixed_mode_m68k: SharedProcessMixedModeM68kState,
     pub(super) system_allocations: PpcSystemAllocationPool,
     pub(super) kchr_cache_ptr: u32,
+    /// Bounded USB Expert diagnostic log: device, status, Pascal-string bytes, value.
+    pub(super) usb_expert_log: Vec<(u32, i32, Vec<u8>, u32)>,
+    /// Owned notification tokens and copied 36-byte guest registration records.
+    pub(super) usb_notifications: Vec<(u32, Vec<u8>)>,
+    pub(super) usb_next_notification_token: u32,
     pub(super) internet_config: dispatch_internet_config::PpcInternetConfigState,
     pub(super) cf_strings: dispatch_core_foundation::PpcCfStringState,
     pub(super) icon_refs: dispatch_icon_services::PpcIconRefState,
@@ -152,6 +157,9 @@ impl Default for PpcToolboxStartupState {
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
             kchr_cache_ptr: 0,
+            usb_expert_log: Vec::new(),
+            usb_notifications: Vec::new(),
+            usb_next_notification_token: 1,
             internet_config: dispatch_internet_config::PpcInternetConfigState::default(),
             cf_strings: dispatch_core_foundation::PpcCfStringState::default(),
             icon_refs: dispatch_icon_services::PpcIconRefState::default(),

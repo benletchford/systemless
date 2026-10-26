@@ -3395,6 +3395,182 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
+        PpcImportDispatcherTarget::USBGetDeviceDescriptor => {
+            // USB.h takes a pointer to a USBDeviceRef, not the reference itself.
+            // With no attached devices no reference can resolve to a descriptor.
+            // Reject it without writing a fictitious descriptor or its length.
+            let reference = cpu.gpr[3];
+            let error = if reference == 0 || !ppc_memory_can_read_bytes(memory, reference, 4) {
+                i32::from(PPC_PARAM_ERR)
+            } else {
+                -6998 // kUSBUnknownDeviceErr
+            };
+            Some(PpcImportAction::Return(error as u32))
+        }
+        PpcImportDispatcherTarget::USBInstallDeviceNotification => {
+            // USB DDK rev. 26, pp. 186–188: retain the registration until its
+            // token is removed. No devices attach in this machine profile.
+            // Ferazel's InputSprocket USB constructors (code offsets 0x34c
+            // and 0x8c64) leave pbLength/pbVersion unset; use the actual layout.
+            let pb = cpu.gpr[3];
+            if pb != 0
+                && ppc_memory_can_read_bytes(memory, pb, 36)
+                && ppc_memory_can_write_bytes(memory, pb, 36)
+            {
+                let kind = memory.read_u8(pb + 4).unwrap_or(0xfe);
+                let callback = memory.read_u32_be(pb + 28).unwrap_or(0);
+                let token = toolbox_startup.usb_next_notification_token;
+                let error = if !matches!(kind, 0..=3 | 0xff) {
+                    -6949 // kUSBUnknownNotification (USB Manager errors, p. 188)
+                } else if callback == 0 {
+                    PPC_PARAM_ERR
+                } else if token == 0 {
+                    PPC_MEM_FULL_ERR
+                } else {
+                    PPC_NO_ERR
+                };
+                if error == PPC_NO_ERR {
+                    let record = ppc_memory_read_bytes(memory, pb, 36).unwrap();
+                    toolbox_startup.usb_notifications.push((token, record));
+                    toolbox_startup.usb_next_notification_token = token.checked_add(1).unwrap_or(0);
+                    let _ = memory.write_u32_be(pb + 24, token);
+                } else {
+                    let _ = memory.write_u32_be(pb + 24, 0);
+                }
+                let _ = memory.write_u32_be(pb + 20, ppc_i16_result(error));
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::USBRemoveDeviceNotification => {
+            let records = &mut toolbox_startup.usb_notifications;
+            let result =
+                if let Some(index) = records.iter().position(|(token, _)| *token == cpu.gpr[3]) {
+                    records.remove(index);
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::USBExpertStatus
+        | PpcImportDispatcherTarget::USBExpertFatalError => {
+            // USB DDK rev. 26, pp. 154 and 157: reporting does not validate
+            // the device reference or unload the driver. The message is a P-string.
+            let fatal = binding.dispatcher_target == PpcImportDispatcherTarget::USBExpertFatalError;
+            let pointer = cpu.gpr[if fatal { 5 } else { 4 }];
+            let message = if pointer == 0 {
+                Some(Vec::new())
+            } else {
+                memory.read_u8(pointer).and_then(|length| {
+                    pointer
+                        .checked_add(1)
+                        .and_then(|bytes| ppc_memory_read_bytes(memory, bytes, u32::from(length)))
+                })
+            };
+            if let Some(message) = message {
+                let log = &mut toolbox_startup.usb_expert_log;
+                if log.len() == 256 {
+                    log.remove(0);
+                }
+                log.push((
+                    cpu.gpr[3],
+                    if fatal { cpu.gpr[4] as i32 } else { 0 },
+                    message,
+                    cpu.gpr[if fatal { 6 } else { 5 }],
+                ));
+                Some(PpcImportAction::Return(0))
+            } else {
+                Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
+            }
+        }
+        PpcImportDispatcherTarget::USBAllocMem
+        | PpcImportDispatcherTarget::USBDeallocMem
+        | PpcImportDispatcherTarget::USBConfigureInterface
+        | PpcImportDispatcherTarget::USBFindNextPipe
+        | PpcImportDispatcherTarget::USBDeviceRequest
+        | PpcImportDispatcherTarget::USBIntRead
+        | PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => {
+            // USB DDK rev. 26, pp. 99 and 150–151. USBPB is 72 bytes
+            // with mac68k alignment. Allocation requires a live USB reference;
+            // immediate errors do not schedule the completion routine.
+            let pb = cpu.gpr[3];
+            let allowed_flags = match binding.dispatcher_target {
+                PpcImportDispatcherTarget::USBFindNextPipe => 3,
+                PpcImportDispatcherTarget::USBDeviceRequest => 16 | 32 | 64 | 128 | 256,
+                PpcImportDispatcherTarget::USBConfigureInterface => 0,
+                _ => 32,
+            };
+            let reserved_buffer = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::USBConfigureInterface
+                    | PpcImportDispatcherTarget::USBFindNextPipe
+            );
+            let error: i32 = if pb == 0 || !ppc_memory_can_read_bytes(memory, pb, 72) {
+                -6985
+            } else if memory.read_u16_be(pb + 6).unwrap_or(0) < 72 {
+                -6985
+            } else if memory.read_u16_be(pb + 8) != Some(0x0100) {
+                -6986
+            } else if memory.read_u32_be(pb + 20) == Some(0)
+                || (memory.read_u32_be(pb + 20) == Some(u32::MAX)
+                    && binding.dispatcher_target != PpcImportDispatcherTarget::USBDeallocMem)
+            {
+                -6984
+            } else if memory.read_u32_be(pb + 44).unwrap_or(0) & !allowed_flags != 0 {
+                -6983
+            } else if reserved_buffer
+                && [32, 36, 40]
+                    .iter()
+                    .any(|offset| memory.read_u32_be(pb + offset) != Some(0))
+            {
+                i32::from(PPC_PARAM_ERR)
+            } else {
+                match binding.dispatcher_target {
+                    // DDK pp. 151–152: synchronous cleanup bypasses reference
+                    // validation, but must still refer to USBAllocMem storage.
+                    // This profile has never allocated USB storage; reject every
+                    // supplied buffer, including nil, without freeing an unrelated
+                    // Memory Manager pointer or invoking a completion routine.
+                    PpcImportDispatcherTarget::USBDeallocMem
+                        if memory.read_u32_be(pb + 20) == Some(u32::MAX) =>
+                    {
+                        -6975
+                    }
+                    PpcImportDispatcherTarget::USBIntRead => -6997,
+                    PpcImportDispatcherTarget::USBFindNextAssociatedDescriptor => -6978,
+                    _ => -6998,
+                }
+            };
+            Some(PpcImportAction::Return(error as u32))
+        }
+        // No USB device or pipe references exist in this machine profile.
+        // USB DDK rev. 26, pp. 135–136: an unknown-pipe error leaves the
+        // GetPipeStatus output untouched, rather than inventing an idle pipe.
+        PpcImportDispatcherTarget::USBUnknownPipe => {
+            Some(PpcImportAction::Return((-6997i32) as u32))
+        }
+        PpcImportDispatcherTarget::USBGetNextDeviceByClass => {
+            // USB DDK API Reference rev. 26, p. 179: exhaustion returns
+            // -43 and leaves deviceRef unchanged. This profile has no USB
+            // devices or class-driver connections to enumerate.
+            let valid = cpu.gpr[3] != 0
+                && cpu.gpr[4] != 0
+                && ppc_memory_can_read_bytes(memory, cpu.gpr[3], 4)
+                && ppc_memory_can_write_bytes(memory, cpu.gpr[4], 4);
+            Some(PpcImportAction::Return(ppc_i16_result(if valid {
+                -43
+            } else {
+                PPC_PARAM_ERR
+            })))
+        }
+        // USB.h: UInt16 endian conversion on the big-endian guest, and
+        // UInt8 bmRequestType fields (direction/type/recipient).
+        PpcImportDispatcherTarget::USBToHostWord => Some(PpcImportAction::Return(u32::from(
+            (cpu.gpr[3] as u16).swap_bytes(),
+        ))),
+        PpcImportDispatcherTarget::USBMakeBMRequestType => Some(PpcImportAction::Return(
+            ((cpu.gpr[3] & 1) << 7) | ((cpu.gpr[4] & 3) << 5) | (cpu.gpr[5] & 0x1f),
+        )),
         PpcImportDispatcherTarget::NoOpPreserve => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::ExitToShell => Some(PpcImportAction::Halt),
         PpcImportDispatcherTarget::GlmSetMode
