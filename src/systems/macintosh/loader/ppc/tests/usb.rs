@@ -373,13 +373,24 @@ fn usb_deallocation_never_frees_non_usb_memory_or_calls_a_completion() {
         b"USBDeallocMem",
     ))
     .unwrap();
+    loaded.cpu.gpr[3] = 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewPtr { clear: false },
+    );
+    let native_pointer = loaded.cpu.gpr[3];
+    assert_ne!(native_pointer, 0);
+    loaded
+        .memory
+        .write_u32_be(native_pointer, 0x12345678)
+        .unwrap();
     let pb = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(pb, vec![0; 80]);
     loaded.memory.write_u16_be(pb + 6, 72).unwrap();
     loaded.memory.write_u16_be(pb + 8, 0x100).unwrap();
     loaded.memory.write_u32_be(pb + 72, 0xa5a5a5a5).unwrap();
     for (completion, expected) in [(0, -6984i32), (0x12345678, -6998), (u32::MAX, -6975)] {
-        for buffer in [0, pb + 72, u32::MAX] {
+        for buffer in [0, pb + 72, native_pointer, u32::MAX] {
             loaded.memory.write_u32_be(pb + 20, completion).unwrap();
             loaded.memory.write_u32_be(pb + 32, buffer).unwrap();
             let before = ppc_memory_read_bytes(&mut loaded.memory, pb, 80).unwrap();
@@ -390,6 +401,10 @@ fn usb_deallocation_never_frees_non_usb_memory_or_calls_a_completion() {
                 ppc_memory_read_bytes(&mut loaded.memory, pb, 80),
                 Some(before)
             );
+            loaded.cpu.gpr[3] = native_pointer;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPtrSize);
+            assert_eq!(loaded.cpu.gpr[3], 8);
+            assert_eq!(loaded.memory.read_u32_be(native_pointer), Some(0x12345678));
         }
     }
 }
