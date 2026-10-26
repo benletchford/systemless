@@ -60,6 +60,12 @@ pub(crate) fn ppc_set_pen_normal(memory: &mut PpcSectionMem, current_gworld: u32
         current_gworld + PPC_CGRAF_PORT_PN_MODE_OFFSET,
         PPC_QD_PEN_MODE_PAT_COPY as u16,
     );
+    if memory
+        .read_u16_be(current_gworld + 6)
+        .is_some_and(|v| v & 0xc000 == 0xc000)
+    {
+        let _ = memory.write_u32_be(current_gworld + 58, 0);
+    }
 }
 
 pub(crate) fn ppc_get_pen_state(memory: &mut PpcSectionMem, current_gworld: u32, state_ptr: u32) {
@@ -1177,6 +1183,7 @@ fn ppc_fill_rows_with_pixpat(
     bottom: i16,
     mut rows: Vec<Vec<i16>>,
     sampler: &PpcPixPatSampler,
+    mode: u16,
 ) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
@@ -1210,21 +1217,23 @@ fn ppc_fill_rows_with_pixpat(
         .saturating_add(surface.front_buffer.width as i16);
     let front_buffer = surface.front_buffer;
 
-    if let PpcPixPatKind::Mono {
-        pat1,
-        fore_pixel,
-        back_pixel,
-    } = &sampler.kind
-    {
-        if let Some(wrote) = ppc_gpu_region_rows(
-            memory,
-            surface,
-            top,
-            &rows,
-            *pat1,
-            [[0, u32::from(*back_pixel)], [0, u32::from(*fore_pixel)]],
-        ) {
-            return wrote;
+    if mode & 7 == 0 {
+        if let PpcPixPatKind::Mono {
+            pat1,
+            fore_pixel,
+            back_pixel,
+        } = &sampler.kind
+        {
+            if let Some(wrote) = ppc_gpu_region_rows(
+                memory,
+                surface,
+                top,
+                &rows,
+                *pat1,
+                [[0, u32::from(*back_pixel)], [0, u32::from(*fore_pixel)]],
+            ) {
+                return wrote;
+            }
         }
     }
     let mut wrote = false;
@@ -1242,7 +1251,22 @@ fn ppc_fill_rows_with_pixpat(
             }
             for x in seg_left..seg_right {
                 let buf_x = i32::from(x) - i32::from(surf_left);
-                let pixel = sampler.sample(x, y);
+                let source = sampler.sample(x, y);
+                let pixel = if mode & 7 == 0 {
+                    source
+                } else {
+                    let Some(destination) =
+                        ppc_quickdraw_read_pixel(memory, front_buffer, (buf_x, buf_y))
+                    else {
+                        continue;
+                    };
+                    ppc_deep_mask_boolean_pixel(
+                        u32::from(source),
+                        u32::from(destination),
+                        front_buffer.depth,
+                        mode & 7,
+                    ) as u16
+                };
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (buf_x, buf_y), pixel);
             }
         }
@@ -1297,6 +1321,7 @@ pub(crate) fn ppc_fill_color_region(
         bottom,
         rows,
         &sampler,
+        8,
     )
 }
 
@@ -1343,6 +1368,7 @@ pub(crate) fn ppc_fill_color_rect(
         bottom,
         rows,
         &sampler,
+        8,
     )
 }
 
@@ -1400,6 +1426,7 @@ pub(crate) fn ppc_fill_region_with_mono_pattern(
         bottom,
         rows,
         &sampler,
+        8,
     )
 }
 
@@ -2698,6 +2725,47 @@ pub(crate) fn ppc_paint_rect(
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
+    // Color QuickDraw takes its pen image from the live port, even when
+    // the legacy monochrome pattern is solid black.
+    let color_port = memory
+        .read_u16_be(current_gworld.wrapping_add(6))
+        .is_some_and(|version| version & 0xc000 == 0xc000);
+    let pixpat = if color_port {
+        memory
+            .read_u32_be(current_gworld.wrapping_add(58))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if pixpat != 0 {
+        let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+            return false;
+        };
+        let (top, left, bottom, right) = rect;
+        if bottom <= top || right <= left {
+            return true;
+        }
+        let fore_pixel =
+            ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, explicit_index)
+                .unwrap_or(1);
+        let back_pixel =
+            ppc_quickdraw_surface_color_pixel(memory, surface, back_color).unwrap_or(0);
+        let sampler = ppc_decode_pixpat_sampler(memory, surface, pixpat, fore_pixel, back_pixel);
+        let rows = vec![vec![left, right]; (i32::from(bottom) - i32::from(top)) as usize];
+        let mode = memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_MODE_OFFSET))
+            .unwrap_or(8);
+        return ppc_fill_rows_with_pixpat(
+            memory,
+            gworlds,
+            current_gworld,
+            top,
+            bottom,
+            rows,
+            &sampler,
+            mode,
+        );
+    }
     if pattern.iter().all(|row| *row == 0xff) {
         return ppc_paint_rect_bounds(
             memory,
