@@ -1027,6 +1027,8 @@ pub enum PpcImportDispatcherTarget {
     ICStart,
     ICStop,
     ICGetSeed,
+    ICGetComponentInstance,
+    ICParseURL,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -5171,9 +5173,22 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => {
             PpcImportDispatcherTarget::ThreadEndCritical
         }
-        ("InterfaceLib", "ICStart") => PpcImportDispatcherTarget::ICStart,
-        ("InterfaceLib", "ICStop") => PpcImportDispatcherTarget::ICStop,
-        ("InterfaceLib", "ICGetSeed") => PpcImportDispatcherTarget::ICGetSeed,
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICStart") => {
+            PpcImportDispatcherTarget::ICStart
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICStop") => {
+            PpcImportDispatcherTarget::ICStop
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICGetSeed") => {
+            PpcImportDispatcherTarget::ICGetSeed
+        }
+        (
+            "InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib",
+            "ICGetComponentInstance",
+        ) => PpcImportDispatcherTarget::ICGetComponentInstance,
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICParseURL") => {
+            PpcImportDispatcherTarget::ICParseURL
+        }
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
