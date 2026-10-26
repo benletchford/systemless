@@ -240,7 +240,7 @@ fn input_sprocket_element_list_delivers_button_press_and_release_once() {
     );
     assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(1));
     assert_eq!(loaded.memory.read_u32_be(event_ptr), Some(0));
-    assert_eq!(loaded.memory.read_u32_be(event_ptr + 4), Some(123));
+    assert_eq!(loaded.memory.read_u32_be(event_ptr + 4), Some(2_044_875));
     assert_eq!(loaded.memory.read_u32_be(event_ptr + 8), Some(element));
     assert_eq!(loaded.memory.read_u32_be(event_ptr + 12), Some(4));
     assert_eq!(
@@ -1776,7 +1776,7 @@ fn mouse_device_elements_report_movement_and_button_events() {
             &mut loaded.cpu,
             &mut loaded.memory,
             input,
-            7,
+            1_000_000,
             state,
             &mut virtual_elements,
         );
@@ -1828,7 +1828,7 @@ fn mouse_device_elements_report_movement_and_button_events() {
         ),
         Some(10 << 16)
     );
-    assert_eq!(loaded.memory.read_u32_be(event + 4), Some(7));
+    assert_eq!(loaded.memory.read_u64_be(event), Some(16_625_000_000));
     assert_eq!(
         loaded.memory.read_u32_be(event + 8),
         Some(PPC_ISP_MOUSE_Y_ELEMENT)
@@ -1933,4 +1933,42 @@ fn mouse_device_simple_state_reports_button_and_movement() {
         );
         assert_eq!(loaded.memory.read_u32_be(state_ptr), Some(expected));
     }
+}
+
+#[test]
+fn inputsprocket_uptime_returns_the_virtual_absolute_clock() {
+    let target = dispatcher_target_for_import("InputSprocketLib", "ISpUptime");
+    assert_eq!(target, PpcImportDispatcherTarget::Microseconds);
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpUptime",
+    ))
+    .unwrap();
+    let time_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(time_ptr, vec![0xaa; 16]);
+    loaded.cpu.gpr[3] = time_ptr;
+    loaded.set_tick_count(1_000_000);
+    loaded.set_clock_cycle_timing(64, 0);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let absolute = loaded.memory.read_u64_be(time_ptr).unwrap();
+    assert_eq!(absolute, ppc_virtual_microseconds(1_000_000, 64, 0, 4));
+    assert!(absolute > u64::from(u32::MAX));
+    assert_eq!(
+        loaded.memory.read_u64_be(time_ptr + 8),
+        Some(0xaaaaaaaaaaaaaaaa)
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[time_ptr + 8, (absolute >> 32) as u32, absolute as u32]);
+    let action = dispatch_simple_hot_import_fast(
+        &PpcImportDispatcherTarget::AbsoluteToNanoseconds,
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        absolute,
+    );
+    assert!(matches!(action, Some(PpcImportAction::ReturnPreserve)));
+    assert_eq!(
+        loaded.memory.read_u64_be(time_ptr + 8),
+        Some(absolute * 1_000)
+    );
 }

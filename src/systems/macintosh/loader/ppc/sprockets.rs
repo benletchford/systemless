@@ -2600,7 +2600,14 @@ pub(crate) fn ppc_isp_element_list_get_next_event(
             continue;
         }
 
-        let event = [0u32, tick_count, element, ref_con, current_state];
+        let when = crate::time_manager::evaluate_microseconds(tick_count);
+        let event = [
+            (when >> 32) as u32,
+            when as u32,
+            element,
+            ref_con,
+            current_state,
+        ];
         let copy_size = buffer_size.min(PPC_ISP_ELEMENT_EVENT_SIZE);
         for offset in 0..copy_size {
             let word = event[(offset / 4) as usize];
