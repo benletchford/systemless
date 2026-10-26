@@ -7282,3 +7282,129 @@ fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose()
         .iter()
         .any(|record| record.handle == owned));
 }
+
+#[test]
+fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() {
+    for item_type in [PPC_DIALOG_ITEM_STATIC_TEXT, PPC_DIALOG_ITEM_EDIT_TEXT] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"GetNewDialog"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 20];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&150i16.to_be_bytes());
+        ditl[14] = item_type;
+        ditl[15] = 4;
+        ditl[16..20].copy_from_slice(b"WIDE");
+        for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: *loaded.process_file_system.current_resource_file,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        let dialog = loaded.cpu.gpr[3];
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        let handles = test_handle_records!(loaded);
+        let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+        let handle = items[0].handle;
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let rect = (bounds.0 + 10, bounds.1 + 10, bounds.0 + 40, bounds.1 + 150);
+        // Guest-owned artwork elsewhere in the dialog must survive the update.
+        let sentinel = (bounds.0 + 60, bounds.1 + 60, bounds.0 + 65, bounds.1 + 65);
+        ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            sentinel,
+            PpcRgbColor {
+                red: 0xffff,
+                green: 0,
+                blue: 0,
+            },
+        );
+        let text_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(text_ptr, vec![0; 256]);
+        for replacement in [b"I".as_slice(), b"".as_slice()] {
+            write_ppc_pstring(&mut loaded.memory, text_ptr, replacement);
+            loaded.cpu.gpr[3] = handle;
+            loaded.cpu.gpr[4] = text_ptr;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+            let mut ink = 0;
+            for y in rect.0..rect.2 {
+                for x in rect.1..rect.3 {
+                    let pixel = ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        front,
+                        (i32::from(x), i32::from(y)),
+                    )
+                    .unwrap();
+                    if pixel == 0 {
+                        ink += 1;
+                    }
+                    if x >= rect.1 + 20 || replacement.is_empty() {
+                        assert_eq!(pixel, 0x7fff, "old text must be erased");
+                    }
+                }
+            }
+            assert_eq!(ink > 0, !replacement.is_empty());
+            assert_eq!(
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (i32::from(sentinel.1), i32::from(sentinel.0))
+                ),
+                Some(0x7c00)
+            );
+        }
+        loaded
+            .memory
+            .write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 0)
+            .unwrap();
+        write_ppc_pstring(&mut loaded.memory, text_ptr, b"Hidden");
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = text_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+        assert_eq!(
+            loaded.memory.read_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET),
+            Some(0)
+        );
+        for y in rect.0..rect.2 {
+            for x in rect.1..rect.3 {
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        front,
+                        (i32::from(x), i32::from(y))
+                    ),
+                    Some(0x7fff)
+                );
+            }
+        }
+    }
+}
