@@ -20,6 +20,12 @@ import sys
 import tempfile
 import time
 
+# Redirected Windows streams otherwise use the legacy ANSI code page, which
+# cannot represent menu arrows and Macintosh shortcut glyphs.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--binary", type=Path)
 parser.add_argument("--output", type=Path)
@@ -199,7 +205,7 @@ def wait_for(backend, role, name, timeout=60, gone=False):
             return None
         time.sleep(0.5)
     snapshot = sorted({(n["role"], n["name"]) for n in backend.nodes()})
-    (output / "tree.json").write_text(json.dumps(snapshot, indent=1))
+    (output / "tree.json").write_text(json.dumps(snapshot, indent=1), encoding="utf-8")
     state = "still present" if gone else "not found"
     raise SystemExit(f"{role} {name!r} {state}; tree saved to {output / 'tree.json'}")
 
@@ -223,7 +229,7 @@ def main():
     env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME="thread", SYSTEMLESS_TRACE_ACCESSIBILITY="1")
     for name in ("SYSTEMLESS_NATIVE_WINDOW_PROBE", "SYSTEMLESS_GPU_FAULT"):
         env.pop(name, None)
-    with (output / "run.log").open("w") as run_log:
+    with (output / "run.log").open("w", encoding="utf-8") as run_log:
         process = subprocess.Popen([str(binary), str(archive)], cwd=case, env=env,
                                    stdout=run_log, stderr=subprocess.STDOUT)
         try:
@@ -263,14 +269,14 @@ def main():
                 raise SystemExit(f"Systemless exited early with {process.returncode}")
         except SystemExit:
             run_log.flush()
-            trace = [line for line in (output / "run.log").read_text(errors="replace").splitlines()
+            trace = [line for line in (output / "run.log").read_text(encoding="utf-8", errors="replace").splitlines()
                      if line.startswith("[ACCESSIBILITY]")]
             print("accessibility requests received:", *trace[-20:], sep="\n  ", flush=True)
             raise
         finally:
             process.kill()
             process.wait()
-            (output / "steps.txt").write_text("\n".join(log) + "\n")
+            (output / "steps.txt").write_text("\n".join(log) + "\n", encoding="utf-8")
     print("screen reader accessibility check: PASS")
 
 
