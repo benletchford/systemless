@@ -2514,7 +2514,10 @@ pub(crate) fn ppc_isp_element_list_new(
 
 // Owned list references carry a private lifetime tag. System-owned device/global
 // lists use their synthetic identities and are never released by this path.
-fn ppc_isp_owned_element_list_count(memory: &mut PpcSectionMem, list: u32) -> Option<u32> {
+pub(super) fn ppc_isp_owned_element_list_count(
+    memory: &mut PpcSectionMem,
+    list: u32,
+) -> Option<u32> {
     if list == 0
         || !ppc_memory_can_read_bytes(memory, list, PPC_ISP_ELEMENT_LIST_RECORD_SIZE)
         || memory.read_u32_be(list + 8) != Some(PPC_ISP_ELEMENT_LIST_MAGIC)

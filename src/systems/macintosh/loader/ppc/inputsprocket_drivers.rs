@@ -38,6 +38,8 @@ struct DriverElement {
 struct DriverEvent {
     allocation: u32,
     when: u64,
+    element: u32,
+    ref_con: u32,
     data: Vec<u8>,
 }
 
@@ -46,6 +48,7 @@ pub(super) struct PpcInputSprocketDriverState {
     devices: BTreeMap<u32, DriverDevice>,
     elements: BTreeMap<u32, DriverElement>,
     callbacks: Vec<ActivationCall>,
+    lists: BTreeMap<u32, VecDeque<DriverEvent>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +101,64 @@ pub(super) fn dispatch_driver_import(
     if let Some(action) = activate_devices(binding, cpu, memory, manager, state, input) {
         sync_heap(manager, memory, heap_cursor);
         return Some(action);
+    }
+    // Keep list queues separate from the individual element queue: consuming or
+    // flushing one subscription must not consume another subscription's events.
+    match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ISpElementListNew => {
+            let output = cpu.gpr[5];
+            let result =
+                ppc_isp_element_list_new(cpu, manager, memory, heap_cursor, virtual_elements);
+            if result == PPC_NO_ERR {
+                let reference = memory.read_u32_be(output).unwrap();
+                state.lists.insert(reference, VecDeque::new());
+            }
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
+        PpcImportDispatcherTarget::ISpElementListDispose => {
+            let reference = cpu.gpr[3];
+            let result = ppc_isp_element_list_dispose(cpu, manager, memory, heap_cursor);
+            if result == PPC_NO_ERR {
+                if let Some(mut events) = state.lists.remove(&reference) {
+                    clear_queue(&mut events, manager);
+                }
+                sync_heap(manager, memory, heap_cursor);
+            }
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
+        PpcImportDispatcherTarget::ISpElementListGetNextEvent
+            if state.lists.contains_key(&cpu.gpr[3]) =>
+        {
+            let reference = cpu.gpr[3];
+            let borrowed =
+                reference == PPC_ISP_GLOBAL_ELEMENT_LIST || state.devices.contains_key(&reference);
+            if !borrowed && ppc_isp_owned_element_list_count(memory, reference).is_none() {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let events = state.lists.get_mut(&reference).unwrap();
+            if borrowed || !events.is_empty() {
+                let result = read_event(cpu, memory, manager, events);
+                sync_heap(manager, memory, heap_cursor);
+                return Some(PpcImportAction::Return(ppc_i16_result(result)));
+            }
+            // An owned list can also contain virtual elements, polled below.
+        }
+        PpcImportDispatcherTarget::ISpElementListFlush if state.lists.contains_key(&cpu.gpr[3]) => {
+            let reference = cpu.gpr[3];
+            let borrowed =
+                reference == PPC_ISP_GLOBAL_ELEMENT_LIST || state.devices.contains_key(&reference);
+            let result = if borrowed {
+                PPC_NO_ERR
+            } else {
+                ppc_isp_element_list_flush(cpu, memory, snapshot, *input, virtual_elements)
+            };
+            if result == PPC_NO_ERR {
+                clear_queue(state.lists.get_mut(&reference).unwrap(), manager);
+                sync_heap(manager, memory, heap_cursor);
+            }
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
+        _ => {}
     }
     // Existing application APIs share the same driver-owned element state.
     match binding.dispatcher_target {
@@ -242,7 +303,7 @@ pub(super) fn dispatch_driver_import(
             if input.suspended || !state.devices[&element.device].enabled {
                 clear_events(element, manager);
             }
-            let result = read_event(cpu, memory, manager, element);
+            let result = read_event(cpu, memory, manager, &mut element.events);
             sync_heap(manager, memory, heap_cursor);
             return Some(PpcImportAction::Return(ppc_i16_result(result)));
         }
@@ -275,6 +336,8 @@ pub(super) fn dispatch_driver_import(
                             enabled: false,
                         },
                     );
+                    state.lists.entry(PPC_ISP_GLOBAL_ELEMENT_LIST).or_default();
+                    state.lists.insert(reference, VecDeque::new());
                     let _ = memory.write_u32_be(output, reference);
                     PPC_NO_ERR
                 }
@@ -295,9 +358,11 @@ pub(super) fn dispatch_driver_import(
                 for element in owned {
                     if let Some(mut record) = state.elements.remove(&element) {
                         clear_events(&mut record, manager);
+                        remove_list_events(&mut state.lists, element, manager);
                     }
                     manager.dispose_native_ptr(element);
                 }
+                state.lists.remove(&reference);
                 manager.dispose_native_ptr(reference);
                 PPC_NO_ERR
             }
@@ -410,11 +475,24 @@ pub(super) fn dispatch_driver_import(
                             size.map_or(0, |size| manager.new_native_ptr(memory, size, false));
                         if allocation == 0 {
                             PPC_MEM_FULL_ERR
+                        } else if !enqueue_list_events(
+                            &mut state.lists,
+                            memory,
+                            manager,
+                            cpu.gpr[3],
+                            element.device,
+                            when,
+                            &data,
+                        ) {
+                            manager.dispose_native_ptr(allocation);
+                            PPC_MEM_FULL_ERR
                         } else {
                             element.state.copy_from_slice(&data);
                             element.events.push_back(DriverEvent {
                                 allocation,
                                 when,
+                                element: cpu.gpr[3],
+                                ref_con: 0,
                                 data,
                             });
                             PPC_NO_ERR
@@ -428,6 +506,7 @@ pub(super) fn dispatch_driver_import(
             let reference = cpu.gpr[3];
             if let Some(mut element) = state.elements.remove(&reference) {
                 clear_events(&mut element, manager);
+                remove_list_events(&mut state.lists, reference, manager);
                 manager.dispose_native_ptr(reference);
                 PPC_NO_ERR
             } else {
@@ -446,7 +525,7 @@ fn read_event(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     manager: &mut ProcessNativeMemoryManager,
-    element: &mut DriverElement,
+    events: &mut VecDeque<DriverEvent>,
 ) -> i16 {
     let size = cpu.gpr[4];
     let output = cpu.gpr[5];
@@ -457,11 +536,16 @@ fn read_event(
     {
         return PPC_PARAM_ERR;
     }
-    let Some(event) = element.events.pop_front() else {
+    let Some(event) = events.pop_front() else {
         let _ = memory.write_u8(was_event, 0);
         return PPC_NO_ERR;
     };
-    let header = [(event.when >> 32) as u32, event.when as u32, cpu.gpr[3], 0];
+    let header = [
+        (event.when >> 32) as u32,
+        event.when as u32,
+        event.element,
+        event.ref_con,
+    ];
     for offset in 0..(size as usize).min(16 + event.data.len()) {
         let byte = if offset < 16 {
             header[offset / 4].to_be_bytes()[offset % 4]
@@ -589,12 +673,13 @@ fn next_activation(
                     device.active = active;
                 }
                 if !active {
-                    for element in state
+                    for (element_ref, element) in state
                         .elements
-                        .values_mut()
-                        .filter(|element| element.device == reference)
+                        .iter_mut()
+                        .filter(|(_, element)| element.device == reference)
                     {
                         clear_events(element, manager);
+                        remove_list_events(&mut state.lists, *element_ref, manager);
                     }
                 }
             }
@@ -650,12 +735,13 @@ fn resume_activation(
             device.active = active;
         }
         if !active {
-            for element in state
+            for (element_ref, element) in state
                 .elements
-                .values_mut()
-                .filter(|element| element.device == reference)
+                .iter_mut()
+                .filter(|(_, element)| element.device == reference)
             {
                 clear_events(element, manager);
+                remove_list_events(&mut state.lists, *element_ref, manager);
             }
         }
     }
@@ -810,9 +896,84 @@ fn activate_devices(
 }
 
 fn clear_events(element: &mut DriverElement, manager: &mut ProcessNativeMemoryManager) {
-    for event in element.events.drain(..) {
+    clear_queue(&mut element.events, manager);
+}
+
+fn clear_queue(events: &mut VecDeque<DriverEvent>, manager: &mut ProcessNativeMemoryManager) {
+    for event in events.drain(..) {
         manager.dispose_native_ptr(event.allocation);
     }
+}
+
+fn remove_list_events(
+    lists: &mut BTreeMap<u32, VecDeque<DriverEvent>>,
+    element: u32,
+    manager: &mut ProcessNativeMemoryManager,
+) {
+    for events in lists.values_mut() {
+        events.retain(|event| {
+            if event.element == element {
+                manager.dispose_native_ptr(event.allocation);
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
+// Reserve every recipient's guest memory before publishing any copy or state.
+// This prevents partial delivery when the application's partition is exhausted.
+fn enqueue_list_events(
+    lists: &mut BTreeMap<u32, VecDeque<DriverEvent>>,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    element: u32,
+    device: u32,
+    when: u64,
+    data: &[u8],
+) -> bool {
+    let mut pending = Vec::new();
+    for (reference, events) in lists.iter_mut() {
+        let ref_con = if *reference == device || *reference == PPC_ISP_GLOBAL_ELEMENT_LIST {
+            Some(0)
+        } else {
+            ppc_isp_owned_element_list_count(memory, *reference).and_then(|count| {
+                (0..count).find_map(|index| {
+                    let (candidate, ref_con, _) =
+                        ppc_isp_element_list_read_entry(memory, *reference, index)?;
+                    (candidate == element).then_some(ref_con)
+                })
+            })
+        };
+        let Some(ref_con) = ref_con else { continue };
+        let allocation = if events.try_reserve(1).is_ok() {
+            manager.new_native_ptr(memory, data.len() as u32 + 16, false)
+        } else {
+            0
+        };
+        if allocation == 0 {
+            for (_, event) in pending {
+                let event: DriverEvent = event;
+                manager.dispose_native_ptr(event.allocation);
+            }
+            return false;
+        }
+        pending.push((
+            *reference,
+            DriverEvent {
+                allocation,
+                when,
+                element,
+                ref_con,
+                data: data.to_vec(),
+            },
+        ));
+    }
+    for (reference, event) in pending {
+        lists.get_mut(&reference).unwrap().push_back(event);
+    }
+    true
 }
 
 fn sync_heap(manager: &ProcessNativeMemoryManager, memory: &mut PpcSectionMem, cursor: &mut u32) {

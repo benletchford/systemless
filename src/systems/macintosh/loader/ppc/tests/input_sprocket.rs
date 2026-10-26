@@ -2449,6 +2449,22 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     loaded.memory.write_u32_be(scratch + 224, 1).unwrap();
     loaded.memory.write_u32_be(scratch + 228, 42).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = queries;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let list = loaded.memory.read_u32_be(queries).unwrap();
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0x1234;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = scratch + 220;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListAddElements,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
     for value in [7, 9] {
         loaded.cpu.gpr[3] = element;
         loaded.cpu.gpr[4] = value;
@@ -2493,8 +2509,30 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
             Some(0xaaaa_aaaa)
         );
     }
+    // Each list still owns both events after the individual queue is consumed.
+    for (reference, ref_con) in [
+        (list, 0x1234),
+        (device, 0),
+        (PPC_ISP_GLOBAL_ELEMENT_LIST, 0),
+    ] {
+        for value in [7, 9] {
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = 20;
+            loaded.cpu.gpr[5] = event_output;
+            loaded.cpu.gpr[6] = event_output + 24;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u8(event_output + 24), Some(1));
+            assert_eq!(loaded.memory.read_u32_be(event_output + 8), Some(element));
+            assert_eq!(loaded.memory.read_u32_be(event_output + 12), Some(ref_con));
+            assert_eq!(loaded.memory.read_u32_be(event_output + 16), Some(value));
+        }
+    }
     let old_limit = loaded.heap_limit();
-    loaded.set_heap_limit(loaded.heap_cursor() + 65);
+    loaded.set_heap_limit(loaded.heap_cursor() + 257);
     let mut exhausted = false;
     let mut queued = 0;
     for value in 0..16 {
@@ -2520,6 +2558,34 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
     );
     assert!(exhausted, "unread events must consume the guest heap");
     loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = scratch + 232;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementGetSimpleState,
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 232), Some(queued - 1));
+    // The rejected push changes neither state nor any recipient queue.
+    for reference in [list, device, PPC_ISP_GLOBAL_ELEMENT_LIST] {
+        for index in 0..=queued {
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = 20;
+            loaded.cpu.gpr[5] = event_output;
+            loaded.cpu.gpr[6] = event_output + 24;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(
+                loaded.memory.read_u8(event_output + 24),
+                Some(u8::from(index < queued))
+            );
+            if index < queued {
+                assert_eq!(loaded.memory.read_u32_be(event_output + 16), Some(index));
+            }
+        }
+    }
+    loaded.cpu.gpr[3] = element;
     run_test_import(
         &mut loaded,
         PpcImportDispatcherTarget::InputSprocketCompatibility(
@@ -2527,6 +2593,11 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
+    for reference in [list, device, PPC_ISP_GLOBAL_ELEMENT_LIST] {
+        loaded.cpu.gpr[3] = reference;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListFlush);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
     loaded.cpu.gpr[3] = element;
     loaded.cpu.gpr[4] = 77;
     loaded.cpu.gpr[5] = scratch + 224;
@@ -2537,6 +2608,27 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 0, "flushing releases event storage");
+    // Flushing only an owned list leaves the device subscription intact.
+    loaded.cpu.gpr[3] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListFlush);
+    for (reference, expected) in [(list, 0), (device, 1)] {
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = 20;
+        loaded.cpu.gpr[5] = event_output;
+        loaded.cpu.gpr[6] = event_output + 24;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u8(event_output + 24), Some(expected));
+    }
+    loaded.cpu.gpr[3] = list;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListDispose,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
     loaded.set_heap_limit(old_limit);
     loaded.cpu.gpr[3] = device;
     run_test_import(
