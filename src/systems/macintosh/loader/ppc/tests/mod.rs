@@ -217,6 +217,7 @@ mod palette_manager;
 mod gworld;
 mod blit;
 mod carbon_toolbox;
+mod carbon_services;
 
 mod file_manager;
 mod file_manager_extras;

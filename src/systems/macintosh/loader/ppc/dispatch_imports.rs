@@ -1022,6 +1022,9 @@ pub(crate) fn dispatch_supported_import(
             working_directories,
             next_working_directory_ref_num,
             event_queue,
+            heap_limit,
+            handles,
+            apple_event_descriptors: &apple_events.descriptors,
         },
     ) {
         return Some(action);
@@ -2207,7 +2210,11 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PutScrap
         | PpcImportDispatcherTarget::ZeroScrap
         | PpcImportDispatcherTarget::LoadScrap
-        | PpcImportDispatcherTarget::UnloadScrap => {
+        | PpcImportDispatcherTarget::UnloadScrap
+        | PpcImportDispatcherTarget::GetCurrentScrap
+        | PpcImportDispatcherTarget::GetScrapFlavorSize
+        | PpcImportDispatcherTarget::GetScrapFlavorData
+        | PpcImportDispatcherTarget::PutScrapFlavor => {
             unreachable!("Scrap Manager imports return through dispatch_scrap_import")
         }
         PpcImportDispatcherTarget::DMGetFirstScreenDevice
@@ -2793,6 +2800,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NewSndCallBackUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::NewTEClickLoopUPP
+        | PpcImportDispatcherTarget::NewNavEventUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::NewControlKeyFilterUPP
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
@@ -2941,6 +2949,25 @@ pub(crate) fn dispatch_supported_import(
                 cpu,
                 memory,
                 toolbox_startup,
+            ))
+        }
+        PpcImportDispatcherTarget::CarbonPrinting(operation) => {
+            Some(dispatch_printing::ppc_dispatch_carbon_printing(
+                operation,
+                cpu,
+                memory,
+                toolbox_startup,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
+            ))
+        }
+        PpcImportDispatcherTarget::NavGetDefaultDialogOptions => {
+            Some(dispatch_standard_file::ppc_nav_get_default_dialog_options(
+                cpu,
+                memory,
+                launched_app_path,
             ))
         }
         PpcImportDispatcherTarget::SlotCompatibility => {

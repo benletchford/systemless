@@ -45,6 +45,8 @@ pub struct PpcToolboxStartupState {
     pub(crate) printing_error: i16,
     /// SetWindowContentColor colours, keyed by window.
     pub(crate) window_content_colors: std::collections::BTreeMap<u32, [u16; 3]>,
+    /// Nesting depth of Carbon Printing Manager PMBegin calls.
+    pub(crate) carbon_printing_depth: u32,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
     pub flush_events_count: u32,
@@ -159,6 +161,7 @@ impl Default for PpcToolboxStartupState {
             text_edit_initialized: false,
             printing_error: 0,
             window_content_colors: std::collections::BTreeMap::new(),
+            carbon_printing_depth: 0,
             dialogs_initialized: false,
             dialog_resume_proc: 0,
             flush_events_count: 0,
