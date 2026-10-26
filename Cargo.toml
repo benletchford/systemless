@@ -62,6 +62,10 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
+# Exact residuals for the classic PowerPC double-double long double ABI.
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
 # Native backends are selected by `gui`; browsers add WebGPU in their crate.
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"], optional = true }
 futures-channel = { version = "0.3", optional = true }

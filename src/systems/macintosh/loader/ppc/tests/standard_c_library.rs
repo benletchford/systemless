@@ -796,15 +796,15 @@ fn stdclib_scanner_floats_stop_at_token_boundaries() {
 }
 
 #[test]
-fn stdclib_scanner_rounds_float_destinations_without_a_double_rounding_step() {
+fn stdclib_scanner_rounds_float_destinations_like_classic_stdclib() {
     let mut loaded =
         load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"sscanf")).unwrap();
     let destination = PPC_DATA_BASE + 0x2100;
     loaded.memory.add_region(destination, vec![0; 8]);
     loaded.cpu.gpr[5] = destination;
     for (input, bits) in [
-        (&b"1.0000000596046448"[..], 1f32.to_bits() + 1),
-        (&b"0x1.0000010000000001p0"[..], 1f32.to_bits() + 1),
+        (&b"1.0000000596046448"[..], 1f32.to_bits()),
+        (&b"0x1.0000010000000001p0"[..], 1f32.to_bits()),
         (&b"0x1.000001p0"[..], 1f32.to_bits()),
         (&b"0x1p-149"[..], 1),
         (&b"0x1p-150"[..], 0),
@@ -818,6 +818,52 @@ fn stdclib_scanner_rounds_float_destinations_without_a_double_rounding_step() {
             loaded.memory.read_u32_be(destination),
             Some(bits),
             "{input:?}"
+        );
+    }
+}
+
+#[test]
+fn stdclib_scanner_writes_both_long_double_components() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"sscanf")).unwrap();
+    let destination = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(destination, vec![0xaa; 20]);
+    loaded.cpu.gpr[5] = destination;
+    for (input, high, low) in [
+        (&b"9007199254740993"[..], 9007199254740992.0f64, 1.0f64),
+        (&b"-9007199254740993"[..], -9007199254740992.0, -1.0),
+        (&b"0x1.0000000000000001p0"[..], 1.0, 2f64.powi(-64)),
+        (
+            &b"1.000000000000000000867361737988403547205962240695953369140625"[..],
+            1.0,
+            2f64.powi(-60),
+        ),
+        // The residual rounds to half an ulp: normalize the leading tie to even.
+        (
+            &b"0x1.00000000000008000000000000001p0"[..],
+            1.0,
+            2f64.powi(-53),
+        ),
+        (
+            &b"0x1.fffffffffffff7ffffffffffffffffffp1023"[..],
+            f64::INFINITY,
+            0.0,
+        ),
+        (&b"1.25"[..], 1.25, 0.0),
+        (&b"-0"[..], -0.0, 0.0),
+    ] {
+        let result =
+            dispatch_stdc::ppc_scan_formatted(&loaded.cpu, &mut loaded.memory, input, b"%Lf");
+        assert_eq!(result.value, 1);
+        let expected = [high.to_bits().to_be_bytes(), low.to_bits().to_be_bytes()].concat();
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, destination, 16).unwrap(),
+            expected,
+            "{input:?}"
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(destination + 16),
+            Some(0xaaaaaaaa)
         );
     }
 }

@@ -701,15 +701,6 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
 /// Consume a complete floating token or its longest valid prefix. Incomplete
 /// exponents are consumed and fail conversion instead of being put back.
 pub(super) fn ppc_scan_float(input: &[u8], start: usize, width: usize) -> (Option<f64>, usize) {
-    ppc_scan_float_precision(input, start, width, false)
-}
-
-fn ppc_scan_float_precision(
-    input: &[u8],
-    start: usize,
-    width: usize,
-    single: bool,
-) -> (Option<f64>, usize) {
     let limit = input.len().min(start.saturating_add(width));
     let token = &input[start..limit];
     let mut cursor = usize::from(matches!(token.first(), Some(b'+' | b'-')));
@@ -830,16 +821,11 @@ fn ppc_scan_float_precision(
             exponent,
             fractional_digits,
             negative,
-            single,
         ))
     } else {
-        std::str::from_utf8(&token[..cursor]).ok().and_then(|text| {
-            if single {
-                text.parse::<f32>().ok().map(f64::from)
-            } else {
-                text.parse::<f64>().ok()
-            }
-        })
+        std::str::from_utf8(&token[..cursor])
+            .ok()
+            .and_then(|text| text.parse().ok())
     };
     (value, start + cursor)
 }
@@ -849,22 +835,8 @@ fn ppc_scan_hex_value(
     exponent: i32,
     fractional_digits: i32,
     negative: bool,
-    single: bool,
 ) -> f64 {
-    let (fraction, bias, min_normal, min_subnormal, max_normal, sign_shift) = if single {
-        (23usize, 127i64, -126i64, -149i64, 127i64, 31)
-    } else {
-        (52usize, 1023i64, -1022i64, -1074i64, 1023i64, 63)
-    };
-    let decode = |bits: u64| {
-        if single {
-            f64::from(f32::from_bits(bits as u32))
-        } else {
-            f64::from_bits(bits)
-        }
-    };
-    let infinity = ((bias * 2 + 1) as u64) << fraction;
-    let sign = u64::from(negative) << sign_shift;
+    let sign = u64::from(negative) << 63;
     let mut bits = Vec::new();
     for byte in mantissa.iter().filter(|byte| **byte != b'.') {
         let digit = (*byte as char).to_digit(16).unwrap();
@@ -873,22 +845,22 @@ fn ppc_scan_hex_value(
         }
     }
     let Some(first) = bits.iter().position(|bit| *bit) else {
-        return decode(sign);
+        return f64::from_bits(sign);
     };
     let bits = &bits[first..];
     let scale = i64::from(exponent) - i64::from(fractional_digits) * 4;
     let mut top = bits.len() as i64 - 1 + scale;
-    if top > max_normal {
-        return decode(sign | infinity);
+    if top > 1023 {
+        return f64::from_bits(sign | (0x7ff << 52));
     }
-    if top < min_subnormal - 1 {
-        return decode(sign);
+    if top < -1075 {
+        return f64::from_bits(sign);
     }
-    let normal = top >= min_normal;
+    let normal = top >= -1022;
     let kept = if normal {
-        fraction + 1
+        53
     } else {
-        (bits.len() as i64 + scale - min_subnormal).max(0) as usize
+        (bits.len() as i64 + scale + 1074).max(0) as usize
     };
     let mut significand = 0u64;
     for index in 0..kept {
@@ -902,18 +874,83 @@ fn ppc_scan_hex_value(
         significand += 1;
     }
     if !normal {
-        return decode(sign | significand);
+        return f64::from_bits(sign | significand);
     }
-    if significand == 1 << (fraction + 1) {
+    if significand == 1 << 53 {
         significand >>= 1;
         top += 1;
     }
-    if top > max_normal {
-        return decode(sign | infinity);
+    if top > 1023 {
+        return f64::from_bits(sign | (0x7ff << 52));
     }
-    decode(sign | (((top + bias) as u64) << fraction) | (significand & ((1 << fraction) - 1)))
+    f64::from_bits(sign | (((top + 1023) as u64) << 52) | (significand & ((1 << 52) - 1)))
 }
 
+// StdCLib's PPC scanner stores a high double followed by its residual double.
+// Use an exact rational so digits beyond binary64 survive in the low component.
+fn ppc_scan_long_double(token: &[u8], high: f64) -> (f64, f64) {
+    use num_bigint::BigInt;
+    use num_rational::BigRational;
+    use num_traits::ToPrimitive;
+
+    if !high.is_finite() || high == 0.0 {
+        return (high, 0.0);
+    }
+    let negative = token.first() == Some(&b'-');
+    let token = if matches!(token.first(), Some(b'+' | b'-')) {
+        &token[1..]
+    } else {
+        token
+    };
+    let hex = token.starts_with(b"0x") || token.starts_with(b"0X");
+    let token = if hex { &token[2..] } else { token };
+    let marker = if hex { b'p' } else { b'e' };
+    let split = token
+        .iter()
+        .position(|byte| byte.eq_ignore_ascii_case(&marker));
+    let (mantissa, exponent) = match split {
+        Some(index) => (
+            &token[..index],
+            std::str::from_utf8(&token[index + 1..])
+                .unwrap()
+                .parse::<i64>()
+                .unwrap(),
+        ),
+        None => (token, 0),
+    };
+    let fractional = mantissa
+        .iter()
+        .position(|byte| *byte == b'.')
+        .map_or(0, |index| mantissa.len() - index - 1) as i64;
+    let digits = mantissa
+        .iter()
+        .copied()
+        .filter(|byte| *byte != b'.')
+        .collect::<Vec<_>>();
+    let mut numerator = BigInt::parse_bytes(&digits, if hex { 16 } else { 10 }).unwrap();
+    if negative {
+        numerator = -numerator;
+    }
+    let scale = exponent - fractional * if hex { 4 } else { 1 };
+    let factor = BigInt::from(if hex { 2u8 } else { 10u8 }).pow(scale.unsigned_abs() as u32);
+    let exact = if scale >= 0 {
+        BigRational::from_integer(numerator * factor)
+    } else {
+        BigRational::new(numerator, factor)
+    };
+    let low = (exact - BigRational::from_float(high).unwrap())
+        .to_f64()
+        .unwrap();
+    // Rounding the residual can land exactly on a high-component midpoint.
+    // Renormalize so equal double-double values have the same leading double.
+    let sum = high + low;
+    if !sum.is_finite() {
+        return (sum, 0.0);
+    }
+    let recovered_low = sum - high;
+    let residual = (high - (sum - recovered_low)) + (low - recovered_low);
+    (sum, residual)
+}
 pub(super) struct PpcScanResult {
     pub value: u32,
     pub consumed: usize,
@@ -1018,13 +1055,20 @@ pub(super) fn ppc_scan_formatted(
                 }
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let single = !matches!(length, PpcPrintfLength::Long | PpcPrintfLength::LongDouble);
-                let (parsed, end) = ppc_scan_float_precision(input, input_cursor, width, single);
+                // Classic StdCLib converts to binary64, then uses frsp for %f.
+                let (parsed, end) = ppc_scan_float(input, input_cursor, width);
                 input_cursor = end;
                 if let Some(value) = parsed {
                     suppress
-                        || if matches!(length, PpcPrintfLength::Long | PpcPrintfLength::LongDouble)
-                        {
+                        || if length == PpcPrintfLength::LongDouble {
+                            let (high, low) =
+                                ppc_scan_long_double(&input[conversion_start..end], value);
+                            let mut bytes = [0u8; 16];
+                            bytes[..8].copy_from_slice(&high.to_bits().to_be_bytes());
+                            bytes[8..].copy_from_slice(&low.to_bits().to_be_bytes());
+                            ppc_memory_can_write_bytes(memory, destination, 16)
+                                && memory.write_bytes(destination, &bytes).is_some()
+                        } else if length == PpcPrintfLength::Long {
                             let bits = value.to_bits();
                             memory
                                 .write_u32_be(destination, (bits >> 32) as u32)
