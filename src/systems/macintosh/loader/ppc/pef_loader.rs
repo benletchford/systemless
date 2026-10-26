@@ -1068,6 +1068,7 @@ fn load_pef_application_with_optional_disk_fragment(
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
+        picture_callback_stack: Vec::new(),
         drag_tracking_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,

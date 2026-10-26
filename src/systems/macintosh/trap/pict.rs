@@ -2084,13 +2084,40 @@ fn skip_pixdata(bus: &MacMemoryBus, mut pos: u32, pm: &PixMapInfo) -> u32 {
     pos
 }
 
-fn read_pict_u16(bytes: &[u8], pos: usize) -> Option<u16> {
+// A bounded view shared by complete and incremental picture scans.
+struct PictureBytes<'a> {
+    data: &'a [u8],
+    needed: std::cell::Cell<usize>,
+}
+
+impl<'a> PictureBytes<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self {
+            data,
+            needed: std::cell::Cell::new(0),
+        }
+    }
+
+    fn require(&self, end: usize) -> bool {
+        if end <= self.data.len() {
+            return true;
+        }
+        self.needed.set(self.needed.get().max(end));
+        false
+    }
+
+    fn get(&self, pos: usize) -> Option<&u8> {
+        self.require(pos.checked_add(1)?).then(|| &self.data[pos])
+    }
+}
+
+fn read_pict_u16(bytes: &PictureBytes<'_>, pos: usize) -> Option<u16> {
     let hi = *bytes.get(pos)?;
     let lo = *bytes.get(pos + 1)?;
     Some(u16::from_be_bytes([hi, lo]))
 }
 
-fn read_pict_u32(bytes: &[u8], pos: usize) -> Option<u32> {
+fn read_pict_u32(bytes: &PictureBytes<'_>, pos: usize) -> Option<u32> {
     let b0 = *bytes.get(pos)?;
     let b1 = *bytes.get(pos + 1)?;
     let b2 = *bytes.get(pos + 2)?;
@@ -2098,20 +2125,20 @@ fn read_pict_u32(bytes: &[u8], pos: usize) -> Option<u32> {
     Some(u32::from_be_bytes([b0, b1, b2, b3]))
 }
 
-fn pict_add(pos: usize, amount: usize, len: usize) -> Option<usize> {
+fn pict_add(pos: usize, amount: usize, bytes: &PictureBytes<'_>) -> Option<usize> {
     let next = pos.checked_add(amount)?;
-    if next <= len {
+    if bytes.require(next) {
         Some(next)
     } else {
         None
     }
 }
 
-fn pict_align_index(pos: usize, len: usize) -> Option<usize> {
-    pict_add(pos, usize::from(!pos.is_multiple_of(2)), len)
+fn pict_align_index(pos: usize, bytes: &PictureBytes<'_>) -> Option<usize> {
+    pict_add(pos, usize::from(!pos.is_multiple_of(2)), bytes)
 }
 
-fn read_pixmap_bytes(bytes: &[u8], mut pos: usize) -> Option<(usize, PixMapInfo)> {
+fn read_pixmap_bytes(bytes: &PictureBytes<'_>, mut pos: usize) -> Option<(usize, PixMapInfo)> {
     let row_bytes_raw = read_pict_u16(bytes, pos)?;
     pos += 2;
     let row_bytes = row_bytes_raw & 0x3FFF;
@@ -2123,15 +2150,15 @@ fn read_pixmap_bytes(bytes: &[u8], mut pos: usize) -> Option<(usize, PixMapInfo)
     pos += 2;
     let bounds_right = read_pict_u16(bytes, pos)? as i16;
     pos += 2;
-    pos = pict_add(pos, 2, bytes.len())?; // version
+    pos = pict_add(pos, 2, bytes)?; // version
     let pack_type = read_pict_u16(bytes, pos)?;
     pos += 2;
-    pos = pict_add(pos, 4 + 4 + 4 + 2, bytes.len())?; // packSize, hRes, vRes, pixelType
+    pos = pict_add(pos, 4 + 4 + 4 + 2, bytes)?; // packSize, hRes, vRes, pixelType
     let pixel_size = read_pict_u16(bytes, pos)?;
     pos += 2;
     let cmp_count = read_pict_u16(bytes, pos)?;
     pos += 2;
-    pos = pict_add(pos, 2 + 4 + 4 + 4, bytes.len())?; // cmpSize, planeBytes, pmTable, pmReserved
+    pos = pict_add(pos, 2 + 4 + 4 + 4, bytes)?; // cmpSize, planeBytes, pmTable, pmReserved
 
     Some((
         pos,
@@ -2148,21 +2175,21 @@ fn read_pixmap_bytes(bytes: &[u8], mut pos: usize) -> Option<(usize, PixMapInfo)
     ))
 }
 
-fn skip_color_table_bytes(bytes: &[u8], pos: usize) -> Option<usize> {
+fn skip_color_table_bytes(bytes: &PictureBytes<'_>, pos: usize) -> Option<usize> {
     let ct_size = usize::from(read_pict_u16(bytes, pos + 6)?);
     pict_add(
         pos,
         8usize.checked_add((ct_size + 1).checked_mul(8)?)?,
-        bytes.len(),
+        bytes,
     )
 }
 
-fn skip_pixpat_bytes(bytes: &[u8], mut pos: usize) -> Option<usize> {
+fn skip_pixpat_bytes(bytes: &PictureBytes<'_>, mut pos: usize) -> Option<usize> {
     let pat_type = read_pict_u16(bytes, pos)?;
-    pos = pict_add(pos, 2 + 8, bytes.len())?;
+    pos = pict_add(pos, 2 + 8, bytes)?;
 
     if pat_type == 2 {
-        return pict_add(pos, 6, bytes.len());
+        return pict_add(pos, 6, bytes);
     }
     if pat_type != 1 {
         return Some(pos);
@@ -2173,12 +2200,13 @@ fn skip_pixpat_bytes(bytes: &[u8], mut pos: usize) -> Option<usize> {
     skip_pixdata_bytes(bytes, new_pos, &pm)
 }
 
-fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<usize> {
-    let height = usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0)).ok()?;
+fn skip_pixdata_bytes(bytes: &PictureBytes<'_>, mut pos: usize, pm: &PixMapInfo) -> Option<usize> {
+    let height =
+        usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0)).ok()?;
     let row_bytes = usize::from(pm.row_bytes);
 
     if pm.pack_type == 1 || pm.row_bytes < 8 {
-        return pict_add(pos, row_bytes.checked_mul(height)?, bytes.len());
+        return pict_add(pos, row_bytes.checked_mul(height)?, bytes);
     }
 
     if pm.pack_type == 2 {
@@ -2187,47 +2215,47 @@ fn skip_pixdata_bytes(bytes: &[u8], mut pos: usize, pm: &PixMapInfo) -> Option<u
         } else {
             row_bytes.checked_mul(height)?
         };
-        return pict_add(pos, data_bytes, bytes.len());
+        return pict_add(pos, data_bytes, bytes);
     }
 
     for _ in 0..height {
         let byte_count = if pm.row_bytes > 250 {
             let count = usize::from(read_pict_u16(bytes, pos)?);
-            pos = pict_add(pos, 2, bytes.len())?;
+            pos = pict_add(pos, 2, bytes)?;
             count
         } else {
             let count = usize::from(*bytes.get(pos)?);
-            pos = pict_add(pos, 1, bytes.len())?;
+            pos = pict_add(pos, 1, bytes)?;
             count
         };
-        pos = pict_add(pos, byte_count, bytes.len())?;
+        pos = pict_add(pos, byte_count, bytes)?;
     }
 
     Some(pos)
 }
 
-fn skip_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
+fn skip_bits_rect_bytes(bytes: &PictureBytes<'_>, mut pos: usize, has_rgn: bool) -> Option<usize> {
     if read_pict_u16(bytes, pos)? & 0x8000 != 0 {
         return skip_indexed_bits_rect_bytes(bytes, pos, has_rgn, false);
     }
     let row_bytes = usize::from(read_pict_u16(bytes, pos)? & 0x3FFF);
     let bounds_top = read_pict_u16(bytes, pos + 2)? as i16;
     let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
-    pos = pict_add(pos, 10 + 18, bytes.len())?;
+    pos = pict_add(pos, 10 + 18, bytes)?;
     if has_rgn {
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
-        pos = pict_add(pos, rgn_size, bytes.len())?;
+        pos = pict_add(pos, rgn_size, bytes)?;
     }
     let height = usize::try_from((i32::from(bounds_bottom) - i32::from(bounds_top)).max(0)).ok()?;
-    pict_add(pos, row_bytes.checked_mul(height)?, bytes.len())
+    pict_add(pos, row_bytes.checked_mul(height)?, bytes)
 }
 
-fn skip_pack_bits_rect_bytes(bytes: &[u8], pos: usize, has_rgn: bool) -> Option<usize> {
+fn skip_pack_bits_rect_bytes(bytes: &PictureBytes<'_>, pos: usize, has_rgn: bool) -> Option<usize> {
     skip_indexed_bits_rect_bytes(bytes, pos, has_rgn, true)
 }
 
 fn skip_indexed_bits_rect_bytes(
-    bytes: &[u8],
+    bytes: &PictureBytes<'_>,
     mut pos: usize,
     has_rgn: bool,
     packed: bool,
@@ -2244,7 +2272,7 @@ fn skip_indexed_bits_rect_bytes(
         let bounds_left = read_pict_u16(bytes, pos + 4)? as i16;
         let bounds_bottom = read_pict_u16(bytes, pos + 6)? as i16;
         let bounds_right = read_pict_u16(bytes, pos + 8)? as i16;
-        pos = pict_add(pos, 10, bytes.len())?;
+        pos = pict_add(pos, 10, bytes)?;
         PixMapInfo {
             row_bytes,
             bounds_top,
@@ -2257,44 +2285,46 @@ fn skip_indexed_bits_rect_bytes(
         }
     };
 
-    pos = pict_add(pos, 18, bytes.len())?;
+    pos = pict_add(pos, 18, bytes)?;
     if has_rgn {
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
-        pos = pict_add(pos, rgn_size, bytes.len())?;
+        pos = pict_add(pos, rgn_size, bytes)?;
     }
     if packed {
         skip_pixdata_bytes(bytes, pos, &pm)
     } else {
-        let height = usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0)).ok()?;
-        pict_add(
-            pos,
-            usize::from(pm.row_bytes).checked_mul(height)?,
-            bytes.len(),
-        )
+        let height =
+            usize::try_from((i32::from(pm.bounds_bottom) - i32::from(pm.bounds_top)).max(0))
+                .ok()?;
+        pict_add(pos, usize::from(pm.row_bytes).checked_mul(height)?, bytes)
     }
 }
 
-fn skip_direct_bits_rect_bytes(bytes: &[u8], mut pos: usize, has_rgn: bool) -> Option<usize> {
-    pos = pict_add(pos, 4, bytes.len())?; // baseAddr
+fn skip_direct_bits_rect_bytes(
+    bytes: &PictureBytes<'_>,
+    mut pos: usize,
+    has_rgn: bool,
+) -> Option<usize> {
+    pos = pict_add(pos, 4, bytes)?; // baseAddr
     let (new_pos, pm) = read_pixmap_bytes(bytes, pos)?;
     // Direct pixels have no ColorTable.
-    pos = pict_add(new_pos, 18, bytes.len())?;
+    pos = pict_add(new_pos, 18, bytes)?;
     if has_rgn {
         let rgn_size = usize::from(read_pict_u16(bytes, pos)?);
-        pos = pict_add(pos, rgn_size, bytes.len())?;
+        pos = pict_add(pos, rgn_size, bytes)?;
     }
     skip_pixdata_bytes(bytes, pos, &pm)
 }
 
-fn skip_v1_reserved_bytes(bytes: &[u8], opcode: u16, pos: usize) -> Option<usize> {
+fn skip_v1_reserved_bytes(bytes: &PictureBytes<'_>, opcode: u16, pos: usize) -> Option<usize> {
     match opcode {
-        0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => pict_add(pos, 8, bytes.len()),
+        0x35..=0x37 | 0x45..=0x47 | 0x55..=0x57 => pict_add(pos, 8, bytes),
         0x3D..=0x3F | 0x4D..=0x4F | 0x5D..=0x5F | 0x7D..=0x7F | 0x8D..=0x8F => Some(pos),
-        0x65..=0x67 => pict_add(pos, 12, bytes.len()),
-        0x6D..=0x6F => pict_add(pos, 4, bytes.len()),
+        0x65..=0x67 => pict_add(pos, 12, bytes),
+        0x6D..=0x6F => pict_add(pos, 4, bytes),
         0x75..=0x77 | 0x85..=0x87 => {
             let data_len = usize::from(read_pict_u16(bytes, pos)?);
-            pict_add(pos, data_len, bytes.len())
+            pict_add(pos, data_len, bytes)
         }
         _ => None,
     }
@@ -2306,7 +2336,29 @@ fn skip_v1_reserved_bytes(bytes: &[u8], opcode: u16, pos: usize) -> Option<usize
 /// until the end-of-picture opcode, which is required for large spooled PICT
 /// files. Inside Macintosh Volume V, V-92.
 pub(crate) fn picture_stream_len(bytes: &[u8]) -> Option<usize> {
-    walk_picture_bytes(bytes, |_, _| Some(()))
+    match picture_stream_progress(bytes) {
+        PictureStreamProgress::Complete(length) => Some(length),
+        _ => None,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PictureStreamProgress {
+    Complete(usize),
+    Need(usize),
+    Invalid,
+}
+
+/// Inspect only available bytes and report the next required total length.
+/// Callers can request exactly the missing suffix from getPicProc, without
+/// trusting picSize or reading through EndOfPicture into a following record.
+pub(crate) fn picture_stream_progress(data: &[u8]) -> PictureStreamProgress {
+    let bytes = PictureBytes::new(data);
+    match walk_picture_bytes(&bytes, |_, _| Some(())) {
+        Some(length) => PictureStreamProgress::Complete(length),
+        None if bytes.needed.get() > data.len() => PictureStreamProgress::Need(bytes.needed.get()),
+        None => PictureStreamProgress::Invalid,
+    }
 }
 
 /// Basic Picture Utilities metadata, independent of the destination display.
@@ -2318,13 +2370,22 @@ pub(crate) struct PictureBasicInfo {
     pub source_rect: [i16; 4],
 }
 
-pub(crate) fn picture_basic_info(bytes: &[u8]) -> Option<PictureBasicInfo> {
+pub(crate) fn picture_basic_info(data: &[u8]) -> Option<PictureBasicInfo> {
+    let reader = PictureBytes::new(data);
+    let bytes = &reader;
     let rect_at = |pos| -> Option<[i16; 4]> {
-        Some([read_pict_u16(bytes, pos)? as i16, read_pict_u16(bytes, pos + 2)? as i16,
-            read_pict_u16(bytes, pos + 4)? as i16, read_pict_u16(bytes, pos + 6)? as i16])
+        Some([
+            read_pict_u16(bytes, pos)? as i16,
+            read_pict_u16(bytes, pos + 2)? as i16,
+            read_pict_u16(bytes, pos + 4)? as i16,
+            read_pict_u16(bytes, pos + 6)? as i16,
+        ])
     };
     let mut info = PictureBasicInfo {
-        depth: 1, h_res: 72 << 16, v_res: 72 << 16, source_rect: rect_at(2)?,
+        depth: 1,
+        h_res: 72 << 16,
+        v_res: 72 << 16,
+        source_rect: rect_at(2)?,
     };
     walk_picture_bytes(bytes, |opcode, pos| {
         let pixmap = match opcode {
@@ -2349,8 +2410,11 @@ pub(crate) fn picture_basic_info(bytes: &[u8]) -> Option<PictureBasicInfo> {
     Some(info)
 }
 
-fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<()>) -> Option<usize> {
-    if bytes.len() < 10 {
+fn walk_picture_bytes(
+    bytes: &PictureBytes<'_>,
+    mut visit: impl FnMut(u16, usize) -> Option<()>,
+) -> Option<usize> {
+    if !bytes.require(10) {
         return None;
     }
 
@@ -2358,23 +2422,23 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
     let mut opcount = 0usize;
     let mut is_v2 = false;
 
-    while pos < bytes.len() {
+    loop {
         if opcount > 1_000_000 {
             return None;
         }
         opcount += 1;
 
         if is_v2 {
-            pos = pict_align_index(pos, bytes.len())?;
+            pos = pict_align_index(pos, bytes)?;
         }
 
         let opcode = if is_v2 {
             let op = read_pict_u16(bytes, pos)?;
-            pos = pict_add(pos, 2, bytes.len())?;
+            pos = pict_add(pos, 2, bytes)?;
             op
         } else {
             let op = u16::from(*bytes.get(pos)?);
-            pos = pict_add(pos, 1, bytes.len())?;
+            pos = pict_add(pos, 1, bytes)?;
             op
         };
 
@@ -2390,19 +2454,19 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             | 0x88..=0x8C => pos,
             0x01 | 0x70..=0x74 | 0x80..=0x84 => {
                 let data_len = usize::from(read_pict_u16(bytes, pos)?);
-                pict_add(pos, data_len, bytes.len())?
+                pict_add(pos, data_len, bytes)?
             }
-            0x02 | 0x09 | 0x0A | 0x10 => pict_add(pos, 8, bytes.len())?,
-            0x03 | 0x05 | 0x08 | 0x0D | 0x15 | 0x16 => pict_add(pos, 2, bytes.len())?,
-            0x04 => pict_add(pos, if is_v2 { 2 } else { 1 }, bytes.len())?,
+            0x02 | 0x09 | 0x0A | 0x10 => pict_add(pos, 8, bytes)?,
+            0x03 | 0x05 | 0x08 | 0x0D | 0x15 | 0x16 => pict_add(pos, 2, bytes)?,
+            0x04 => pict_add(pos, if is_v2 { 2 } else { 1 }, bytes)?,
             0x06 | 0x07 | 0x0B | 0x0C | 0x0E | 0x0F | 0x21 | 0x68..=0x6C => {
-                pict_add(pos, 4, bytes.len())?
+                pict_add(pos, 4, bytes)?
             }
             0x11 => {
                 let version = *bytes.get(pos)?;
-                let next = pict_add(pos, 1, bytes.len())?;
+                let next = pict_add(pos, 1, bytes)?;
                 if version == 0x02 {
-                    pos = pict_add(next, 1, bytes.len())?;
+                    pos = pict_add(next, 1, bytes)?;
                     is_v2 = true;
                     pos
                 } else {
@@ -2410,43 +2474,43 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
                 }
             }
             0x12..=0x14 => skip_pixpat_bytes(bytes, pos)?,
-            0x1A | 0x1B | 0x1D | 0x1F | 0x22 => pict_add(pos, 6, bytes.len())?,
-            0x20 | 0x30..=0x34 | 0x40..=0x44 | 0x50..=0x54 => pict_add(pos, 8, bytes.len())?,
-            0x23 | 0xA0 => pict_add(pos, 2, bytes.len())?,
+            0x1A | 0x1B | 0x1D | 0x1F | 0x22 => pict_add(pos, 6, bytes)?,
+            0x20 | 0x30..=0x34 | 0x40..=0x44 | 0x50..=0x54 => pict_add(pos, 8, bytes)?,
+            0x23 | 0xA0 => pict_add(pos, 2, bytes)?,
             0x28 => {
                 let len = usize::from(*bytes.get(pos + 4)?);
-                let mut next = pict_add(pos, 5usize.checked_add(len)?, bytes.len())?;
+                let mut next = pict_add(pos, 5usize.checked_add(len)?, bytes)?;
                 if is_v2 && !(1 + len).is_multiple_of(2) {
-                    next = pict_add(next, 1, bytes.len())?;
+                    next = pict_add(next, 1, bytes)?;
                 }
                 next
             }
             0x29 | 0x2A => {
                 let len = usize::from(*bytes.get(pos + 1)?);
-                let mut next = pict_add(pos, 2usize.checked_add(len)?, bytes.len())?;
+                let mut next = pict_add(pos, 2usize.checked_add(len)?, bytes)?;
                 if is_v2 && !len.is_multiple_of(2) {
-                    next = pict_add(next, 1, bytes.len())?;
+                    next = pict_add(next, 1, bytes)?;
                 }
                 next
             }
             0x2B => {
                 let len = usize::from(*bytes.get(pos + 2)?);
-                let mut next = pict_add(pos, 3usize.checked_add(len)?, bytes.len())?;
+                let mut next = pict_add(pos, 3usize.checked_add(len)?, bytes)?;
                 if is_v2 && !(1 + len).is_multiple_of(2) {
-                    next = pict_add(next, 1, bytes.len())?;
+                    next = pict_add(next, 1, bytes)?;
                 }
                 next
             }
             0x2C | 0x2D | 0x2E | 0x24..=0x27 | 0x2F => {
                 let data_len = usize::from(read_pict_u16(bytes, pos)?);
-                let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes.len())?;
+                let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes)?;
                 if is_v2 {
-                    pict_align_index(next, bytes.len())?
+                    pict_align_index(next, bytes)?
                 } else {
                     next
                 }
             }
-            0x60..=0x64 => pict_add(pos, 12, bytes.len())?,
+            0x60..=0x64 => pict_add(pos, 12, bytes)?,
             0x90 => skip_bits_rect_bytes(bytes, pos, false)?,
             0x91 => skip_bits_rect_bytes(bytes, pos, true)?,
             0x98 => skip_pack_bits_rect_bytes(bytes, pos, false)?,
@@ -2455,29 +2519,29 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             0x9B => skip_direct_bits_rect_bytes(bytes, pos, true)?,
             0xA1 => {
                 let data_len = usize::from(read_pict_u16(bytes, pos + 2)?);
-                let mut next = pict_add(pos, 4usize.checked_add(data_len)?, bytes.len())?;
+                let mut next = pict_add(pos, 4usize.checked_add(data_len)?, bytes)?;
                 if is_v2 && !data_len.is_multiple_of(2) {
-                    next = pict_add(next, 1, bytes.len())?;
+                    next = pict_add(next, 1, bytes)?;
                 }
                 next
             }
             0xFF => return Some(pos),
-            0x0C00 => pict_add(pos, 24, bytes.len())?,
-            0x02FF => pict_add(pos, 2, bytes.len())?,
+            0x0C00 => pict_add(pos, 24, bytes)?,
+            0x02FF => pict_add(pos, 2, bytes)?,
             _ if is_v2 => {
                 if (0x00A2..=0x00AF).contains(&opcode) {
                     let data_len = usize::from(read_pict_u16(bytes, pos)?);
-                    let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes.len())?;
-                    pict_align_index(next, bytes.len())?
+                    let next = pict_add(pos, 2usize.checked_add(data_len)?, bytes)?;
+                    pict_align_index(next, bytes)?
                 } else if (0x00B0..=0x00CF).contains(&opcode) || (0x8000..=0x80FF).contains(&opcode)
                 {
                     pos
                 } else if (0x00D0..=0x00FE).contains(&opcode) || opcode >= 0x8100 {
                     let data_len = usize::try_from(read_pict_u32(bytes, pos)?).ok()?;
-                    let next = pict_add(pos, 4usize.checked_add(data_len)?, bytes.len())?;
-                    pict_align_index(next, bytes.len())?
+                    let next = pict_add(pos, 4usize.checked_add(data_len)?, bytes)?;
+                    pict_align_index(next, bytes)?
                 } else if (0x0100..=0x7FFF).contains(&opcode) {
-                    pict_add(pos, usize::from(opcode >> 8).checked_mul(2)?, bytes.len())?
+                    pict_add(pos, usize::from(opcode >> 8).checked_mul(2)?, bytes)?
                 } else {
                     return None;
                 }
@@ -2485,8 +2549,6 @@ fn walk_picture_bytes(bytes: &[u8], mut visit: impl FnMut(u16, usize) -> Option<
             _ => skip_v1_reserved_bytes(bytes, opcode, pos)?,
         };
     }
-
-    None
 }
 
 /// Read a ColorTable from PICT data.
