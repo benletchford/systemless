@@ -5720,7 +5720,7 @@ impl super::TrapDispatcher {
                             tolerance,
                         );
                         self.install_animated_palette_entry_on_active_device(
-                            window, palette, dst, rgb, usage,
+                            bus, window, palette, dst, rgb, usage,
                         );
                     }
                     self.activate_associated_palette_for_window(bus, window);
@@ -15803,6 +15803,7 @@ impl super::TrapDispatcher {
                     tolerance,
                 );
                 self.install_animated_palette_entry_on_active_device(
+                    bus,
                     window,
                     palette,
                     dst_entry as u32,
@@ -17497,6 +17498,7 @@ impl super::TrapDispatcher {
 
     fn install_animated_palette_entry_on_active_device(
         &mut self,
+        bus: &mut MacMemoryBus,
         window: u32,
         palette_handle: u32,
         entry: u32,
@@ -17522,6 +17524,35 @@ impl super::TrapDispatcher {
         let device_index = (entry as usize) & 0xFF;
         self.device_clut.set_entry(device_index, rgb);
         self.color_manager_clut.set_entry(device_index, rgb);
+
+        // Animation changes a device cell before palette activation. Publish
+        // that cell now: activation may correctly find no further changes,
+        // but subsequent indexed drawing still needs the new guest table.
+        let gdh = self.active_gdevice_or_main(bus);
+        let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
+        if ctab_handle == 0
+            || device_index >= Self::color_table_entry_count(bus, ctab_handle) as usize
+        {
+            return;
+        }
+        let ctab_ptr = bus.read_long(ctab_handle);
+        if ctab_ptr == 0 {
+            return;
+        }
+        let entry = ctab_ptr + 8 + device_index as u32 * 8;
+        let previous = [
+            bus.read_word(entry + 2),
+            bus.read_word(entry + 4),
+            bus.read_word(entry + 6),
+        ];
+        if previous != rgb {
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+            let seed = self.next_color_table_seed();
+            bus.write_long(ctab_ptr, seed);
+            self.trace_ctab_seed_write(ctab_ptr, seed, "animate_palette_entry");
+        }
     }
 
     pub(crate) fn set_window_palette_association(

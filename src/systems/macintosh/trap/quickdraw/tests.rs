@@ -18417,6 +18417,13 @@ fn copy_bits_converts_between_direct_color_depths() {
             .current_port
             .with_mut(|current_port| *current_port = window);
 
+        // Activate first so animation is the only device change. A later
+        // no-op activation must not hide a stale guest ColorTable.
+        d.activate_associated_palette_for_window(&mut bus, window);
+        let gd = d.active_gdevice_or_main(&mut bus);
+        let ctab = TrapDispatcher::gdevice_ctab_handle(&bus, gd);
+        let ctab_ptr = bus.read_long(ctab);
+        let seed_before = bus.read_long(ctab_ptr);
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
         bus.write_word(TEST_SP + 4, 1);
@@ -18427,6 +18434,12 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(
+            [bus.read_word(ctab_ptr + 18), bus.read_word(ctab_ptr + 20),
+             bus.read_word(ctab_ptr + 22)],
+            animated_rgb
+        );
+        assert_ne!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
@@ -20549,6 +20562,13 @@ fn copy_bits_converts_between_direct_color_depths() {
             .current_port
             .with_mut(|current_port| *current_port = window);
 
+        // Activate first so animation is the only device change. A later
+        // no-op activation must not hide a stale guest ColorTable.
+        d.activate_associated_palette_for_window(&mut bus, window);
+        let gd = d.active_gdevice_or_main(&mut bus);
+        let ctab = TrapDispatcher::gdevice_ctab_handle(&bus, gd);
+        let ctab_ptr = bus.read_long(ctab);
+        let seed_before = bus.read_long(ctab_ptr);
         let before = *d.device_clut;
         bus.write_word(TEST_SP, 1);
         bus.write_word(TEST_SP + 2, 1);
@@ -20561,6 +20581,12 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(
+            [bus.read_word(ctab_ptr + 18), bus.read_word(ctab_ptr + 20),
+             bus.read_word(ctab_ptr + 22)],
+            animated_rgb
+        );
+        assert_ne!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
