@@ -527,3 +527,88 @@ fn fixture_runner_can_select_classic_theme_before_guest_initialization() {
     assert_eq!(runner.dispatcher().ui_theme_id(), UiThemeId::ClassicSystem7);
     assert!(runner.uses_classic_guest_metrics());
 }
+
+#[test]
+fn ppc_launchapplication_switches_to_bundled_application_on_either_cpu() {
+    for powerpc in [false, true] {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let native = app.ppc.as_mut().unwrap();
+        native
+            .memory
+            .write_u32_be(
+                PPC_CODE_BASE,
+                ppc_test_relative_branch(PPC_CODE_BASE, PPC_IMPORT_TRAP_BASE),
+            )
+            .unwrap();
+        let mut binding = test_ppc_import_binding(0, "InterfaceLib", "LaunchApplication");
+        binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+        binding.dispatcher_target = PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LaunchApplication,
+        );
+        native.import_count = 1;
+        native.imports = vec![binding];
+        let pb = PPC_DATA_BASE + 0x3000;
+        let spec = pb + 64;
+        native.memory.add_region(pb, vec![0; 256]);
+        native.memory.write_u16_be(pb + 6, 0x4c43).unwrap();
+        native.memory.write_u32_be(pb + 8, 32).unwrap();
+        native.memory.write_u32_be(pb + 16, spec).unwrap();
+        native
+            .memory
+            .write_u32_be(spec + 2, PPC_ROOT_DIR_ID)
+            .unwrap();
+        native
+            .memory
+            .write_bytes(spec + 6, b"\x0fregister helper")
+            .unwrap();
+        native.cpu.gpr[3] = pb;
+        let helper_code0 = minimal_code0(0, 0x2000, 0, 0);
+        let (helper_data, helper_bytes) = if powerpc {
+            let mut cfrg = vec![0; 76];
+            cfrg[8..12].copy_from_slice(&1u32.to_be_bytes());
+            cfrg[28..32].copy_from_slice(&1u32.to_be_bytes());
+            cfrg[32..36].copy_from_slice(b"pwpc");
+            cfrg[54] = 1; // application
+            cfrg[55] = 1; // data fork
+            cfrg[72..74].copy_from_slice(&44u16.to_be_bytes());
+            let mut pef = crate::loader::ppc::tests::synthetic_pef_with_import(b"TickCount");
+            let code_offset = u32::from_be_bytes(pef[60..64].try_into().unwrap()) as usize;
+            // Keep the helper alive after its real Toolbox call, rather than
+            // returning to address zero as the generic loader fixture does.
+            pef[code_offset + 16..code_offset + 20].copy_from_slice(&0x4800_0000u32.to_be_bytes());
+            (pef, make_resource_fork_bytes(&[(*b"cfrg", 0, &cfrg)]))
+        } else {
+            (
+                Vec::new(),
+                make_resource_fork_bytes(&[(*b"CODE", 0, &helper_code0)]),
+            )
+        };
+        let mut runner = FixtureRunner::new(128 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .vfs
+            .insert("Register Helper".into(), helper_data);
+        runner
+            .dispatcher
+            .vfs_rsrc
+            .insert("Register Helper".into(), helper_bytes);
+        runner.dispatcher.ensure_vfs_catalog();
+        runner.dispatcher.set_launched_app_path("Main App");
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(100_000);
+        runner.tick_budget = 50_000;
+        let (_, running) = runner.run_steps(8, None);
+        assert!(running);
+        assert!(
+            runner.tick_budget > 0 && runner.tick_budget < 50_000,
+            "launch must preserve the remaining fraction of the current tick"
+        );
+        assert!(!runner.is_halted());
+        assert_eq!(
+            runner.dispatcher.launched_app_path(),
+            Some("Register Helper")
+        );
+        assert_eq!(runner.native.application().is_some(), powerpc);
+        assert!(runner.dispatcher.vfs_rsrc.contains_key("Register Helper"));
+    }
+}

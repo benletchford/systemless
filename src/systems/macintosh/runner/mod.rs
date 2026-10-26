@@ -3775,18 +3775,7 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
 
         let normalized = TrapDispatcher::normalize_vfs_path(app_path);
-        let rsrc_key = self
-            .dispatcher
-            .find_vfs_rsrc_file(&normalized)
-            .ok_or_else(|| format!("no resource fork for launched application {normalized:?}"))?;
-        let rsrc_bytes = self
-            .dispatcher
-            .vfs_rsrc
-            .get(&rsrc_key)
-            .cloned()
-            .ok_or_else(|| format!("resource fork {rsrc_key:?} disappeared before launch"))?;
-        let fork = ResourceFork::parse(&rsrc_bytes)
-            .ok_or_else(|| format!("failed to parse launched application {normalized:?}"))?;
+        let prefer_powerpc = self.native.application().is_some() || self.prefers_powerpc_executables();
 
         let ram_size = self.bus.ram_size() as usize;
         let config = FixtureRunnerConfig {
@@ -3826,7 +3815,8 @@ impl FixtureRunner {
         replacement.dispatcher.initial_kiosk_guest_hide_observed =
             initial_kiosk_guest_hide_observed;
         replacement.instructions_per_tick = instructions_per_tick;
-        replacement.tick_budget = instructions_per_tick as i32;
+        // A process handoff does not restart the current VBL's CPU allowance.
+        replacement.tick_budget = self.tick_budget;
         replacement.wait_sleep_cap_in_headless = wait_sleep_cap_in_headless;
         replacement.app_start_time = app_start_time;
         replacement.launch_ticks_override = launch_ticks_override;
@@ -3839,9 +3829,9 @@ impl FixtureRunner {
         replacement.dispatcher.output_dir = output_dir;
         replacement.dispatcher.set_launched_app_path(&normalized);
 
-        let app = replacement
-            .load_app(&fork)
-            .ok_or_else(|| format!("failed to load launched application {normalized:?}"))?;
+        let app = crate::game::launch::load_application_from_vfs(
+            &mut replacement, &normalized, prefer_powerpc,
+        )?;
         replacement.init_app(&app);
         if ppc_host_mirror_capacity != 0 {
             let base = replacement.bus.alloc(ppc_host_mirror_capacity);
@@ -8402,9 +8392,23 @@ impl FixtureRunner {
             }
         }
 
+        let launch_path = if foreground
+            && ppc_app.toolbox_startup.pending_launch.as_ref().is_some_and(|launch| launch.ready)
+        {
+            ppc_app.prepare_vfs_resource_forks_for_native_export();
+            self.persist_ppc_vfs_to_host(&mut ppc_app);
+            ppc_app.toolbox_startup.pending_launch.take().map(|launch| launch.path)
+        } else {
+            None
+        };
         self.native
             .restore(native_context)
             .unwrap_or_else(|_| panic!("native context lost its owner"));
+        if let Some(path) = launch_path {
+            self.dispatcher.queue_pending_launch_application(&path, false);
+            self.service_pending_launch_application(false, false);
+            return (usize::try_from(cycles).unwrap_or(usize::MAX), !self.halted);
+        }
         if foreground && exited_via_ppc_exit_to_shell {
             if finish_frame == FrameFinalization::Complete {
                 self.redraw_chrome_outside_idle_journal();

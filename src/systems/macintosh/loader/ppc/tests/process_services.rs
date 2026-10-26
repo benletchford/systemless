@@ -3279,3 +3279,168 @@ fn ppc_component_refcons_of_unregistered_components_read_zero() {
     );
     assert_eq!(loaded.cpu.gpr[3], 0x1234);
 }
+
+#[test]
+fn ppc_launchapplication_queues_existing_targets_and_defers_until_yield() {
+    for flags in [0u16, 0x4800, 0x4200] {
+        let pef = synthetic_pef_with_import(b"LaunchApplication");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+            path: "Register App".to_string(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"APPL"),
+            finder_flags: 0,
+            resource_len: 4,
+            raw_data: Some(b"fork".to_vec().into()),
+            map_attrs: 0,
+            dirty: false,
+        });
+        let mut size = vec![0, 0];
+        size.extend_from_slice(&0x0010_0000u32.to_be_bytes());
+        size.extend_from_slice(&0x0008_0000u32.to_be_bytes());
+        loaded.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Register App".to_string(),
+            res_type: u32::from_be_bytes(*b"SIZE"),
+            res_id: 0,
+            name: Vec::new(),
+            data: size.into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        let pb = PPC_DATA_BASE + 0x3000;
+        let spec = pb + 64;
+        loaded.memory.add_region(pb, vec![0; 256]);
+        loaded.memory.write_u16_be(pb + 6, 0x4c43).unwrap();
+        loaded.memory.write_u32_be(pb + 8, 32).unwrap();
+        loaded.memory.write_u16_be(pb + 14, flags).unwrap();
+        loaded.memory.write_u32_be(pb + 16, spec).unwrap();
+        loaded
+            .memory
+            .write_u32_be(spec + 2, PPC_ROOT_DIR_ID)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(spec + 6, b"\x0cRegister App")
+            .unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::LaunchApplication,
+            ),
+        );
+        assert_eq!(loaded.memory.read_u32_be(pb + 20), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(pb + 24), Some(2));
+        assert_eq!(loaded.memory.read_u32_be(pb + 28), Some(0x0010_0000));
+        assert_eq!(loaded.memory.read_u32_be(pb + 32), Some(0x0008_0000));
+        let pending = loaded.toolbox_startup.pending_launch.as_ref().unwrap();
+        assert_eq!(pending.path, "Register App");
+        assert_eq!(pending.ready, flags == 0);
+        if flags != 0 {
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+            );
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .pending_launch
+                    .as_ref()
+                    .unwrap()
+                    .ready,
+                flags == 0x4800
+            );
+            if flags == 0x4200 {
+                run_test_import(&mut loaded, PpcImportDispatcherTarget::ExitToShell);
+                assert!(
+                    loaded
+                        .toolbox_startup
+                        .pending_launch
+                        .as_ref()
+                        .unwrap()
+                        .ready
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ppc_launchapplication_missing_target_clears_outputs_without_queuing() {
+    let pef = synthetic_pef_with_import(b"LaunchApplication");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    // A same-named application in another directory is not this FSSpec target.
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: "Other/Missing".to_string(),
+        creator: u32::from_be_bytes(*b"TEST"),
+        file_type: u32::from_be_bytes(*b"APPL"),
+        finder_flags: 0,
+        resource_len: 4,
+        raw_data: Some(b"fork".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    });
+    let pb = PPC_DATA_BASE + 0x3000;
+    let spec = pb + 64;
+    loaded.memory.add_region(pb, vec![0; 256]);
+    loaded.memory.write_u16_be(pb + 6, 0x4c43).unwrap();
+    loaded.memory.write_u32_be(pb + 8, 32).unwrap();
+    loaded.memory.write_u16_be(pb + 14, 0x4800).unwrap();
+    loaded.memory.write_u32_be(pb + 16, spec).unwrap();
+    loaded
+        .memory
+        .write_u32_be(spec + 2, PPC_ROOT_DIR_ID)
+        .unwrap();
+    loaded.memory.write_bytes(spec + 6, b"\x07Missing").unwrap();
+    for offset in [20, 24, 28, 32, 36] {
+        loaded.memory.write_u32_be(pb + offset, 0xdeadbeef).unwrap();
+    }
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::LaunchApplication,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+    assert!(loaded.toolbox_startup.pending_launch.is_none());
+    for offset in [20, 24, 28, 32, 36] {
+        assert_eq!(loaded.memory.read_u32_be(pb + offset), Some(0));
+    }
+}
+
+#[test]
+fn ppc_launchapplication_rejects_invalid_parameter_blocks() {
+    for (length, block_id, extended_length) in [
+        (0, 0x4c43, 32),
+        (16, 0x4c43, 32),
+        (44, 0, 32),
+        (44, 0x4c43, 0),
+    ] {
+        let pef = synthetic_pef_with_import(b"LaunchApplication");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = if length == 0 {
+            0
+        } else {
+            PPC_DATA_BASE + 0x3000
+        };
+        if length != 0 {
+            loaded.memory.add_region(pb, vec![0; length]);
+            loaded.memory.write_u16_be(pb + 6, block_id).unwrap();
+            loaded.memory.write_u32_be(pb + 8, extended_length).unwrap();
+        }
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::LaunchApplication,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert!(loaded.toolbox_startup.pending_launch.is_none());
+    }
+}
