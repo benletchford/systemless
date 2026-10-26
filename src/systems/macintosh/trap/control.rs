@@ -1940,6 +1940,49 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn draw_multiline_control_title(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        centered: bool,
+        inactive: bool,
+    ) {
+        let (base, row_bytes, width, height, depth) = self.get_screen_params();
+        let metrics = get_font_metrics(font_id, font_size);
+        let lines: Vec<_> = title.split('\r').collect();
+        let widths: Vec<_> = lines
+            .iter()
+            .map(|line| Self::fb_measure_string(line, font_id, font_size))
+            .collect();
+        let origins = crate::control_manager::control_title_line_origins(
+            rect,
+            &widths,
+            metrics.ascent,
+            metrics.descent,
+            metrics.leading,
+            centered,
+        );
+        let ink = (depth == 8).then(|| {
+            if inactive {
+                self.inactive_control_title_index()
+            } else {
+                super::pict::closest_clut_index(0, 0, 0, &self.device_clut)
+            }
+        });
+        for (line, (x, y)) in lines.into_iter().zip(origins) {
+            Self::fb_draw_string_clipped_with_index(
+                bus, base, row_bytes, depth, width, height, x, y, line, font_id, font_size, rect,
+                ink,
+            );
+        }
+        if inactive && depth != 8 {
+            self.dim_rect(bus, rect.0, rect.1, rect.2, rect.3);
+        }
+    }
+
     /// Draw centered text for a push button control using fb_draw_string.
     fn draw_control_text(
         &self,
@@ -1950,6 +1993,18 @@ impl super::TrapDispatcher {
         abs_right: i16,
         title: &str,
     ) {
+        if title.contains('\r') {
+            self.draw_multiline_control_title(
+                bus,
+                (abs_top, abs_left, abs_bottom, abs_right),
+                title,
+                0,
+                12,
+                true,
+                false,
+            );
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let font_id = 0i16; // Chicago (system font)
@@ -2024,6 +2079,18 @@ impl super::TrapDispatcher {
         font_size: i16,
         inactive: bool,
     ) {
+        if title.contains('\r') {
+            self.draw_multiline_control_title(
+                bus,
+                (label_top, text_x, label_bottom, label_right),
+                title,
+                font_id,
+                font_size,
+                false,
+                inactive,
+            );
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         if inactive && pixel_size == 8 {

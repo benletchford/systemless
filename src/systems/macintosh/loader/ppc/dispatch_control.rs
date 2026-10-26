@@ -3744,20 +3744,60 @@ pub(super) fn ppc_draw_control_inner(
         // for compact custom CDEFs whose title is metadata rather than text
         // intended to be painted beside the control.
         let title_clip = Some((top, left, bottom, right));
-        let _ = ppc_draw_text_bytes_styled_clipped(
-            memory,
-            gworlds,
-            owner,
-            (title_h, title_v),
-            title_style.font,
-            title_style.size,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            title_color,
-            None,
-            title_style.face,
-            title_clip,
-            &title,
-        );
+        if matches!(proc_id, 0 | 1 | 2) && title.contains(&b'\r') {
+            let lines: Vec<_> = title.split(|byte| *byte == b'\r').collect();
+            let widths: Vec<_> = lines
+                .iter()
+                .map(|line| {
+                    ppc_text_width_bytes(title_style.font, title_style.size, title_style.face, line)
+                })
+                .collect();
+            let origins = crate::control_manager::control_title_line_origins(
+                (
+                    top,
+                    if proc_id == 0 { left } else { title_h },
+                    bottom,
+                    right,
+                ),
+                &widths,
+                metrics.ascent,
+                metrics.descent,
+                metrics.leading,
+                proc_id == 0,
+            );
+            for (line, origin) in lines.into_iter().zip(origins) {
+                let _ = ppc_draw_text_bytes_styled_clipped(
+                    memory,
+                    gworlds,
+                    owner,
+                    origin,
+                    title_style.font,
+                    title_style.size,
+                    PPC_QD_TEXT_MODE_SRC_OR,
+                    title_color,
+                    None,
+                    title_style.face,
+                    title_clip,
+                    line,
+                );
+            }
+        } else {
+            let _ = ppc_draw_text_bytes_styled_clipped(
+                memory,
+                gworlds,
+                owner,
+                (title_h, title_v),
+                title_style.font,
+                title_style.size,
+                PPC_QD_TEXT_MODE_SRC_OR,
+                title_color,
+                None,
+                title_style.face,
+                title_clip,
+                &title,
+            );
+        }
+
     }
     framed
 }
