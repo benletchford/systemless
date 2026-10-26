@@ -433,7 +433,6 @@ pub enum PpcImportDispatcherTarget {
     FlashMenuBar,
     HMGetHelpMenuHandle,
     HMGetBalloons,
-    HMShowBalloon,
     SetMCEntries,
     LGetCellDataLocation,
     LAddColumn,
@@ -4090,13 +4089,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IsCmdChar") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::IsCmdChar)
         }
-        ("InterfaceLib", "GetColor") => {
-            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetColor)
-        }
         ("InterfaceLib", "FindServiceWindow") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::FindServiceWindow)
         }
-        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::HMShowBalloon,
         ("InterfaceLib", "SetMCEntries") => PpcImportDispatcherTarget::SetMCEntries,
         ("InterfaceLib", "LGetCellDataLocation") => PpcImportDispatcherTarget::LGetCellDataLocation,
         ("InterfaceLib", "LAddColumn") => PpcImportDispatcherTarget::LAddColumn,

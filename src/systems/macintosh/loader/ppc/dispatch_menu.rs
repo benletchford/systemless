@@ -943,22 +943,6 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                 toolbox_startup.help_balloons_enabled,
             )))
         }
-        PpcImportDispatcherTarget::HMShowBalloon => {
-            // Inside Macintosh: More Macintosh Toolbox (HMShowBalloon): no
-            // balloon is shown while Balloon Help is off (hmHelpDisabled).
-            // The runtime does not draw help balloons, so when it is on the
-            // request ends as hmBalloonAborted, the result for a balloon that
-            // could not be kept on screen.
-            const HM_HELP_DISABLED: i16 = -850;
-            const HM_BALLOON_ABORTED: i16 = -853;
-            Some(PpcImportAction::Return(ppc_i16_result(
-                if toolbox_startup.help_balloons_enabled {
-                    HM_BALLOON_ABORTED
-                } else {
-                    HM_HELP_DISABLED
-                },
-            )))
-        }
         PpcImportDispatcherTarget::SetMCEntries => {
             // Inside Macintosh Volume V (SetMCEntries): copies numEntries
             // MCEntry records into the menu color information table,
@@ -1021,8 +1005,9 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             // FUNCTION HMShowBalloon(aHelpMsg: HMMessageRecord; tip: Point;
             //   alternateRect: RectPtr; tipProc: Ptr; theProc, variant,
             //   method: INTEGER): OSErr; More Macintosh Toolbox (1993), 3-100.
-            // The host presents string balloons; help stays disabled otherwise.
+            // Preserve the disabled/aborted results when no host balloon is shown.
             const HM_HELP_DISABLED: i16 = -850;
+            const HM_BALLOON_ABORTED: i16 = -853;
             let message = cpu.gpr[3];
             let tip = ((cpu.gpr[4] >> 16) as u16 as i16, cpu.gpr[4] as u16 as i16);
             let bytes: Vec<u8> = (0..260u32)
@@ -1072,6 +1057,8 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
                     .show_balloon(text.unwrap_or_default(), artwork, tip);
             Some(PpcImportAction::Return(ppc_i16_result(if shown {
                 PPC_NO_ERR
+            } else if toolbox_startup.help_balloons_enabled {
+                HM_BALLOON_ABORTED
             } else {
                 HM_HELP_DISABLED
             })))

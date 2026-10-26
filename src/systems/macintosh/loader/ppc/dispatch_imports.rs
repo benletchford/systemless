@@ -1548,7 +1548,6 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FlashMenuBar
         | PpcImportDispatcherTarget::HMGetHelpMenuHandle
         | PpcImportDispatcherTarget::HMGetBalloons
-        | PpcImportDispatcherTarget::HMShowBalloon
         | PpcImportDispatcherTarget::SetMCEntries
         | PpcImportDispatcherTarget::HMIsBalloon
         | PpcImportDispatcherTarget::HMSetBalloons

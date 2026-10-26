@@ -862,6 +862,7 @@ pub(super) fn dispatch_textedit_import(
                     te_handle,
                 );
                 ppc_te_draw(
+                    Some(&toolbox_startup.host_ui),
                     memory,
                     handles,
                     gworlds,

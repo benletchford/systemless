@@ -53,6 +53,15 @@ pub(crate) fn ppc_dispatch_get_color(
             memory.read_u16_be(input + offset).unwrap_or(0)
         }
     });
+    if !startup.host_ui.enabled {
+        let out = cpu.gpr[6];
+        if out != 0 {
+            for (index, component) in color.into_iter().enumerate() {
+                let _ = memory.write_u16_be(out + index as u32 * 2, component);
+            }
+        }
+        return PpcImportAction::Return(0);
+    }
     let prompt = if cpu.gpr[4] == 0 {
         String::new()
     } else {
