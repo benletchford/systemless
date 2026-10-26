@@ -2850,6 +2850,44 @@ fn insert_payload_into_vfs(
     }
 }
 
+/// Load the exact VFS application requested by the Process Manager, using the
+/// same architecture and CFM setup as initial archive launch.
+pub(crate) fn load_application_from_vfs(
+    runner: &mut FixtureRunner,
+    path: &str,
+    prefer_powerpc: bool,
+) -> Result<LoadedApp, String> {
+    let (path, resource) = runner
+        .dispatcher()
+        .vfs_rsrc
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(path))
+        .ok_or_else(|| format!("No resource fork for launched application {path:?}"))?;
+    let data = runner
+        .dispatcher()
+        .vfs
+        .get(path)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let kind = classify_executable_with_preference(data, resource, true, prefer_powerpc)
+        .ok_or_else(|| format!("No executable application in {path:?}"))?;
+    let executable = ExecutableCandidate {
+        name: path.to_owned(),
+        vfs_key: path.to_owned(),
+        kind,
+        is_appl: true,
+        has_data_fork: !data.is_empty(),
+        score: 0,
+        priority: 0,
+        creator: *b"????",
+        is_installer: false,
+        is_documentation: false,
+        is_demo: false,
+        version: None,
+    };
+    load_selected_executable(runner, &executable)
+}
+
 fn load_selected_executable(
     runner: &mut FixtureRunner,
     executable: &ExecutableCandidate,
@@ -3042,6 +3080,9 @@ fn load_powerpc_executable(
         .iter()
         .find(|directory| directory.path.eq_ignore_ascii_case(parent))
         .map(|directory| directory.dir_id)
+        // Flat VFS distributions use the implicit HFS root (directory 2),
+        // which need not have an explicit empty-path catalogue record.
+        .or_else(|| parent.is_empty().then_some(crate::loader::ppc::PPC_ROOT_DIR_ID))
         .ok_or_else(|| format!("PowerPC executable parent directory missing: {parent}"))?;
     let filename = crate::mac_roman::encode_mac_roman_lossy(filename);
     let mut loaded = crate::loader::ppc::load_pef_application_with_disk_fragment_and_libraries(

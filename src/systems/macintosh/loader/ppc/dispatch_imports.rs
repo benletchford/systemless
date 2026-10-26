@@ -122,8 +122,11 @@ pub(crate) struct PpcDispatchContext<'a> {
 }
 
 pub(crate) fn dispatch_supported_import(
-    context: PpcDispatchContext<'_>,
+    mut context: PpcDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
+    if let Some(action) = dispatch_launch::dispatch(&mut context) {
+        return Some(action);
+    }
     if let PpcImportDispatcherTarget::StdDescriptor(operation) = context.binding.dispatcher_target {
         return Some(dispatch_descriptor::dispatch(operation, context));
     }

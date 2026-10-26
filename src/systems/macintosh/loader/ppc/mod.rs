@@ -175,6 +175,7 @@ mod dispatch_stdio;
 mod dispatch_descriptor;
 use dispatch_descriptor::PpcDescriptorOperation;
 mod dispatch_system;
+mod dispatch_launch;
 mod dispatch_textedit;
 mod dispatch_threads;
 mod dispatch_time;
