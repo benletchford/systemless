@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "apple_event_send.rs"]
+mod send;
+
 /// Inside Macintosh: Interapplication Communication (1993), p. 4-112.
 const PPC_ERR_AE_HANDLER_NOT_FOUND: i16 = -1717;
 
@@ -11,6 +14,7 @@ pub(super) struct PpcAppleEventDispatchAllocation {
     pub(super) descriptors: u32,
     pub(super) event_handle: u32,
     pub(super) reply_handle: u32,
+    pub(super) send_reply: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -900,6 +904,19 @@ pub(super) fn dispatch_apple_event_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ) => Some(send::dispatch(
+            cpu,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            apple_events,
+            toolbox_startup,
+        )),
         PpcImportDispatcherTarget::AppleEventCompatibility(operation) => {
             Some(ppc_dispatch_apple_event_compatibility(
                 operation,
@@ -1819,6 +1836,11 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
         }
         PpcAppleEventCompatibilityOperation::PutParamDesc
         | PpcAppleEventCompatibilityOperation::PutParamPtr => {
+            // A no-reply send supplies typeNull to its handler, not an event
+            // that can receive reply parameters (IM:IAC, Replying to an Event).
+            if memory.read_u32_be(cpu.gpr[3]) == Some(PPC_TYPE_NULL) {
+                return PpcImportAction::Return(ppc_i16_result(-1707));
+            }
             let value = if operation == PpcAppleEventCompatibilityOperation::PutParamDesc {
                 ppc_ae_descriptor(memory, &apple_events.descriptors, cpu.gpr[5])
             } else {
@@ -1976,6 +1998,45 @@ pub(super) fn ppc_process_apple_event(
     let Some((PPC_HIGH_LEVEL_EVENT, event_class, event_id)) = event.flatten() else {
         return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED));
     };
+    let mut data = event_class.to_be_bytes().to_vec();
+    data.extend_from_slice(&event_id.to_be_bytes());
+    ppc_dispatch_owned_apple_event(
+        cpu,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        apple_events,
+        toolbox_startup,
+        resume_guest_call_depth,
+        ProcessAeDescriptor {
+            desc_type: PPC_CORE_EVENT_CLASS,
+            data,
+            ..Default::default()
+        },
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_owned_apple_event(
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    apple_events: &mut PpcAppleEventState,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    resume_guest_call_depth: usize,
+    event_descriptor: ProcessAeDescriptor,
+    send_reply: Option<u32>,
+) -> PpcImportAction {
+    let event_class = u32::from_be_bytes(event_descriptor.data[..4].try_into().unwrap());
+    let event_id = u32::from_be_bytes(event_descriptor.data[4..8].try_into().unwrap());
     let Some(handler) = apple_events
         .handlers
         .handler_for(event_class, event_id, PPC_TYPE_WILDCARD)
@@ -1988,20 +2049,45 @@ pub(super) fn ppc_process_apple_event(
     // event and reply descriptors live in its application heap and the Apple
     // Event Manager disposes both after the installed handler returns.
     let descriptors = process_memory_manager.new_native_ptr(memory, 16, true);
-    let mut event_data = Vec::with_capacity(8);
-    event_data.extend_from_slice(&event_class.to_be_bytes());
-    event_data.extend_from_slice(&event_id.to_be_bytes());
+    let wants_reply = send_reply != Some(0);
+    let reply_descriptor = if !wants_reply {
+        ProcessAeDescriptor {
+            desc_type: PPC_TYPE_NULL,
+            ..Default::default()
+        }
+    } else if send_reply.is_some() {
+        ProcessAeDescriptor {
+            desc_type: PPC_CORE_EVENT_CLASS,
+            data: b"aevtansr".to_vec(),
+            attributes: event_descriptor.attributes.clone(),
+            ..Default::default()
+        }
+    } else {
+        ProcessAeDescriptor {
+            desc_type: PPC_CORE_EVENT_CLASS,
+            ..Default::default()
+        }
+    };
     let event_handle = (descriptors != 0)
-        .then(|| process_memory_manager.copy_bytes_to_new_native_handle(memory, &event_data))
+        .then(|| {
+            process_memory_manager.copy_bytes_to_new_native_handle(memory, &event_descriptor.data)
+        })
         .unwrap_or(0);
-    let reply_handle = (event_handle != 0)
-        .then(|| process_memory_manager.copy_bytes_to_new_native_handle(memory, &[]))
+    let reply_handle = (event_handle != 0 && wants_reply)
+        .then(|| {
+            process_memory_manager.copy_bytes_to_new_native_handle(memory, &reply_descriptor.data)
+        })
         .unwrap_or(0);
     if descriptors == 0
         || event_handle == 0
-        || reply_handle == 0
+        || (wants_reply && reply_handle == 0)
         || !ppc_write_ae_desc(memory, descriptors, PPC_CORE_EVENT_CLASS, event_handle)
-        || !ppc_write_ae_desc(memory, descriptors + 8, PPC_CORE_EVENT_CLASS, reply_handle)
+        || !ppc_write_ae_desc(
+            memory,
+            descriptors + 8,
+            reply_descriptor.desc_type,
+            reply_handle,
+        )
         || install_powerpc_call_arguments(
             cpu,
             memory,
@@ -2029,46 +2115,40 @@ pub(super) fn ppc_process_apple_event(
     ppc_apply_process_native_handle(process_memory_manager, handles, event_handle);
     ppc_apply_process_native_handle(process_memory_manager, handles, reply_handle);
     apple_events.descriptors.with_mut(|state| {
-        let event_descriptor = ProcessAeDescriptor {
-            attributes: Default::default(),
-            desc_type: PPC_CORE_EVENT_CLASS,
-            data: event_data,
-            fields: HashMap::new(),
-            items: Vec::new(),
-        };
-        let reply_descriptor = ProcessAeDescriptor {
-            attributes: Default::default(),
-            desc_type: PPC_CORE_EVENT_CLASS,
-            data: Vec::new(),
-            fields: HashMap::new(),
-            items: Vec::new(),
-        };
         state
             .descriptors
             .insert(descriptors, event_descriptor.clone());
         state
             .descriptors
             .insert(descriptors + 8, reply_descriptor.clone());
-        state.backing.insert(event_handle, event_descriptor);
-        state.backing.insert(reply_handle, reply_descriptor);
+        state.backing.insert(event_handle, event_descriptor.clone());
+        if reply_handle != 0 {
+            state.backing.insert(reply_handle, reply_descriptor);
+        }
         state.events.insert(
             descriptors,
             ProcessSyntheticAppleEvent {
                 event_class,
                 event_id,
-                params: HashMap::new(),
-                items: Vec::new(),
+                params: event_descriptor.fields.clone(),
+                items: event_descriptor.items.clone(),
             },
         );
-        state.events.insert(
-            descriptors + 8,
-            ProcessSyntheticAppleEvent {
-                event_class: PPC_CORE_EVENT_CLASS,
-                event_id: 0,
-                params: HashMap::new(),
-                items: Vec::new(),
-            },
-        );
+        if wants_reply {
+            state.events.insert(
+                descriptors + 8,
+                ProcessSyntheticAppleEvent {
+                    event_class: PPC_CORE_EVENT_CLASS,
+                    event_id: if send_reply.is_some() {
+                        u32::from_be_bytes(*b"ansr")
+                    } else {
+                        0
+                    },
+                    params: HashMap::new(),
+                    items: Vec::new(),
+                },
+            );
+        }
     });
     apple_events
         .pending_dispatches
@@ -2077,6 +2157,7 @@ pub(super) fn ppc_process_apple_event(
             descriptors,
             event_handle,
             reply_handle,
+            send_reply,
         });
     match handler.procedure.isa {
         GuestIsa::PowerPc => GuestCallEffect::call_guest(
@@ -2134,7 +2215,10 @@ pub(super) fn ppc_process_apple_event(
                 toolbox_startup
                     .mixed_mode_m68k
                     .restore_snapshot(saved_mixed_mode_m68k);
-                for handle in [event_handle, reply_handle] {
+                for handle in [event_handle, reply_handle]
+                    .into_iter()
+                    .filter(|handle| *handle != 0)
+                {
                     let _ = memory.write_u32_be(handle, 0);
                 }
                 process_memory_manager.restore_native_snapshot(snapshot);
@@ -2156,6 +2240,7 @@ pub(super) fn ppc_process_apple_event(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_complete_apple_event_dispatch(
+    cpu: &mut PpcCpu,
     apple_events: &mut PpcAppleEventState,
     guest_call_depth: usize,
     process_memory_manager: &mut ProcessNativeMemoryManager,
@@ -2173,6 +2258,19 @@ pub(super) fn ppc_complete_apple_event_dispatch(
         return;
     };
     apple_events.pending_dispatches.pop();
+    if let Some(output) = dispatch.send_reply {
+        cpu.gpr[3] = ppc_i16_result(send::complete_reply(
+            cpu.gpr[3] as u16 as i16,
+            output,
+            dispatch.descriptors + 8,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            handles,
+            apple_events,
+        ));
+    }
     apple_events.descriptors.with_mut(|state| {
         for descriptor in [dispatch.descriptors, dispatch.descriptors + 8] {
             state.events.remove(&descriptor);
@@ -2181,7 +2279,10 @@ pub(super) fn ppc_complete_apple_event_dispatch(
         state.backing.remove(&dispatch.event_handle);
         state.backing.remove(&dispatch.reply_handle);
     });
-    for handle in [dispatch.event_handle, dispatch.reply_handle] {
+    for handle in [dispatch.event_handle, dispatch.reply_handle]
+        .into_iter()
+        .filter(|handle| *handle != 0)
+    {
         let _ = process_memory_manager.dispose_native_handle(memory, handle);
         handles.retain(|record| record.handle != handle);
     }

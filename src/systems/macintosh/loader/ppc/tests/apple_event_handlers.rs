@@ -268,6 +268,7 @@ fn apple_event_handler_bundle_is_process_owned_cross_isa_and_depth_disposed() {
     {
         let mut manager = context.memory_manager_mut();
         ppc_complete_apple_event_dispatch(
+            &mut native.cpu,
             &mut apple_events,
             1,
             &mut manager,
@@ -284,6 +285,7 @@ fn apple_event_handler_bundle_is_process_owned_cross_isa_and_depth_disposed() {
     {
         let mut manager = context.memory_manager_mut();
         ppc_complete_apple_event_dispatch(
+            &mut native.cpu,
             &mut apple_events,
             0,
             &mut manager,
@@ -625,6 +627,7 @@ fn native_apple_event_dispatch_enters_registered_classic_handler() {
     {
         let mut manager = context.memory_manager_mut();
         ppc_complete_apple_event_dispatch(
+            &mut native.cpu,
             &mut native.apple_events,
             0,
             &mut manager,
@@ -706,4 +709,368 @@ fn ae_remove_event_handler_requires_the_installed_handler() {
         assert_eq!(loaded.cpu.gpr[3], expected);
     }
     assert_eq!(loaded.apple_events.handlers.len(), 0);
+}
+
+fn self_addressed_send_fixture() -> (PpcLoadedApp, u32) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AESend")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0; 0x1000]);
+    loaded.memory.write_u32_be(scratch + 0x44, 2).unwrap();
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"psn ");
+    loaded.cpu.gpr[4] = scratch + 0x40;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = scratch;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"send");
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 17;
+    loaded.cpu.gpr[7] = 42;
+    loaded.cpu.gpr[8] = scratch + 8;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    loaded
+        .memory
+        .write_bytes(scratch + 0x50, b"payload")
+        .unwrap();
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"----");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[6] = scratch + 0x50;
+    loaded.cpu.gpr[7] = 7;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamPtr),
+    );
+    (loaded, scratch)
+}
+
+#[test]
+fn aesend_direct_queue_and_wait_preserve_payload_reply_and_handler_errors() {
+    for mode in [2, 3] {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        let entry = scratch + 0x200;
+        let observed = scratch + 0x100;
+        for (index, symbol) in [(1, "AEGetParamPtr"), (2, "AEPutParamPtr")] {
+            let mut binding = loaded.imports[0].clone();
+            binding.symbol_index = index;
+            binding.symbol_name = symbol.into();
+            binding.dispatcher_target = dispatcher_target_for_import("InterfaceLib", symbol);
+            binding.trap_pc = PPC_IMPORT_TRAP_BASE + index * 4;
+            loaded.memory.add_region(binding.trap_pc, vec![0; 4]);
+            loaded.imports.push(binding);
+        }
+        loaded.import_count = 3;
+        // Preserve the PPC linkage area and outgoing parameter home area.
+        let mut code = vec![
+            0x7c08_02a6, // mflr r0
+            d_form_u(36, 0, 1, 8),
+            d_form_u(37, 1, 1, (-96i16) as u16),
+            d_form_u(36, 5, 1, 56), // refcon = output buffer
+            d_form_u(36, 4, 1, 60), // reply descriptor
+            d_form_u(14, 6, 5, 0),
+            d_form_u(14, 7, 5, 8),
+            d_form_u(14, 9, 5, 4),
+            d_form_u(14, 8, 0, 16),
+            d_form_u(15, 4, 0, 0x2d2d),
+            d_form_u(24, 4, 4, 0x2d2d),
+            d_form_u(15, 5, 0, 0x5445),
+            d_form_u(24, 5, 5, 0x5854),
+        ];
+        let call_pc = entry + code.len() as u32 * 4;
+        code.push(0x4800_0001 | ((PPC_IMPORT_TRAP_BASE + 4).wrapping_sub(call_pc) & 0x03ff_fffc));
+        code.extend([
+            d_form_u(32, 3, 1, 60),
+            d_form_u(32, 6, 1, 56),
+            d_form_u(32, 7, 6, 4),
+            d_form_u(14, 6, 6, 8),
+            d_form_u(15, 4, 0, 0x2d2d),
+            d_form_u(24, 4, 4, 0x2d2d),
+            d_form_u(15, 5, 0, 0x5445),
+            d_form_u(24, 5, 5, 0x5854),
+        ]);
+        let call_pc = entry + code.len() as u32 * 4;
+        code.push(0x4800_0001 | ((PPC_IMPORT_TRAP_BASE + 8).wrapping_sub(call_pc) & 0x03ff_fffc));
+        code.extend([
+            d_form_u(14, 1, 1, 96),
+            d_form_u(32, 0, 1, 8),
+            0x7c08_03a6,
+            d_form_u(14, 3, 0, (-50i16) as u16),
+            0x4e80_0020,
+        ]);
+        for (index, word) in code.iter().enumerate() {
+            loaded
+                .memory
+                .write_u32_be(entry + index as u32 * 4, *word)
+                .unwrap();
+        }
+        loaded.memory.write_u32_be(scratch + 0x80, entry).unwrap();
+        loaded
+            .memory
+            .write_u32_be(scratch + 0x84, loaded.rtoc)
+            .unwrap();
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"send");
+        loaded.cpu.gpr[5] = scratch + 0x80;
+        loaded.cpu.gpr[6] = observed;
+        loaded.cpu.gpr[7] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AEInstallEventHandler,
+        );
+        let before = loaded.handles().len();
+        let pointers = loaded.ptrs();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        );
+        loaded.cpu.gpr[3] = scratch + 8;
+        loaded.cpu.gpr[4] = scratch + 16;
+        loaded.cpu.gpr[5] = mode;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = u32::MAX;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 3);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, observed + 8, 7),
+            Some(b"payload".to_vec())
+        );
+        assert!(loaded.apple_events.pending_dispatches.is_empty());
+        assert_eq!(loaded.ptrs(), pointers);
+        assert_eq!(loaded.handles().len(), before + 1);
+        let reply = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 16,
+        )
+        .unwrap();
+        assert_eq!(reply.data, b"aevtansr");
+        assert_eq!(reply.fields[&u32::from_be_bytes(*b"----")].data, b"payload");
+        assert_eq!(
+            reply.fields[&u32::from_be_bytes(*b"errn")].data,
+            (-50i32).to_be_bytes()
+        );
+        assert_eq!(
+            reply.attributes[&u32::from_be_bytes(*b"rtid")].data,
+            17i16.to_be_bytes()
+        );
+    }
+}
+
+#[test]
+fn aesend_no_reply_passes_a_null_descriptor_and_releases_temporaries() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let entry = scratch + 0x200;
+    let observed = scratch + 0x100;
+    let code = [
+        d_form_u(32, 6, 4, 0),
+        d_form_u(36, 6, 5, 0),
+        d_form_u(32, 6, 4, 4),
+        d_form_u(36, 6, 5, 4),
+        d_form_u(14, 3, 0, 42),
+        0x4e80_0020,
+    ];
+    for (index, word) in code.iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(entry + index as u32 * 4, *word)
+            .unwrap();
+    }
+    loaded.memory.write_u32_be(scratch + 0x80, entry).unwrap();
+    loaded
+        .memory
+        .write_u32_be(scratch + 0x84, loaded.rtoc)
+        .unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"send");
+    loaded.cpu.gpr[5] = scratch + 0x80;
+    loaded.cpu.gpr[6] = observed;
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AEInstallEventHandler,
+    );
+    let handles = loaded.handles();
+    let pointers = loaded.ptrs();
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = scratch + 16;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(PPC_TYPE_NULL));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(PPC_TYPE_NULL));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 20), Some(0));
+    assert_eq!(loaded.handles(), handles);
+    assert_eq!(loaded.ptrs(), pointers);
+    assert!(loaded.apple_events.pending_dispatches.is_empty());
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"----");
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"TEXT");
+    loaded.cpu.gpr[6] = scratch + 0x50;
+    loaded.cpu.gpr[7] = 7;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutParamPtr,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1707));
+    assert_eq!(loaded.handles(), handles);
+}
+
+#[test]
+fn aesend_rejects_missing_handlers_targets_and_invalid_modes_without_allocating() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let handles = loaded.handles();
+    for (mode, expected) in [(0, -1710i16), (3, PPC_ERR_AE_EVENT_NOT_HANDLED)] {
+        loaded.cpu.gpr[3] = scratch + 8;
+        loaded.cpu.gpr[4] = scratch + 16;
+        loaded.cpu.gpr[5] = mode;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.handles(), handles);
+    }
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data[7] = 9;
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = scratch + 16;
+    loaded.cpu.gpr[5] = 3;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+    assert_eq!(loaded.handles(), handles);
+}
+
+#[test]
+fn aesend_direct_nested_handler_calls_release_their_own_temporaries() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"innr");
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 18;
+    loaded.cpu.gpr[7] = 42;
+    loaded.cpu.gpr[8] = scratch + 24;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    let mut nested_send = loaded.imports[0].clone();
+    nested_send.symbol_index = 1;
+    nested_send.symbol_name = "AESend".into();
+    nested_send.dispatcher_target = ae(PpcAppleEventCompatibilityOperation::Send);
+    nested_send.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+    loaded.memory.add_region(nested_send.trap_pc, vec![0; 4]);
+    loaded.imports.push(nested_send);
+    loaded.import_count = 2;
+    let outer = scratch + 0x200;
+    let inner = scratch + 0x300;
+    let mut outer_code = vec![
+        0x7c08_02a6,
+        d_form_u(36, 0, 1, 8),
+        d_form_u(37, 1, 1, (-96i16) as u16),
+        d_form_u(14, 3, 5, 24),
+        d_form_u(14, 4, 5, 32),
+        d_form_u(14, 5, 0, 1),
+        d_form_u(14, 6, 0, 0),
+        d_form_u(14, 7, 0, u16::MAX),
+    ];
+    let call_pc = outer + outer_code.len() as u32 * 4;
+    outer_code.push(0x4800_0001 | ((PPC_IMPORT_TRAP_BASE + 4).wrapping_sub(call_pc) & 0x03ff_fffc));
+    outer_code.extend([
+        d_form_u(14, 1, 1, 96),
+        d_form_u(32, 0, 1, 8),
+        0x7c08_03a6,
+        0x4e80_0020,
+    ]);
+    let inner_code = vec![
+        d_form_u(14, 6, 0, 1),
+        d_form_u(36, 6, 5, 0),
+        d_form_u(14, 3, 0, 0),
+        0x4e80_0020,
+    ];
+    for (entry, code) in [(outer, outer_code), (inner, inner_code)] {
+        for (index, word) in code.iter().enumerate() {
+            loaded
+                .memory
+                .write_u32_be(entry + index as u32 * 4, *word)
+                .unwrap();
+        }
+    }
+    for (tvector, entry, id, refcon) in [
+        (scratch + 0x80, outer, *b"send", scratch),
+        (scratch + 0x88, inner, *b"innr", scratch + 0x100),
+    ] {
+        loaded.memory.write_u32_be(tvector, entry).unwrap();
+        loaded
+            .memory
+            .write_u32_be(tvector + 4, loaded.rtoc)
+            .unwrap();
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+        loaded.cpu.gpr[4] = u32::from_be_bytes(id);
+        loaded.cpu.gpr[5] = tvector;
+        loaded.cpu.gpr[6] = refcon;
+        loaded.cpu.gpr[7] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AEInstallEventHandler,
+        );
+    }
+    let handles = loaded.handles().len();
+    let pointers = loaded.ptrs();
+    loaded.imports[0].dispatcher_target = ae(PpcAppleEventCompatibilityOperation::Send);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = scratch + 16;
+    loaded.cpu.gpr[5] = 3;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = u32::MAX;
+    let probe = loaded.run_with_hle_imports(256);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 2);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(scratch + 0x100), Some(1));
+    assert!(loaded.apple_events.pending_dispatches.is_empty());
+    assert_eq!(loaded.handles().len(), handles + 1);
+    assert_eq!(loaded.ptrs(), pointers);
 }
