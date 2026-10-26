@@ -12,16 +12,15 @@ use std::rc::Rc;
 
 use super::{
     format_ppc_fourcc, ppc_decode_aiff_samples, ppc_decoded_sound_data, ppc_draw_pict_bytes_to_16bpp,
-    ppc_existing_path_for_fsspec, ppc_i16_result, ppc_live_front_buffer_for_gworld,
-    ppc_live_quickdraw_surface, ppc_memory_can_write_bytes, ppc_parse_aiff_metadata,
-    ppc_process_alloc_handle_with_bytes,
-    ppc_q3_write_software_pixel, ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel,
-    ppc_read_be_u32_from_slice, ppc_read_rect, ppc_sound_codec, ppc_write_rect, qt_trace_enabled, PpcCpu,
-    PpcDecodedAiffData, PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer,
-    PpcGWorldRecord, PpcHandleRecord, PpcImportAction, PpcProcessAllocatorView,
-    PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem, PpcSoundFilePlaybackRecord, PpcSoundState,
-    PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord, PpcVfsResourceRecord,
-    PPC_FIRST_FILE_REF_NUM, PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
+    ppc_existing_path_for_fsspec, ppc_i16_result, ppc_live_quickdraw_surface,
+    ppc_memory_can_write_bytes, ppc_parse_aiff_metadata, ppc_process_alloc_handle_with_bytes,
+    ppc_quickdraw_surface_color_pixel, ppc_quickdraw_write_raw_pixel, ppc_read_be_u32_from_slice,
+    ppc_read_rect, ppc_sound_codec, ppc_write_rect, qt_trace_enabled, PpcCpu, PpcDecodedAiffData,
+    PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer, PpcGWorldRecord, PpcHandleRecord,
+    PpcImportAction, PpcProcessAllocatorView, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
+    PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
+    PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
 };
 use crate::managers::resource::ResourceFork;
@@ -5543,9 +5542,10 @@ pub(crate) fn ppc_qt_draw_movie_frame(
     } else {
         current_gworld
     };
-    let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, gworld) else {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, gworld) else {
         return false;
     };
+    let front_buffer = surface.front_buffer;
     // Inside Macintosh: QuickTime Components (1993), p. 2-38: the bounds
     // of an attached controller also position its movie.
     let draw_rect = quicktime
@@ -5554,7 +5554,7 @@ pub(crate) fn ppc_qt_draw_movie_frame(
         .rev()
         .find(|controller| controller.movie == PPC_QT_MOVIE && controller.window == gworld)
         .map_or(quicktime.movie_box, |controller| controller.rect);
-    if ppc_qt_draw_decoded_movie_frame(memory, front_buffer, quicktime, draw_rect) {
+    if ppc_qt_draw_decoded_movie_frame(memory, surface, quicktime, draw_rect) {
         return true;
     }
     if front_buffer.depth != 16 {
@@ -5570,15 +5570,21 @@ pub(crate) fn ppc_qt_draw_movie_frame(
 
 fn ppc_qt_draw_decoded_movie_frame(
     memory: &mut PpcSectionMem,
-    front_buffer: PpcFrontBuffer,
+    surface: PpcQuickDrawSurface,
     quicktime: &mut PpcQuickTimeState,
     draw_rect: (i16, i16, i16, i16),
 ) -> bool {
-    if front_buffer.depth != 16
+    let front_buffer = surface.front_buffer;
+    if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16 | 32)
         || front_buffer.base_addr == 0
         || front_buffer.width == 0
         || front_buffer.height == 0
-        || front_buffer.row_bytes < front_buffer.width.saturating_mul(2)
+        || front_buffer.row_bytes
+            < front_buffer
+                .width
+                .saturating_mul(front_buffer.depth)
+                .saturating_add(7)
+                / 8
     {
         return false;
     }
@@ -5591,10 +5597,14 @@ fn ppc_qt_draw_decoded_movie_frame(
     if box_width <= 0 || box_height <= 0 {
         return false;
     }
-    let dst_left = i32::from(left).max(0).min(front_buffer.width as i32);
-    let dst_top = i32::from(top).max(0).min(front_buffer.height as i32);
-    let dst_right = i32::from(right).max(0).min(front_buffer.width as i32);
-    let dst_bottom = i32::from(bottom).max(0).min(front_buffer.height as i32);
+    let surface_left = i32::from(surface.left);
+    let surface_top = i32::from(surface.top);
+    let surface_right = surface_left.saturating_add(front_buffer.width as i32);
+    let surface_bottom = surface_top.saturating_add(front_buffer.height as i32);
+    let dst_left = i32::from(left).clamp(surface_left, surface_right);
+    let dst_top = i32::from(top).clamp(surface_top, surface_bottom);
+    let dst_right = i32::from(right).clamp(surface_left, surface_right);
+    let dst_bottom = i32::from(bottom).clamp(surface_top, surface_bottom);
     if dst_left >= dst_right || dst_top >= dst_bottom {
         return false;
     }
@@ -5631,8 +5641,20 @@ fn ppc_qt_draw_decoded_movie_frame(
             if !ppc_qt_display_clip_contains(quicktime, dst_x, dst_y) {
                 continue;
             }
-            let pixel = ppc_qt_rgb555_from_u8(rgb[0], rgb[1], rgb[2]);
-            if ppc_q3_write_software_pixel(memory, front_buffer, (dst_x, dst_y), pixel) {
+            let color = PpcRgbColor {
+                red: u16::from(rgb[0]) * 257,
+                green: u16::from(rgb[1]) * 257,
+                blue: u16::from(rgb[2]) * 257,
+            };
+            let Some(pixel) = ppc_qt_graphics_pixel_value(memory, surface, color) else {
+                continue;
+            };
+            if ppc_qt_write_graphics_pixel(
+                memory,
+                front_buffer,
+                surface.local_point((dst_x, dst_y)),
+                pixel,
+            ) {
                 wrote_any = true;
             }
         }

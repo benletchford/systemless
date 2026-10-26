@@ -1863,6 +1863,113 @@ fn quicktime_movie_frame_draw_uses_cinepak_sample_pixels() {
         Some(ppc_qt_rgb555_from_u8(170, 170, 170))
     );
     assert_eq!(loaded.memory.read_u16_be(base + 30), Some(0x7fff));
+    // The same decoded frame must be usable on direct and indexed GWorlds.
+    for (depth, row_bytes, expected_last) in [
+        (1, 1, 0x00u32),
+        (2, 1, 0x00),
+        (4, 2, 0x00),
+        (8, 4, 0x00),
+        (32, 16, 0x00ff_ffff),
+    ] {
+        loaded.gworlds[0].depth = depth;
+        loaded.gworlds[0].row_bytes = row_bytes;
+        let destination = base + 0x1000 + depth * 0x100;
+        loaded.gworlds[0].base_addr = destination;
+        loaded
+            .memory
+            .add_region(destination, vec![0xee; row_bytes as usize * 4]);
+        assert!(ppc_qt_draw_movie_frame(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            gworld,
+            &mut loaded.quicktime,
+            0x21
+        ));
+        let last_row = destination + row_bytes * 3;
+        let last_pixel = match depth {
+            1 => u32::from(loaded.memory.read_u8(last_row).unwrap() >> 4 & 1),
+            2 => u32::from(loaded.memory.read_u8(last_row).unwrap() & 3),
+            4 => u32::from(loaded.memory.read_u8(last_row + 1).unwrap() & 15),
+            8 => u32::from(loaded.memory.read_u8(last_row + 3).unwrap()),
+            32 => loaded.memory.read_u32_be(last_row + 12).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(last_pixel, expected_last, "depth {depth}");
+        if depth == 32 {
+            assert_eq!(loaded.memory.read_u32_be(destination), Some(0));
+            assert_eq!(
+                loaded.memory.read_u32_be(destination + 8),
+                Some(0x0055_5555)
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(destination + 32),
+                Some(0x00aa_aaaa)
+            );
+        }
+    }
+    // Resolve a live port PixMap, including a nonzero coordinate origin.
+    let pixmap = base + 0x8000;
+    let pixmap_handle = pixmap + 0x100;
+    let destination = pixmap + 0x200;
+    loaded.memory.add_region(gworld, vec![0; 64]);
+    loaded.memory.add_region(pixmap, vec![0; 0x300]);
+    loaded.memory.write_u16_be(gworld + 6, 0xc000).unwrap();
+    loaded
+        .memory
+        .write_u32_be(gworld + 2, pixmap_handle)
+        .unwrap();
+    loaded.memory.write_u32_be(pixmap_handle, pixmap).unwrap();
+    loaded.memory.write_u32_be(pixmap, destination).unwrap();
+    loaded.memory.write_u16_be(pixmap + 4, 0x8010).unwrap();
+    loaded.memory.write_u16_be(pixmap + 32, 32).unwrap();
+    ppc_write_rect(&mut loaded.memory, pixmap + 6, 10, 20, 14, 24).unwrap();
+    loaded.quicktime.movie_box = (10, 20, 14, 24);
+    assert!(ppc_qt_draw_movie_frame(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        gworld,
+        &mut loaded.quicktime,
+        0x21
+    ));
+    assert_eq!(
+        loaded.memory.read_u32_be(destination + 8),
+        Some(0x0055_5555)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(destination + 60),
+        Some(0x00ff_ffff)
+    );
+
+    // A custom indexed table maps white to 7 rather than the standard 0.
+    let table_handle = pixmap + 0x400;
+    let table = table_handle + 4;
+    loaded.memory.add_region(table_handle, vec![0; 12 + 8 * 8]);
+    loaded.memory.write_u32_be(table_handle, table).unwrap();
+    loaded.memory.write_u16_be(table + 6, 7).unwrap();
+    for index in 0..8u32 {
+        let entry = table + 8 + index * 8;
+        loaded.memory.write_u16_be(entry, index as u16).unwrap();
+        for component in [2, 4, 6] {
+            loaded
+                .memory
+                .write_u16_be(entry + component, if index == 7 { 0xffff } else { 0 })
+                .unwrap();
+        }
+    }
+    loaded
+        .memory
+        .write_u32_be(pixmap + 42, table_handle)
+        .unwrap();
+    loaded.memory.write_u16_be(pixmap + 32, 8).unwrap();
+    loaded.memory.write_u16_be(pixmap + 4, 0x8004).unwrap();
+    assert!(ppc_qt_draw_movie_frame(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        gworld,
+        &mut loaded.quicktime,
+        0x21
+    ));
+    assert_eq!(loaded.memory.read_u8(destination + 15), Some(7));
 }
 
 #[test]
