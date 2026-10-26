@@ -839,7 +839,7 @@ pub(super) fn dispatch_movie_toolbox(
                 return PpcImportAction::Return(0);
             }
             ppc_qt_record_error(quicktime, PPC_NO_ERR);
-            let playing = quicktime.movie_started && quicktime.movie_active;
+            let playing = quicktime.movie_started;
             PpcImportAction::Return(if playing {
                 quicktime.movie_playback_rate as u32
             } else {
