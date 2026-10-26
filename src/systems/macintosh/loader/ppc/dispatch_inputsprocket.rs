@@ -194,6 +194,7 @@ pub(super) fn dispatch_inputsprocket_import(
 pub enum PpcInputSprocketCompatibilityOperation {
     DevicesActivateClass,
     DevicesDeactivateClass,
+    DeviceIsActive,
     ElementDisposeVirtual,
     ElementFlush,
     ElementGetNextEvent,
@@ -210,21 +211,28 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
     virtual_elements: &mut Vec<PpcInputSprocketVirtualElementRecord>,
 ) -> PpcImportAction {
     match operation {
-        PpcInputSprocketCompatibilityOperation::DevicesActivateClass => {
-            input_sprocket.keyboard_active = true;
-            input_sprocket.mouse_active = true;
+        PpcInputSprocketCompatibilityOperation::DevicesActivateClass
+        | PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass => {
+            let active = operation == PpcInputSprocketCompatibilityOperation::DevicesActivateClass;
+            let device = match cpu.gpr[3] {
+                PPC_ISP_DEVICE_CLASS_KEYBOARD => Some(PPC_ISP_KEYBOARD_DEVICE),
+                PPC_ISP_DEVICE_CLASS_MOUSE => Some(PPC_ISP_MOUSE_DEVICE),
+                _ => None,
+            };
+            if let Some(device) = device {
+                ppc_isp_set_device_active(input_sprocket, device, active);
+            }
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
-        // InputSprocket.h: ISpDevices_DeactivateClass(ISpDeviceClass) stops
-        // every device of that class, such as kISpDeviceClass_Mouse, so the
-        // game reads it through the Event Manager instead. Classes with no
-        // emulated device have nothing to deactivate.
-        PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass => {
-            match cpu.gpr[3] {
-                PPC_ISP_DEVICE_CLASS_KEYBOARD => input_sprocket.keyboard_active = false,
-                PPC_ISP_DEVICE_CLASS_MOUSE => input_sprocket.mouse_active = false,
-                _ => {}
+        PpcInputSprocketCompatibilityOperation::DeviceIsActive => {
+            let Some(active) = ppc_isp_device_is_active(input_sprocket, cpu.gpr[3]) else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            };
+            let output = cpu.gpr[4];
+            if output == 0 || !ppc_memory_can_write_bytes(memory, output, 1) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
             }
+            let _ = memory.write_u8(output, u8::from(active));
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
         PpcInputSprocketCompatibilityOperation::ElementDisposeVirtual => {

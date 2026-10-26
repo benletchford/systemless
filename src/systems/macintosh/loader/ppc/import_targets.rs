@@ -7090,6 +7090,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "UpdateMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::UpdateMovie,
         ),
+        ("InputSprocketLib", "ISpDevice_IsActive") => {
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::DeviceIsActive,
+            )
+        }
         ("InputSprocketLib", "ISpDevices_ActivateClass") => {
             PpcImportDispatcherTarget::InputSprocketCompatibility(
                 PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
