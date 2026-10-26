@@ -22,6 +22,7 @@ pub(super) struct DescriptorMode {
     pub append: bool,
     pub resource_fork: bool,
     pub resolve_alias: bool,
+    pub alias_only: bool,
     pub create: bool,
     pub truncate: bool,
     pub exclusive: bool,
@@ -36,7 +37,7 @@ impl DescriptorMode {
             return Err(22); // EINVAL, MPW errno.h.
         }
         let writable = access != 0;
-        if flags & 512 != 0 && !writable {
+        if (flags & 512 != 0 && !writable) || (flags & 32 != 0 && flags & (256 | 1024) != 0) {
             return Err(22);
         }
         Ok(Self {
@@ -44,7 +45,8 @@ impl DescriptorMode {
             writable,
             append: flags & 8 != 0,
             resource_fork: flags & 16 != 0,
-            resolve_alias: flags & (32 | 16384) == 0,
+            resolve_alias: flags & 16384 == 0,
+            alias_only: flags & 32 != 0,
             create: flags & 256 != 0,
             truncate: flags & 512 != 0,
             exclusive: flags & 1024 != 0,
@@ -85,15 +87,40 @@ impl PpcDescriptorState {
     }
 }
 
+fn descriptor_resolve_alias(
+    mut path: String,
+    context: &dispatch_imports::PpcDispatchContext<'_>,
+) -> Result<String, u32> {
+    let mut seen = Vec::<String>::new();
+    while let Some(alias) =
+        ppc_alias_record_for_path(context.vfs_directories, context.vfs_resources, &path)
+    {
+        if seen.len() == 32 || seen.iter().any(|old| old.eq_ignore_ascii_case(&path)) {
+            return Err(22);
+        }
+        seen.push(path);
+        path = ppc_resolved_fsspec_target_path(
+            context.vfs_directories,
+            context.vfs_files,
+            context.vfs_resource_files,
+            alias.target_dir_id,
+            &alias.target_name,
+        )
+        .ok_or(2u32)?;
+    }
+    Ok(path)
+}
+
 fn descriptor_path(
     requested: &str,
+    resolve_alias: bool,
     context: &dispatch_imports::PpcDispatchContext<'_>,
 ) -> Result<String, u32> {
     if requested.is_empty() {
         return Err(2);
     }
     let hfs = requested.contains(':');
-    let (base, remainder, floor) = if hfs && !requested.starts_with(':') {
+    let (base, remainder, mut floor) = if hfs && !requested.starts_with(':') {
         let (name, remainder) = requested.split_once(':').unwrap();
         let root = if name.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
             PPC_ROOT_DIR_ID
@@ -158,8 +185,35 @@ fn descriptor_path(
         } else if !component.is_empty() && (hfs || *component != ".") {
             parts.push((*component).to_string());
         }
-        if !last && ppc_directory_id_for_path(context.vfs_directories, &parts.join("/")).is_none() {
-            return Err(2);
+        if !last {
+            let path = parts.join("/");
+            let resolved = if resolve_alias {
+                descriptor_resolve_alias(path.clone(), context)?
+            } else {
+                path.clone()
+            };
+            if ppc_directory_id_for_path(context.vfs_directories, &resolved).is_none() {
+                return Err(2);
+            }
+            if resolved != path {
+                // A directory alias may cross volumes. Parent traversal then
+                // stops at the target volume's root, not the alias's volume.
+                floor = context
+                    .vfs_volumes
+                    .iter()
+                    .filter_map(|volume| {
+                        ppc_directory_path_for_id(context.vfs_directories, volume.root_dir_id)
+                    })
+                    .filter(|root| resolved == *root || resolved.starts_with(&format!("{root}/")))
+                    .map(|root| root.split('/').filter(|part| !part.is_empty()).count())
+                    .max()
+                    .unwrap_or(0);
+                parts = resolved
+                    .split('/')
+                    .filter(|part| !part.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
         }
     }
     Ok(parts.join("/"))
@@ -184,7 +238,7 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
         return Err(22);
     }
     let requested = decode_mac_roman(&bytes);
-    let mut path = descriptor_path(&requested, context)?;
+    let mut path = descriptor_path(&requested, mode.resolve_alias, context)?;
     let exists = |path: &str, context: &dispatch_imports::PpcDispatchContext<'_>| {
         ppc_vfs_file_index(context.vfs_files, path).is_some()
             || ppc_vfs_resource_file_index(context.vfs_resource_files, path).is_some()
@@ -192,24 +246,14 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
     if mode.create && mode.exclusive && exists(&path, context) {
         return Err(17);
     }
-    if mode.resolve_alias {
-        let mut seen = Vec::<String>::new();
-        while let Some(alias) =
-            ppc_alias_record_for_path(context.vfs_directories, context.vfs_resources, &path)
+    if mode.alias_only {
+        if ppc_alias_record_for_path(context.vfs_directories, context.vfs_resources, &path)
+            .is_none()
         {
-            if seen.len() == 32 || seen.iter().any(|old| old.eq_ignore_ascii_case(&path)) {
-                return Err(22);
-            }
-            seen.push(path);
-            path = ppc_resolved_fsspec_target_path(
-                context.vfs_directories,
-                context.vfs_files,
-                context.vfs_resource_files,
-                alias.target_dir_id,
-                &alias.target_name,
-            )
-            .ok_or(2u32)?;
+            return Err(3); // MPW _fsFAccess: O_ALIAS requires an alias file.
         }
+    } else if mode.resolve_alias {
+        path = descriptor_resolve_alias(path, context)?;
     }
     if ppc_directory_id_for_path(context.vfs_directories, &path).is_some() {
         return Err(21);
@@ -266,13 +310,26 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
     // Reserve both identifiers before creating or truncating any file.
     let ref_num = *context.next_file_ref_num;
     let next_ref_num = ref_num.checked_add(1).ok_or(24u32)?;
+    // MPW's standalone file backend creates nonbinary data files as TEXT/ttxt.
+    // O_BINARY changes the creation metadata, not read/write byte translation.
+    let (file_type, creator, finder_flags) = if exists(&path, context) {
+        ppc_finder_info_for_path(context.vfs_files, context.vfs_resource_files, &path)
+    } else if !mode.binary && !mode.resource_fork {
+        (
+            u32::from_be_bytes(*b"TEXT"),
+            u32::from_be_bytes(*b"ttxt"),
+            0,
+        )
+    } else {
+        (0, 0, 0)
+    };
     if ppc_vfs_file_index(context.vfs_files, &path).is_none() {
         context.vfs_files.push(PpcVfsFileRecord {
             path: path.clone(),
             data: Vec::new().into(),
-            creator: 0,
-            file_type: 0,
-            finder_flags: 0,
+            creator,
+            file_type,
+            finder_flags,
             dirty: true,
         });
     }
@@ -280,9 +337,9 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
         if ppc_vfs_resource_file_index(context.vfs_resource_files, &path).is_none() {
             context.vfs_resource_files.push(PpcVfsResourceFileRecord {
                 path: path.clone(),
-                creator: 0,
-                file_type: 0,
-                finder_flags: 0,
+                creator,
+                file_type,
+                finder_flags,
                 resource_len: 0,
                 raw_data: Some(Vec::new().into()),
                 map_attrs: 0,

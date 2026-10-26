@@ -1179,3 +1179,113 @@ fn stdclib_descriptor_paths_resolve_hfs_parents_and_volume_roots() {
     }
     assert!(ppc_vfs_file_index(&loaded.vfs_files, "Folder/NewFile").is_none());
 }
+
+#[test]
+fn stdclib_descriptors_follow_directory_aliases_and_reject_cycles() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    loaded.vfs_directories.push(PpcVfsDirectory {
+        dir_id: 42,
+        parent_dir_id: PPC_ROOT_DIR_ID,
+        path: "Target".to_string(),
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: false,
+    });
+    for (path, target_dir, target_name) in [
+        ("Shortcut", 42, &b""[..]),
+        ("Loop", PPC_ROOT_DIR_ID, &b"Loop"[..]),
+        ("Dangling", PPC_ROOT_DIR_ID, &b"Missing"[..]),
+    ] {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.to_string(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"alis"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: 0,
+                path: path.to_string(),
+                res_type: u32::from_be_bytes(*b"alis"),
+                res_id: 0,
+                name: Vec::new(),
+                data: ppc_alias_record_bytes(PPC_BOOT_VOLUME_REF_NUM, target_dir, target_name)
+                    .unwrap()
+                    .into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    use PpcDescriptorOperation as Op;
+    let call = |loaded: &mut PpcLoadedApp, operation, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, PpcImportDispatcherTarget::StdDescriptor(operation));
+        loaded.cpu.gpr[3]
+    };
+    for (name, flags, expected) in [
+        (":Shortcut:File", 2 | 256, Some("Target/File")),
+        ("Shortcut/../AtRoot", 2 | 256, Some("AtRoot")),
+        ("Shortcut/File", 16384, None),
+        ("Shortcut/File", 32, None),
+        ("Loop/File", 0, None),
+        ("Dangling/File", 0, None),
+    ] {
+        loaded.memory.write_bytes(base, name.as_bytes()).unwrap();
+        loaded.memory.write_u8(base + name.len() as u32, 0).unwrap();
+        let descriptor = call(&mut loaded, Op::Open, &[base, flags]);
+        if let Some(expected) = expected {
+            assert_ne!(descriptor, u32::MAX, "{name}");
+            let record = &loaded.toolbox_startup.descriptors.records[&descriptor];
+            assert_eq!(
+                loaded
+                    .files
+                    .iter()
+                    .find(|file| file.ref_num == record.ref_num)
+                    .unwrap()
+                    .path,
+                expected
+            );
+            let file = loaded
+                .vfs_files
+                .iter()
+                .find(|file| file.path == expected)
+                .unwrap();
+            assert_eq!(file.file_type, u32::from_be_bytes(*b"TEXT"));
+            assert_eq!(file.creator, u32::from_be_bytes(*b"ttxt"));
+            // MPW descriptor I/O passes CR, LF and control-Z through unchanged.
+            loaded
+                .memory
+                .write_bytes(base + 128, b"a\r\n\x1ab")
+                .unwrap();
+            assert_eq!(
+                call(&mut loaded, Op::Write, &[descriptor, base + 128, 5]),
+                5
+            );
+            assert_eq!(call(&mut loaded, Op::Seek, &[descriptor, 0, 0]), 0);
+            assert_eq!(call(&mut loaded, Op::Read, &[descriptor, base + 256, 5]), 5);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, base + 256, 5).unwrap(),
+                b"a\r\n\x1ab"
+            );
+            assert_eq!(call(&mut loaded, Op::Close, &[descriptor]), 0);
+        } else {
+            assert_eq!(descriptor, u32::MAX, "{name}");
+        }
+    }
+    loaded.memory.write_bytes(base, b"Shortcut\0").unwrap();
+    let alias = call(&mut loaded, Op::Open, &[base, 32]);
+    assert_ne!(alias, u32::MAX);
+    assert_eq!(call(&mut loaded, Op::Read, &[alias, base + 256, 5]), 0);
+    assert_eq!(call(&mut loaded, Op::Close, &[alias]), 0);
+    assert_eq!(call(&mut loaded, Op::Open, &[base, 32 | 256]), u32::MAX);
+    assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(22));
+}
