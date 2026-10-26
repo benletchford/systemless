@@ -106,8 +106,14 @@ impl TecCodec {
                     0xf0..=0xf4 => 4,
                     _ => return Err(malformed),
                 };
-                let token = bytes.get(..width).ok_or(partial)?;
-                let text = std::str::from_utf8(token).map_err(|_| malformed)?;
+                let token = &bytes[..bytes.len().min(width)];
+                let text = std::str::from_utf8(token).map_err(|error| {
+                    if error.error_len().is_none() {
+                        partial
+                    } else {
+                        malformed
+                    }
+                })?;
                 Ok((text.chars().next().ok_or(malformed)?, width))
             }
             Self::Utf16 => {
@@ -263,7 +269,7 @@ pub(crate) fn ppc_dispatch_text_encoding(
             let Some(codecs) =
                 TecCodec::from_encoding(cpu.gpr[4]).zip(TecCodec::from_encoding(cpu.gpr[5]))
             else {
-                return status(-8749);
+                return status(TEXT_UNSUPPORTED_ENCODING_ERR);
             };
             let Some(next) = state
                 .next_id

@@ -201,6 +201,7 @@ fn tec_unicode_preserves_scalar_boundaries_and_reports_conversion_errors() {
         (0x500, 0x0800_0100, &b"\x80"[..], 3, 0, &b"\xe2\x82\xac"[..]),
         (0x201, 0x0800_0100, &b"\xe9"[..], 2, 0, &b"\xc3\xa9"[..]),
         (0x0800_0100, 0x100, &b"\xf0\x9f"[..], 4, -8753, &b""[..]),
+        (0x0800_0100, 0x100, &b"\xf0\x80"[..], 4, -8739, &b""[..]),
         (0x0800_0100, 0x100, &b"\xc0\x80"[..], 4, -8739, &b""[..]),
         (0x100, 0x0800_0100, &b"\xdc\x00"[..], 4, -8739, &b""[..]),
         (
@@ -258,7 +259,7 @@ fn tec_unicode_preserves_scalar_boundaries_and_reports_conversion_errors() {
     loaded.cpu.gpr[3..6].copy_from_slice(&[base, 1, 0x100]);
     assert_eq!(
         tec(PpcTextEncodingOperation::CreateConverter, &mut loaded),
-        (-8749i32) as u32
+        (-8738i32) as u32
     );
     assert_eq!(loaded.memory.read_u32_be(base), Some(0));
 }
