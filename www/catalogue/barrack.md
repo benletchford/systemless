@@ -10,20 +10,21 @@ architectures:
 - 68k
 - ppc
 default_architecture: ppc
+launch_enabled: false
 category: Arcade
 compatibility:
   status: playable
   verified:
   - date: "2026-10-27"
     tester: Catalogue maintainer
-    systemless_version: 983bc557a5b62cba54d0fb1a6049baed9b4da8fa
+    systemless_version: d9210e9622c520d48117eeb5819baf262876de0f
     architecture: 68k
-    environment: "Native combined candidate SHA-256 ca13fb274a875e1b4ddf9ad34e40928a22be6239b01ef8687bb552aced6a1fe6, built from 6ca05600cb6e981cf4435921b58f531f8e9e9ce1 plus the guest-table preservation guard in #5125; runtime source matches the recorded commit. Exact managed Tucows archive and selector below, ordinary scheduler and default display/time. Not Yet, Play Barrack, gun movement and a fired barrier pass ten existing measured checks at 1632 frontend / 2232 guest ticks. The matched no-fire control passes two checks at the same clocks. Actual captures show intact menu artwork and score 90 with nine percent cleared; control remains at zero. Both runs have zero exhausted frames. This is bounded gameplay, not a completed 68K level or audio-fidelity test. Browser input/pacing and public qualification remain pending."
+    environment: "Native combined candidate SHA-256 7bb073961616428b1f96bbb09dd05bd63533b5fed9d6406e90dd8d693c7b77cd, built from the recorded combined source, including the fade preservation and animation-table synchronization repairs in #5125. Both CPU showcase suites pass against unchanged reference images. Exact managed Tucows archive and selector below, ordinary scheduler and default display/time. Not Yet, Play Barrack, gun movement and a fired barrier pass ten existing measured checks at 1632 frontend / 2232 guest ticks. The matched no-fire control passes two checks at the same clocks. Actual captures show intact menu artwork and score 90 with nine percent cleared; control remains at zero. Both runs have zero exhausted frames. This is bounded gameplay, not a completed 68K level or audio-fidelity test. Browser input/pacing and public qualification remain pending."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5124
   - date: "2026-10-27"
     tester: Catalogue maintainer
-    systemless_version: 983bc557a5b62cba54d0fb1a6049baed9b4da8fa
+    systemless_version: d9210e9622c520d48117eeb5819baf262876de0f
     architecture: ppc
     environment: >-
       Same exact archive and immutable native candidate as the current 68K row.
