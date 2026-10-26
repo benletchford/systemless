@@ -68,7 +68,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 7 | The Dig | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 8 | Quake | [Grant not identified; unhosted](CATALOGUE-SOURCES.md#quake-preview-original-intake) | [Exact preview; all fourteen forks matched](CATALOGUE-SOURCES.md#quake-preview-original-intake) | N/A: original PPC PEF/cfrg, no CODE | Menu-driven map entry and input-view changes; twelve assertions | Pending | Pending | Pending |
 | 9 | Unreal Tournament | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 10 | Myth: The Fallen Lords | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 10 | Myth: The Fallen Lords | No affirmative archive grant found; unhosted | [Two original receipts; primary unchanged](CATALOGUE-SOURCES.md#myth-the-fallen-lords--native-qualification-after-directory-and-write-repairs) | Game slice unverified; installer is not gameplay evidence | Primary PPC: camera and troop movement, eight checks each; tested PBWrite build | Pending | Directory #5063 and write #5069 merged | Pending |
 | 11 | Myth II: Soulblighter | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 12 | Age of Empires | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 13 | Total Annihilation | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
