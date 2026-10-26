@@ -18149,6 +18149,33 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn default_palette_activation_preserves_logical_colors_during_device_fade() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.initialize_application_palette(&mut bus);
+        let window = 0x0020_4110u32;
+        d.front_window = window;
+        let logical = *d.color_manager_clut;
+        assert_ne!(logical, [[0; 3]; 256]);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        let table_size = 8 + u32::from(bus.read_word(ctab + 6) + 1) * 8;
+        let table_before = bus.read_bytes(ctab, table_size as usize);
+        // SetEntries fades hardware while retaining the logical drawing table.
+        d.device_clut.replace([[0; 3]; 256]);
+
+        d.activate_palette_for_window(&mut bus, window);
+
+        assert_eq!(*d.device_clut, [[0; 3]; 256]);
+        assert_eq!(*d.color_manager_clut, logical);
+        assert_eq!(bus.read_bytes(ctab, table_size as usize), table_before);
+        let palette = d.window_palette_handle(window);
+        assert_ne!(palette, 0);
+        assert!(d.palette_device_indices.contains_key(&(palette, 0)));
+        assert!(d.palette_device_indices.contains_key(&(palette, 1)));
+    }
+
+    #[test]
     fn activatepalette_preserves_device_cells_not_claimed_by_the_palette() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4120u32;
@@ -18390,6 +18417,13 @@ fn copy_bits_converts_between_direct_color_depths() {
             .current_port
             .with_mut(|current_port| *current_port = window);
 
+        // Activate first so animation is the only device change. A later
+        // no-op activation must not hide a stale guest ColorTable.
+        d.activate_associated_palette_for_window(&mut bus, window);
+        let gd = d.active_gdevice_or_main(&mut bus);
+        let ctab = TrapDispatcher::gdevice_ctab_handle(&bus, gd);
+        let ctab_ptr = bus.read_long(ctab);
+        let seed_before = bus.read_long(ctab_ptr);
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
         bus.write_word(TEST_SP + 4, 1);
@@ -18400,6 +18434,12 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(
+            [bus.read_word(ctab_ptr + 18), bus.read_word(ctab_ptr + 20),
+             bus.read_word(ctab_ptr + 22)],
+            animated_rgb
+        );
+        assert_ne!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
@@ -20522,6 +20562,13 @@ fn copy_bits_converts_between_direct_color_depths() {
             .current_port
             .with_mut(|current_port| *current_port = window);
 
+        // Activate first so animation is the only device change. A later
+        // no-op activation must not hide a stale guest ColorTable.
+        d.activate_associated_palette_for_window(&mut bus, window);
+        let gd = d.active_gdevice_or_main(&mut bus);
+        let ctab = TrapDispatcher::gdevice_ctab_handle(&bus, gd);
+        let ctab_ptr = bus.read_long(ctab);
+        let seed_before = bus.read_long(ctab_ptr);
         let before = *d.device_clut;
         bus.write_word(TEST_SP, 1);
         bus.write_word(TEST_SP + 2, 1);
@@ -20534,6 +20581,12 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
+        assert_eq!(
+            [bus.read_word(ctab_ptr + 18), bus.read_word(ctab_ptr + 20),
+             bus.read_word(ctab_ptr + 22)],
+            animated_rgb
+        );
+        assert_ne!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
