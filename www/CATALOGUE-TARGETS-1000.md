@@ -872,7 +872,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 810 | 997 | V for Victory: Utah Beach | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-utah-beach) |
 | 811 | 998 | Wacky Races: A Tsuyoshi Takashiro Digital film (チキチキマシン猛レース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-races-a-tsuyoshi-takashiro-digital-film) |
 | 812 | 999 | Anagrams | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 813 | 1000 | Hextris 1.0 (Hellosh Software; from R50) | Original installer readme requires System 7.5; CPU slices pending | U | [Exact archive identity](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) |
+| 813 | 1000 | Hextris 1.0 (Hellosh Software; from R50) | 68K/PPC inspected; bounded native input verified | S | [Original-package grant and evidence](CATALOGUE-SOURCES.md#hextris-10--repaired-native-verification-and-staged-entry); [intake #5121](https://github.com/benletchford/systemless/issues/5121) |
 
 ## Replacement reserves (99 original reserves remaining; not counted)
 
@@ -1192,7 +1192,7 @@ This inventory preserves the original stocktake, with the confirmed Checkers Del
 
 The existing [50-game candidate queue](CATALOGUE-CANDIDATES.md) and [exact source record](CATALOGUE-SOURCES.md) remain authoritative for their archive receipts, rights restrictions and bounded runtime findings. This larger plan does not overwrite them. In particular, the Tomb Raider index link actually points to a Gold demo; its retired entry must not be restored without a new rights and qualification review; Populous II's recorded copying restrictions still require affirmative permission; and Zork interpreter permission does not cover Infocom story data.
 
-No source establishes that the most popular 1,000 classic Mac games are all available as redistributable distributions. The 812-slot target list is achievable arithmetic with a replacement strategy, **not a guarantee of 812 licensable games**. Identity and architecture remain unresolved for many long-tail archives. Famous unavailable games should stay in rights outreach rather than be published on presumed abandonment. Reassess the baseline and remaining gap after every 100 qualified additions, and replenish the reserves when exclusions consume them.
+No source establishes that the most popular 1,000 classic Mac games are all available as redistributable distributions. The 813-slot target list is achievable arithmetic with a replacement strategy, **not a guarantee of 813 licensable games**. Identity and architecture remain unresolved for many long-tail archives. Famous unavailable games should stay in rights outreach rather than be published on presumed abandonment. Reassess the baseline and remaining gap after every 100 qualified additions, and replenish the reserves when exclusions consume them.
 
 
 ## Additional discoveries during intake

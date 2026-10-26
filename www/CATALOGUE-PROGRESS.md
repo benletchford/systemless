@@ -2,11 +2,13 @@
 
 Tracking issue: [#4353](https://github.com/benletchford/systemless/issues/4353). Updated 13 October 2026. Scope and discovery links are in [the 1,000-entry target list](CATALOGUE-TARGETS-1000.md).
 
-This ledger tracks all 812 primary intake slots. A stage is complete only when its evidence is linked. `Pending` means unverified; `N/A` requires inspected executable evidence. A promoted archive or merged catalogue draft is not a live qualified game. Production must be checked against the deployed release and catalogue route. The 188-record baseline includes 18 launch-disabled records; its live qualified count has not been independently established. Therefore 812 additions alone do not yet prove the goal achieved.
+This ledger tracks all 813 primary intake slots. A stage is complete only when its evidence is linked. `Pending` means unverified; `N/A` requires inspected executable evidence. A promoted archive or merged catalogue draft is not a live qualified game. Production must be checked against the deployed release and catalogue route. The original 188-record baseline included 18 launch-disabled records; deduplication leaves 187 distinct baseline games. Its live qualified count has not been independently established. Therefore 813 additions alone do not yet prove the goal achieved.
 
 Stages: **rights** = applicable affirmative archive redistribution terms; **archive** = URL, SHA-256, size and intact contents; **68K/PPC** = slice validation and bounded gameplay; **browser** = Systemless-hosted exact archive, input, screenshot, and approval; **CI** = validation and asset promotion on the submitted revision; **live** = released deployment and route verified. Runtime defects receive focused issues/PRs and stay open until their exact archive is retested.
 
 ## Active intake
+
+- **27 October 2026 — Hextris 1.0 staged:** [intake #5121](https://github.com/benletchford/systemless/issues/5121) records the intact original-package nonprofit grant, inspected 68K/PPC slices and fresh five-check input plus five-check control replays on each CPU. Five additional checks verify restored classic registration content. PPC initialization #5109 is merged; #5114/#5117 await remaining CI. The proposed disabled entry brings source stock to **220 records** after merging; no qualified-live increment. Managed promotion, browser approval and public qualification remain pending. [Repaired native evidence](CATALOGUE-SOURCES.md#hextris-10--repaired-native-verification-and-staged-entry).
 
 - **27 October 2026 — duplicate stocktake correction:** Checkers Deluxe Demo and Strategic Leap use the same pinned original archive and represent one game. Consolidation preserves the Strategic Leap URL as an alias and both sets of historical compatibility evidence. Source stock becomes **219 records**, with no qualified-live increment. Reserve R50 (Hextris 1.0, Hellosh Software) moves to primary slot 813 as an unqualified replacement lead; the objective remains 1,000 distinct qualified games. [Issue #5104](https://github.com/benletchford/systemless/issues/5104).
 
@@ -875,6 +877,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 810 | V for Victory: Utah Beach | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 811 | Wacky Races: A Tsuyoshi Takashiro Digital film (チキチキマシン猛レース | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 812 | Anagrams | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 813 | Hextris 1.0 (Hellosh Software) | [Grant](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) | [Pinned original](catalogue/hextris.md) | Native 5+5; browser pending | Native 5+5; browser pending | Pending | Pending | Pending |
 
 ## Reserve policy
 
