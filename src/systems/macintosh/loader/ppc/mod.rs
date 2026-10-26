@@ -140,6 +140,8 @@ mod dispatch_graphics_devices;
 mod dispatch_gworlds;
 mod dispatch_icon_services;
 mod dispatch_inputsprocket;
+mod inputsprocket_drivers;
+pub use inputsprocket_drivers::PpcInputSprocketDriverOperation;
 mod dispatch_list;
 mod dispatch_low_memory;
 mod dispatch_math;
