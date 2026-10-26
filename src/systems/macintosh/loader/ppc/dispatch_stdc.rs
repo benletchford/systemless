@@ -280,6 +280,10 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
         PpcImportDispatcherTarget::StdStrstr => Some(PpcImportAction::Return(ppc_std_strstr(
             memory, cpu.gpr[3], cpu.gpr[4],
         ))),
+        PpcImportDispatcherTarget::StdAtof => {
+            cpu.fpr[1] = ppc_std_atof(memory, cpu.gpr[3]).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::StdAtoi => {
             Some(PpcImportAction::Return(ppc_std_atoi(memory, cpu.gpr[3])))
         }
@@ -2110,6 +2114,74 @@ pub(super) fn ppc_std_strncat(
         let _ = memory.write_u8(destination_end + total - 1, 0);
     }
     destination
+}
+
+// Classic ISO C decimal syntax: consume the longest complete numeric prefix.
+// An incomplete exponent belongs to the unconverted suffix, not the mantissa.
+pub(super) fn ppc_std_atof(memory: &mut PpcSectionMem, string: u32) -> f64 {
+    let mut cursor = string;
+    let mut current = memory.read_u8(cursor);
+    let advance = |memory: &mut PpcSectionMem, cursor: &mut u32| {
+        *cursor = cursor.checked_add(1)?;
+        memory.read_u8(*cursor)
+    };
+    while current.is_some_and(|byte| ppc_ctype_entry(byte) & PPC_CTYPE_WSP != 0) {
+        current = advance(memory, &mut cursor);
+    }
+    let mut token = Vec::new();
+    if let Some(sign @ (b'+' | b'-')) = current {
+        token.push(sign);
+        current = advance(memory, &mut cursor);
+    }
+    let mut digits = 0;
+    while current.is_some_and(|byte| byte.is_ascii_digit()) {
+        token.push(current.unwrap());
+        digits += 1;
+        current = advance(memory, &mut cursor);
+    }
+    if current == Some(b'.') {
+        token.push(b'.');
+        current = advance(memory, &mut cursor);
+        while current.is_some_and(|byte| byte.is_ascii_digit()) {
+            token.push(current.unwrap());
+            digits += 1;
+            current = advance(memory, &mut cursor);
+        }
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    if matches!(current, Some(b'e' | b'E')) {
+        let mantissa_end = token.len();
+        token.push(b'e');
+        current = advance(memory, &mut cursor);
+        if let Some(sign @ (b'+' | b'-')) = current {
+            token.push(sign);
+            current = advance(memory, &mut cursor);
+        }
+        let exponent_start = token.len();
+        while current.is_some_and(|byte| byte.is_ascii_digit()) {
+            token.push(current.unwrap());
+            current = advance(memory, &mut cursor);
+        }
+        if token.len() == exponent_start {
+            token.truncate(mantissa_end);
+        }
+    }
+    let value: f64 = std::str::from_utf8(&token)
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(0.0);
+    let nonzero_mantissa = token
+        .iter()
+        .take_while(|byte| **byte != b'e')
+        .any(|byte| matches!(byte, b'1'..=b'9'));
+    if value.is_infinite() || (value == 0.0 && nonzero_mantissa) {
+        // MSL C Reference, atof: range failures set errno. Universal
+        // Interfaces errno.h defines the classic StdCLib ERANGE as 34.
+        let _ = memory.write_u32_be(PPC_IMPORT_STD_ERRNO, 34);
+    }
+    value
 }
 
 pub(super) fn ppc_std_atoi(memory: &mut PpcSectionMem, string: u32) -> u32 {

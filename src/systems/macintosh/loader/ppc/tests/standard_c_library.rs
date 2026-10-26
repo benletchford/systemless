@@ -616,3 +616,51 @@ fn stdclib_time_localtime_strftime_share_the_same_calendar() {
         b"2024-01-01 00:00:00 Mon 001".to_vec()
     );
 }
+
+#[test]
+fn stdclib_atof_converts_decimal_prefixes_in_the_floating_point_return_register() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"atof")).unwrap();
+    let input = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(input, vec![0; 128]);
+    for (text, expected) in [
+        (" \t\n\r\x0b\x0c-12.5tail", -12.5f64),
+        ("+.125e+2suffix", 12.5),
+        ("42.", 42.0),
+        ("1e-2", 0.01),
+        ("1e+", 1.0),
+        ("2.5.3", 2.5),
+        ("-0", -0.0),
+        ("-1e-9999", -0.0),
+        ("1e9999", f64::INFINITY),
+        ("4.9406564584124654e-324", f64::from_bits(1)),
+        ("1.7976931348623157e308", f64::MAX),
+        ("", 0.0),
+        ("word", 0.0),
+        ("-.", 0.0),
+        ("+ 1", 0.0),
+    ] {
+        for (index, byte) in text.bytes().chain(std::iter::once(0)).enumerate() {
+            loaded.memory.write_u8(input + index as u32, byte).unwrap();
+        }
+        loaded
+            .memory
+            .write_u32_be(PPC_IMPORT_STD_ERRNO, 33)
+            .unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = input;
+        loaded.cpu.fpr[1] = 123f64.to_bits();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.fpr[1], expected.to_bits(), "{text:?}");
+        assert_eq!(loaded.cpu.gpr[3], input);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO),
+            Some(if matches!(text, "-1e-9999" | "1e9999") {
+                34
+            } else {
+                33
+            })
+        );
+    }
+}
