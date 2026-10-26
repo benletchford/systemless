@@ -36,7 +36,7 @@ resolver = "2"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-m68k = { version = "0.14.4" }
+m68k = { version = "0.14.7" }
 ppc = "0.7.2"
 thiserror = "2"
 tracing = "0.1"
