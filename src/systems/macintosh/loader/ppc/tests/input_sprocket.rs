@@ -2442,6 +2442,11 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
     assert_eq!(loaded.memory.read_u32_be(queries), Some(1));
     assert_eq!(loaded.memory.read_u32_be(queries + 4), Some(element));
 
+    loaded.memory.write_u32_be(scratch + 240, device).unwrap();
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = scratch + 240;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpDevicesActivate);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     loaded.memory.write_u32_be(scratch + 224, 1).unwrap();
     loaded.memory.write_u32_be(scratch + 228, 42).unwrap();
     for value in [7, 9] {
@@ -2488,6 +2493,51 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
             Some(0xaaaa_aaaa)
         );
     }
+    let old_limit = loaded.heap_limit();
+    loaded.set_heap_limit(loaded.heap_cursor() + 65);
+    let mut exhausted = false;
+    let mut queued = 0;
+    for value in 0..16 {
+        loaded.cpu.gpr[3] = element;
+        loaded.cpu.gpr[4] = value;
+        loaded.cpu.gpr[5] = scratch + 224;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::InputSprocketDriver(
+                PpcInputSprocketDriverOperation::ElementPushSimpleData,
+            ),
+        );
+        if loaded.cpu.gpr[3] == ppc_i16_result(PPC_MEM_FULL_ERR) {
+            exhausted = true;
+            break;
+        }
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        queued += 1;
+    }
+    assert!(
+        queued > 0,
+        "the fixture must allow events before exhaustion"
+    );
+    assert!(exhausted, "unread events must consume the guest heap");
+    loaded.cpu.gpr[3] = element;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementFlush,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = 77;
+    loaded.cpu.gpr[5] = scratch + 224;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementPushSimpleData,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0, "flushing releases event storage");
+    loaded.set_heap_limit(old_limit);
     loaded.cpu.gpr[3] = device;
     run_test_import(
         &mut loaded,
@@ -2511,4 +2561,397 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
         PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementNew),
     );
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
+fn input_sprocket_driver_activation_calls_guest_metahandler_and_propagates_errors() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpDevice_New");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 512]);
+    let context = scratch + 128;
+    let meta = scratch + 256;
+    let callback = scratch + 288;
+    let meta_vector = scratch + 320;
+    let callback_vector = scratch + 328;
+    // Metahandler: record selector, return the stored callback TVector.
+    for (index, word) in [0x9083_0000, 0x8063_0004, BLR].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(meta + index as u32 * 4, word)
+            .unwrap();
+    }
+    // SetActive: record Boolean, return the configured OSStatus.
+    for (index, word) in [0x9083_0008, 0x8063_000c, BLR].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(callback + index as u32 * 4, word)
+            .unwrap();
+    }
+    for (vector, entry) in [(meta_vector, meta), (callback_vector, callback)] {
+        loaded.memory.write_u32_be(vector, entry).unwrap();
+        loaded
+            .memory
+            .write_u32_be(vector + 4, loaded.cpu.gpr[2])
+            .unwrap();
+    }
+    loaded
+        .memory
+        .write_u32_be(context + 4, callback_vector)
+        .unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = meta_vector;
+    loaded.cpu.gpr[5] = context;
+    loaded.cpu.gpr[6] = scratch + 96;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::DeviceNew),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let device = loaded.memory.read_u32_be(scratch + 96).unwrap();
+    loaded.memory.write_u32_be(scratch + 100, device).unwrap();
+    let element_definition = scratch + 352;
+    loaded
+        .memory
+        .write_u32_be(element_definition, device)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(element_definition + 88, 4)
+        .unwrap();
+    loaded.cpu.gpr[3] = element_definition;
+    loaded.cpu.gpr[4] = scratch + 460;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementNew),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let element = loaded.memory.read_u32_be(scratch + 460).unwrap();
+    let needs = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(needs, vec![0; 128]);
+    // Init records count, needs, virtual array, used array, and creator codes.
+    for (index, word) in [
+        0x9083_0008,
+        0x90a3_0014,
+        0x90c3_0018,
+        0x90e3_001c,
+        0x9103_0020,
+        0x9123_0024,
+        0x8063_000c,
+        BLR,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(callback + index as u32 * 4, word)
+            .unwrap();
+    }
+    let before_init = loaded.heap_cursor();
+    for error in [0, ppc_i16_result(PPC_PARAM_ERR)] {
+        loaded.memory.write_u32_be(context + 12, error).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ISpInit;
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = needs;
+        loaded.cpu.gpr[5] = needs + 96;
+        loaded.cpu.gpr[6] = 0x1234_5678;
+        loaded.cpu.gpr[7] = 0xaabb_ccdd;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 0;
+        loaded.cpu.gpr[10] = 0;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], error);
+        assert_eq!(loaded.memory.read_u32_be(context), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(context + 8), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(context + 20), Some(needs));
+        assert_eq!(loaded.memory.read_u32_be(context + 24), Some(needs + 96));
+        assert_ne!(loaded.memory.read_u32_be(context + 28), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(context + 32), Some(0x1234_5678));
+        assert_eq!(loaded.memory.read_u32_be(context + 36), Some(0xaabb_ccdd));
+        assert_eq!(
+            loaded.heap_cursor(),
+            before_init,
+            "Init scratch must be released on both exits"
+        );
+    }
+    for (index, word) in [0x9083_0008, 0x8063_000c, BLR].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u32_be(callback + index as u32 * 4, word)
+            .unwrap();
+    }
+    let original_rtoc = loaded.cpu.gpr[2];
+    for (active, error) in [
+        (true, 0),
+        (false, ppc_i16_result(PPC_PARAM_ERR)),
+        (false, 0),
+    ] {
+        if error != 0 {
+            loaded.cpu.gpr[3] = element;
+            loaded.cpu.gpr[4] = 33;
+            loaded.cpu.gpr[5] = scratch + 464;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::InputSprocketDriver(
+                    PpcInputSprocketDriverOperation::ElementPushSimpleData,
+                ),
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        loaded.memory.write_u32_be(context + 12, error).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = if active {
+            PpcImportDispatcherTarget::ISpDevicesActivate
+        } else {
+            PpcImportDispatcherTarget::ISpDevicesDeactivate
+        };
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = scratch + 100;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], error);
+        assert_eq!(loaded.cpu.gpr[2], original_rtoc);
+        assert_eq!(loaded.memory.read_u32_be(context), Some(13));
+        assert_eq!(
+            loaded.memory.read_u32_be(context + 8),
+            Some(u32::from(active))
+        );
+        loaded.cpu.gpr[3] = device;
+        loaded.cpu.gpr[4] = scratch + 104;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::DeviceIsActive,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u8(scratch + 104),
+            Some(u8::from(active || error != 0))
+        );
+        if error != 0 {
+            loaded.cpu.gpr[3] = element;
+            loaded.cpu.gpr[4] = 20;
+            loaded.cpu.gpr[5] = scratch + 480;
+            loaded.cpu.gpr[6] = scratch + 504;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::InputSprocketCompatibility(
+                    PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+                ),
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u8(scratch + 504), Some(1));
+            assert_eq!(loaded.memory.read_u32_be(scratch + 496), Some(33));
+        }
+        if active {
+            loaded.memory.write_u32_be(context, 0).unwrap();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.imports[0].dispatcher_target =
+                PpcImportDispatcherTarget::InputSprocketCompatibility(
+                    PpcInputSprocketCompatibilityOperation::Tickle,
+                );
+            let probe = loaded.run_with_hle_imports(256);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u32_be(context), Some(15));
+            for (target, expected) in [
+                (PpcImportDispatcherTarget::ISpSuspend, false),
+                (PpcImportDispatcherTarget::ISpResume, true),
+            ] {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                loaded.imports[0].dispatcher_target = target;
+                let probe = loaded.run_with_hle_imports(256);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], 0);
+                assert_eq!(
+                    loaded.memory.read_u32_be(context + 8),
+                    Some(u32::from(expected))
+                );
+                loaded.cpu.gpr[3] = device;
+                loaded.cpu.gpr[4] = scratch + 104;
+                run_test_import(
+                    &mut loaded,
+                    PpcImportDispatcherTarget::InputSprocketCompatibility(
+                        PpcInputSprocketCompatibilityOperation::DeviceIsActive,
+                    ),
+                );
+                assert_eq!(
+                    loaded.memory.read_u8(scratch + 104),
+                    Some(u8::from(expected))
+                );
+            }
+        }
+    }
+    loaded.memory.write_u32_be(context, 0).unwrap();
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ISpStop;
+    let probe = loaded.run_with_hle_imports(256);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(context), Some(2));
+}
+
+#[test]
+fn input_sprocket_complex_state_shares_mouse_delta_and_validates_output_first() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElement_GetComplexState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xaa; 16]);
+    let mut input = PpcInputSnapshot::default();
+    input.mouse_h = 100;
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = 4;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementGetComplexState,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0));
+
+    input.mouse_h = 103;
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = 4;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementGetComplexState,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementGetSimpleState,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(3 << 16));
+
+    input.mouse_h = 107;
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = output + 4;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementGetComplexState,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(output + 4), Some(4));
+    assert_eq!(loaded.memory.read_u16_be(output + 6), Some(0xaaaa));
+}
+
+#[test]
+fn input_sprocket_driver_complex_payloads_truncate_state_and_dequeue_short_events() {
+    let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpDevice_New");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let output = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(scratch, vec![0; 256]);
+    loaded.memory.add_region(output, vec![0xaa; 64]);
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = scratch + 96;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::DeviceNew),
+    );
+    let device = loaded.memory.read_u32_be(scratch + 96).unwrap();
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = scratch + 96;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpDevicesActivate);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.memory.write_u32_be(scratch + 112, device).unwrap();
+    loaded.memory.write_u32_be(scratch + 200, 8).unwrap();
+    loaded.cpu.gpr[3] = scratch + 112;
+    loaded.cpu.gpr[4] = scratch + 220;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementNew),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let element = loaded.memory.read_u32_be(scratch + 220).unwrap();
+    loaded.memory.write_u32_be(scratch + 224, 1).unwrap();
+    loaded.memory.write_u32_be(scratch + 228, 2).unwrap();
+    loaded
+        .memory
+        .write_u32_be(scratch + 232, 0x1122_3344)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(scratch + 236, 0x5566_7788)
+        .unwrap();
+    for size in [4, 8] {
+        loaded.cpu.gpr[3] = element;
+        loaded.cpu.gpr[4] = size;
+        loaded.cpu.gpr[5] = scratch + 232;
+        loaded.cpu.gpr[6] = scratch + 224;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::InputSprocketDriver(
+                PpcInputSprocketDriverOperation::ElementPushComplexData,
+            ),
+        );
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            if size == 8 {
+                0
+            } else {
+                ppc_i16_result(PPC_PARAM_ERR)
+            }
+        );
+    }
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementGetComplexState,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0x1122_33aa));
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = 19;
+    loaded.cpu.gpr[5] = output + 8;
+    loaded.cpu.gpr[6] = output + 40;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u8(output + 40), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(output + 8), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(output + 12), Some(2));
+    assert_eq!(loaded.memory.read_u32_be(output + 24), Some(0x1122_33aa));
+    loaded.cpu.gpr[3] = element;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u8(output + 40), Some(0));
 }

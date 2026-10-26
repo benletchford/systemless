@@ -10,6 +10,7 @@ pub(super) struct PpcInputSprocketDispatchContext<'a> {
     pub(super) heap_cursor: &'a mut u32,
     pub(super) heap_limit: u32,
     pub(super) input_sprocket: &'a mut PpcInputSprocketState,
+    pub(super) drivers: &'a mut inputsprocket_drivers::PpcInputSprocketDriverState,
     pub(super) input_sprocket_virtual_elements: &'a mut Vec<PpcInputSprocketVirtualElementRecord>,
     pub(super) input: PpcInputSnapshot,
     pub(super) tick_count: u32,
@@ -28,6 +29,7 @@ pub(super) fn dispatch_inputsprocket_import(
         heap_cursor,
         heap_limit,
         input_sprocket,
+        drivers,
         input_sprocket_virtual_elements,
         input,
         tick_count,
@@ -160,7 +162,12 @@ pub(super) fn dispatch_inputsprocket_import(
             let result = ppc_isp_init(input_sprocket, defaults);
             // The game may have created its virtual elements before ISpInit.
             ppc_isp_assign_keyboard_defaults(input_sprocket, input_sprocket_virtual_elements);
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
+            if result != PPC_NO_ERR {
+                return Some(PpcImportAction::Return(ppc_i16_result(result)));
+            }
+            Some(inputsprocket_drivers::initialize_drivers(
+                cpu, memory, process_memory_manager, heap_cursor, drivers,
+            ))
         }
         PpcImportDispatcherTarget::ISpStop => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_isp_stop(input_sprocket),

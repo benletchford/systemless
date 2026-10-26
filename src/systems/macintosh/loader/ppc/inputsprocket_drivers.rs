@@ -22,6 +22,7 @@ struct DriverDevice {
     meta_handler: u32,
     ref_con: u32,
     active: bool,
+    enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,7 @@ struct DriverElement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DriverEvent {
+    allocation: u32,
     when: u64,
     data: Vec<u8>,
 }
@@ -43,6 +45,21 @@ struct DriverEvent {
 pub(super) struct PpcInputSprocketDriverState {
     devices: BTreeMap<u32, DriverDevice>,
     elements: BTreeMap<u32, DriverElement>,
+    callbacks: Vec<ActivationCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActivationCall {
+    import_pc: u32,
+    return_pc: u32,
+    rtoc: u32,
+    pending: VecDeque<(u32, bool)>,
+    current: Option<(u32, bool)>,
+    invoking: bool,
+    update_requested: bool,
+    selector: u32,
+    arguments: Vec<u32>,
+    scratch: u32,
 }
 
 fn read_bytes(memory: &mut PpcSectionMem, address: u32, size: u32) -> Option<Vec<u8>> {
@@ -59,14 +76,44 @@ fn read_bytes(memory: &mut PpcSectionMem, address: u32, size: u32) -> Option<Vec
 
 pub(super) fn dispatch_driver_import(
     binding: &PpcImportBinding,
-    cpu: &PpcCpu,
+    cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     manager: &mut ProcessNativeMemoryManager,
     heap_cursor: &mut u32,
     state: &mut PpcInputSprocketDriverState,
+    input: &mut PpcInputSprocketState,
+    snapshot: PpcInputSnapshot,
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
 ) -> Option<PpcImportAction> {
+    if cpu.lr == cpu.pc
+        && state
+            .callbacks
+            .last()
+            .is_some_and(|call| call.import_pc == cpu.pc)
+    {
+        let action = resume_activation(cpu, memory, manager, state);
+        sync_heap(manager, memory, heap_cursor);
+        return Some(action);
+    }
+    if let Some(action) = activate_devices(binding, cpu, memory, manager, state, input) {
+        sync_heap(manager, memory, heap_cursor);
+        return Some(action);
+    }
     // Existing application APIs share the same driver-owned element state.
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::DeviceIsActive,
+        ) if state.devices.contains_key(&cpu.gpr[3]) => {
+            let output = cpu.gpr[4];
+            let result = if output == 0 || !ppc_memory_can_write_bytes(memory, output, 1) {
+                PPC_PARAM_ERR
+            } else {
+                let active = state.devices[&cpu.gpr[3]].enabled && !input.suspended;
+                let _ = memory.write_u8(output, u8::from(active));
+                PPC_NO_ERR
+            };
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
         PpcImportDispatcherTarget::ISpDevicesExtract
         | PpcImportDispatcherTarget::ISpDevicesExtractByClass
             if !state.devices.is_empty() =>
@@ -172,17 +219,31 @@ pub(super) fn dispatch_driver_import(
             {
                 PPC_PARAM_ERR
             } else {
+                let enabled = state.devices[&element.device].enabled && !input.suspended;
                 for (offset, byte) in element.state.iter().enumerate() {
-                    let _ = memory.write_u8(output + offset as u32, *byte);
+                    let _ =
+                        memory.write_u8(output + offset as u32, if enabled { *byte } else { 0 });
                 }
                 PPC_NO_ERR
             };
             return Some(PpcImportAction::Return(ppc_i16_result(result)));
         }
         PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementFlush,
+        ) if state.elements.contains_key(&cpu.gpr[3]) => {
+            clear_events(state.elements.get_mut(&cpu.gpr[3]).unwrap(), manager);
+            sync_heap(manager, memory, heap_cursor);
+            return Some(PpcImportAction::Return(0));
+        }
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
             PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
         ) if state.elements.contains_key(&cpu.gpr[3]) => {
-            let result = read_event(cpu, memory, state.elements.get_mut(&cpu.gpr[3]).unwrap());
+            let element = state.elements.get_mut(&cpu.gpr[3]).unwrap();
+            if input.suspended || !state.devices[&element.device].enabled {
+                clear_events(element, manager);
+            }
+            let result = read_event(cpu, memory, manager, element);
+            sync_heap(manager, memory, heap_cursor);
             return Some(PpcImportAction::Return(ppc_i16_result(result)));
         }
         _ => {}
@@ -211,6 +272,7 @@ pub(super) fn dispatch_driver_import(
                             meta_handler: cpu.gpr[4],
                             ref_con: cpu.gpr[5],
                             active: false,
+                            enabled: false,
                         },
                     );
                     let _ = memory.write_u32_be(output, reference);
@@ -231,7 +293,9 @@ pub(super) fn dispatch_driver_import(
                     })
                     .collect();
                 for element in owned {
-                    state.elements.remove(&element);
+                    if let Some(mut record) = state.elements.remove(&element) {
+                        clear_events(&mut record, manager);
+                    }
                     manager.dispose_native_ptr(element);
                 }
                 manager.dispose_native_ptr(reference);
@@ -294,13 +358,29 @@ pub(super) fn dispatch_driver_import(
                 if output == 0 || !ppc_memory_can_write_bytes(memory, output, size as u32) {
                     PPC_PARAM_ERR
                 } else {
+                    let enabled = state.devices[&element.device].enabled && !input.suspended;
                     for (offset, byte) in element.state.iter().take(size).enumerate() {
-                        let _ = memory.write_u8(output + offset as u32, *byte);
+                        let _ = memory
+                            .write_u8(output + offset as u32, if enabled { *byte } else { 0 });
                     }
                     PPC_NO_ERR
                 }
             } else {
-                PPC_PARAM_ERR
+                let output = cpu.gpr[5];
+                let size = cpu.gpr[4].min(4);
+                if output == 0 || !ppc_memory_can_write_bytes(memory, output, size) {
+                    PPC_PARAM_ERR
+                } else if let Some(value) = ppc_isp_element_state_value(
+                    cpu.gpr[3],
+                    memory,
+                    snapshot,
+                    input,
+                    virtual_elements,
+                ) {
+                    copy_output(memory, output, size, &value.to_be_bytes(), false)
+                } else {
+                    PPC_PARAM_ERR
+                }
             }
         }
         PpcInputSprocketDriverOperation::ElementPushSimpleData
@@ -316,12 +396,29 @@ pub(super) fn dispatch_driver_import(
                 .map(|bytes| u64::from_be_bytes(bytes.try_into().unwrap()));
             match (state.elements.get_mut(&cpu.gpr[3]), data, time) {
                 (Some(element), Some(data), Some(when)) if data.len() == element.state.len() => {
-                    if element.events.try_reserve(1).is_err() {
+                    let enabled = state.devices[&element.device].enabled && !input.suspended;
+                    if !enabled {
+                        element.state.copy_from_slice(&data);
+                        PPC_NO_ERR
+                    } else if element.events.try_reserve(1).is_err() {
                         PPC_MEM_FULL_ERR
                     } else {
-                        element.state.copy_from_slice(&data);
-                        element.events.push_back(DriverEvent { when, data });
-                        PPC_NO_ERR
+                        let size = u32::try_from(data.len())
+                            .ok()
+                            .and_then(|size| size.checked_add(16));
+                        let allocation =
+                            size.map_or(0, |size| manager.new_native_ptr(memory, size, false));
+                        if allocation == 0 {
+                            PPC_MEM_FULL_ERR
+                        } else {
+                            element.state.copy_from_slice(&data);
+                            element.events.push_back(DriverEvent {
+                                allocation,
+                                when,
+                                data,
+                            });
+                            PPC_NO_ERR
+                        }
                     }
                 }
                 _ => PPC_PARAM_ERR,
@@ -329,11 +426,12 @@ pub(super) fn dispatch_driver_import(
         }
         PpcInputSprocketDriverOperation::ElementDispose => {
             let reference = cpu.gpr[3];
-            if state.elements.remove(&reference).is_none() {
-                PPC_PARAM_ERR
-            } else {
+            if let Some(mut element) = state.elements.remove(&reference) {
+                clear_events(&mut element, manager);
                 manager.dispose_native_ptr(reference);
                 PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
             }
         }
     };
@@ -344,7 +442,12 @@ pub(super) fn dispatch_driver_import(
 
 // InputSprocket.h requires even a truncated event to be dequeued, with
 // paramErr returned when the caller did not supply room for all its data.
-fn read_event(cpu: &PpcCpu, memory: &mut PpcSectionMem, element: &mut DriverElement) -> i16 {
+fn read_event(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    element: &mut DriverElement,
+) -> i16 {
     let size = cpu.gpr[4];
     let output = cpu.gpr[5];
     let was_event = cpu.gpr[6];
@@ -368,6 +471,7 @@ fn read_event(cpu: &PpcCpu, memory: &mut PpcSectionMem, element: &mut DriverElem
         let _ = memory.write_u8(output + offset as u32, byte);
     }
     let _ = memory.write_u8(was_event, 1);
+    manager.dispose_native_ptr(event.allocation);
     if (size as usize) < 16 + event.data.len() {
         PPC_PARAM_ERR
     } else {
@@ -416,4 +520,357 @@ fn write_references(
         let _ = memory.write_u32_be(output + index as u32 * 4, *reference);
     }
     PPC_NO_ERR
+}
+
+fn finish_activation(
+    cpu: &mut PpcCpu,
+    manager: &mut ProcessNativeMemoryManager,
+    state: &mut PpcInputSprocketDriverState,
+    result: u32,
+) -> PpcImportAction {
+    let call = state.callbacks.pop().unwrap();
+    if call.scratch != 0 {
+        manager.dispose_native_ptr(call.scratch);
+    }
+    cpu.lr = call.return_pc;
+    cpu.gpr[2] = call.rtoc;
+    PpcImportAction::Return(result)
+}
+
+fn call_driver(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    call: &ActivationCall,
+    procedure: u32,
+    arguments: &[u32],
+) -> Option<PpcImportAction> {
+    let target = ppc_resolve_callback_target(memory, procedure, call.rtoc, None)?;
+    install_powerpc_call_arguments(cpu, memory, arguments)?;
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: target.entry,
+            rtoc: target.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            call.import_pc,
+            call.rtoc,
+            PpcNativeReturnGpr3::Preserve,
+        ),
+    )
+    .into_ppc_import_action()
+}
+
+fn next_activation(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    state: &mut PpcInputSprocketDriverState,
+) -> PpcImportAction {
+    loop {
+        let call = state.callbacks.last_mut().unwrap();
+        let Some((reference, active)) = call.pending.pop_front() else {
+            return finish_activation(cpu, manager, state, 0);
+        };
+        let Some(device) = state.devices.get_mut(&reference) else {
+            return finish_activation(cpu, manager, state, ppc_i16_result(PPC_PARAM_ERR));
+        };
+        if call.selector == 13 && device.enabled == active {
+            if call.update_requested {
+                device.active = active;
+            }
+            continue;
+        }
+        if device.meta_handler == 0 {
+            if call.selector == 13 || call.selector == 2 {
+                device.enabled = active;
+                if call.update_requested {
+                    device.active = active;
+                }
+                if !active {
+                    for element in state
+                        .elements
+                        .values_mut()
+                        .filter(|element| element.device == reference)
+                    {
+                        clear_events(element, manager);
+                    }
+                }
+            }
+            continue;
+        }
+        call.current = Some((reference, active));
+        call.invoking = false;
+        if let Some(action) = call_driver(
+            cpu,
+            memory,
+            call,
+            device.meta_handler,
+            &[device.ref_con, call.selector],
+        ) {
+            return action;
+        }
+        return finish_activation(cpu, manager, state, ppc_i16_result(PPC_PARAM_ERR));
+    }
+}
+
+fn resume_activation(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    state: &mut PpcInputSprocketDriverState,
+) -> PpcImportAction {
+    let call = state.callbacks.last_mut().unwrap();
+    let (reference, active) = call.current.unwrap();
+    let Some(device) = state.devices.get_mut(&reference) else {
+        return finish_activation(cpu, manager, state, ppc_i16_result(PPC_PARAM_ERR));
+    };
+    if !call.invoking {
+        let procedure = cpu.gpr[3];
+        if procedure != 0 {
+            call.invoking = true;
+            let mut arguments = vec![device.ref_con];
+            if call.selector == 13 {
+                arguments.push(u32::from(active));
+            } else {
+                arguments.extend_from_slice(&call.arguments);
+            }
+            if let Some(action) = call_driver(cpu, memory, call, procedure, &arguments) {
+                return action;
+            }
+            return finish_activation(cpu, manager, state, ppc_i16_result(PPC_PARAM_ERR));
+        }
+    } else if cpu.gpr[3] != 0 {
+        return finish_activation(cpu, manager, state, cpu.gpr[3]);
+    }
+    if call.selector == 13 || call.selector == 2 {
+        device.enabled = active;
+        if call.update_requested {
+            device.active = active;
+        }
+        if !active {
+            for element in state
+                .elements
+                .values_mut()
+                .filter(|element| element.device == reference)
+            {
+                clear_events(element, manager);
+            }
+        }
+    }
+    next_activation(cpu, memory, manager, state)
+}
+
+fn activate_devices(
+    binding: &PpcImportBinding,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    state: &mut PpcInputSprocketDriverState,
+    input: &mut PpcInputSprocketState,
+) -> Option<PpcImportAction> {
+    if state.devices.is_empty() {
+        return None;
+    }
+    let selector = match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ISpStop | PpcImportDispatcherTarget::ISpShutdown => Some(2),
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::Tickle,
+        ) => Some(15),
+        _ => None,
+    };
+    if let Some(selector) = selector {
+        if selector == 2 {
+            ppc_isp_stop(input);
+        }
+        let pending = state
+            .devices
+            .iter()
+            .filter_map(|(reference, device)| {
+                (selector == 2 || (device.enabled && !input.suspended))
+                    .then_some((*reference, false))
+            })
+            .collect();
+        state.callbacks.push(ActivationCall {
+            import_pc: cpu.pc,
+            return_pc: cpu.lr,
+            rtoc: cpu.gpr[2],
+            pending,
+            current: None,
+            invoking: false,
+            update_requested: selector == 2,
+            selector,
+            arguments: Vec::new(),
+            scratch: 0,
+        });
+        return Some(next_activation(cpu, memory, manager, state));
+    }
+    if matches!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::ISpSuspend | PpcImportDispatcherTarget::ISpResume
+    ) {
+        let suspend = matches!(
+            binding.dispatcher_target,
+            PpcImportDispatcherTarget::ISpSuspend
+        );
+        if suspend {
+            ppc_isp_suspend(input);
+        } else {
+            ppc_isp_resume(input);
+        }
+        let pending = state
+            .devices
+            .iter()
+            .map(|(reference, device)| (*reference, !suspend && device.active))
+            .collect();
+        state.callbacks.push(ActivationCall {
+            import_pc: cpu.pc,
+            return_pc: cpu.lr,
+            rtoc: cpu.gpr[2],
+            pending,
+            current: None,
+            invoking: false,
+            update_requested: false,
+            selector: 13,
+            arguments: Vec::new(),
+            scratch: 0,
+        });
+        return Some(next_activation(cpu, memory, manager, state));
+    }
+    let (active, class) = match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ISpDevicesActivate => (true, None),
+        PpcImportDispatcherTarget::ISpDevicesDeactivate => (false, None),
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::DevicesActivateClass,
+        ) => (true, Some(cpu.gpr[3])),
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::DevicesDeactivateClass,
+        ) => (false, Some(cpu.gpr[3])),
+        _ => return None,
+    };
+    let devices = if let Some(class) = class {
+        let mut devices: Vec<u32> = state
+            .devices
+            .iter()
+            .filter_map(|(reference, device)| {
+                (u32::from_be_bytes(device.definition[64..68].try_into().unwrap()) == class)
+                    .then_some(*reference)
+            })
+            .collect();
+        if class == PPC_ISP_DEVICE_CLASS_KEYBOARD {
+            devices.push(PPC_ISP_KEYBOARD_DEVICE);
+        }
+        if class == PPC_ISP_DEVICE_CLASS_MOUSE {
+            devices.push(PPC_ISP_MOUSE_DEVICE);
+        }
+        devices
+    } else {
+        // Universal Interfaces: the arguments are (count, device-reference array).
+        let Some(size) = cpu.gpr[3].checked_mul(4) else {
+            return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+        };
+        let Some(bytes) = read_bytes(memory, cpu.gpr[4], size) else {
+            return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+        };
+        bytes
+            .chunks_exact(4)
+            .map(|word| u32::from_be_bytes(word.try_into().unwrap()))
+            .collect()
+    };
+    if devices.iter().any(|reference| {
+        !ppc_isp_known_device(*reference) && !state.devices.contains_key(reference)
+    }) {
+        return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+    }
+    let mut pending = VecDeque::new();
+    for reference in devices {
+        if ppc_isp_known_device(reference) {
+            ppc_isp_set_device_active(input, reference, active);
+        } else {
+            if input.suspended {
+                state.devices.get_mut(&reference).unwrap().active = active;
+            }
+            pending.push_back((reference, active && !input.suspended));
+        }
+    }
+    state.callbacks.push(ActivationCall {
+        import_pc: cpu.pc,
+        return_pc: cpu.lr,
+        rtoc: cpu.gpr[2],
+        pending,
+        current: None,
+        invoking: false,
+        update_requested: !input.suspended,
+        selector: 13,
+        arguments: Vec::new(),
+        scratch: 0,
+    });
+    Some(next_activation(cpu, memory, manager, state))
+}
+
+fn clear_events(element: &mut DriverElement, manager: &mut ProcessNativeMemoryManager) {
+    for event in element.events.drain(..) {
+        manager.dispose_native_ptr(event.allocation);
+    }
+}
+
+fn sync_heap(manager: &ProcessNativeMemoryManager, memory: &mut PpcSectionMem, cursor: &mut u32) {
+    let mut last_mem_error = PPC_NO_ERR;
+    ppc_apply_process_native_allocator(manager, memory, cursor, &mut last_mem_error);
+}
+
+pub(super) fn initialize_drivers(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    state: &mut PpcInputSprocketDriverState,
+) -> PpcImportAction {
+    if state.devices.is_empty() {
+        return PpcImportAction::Return(0);
+    }
+    let count = cpu.gpr[3];
+    let needs = cpu.gpr[4];
+    let elements = cpu.gpr[5];
+    let valid = count
+        .checked_mul(PPC_ISP_NEED_SIZE)
+        .zip(count.checked_mul(4))
+        .is_some_and(|(need_size, element_size)| {
+            count == 0
+                || (needs != 0
+                    && elements != 0
+                    && ppc_memory_can_read_bytes(memory, needs, need_size)
+                    && ppc_memory_can_read_bytes(memory, elements, element_size))
+        });
+    if !valid {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    // Each driver sees which needs previous drivers have already configured.
+    let used = manager.new_native_ptr(memory, count.max(1), true);
+    if used == 0 {
+        sync_heap(manager, memory, heap_cursor);
+        return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
+    }
+    let arguments = vec![count, needs, elements, used, cpu.gpr[6], cpu.gpr[7], 0, 0];
+    let pending = state
+        .devices
+        .keys()
+        .map(|reference| (*reference, false))
+        .collect();
+    state.callbacks.push(ActivationCall {
+        import_pc: cpu.pc,
+        return_pc: cpu.lr,
+        rtoc: cpu.gpr[2],
+        pending,
+        current: None,
+        invoking: false,
+        update_requested: false,
+        selector: 1,
+        arguments,
+        scratch: used,
+    });
+    let action = next_activation(cpu, memory, manager, state);
+    sync_heap(manager, memory, heap_cursor);
+    action
 }
