@@ -7468,11 +7468,16 @@ impl FixtureRunner {
                     return (count, false);
                 }
                 BatchExit::AlineTrap { opcode } => {
-                    if self.m68k.complete_manager_return(&self.bus)
-                        && (self.dispatcher.resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
-                            || self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some())
-                    {
-                        continue;
+                    if self.m68k.complete_manager_return(&self.bus) {
+                        if let Some(result) = self.dispatcher.resume_completed_classic_manager(
+                            &mut self.m68k.cpu, &mut self.bus,
+                        ) {
+                            if result.is_err() {
+                                self.halt_with_stop_diagnostics(count);
+                                return (count, false);
+                            }
+                            continue;
+                        }
                     }
                     // Accounting (count/ticks) happened via `executed`
                     // above. The batch may have retired instructions before
@@ -8576,11 +8581,16 @@ impl FixtureRunner {
                     }
                 }
                 BatchExit::AlineTrap { opcode } => {
-                    if self.m68k.complete_manager_return(&self.bus)
-                        && (self.dispatcher.resume_completed_menu_bar_build(&mut self.m68k.cpu, &mut self.bus)
-                            || self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some())
-                    {
-                        continue;
+                    if self.m68k.complete_manager_return(&self.bus) {
+                        if let Some(result) = self.dispatcher.resume_completed_classic_manager(
+                            &mut self.m68k.cpu, &mut self.bus,
+                        ) {
+                            if result.is_err() {
+                                running = false;
+                                break;
+                            }
+                            continue;
+                        }
                     }
                     if !self.dispatcher.aline_vector_is_default(&self.bus) {
                         self.m68k.cpu.core.take_aline_exception(&mut self.bus);

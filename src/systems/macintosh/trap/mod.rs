@@ -29,6 +29,7 @@ mod movie_media;
 pub(crate) mod pict;
 mod pict_image;
 mod qtrle;
+mod picture_stream;
 mod quickdraw;
 mod resource;
 mod sane;
