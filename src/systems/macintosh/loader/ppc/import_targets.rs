@@ -7091,6 +7091,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("MathLib", "dec2str") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Dec2Str)
         }
+        ("MathLib", "__inf") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Infinity)
+        }
+        ("MathLib", "__isfinited") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::IsFiniteD)
+        }
+        ("MathLib", "feraiseexcept") => PpcImportDispatcherTarget::MathCompatibility(
+            PpcMathCompatibilityOperation::FeRaiseExcept,
+        ),
         ("MathLib", "feclearexcept") => PpcImportDispatcherTarget::MathCompatibility(
             PpcMathCompatibilityOperation::FeClearExcept,
         ),

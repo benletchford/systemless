@@ -1153,3 +1153,78 @@ fn carbonlib_math_exports_resolve_through_mathlib() {
         dispatcher_target_for_import("InterfaceLib", "NewPtr")
     );
 }
+
+#[test]
+fn mathlib_infinity_and_finite_queries_preserve_the_environment() {
+    let mut memory = PpcSectionMem::new();
+    let mut cpu = PpcCpu::new();
+    cpu.fpscr = 0x1234_5678;
+    assert_eq!(
+        ppc_dispatch_math_compatibility(math_operation("__inf"), &mut cpu, &mut memory),
+        PpcImportAction::ReturnPreserve
+    );
+    assert_eq!(cpu.fpr[1], f64::INFINITY.to_bits());
+    for (bits, finite) in [
+        (0u64, true),
+        (1u64, true),
+        ((-0.0f64).to_bits(), true),
+        (f64::MAX.to_bits(), true),
+        (f64::INFINITY.to_bits(), false),
+        (f64::NEG_INFINITY.to_bits(), false),
+        (0x7ff0_0000_0000_0001, false),
+        (f64::NAN.to_bits(), false),
+    ] {
+        cpu.fpr[1] = bits;
+        assert_eq!(
+            ppc_dispatch_math_compatibility(math_operation("__isfinited"), &mut cpu, &mut memory),
+            PpcImportAction::Return(u32::from(finite))
+        );
+        assert_eq!(cpu.fpr[1], bits);
+        assert_eq!(cpu.fpscr, 0x1234_5678);
+    }
+}
+
+#[test]
+fn mathlib_exception_controls_raise_test_and_selectively_clear_fpscr() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"MathLib",
+        b"feraiseexcept",
+    ))
+    .unwrap();
+    // Preserve rounding, result classification, and enable bits.
+    let control = 0x0001_0083; // VE, RN=3, FPRF bit
+    loaded.cpu.fpscr = control;
+    loaded.cpu.gpr[3] = 0x2400_0000; // invalid and divide by zero
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("MathLib", "feraiseexcept"),
+    );
+    assert_eq!(loaded.cpu.fpscr & 0x3e00_0000, 0x2400_0000);
+    assert!(loaded.cpu.fpscr_bit(0));
+    assert!(loaded.cpu.fpscr_bit(1));
+    assert!(loaded.cpu.fpscr_bit(21)); // VXSOFT
+    assert_eq!(loaded.cpu.fpscr & control, control);
+    loaded.cpu.gpr[3] = 0x1400_0000; // request overflow and divide-by-zero
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("MathLib", "fetestexcept"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x0400_0000);
+    loaded.cpu.gpr[3] = 0x2000_0000;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("MathLib", "feclearexcept"),
+    );
+    assert_eq!(loaded.cpu.fpscr & 0x3e00_0000, 0x0400_0000);
+    assert_eq!(loaded.cpu.fpscr & 0x01f8_0700, 0);
+    assert!(!loaded.cpu.fpscr_bit(1));
+    assert_eq!(loaded.cpu.fpscr & control, control);
+    // A zero mask is a no-op; ignored argument bits cannot change controls.
+    let before = loaded.cpu.fpscr;
+    loaded.cpu.gpr[3] = 0x0000_ffff;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("MathLib", "feclearexcept"),
+    );
+    assert_eq!(loaded.cpu.fpscr, before);
+}

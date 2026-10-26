@@ -345,6 +345,9 @@ pub enum PpcMathCompatibilityOperation {
     Fabs,
     FeClearExcept,
     FeTestExcept,
+    FeRaiseExcept,
+    Infinity,
+    IsFiniteD,
     FpClassifyD,
     FpClassifyF,
     Floor,
@@ -551,11 +554,36 @@ pub(super) fn ppc_dispatch_math_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        PpcMathCompatibilityOperation::FeClearExcept => {
-            cpu.fpscr &= 0x0000_00ff;
-            PpcImportAction::Return(0)
+        PpcMathCompatibilityOperation::Infinity => {
+            cpu.fpr[1] = f64::INFINITY.to_bits();
+            PpcImportAction::ReturnPreserve
         }
-        PpcMathCompatibilityOperation::FeTestExcept => PpcImportAction::Return(0),
+        PpcMathCompatibilityOperation::IsFiniteD => {
+            PpcImportAction::Return(u32::from(f64::from_bits(cpu.fpr[1]).is_finite()))
+        }
+        PpcMathCompatibilityOperation::FeClearExcept
+        | PpcMathCompatibilityOperation::FeRaiseExcept => {
+            // Apple's PowerPC fenv.h uses the FPSCR exception summary bits
+            // directly. VX is derived from the individual invalid causes.
+            let mut flags = cpu.gpr[3] & 0x3e00_0000;
+            if operation == PpcMathCompatibilityOperation::FeClearExcept {
+                if flags & 0x2000_0000 != 0 {
+                    flags |= 0x01f8_0700; // all invalid-operation causes
+                }
+                cpu.fpscr &= !flags;
+            } else if flags != 0 {
+                if flags & 0x2000_0000 != 0 {
+                    flags |= 0x0000_0400; // VXSOFT
+                }
+                cpu.fpscr |= flags | 0x8000_0000; // sticky FX summary
+            }
+            let enabled = (cpu.fpscr >> 22) & cpu.fpscr & 0x0000_00f8 != 0;
+            cpu.set_fpscr_bit(1, enabled); // derived FEX summary
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::FeTestExcept => {
+            PpcImportAction::Return(cpu.fpscr & cpu.gpr[3] & 0x3e00_0000)
+        }
     }
 }
 
