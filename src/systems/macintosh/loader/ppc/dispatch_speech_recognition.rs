@@ -20,6 +20,11 @@ impl PpcSpeechRecognitionOperation {
         Some(match name {
             "SROpenRecognitionSystem" => Self::Open,
             "SRNewRecognizer" | "SRNewLanguageModel" | "SRGetIndexedItem" => Self::ObjectOutput,
+            // Legacy Speech Recognition 1.5 call: Warcraft II Demo 1.2,
+            // code offset 0x65a24, passes object in r3, output in r4 and
+            // zero in r5; it checks a signed OSErr and dereferences the
+            // output only on success. Later Universal Interfaces omit it.
+            "SRGetSpeechSource" => Self::ObjectOutput,
             "SRGetProperty" => Self::GetProperty,
             "SRCloseRecognitionSystem"
             | "SRContinueRecognition"

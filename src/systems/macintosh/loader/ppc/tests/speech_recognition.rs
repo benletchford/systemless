@@ -45,7 +45,12 @@ fn speech_recognition_invalid_objects_clear_references_without_writing_property_
     let output = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(output, vec![0xa5; 32]);
     let before = loaded.handles();
-    for symbol in ["SRNewRecognizer", "SRNewLanguageModel", "SRGetIndexedItem"] {
+    for symbol in [
+        "SRNewRecognizer",
+        "SRNewLanguageModel",
+        "SRGetIndexedItem",
+        "SRGetSpeechSource",
+    ] {
         loaded.memory.write_u32_be(output + 4, u32::MAX).unwrap();
         loaded.cpu.gpr[3] = 0x12345678;
         loaded.cpu.gpr[4] = output + 4;
