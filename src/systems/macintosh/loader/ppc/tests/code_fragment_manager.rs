@@ -739,6 +739,9 @@ fn cfm_symbol_enumeration_imports_route_aliases_and_preserve_failed_outputs() {
                     .unwrap()
                     .connections
                     .push(PpcCfmConnection {
+                        references: 1,
+                        container: None,
+                        sections: Vec::new(),
                         id: 7,
                         library_name: "fixture".into(),
                         main_addr: 0,
@@ -856,12 +859,21 @@ fn initial_application_imports_bind_bundled_library_data_and_tvectors() {
             None,
             vec![PpcCfmLibraryFragment {
                 name: "BundledLibrary".to_string(),
-                bytes: library,
+                bytes: library.clone(),
             }],
             None,
         )
         .unwrap();
 
+        let container = &loaded.cfm.as_ref().unwrap().connections[0].container;
+        let Some(crate::cfm::CfmContainerLocation::Memory { address, length }) = container else {
+            panic!("memory-backed library must retain its original container");
+        };
+        assert_eq!(*length, library.len() as u32);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, *address, *length),
+            Some(library.clone())
+        );
         let binding_address = loaded.import_binding(0).unwrap().address;
         assert_ne!(binding_address, 0);
         assert_eq!(
@@ -1038,6 +1050,28 @@ fn disk_backed_bundled_library_initializer_receives_file_locator() {
     )
     .unwrap();
 
+    let connection = loaded
+        .cfm
+        .as_ref()
+        .unwrap()
+        .connections
+        .iter()
+        .find(|connection| connection.library_name == "BundledInitializer")
+        .unwrap();
+    let Some(crate::cfm::CfmContainerLocation::DataFork {
+        file_spec,
+        offset,
+        length,
+    }) = connection.container.as_ref()
+    else {
+        panic!("disk-backed library must retain its disk locator");
+    };
+    assert_eq!(*offset, 128);
+    assert_eq!(*length, library.len() as u32);
+    assert_eq!(&file_spec[..2], &(-1i16).to_be_bytes());
+    assert_eq!(&file_spec[2..6], &42u32.to_be_bytes());
+    assert_eq!(&file_spec[6..14], b"\x07Library");
+
     loaded.run_with_hle_imports(2);
     let block = loaded.cpu.gpr[3];
     assert_eq!(loaded.memory.read_u32_be(block + 12), Some(1));
@@ -1191,6 +1225,9 @@ fn close_connection_import_preserves_live_registry_on_protected_output_and_retri
         let pointer = PPC_HEAP_BASE + 0x1000;
         loaded.memory.write_u32_be(pointer, 77).unwrap();
         let connection = PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id: 77,
             library_name: "Library".to_string(),
             main_addr: 0x1234,
@@ -1205,6 +1242,9 @@ fn close_connection_import_preserves_live_registry_on_protected_output_and_retri
             .unwrap()
             .connections
             .push(PpcCfmConnection {
+                references: 1,
+                container: None,
+                sections: Vec::new(),
                 id: 78,
                 library_name: "Other".to_string(),
                 main_addr: 0x5678,
@@ -1257,6 +1297,9 @@ fn find_symbol_returns_real_export_class_before_hle_fallback() {
         .unwrap()
         .connections
         .push(PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id: 77,
             library_name: "RealLibrary".to_string(),
             main_addr: 0,
@@ -1312,6 +1355,9 @@ fn find_symbol_import_refuses_partial_outputs_retries_and_reuses_callable_bindin
             .unwrap()
             .connections
             .push(PpcCfmConnection {
+                references: 1,
+                container: None,
+                sections: Vec::new(),
                 id: 7,
                 library_name: if dynamic {
                     "InterfaceLib"
@@ -1339,6 +1385,9 @@ fn find_symbol_import_refuses_partial_outputs_retries_and_reuses_callable_bindin
                 .unwrap()
                 .connections
                 .push(PpcCfmConnection {
+                    references: 1,
+                    container: None,
+                    sections: Vec::new(),
                     id: 8,
                     library_name: "StdCLib".into(),
                     main_addr: 0,
@@ -1438,6 +1487,9 @@ fn find_symbol_returns_the_static_stdclib_data_identity() {
         .unwrap()
         .connections
         .push(PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id: 78,
             library_name: "StdCLib".to_string(),
             main_addr: 0,
@@ -1632,6 +1684,9 @@ fn dynamic_fragment_imports_resolve_existing_guest_library_exports() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let fragment = synthetic_pef_with_library_import(b"Storm", b"__register_fragment");
     let connection = PpcCfmConnection {
+        references: 1,
+        container: None,
+        sections: Vec::new(),
         id: 7,
         library_name: "Storm".into(),
         main_addr: 0,
@@ -1667,6 +1722,9 @@ fn dynamic_fragment_imports_resolve_existing_guest_library_exports() {
 #[test]
 fn bundled_imports_bind_by_name_when_symbol_classes_differ() {
     let connection = PpcCfmConnection {
+        references: 1,
+        container: None,
+        sections: Vec::new(),
         id: 7,
         library_name: "Storm".into(),
         main_addr: 0,
@@ -1831,6 +1889,9 @@ fn nameless_disk_find_uses_container_name_to_find_loaded_fragment() {
     cpu.gpr[8] = 0x6004;
     cpu.gpr[9] = 0x6010;
     let mut connections = vec![PpcCfmConnection {
+        references: 1,
+        container: None,
+        sections: Vec::new(),
         id: PPC_FIRST_CFM_CONNECTION_ID,
         library_name: "Example App".to_string(),
         main_addr: 0x1234,
@@ -1880,5 +1941,83 @@ fn code_fragment_manager_namespace_exports_the_fragment_loaders() {
             PpcImportDispatcherTarget::GetMemFragment,
             "{library}"
         );
+    }
+}
+
+#[test]
+fn cfm_private_section_query_reports_mappings_and_preserves_padding() {
+    use crate::cfm::CfmMappedSection;
+    for fault in 0..5 {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"PrivateInterfaceLib",
+            b"FragGetSectionInfo",
+        ))
+        .unwrap();
+        const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+        loaded.memory.add_region(OUTPUT, vec![0xa5; 40]);
+        loaded
+            .cfm
+            .as_mut()
+            .unwrap()
+            .connections
+            .push(PpcCfmConnection {
+                references: 1,
+                container: None,
+                sections: vec![
+                    CfmMappedSection {
+                        index: 0,
+                        address: 0x0100_1000,
+                        length: 24,
+                        kind: 0,
+                    },
+                    CfmMappedSection {
+                        index: 1,
+                        address: 0x0200_2000,
+                        length: 48,
+                        kind: 2,
+                    },
+                ],
+                id: 7,
+                library_name: "fixture".into(),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: Vec::new(),
+            });
+        loaded.cpu.gpr[3] = if fault == 1 { 99 } else { 0 };
+        loaded.cpu.gpr[4] = if fault == 2 { 99 } else { 7 };
+        loaded.cpu.gpr[5] = if fault == 3 { 1 } else { 0 };
+        loaded.cpu.gpr[6] = 2;
+        loaded.cpu.gpr[7] = OUTPUT;
+        if fault == 4 {
+            loaded
+                .memory
+                .add_readonly_region(OUTPUT + 20, vec![0xa5; 4]);
+        }
+        let probe = loaded.run_with_hle_imports(128);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let expected = [0, -2800, -2801, -2803, -50][fault];
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        if fault == 0 {
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(0x0100_1000));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 4), Some(24));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 8), Some(0x0100));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 10), Some(0xa5a5));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 12), Some(1));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 16), Some(0x0200_2000));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 20), Some(48));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 24), Some(0x0001));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 26), Some(0xa5a5));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 28), Some(1));
+        } else {
+            for offset in (0..32).step_by(4) {
+                assert_eq!(
+                    loaded.memory.read_u32_be(OUTPUT + offset),
+                    Some(0xa5a5_a5a5)
+                );
+            }
+        }
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT + 32), Some(0xa5a5_a5a5));
     }
 }

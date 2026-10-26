@@ -1044,6 +1044,12 @@ pub(super) fn ppc_prepare_resource_call(
         *next_id = id + 1;
         let name = format!("resource routine ${:08X}", request.record);
         connections.push(PpcCfmConnection {
+            references: 1,
+            container: Some(crate::cfm::CfmContainerLocation::Memory {
+                address: request.fragment_address,
+                length: fragment.len() as u32,
+            }),
+            sections: prepared.sections.clone(),
             id,
             library_name: name.clone(),
             main_addr: prepared.main_addr,

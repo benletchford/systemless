@@ -2229,6 +2229,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetSharedLibrary
         | PpcImportDispatcherTarget::FindSymbol
+        | PpcImportDispatcherTarget::FragGetSectionInfo
         | PpcImportDispatcherTarget::CountSymbols
         | PpcImportDispatcherTarget::GetIndSymbol
         | PpcImportDispatcherTarget::CloseConnection

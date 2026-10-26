@@ -60,6 +60,9 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             cfm_connections,
             import_run_state,
         )),
+        PpcImportDispatcherTarget::FragGetSectionInfo => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_frag_get_section_info(cpu, memory, cfm_connections)),
+        )),
         PpcImportDispatcherTarget::CountSymbols | PpcImportDispatcherTarget::GetIndSymbol => {
             // PowerPC System Software (1994), pp. 3-25–3-26. Only the ABI
             // registers and return encoding belong in this adapter.
@@ -256,6 +259,12 @@ pub(super) fn ppc_get_shared_library(
                     fragment_size.saturating_add(prepared.code_size),
                 );
                 let connection = PpcCfmConnection {
+                    references: 1,
+                    container: Some(crate::cfm::CfmContainerLocation::Memory {
+                        address: fragment_addr,
+                        length: fragment_size,
+                    }),
+                    sections: prepared.sections.clone(),
                     id,
                     library_name: lib_name.clone(),
                     main_addr: prepared.main_addr,
@@ -284,6 +293,9 @@ pub(super) fn ppc_get_shared_library(
                 // System libraries without a supplied PEF remain synthetic
                 // CFM connections whose optional main routine is a no-op.
                 PpcCfmConnection {
+                    references: 1,
+                    container: None,
+                    sections: Vec::new(),
                     id,
                     library_name: lib_name.clone(),
                     main_addr: ppc_cfm_main_stub_addr(id),
@@ -301,6 +313,7 @@ pub(super) fn ppc_get_shared_library(
     };
 
     let operation = CfmLoadOperation {
+        acquire_reference: !created_connection && find_flags != PPC_CFM_FIND_LIB,
         id: CfmLoadId(connection.id),
         created_connection,
         main_address: connection.main_addr,
@@ -429,8 +442,12 @@ pub(super) fn ppc_get_disk_fragment(
             *heap_cursor
         );
     }
+    let Some(file_spec) = ppc_memory_read_bytes(memory, spec, 70) else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let new_id = *next_cfm_connection_id;
     cpu.gpr[3..=9].copy_from_slice(&[address, size, name, flags, conn, main, err]);
-    ppc_get_mem_fragment(
+    let action = ppc_get_mem_fragment(
         cpu,
         guest_calls,
         process_memory_manager,
@@ -443,7 +460,15 @@ pub(super) fn ppc_get_disk_fragment(
         import_run_state,
         Some(size),
         Some(path.rsplit('/').next().unwrap_or(&path)),
-    )
+    );
+    if let Some(connection) = cfm_connections.iter_mut().find(|item| item.id == new_id) {
+        connection.container = Some(crate::cfm::CfmContainerLocation::DataFork {
+            file_spec,
+            offset,
+            length: size,
+        });
+    }
+    action
 }
 
 pub(super) fn ppc_get_mem_fragment(
@@ -574,6 +599,12 @@ pub(super) fn ppc_get_mem_fragment(
                 );
             }
             let connection = PpcCfmConnection {
+                references: 1,
+                container: Some(crate::cfm::CfmContainerLocation::Memory {
+                    address: mem_addr,
+                    length,
+                }),
+                sections: prepared.sections.clone(),
                 id,
                 library_name: frag_name,
                 main_addr: prepared.main_addr,
@@ -603,6 +634,7 @@ pub(super) fn ppc_get_mem_fragment(
         }
     };
     let operation = CfmLoadOperation {
+        acquire_reference: !created_connection && find_flags != PPC_CFM_FIND_LIB,
         id: CfmLoadId(connection.id),
         created_connection,
         main_address: connection.main_addr,
@@ -828,4 +860,78 @@ pub(super) fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
             | "CFMPriv_CarbonCore"
     ) || is_quickdraw_3d_library(library_name)
         || is_quickdraw_3d_accelerator_library(library_name)
+}
+
+// PrivateInterfaceLib's legacy FragGetSectionInfo uses 16-byte records:
+// address, length, executable, writable, two untouched padding bytes,
+// and the mapping's share count. The reference System CFM implementation
+// writes each field separately; do not apply the older mac68k struct packing.
+pub(super) fn ppc_frag_get_section_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    connections: &[PpcCfmConnection],
+) -> i16 {
+    use crate::loader::pef::{
+        SECTION_KIND_CODE, SECTION_KIND_CONSTANT, SECTION_KIND_EXECUTABLE_DATA,
+    };
+    // InitBlock currently publishes context zero for this process.
+    if cpu.gpr[3] != 0 {
+        return -2800;
+    }
+    let Some(connection) = connections.iter().find(|item| item.id == cpu.gpr[4]) else {
+        return -2801;
+    };
+    let count = cpu.gpr[6] as i32;
+    if count <= 0 {
+        return 0;
+    }
+    let first = cpu.gpr[5];
+    let Some(end) = first.checked_add(count as u32) else {
+        return -2803;
+    };
+    if end as usize > connection.sections.len() {
+        return -2803;
+    }
+    let output = cpu.gpr[7];
+    let Some(size) = (count as u32).checked_mul(16) else {
+        return -50;
+    };
+    if output == 0 || output.checked_add(size - 1).is_none() {
+        return -50;
+    }
+    let mut owned = Vec::with_capacity(count as usize * 2);
+    for (offset, index) in (first..end).enumerate() {
+        let Some(section) = connection
+            .sections
+            .iter()
+            .find(|section| section.index == index as usize)
+        else {
+            return -2803;
+        };
+        let mut fields = Vec::with_capacity(10);
+        fields.extend_from_slice(&section.address.to_be_bytes());
+        fields.extend_from_slice(&section.length.to_be_bytes());
+        fields.push(u8::from(matches!(
+            section.kind,
+            SECTION_KIND_CODE | SECTION_KIND_EXECUTABLE_DATA
+        )));
+        fields.push(u8::from(!matches!(
+            section.kind,
+            SECTION_KIND_CODE | SECTION_KIND_CONSTANT
+        )));
+        let address = output + offset as u32 * 16;
+        owned.push((address, fields));
+        // Each currently instantiated section has one mapping. Reopening a
+        // connection does not create another section mapping.
+        owned.push((address + 12, 1u32.to_be_bytes().to_vec()));
+    }
+    let writes: Vec<_> = owned
+        .iter()
+        .map(|(address, bytes)| (*address, bytes.as_slice()))
+        .collect();
+    if memory.publish_cfm_outputs(&writes) {
+        0
+    } else {
+        -50
+    }
 }

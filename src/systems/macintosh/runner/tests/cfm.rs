@@ -3,6 +3,9 @@ use crate::cpu::Register;
 
 fn cfm_test_connection(id: u32) -> crate::cfm::CfmConnection {
     crate::cfm::CfmConnection {
+        references: 1,
+        container: None,
+        sections: Vec::new(),
         id,
         library_name: format!("existing-{id}"),
         main_addr: 0,

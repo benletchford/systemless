@@ -10989,6 +10989,9 @@ mod tests {
         let mut context = ProcessContext::default();
         let mut seed = Some(crate::cfm::CfmState {
             connections: vec![crate::cfm::CfmConnection {
+                references: 1,
+                container: None,
+                sections: Vec::new(),
                 id: 7,
                 library_name: "seed".into(),
                 main_addr: 0x2000,

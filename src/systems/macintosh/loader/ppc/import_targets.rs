@@ -140,6 +140,7 @@ pub enum PpcImportDispatcherTarget {
     SetControlFontStyle,
     GetSharedLibrary,
     FindSymbol,
+    FragGetSectionInfo,
     CountSymbols,
     GetIndSymbol,
     CloseConnection,
@@ -1662,6 +1663,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SpeechRecognition(
                 PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
             )
+        }
+        ("PrivateInterfaceLib", "FragGetSectionInfo") => {
+            PpcImportDispatcherTarget::FragGetSectionInfo
         }
         ("SoundSprocketLib", symbol) if PpcSoundSprocketFunction::from_name(symbol).is_some() => {
             PpcImportDispatcherTarget::SoundSprocket(

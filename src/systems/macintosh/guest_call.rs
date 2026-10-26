@@ -5945,6 +5945,7 @@ mod tests {
             let mut cpu = PpcCpu::new();
             cpu.gpr[1] = 0x8000;
             let operation = |id| CfmLoadOperation {
+                acquire_reference: false,
                 id: CfmLoadId(id),
                 main_address: 0,
                 outputs: crate::cfm::CfmLoadOutputs {
