@@ -4793,3 +4793,335 @@ fn quicktime_aiff_import_preserves_resource_selection_and_rejects_bad_data() {
         assert!(ppc_qt_movie_first_audio_track(&invalid).is_none());
     }
 }
+
+fn movie_toolbox_fixture() -> PpcLoadedApp {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"GetMovieTrackCount",
+    ))
+    .unwrap();
+    let mut movie = test_quicktime_tkhd_movie(320, 240);
+    // Supply valid tkhd duration and identity matrices; the older fixture
+    // leaves these fields zero because it only probes dimensions and media.
+    let headers: Vec<_> = movie
+        .windows(4)
+        .enumerate()
+        .filter_map(|(index, kind)| (kind == b"tkhd").then_some(index + 4))
+        .collect();
+    for header in headers {
+        movie[header + 20..header + 24].copy_from_slice(&120u32.to_be_bytes());
+        for (offset, value) in [(40, 0x10000u32), (56, 0x10000), (72, 0x40000000)] {
+            movie[header + offset..header + offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        movie[header + 32..header + 34].copy_from_slice(&(-2i16).to_be_bytes());
+        movie[header + 36..header + 38].copy_from_slice(&0x100u16.to_be_bytes());
+    }
+    loaded.quicktime.movie_tracks = ppc_qt_movie_tracks(&movie);
+    loaded.quicktime.movie_file_data = movie;
+    loaded.quicktime.movie_creation_time_scale = 60;
+    loaded.quicktime.movie_time_scale = 60;
+    loaded.quicktime.movie_file_duration = 120;
+    loaded.quicktime.movie_file_bounds = Some((0, 0, 240, 320));
+    loaded.quicktime.movie_box = (0, 0, 240, 320);
+    loaded
+        .memory
+        .add_region(PPC_DATA_BASE + 0x4000, vec![0; 0x400]);
+    loaded
+}
+
+fn call_movie_toolbox(loaded: &mut PpcLoadedApp, symbol: &str, args: &[u32]) -> u32 {
+    let target = dispatcher_target_for_import("QuickTimeLib", symbol);
+    assert!(
+        matches!(target, PpcImportDispatcherTarget::QuickTimeCompatibility(_)),
+        "{symbol}"
+    );
+    loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+    run_test_import(loaded, target);
+    loaded.cpu.gpr[3]
+}
+
+#[test]
+fn quicktime_toolbox_track_metadata_scales_and_rejects_bad_indices() {
+    let mut loaded = movie_toolbox_fixture();
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieTrackCount", &[PPC_QT_MOVIE]),
+        2
+    );
+    let track = call_movie_toolbox(&mut loaded, "GetMovieIndTrack", &[PPC_QT_MOVIE, 1]);
+    assert_eq!(track, loaded.quicktime.movie_tracks[0].handle);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackDuration", &[track]),
+        120
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackLayer", &[track]) as i16,
+        -2
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackVolume", &[track]),
+        0x100
+    );
+    call_movie_toolbox(&mut loaded, "SetMovieTimeScale", &[PPC_QT_MOVIE, 600]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackDuration", &[track]),
+        1200
+    );
+    call_movie_toolbox(&mut loaded, "SetTrackOffset", &[track, 300]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackOffset", &[track]),
+        300
+    );
+    call_movie_toolbox(&mut loaded, "SetTrackEnabled", &[track, 0]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTrackEnabled", &[track]),
+        0
+    );
+    for index in [0, 3, u32::MAX, i32::MIN as u32] {
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetMovieIndTrack", &[PPC_QT_MOVIE, index]),
+            0
+        );
+        assert_eq!(loaded.quicktime.movie_error, -2028);
+    }
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetTrackDuration", &[0]), 0);
+    assert_eq!(loaded.quicktime.movie_error, -2009);
+}
+
+#[test]
+fn quicktime_toolbox_media_characteristics_write_boolean_output() {
+    let mut loaded = movie_toolbox_fixture();
+    let out = PPC_DATA_BASE + 0x4000;
+    let track = loaded.quicktime.movie_tracks[1].handle;
+    let handler = call_movie_toolbox(&mut loaded, "GetMediaHandler", &[track + 1]);
+    for (kind, expected) in [(b"ears", 1), (b"eyes", 0)] {
+        loaded.memory.write_u32_be(out, 0xa5a5a5a5).unwrap();
+        assert_eq!(
+            call_movie_toolbox(
+                &mut loaded,
+                "MediaHasCharacteristic",
+                &[handler, u32::from_be_bytes(*kind), out]
+            ),
+            0
+        );
+        assert_eq!(loaded.memory.read_u8(out), Some(expected));
+        assert_eq!(loaded.memory.read_u8(out + 1), Some(0xa5));
+    }
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MediaSetSoundBalance",
+            &[handler, (-100i32) as u32]
+        ),
+        0
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MediaGetSoundBalance", &[handler, out]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(out), Some((-100i16) as u16));
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MediaHasCharacteristic",
+            &[handler, u32::from_be_bytes(*b"ears"), 0]
+        ) as i32,
+        -50
+    );
+}
+
+#[test]
+fn quicktime_toolbox_matrices_transform_and_invert_rectangles() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    let (matrix, inverse, src, dst, corners) = (base, base + 40, base + 80, base + 88, base + 100);
+    ppc_write_rect(&mut loaded.memory, src, 0, 0, 10, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, dst, 10, 30, 30, 90).unwrap();
+    call_movie_toolbox(&mut loaded, "RectMatrix", &[matrix, src, dst]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "TransformRect", &[matrix, src, corners]),
+        1
+    );
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, src),
+        Some((10, 30, 30, 90))
+    );
+    assert_eq!(loaded.memory.read_u32_be(corners), Some(30 << 16));
+    assert_eq!(loaded.memory.read_u32_be(corners + 4), Some(10 << 16));
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "InverseMatrix", &[matrix, inverse]),
+        1
+    );
+    call_movie_toolbox(&mut loaded, "TransformRect", &[inverse, src, 0]);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, src), Some((0, 0, 10, 20)));
+    loaded.memory.write_bytes(matrix, &[0; 36]).unwrap();
+    loaded.memory.write_bytes(inverse, &[0xa5; 36]).unwrap();
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "InverseMatrix", &[matrix, inverse]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(inverse), Some(0xa5a5a5a5));
+}
+
+#[test]
+fn quicktime_toolbox_time_records_preserve_signed_values_and_timebase() {
+    let mut loaded = movie_toolbox_fixture();
+    let record = PPC_DATA_BASE + 0x4000;
+    for value in [-9_000_000_001i64, -3, 3, 9_000_000_001] {
+        loaded.memory.write_u64_be(record, value as u64).unwrap();
+        loaded.memory.write_u32_be(record + 8, 3).unwrap();
+        loaded.memory.write_u32_be(record + 12, 0x12345678).unwrap();
+        call_movie_toolbox(&mut loaded, "ConvertTimeScale", &[record, 600]);
+        assert_eq!(
+            loaded.memory.read_u64_be(record),
+            Some((value * 200) as u64)
+        );
+        assert_eq!(loaded.memory.read_u32_be(record + 8), Some(600));
+        assert_eq!(loaded.memory.read_u32_be(record + 12), Some(0x12345678));
+    }
+}
+
+#[test]
+fn quicktime_toolbox_controller_visibility_attachment_and_clip_ownership() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    ppc_write_rect(&mut loaded.memory, base, 0, 0, 240, 320).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, base, 0]);
+    assert_ne!(controller, 0);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCGetVisible", &[controller]),
+        1
+    );
+    call_movie_toolbox(&mut loaded, "MCSetVisible", &[controller, 0]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCGetVisible", &[controller]),
+        0
+    );
+    call_movie_toolbox(&mut loaded, "MCSetControllerAttached", &[controller, 0]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCIsControllerAttached", &[controller]),
+        0
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let region = loaded.cpu.gpr[3];
+    let data = loaded.memory.read_u32_be(region).unwrap();
+    ppc_write_rect(&mut loaded.memory, data + 2, 10, 20, 30, 40).unwrap();
+    call_movie_toolbox(&mut loaded, "MCSetClip", &[controller, region, 0]);
+    ppc_write_rect(&mut loaded.memory, data + 2, 0, 0, 1, 1).unwrap();
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCGetClip",
+            &[controller, base + 40, base + 44]
+        ),
+        0
+    );
+    let copied = loaded.memory.read_u32_be(base + 40).unwrap();
+    assert_ne!(copied, region);
+    let copied_data = loaded.memory.read_u32_be(copied).unwrap();
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, copied_data + 2),
+        Some((10, 20, 30, 40))
+    );
+    assert_eq!(loaded.memory.read_u32_be(base + 44), Some(0));
+}
+
+#[test]
+fn quicktime_toolbox_sample_sizes_and_interesting_times_follow_track_tables() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    // Exclude the audio track: the fixture has two video samples, each
+    // four bytes and one second long at a movie time scale of 60.
+    loaded.quicktime.movie_tracks[1].enabled = false;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieDataSize", &[PPC_QT_MOVIE, 0, 120]),
+        8
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieDataSize", &[PPC_QT_MOVIE, 60, 60]),
+        4
+    );
+    loaded
+        .memory
+        .write_u32_be(base, u32::from_be_bytes(*b"vide"))
+        .unwrap();
+    for (flags, time, rate, expected, duration) in [
+        (1, 0, 0x10000, 60i32, 60),
+        (1 | 0x4000, 0, 0x10000, 0, 60),
+        (1, 60, 0xffff0000, 0, 60),
+        (1, 60, 0x10000, -1, 0),
+    ] {
+        call_movie_toolbox(
+            &mut loaded,
+            "GetMovieNextInterestingTime",
+            &[PPC_QT_MOVIE, flags, 1, base, time, rate, base + 4, base + 8],
+        );
+        assert_eq!(loaded.memory.read_u32_be(base + 4), Some(expected as u32));
+        assert_eq!(loaded.memory.read_u32_be(base + 8), Some(duration));
+    }
+}
+
+#[test]
+fn quicktime_toolbox_display_regions_preserve_gaps_between_tracks() {
+    let mut loaded = movie_toolbox_fixture();
+    let mut second = loaded.quicktime.movie_tracks[0];
+    second.handle += 0x100;
+    second.matrix[6] = 400 << 16;
+    loaded.quicktime.movie_tracks.push(second);
+    let region = call_movie_toolbox(&mut loaded, "GetMovieDisplayBoundsRgn", &[PPC_QT_MOVIE]);
+    let storage = ppc_region_storage(&mut loaded.memory, region).unwrap();
+    assert!(ppc_point_in_region_storage(&storage, 10, 10));
+    assert!(!ppc_point_in_region_storage(&storage, 10, 350));
+    assert!(ppc_point_in_region_storage(&storage, 10, 410));
+}
+
+#[test]
+fn quicktime_toolbox_set_movie_box_updates_an_explicit_matrix() {
+    let mut loaded = movie_toolbox_fixture();
+    let base = PPC_DATA_BASE + 0x4000;
+    call_movie_toolbox(&mut loaded, "SetIdentityMatrix", &[base]);
+    loaded.memory.write_u32_be(base + 24, 10 << 16).unwrap();
+    call_movie_toolbox(&mut loaded, "SetMovieMatrix", &[PPC_QT_MOVIE, base]);
+    assert_eq!(loaded.quicktime.movie_box, (0, 10, 240, 330));
+    ppc_write_rect(&mut loaded.memory, base + 40, 20, 30, 500, 670).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = base + 40;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtSetMovieBox);
+    assert_eq!(loaded.quicktime.movie_error, 0);
+    call_movie_toolbox(&mut loaded, "GetMovieMatrix", &[PPC_QT_MOVIE, base]);
+    assert_eq!(loaded.memory.read_u32_be(base), Some(2 << 16));
+    assert_eq!(loaded.memory.read_u32_be(base + 16), Some(2 << 16));
+    assert_eq!(loaded.memory.read_u32_be(base + 24), Some(30 << 16));
+    assert_eq!(loaded.memory.read_u32_be(base + 28), Some(20 << 16));
+}
+
+#[test]
+fn quicktime_toolbox_preferred_rate_does_not_change_current_playback_rate() {
+    let mut loaded = movie_toolbox_fixture();
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMoviePreferredRate",
+        &[PPC_QT_MOVIE, 0x20000],
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtStartMovie);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieRate", &[PPC_QT_MOVIE]),
+        0x20000
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMoviePreferredRate",
+        &[PPC_QT_MOVIE, 0x10000],
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieRate", &[PPC_QT_MOVIE]),
+        0x20000
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtStopMovie);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieRate", &[PPC_QT_MOVIE]),
+        0
+    );
+}

@@ -7287,6 +7287,162 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcInputSprocketCompatibilityOperation::DeviceIsActive,
             )
         }
+        ("QuickTimeLib", "GetMovieTrackCount") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieTrackCount,
+        ),
+        ("QuickTimeLib", "GetMovieIndTrack") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieIndTrack,
+        ),
+        ("QuickTimeLib", "GetMovieRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieRate,
+        ),
+        ("QuickTimeLib", "SetMoviePreferredRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMoviePreferredRate,
+        ),
+        ("QuickTimeLib", "SetMovieTimeScale") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieTimeScale,
+        ),
+        ("QuickTimeLib", "GetMovieSelection") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieSelection,
+        ),
+        ("QuickTimeLib", "GetMoviePosterTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMoviePosterTime,
+        ),
+        ("QuickTimeLib", "GetMovieDataSize") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieDataSize,
+        ),
+        ("QuickTimeLib", "GetMovieNextInterestingTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieNextInterestingTime,
+        ),
+        ("QuickTimeLib", "GetMovieGWorld") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieGWorld,
+        ),
+        ("QuickTimeLib", "GetMovieMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieMatrix,
+        ),
+        ("QuickTimeLib", "SetMovieMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieMatrix,
+        ),
+        ("QuickTimeLib", "GetMovieDisplayBoundsRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMovieDisplayBoundsRgn,
+        ),
+        ("QuickTimeLib", "SetMovieDisplayClipRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieDisplayClipRgn,
+        ),
+        ("QuickTimeLib", "SetMovieDrawingCompleteProc") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieDrawingCompleteProc,
+        ),
+        ("QuickTimeLib", "GetMoviePict") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMoviePict,
+        ),
+        ("QuickTimeLib", "ConvertTimeScale") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::ConvertTimeScale,
+        ),
+        ("QuickTimeLib", "GetTrackDuration") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackDuration,
+        ),
+        ("QuickTimeLib", "GetTrackOffset") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackOffset,
+        ),
+        ("QuickTimeLib", "GetTrackLayer") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackLayer,
+        ),
+        ("QuickTimeLib", "GetTrackVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackVolume,
+        ),
+        ("QuickTimeLib", "GetTrackEnabled") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackEnabled,
+        ),
+        ("QuickTimeLib", "SetTrackEnabled") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTrackEnabled,
+        ),
+        ("QuickTimeLib", "SetTrackLayer") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTrackLayer,
+        ),
+        ("QuickTimeLib", "SetTrackOffset") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTrackOffset,
+        ),
+        ("QuickTimeLib", "SetTrackVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTrackVolume,
+        ),
+        ("QuickTimeLib", "GetTrackDisplayBoundsRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackDisplayBoundsRgn,
+        ),
+        ("QuickTimeLib", "GetTrackMovieBoundsRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackMovieBoundsRgn,
+        ),
+        ("QuickTimeLib", "PtInTrack") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::PtInTrack,
+        ),
+        ("QuickTimeLib", "GetTrackUserData") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTrackUserData,
+        ),
+        ("QuickTimeLib", "CountUserDataType") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::CountUserDataType,
+        ),
+        ("QuickTimeLib", "GetMediaHandler") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMediaHandler,
+        ),
+        ("QuickTimeLib", "GetMediaHandlerDescription") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetMediaHandlerDescription,
+        ),
+        ("QuickTimeLib", "MediaGetSoundBalance") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MediaGetSoundBalance,
+        ),
+        ("QuickTimeLib", "MediaSetSoundBalance") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MediaSetSoundBalance,
+        ),
+        ("QuickTimeLib", "MediaHasCharacteristic") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MediaHasCharacteristic,
+        ),
+        ("QuickTimeLib", "MediaSetGraphicsMode") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MediaSetGraphicsMode,
+        ),
+        ("QuickTimeLib", "SetIdentityMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetIdentityMatrix,
+        ),
+        ("QuickTimeLib", "InverseMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::InverseMatrix,
+        ),
+        ("QuickTimeLib", "RectMatrix") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::RectMatrix,
+        ),
+        ("QuickTimeLib", "TransformRect") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TransformRect,
+        ),
+        ("QuickTimeLib", "MCClick") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCClick,
+        ),
+        ("QuickTimeLib", "MCDraw") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCDraw,
+        ),
+        ("QuickTimeLib", "MCGetClip") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCGetClip,
+        ),
+        ("QuickTimeLib", "MCSetClip") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCSetClip,
+        ),
+        ("QuickTimeLib", "MCGetControllerBoundsRgn") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRgn,
+        ),
+        ("QuickTimeLib", "MCGetControllerInfo") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCGetControllerInfo,
+        ),
+        ("QuickTimeLib", "MCGetVisible") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCGetVisible,
+        ),
+        ("QuickTimeLib", "MCSetVisible") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCSetVisible,
+        ),
+        ("QuickTimeLib", "MCIsControllerAttached") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCIsControllerAttached,
+        ),
+        ("QuickTimeLib", "MCSetControllerAttached") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCSetControllerAttached,
+        ),
+        ("QuickTimeLib", "MCMovieChanged") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::MCMovieChanged,
+        ),
         ("InputSprocketLib", "ISpDevices_ActivateClass") => {
             PpcImportDispatcherTarget::InputSprocketCompatibility(
                 PpcInputSprocketCompatibilityOperation::DevicesActivateClass,

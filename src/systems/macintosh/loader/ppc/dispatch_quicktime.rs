@@ -197,6 +197,9 @@ pub(super) fn dispatch_quicktime_import(
             let playing = quicktime.movie_started;
             let rate_before = quicktime_callback_rate(quicktime);
             let error = ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
+            if error == PPC_NO_ERR {
+                ppc_qt_mark_drawing_complete(quicktime, playing && quicktime.movie_active);
+            }
             if error == PPC_NO_ERR && playing {
                 let after = quicktime_callback_time(quicktime);
                 quicktime.callbacks.mark_time_due(
@@ -315,11 +318,7 @@ pub(super) fn dispatch_quicktime_import(
 }
 
 pub(super) fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
-    let duration = if quicktime.movie_file_duration == 0 {
-        600
-    } else {
-        quicktime.movie_file_duration
-    };
+    let duration = ppc_qt_movie_duration_value(quicktime);
     let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
     i64::try_from(
         u64::from(quicktime.movie_task_count)
@@ -332,7 +331,7 @@ pub(super) fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
 
 fn quicktime_callback_rate(quicktime: &PpcQuickTimeState) -> i32 {
     if quicktime.movie_started {
-        quicktime.movie_preferred_rate
+        quicktime.movie_playback_rate
     } else {
         0
     }
@@ -359,6 +358,7 @@ pub(super) fn finish_controller_callbacks(
     }
     let (before_time, before_rate, was_playing) = before;
     let (after_time, after_rate, is_playing) = quicktime_callback_progress(quicktime);
+    ppc_qt_mark_drawing_complete(quicktime, was_playing && quicktime.movie_active);
     if was_playing {
         quicktime.callbacks.mark_time_due(
             PPC_QT_MOVIE + 0x10,
