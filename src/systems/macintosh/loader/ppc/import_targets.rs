@@ -2665,6 +2665,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "fopen") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileOpen)
         }
+        ("StdCLib", "printf") => {
+            PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::Printf)
+        }
         ("StdCLib", "fprintf") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FilePrintf)
         }

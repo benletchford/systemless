@@ -7886,37 +7886,6 @@ impl ProcessNativeMemoryManager {
         ptr
     }
 
-    /// Borrow unmapped tail space for a non-reentrant native import scratch buffer.
-    ///
-    /// The cursor is intentionally unchanged: the caller must consume the
-    /// bytes before another process allocation occurs and must not publish the
-    /// address to guest code.
-    pub(crate) fn native_scratch_bytes(
-        &mut self,
-        memory: &mut GuestAddressSpace,
-        size: u32,
-        clear: bool,
-    ) -> u32 {
-        let Some(required) = Self::native_allocation_size(size) else {
-            return 0;
-        };
-        let Some(heap) = self.native_heap_state() else {
-            return 0;
-        };
-        let allocation_limit = self.native_allocation_limit(heap.heap_limit);
-        let Some((ptr, _)) = Self::native_allocation_bounds(
-            heap.heap_cursor,
-            allocation_limit,
-            required,
-            |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
-        ) else {
-            return 0;
-        };
-        Self::prepare_native_allocation(memory, ptr, required, clear)
-            .then_some(ptr)
-            .unwrap_or(0)
-    }
-
     /// Validate the CFM cursor before publishing its prepared memory layout.
     /// The synchronous commit must not reenter the allocator and must preserve
     /// external state on failure. No guest code may execute inside it.

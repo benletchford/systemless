@@ -1710,13 +1710,11 @@ pub(super) fn ppc_printf_general(value: f64, precision: usize, uppercase: bool) 
     text.into_bytes()
 }
 
-pub(super) fn ppc_std_format<F>(
+pub(super) fn ppc_std_format_bytes<F>(
     memory: &mut PpcSectionMem,
-    destination: u32,
     format_ptr: u32,
-    trace_name: &str,
     mut next_word: F,
-) -> u32
+) -> Vec<u8>
 where
     F: FnMut(&mut PpcSectionMem, usize) -> u32,
 {
@@ -1969,6 +1967,20 @@ where
             break;
         }
     }
+    output
+}
+
+pub(super) fn ppc_std_format<F>(
+    memory: &mut PpcSectionMem,
+    destination: u32,
+    format_ptr: u32,
+    trace_name: &str,
+    next_word: F,
+) -> u32
+where
+    F: FnMut(&mut PpcSectionMem, usize) -> u32,
+{
+    let output = ppc_std_format_bytes(memory, format_ptr, next_word);
     let byte_count = u32::try_from(output.len()).unwrap_or(u32::MAX);
     if byte_count
         .checked_add(1)
@@ -1980,7 +1992,7 @@ where
     if ppc_hle_trace_enabled() {
         eprintln!(
             "[PPC-TRACE] {trace_name} dst=${destination:08X} format={:?} -> {:?}",
-            String::from_utf8_lossy(&format),
+            String::from_utf8_lossy(&ppc_std_c_string(memory, format_ptr, 4096)),
             String::from_utf8_lossy(&output)
         );
     }
