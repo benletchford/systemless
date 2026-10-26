@@ -2212,6 +2212,7 @@ pub struct TrapDispatcher {
     /// forever. While the stack pointer is still at or below the recorded value
     /// we are nested inside the proc, so CopyBits performs the blit itself.
     pub(crate) bits_proc_reentry: Option<(u32, u32)>,
+    pub(crate) picture_stream_stack: Vec<super::picture_stream::PictureStreamFrame>,
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: crate::process_context::SharedProcessTimerTasks,
@@ -4085,6 +4086,7 @@ impl TrapDispatcher {
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::default(),
             bits_proc_reentry: None,
+            picture_stream_stack: Vec::new(),
             timer_tasks: Default::default(),
             deferred_tasks: VecDeque::new(),
             deferred_install_in_interrupt: false,
@@ -8172,6 +8174,24 @@ impl TrapDispatcher {
         self.dispatch_inner(trap, cpu, bus, Some(cfm), bindings)
     }
 
+    /// Resume the manager that owned a retired classic callback before any
+    /// public trap/vector routing can interpret its internal return gate.
+    pub(crate) fn resume_completed_classic_manager<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        if let Some(result) = self.resume_picture_stream(cpu, bus) {
+            return Some(result);
+        }
+        if self.resume_completed_menu_bar_build(cpu, bus)
+            || self.resume_menu_tracking(cpu, bus).is_some()
+        {
+            return Some(Ok(()));
+        }
+        None
+    }
+
     fn dispatch_inner<C: CpuOps>(
         &mut self,
         trap: u16,
@@ -8183,11 +8203,10 @@ impl TrapDispatcher {
         if self.complete_control_callback_return(trap, cpu, bus) {
             return Ok(());
         }
-        if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus)
-            && (self.resume_completed_menu_bar_build(cpu, bus)
-                || self.resume_menu_tracking(cpu, bus).is_some())
-        {
-            return Ok(());
+        if crate::execution_m68k::complete_classic_manager_return(&self.guest_calls, cpu, bus) {
+            if let Some(result) = self.resume_completed_classic_manager(cpu, bus) {
+                return result;
+            }
         }
         self.initialize_trap_tables(bus)?;
         // Low-memory Ticks is guest-owned writable state. Import it at the

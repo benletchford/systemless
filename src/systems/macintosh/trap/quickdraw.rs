@@ -8538,8 +8538,16 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_rect_ptr = bus.read_long(sp);
                 let pic_handle = bus.read_long(sp + 4);
+                let streamed_bytes = match self.prepare_picture_stream(cpu, bus, pic_handle, dst_rect_ptr) {
+                    super::picture_stream::PictureStreamInput::Resident => None,
+                    super::picture_stream::PictureStreamInput::Deferred => return Some(Ok(())),
+                    super::picture_stream::PictureStreamInput::Materialized(bytes) => Some(bytes),
+                };
                 cpu.write_reg(Register::A7, sp + 8);
 
+                if streamed_bytes.as_ref().is_some_and(|bytes| bytes.is_empty()) {
+                    return Some(Ok(()));
+                }
                 if pic_handle != 0 {
                     let pic_ptr = bus.read_long(pic_handle);
                     let dst_top = bus.read_word(dst_rect_ptr) as i16;
@@ -8849,7 +8857,14 @@ impl super::TrapDispatcher {
                             );
                         }
                     }
-                    let streamed_pic_ptr = self.materialize_recent_spooled_picture(bus, pic_ptr);
+                    let streamed_pic_ptr = if let Some(bytes) = streamed_bytes {
+                        let pointer = bus.alloc(bytes.len() as u32);
+                        if pointer == 0 { return Some(Ok(())); }
+                        bus.write_bytes(pointer, &bytes);
+                        Some(pointer)
+                    } else {
+                        self.materialize_recent_spooled_picture(bus, pic_ptr)
+                    };
                     let draw_pic_ptr = streamed_pic_ptr.unwrap_or(pic_ptr);
                     let is_screen_picture_target =
                         port_base == self.screen_mode.0 && port_rb == self.screen_mode.1;
