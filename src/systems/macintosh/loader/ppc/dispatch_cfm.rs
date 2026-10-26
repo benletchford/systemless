@@ -60,6 +60,9 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             cfm_connections,
             import_run_state,
         )),
+        PpcImportDispatcherTarget::FragGetConnectionInfo => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_frag_get_connection_info(cpu, memory, cfm_connections)),
+        )),
         PpcImportDispatcherTarget::FragGetSectionInfo => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_frag_get_section_info(cpu, memory, cfm_connections)),
         )),
@@ -463,6 +466,7 @@ pub(super) fn ppc_get_disk_fragment(
     );
     if let Some(connection) = cfm_connections.iter_mut().find(|item| item.id == new_id) {
         connection.container = Some(crate::cfm::CfmContainerLocation::DataFork {
+            address,
             file_spec,
             offset,
             length: size,
@@ -929,6 +933,104 @@ pub(super) fn ppc_frag_get_section_info(
         .iter()
         .map(|(address, bytes)| (*address, bytes.as_slice()))
         .collect();
+    if memory.publish_cfm_outputs(&writes) {
+        0
+    } else {
+        -50
+    }
+}
+
+pub(super) fn ppc_frag_get_connection_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    connections: &[PpcCfmConnection],
+) -> i16 {
+    use crate::cfm::CfmContainerLocation;
+    let output = cpu.gpr[6];
+    let Some(spec_pointer_address) = output.checked_add(24) else {
+        return -50;
+    };
+    let Some(spec_pointer) = memory
+        .read_u32_be(spec_pointer_address)
+        .filter(|ptr| *ptr != 0)
+    else {
+        return -50;
+    };
+    if output == 0 || !memory.preflight_writable_range(output, 140) {
+        return -50;
+    }
+    if cpu.gpr[3] != 0 {
+        return -2800;
+    }
+    let index = if cpu.gpr[4] == 0 {
+        Some(0)
+    } else {
+        connections
+            .iter()
+            .position(|item| item.id == cpu.gpr[4])
+            .and_then(|index| index.checked_add(usize::from(cpu.gpr[5] as u8 != 0)))
+    };
+    let Some(connection) = index.and_then(|index| connections.get(index)) else {
+        return -2801;
+    };
+    let Some(container) = &connection.container else {
+        // Synthetic HLE connections do not own a PEF container.
+        return -4;
+    };
+    let mut record = match ppc_memory_read_bytes(memory, output, 140) {
+        Some(record) => record,
+        None => return -50,
+    };
+    let (address, length, file_spec) = match container {
+        CfmContainerLocation::Memory { address, length } => {
+            record[20..24].copy_from_slice(&0u32.to_be_bytes());
+            record[24..28].copy_from_slice(&address.to_be_bytes());
+            record[28..32].copy_from_slice(&length.to_be_bytes());
+            record[32..36].fill(0);
+            (*address, *length, None)
+        }
+        CfmContainerLocation::DataFork {
+            address,
+            file_spec,
+            offset,
+            length,
+        } => {
+            if file_spec.len() != 70 {
+                return -50;
+            }
+            record[20..24].copy_from_slice(&1u32.to_be_bytes());
+            record[24..28].copy_from_slice(&spec_pointer.to_be_bytes());
+            record[28..32].copy_from_slice(&offset.to_be_bytes());
+            record[32..36].copy_from_slice(&length.to_be_bytes());
+            (*address, *length, Some(file_spec.as_slice()))
+        }
+    };
+    record[0..4].copy_from_slice(&connection.id.to_be_bytes());
+    // The loader publishes connections after section relocation (state 3).
+    record[4..6].copy_from_slice(&3u16.to_be_bytes());
+    // Bytes 6..8 are padding, untouched by the reference implementation.
+    record[8..12].copy_from_slice(&connection.references.to_be_bytes());
+    record[12..16].copy_from_slice(b"peff");
+    record[16..20].copy_from_slice(b"pwpc");
+    record[36..40].copy_from_slice(&address.to_be_bytes());
+    record[40..44].copy_from_slice(&length.to_be_bytes());
+    // Ordinary fragments have update level zero. HLE uses heap-backed
+    // containers and has no guest-native container-handler procedures.
+    record[44..52].fill(0);
+    record[52..56].copy_from_slice(&(connection.sections.len() as u32).to_be_bytes());
+    record[56..60].copy_from_slice(&(connection.exports.len() as u32).to_be_bytes());
+    record[60..76].fill(0);
+    let name = crate::mac_roman::encode_mac_roman_lossy(&connection.library_name);
+    let length = name.len().min(63);
+    record[76] = length as u8;
+    record[77..77 + length].copy_from_slice(&name[..length]);
+    if length < 63 {
+        record[77 + length] = 0;
+    }
+    let mut writes = vec![(output, record.as_slice())];
+    if let Some(file_spec) = file_spec {
+        writes.push((spec_pointer, file_spec));
+    }
     if memory.publish_cfm_outputs(&writes) {
         0
     } else {

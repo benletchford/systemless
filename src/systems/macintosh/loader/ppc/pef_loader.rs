@@ -26,7 +26,7 @@ pub(crate) struct PpcDiskLibraryFragment {
 }
 
 impl PpcDiskFragment<'_> {
-    fn container_location(&self) -> crate::cfm::CfmContainerLocation {
+    fn container_location(&self, address: u32) -> crate::cfm::CfmContainerLocation {
         let mut file_spec = vec![0; 70];
         file_spec[..2].copy_from_slice(&self.vref.to_be_bytes());
         file_spec[2..6].copy_from_slice(&self.dir_id.to_be_bytes());
@@ -34,6 +34,7 @@ impl PpcDiskFragment<'_> {
         file_spec[6] = length as u8;
         file_spec[7..7 + length].copy_from_slice(&self.filename[..length]);
         crate::cfm::CfmContainerLocation::DataFork {
+            address,
             file_spec,
             offset: self.offset,
             length: self.length,
@@ -897,7 +898,7 @@ fn load_pef_application_with_optional_disk_fragment(
             disk_libraries
                 .iter()
                 .find(|disk| disk.name.eq_ignore_ascii_case(&library.library_name))
-                .map(|disk| disk.locator().container_location())
+                .map(|disk| disk.locator().container_location(fragment_addr))
                 .unwrap_or(crate::cfm::CfmContainerLocation::Memory {
                     address: fragment_addr,
                     length: fragment_size,
@@ -960,7 +961,7 @@ fn load_pef_application_with_optional_disk_fragment(
         Some(
             application_disk_fragment
                 .as_ref()
-                .map(|disk| disk.container_location())
+                .map(|disk| disk.container_location(fragment_addr))
                 .unwrap_or(crate::cfm::CfmContainerLocation::Memory {
                     address: fragment_addr,
                     length: fragment_size,

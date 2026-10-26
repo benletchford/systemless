@@ -1059,6 +1059,7 @@ fn disk_backed_bundled_library_initializer_receives_file_locator() {
         .find(|connection| connection.library_name == "BundledInitializer")
         .unwrap();
     let Some(crate::cfm::CfmContainerLocation::DataFork {
+        address,
         file_spec,
         offset,
         length,
@@ -1066,6 +1067,10 @@ fn disk_backed_bundled_library_initializer_receives_file_locator() {
     else {
         panic!("disk-backed library must retain its disk locator");
     };
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, *address, *length),
+        Some(library.clone())
+    );
     assert_eq!(*offset, 128);
     assert_eq!(*length, library.len() as u32);
     assert_eq!(&file_spec[..2], &(-1i16).to_be_bytes());
@@ -2019,5 +2024,169 @@ fn cfm_private_section_query_reports_mappings_and_preserves_padding() {
             }
         }
         assert_eq!(loaded.memory.read_u32_be(OUTPUT + 32), Some(0xa5a5_a5a5));
+    }
+}
+
+#[test]
+fn cfm_private_connection_query_reports_container_and_preserves_failed_outputs() {
+    use crate::cfm::{CfmContainerLocation, CfmMappedSection};
+    for disk in [false, true] {
+        for fault in 0..7 {
+            let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+                b"PrivateInterfaceLib",
+                b"FragGetConnectionInfo",
+            ))
+            .unwrap();
+            const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+            const SPEC: u32 = OUTPUT + 160;
+            loaded.memory.add_region(OUTPUT, vec![0xa5; 256]);
+            loaded.memory.write_u32_be(OUTPUT + 24, SPEC).unwrap();
+            let file_spec = vec![0x42; 70];
+            let container = if disk {
+                CfmContainerLocation::DataFork {
+                    address: 0x123400,
+                    file_spec: file_spec.clone(),
+                    offset: 64,
+                    length: 512,
+                }
+            } else {
+                CfmContainerLocation::Memory {
+                    address: 0x123400,
+                    length: 512,
+                }
+            };
+            loaded
+                .cfm
+                .as_mut()
+                .unwrap()
+                .connections
+                .push(PpcCfmConnection {
+                    references: 2,
+                    container: Some(container),
+                    sections: vec![CfmMappedSection {
+                        index: 0,
+                        address: 0x1000000,
+                        length: 64,
+                        kind: 0,
+                    }],
+                    id: 7,
+                    library_name: "Fixture".into(),
+                    main_addr: 0,
+                    init_addr: 0,
+                    term_addr: 0,
+                    exports: Vec::new(),
+                });
+            loaded.cpu.gpr[3] = if fault == 1 { 99 } else { 0 };
+            loaded.cpu.gpr[4] = if fault == 2 { 99 } else { 7 };
+            loaded.cpu.gpr[5] = u32::from(fault == 3);
+            loaded.cpu.gpr[6] = OUTPUT;
+            if fault == 4 {
+                loaded
+                    .memory
+                    .add_readonly_region(OUTPUT + 80, vec![0xa5; 4]);
+            }
+            if fault == 5 {
+                loaded.memory.write_u32_be(OUTPUT + 24, 0).unwrap();
+            }
+            if fault == 6 {
+                loaded.memory.add_readonly_region(SPEC + 8, vec![0xa5; 4]);
+            }
+            let before = ppc_memory_read_bytes(&mut loaded.memory, OUTPUT, 256).unwrap();
+            let probe = loaded.run_with_hle_imports(128);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let expected = [0, -2800, -2801, -2801, -50, -50, if disk { -50 } else { 0 }][fault];
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+            if expected != 0 {
+                assert_eq!(
+                    ppc_memory_read_bytes(&mut loaded.memory, OUTPUT, 256),
+                    Some(before)
+                );
+                continue;
+            }
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(7));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 4), Some(3));
+            assert_eq!(loaded.memory.read_u16_be(OUTPUT + 6), Some(0xa5a5));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 8), Some(2));
+            assert_eq!(
+                loaded.memory.read_u32_be(OUTPUT + 12),
+                Some(u32::from_be_bytes(*b"peff"))
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(OUTPUT + 16),
+                Some(u32::from_be_bytes(*b"pwpc"))
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(OUTPUT + 20),
+                Some(u32::from(disk))
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(OUTPUT + 24),
+                Some(if disk { SPEC } else { 0x123400 })
+            );
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 36), Some(0x123400));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 40), Some(512));
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 52), Some(1));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, OUTPUT + 76, 9),
+                Some(b"\x07Fixture\0".to_vec())
+            );
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT + 140), Some(0xa5a5_a5a5));
+            if disk {
+                assert_eq!(
+                    ppc_memory_read_bytes(&mut loaded.memory, SPEC, 70),
+                    Some(file_spec)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cfm_private_connection_query_enumerates_connections() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"PrivateInterfaceLib",
+        b"FragGetConnectionInfo",
+    ))
+    .unwrap();
+    const OUTPUT: u32 = PPC_HEAP_BASE + 0x100;
+    loaded.memory.add_region(OUTPUT, vec![0; 256]);
+    for id in [7, 9] {
+        loaded
+            .cfm
+            .as_mut()
+            .unwrap()
+            .connections
+            .push(PpcCfmConnection {
+                references: 1,
+                container: Some(crate::cfm::CfmContainerLocation::Memory {
+                    address: 0x1000,
+                    length: 128,
+                }),
+                sections: Vec::new(),
+                id,
+                library_name: format!("library{id}"),
+                main_addr: 0,
+                init_addr: 0,
+                term_addr: 0,
+                exports: Vec::new(),
+            });
+    }
+    for (id, next, result, selected) in [(0, 1, 0, 7), (7, 0, 0, 7), (7, 1, 0, 9), (9, 1, -2801, 9)]
+    {
+        loaded
+            .memory
+            .write_u32_be(OUTPUT + 24, OUTPUT + 160)
+            .unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = id;
+        loaded.cpu.gpr[5] = next;
+        loaded.cpu.gpr[6] = OUTPUT;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::FragGetConnectionInfo,
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(result));
+        assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(selected));
     }
 }

@@ -211,6 +211,7 @@ pub enum CfmContainerLocation {
         length: u32,
     },
     DataFork {
+        address: u32,
         file_spec: Vec<u8>,
         offset: u32,
         length: u32,
