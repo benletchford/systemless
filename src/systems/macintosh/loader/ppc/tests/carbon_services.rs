@@ -349,3 +349,56 @@ fn nav_put_file_uses_the_put_dialog_and_returns_an_fsspec_selection() {
         Some(u32::from_be_bytes(*b"null"))
     );
 }
+
+#[test]
+fn nav_put_file_host_dialog_preserves_save_and_cancel_replies() {
+    use crate::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+
+    for cancel in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NavPutFile")).unwrap();
+        loaded.toolbox_startup.host_ui.enabled = true;
+        let options = PPC_DATA_BASE + 0x4000;
+        let result = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(options, vec![0; 2048]);
+        loaded.memory.add_region(result, vec![0xaa; 0x300]);
+        write_ppc_pstring(&mut loaded.memory, options + 1034, b"Scores");
+        start_nav_put_file(&mut loaded, options, result);
+        let snapshot = loaded
+            .host_file_dialog()
+            .expect("Navigation save is projected");
+        let reply = FileDialogReply {
+            id: snapshot.id,
+            revision: snapshot.revision,
+            action: if cancel {
+                FileDialogAction::Cancel
+            } else {
+                FileDialogAction::Save("Scores".into())
+            },
+        };
+        assert!(loaded.reply_host_file_dialog(reply.clone()));
+        assert!(!loaded.reply_host_file_dialog(reply));
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert!(loaded.host_file_dialog().is_none());
+        assert_eq!(loaded.cpu.gpr[3] as i16, if cancel { -128 } else { 0 });
+        assert_eq!(loaded.memory.read_u8(result + 2), Some(u8::from(!cancel)));
+        assert_eq!(
+            loaded.memory.read_u32_be(result + 6),
+            Some(u32::from_be_bytes(if cancel { *b"null" } else { *b"list" }))
+        );
+        if !cancel {
+            let count = result + 0x200;
+            loaded.cpu.gpr[3] = result + 6;
+            loaded.cpu.gpr[4] = count;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::CountItems,
+                ),
+            );
+            assert_eq!(loaded.memory.read_u32_be(count), Some(1));
+        }
+    }
+}

@@ -1996,6 +1996,7 @@ fn ppc_dispatch_standard_file(
         working_directories,
         next_working_directory_ref_num,
         event_queue,
+        navigation,
     );
     if startup.standard_file_get_filtering.is_none()
         && startup.standard_file_get_tracking.is_none()
@@ -2027,6 +2028,7 @@ fn ppc_dispatch_standard_file_inner(
     working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
     next_working_directory_ref_num: &mut i16,
     event_queue: &mut EventQueue,
+    navigation: &mut PpcNavigationReplyContext<'_>,
 ) -> PpcImportAction {
     let mode = operation.mode();
     let requested_origin = operation.requested_origin(cpu, memory);
@@ -2082,6 +2084,10 @@ fn ppc_dispatch_standard_file_inner(
                         return ppc_standard_file_finish_put(
                             memory,
                             startup,
+                            process_memory_manager,
+                            heap_cursor,
+                            last_mem_error,
+                            navigation,
                             tracking,
                             vfs_directories,
                             vfs_files,
