@@ -4587,6 +4587,7 @@ fn ppc_draw_styled_dialog_text(
     rect: (i16, i16, i16, i16),
     bytes: &[u8],
     style: PpcDialogItemTextStyle,
+    port: Option<u32>,
 ) {
     let (face, numerator, denominator) = get_font_face_scale_ratio(style.font, style.size);
     let metrics = face.metrics;
@@ -4609,7 +4610,9 @@ fn ppc_draw_styled_dialog_text(
         },
     );
     if let Some(background) = style.background {
-        if let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
+        if let Some(port) = port {
+            let _ = ppc_paint_rect_bounds(memory, gworlds, port, rect, background, None);
+        } else if let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
             let _ = ppc_fill_front_rect(memory, front, rect, background);
         }
     }
@@ -4622,11 +4625,11 @@ fn ppc_draw_styled_dialog_text(
         if top >= rect.2 {
             break;
         }
-        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+        let draw = |memory: &mut PpcSectionMem| {
             ppc_draw_text_bytes_styled_clipped(
                 memory,
                 gworlds,
-                PPC_MAIN_GWORLD,
+                port.unwrap_or(PPC_MAIN_GWORLD),
                 (rect.1, top.saturating_add(ascent)),
                 style.font,
                 style.size,
@@ -4637,7 +4640,12 @@ fn ppc_draw_styled_dialog_text(
                 Some(rect),
                 &bytes[line.start..line.visible_end],
             )
-        });
+        };
+        if port.is_some() {
+            let _ = draw(memory);
+        } else {
+            let _ = ppc_with_unclipped_screen_port(memory, draw);
+        }
     }
 }
 
@@ -4810,8 +4818,9 @@ fn ppc_draw_dialog_items(
             }
             DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
-                if text_handle.is_some() && base_type == DIALOG_ITEM_STATIC_TEXT {
-                    let background = ppc_dialog_item_text_style(
+                if text_handle.is_some() {
+                    let background = ppc_theme_rgb(palette.window_background);
+                    let mut style = ppc_dialog_item_text_style(
                         memory,
                         handles,
                         vfs_resources,
@@ -4819,9 +4828,34 @@ fn ppc_draw_dialog_items(
                         index,
                         ppc_theme_rgb(palette.frame_dark),
                     )
-                    .and_then(|style| style.background)
-                    .unwrap_or_else(|| ppc_theme_rgb(palette.window_background));
-                    let _ = ppc_fill_front_rect(memory, front, rect, background);
+                    .unwrap_or(PpcDialogItemTextStyle {
+                        font: PPC_QD_TEXT_FONT_DEFAULT,
+                        size: PPC_QD_TEXT_SIZE_SYSTEM,
+                        face: 0,
+                        mode: PPC_QD_TEXT_MODE_SRC_OR,
+                        foreground: ppc_theme_rgb(palette.frame_dark),
+                        background: None,
+                    });
+                    let _ = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        dialog,
+                        item.rect,
+                        style.background.unwrap_or(background),
+                        None,
+                    );
+                    // The item rectangle is dialog-local. Drawing through its
+                    // port preserves visRgn/clipRgn, including occluding windows.
+                    style.background = None;
+                    ppc_draw_styled_dialog_text(
+                        memory,
+                        gworlds,
+                        dialog_text_rect(item.rect),
+                        &text,
+                        style,
+                        Some(dialog),
+                    );
+                    continue;
                 }
                 if base_type == DIALOG_ITEM_EDIT_TEXT {
                     // Text (1993), p. 2-88: TEUpdate redraws within the view
@@ -4900,7 +4934,7 @@ fn ppc_draw_dialog_items(
                         style.foreground = color;
                         style.background = None;
                     }
-                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style);
+                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style, None);
                 } else {
                     ppc_draw_dialog_text(memory, gworlds, text_rect, &text, color);
                 }

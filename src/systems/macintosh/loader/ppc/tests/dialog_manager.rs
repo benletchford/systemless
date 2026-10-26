@@ -7382,6 +7382,43 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
                 Some(0x7c00)
             );
         }
+        let clip = loaded
+            .memory
+            .read_u32_be(dialog + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip, 10, 10, 40, 20).unwrap();
+        ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            rect,
+            PpcRgbColor {
+                red: 0xffff,
+                green: 0,
+                blue: 0,
+            },
+        );
+        write_ppc_pstring(&mut loaded.memory, text_ptr, b"");
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = text_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+        for y in rect.0..rect.2 {
+            for x in rect.1..rect.3 {
+                let expected = if x < rect.1 + 10 { 0x7fff } else { 0x7c00 };
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        front,
+                        (i32::from(x), i32::from(y))
+                    ),
+                    Some(expected),
+                    "text replacement must respect the dialog clip region"
+                );
+            }
+        }
+        ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 0, 100, 200).unwrap();
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = text_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
         loaded
             .memory
             .write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 0)
