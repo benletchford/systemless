@@ -4,6 +4,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    USBGetNextDeviceByClass,
     USBToHostWord,
     USBMakeBMRequestType,
     Collection(PpcCollectionOperation),
@@ -1611,6 +1612,9 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::SpeechRecognition(
                 PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
             )
+        }
+        ("USBManagerLib", "USBGetNextDeviceByClass") => {
+            PpcImportDispatcherTarget::USBGetNextDeviceByClass
         }
         ("USBServicesLib", "USBToHostWord" | "HostToUSBWord") => {
             PpcImportDispatcherTarget::USBToHostWord

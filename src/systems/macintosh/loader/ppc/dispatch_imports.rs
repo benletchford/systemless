@@ -3395,6 +3395,20 @@ pub(crate) fn dispatch_supported_import(
                 super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
             })
         }
+        PpcImportDispatcherTarget::USBGetNextDeviceByClass => {
+            // USB DDK API Reference rev. 26, p. 179: exhaustion returns
+            // -43 and leaves deviceRef unchanged. This profile has no USB
+            // devices or class-driver connections to enumerate.
+            let valid = cpu.gpr[3] != 0
+                && cpu.gpr[4] != 0
+                && ppc_memory_can_read_bytes(memory, cpu.gpr[3], 4)
+                && ppc_memory_can_write_bytes(memory, cpu.gpr[4], 4);
+            Some(PpcImportAction::Return(ppc_i16_result(if valid {
+                -43
+            } else {
+                PPC_PARAM_ERR
+            })))
+        }
         // USB.h: UInt16 endian conversion on the big-endian guest, and
         // UInt8 bmRequestType fields (direction/type/recipient).
         PpcImportDispatcherTarget::USBToHostWord => {
