@@ -564,7 +564,7 @@ pub(super) fn ppc_sscanf_integer(
     start: usize,
     width: usize,
     specifier: u8,
-) -> Option<(u64, usize)> {
+) -> (Option<u64>, usize) {
     let limit = input.len().min(start.saturating_add(width));
     let mut cursor = start;
     let negative = match input.get(cursor) {
@@ -612,12 +612,12 @@ pub(super) fn ppc_sscanf_integer(
         cursor += 1;
     }
     if cursor == digit_start {
-        return None;
+        return (None, cursor);
     }
     if negative {
         value = 0u64.wrapping_sub(value);
     }
-    Some((value, cursor))
+    (Some(value), cursor)
 }
 
 pub(super) fn ppc_sscanf_length(format: &[u8], cursor: &mut usize) -> PpcPrintfLength {
@@ -695,10 +695,280 @@ pub(super) fn ppc_sscanf_scan_set(
 pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> u32 {
     let input = ppc_std_c_string(memory, cpu.gpr[3], 65_535);
     let format = ppc_std_c_string(memory, cpu.gpr[4], 4096);
+    ppc_scan_formatted(cpu, memory, &input, &format).value
+}
+
+/// Consume a complete floating token or its longest valid prefix. Incomplete
+/// exponents are consumed and fail conversion instead of being put back.
+pub(super) fn ppc_scan_float(input: &[u8], start: usize, width: usize) -> (Option<f64>, usize) {
+    let limit = input.len().min(start.saturating_add(width));
+    let token = &input[start..limit];
+    let mut cursor = usize::from(matches!(token.first(), Some(b'+' | b'-')));
+    let negative = token.first() == Some(&b'-');
+    let sign = if negative { -1.0 } else { 1.0 };
+    if token
+        .get(cursor)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b'i'))
+    {
+        for expected in b"infinity" {
+            if token
+                .get(cursor)
+                .is_some_and(|b| b.eq_ignore_ascii_case(expected))
+            {
+                cursor += 1;
+            } else {
+                break;
+            }
+        }
+        let letters = cursor - usize::from(matches!(token.first(), Some(b'+' | b'-')));
+        return (
+            (letters == 3 || letters == 8).then_some(sign * f64::INFINITY),
+            start + cursor,
+        );
+    }
+    if token
+        .get(cursor)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&b'n'))
+    {
+        let beginning = cursor;
+        for expected in b"nan" {
+            if token
+                .get(cursor)
+                .is_some_and(|b| b.eq_ignore_ascii_case(expected))
+            {
+                cursor += 1;
+            } else {
+                return (None, start + cursor);
+            }
+        }
+        if token.get(cursor) == Some(&b'(') {
+            cursor += 1;
+            while token
+                .get(cursor)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                cursor += 1;
+            }
+            if token.get(cursor) != Some(&b')') {
+                return (None, start + cursor);
+            }
+            cursor += 1;
+        }
+        return (
+            (cursor - beginning >= 3).then_some(sign * f64::NAN),
+            start + cursor,
+        );
+    }
+    let hex =
+        token.get(cursor) == Some(&b'0') && matches!(token.get(cursor + 1), Some(b'x' | b'X'));
+    if hex {
+        cursor += 2;
+    }
+    let mantissa_start = cursor;
+    let digit = |byte: &u8| {
+        if hex {
+            byte.is_ascii_hexdigit()
+        } else {
+            byte.is_ascii_digit()
+        }
+    };
+    let mut digits = 0;
+    while token.get(cursor).is_some_and(digit) {
+        cursor += 1;
+        digits += 1;
+    }
+    let mut fractional_digits = 0i32;
+    if token.get(cursor) == Some(&b'.') {
+        cursor += 1;
+        while token.get(cursor).is_some_and(digit) {
+            cursor += 1;
+            digits += 1;
+            fractional_digits = fractional_digits.saturating_add(1);
+        }
+    }
+    let mantissa_end = cursor;
+    if digits == 0 {
+        return (None, start + cursor);
+    }
+    let exponent_mark = if hex { b'p' } else { b'e' };
+    let mut exponent = 0i32;
+    if token
+        .get(cursor)
+        .is_some_and(|b| b.eq_ignore_ascii_case(&exponent_mark))
+    {
+        cursor += 1;
+        let exponent_negative = token.get(cursor) == Some(&b'-');
+        if matches!(token.get(cursor), Some(b'+' | b'-')) {
+            cursor += 1;
+        }
+        let exponent_start = cursor;
+        while let Some(b'0'..=b'9') = token.get(cursor) {
+            exponent = exponent
+                .saturating_mul(10)
+                .saturating_add(i32::from(token[cursor] - b'0'));
+            cursor += 1;
+        }
+        if cursor == exponent_start {
+            return (None, start + cursor);
+        }
+        if exponent_negative {
+            exponent = -exponent;
+        }
+    }
+    let value = if hex {
+        Some(ppc_scan_hex_value(
+            &token[mantissa_start..mantissa_end],
+            exponent,
+            fractional_digits,
+            negative,
+        ))
+    } else {
+        std::str::from_utf8(&token[..cursor])
+            .ok()
+            .and_then(|text| text.parse().ok())
+    };
+    (value, start + cursor)
+}
+
+fn ppc_scan_hex_value(
+    mantissa: &[u8],
+    exponent: i32,
+    fractional_digits: i32,
+    negative: bool,
+) -> f64 {
+    let sign = u64::from(negative) << 63;
+    let mut bits = Vec::new();
+    for byte in mantissa.iter().filter(|byte| **byte != b'.') {
+        let digit = (*byte as char).to_digit(16).unwrap();
+        for shift in (0..4).rev() {
+            bits.push(digit & (1 << shift) != 0);
+        }
+    }
+    let Some(first) = bits.iter().position(|bit| *bit) else {
+        return f64::from_bits(sign);
+    };
+    let bits = &bits[first..];
+    let scale = i64::from(exponent) - i64::from(fractional_digits) * 4;
+    let mut top = bits.len() as i64 - 1 + scale;
+    if top > 1023 {
+        return f64::from_bits(sign | (0x7ff << 52));
+    }
+    if top < -1075 {
+        return f64::from_bits(sign);
+    }
+    let normal = top >= -1022;
+    let kept = if normal {
+        53
+    } else {
+        (bits.len() as i64 + scale + 1074).max(0) as usize
+    };
+    let mut significand = 0u64;
+    for index in 0..kept {
+        significand = (significand << 1) | u64::from(bits.get(index).copied().unwrap_or(false));
+    }
+    let guard = bits.get(kept).copied().unwrap_or(false);
+    let sticky = bits
+        .get(kept + 1..)
+        .is_some_and(|tail| tail.iter().any(|bit| *bit));
+    if guard && (sticky || significand & 1 != 0) {
+        significand += 1;
+    }
+    if !normal {
+        return f64::from_bits(sign | significand);
+    }
+    if significand == 1 << 53 {
+        significand >>= 1;
+        top += 1;
+    }
+    if top > 1023 {
+        return f64::from_bits(sign | (0x7ff << 52));
+    }
+    f64::from_bits(sign | (((top + 1023) as u64) << 52) | (significand & ((1 << 52) - 1)))
+}
+
+// StdCLib's PPC scanner stores a high double followed by its residual double.
+// Use an exact rational so digits beyond binary64 survive in the low component.
+fn ppc_scan_long_double(token: &[u8], high: f64) -> (f64, f64) {
+    use num_bigint::BigInt;
+    use num_rational::BigRational;
+    use num_traits::ToPrimitive;
+
+    if !high.is_finite() || high == 0.0 {
+        return (high, 0.0);
+    }
+    let negative = token.first() == Some(&b'-');
+    let token = if matches!(token.first(), Some(b'+' | b'-')) {
+        &token[1..]
+    } else {
+        token
+    };
+    let hex = token.starts_with(b"0x") || token.starts_with(b"0X");
+    let token = if hex { &token[2..] } else { token };
+    let marker = if hex { b'p' } else { b'e' };
+    let split = token
+        .iter()
+        .position(|byte| byte.eq_ignore_ascii_case(&marker));
+    let (mantissa, exponent) = match split {
+        Some(index) => (
+            &token[..index],
+            std::str::from_utf8(&token[index + 1..])
+                .unwrap()
+                .parse::<i64>()
+                .unwrap(),
+        ),
+        None => (token, 0),
+    };
+    let fractional = mantissa
+        .iter()
+        .position(|byte| *byte == b'.')
+        .map_or(0, |index| mantissa.len() - index - 1) as i64;
+    let digits = mantissa
+        .iter()
+        .copied()
+        .filter(|byte| *byte != b'.')
+        .collect::<Vec<_>>();
+    let mut numerator = BigInt::parse_bytes(&digits, if hex { 16 } else { 10 }).unwrap();
+    if negative {
+        numerator = -numerator;
+    }
+    let scale = exponent - fractional * if hex { 4 } else { 1 };
+    let factor = BigInt::from(if hex { 2u8 } else { 10u8 }).pow(scale.unsigned_abs() as u32);
+    let exact = if scale >= 0 {
+        BigRational::from_integer(numerator * factor)
+    } else {
+        BigRational::new(numerator, factor)
+    };
+    let low = (exact - BigRational::from_float(high).unwrap())
+        .to_f64()
+        .unwrap();
+    // Rounding the residual can land exactly on a high-component midpoint.
+    // Renormalize so equal double-double values have the same leading double.
+    let sum = high + low;
+    if !sum.is_finite() {
+        return (sum, 0.0);
+    }
+    let recovered_low = sum - high;
+    let residual = (high - (sum - recovered_low)) + (low - recovered_low);
+    (sum, residual)
+}
+pub(super) struct PpcScanResult {
+    pub value: u32,
+    pub consumed: usize,
+    pub eof: bool,
+}
+
+pub(super) fn ppc_scan_formatted(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    input: &[u8],
+    format: &[u8],
+) -> PpcScanResult {
+    let mut reached_eof = false;
     let mut input_cursor = 0usize;
     let mut format_cursor = 0usize;
     let mut argument = 0usize;
     let mut assignments = 0u32;
+    let mut conversions = 0u32;
     let mut input_failure = false;
     while format_cursor < format.len() {
         if format[format_cursor].is_ascii_whitespace() {
@@ -711,6 +981,7 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
             while input.get(input_cursor).is_some_and(u8::is_ascii_whitespace) {
                 input_cursor += 1;
             }
+            reached_eof |= input_cursor == input.len();
             continue;
         }
         if format[format_cursor] != b'%' {
@@ -724,6 +995,9 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
         }
         format_cursor += 1;
         if format.get(format_cursor) == Some(&b'%') {
+            while input.get(input_cursor).is_some_and(u8::is_ascii_whitespace) {
+                input_cursor += 1;
+            }
             if input.get(input_cursor) != Some(&b'%') {
                 input_failure = input_cursor >= input.len();
                 break;
@@ -769,37 +1043,32 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
             destination
         };
         let mut counted_assignment = !suppress && specifier != b'n';
+        let conversion_start = input_cursor;
         let success = match specifier {
             b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'p' => {
-                if let Some((value, end)) =
-                    ppc_sscanf_integer(&input, input_cursor, width, specifier)
-                {
-                    input_cursor = end;
+                let (value, end) = ppc_sscanf_integer(input, input_cursor, width, specifier);
+                input_cursor = end;
+                if let Some(value) = value {
                     suppress || ppc_sscanf_store_integer(memory, destination, value, length)
                 } else {
                     false
                 }
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' | b'a' | b'A' => {
-                let end = input.len().min(input_cursor.saturating_add(width));
-                let token_len = input[input_cursor..end]
-                    .iter()
-                    .take_while(|byte| {
-                        byte.is_ascii_digit()
-                            || matches!(
-                                **byte,
-                                b'+' | b'-' | b'.' | b'e' | b'E' | b'p' | b'P' | b'x' | b'X'
-                            )
-                    })
-                    .count();
-                let parsed = std::str::from_utf8(&input[input_cursor..input_cursor + token_len])
-                    .ok()
-                    .and_then(|text| text.parse::<f64>().ok());
+                // Classic StdCLib converts to binary64, then uses frsp for %f.
+                let (parsed, end) = ppc_scan_float(input, input_cursor, width);
+                input_cursor = end;
                 if let Some(value) = parsed {
-                    input_cursor += token_len;
                     suppress
-                        || if matches!(length, PpcPrintfLength::Long | PpcPrintfLength::LongDouble)
-                        {
+                        || if length == PpcPrintfLength::LongDouble {
+                            let (high, low) =
+                                ppc_scan_long_double(&input[conversion_start..end], value);
+                            let mut bytes = [0u8; 16];
+                            bytes[..8].copy_from_slice(&high.to_bits().to_be_bytes());
+                            bytes[8..].copy_from_slice(&low.to_bits().to_be_bytes());
+                            ppc_memory_can_write_bytes(memory, destination, 16)
+                                && memory.write_bytes(destination, &bytes).is_some()
+                        } else if length == PpcPrintfLength::Long {
                             let bits = value.to_bits();
                             memory
                                 .write_u32_be(destination, (bits >> 32) as u32)
@@ -837,6 +1106,8 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
             b'c' => {
                 let length = width.min(input.len().saturating_sub(input_cursor));
                 if length == 0 || (width != usize::MAX && length != width) {
+                    input_cursor += length;
+                    reached_eof = true;
                     false
                 } else {
                     let length = if width == usize::MAX { 1 } else { length };
@@ -873,18 +1144,27 @@ pub(super) fn ppc_dispatch_stdc_sscanf(cpu: &PpcCpu, memory: &mut PpcSectionMem)
             }
             _ => false,
         };
+        if success && specifier != b'n' && specifier != b'c' {
+            reached_eof |= input_cursor == input.len() && input_cursor - conversion_start < width;
+        }
         if !success {
-            input_failure = input_cursor >= input.len();
+            input_failure = conversion_start >= input.len() || (specifier == b'c' && reached_eof);
+            reached_eof |= input_cursor == input.len() && input_cursor - conversion_start < width;
             break;
         }
+        conversions += 1;
         if counted_assignment {
             assignments = assignments.saturating_add(1);
         }
     }
-    if assignments == 0 && input_failure {
-        u32::MAX
-    } else {
-        assignments
+    PpcScanResult {
+        value: if conversions == 0 && input_failure {
+            u32::MAX
+        } else {
+            assignments
+        },
+        consumed: input_cursor,
+        eof: reached_eof || input_failure,
     }
 }
 

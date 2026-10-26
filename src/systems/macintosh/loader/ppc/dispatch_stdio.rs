@@ -18,6 +18,7 @@ pub enum PpcStdIoOperation {
     FileFlush,
     FileOpen,
     FilePrintf,
+    FileScanf,
     Printf,
     FileRead,
     FileSeek,
@@ -178,6 +179,55 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
         cpu.gpr[3]
     };
     match operation {
+        PpcStdIoOperation::FileScanf => {
+            let stream = cpu.gpr[3];
+            let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
+                return PpcImportAction::Return(u32::MAX);
+            };
+            if !record.readable {
+                ppc_stdio_set_error(stream, stdio_streams);
+                return PpcImportAction::Return(u32::MAX);
+            }
+            let position = record.position;
+            let pushback = record.pushback;
+            let data = if record.standard {
+                &[][..]
+            } else if let Some(file) = record.path.as_ref().and_then(|path| {
+                vfs_files
+                    .iter()
+                    .find(|file| file.path.eq_ignore_ascii_case(path))
+            }) {
+                file.data.as_slice()
+            } else {
+                ppc_stdio_set_error(stream, stdio_streams);
+                return PpcImportAction::Return(u32::MAX);
+            };
+            let data = &data[(position as usize).min(data.len())..];
+            let input = if let Some(byte) = pushback {
+                let mut input = Vec::with_capacity(data.len() + 1);
+                input.push(byte);
+                input.extend_from_slice(data);
+                std::borrow::Cow::Owned(input)
+            } else {
+                std::borrow::Cow::Borrowed(data)
+            };
+            let format = ppc_std_c_string(memory, cpu.gpr[4], 4096);
+            let result = dispatch_stdc::ppc_scan_formatted(cpu, memory, &input, &format);
+            let prefix = usize::from(pushback.is_some() && result.consumed > 0);
+            if let Some(record) = stdio_streams.get_mut(&stream) {
+                if prefix != 0 {
+                    record.pushback = None;
+                }
+                record.eof |= result.eof;
+            }
+            ppc_stdio_set_position(
+                stream,
+                position.saturating_add((result.consumed - prefix) as u32),
+                stdio_streams,
+                files,
+            );
+            PpcImportAction::Return(result.value)
+        }
         PpcStdIoOperation::FileUngetChar => {
             let character = cpu.gpr[3];
             let Some(record) = stdio_streams
