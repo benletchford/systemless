@@ -94,7 +94,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 49 | 237 | Otto Matic | PPC lead | D | [Demo index](https://classicmacdemos.com/otto-matic) |
 | 50 | 238 | Avara | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 51 | 239 | Ares | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 52 | 240 | Barrack | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 52 | 240 | Barrack | Original fat 68K/PPC; bounded PPC barrier play verified, 68K streaming unresolved | P | [Original licence and nine-check native evidence](CATALOGUE-SOURCES.md#barrack-104--native-menu-and-barrier-qualification) |
 | 53 | 241 | Bubble Trouble | Original 68K/PPC; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/bubble-trouble.md) |
 | 54 | 242 | Chiral | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/chiral.md) |
 | 55 | 243 | Cythera | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
