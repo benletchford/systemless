@@ -3443,11 +3443,9 @@ pub(crate) fn dispatch_supported_import(
         }
         // USB.h: UInt16 endian conversion on the big-endian guest, and
         // UInt8 bmRequestType fields (direction/type/recipient).
-        PpcImportDispatcherTarget::USBToHostWord => {
-            Some(PpcImportAction::Return(u32::from(
-                (cpu.gpr[3] as u16).swap_bytes(),
-            )))
-        }
+        PpcImportDispatcherTarget::USBToHostWord => Some(PpcImportAction::Return(u32::from(
+            (cpu.gpr[3] as u16).swap_bytes(),
+        ))),
         PpcImportDispatcherTarget::USBMakeBMRequestType => Some(PpcImportAction::Return(
             ((cpu.gpr[3] & 1) << 7) | ((cpu.gpr[4] & 3) << 5) | (cpu.gpr[5] & 0x1f),
         )),

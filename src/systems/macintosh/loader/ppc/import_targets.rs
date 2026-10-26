@@ -1617,7 +1617,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("USBServicesLib", "USBAllocMem") => PpcImportDispatcherTarget::USBAllocMem,
         (
             "USBServicesLib",
-            "USBAbortPipeByReference" | "USBClearPipeStallByReference" | "USBGetPipeStatusByReference",
+            "USBAbortPipeByReference"
+            | "USBClearPipeStallByReference"
+            | "USBGetPipeStatusByReference",
         ) => PpcImportDispatcherTarget::USBUnknownPipe,
         ("USBManagerLib", "USBGetNextDeviceByClass") => {
             PpcImportDispatcherTarget::USBGetNextDeviceByClass
