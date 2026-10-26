@@ -797,6 +797,7 @@ fn process_file_records_remain_canonical_during_native_execution_panic_cross_isa
     native.insert_test_stdio_stream(
         0x2200,
         crate::process_context::ProcessStdioStreamRecord {
+            pushback: None,
             ref_num: Some(PPC_FIRST_FILE_REF_NUM),
             path: Some("Shared/Native.bin".to_string()),
             position: 4,

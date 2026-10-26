@@ -10,6 +10,8 @@ pub const PPC_STDIO_FILE_SIZE: u32 = 24;
 pub enum PpcStdIoOperation {
     ClearErr,
     FileBuffer,
+    FilePutChar,
+    FileUngetChar,
     FileClose,
     FileEof,
     FileError,
@@ -18,6 +20,7 @@ pub enum PpcStdIoOperation {
     FilePrintf,
     FileRead,
     FileSeek,
+    FileRewind,
     FileTell,
     FileWrite,
     IoBuffer,
@@ -29,6 +32,7 @@ pub(crate) fn ppc_initial_stdio_streams() -> HashMap<u32, PpcStdioStreamRecord> 
             (
                 PPC_STDIO_IOB_ADDR + index * PPC_STDIO_FILE_SIZE,
                 PpcStdioStreamRecord {
+                    pushback: None,
                     ref_num: None,
                     path: None,
                     position: 0,
@@ -169,6 +173,64 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
 ) -> PpcImportAction {
     let stream = cpu.gpr[3];
     match operation {
+        PpcStdIoOperation::FileUngetChar => {
+            let character = cpu.gpr[3];
+            let Some(record) = stdio_streams
+                .get_mut(&cpu.gpr[4])
+                .filter(|record| !record.closed && record.readable)
+            else {
+                return PpcImportAction::Return(u32::MAX);
+            };
+            if character == u32::MAX || record.pushback.is_some() {
+                return PpcImportAction::Return(u32::MAX);
+            }
+            record.pushback = Some(character as u8);
+            record.eof = false;
+            PpcImportAction::Return(u32::from(character as u8))
+        }
+        PpcStdIoOperation::FilePutChar => {
+            let character = cpu.gpr[3] as u8;
+            let stream = cpu.gpr[4];
+            let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
+                return PpcImportAction::Return(u32::MAX);
+            };
+            if !record.writable {
+                ppc_stdio_set_error(stream, stdio_streams);
+                return PpcImportAction::Return(u32::MAX);
+            }
+            if record.standard {
+                return PpcImportAction::Return(u32::from(character));
+            }
+            let Some(file) = record
+                .path
+                .as_ref()
+                .and_then(|path| ppc_vfs_file_mut(vfs_files, path))
+            else {
+                ppc_stdio_set_error(stream, stdio_streams);
+                return PpcImportAction::Return(u32::MAX);
+            };
+            let position = if record.append {
+                file.data.len()
+            } else {
+                record.position as usize
+            };
+            let Some(end) = position
+                .checked_add(1)
+                .filter(|end| *end <= u32::MAX as usize)
+            else {
+                ppc_stdio_set_error(stream, stdio_streams);
+                return PpcImportAction::Return(u32::MAX);
+            };
+            file.data.with_mut(|data| {
+                if end > data.len() {
+                    data.resize(end, 0);
+                }
+                data[position] = character;
+            });
+            file.dirty = true;
+            ppc_stdio_set_position(stream, end as u32, stdio_streams, files);
+            PpcImportAction::Return(u32::from(character))
+        }
         PpcStdIoOperation::FileOpen => {
             let mode = ppc_std_c_string(memory, cpu.gpr[4], 16);
             let Some(&mode_kind @ (b'r' | b'w' | b'a')) = mode.first() else {
@@ -253,6 +315,7 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             stdio_streams.insert(
                 stream_ptr,
                 PpcStdioStreamRecord {
+                    pushback: None,
                     ref_num: Some(ref_num),
                     path: Some(path),
                     position,
@@ -312,25 +375,24 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             else {
                 return PpcImportAction::Return(0);
             };
-            if standard {
-                if operation == PpcStdIoOperation::FileWrite
-                    && !ppc_memory_can_read_bytes(memory, destination, total)
-                {
+            if standard && operation == PpcStdIoOperation::FileWrite {
+                if !ppc_memory_can_read_bytes(memory, destination, total) {
                     ppc_stdio_set_error(stream, stdio_streams);
                     return PpcImportAction::Return(0);
                 }
-                return PpcImportAction::Return(if operation == PpcStdIoOperation::FileWrite {
-                    element_count
-                } else {
-                    0
-                });
+                return PpcImportAction::Return(element_count);
             }
             if operation == PpcStdIoOperation::FileRead {
                 let start = usize::try_from(position)
                     .unwrap_or(usize::MAX)
                     .min(data_len);
                 let requested = usize::try_from(total).unwrap_or(usize::MAX);
-                let read_len = requested.min(data_len.saturating_sub(start));
+                let pushback = stdio_streams
+                    .get(&stream)
+                    .and_then(|record| record.pushback);
+                let prefix = usize::from(pushback.is_some());
+                let source_len = (requested - prefix).min(data_len.saturating_sub(start));
+                let read_len = prefix + source_len;
                 if read_len > 0
                     && !ppc_memory_can_write_bytes(
                         memory,
@@ -340,21 +402,27 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
                 {
                     return PpcImportAction::Return(0);
                 }
-                let Some(data) = path.and_then(|path| {
-                    vfs_files
-                        .iter()
-                        .find(|record| record.path.eq_ignore_ascii_case(path))
-                        .map(|record| record.data.as_slice())
-                }) else {
-                    return PpcImportAction::Return(0);
-                };
-                if memory
-                    .write_bytes(destination, &data[start..start + read_len])
-                    .is_none()
-                {
-                    return PpcImportAction::Return(0);
+                let data = path
+                    .and_then(|path| {
+                        vfs_files
+                            .iter()
+                            .find(|record| record.path.eq_ignore_ascii_case(path))
+                            .map(|record| record.data.as_slice())
+                    })
+                    .unwrap_or(&[]);
+                if let Some(byte) = pushback {
+                    let _ = memory.write_u8(destination, byte);
                 }
-                let new_position = position.saturating_add(read_len as u32);
+                if source_len > 0 {
+                    let _ = memory.write_bytes(
+                        destination + prefix as u32,
+                        &data[start..start + source_len],
+                    );
+                }
+                if let Some(record) = stdio_streams.get_mut(&stream) {
+                    record.pushback = None;
+                }
+                let new_position = position.saturating_add(source_len as u32);
                 ppc_stdio_set_position(stream, new_position, stdio_streams, files);
                 if read_len < requested {
                     if let Some(record) = stdio_streams.get_mut(&stream) {
@@ -403,6 +471,20 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
                 PpcImportAction::Return(element_count)
             }
         }
+        PpcStdIoOperation::FileRewind => {
+            if let Some(record) = stdio_streams
+                .get_mut(&stream)
+                .filter(|record| !record.closed)
+            {
+                record.error = false;
+                if !record.standard {
+                    record.eof = false;
+                    record.pushback = None;
+                    ppc_stdio_set_position(stream, 0, stdio_streams, files);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
         PpcStdIoOperation::FileSeek => {
             let offset = cpu.gpr[4] as i32 as i64;
             let whence = cpu.gpr[5];
@@ -416,7 +498,14 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             }
             let base = match whence {
                 0 => 0,
-                1 => i64::from(position),
+                1 => {
+                    i64::from(position)
+                        - i64::from(
+                            stdio_streams
+                                .get(&stream)
+                                .is_some_and(|record| record.pushback.is_some()),
+                        )
+                }
                 2 => i64::try_from(data_len).unwrap_or(i64::MAX),
                 _ => return PpcImportAction::Return(u32::MAX),
             };
@@ -429,6 +518,7 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             ppc_stdio_set_position(stream, new_position, stdio_streams, files);
             if let Some(record) = stdio_streams.get_mut(&stream) {
                 record.eof = false;
+                record.pushback = None;
             }
             PpcImportAction::Return(0)
         }
@@ -436,7 +526,11 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
                 return PpcImportAction::Return(u32::MAX);
             };
-            PpcImportAction::Return(record.position)
+            PpcImportAction::Return(
+                record
+                    .position
+                    .saturating_sub(u32::from(record.pushback.is_some())),
+            )
         }
         PpcStdIoOperation::FileBuffer => {
             let Some(record) = stdio_streams.get(&stream).filter(|record| !record.closed) else {
@@ -445,6 +539,12 @@ pub(super) fn ppc_dispatch_stdio_compatibility_with_manager(
             if !record.readable {
                 ppc_stdio_set_error(stream, stdio_streams);
                 return PpcImportAction::Return(u32::MAX);
+            }
+            if let Some(byte) = stdio_streams
+                .get_mut(&stream)
+                .and_then(|record| record.pushback.take())
+            {
+                return PpcImportAction::Return(u32::from(byte));
             }
             let Some((_standard, _ref_num, position, path, _data_len)) =
                 ppc_stdio_stream_info(stream, stdio_streams, vfs_files)
