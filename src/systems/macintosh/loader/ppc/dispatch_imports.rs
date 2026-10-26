@@ -956,6 +956,12 @@ pub(crate) fn dispatch_supported_import(
     ) {
         return Some(action);
     }
+    if let Some(action) = inputsprocket_drivers::dispatch_driver_import(
+        binding, cpu, memory, process_memory_manager, heap_cursor,
+        &mut toolbox_startup.input_sprocket_drivers,
+    ) {
+        return Some(action);
+    }
     if let Some(action) = dispatch_inputsprocket::dispatch_inputsprocket_import(
         dispatch_inputsprocket::PpcInputSprocketDispatchContext {
             binding,
@@ -3075,7 +3081,8 @@ pub(crate) fn dispatch_supported_import(
                 action
             })
         }
-        PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
+        PpcImportDispatcherTarget::InputSprocketDriver(_)
+        | PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
             unreachable!(
                 "input sprocket compatibility imports return through dispatch_inputsprocket_import"
             )

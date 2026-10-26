@@ -1410,6 +1410,7 @@ pub enum PpcImportDispatcherTarget {
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
+    InputSprocketDriver(PpcInputSprocketDriverOperation),
     MathCompatibility(PpcMathCompatibilityOperation),
     MathFp(PpcFpFunction),
     StdCCompatibility(PpcStdCCompatibilityOperation),
@@ -2851,6 +2852,13 @@ pub(crate) fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpContext_SetUnderlayAltBuffer") => {
             PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer
         }
+        ("InputSprocketLib", "ISpDevice_New") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::DeviceNew),
+        ("InputSprocketLib", "ISpDevice_Dispose") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::DeviceDispose),
+        ("InputSprocketLib", "ISpElement_New") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementNew),
+        ("InputSprocketLib", "ISpElement_Dispose") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementDispose),
+        ("InputSprocketLib", "ISpElement_GetComplexState") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementGetComplexState),
+        ("InputSprocketLib", "ISpElement_PushSimpleData") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementPushSimpleData),
+        ("InputSprocketLib", "ISpElement_PushComplexData") => PpcImportDispatcherTarget::InputSprocketDriver(PpcInputSprocketDriverOperation::ElementPushComplexData),
         ("InputSprocketLib", "ISpElement_NewVirtualFromNeeds") => {
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
