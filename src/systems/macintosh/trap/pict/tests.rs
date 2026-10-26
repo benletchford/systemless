@@ -2991,3 +2991,101 @@ fn streamed_picture_requests_stop_at_end_opcode() {
         PictureStreamProgress::Invalid
     );
 }
+
+#[test]
+fn indexed_bits_region_masks_intersect_picture_clip_at_translated_scaled_destinations() {
+    for packed in [false, true] {
+        for scale in [1, 2] {
+            for mask_kind in 0..3 {
+                let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+                let source = 0x10000;
+                let screen = 0x80000;
+                let mut bytes = Vec::new();
+                // Two-row 8-bit PixMap, with white/black colour-table entries.
+                for word in [0x8008u16, 0, 0, 2, 8, 0, 0] {
+                    bytes.extend_from_slice(&word.to_be_bytes());
+                }
+                for long in [0u32, 0x0048_0000, 0x0048_0000] {
+                    bytes.extend_from_slice(&long.to_be_bytes());
+                }
+                for word in [0u16, 8, 1, 8] {
+                    bytes.extend_from_slice(&word.to_be_bytes());
+                }
+                bytes.extend_from_slice(&[0; 12]); // planeBytes, pmTable, pmReserved
+                bytes.extend_from_slice(&1234u32.to_be_bytes());
+                for word in [
+                    0x8000u16, 1, 0, 0xffff, 0xffff, 0xffff, 1, 0, 0, 0, 0, 0, 2, 8, 0, 0, 2, 8, 0,
+                ] {
+                    bytes.extend_from_slice(&word.to_be_bytes());
+                }
+                if mask_kind == 0 {
+                    // Two separated spans: [1,3) and [5,7), on both rows.
+                    for word in [
+                        36u16, 0, 1, 2, 7, 0, 1, 3, 5, 7, 0x7fff, 2, 1, 3, 5, 7, 0x7fff, 0x7fff,
+                    ] {
+                        bytes.extend_from_slice(&word.to_be_bytes());
+                    }
+                } else if mask_kind == 1 {
+                    // A valid empty mask must suppress every pixel.
+                    for word in [10u16, 0, 0, 0, 0] {
+                        bytes.extend_from_slice(&word.to_be_bytes());
+                    }
+                }
+                for _ in 0..2 {
+                    if packed {
+                        bytes.extend_from_slice(&[2, 249, 1]); // repeat black index eight times
+                    } else {
+                        bytes.extend_from_slice(&[1; 8]);
+                    }
+                }
+                bus.write_bytes(source, &bytes);
+                bus.write_bytes(screen, &[42; 32 * 16]);
+                let clip = PictureRegion {
+                    top: 0,
+                    left: 2,
+                    bottom: 2,
+                    right: 6,
+                    rows: Vec::new(),
+                };
+                let clut = crate::trap::TrapDispatcher::standard_mac_8bpp_clut();
+                let (end, _) = super::parse_indexed_bits_rect(
+                    &mut bus,
+                    source,
+                    mask_kind != 2,
+                    packed,
+                    2,
+                    3,
+                    0,
+                    0,
+                    f64::from(scale),
+                    f64::from(scale),
+                    (screen, 32, 32, 16, 8),
+                    &clut,
+                    0,
+                    255,
+                    0,
+                    Some(&clip),
+                    None,
+                );
+                assert_eq!(end, source + bytes.len() as u32);
+                for y in 0..16 {
+                    for x in 0..32 {
+                        let in_rows = y >= 2 && y < 2 + 2 * scale;
+                        let in_columns = if mask_kind == 0 {
+                            (x >= 3 + 2 * scale && x < 3 + 3 * scale)
+                                || (x >= 3 + 5 * scale && x < 3 + 6 * scale)
+                        } else {
+                            mask_kind == 2 && x >= 3 + 2 * scale && x < 3 + 6 * scale
+                        };
+                        let expected = if in_rows && in_columns { 255 } else { 42 };
+                        assert_eq!(
+                            bus.read_byte(screen + (y * 32 + x) as u32),
+                            expected,
+                            "packed={packed} scale={scale} mask={mask_kind} x={x} y={y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
