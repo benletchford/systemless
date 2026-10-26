@@ -8,7 +8,7 @@ The initial 10 October stocktake recorded **188 game records** directly under `w
 
 **187 baseline entries after the confirmed duplicate + 813 primary additions = 1,000 planned games.** On 27 October, the Checkers Deluxe and Strategic Leap records were confirmed to use the same original archive (370,673 bytes, SHA-256 `628df9cc8876036f1a0ed65dda10e2445f29e4f64b0e1723db8c23175cb5c95e`). They are consolidated under `checkers-deluxe-demo`; the other route remains an alias. The original 188-record stocktake above is historical, not a distinct-game count. Further baseline auditing remains pending.
 
-Reserve R50, **Hextris / MacHextris**, moves to primary slot 813 to replace this duplicate; 99 of the original reserves remain. The [author's history](https://hextris.com/) confirms an original Macintosh shareware port. This is only a research lead: exact edition, archive, permission, architecture and gameplay still need qualification. Count distinct games, not archive mirrors, CPU builds, localisations, installers, demo/full variants, patches, maps or version updates.
+Reserve R50, **Hextris 1.0 (Hellosh Software, 1998)**, moves to primary slot 813 to replace this duplicate; 99 of the original reserves remain. The [downloaded original installer's readme](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) identifies Mark S. Andersson and Hellosh Software. It is distinct from David Markley's earlier MacHextris. This is only an intake lead: permission, executable architecture and gameplay still need qualification. Count distinct games, not archive mirrors, CPU builds, localisations, installers, demo/full variants, patches, maps or version updates.
 
 Baseline category declarations: Arcade: 69, Puzzle: 42, Strategy: 35, Role-Playing: 15, Simulation: 12, FPS: 12, Space Trading: 3. The catalogue is concentrated in 68K arcade and puzzle games. The first wave below gives PowerPC strategy, action and 3D games deliberate priority. Aim for at least 300 PPC-capable records and 500 68K-capable records across the eventual catalogue; overlap is welcome, and these are planning goals rather than a result proven by this list.
 
@@ -872,7 +872,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 810 | 997 | V for Victory: Utah Beach | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-utah-beach) |
 | 811 | 998 | Wacky Races: A Tsuyoshi Takashiro Digital film (チキチキマシン猛レース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-races-a-tsuyoshi-takashiro-digital-film) |
 | 812 | 999 | Anagrams | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 813 | 1000 | Hextris / MacHextris (from R50) | Original Macintosh port confirmed by author; CPU pending | U | [Author history](https://hextris.com/); [Archive lead](https://www.vintageapplemac.com/software/games/h/) |
+| 813 | 1000 | Hextris 1.0 (Hellosh Software; from R50) | Original installer readme requires System 7.5; CPU slices pending | U | [Exact archive identity](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) |
 
 ## Replacement reserves (99 original reserves remaining; not counted)
 
