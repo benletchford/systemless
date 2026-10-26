@@ -543,3 +543,70 @@ fn import_bindings_classify_stdclib_utility_imports() {
         );
     }
 }
+
+#[test]
+fn stdclib_localtime_uses_unsigned_msl_epoch_and_reuses_static_storage() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"localtime")).unwrap();
+    let input = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(input, vec![0; 4]);
+    for (seconds, fields) in [
+        (0, [0, 0, 0, 1, 0, 0, 1, 0, 0]),
+        (5_097_600, [0, 0, 0, 1, 2, 0, 4, 59, 0]),
+        (3_160_771_200, [0, 0, 0, 29, 1, 100, 2, 59, 0]),
+        (2_147_483_648, [8, 14, 3, 20, 0, 68, 6, 19, 0]),
+        (u32::MAX, [15, 28, 6, 7, 1, 136, 4, 37, 0]),
+    ] {
+        loaded.memory.write_u32_be(input, seconds).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = input;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], PPC_IMPORT_STD_TM);
+        for (index, expected) in fields.into_iter().enumerate() {
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(PPC_IMPORT_STD_TM + index as u32 * 4),
+                Some(expected)
+            );
+        }
+    }
+    for input in [0, 0xffff_fffc] {
+        loaded.cpu.gpr[3] = input;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::StdLocaltime);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
+
+#[test]
+fn stdclib_time_localtime_strftime_share_the_same_calendar() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"localtime")).unwrap();
+    let input = PPC_DATA_BASE + 0x2100;
+    let output = input + 0x100;
+    let format = input + 0x200;
+    loaded.memory.add_region(input, vec![0; 4]);
+    loaded.memory.add_region(output, vec![0; 64]);
+    loaded
+        .memory
+        .add_region(format, b"%Y-%m-%d %H:%M:%S %a %j\0".to_vec());
+    loaded.cpu.gpr[3] = input;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StdTime);
+    assert_eq!(loaded.memory.read_u32_be(input), Some(loaded.cpu.gpr[3]));
+    loaded.cpu.gpr[3] = input;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::StdLocaltime);
+    let tm = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = output;
+    loaded.cpu.gpr[4] = 64;
+    loaded.cpu.gpr[5] = format;
+    loaded.cpu.gpr[6] = tm;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Strftime),
+    );
+    assert_eq!(
+        ppc_std_c_string(&mut loaded.memory, output, 64),
+        b"2024-01-01 00:00:00 Mon 001".to_vec()
+    );
+}
