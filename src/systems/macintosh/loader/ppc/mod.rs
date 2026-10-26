@@ -165,6 +165,8 @@ mod dispatch_sound;
 mod dispatch_standard_file;
 mod dispatch_stdc;
 mod dispatch_stdio;
+mod dispatch_descriptor;
+use dispatch_descriptor::PpcDescriptorOperation;
 mod dispatch_system;
 mod dispatch_textedit;
 mod dispatch_threads;

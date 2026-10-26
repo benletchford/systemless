@@ -930,6 +930,7 @@ pub enum PpcImportDispatcherTarget {
     StdGetenv,
     StdSprintf,
     StdIoCompatibility(PpcStdIoOperation),
+    StdDescriptor(PpcDescriptorOperation),
     StdAbs,
     StdToupper,
     StdTolower,
@@ -2663,6 +2664,21 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("StdCLib", "fflush") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileFlush)
+        }
+        ("StdCLib", "open") => {
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open)
+        }
+        ("StdCLib", "close") => {
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Close)
+        }
+        ("StdCLib", "read") => {
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Read)
+        }
+        ("StdCLib", "write") => {
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Write)
+        }
+        ("StdCLib", "lseek") => {
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Seek)
         }
         ("StdCLib", "fopen") => {
             PpcImportDispatcherTarget::StdIoCompatibility(PpcStdIoOperation::FileOpen)

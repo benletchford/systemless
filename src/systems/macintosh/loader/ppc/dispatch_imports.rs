@@ -123,6 +123,9 @@ pub(crate) struct PpcDispatchContext<'a> {
 pub(crate) fn dispatch_supported_import(
     context: PpcDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
+    if let PpcImportDispatcherTarget::StdDescriptor(operation) = context.binding.dispatcher_target {
+        return Some(dispatch_descriptor::dispatch(operation, context));
+    }
     let PpcDispatchContext {
         binding,
         agl,
@@ -2403,6 +2406,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StdGetenv
         | PpcImportDispatcherTarget::StdSprintf => {
             unreachable!("stdc imports return through dispatch_stdc_import")
+        }
+        PpcImportDispatcherTarget::StdDescriptor(_) => {
+            unreachable!("handled before context split")
         }
         PpcImportDispatcherTarget::StdIoCompatibility(operation) => {
             Some(ppc_dispatch_process_stdio_compatibility(
