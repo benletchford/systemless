@@ -373,11 +373,12 @@ pub(crate) fn window_help(
     }
 }
 
-/// Automatic balloons for one guest-drawn window: content bounds and hot
-/// rectangles in presented coordinates. Windows without help still occlude
-/// the windows behind them.
+/// Automatic balloons for one guest-drawn window, in presented coordinates.
+/// Structure bounds include the title bar and border; windows without help
+/// still occlude the windows behind them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowHelpSnapshot {
+    pub occlusion_bounds: (i16, i16, i16, i16),
     pub bounds: (i16, i16, i16, i16),
     pub rects: Vec<((i16, i16, i16, i16), String)>,
 }
@@ -385,7 +386,12 @@ pub struct WindowHelpSnapshot {
 impl WindowHelpSnapshot {
     /// Convert window-local help to global coordinates; dialog items take
     /// their rectangles from the DITL.
-    pub(crate) fn new(bounds: (i16, i16, i16, i16), help: WindowHelp, ditl: Option<&[u8]>) -> Self {
+    pub(crate) fn new(
+        bounds: (i16, i16, i16, i16),
+        occlusion_bounds: (i16, i16, i16, i16),
+        help: WindowHelp,
+        ditl: Option<&[u8]>,
+    ) -> Self {
         let item_rects = ditl.map(ditl_item_rects).unwrap_or_default();
         let items = help.items.into_iter().filter_map(|(item, text)| {
             let rect = *item_rects.get(usize::try_from(item).ok()?.checked_sub(1)?)?;
@@ -408,7 +414,11 @@ impl WindowHelpSnapshot {
                 )
             })
             .collect();
-        Self { bounds, rects }
+        Self {
+            bounds,
+            occlusion_bounds,
+            rects,
+        }
     }
 
     pub fn offset(mut self, v: i16, h: i16) -> Self {
@@ -421,6 +431,7 @@ impl WindowHelpSnapshot {
             )
         };
         self.bounds = shift(self.bounds);
+        self.occlusion_bounds = shift(self.occlusion_bounds);
         for (rect, _) in &mut self.rects {
             *rect = shift(*rect);
         }
@@ -434,7 +445,7 @@ pub fn window_help_at(windows: &[WindowHelpSnapshot], point: (i16, i16)) -> Opti
     let inside = |(top, left, bottom, right): (i16, i16, i16, i16)| {
         point.0 >= top && point.0 < bottom && point.1 >= left && point.1 < right
     };
-    let window = windows.iter().find(|window| inside(window.bounds))?;
+    let window = windows.iter().find(|window| inside(window.occlusion_bounds))?;
     window
         .rects
         .iter()
@@ -2059,6 +2070,35 @@ mod balloon_tests {
         hdlg[3] = 2;
         let indexed = dialog_help_strings(&hdlg, 1, |_, _| None);
         assert_eq!(indexed, vec![(3, "Saves".into())]);
+    }
+
+    #[test]
+    fn window_help_is_occluded_by_title_bars_and_tracks_presentation_offsets() {
+        let front = WindowHelpSnapshot::new(
+            (100, 100, 200, 300),
+            (80, 99, 201, 301),
+            WindowHelp::default(),
+            None,
+        );
+        let back = WindowHelpSnapshot::new(
+            (40, 40, 240, 340),
+            (20, 39, 241, 341),
+            WindowHelp {
+                rects: vec![((0, 0, 200, 300), "Behind".into())],
+                ..Default::default()
+            },
+            None,
+        );
+        let windows = vec![front.clone(), back.clone()];
+        assert_eq!(window_help_at(&windows, (90, 150)), None, "title bar");
+        assert_eq!(window_help_at(&windows, (150, 100)), None, "content");
+        assert_eq!(window_help_at(&windows, (150, 300)), None, "border");
+        assert_eq!(window_help_at(&windows, (79, 150)), Some("Behind"));
+        assert_eq!(window_help_at(&windows, (150, 301)), Some("Behind"));
+        let shifted = vec![front.offset(-20, 30), back.offset(-20, 30)];
+        assert_eq!(window_help_at(&shifted, (70, 180)), None);
+        assert_eq!(window_help_at(&shifted, (59, 180)), Some("Behind"));
+        assert_eq!(shifted[1].rects[0].0, (20, 70, 220, 370));
     }
 
     #[test]

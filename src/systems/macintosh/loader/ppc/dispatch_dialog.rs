@@ -6688,8 +6688,14 @@ impl PpcLoadedApp {
                 None
             };
             let window_help = self.window_help(window, ditl.as_deref());
+            let structure = self
+                .memory
+                .read_u32_be(window + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
+                .and_then(|region| ppc_read_rgn_bbox(&mut self.memory, region))
+                .unwrap_or(bounds);
             help.push(crate::systems::macintosh::host_ui::WindowHelpSnapshot::new(
                 bounds,
+                structure,
                 window_help,
                 ditl.as_deref(),
             ));

@@ -18072,6 +18072,8 @@ impl super::TrapDispatcher {
             let window_help = self.window_help(bus, window, ditl.as_deref());
             help.push(crate::systems::macintosh::host_ui::WindowHelpSnapshot::new(
                 Self::dialog_screen_bounds(bus, window),
+                self.window_structure_rect(bus, window)
+                    .unwrap_or_else(|| Self::dialog_screen_bounds(bus, window)),
                 window_help,
                 ditl.as_deref(),
             ));

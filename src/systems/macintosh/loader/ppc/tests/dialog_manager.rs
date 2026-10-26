@@ -9214,6 +9214,15 @@ fn guest_window_help_powerpc_reports_hwin_hot_rectangles_in_global_coordinates()
     let help = loaded.guest_window_help();
     assert_eq!(help.len(), 1);
     assert_eq!(help[0].bounds, bounds);
+    let structure = loaded
+        .memory
+        .read_u32_be(dialog + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        help[0].occlusion_bounds,
+        ppc_read_rgn_bbox(&mut loaded.memory, structure).unwrap()
+    );
+    assert!(help[0].occlusion_bounds.0 < bounds.0);
     assert!(help[0].rects.is_empty(), "kind 2 does not match the hwin");
     loaded
         .memory

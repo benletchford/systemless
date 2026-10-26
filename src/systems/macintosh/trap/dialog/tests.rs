@@ -24678,6 +24678,11 @@ fn hwin_assigns_dialog_and_window_balloons_to_projected_and_guest_drawn_windows(
     assert_eq!(help.len(), 1);
     assert_eq!(help[0].bounds, (220, 300, 340, 540));
     assert_eq!(
+        help[0].occlusion_bounds,
+        disp.window_structure_rect(&bus, guest).unwrap()
+    );
+    assert!(help[0].occlusion_bounds.0 < help[0].bounds.0);
+    assert_eq!(
         help[0].rects,
         vec![((230, 310, 260, 360), "Confirms".to_string())]
     );

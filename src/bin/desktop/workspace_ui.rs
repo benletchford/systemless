@@ -4170,10 +4170,12 @@ mod tests {
                 use systemless::systems::macintosh::host_ui::WindowHelpSnapshot;
                 ui.window_help = std::sync::Arc::new(vec![
                     WindowHelpSnapshot {
+                        occlusion_bounds: (30, 49, 91, 401),
                         bounds: (50, 50, 90, 400),
                         rects: Vec::new(),
                     },
                     WindowHelpSnapshot {
+                        occlusion_bounds: (30, 49, 301, 401),
                         bounds: (50, 50, 300, 400),
                         rects: vec![((60, 150, 140, 260), "Shows the tools.".into())],
                     },
