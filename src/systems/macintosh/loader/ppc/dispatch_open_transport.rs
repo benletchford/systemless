@@ -46,6 +46,9 @@ pub enum PpcOpenTransportFunction {
     InitInetAddress,
     InitDnsAddress,
     InitDdpAddress,
+    InitNbpAddress,
+    AddressFromNbpString,
+    CompareDdpAddresses,
     InitNbpEntity,
     SetNbpEntityFromAddress,
     SetNbpPart {
@@ -185,6 +188,9 @@ impl PpcOpenTransportFunction {
             "OTInitInetAddress" => Self::InitInetAddress,
             "OTInitDNSAddress" => Self::InitDnsAddress,
             "OTInitDDPAddress" => Self::InitDdpAddress,
+            "OTInitNBPAddress" => Self::InitNbpAddress,
+            "OTSetAddressFromNBPString" => Self::AddressFromNbpString,
+            "OTCompareDDPAddresses" => Self::CompareDdpAddresses,
             "OTInitNBPEntity" => Self::InitNbpEntity,
             "OTSetNBPEntityFromAddress" => Self::SetNbpEntityFromAddress,
             "OTSetNBPName" => Self::SetNbpPart { index: 0 },
@@ -265,6 +271,33 @@ fn nbp_address(memory: &mut PpcSectionMem, entity: u32) -> Vec<u8> {
     address.push(b'@');
     address.extend(nbp_escape(&nbp_part(memory, entity, 2)));
     address
+}
+
+// Open Transport copies the already-escaped name verbatim. Address buffers
+// are length-delimited: neither a Pascal length nor a terminating NUL is added.
+fn nbp_string(memory: &mut PpcSectionMem, source: u32, length: i32) -> Option<Vec<u8>> {
+    if length >= 0 {
+        let length = length as u32;
+        if !ppc_memory_can_read_bytes(memory, source, length) {
+            return None;
+        }
+        return (0..length)
+            .map(|offset| memory.read_u8(source.checked_add(offset)?))
+            .collect();
+    }
+    if length != -1 || source == 0 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    let mut cursor = source;
+    loop {
+        let byte = memory.read_u8(cursor)?;
+        if byte == 0 {
+            return Some(bytes);
+        }
+        bytes.push(byte);
+        cursor = cursor.checked_add(1)?;
+    }
 }
 
 fn read_u32(memory: &mut PpcSectionMem, address: u32) -> u32 {
@@ -387,6 +420,48 @@ pub(crate) fn ppc_dispatch_open_transport(
             address[6] = args[7] as u8;
             let _ = memory.write_bytes(args[3], &address);
             PpcImportAction::ReturnPreserve
+        }
+        F::InitNbpAddress | F::AddressFromNbpString => {
+            let initialize = function == F::InitNbpAddress;
+            let length = if initialize { -1 } else { args[5] as i32 };
+            let Some(mut bytes) = nbp_string(memory, args[4], length) else {
+                return PpcImportAction::Return(0);
+            };
+            if initialize {
+                bytes.splice(..0, 0x0102u16.to_be_bytes());
+            }
+            let Ok(count) = u32::try_from(bytes.len()) else {
+                return PpcImportAction::Return(0);
+            };
+            if !ppc_memory_can_write_bytes(memory, args[3], count) {
+                return PpcImportAction::Return(0);
+            }
+            let _ = memory.write_bytes(args[3], &bytes);
+            PpcImportAction::Return(count)
+        }
+        F::CompareDdpAddresses => {
+            // Inside Macintosh: Open Transport, OTCompareDDPAddresses:
+            // only pure DDP addresses qualify; zero is a wildcard in each
+            // network/node/socket/type field. Padding does not participate.
+            let read = |memory: &mut PpcSectionMem, address: u32| -> Option<[u16; 4]> {
+                if address == 0 || memory.read_u16_be(address)? != 0x0100 {
+                    return None;
+                }
+                Some([
+                    memory.read_u16_be(address.checked_add(2)?)?,
+                    u16::from(memory.read_u8(address.checked_add(4)?)?),
+                    u16::from(memory.read_u8(address.checked_add(5)?)?),
+                    u16::from(memory.read_u8(address.checked_add(6)?)?),
+                ])
+            };
+            let equal = read(memory, args[3])
+                .zip(read(memory, args[4]))
+                .is_some_and(|(left, right)| {
+                    left.into_iter()
+                        .zip(right)
+                        .all(|(a, b)| a == b || a == 0 || b == 0)
+                });
+            PpcImportAction::Return(u32::from(equal))
         }
         F::InitNbpEntity => {
             let _ = memory.write_bytes(args[3], &[0; 99]);
