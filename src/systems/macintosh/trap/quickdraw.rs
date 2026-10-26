@@ -17423,8 +17423,12 @@ impl super::TrapDispatcher {
         }
         let color_environment_changed = updated_clut != current_clut;
         self.device_clut.replace(updated_clut);
-        self.color_manager_clut.replace(updated_clut);
         if color_environment_changed {
+            // A palette that only matches existing device colors must not
+            // publish a transient hardware fade as the color-matching table.
+            // In particular, the default courteous white/black palette can
+            // activate while SetEntries has faded the screen to black.
+            self.color_manager_clut.replace(updated_clut);
             let active_window = if window == DEFAULT_PALETTE_WINDOW {
                 self.front_window
             } else {

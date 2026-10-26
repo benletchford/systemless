@@ -18149,6 +18149,27 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn default_palette_activation_preserves_logical_colors_during_device_fade() {
+        let (mut d, _cpu, mut bus) = setup();
+        d.initialize_application_palette(&mut bus);
+        let window = 0x0020_4110u32;
+        d.front_window = window;
+        let logical = *d.color_manager_clut;
+        assert_ne!(logical, [[0; 3]; 256]);
+        // SetEntries fades hardware while retaining the logical drawing table.
+        d.device_clut.replace([[0; 3]; 256]);
+
+        d.activate_palette_for_window(&mut bus, window);
+
+        assert_eq!(*d.device_clut, [[0; 3]; 256]);
+        assert_eq!(*d.color_manager_clut, logical);
+        let palette = d.window_palette_handle(window);
+        assert_ne!(palette, 0);
+        assert!(d.palette_device_indices.contains_key(&(palette, 0)));
+        assert!(d.palette_device_indices.contains_key(&(palette, 1)));
+    }
+
+    #[test]
     fn activatepalette_preserves_device_cells_not_claimed_by_the_palette() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4120u32;
