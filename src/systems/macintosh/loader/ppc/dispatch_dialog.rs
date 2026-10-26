@@ -511,8 +511,8 @@ pub(super) fn dispatch_dialog_import(
         PpcImportDispatcherTarget::SetDialogItemText => {
             // Macintosh Toolbox Essentials 1992, 6-131: SetDialogItemText
             // replaces the contents of a statText/editText item handle with
-            // the supplied Str255. Drawing is handled by the PPC game's own
-            // dialog/window rendering path; preserve this routine's void ABI.
+            // the supplied Str255 and draws that item immediately. Preserve
+            // this routine's void ABI and leave unrelated items untouched.
             let item_handle = cpu.gpr[3];
             let text_ptr = cpu.gpr[4];
             if let Some(params) = evaluate_set_dialog_item_text_parameters(item_handle, text_ptr) {
@@ -544,6 +544,21 @@ pub(super) fn dispatch_dialog_import(
                             for (offset, byte) in eval.bytes.iter().copied().enumerate() {
                                 let _ = memory.write_u8(ptr + offset as u32, byte);
                             }
+                        }
+                        for dialog in window_list.windows() {
+                            let kind = memory
+                                .read_u16_be(dialog + DIALOG_WINDOW_KIND_OFFSET)
+                                .map(|kind| kind as i16);
+                            if evaluate_get_dialog_from_window(dialog, kind) == 0
+                                || !ppc_window_is_visible(memory, dialog)
+                            {
+                                continue;
+                            }
+                            let _ = ppc_draw_dialog_items(
+                                memory, handles, controls, gworlds, screen_clut,
+                                vfs_resources, current_resource_refnum, dialog,
+                                Some(eval.item_handle),
+                            );
                         }
                     }
                 }
@@ -4572,6 +4587,7 @@ fn ppc_draw_styled_dialog_text(
     rect: (i16, i16, i16, i16),
     bytes: &[u8],
     style: PpcDialogItemTextStyle,
+    port: Option<u32>,
 ) {
     let (face, numerator, denominator) = get_font_face_scale_ratio(style.font, style.size);
     let metrics = face.metrics;
@@ -4594,7 +4610,9 @@ fn ppc_draw_styled_dialog_text(
         },
     );
     if let Some(background) = style.background {
-        if let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
+        if let Some(port) = port {
+            let _ = ppc_paint_rect_bounds(memory, gworlds, port, rect, background, None);
+        } else if let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
             let _ = ppc_fill_front_rect(memory, front, rect, background);
         }
     }
@@ -4607,11 +4625,11 @@ fn ppc_draw_styled_dialog_text(
         if top >= rect.2 {
             break;
         }
-        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+        let draw = |memory: &mut PpcSectionMem| {
             ppc_draw_text_bytes_styled_clipped(
                 memory,
                 gworlds,
-                PPC_MAIN_GWORLD,
+                port.unwrap_or(PPC_MAIN_GWORLD),
                 (rect.1, top.saturating_add(ascent)),
                 style.font,
                 style.size,
@@ -4622,7 +4640,12 @@ fn ppc_draw_styled_dialog_text(
                 Some(rect),
                 &bytes[line.start..line.visible_end],
             )
-        });
+        };
+        if port.is_some() {
+            let _ = draw(memory);
+        } else {
+            let _ = ppc_with_unclipped_screen_port(memory, draw);
+        }
     }
 }
 
@@ -4697,6 +4720,30 @@ pub(super) fn ppc_draw_dialog(
     current_resource_refnum: i16,
     dialog: u32,
 ) -> bool {
+    ppc_draw_dialog_items(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        screen_clut,
+        vfs_resources,
+        current_resource_refnum,
+        dialog,
+        None,
+    )
+}
+
+fn ppc_draw_dialog_items(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    dialog: u32,
+    text_handle: Option<u32>,
+) -> bool {
     let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
         return false;
     };
@@ -4715,6 +4762,15 @@ pub(super) fn ppc_draw_dialog(
         .read_u16_be(dialog.wrapping_add(DIALOG_DEFAULT_ITEM_OFFSET))
         .unwrap_or(1) as usize;
     for (index, item) in items.iter().enumerate() {
+        if text_handle.is_some_and(|handle| {
+            item.handle != handle
+                || !matches!(
+                    dialog_item_base_type(item.item_type),
+                    DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT
+                )
+        }) {
+            continue;
+        }
         // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is clipped
         // to the port's visible region. Some applications deliberately keep
         // inactive DITL items beyond the DialogRecord's portRect; the native
@@ -4762,6 +4818,45 @@ pub(super) fn ppc_draw_dialog(
             }
             DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
+                if text_handle.is_some() {
+                    let background = ppc_theme_rgb(palette.window_background);
+                    let mut style = ppc_dialog_item_text_style(
+                        memory,
+                        handles,
+                        vfs_resources,
+                        dialog,
+                        index,
+                        ppc_theme_rgb(palette.frame_dark),
+                    )
+                    .unwrap_or(PpcDialogItemTextStyle {
+                        font: PPC_QD_TEXT_FONT_DEFAULT,
+                        size: PPC_QD_TEXT_SIZE_SYSTEM,
+                        face: 0,
+                        mode: PPC_QD_TEXT_MODE_SRC_OR,
+                        foreground: ppc_theme_rgb(palette.frame_dark),
+                        background: None,
+                    });
+                    let _ = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        dialog,
+                        item.rect,
+                        style.background.unwrap_or(background),
+                        None,
+                    );
+                    // The item rectangle is dialog-local. Drawing through its
+                    // port preserves visRgn/clipRgn, including occluding windows.
+                    style.background = None;
+                    ppc_draw_styled_dialog_text(
+                        memory,
+                        gworlds,
+                        dialog_text_rect(item.rect),
+                        &text,
+                        style,
+                        Some(dialog),
+                    );
+                    continue;
+                }
                 if base_type == DIALOG_ITEM_EDIT_TEXT {
                     // Text (1993), p. 2-88: TEUpdate redraws within the view
                     // rectangle. Clear this manager-owned edit item before
@@ -4839,11 +4934,10 @@ pub(super) fn ppc_draw_dialog(
                         style.foreground = color;
                         style.background = None;
                     }
-                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style);
+                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style, None);
                 } else {
                     ppc_draw_dialog_text(memory, gworlds, text_rect, &text, color);
                 }
-
             }
             DIALOG_ITEM_PICTURE => {
                 if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
@@ -4876,6 +4970,9 @@ pub(super) fn ppc_draw_dialog(
             }
             _ => {}
         }
+    }
+    if text_handle.is_some() {
+        return true;
     }
     // Resource-control DITL entries can retain the resource handle after the
     // Control Manager has materialized the live control. Draw live pop-up
