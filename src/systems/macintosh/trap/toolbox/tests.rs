@@ -153,6 +153,9 @@ fn cfm_symbol_enumeration_uses_stack_selectors_and_atomic_pascal_results() {
     const OUTPUT: u32 = STACK + 0x100;
     let cfm = CfmState {
         connections: vec![CfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id: 7,
             library_name: "fragment".into(),
             main_addr: 0,

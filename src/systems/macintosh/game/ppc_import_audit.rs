@@ -97,11 +97,12 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
         else {
             continue;
         };
-        // Launch skips system-component installers; so does the audit.
-        if ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application.as_deref())
-        {
+        // Match launch's per-fragment replacement policy. A system library's
+        // container may also provide non-replaced helper fragments.
+        let uses_runtime_library =
+            ppc_cfrg_is_runtime_library_installer(&cfrg, &resource_file.path, application.as_deref());
+        if uses_runtime_library {
             installers.insert(resource_file.path.to_ascii_lowercase());
-            continue;
         }
         let Some(data_file) = vfs
             .files
@@ -125,7 +126,11 @@ pub fn audit_ppc_imports_from_path(path: &std::path::Path) -> PpcImportAuditRepo
                 continue;
             }
             registered.insert((resource_file.path.to_ascii_lowercase(), start));
-            if fragment.usage == USAGE_LIB && is_native_replacement_library(&fragment.name) {
+            if fragment.usage == USAGE_LIB
+                && (is_native_replacement_library(&fragment.name)
+                    || (uses_runtime_library
+                        && crate::loader::ppc::ppc_runtime_provides_cfm_library(&fragment.name)))
+            {
                 continue;
             }
             let usage = match fragment.usage {

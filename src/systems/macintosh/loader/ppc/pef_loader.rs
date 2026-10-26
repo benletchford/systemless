@@ -25,6 +25,23 @@ pub(crate) struct PpcDiskLibraryFragment {
     pub length: u32,
 }
 
+impl PpcDiskFragment<'_> {
+    fn container_location(&self, address: u32) -> crate::cfm::CfmContainerLocation {
+        let mut file_spec = vec![0; 70];
+        file_spec[..2].copy_from_slice(&self.vref.to_be_bytes());
+        file_spec[2..6].copy_from_slice(&self.dir_id.to_be_bytes());
+        let length = self.filename.len().min(63);
+        file_spec[6] = length as u8;
+        file_spec[7..7 + length].copy_from_slice(&self.filename[..length]);
+        crate::cfm::CfmContainerLocation::DataFork {
+            address,
+            file_spec,
+            offset: self.offset,
+            length: self.length,
+        }
+    }
+}
+
 impl PpcDiskLibraryFragment {
     fn locator(&self) -> PpcDiskFragment<'_> {
         PpcDiskFragment {
@@ -297,6 +314,9 @@ fn ppc_plan_initial_cfm_libraries(
         pending.commit();
         let prepared = plan.prepared_fragment();
         connections.push(PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: prepared.sections.clone(),
             id: next_connection_id,
             library_name: fragment.name.clone(),
             main_addr: prepared.main_addr,
@@ -693,6 +713,15 @@ fn load_pef_application_with_optional_disk_fragment(
             .map(|section| section.bytes.len() as u32)
             .fold(0, u32::saturating_add),
     };
+    let application_sections = mapped_sections
+        .iter()
+        .map(|section| crate::cfm::CfmMappedSection {
+            index: section.index,
+            address: section.base,
+            length: section.bytes.len() as u32,
+            kind: section.section_kind,
+        })
+        .collect();
     for section in mapped_sections {
         if section.section_kind == SECTION_KIND_CODE
             || section.section_kind == SECTION_KIND_CONSTANT
@@ -840,12 +869,9 @@ fn load_pef_application_with_optional_disk_fragment(
     let mut startup_initializers = Vec::new();
     for library in &initial_library_plans {
         let connection = cfm_connections
-            .iter()
+            .iter_mut()
             .find(|connection| connection.library_name == library.library_name)
             .expect("planned CFM library has a connection");
-        if connection.init_addr == 0 {
-            continue;
-        }
         let fragment_size = u32::try_from(library.fragment_bytes.len())
             .map_err(|_| PpcLoadError::AddressOverflow)?;
         let fragment_addr = ppc_heap_alloc(
@@ -868,6 +894,19 @@ fn load_pef_application_with_optional_disk_fragment(
         launch_partition_storage.outside_partition = launch_partition_storage
             .outside_partition
             .saturating_add(fragment_size);
+        connection.container = Some(
+            disk_libraries
+                .iter()
+                .find(|disk| disk.name.eq_ignore_ascii_case(&library.library_name))
+                .map(|disk| disk.locator().container_location(fragment_addr))
+                .unwrap_or(crate::cfm::CfmContainerLocation::Memory {
+                    address: fragment_addr,
+                    length: fragment_size,
+                }),
+        );
+        if connection.init_addr == 0 {
+            continue;
+        }
         let init_block = if let Some(disk) = disk_libraries.iter().find(|disk| {
             disk.name.eq_ignore_ascii_case(&library.library_name)
         }) {
@@ -900,7 +939,7 @@ fn load_pef_application_with_optional_disk_fragment(
     let library_initializer_count = startup_initializers.len();
     let mut application_startup = None;
 
-    if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
+    let application_container = if application_fragment_name.is_some() || init_tvector.is_some() {
         // Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18
         // requires CFM to call a fragment initializer before its main routine.
         // Retain a guest-visible PEF copy for direct in-memory loads. File-backed
@@ -919,6 +958,26 @@ fn load_pef_application_with_optional_disk_fragment(
         launch_partition_storage.outside_partition = launch_partition_storage
             .outside_partition
             .saturating_add(fragment_size);
+        Some(
+            application_disk_fragment
+                .as_ref()
+                .map(|disk| disk.container_location(fragment_addr))
+                .unwrap_or(crate::cfm::CfmContainerLocation::Memory {
+                    address: fragment_addr,
+                    length: fragment_size,
+                }),
+        )
+    } else {
+        None
+    };
+
+    if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
+        let (fragment_addr, fragment_size) = match application_container.as_ref() {
+            Some(crate::cfm::CfmContainerLocation::Memory { address, length }) => {
+                (*address, *length)
+            }
+            _ => (0, 0),
+        };
         let init_block = if let Some(disk) = application_disk_fragment {
             ppc_create_disk_fragment_init_block(
                 &mut memory,
@@ -950,6 +1009,9 @@ fn load_pef_application_with_optional_disk_fragment(
     // the application has no initializer.
     if application_fragment_name.is_some() || init_tvector.is_some() {
         cfm_connections.push(PpcCfmConnection {
+            references: 1,
+            container: application_container,
+            sections: application_sections,
             id: next_cfm_connection_id,
             library_name: application_fragment_name
                 .unwrap_or("application")

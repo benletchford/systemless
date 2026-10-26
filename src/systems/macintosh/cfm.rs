@@ -193,8 +193,36 @@ impl CfmOperation {
     }
 }
 
+/// An instantiated PEF section retained for CFM introspection.
+/// Keep the original section index: loader/debug sections are not mapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfmMappedSection {
+    pub index: usize,
+    pub address: u32,
+    pub length: u32,
+    pub kind: u8,
+}
+
+/// Original container location, retained separately from relocated sections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CfmContainerLocation {
+    Memory {
+        address: u32,
+        length: u32,
+    },
+    DataFork {
+        address: u32,
+        file_spec: Vec<u8>,
+        offset: u32,
+        length: u32,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfmConnection {
+    pub references: u32,
+    pub container: Option<CfmContainerLocation>,
+    pub sections: Vec<CfmMappedSection>,
     pub id: u32,
     pub library_name: String,
     pub main_addr: u32,
@@ -229,7 +257,7 @@ impl CfmCloseError {
 /// PowerPC System Software (1994), p. 3-23: CloseConnection takes a pointer
 /// to a ConnectionID. Retire the record only after publishing its invalidation.
 /// No guest execution may occur in `publish`; it must commit all outputs or none.
-/// Termination, fragment reference counting and storage release remain separate
+/// Termination, dependency closures and storage release remain separate
 /// lifecycle work and are not implemented by this registry transaction.
 pub(crate) fn close_connection<M: CfmMemory>(
     connections: &mut Vec<CfmConnection>,
@@ -250,7 +278,11 @@ pub(crate) fn close_connection<M: CfmMemory>(
     if !publish(memory, &[(connection_id_address, &0u32.to_be_bytes())]) {
         return Err(CfmCloseError::InvalidIdPointer);
     }
-    connections.remove(index);
+    if connections[index].references > 1 {
+        connections[index].references -= 1;
+    } else {
+        connections.remove(index);
+    }
     Ok(())
 }
 
@@ -547,6 +579,7 @@ pub(crate) struct CfmLoadOutputs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CfmLoadOperation {
+    pub(crate) acquire_reference: bool,
     pub(crate) id: CfmLoadId,
     pub(crate) main_address: u32,
     pub(crate) outputs: CfmLoadOutputs,
@@ -578,6 +611,7 @@ pub(crate) enum CfmLoadError {
     DescriptorChanged,
     CorruptFragment,
     NoAddressSpace,
+    ReferenceOverflow,
 }
 
 impl CfmLoadError {
@@ -587,6 +621,7 @@ impl CfmLoadError {
             Self::ConnectionNotFound => -2801,
             Self::InvalidOutputs => -50,
             Self::NoAddressSpace => -2810,
+            Self::ReferenceOverflow => -2809,
             Self::DescriptorChanged | Self::CorruptFragment => -2820,
         }
     }
@@ -605,11 +640,15 @@ impl CfmLoadOperation {
         let result = match self.resume(initializer_result) {
             CfmLoadCompletion::InitializationFailed(_) => Err(CfmLoadError::InitializationFailed),
             CfmLoadCompletion::Ready(operation) => {
-                if !connections
+                let index = connections
                     .iter()
-                    .any(|connection| connection.id == operation.id.0)
-                {
+                    .position(|connection| connection.id == operation.id.0);
+                if index.is_none() {
                     Err(CfmLoadError::ConnectionNotFound)
+                } else if operation.acquire_reference
+                    && connections[index.unwrap()].references == u32::MAX
+                {
+                    Err(CfmLoadError::ReferenceOverflow)
                 } else {
                     let connection = operation.id.0.to_be_bytes();
                     let main_address = operation.main_address.to_be_bytes();
@@ -627,6 +666,9 @@ impl CfmLoadOperation {
                     {
                         Err(CfmLoadError::InvalidOutputs)
                     } else {
+                        if operation.acquire_reference {
+                            connections[index.unwrap()].references += 1;
+                        }
                         Ok(())
                     }
                 }
@@ -679,6 +721,9 @@ mod tests {
 
     fn connection(id: u32) -> CfmConnection {
         CfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id,
             library_name: format!("library-{id}"),
             main_addr: 0x1234_5678,
@@ -690,6 +735,7 @@ mod tests {
 
     fn operation(created_connection: bool) -> CfmLoadOperation {
         CfmLoadOperation {
+            acquire_reference: false,
             id: CfmLoadId(7),
             main_address: 0x1234_5678,
             outputs: CfmLoadOutputs {
@@ -1448,4 +1494,65 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn connection_references_commit_only_with_successful_load_and_close_outputs() {
+        let mut connections = vec![connection(7)];
+        let mut request = operation(false);
+        request.acquire_reference = true;
+        assert_eq!(
+            request.complete(0, &mut connections, |_| false),
+            Err(CfmLoadError::InvalidOutputs)
+        );
+        assert_eq!(connections[0].references, 1);
+        request.complete(0, &mut connections, |_| true).unwrap();
+        assert_eq!(connections[0].references, 2);
+        let mut find = request;
+        find.acquire_reference = false;
+        find.complete(0, &mut connections, |_| true).unwrap();
+        assert_eq!(connections[0].references, 2);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(OUTPUT, 7u32.to_be_bytes().to_vec());
+        assert_eq!(
+            close_connection(&mut connections, &mut memory, OUTPUT, |_, _| false),
+            Err(CfmCloseError::InvalidIdPointer)
+        );
+        assert_eq!(connections[0].references, 2);
+        close_connection(
+            &mut connections,
+            &mut memory,
+            OUTPUT,
+            CfmMemory::publish_cfm_outputs,
+        )
+        .unwrap();
+        assert_eq!(connections[0].references, 1);
+        assert_eq!(cfm_bytes::<4>(&mut memory, OUTPUT), Some([0; 4]));
+        memory.write_bytes(OUTPUT, &7u32.to_be_bytes()).unwrap();
+        close_connection(
+            &mut connections,
+            &mut memory,
+            OUTPUT,
+            CfmMemory::publish_cfm_outputs,
+        )
+        .unwrap();
+        assert!(connections.is_empty());
+    }
+
+    #[test]
+    fn connection_reference_overflow_does_not_publish_outputs() {
+        let mut connections = vec![connection(7)];
+        connections[0].references = u32::MAX;
+        let mut request = operation(false);
+        request.acquire_reference = true;
+        let mut published = false;
+        assert_eq!(
+            request.complete(0, &mut connections, |_| {
+                published = true;
+                true
+            }),
+            Err(CfmLoadError::ReferenceOverflow)
+        );
+        assert!(!published);
+        assert_eq!(connections[0].references, u32::MAX);
+    }
+
 }

@@ -61,6 +61,7 @@ pub(crate) struct CfmSection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CfmPreparedFragment {
+    pub(crate) sections: Vec<super::CfmMappedSection>,
     pub(crate) main_addr: u32,
     pub(crate) init_addr: u32,
     pub(crate) term_addr: u32,
@@ -161,6 +162,15 @@ impl CfmFragmentPlan {
                 .map_err(|_| CfmLoadError::CorruptFragment)?;
         }
         let prepared = CfmPreparedFragment {
+            sections: sections
+                .iter()
+                .map(|section| super::CfmMappedSection {
+                    index: section.index,
+                    address: section.base,
+                    length: section.bytes.len() as u32,
+                    kind: section.section_kind,
+                })
+                .collect(),
             main_addr: fragment_special_tvector(
                 &sections,
                 loader.main_section,
@@ -428,6 +438,23 @@ mod tests {
         assert_eq!(plan.fragment.main_addr, HEAP + 64);
         assert_eq!((plan.fragment.init_addr, plan.fragment.term_addr), (0, 0));
         assert!(plan.fragment.exports.is_empty());
+        assert_eq!(
+            plan.fragment.sections,
+            vec![
+                super::super::CfmMappedSection {
+                    index: 0,
+                    address: HEAP + 16,
+                    length: 8,
+                    kind: SECTION_KIND_CODE,
+                },
+                super::super::CfmMappedSection {
+                    index: 1,
+                    address: HEAP + 64,
+                    length: 12,
+                    kind: SECTION_KIND_PATTERN_DATA,
+                },
+            ]
+        );
         for fault in 0..3 {
             let mut outcomes = Vec::new();
             for classic in [false, true] {
