@@ -2399,6 +2399,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StdStrpbrk
         | PpcImportDispatcherTarget::StdStrstr
         | PpcImportDispatcherTarget::StdAtoi
+        | PpcImportDispatcherTarget::StdAtof
         | PpcImportDispatcherTarget::StdGetenv
         | PpcImportDispatcherTarget::StdSprintf => {
             unreachable!("stdc imports return through dispatch_stdc_import")

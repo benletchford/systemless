@@ -926,6 +926,7 @@ pub enum PpcImportDispatcherTarget {
     StdStrpbrk,
     StdStrstr,
     StdAtoi,
+    StdAtof,
     StdGetenv,
     StdSprintf,
     StdIoCompatibility(PpcStdIoOperation),
@@ -2636,6 +2637,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "strpbrk") => PpcImportDispatcherTarget::StdStrpbrk,
         ("StdCLib", "strstr") => PpcImportDispatcherTarget::StdStrstr,
         ("StdCLib", "atoi") => PpcImportDispatcherTarget::StdAtoi,
+        ("StdCLib", "atof") => PpcImportDispatcherTarget::StdAtof,
         ("StdCLib", "getenv") => PpcImportDispatcherTarget::StdGetenv,
         ("StdCLib", "sprintf") => PpcImportDispatcherTarget::StdSprintf,
         ("StdCLib", "clearerr") => {
