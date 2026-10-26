@@ -6760,6 +6760,12 @@ impl super::TrapDispatcher {
                         self.dialog_control_handle_for_item(dialog_ptr, item_num)
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
+                        // The queued application CDEF owns this control's drawing.
+                        // An opaque button fallback here erases content beneath
+                        // frame controls before their guest drawing runs.
+                        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                            continue;
+                        }
                         let proc_id_ctrl = self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
@@ -6974,6 +6980,12 @@ impl super::TrapDispatcher {
                         self.dialog_control_handle_for_item(dialog_ptr, item_num)
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
+                        // The queued application CDEF owns this control's drawing.
+                        // An opaque button fallback here erases content beneath
+                        // frame controls before their guest drawing runs.
+                        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                            continue;
+                        }
                         let proc_id_ctrl = self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values

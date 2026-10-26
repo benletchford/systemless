@@ -22400,3 +22400,60 @@
         let result = disp.dispatch_dialog(true, 0xFFFF, &mut cpu, &mut bus);
         assert!(result.is_none());
     }
+
+    #[test]
+    fn dialog_application_cdef_drawing_preserves_underlying_content() {
+        for retained in [false, true] {
+            for (proc_id, callable) in [(16032, true), (16032, false), (0, true)] {
+                let (mut disp, _cpu, mut bus) = setup();
+                let screen_base = 0x300000u32;
+                let row_bytes = 64u32;
+                let bounds = (40, 40, 120, 220);
+                disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+                let dialog_ptr = bus.alloc(170);
+                let ctrl_ptr = bus.alloc(296);
+                let ctrl_handle = bus.alloc(4);
+                let def_handle = bus.alloc(4);
+                let def_ptr = bus.alloc(4);
+                bus.write_long(ctrl_handle, ctrl_ptr);
+                bus.write_long(ctrl_ptr + 4, dialog_ptr);
+                bus.write_byte(ctrl_ptr + 16, 0xff);
+                bus.write_long(ctrl_ptr + 24, def_handle);
+                bus.write_long(def_handle, def_ptr);
+                bus.write_word(def_ptr, if callable { 0x600a } else { 0 });
+                disp.control_manager.set_proc_id(ctrl_ptr, proc_id);
+                disp.dialog_control_handles
+                    .insert(ctrl_handle, (dialog_ptr, 1));
+                let items = [DialogItem {
+                    item_type: 7,
+                    rect: (10, 10, 70, 170),
+                    text: String::new(),
+                    resource_id: 1,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                }];
+                let before = vec![0x55; (row_bytes * 342) as usize];
+                bus.write_bytes(screen_base, &before);
+                if retained {
+                    disp.redraw_standard_dialog_items(
+                        &mut bus, bounds, &items, 0, "", 0, dialog_ptr, None,
+                    );
+                } else {
+                    disp.draw_dialog_items(&mut bus, bounds, 1, &items, 0, "", 0, false, dialog_ptr);
+                }
+                let after = bus.read_bytes(screen_base, before.len());
+                if proc_id == 16032 && callable {
+                    assert_eq!(
+                        after, before,
+                        "application CDEF owns frame drawing, retained={retained}"
+                    );
+                } else {
+                    assert_ne!(
+                        after, before,
+                        "standard and unavailable-CDEF controls retain fallback drawing"
+                    );
+                }
+            }
+        }
+    }
