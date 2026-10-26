@@ -1030,6 +1030,9 @@ pub enum PpcImportDispatcherTarget {
     ICGetComponentInstance,
     ICParseURL,
     ICGetPref,
+    ICCountMapEntries,
+    ICGetIndMapEntry,
+    ICGetMapEntry,
     ICFindPrefHandle,
     ICSetPref,
     ICBegin,
@@ -5206,6 +5209,15 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICFindPrefHandle") => {
             PpcImportDispatcherTarget::ICFindPrefHandle
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICCountMapEntries") => {
+            PpcImportDispatcherTarget::ICCountMapEntries
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICGetIndMapEntry") => {
+            PpcImportDispatcherTarget::ICGetIndMapEntry
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICGetMapEntry") => {
+            PpcImportDispatcherTarget::ICGetMapEntry
         }
         ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICGetPref") => {
             PpcImportDispatcherTarget::ICGetPref
