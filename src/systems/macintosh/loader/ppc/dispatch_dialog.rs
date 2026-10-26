@@ -1522,6 +1522,21 @@ fn ppc_release_dialog_storage(
             te_handle,
         );
 
+        let style_handle = memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET)
+            .unwrap_or(0);
+        if style_handle != 0 {
+            let _ = allocator.dispose_handle(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                style_handle,
+            );
+            let _ = memory.write_u32_be(dialog + PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET, 0);
+        }
+
         ppc_dispose_window(
             &mut allocator,
             memory,
@@ -3250,6 +3265,37 @@ fn ppc_get_new_dialog(
         current_gdevice,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
+    // Item styles require a matching dialog color table. The style table
+    // follows the DITL ID, whereas the color table follows the DLOG ID.
+    let has_color_table = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"dctb"),
+        dialog_id,
+        false,
+    )
+    .is_some();
+    if dialog != 0 && has_color_table {
+        if let Some(index) = ppc_vfs_resource_index(
+            vfs_resources,
+            current_resource_refnum,
+            u32::from_be_bytes(*b"ictb"),
+            template.items_id,
+            false,
+        ) {
+            // A dialog owns its copy even after CurResFile or resources change.
+            let bytes = vfs_resources[index].data.to_vec();
+            let style_handle = ppc_process_alloc_handle_with_bytes(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                &bytes,
+            );
+            let _ = memory.write_u32_be(dialog + PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET, style_handle);
+        }
+    }
     let dialog = if dialog != 0
         && !ppc_initialize_dialog_items(
             process_memory_manager,
@@ -4416,6 +4462,170 @@ pub(super) fn ppc_frame_front_round_rect(
     wrote
 }
 
+// Macintosh Toolbox Essentials (1992), pp. 6-161--6-164: ictb text styles.
+// Dialog-owned item color table; kept in the existing private record tail.
+const PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = 216;
+
+#[derive(Clone, Copy, Debug)]
+struct PpcDialogItemTextStyle {
+    font: i16,
+    size: i16,
+    face: u8,
+    mode: i16,
+    foreground: PpcRgbColor,
+    background: Option<PpcRgbColor>,
+}
+
+fn ppc_dialog_item_text_style(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    resources: &[PpcVfsResourceRecord],
+    dialog: u32,
+    index: usize,
+    foreground: PpcRgbColor,
+) -> Option<PpcDialogItemTextStyle> {
+    let handle = memory.read_u32_be(dialog + PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET)?;
+    let bytes = ppc_handle_bytes(memory, handles, handle)?;
+    let word = |offset: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+        ))
+    };
+    let entry = index.checked_mul(4)?;
+    let flags = word(entry)?;
+    let offset = usize::from(word(entry.checked_add(2)?)?);
+    if flags == 0 || offset == 0 {
+        return None;
+    }
+    bytes.get(offset..offset.checked_add(20)?)?;
+    let mut font = memory
+        .read_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET)
+        .unwrap_or(0) as i16;
+    let mut size = memory
+        .read_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET)
+        .unwrap_or(12) as i16;
+    if size == 0 {
+        size = PPC_QD_TEXT_SIZE_SYSTEM;
+    }
+    if flags & 0x8001 != 0 {
+        let stored = word(offset)?;
+        if flags & 0x8000 != 0 {
+            let name_offset = usize::from(stored);
+            if let Some(&length) = bytes.get(name_offset) {
+                if let Some(name) =
+                    bytes.get(name_offset + 1..name_offset + 1 + usize::from(length))
+                {
+                    let name = decode_mac_roman(name);
+                    font = font_id_for_name(&name)
+                        .or_else(|| ppc_vfs_font_id_for_name(resources, &name))
+                        .unwrap_or(font);
+                }
+            }
+        } else {
+            font = stored as i16;
+        }
+    }
+    let stored_size = word(offset + 4)? as i16;
+    if flags & 4 != 0 {
+        size = stored_size;
+    }
+    if flags & 0x10 != 0 {
+        size = size.saturating_add(stored_size);
+    }
+    let color = |offset| -> Option<PpcRgbColor> {
+        Some(PpcRgbColor {
+            red: word(offset)?,
+            green: word(offset + 2)?,
+            blue: word(offset + 4)?,
+        })
+    };
+    Some(PpcDialogItemTextStyle {
+        font,
+        size,
+        // The resource stores Style in the low byte of a 16-bit word.
+        face: if flags & 2 != 0 {
+            word(offset + 2)? as u8
+        } else {
+            ppc_current_text_style(memory, dialog)
+        },
+        mode: if flags & 0x4000 != 0 {
+            word(offset + 18)? as i16
+        } else {
+            PPC_QD_TEXT_MODE_SRC_OR
+        },
+        foreground: if flags & 8 != 0 {
+            color(offset + 6)?
+        } else {
+            foreground
+        },
+        background: if flags & 0x2000 != 0 {
+            Some(color(offset + 12)?)
+        } else {
+            None
+        },
+    })
+}
+
+fn ppc_draw_styled_dialog_text(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    rect: (i16, i16, i16, i16),
+    bytes: &[u8],
+    style: PpcDialogItemTextStyle,
+) {
+    let (face, numerator, denominator) = get_font_face_scale_ratio(style.font, style.size);
+    let metrics = face.metrics;
+    let ascent = ppc_scale_font_value(i32::from(metrics.ascent), numerator, denominator);
+    let line_height = ppc_scale_font_value(
+        i32::from(metrics.ascent) + i32::from(metrics.descent) + i32::from(metrics.leading),
+        numerator,
+        denominator,
+    )
+    .max(1);
+    let text_style = QuickDrawTextStyle::from_bits(style.face);
+    let lines = crate::quickdraw::text::wrap_classic_text(
+        bytes,
+        rect.3.saturating_sub(rect.1).max(1),
+        |_, byte| {
+            let advance = get_glyph(style.font, face.size, byte as char)
+                .map(|(glyph, _)| text_style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or(6);
+            ppc_scale_font_value(advance, numerator, denominator)
+        },
+    );
+    if let Some(background) = style.background {
+        if let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
+            let _ = ppc_fill_front_rect(memory, front, rect, background);
+        }
+    }
+    for (index, line) in lines.iter().enumerate() {
+        let top = rect.0.saturating_add(
+            i16::try_from(index)
+                .unwrap_or(i16::MAX)
+                .saturating_mul(line_height),
+        );
+        if top >= rect.2 {
+            break;
+        }
+        let _ = ppc_with_unclipped_screen_port(memory, |memory| {
+            ppc_draw_text_bytes_styled_clipped(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                (rect.1, top.saturating_add(ascent)),
+                style.font,
+                style.size,
+                style.mode,
+                style.foreground,
+                None,
+                style.face,
+                Some(rect),
+                &bytes[line.start..line.visible_end],
+            )
+        });
+    }
+}
+
 pub(super) fn ppc_dialog_text_lines(bytes: &[u8], max_width: i16) -> Vec<Vec<u8>> {
     crate::quickdraw::text::wrap_classic_text(bytes, max_width, |_, byte| {
         ppc_text_byte_advance_for_font(byte, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM)
@@ -4617,17 +4827,23 @@ pub(super) fn ppc_draw_dialog(
                     } else {
                         rect
                     };
-                ppc_draw_dialog_text(
-                    memory,
-                    gworlds,
-                    text_rect,
-                    &text,
-                    if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
-                        ppc_theme_rgb(palette.window_background)
-                    } else {
-                        ppc_theme_rgb(palette.frame_dark)
-                    },
-                );
+                let color = if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
+                    ppc_theme_rgb(palette.window_background)
+                } else {
+                    ppc_theme_rgb(palette.frame_dark)
+                };
+                if let Some(mut style) =
+                    ppc_dialog_item_text_style(memory, handles, vfs_resources, dialog, index, color)
+                {
+                    if selected {
+                        style.foreground = color;
+                        style.background = None;
+                    }
+                    ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style);
+                } else {
+                    ppc_draw_dialog_text(memory, gworlds, text_rect, &text, color);
+                }
+
             }
             DIALOG_ITEM_PICTURE => {
                 if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
