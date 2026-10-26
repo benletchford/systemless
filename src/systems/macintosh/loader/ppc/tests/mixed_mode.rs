@@ -4283,7 +4283,7 @@ fn theme_callback_upps_bind_weak_imports_and_own_typed_descriptors() {
             0x82,
             &[sm_index_reloc(0x30, 0)],
         ));
-        let mut loaded = load_pef_application(&pef).unwrap();
+        let loaded = load_pef_application(&pef).unwrap();
         assert_ne!(loaded.imports[0].address, 0);
         assert_eq!(loaded.imports[0].dispatcher_target, target);
         // The weak-import fixture checks relocation only; use the executable

@@ -1358,6 +1358,7 @@ pub enum PpcImportDispatcherTarget {
     NewRoutineDescriptor,
     NewIOCompletionUPP,
     NewSndCallBackUPP,
+    DrawThemeButton,
     NewThemeButtonDrawUPP,
     NewThemeEraseUPP,
     DisposeIOCompletionUPP,
@@ -5564,6 +5565,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "DisposeUserItemUPP" | "disposeuseritemupp") => {
             PpcImportDispatcherTarget::DisposeUserItemUPP
+        }
+        ("InterfaceLib" | "AppearanceLib", "DrawThemeButton") => {
+            PpcImportDispatcherTarget::DrawThemeButton
         }
         ("InterfaceLib" | "AppearanceLib", "NewThemeButtonDrawUPP") => {
             PpcImportDispatcherTarget::NewThemeButtonDrawUPP

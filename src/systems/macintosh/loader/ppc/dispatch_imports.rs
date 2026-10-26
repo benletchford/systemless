@@ -1157,6 +1157,29 @@ pub(crate) fn dispatch_supported_import(
         return Some(action);
     }
 
+    if let Some(action) =
+        dispatch_theme_button::dispatch_theme_button(dispatch_theme_button::ThemeButtonContext {
+            binding,
+            cpu,
+            memory,
+            manager: process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            state: &mut toolbox_startup.theme_buttons,
+            gworlds,
+            port: current_gworld,
+            device: current_gdevice,
+            fore_color: quickdraw_fore_color,
+            back_color: quickdraw_back_color,
+            pen_h: quickdraw_pen_h,
+            pen_v: quickdraw_pen_v,
+            text_mode: quickdraw_text_mode,
+            text_size: quickdraw_text_size,
+        })
+    {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_appearance::dispatch_appearance_import(
         binding,
         cpu,
@@ -1391,6 +1414,9 @@ pub(crate) fn dispatch_supported_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::DrawThemeButton => {
+            unreachable!("theme button imports return through dispatch_theme_button")
+        }
         PpcImportDispatcherTarget::NSpInitialize => {
             // Apple MacErrors.h: kNSpOTNotPresentErr. NetSprocket cannot
             // initialize without Open Transport; do not advertise networking
