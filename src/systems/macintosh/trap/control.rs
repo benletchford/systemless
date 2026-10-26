@@ -1940,7 +1940,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn draw_multiline_control_title(
+    pub(crate) fn draw_multiline_control_title(
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),

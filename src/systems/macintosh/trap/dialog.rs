@@ -8231,6 +8231,18 @@ impl super::TrapDispatcher {
         title: &str,
         enabled: bool,
     ) {
+        if title.contains('\r') {
+            self.draw_multiline_control_title(
+                bus,
+                (top, left, bottom, right),
+                title,
+                0,
+                12,
+                true,
+                !enabled,
+            );
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let font_id = 0i16; // Chicago
@@ -8667,6 +8679,18 @@ impl super::TrapDispatcher {
         inactive: bool,
         dim_disabled_title: bool,
     ) {
+        if title.contains('\r') {
+            self.draw_multiline_control_title(
+                bus,
+                (label_top, text_x, label_bottom, label_right),
+                title,
+                font_id,
+                font_size,
+                false,
+                inactive || dim_disabled_title,
+            );
+            return;
+        }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         if inactive && pixel_size == 8 {

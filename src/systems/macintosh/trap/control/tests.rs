@@ -4408,3 +4408,45 @@ fn multiline_control_titles_draw_two_separate_text_bands() {
         );
     }
 }
+
+#[test]
+fn multiline_dialog_control_titles_draw_two_separate_text_bands() {
+    for proc_id in [0, 1, 2] {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen = bus.alloc(180 * 100);
+        disp.set_screen_mode_for_test(screen, 180, 180, 100, 8);
+        disp.device_clut.replace([[0xffff, 0xffff, 0xffff]; 256]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
+        bus.write_long(0x0824, screen);
+        bus.write_word(0x0828, 180);
+        for offset in 0..18000 {
+            bus.write_byte(screen + offset, 0);
+        }
+        let owner = *disp.current_port;
+        bus.write_word(owner + 8, 0);
+        bus.write_word(owner + 10, 0);
+        bus.write_word(owner + 16, 0);
+        bus.write_word(owner + 18, 0);
+        bus.write_word(owner + 20, 100);
+        bus.write_word(owner + 22, 180);
+        match proc_id {
+            0 => disp.draw_button(&mut bus, 20, 20, 60, 140, "TOP\rLOW", false),
+            1 => disp.draw_checkbox(&mut bus, 20, 20, 60, 140, "TOP\rLOW", false),
+            2 => disp.draw_radio(&mut bus, 20, 20, 60, 140, "TOP\rLOW", false),
+            _ => unreachable!(),
+        }
+        let mut bands = 0;
+        let mut previous_ink = false;
+        for y in 22..58 {
+            let ink = (40..130).any(|x| bus.read_byte(screen + y * 180 + x) == 255);
+            if ink && !previous_ink {
+                bands += 1;
+            }
+            previous_ink = ink;
+        }
+        assert_eq!(
+            bands, 2,
+            "proc_id={proc_id}: both explicit lines must be visible"
+        );
+    }
+}
