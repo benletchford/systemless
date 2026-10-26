@@ -86,6 +86,7 @@ class AtSpi:
 UIA_SCRIPT = r"""
 param([int]$Target, [string]$Invoke)
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
 $condition = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $Target)
@@ -144,7 +145,7 @@ class UiAutomation:
         return subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(self.script),
              "-Target", str(self.pid), *extra],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding="utf-8", timeout=60)
 
     def nodes(self):
         result = self._run()
