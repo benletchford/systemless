@@ -42,8 +42,13 @@ const M68K_PRESENTATION_GRACE_INSTRUCTIONS: usize = 100_000;
 /// and event synchronization performed after every runner call. This matches
 /// the desktop headless runner while keeping each browser slice bounded.
 const PPC_CPU_BATCH_INSTRUCTIONS: usize = 100_000;
-const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = M68K_CPU_BATCH_INSTRUCTIONS;
-const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = SOUND_CALLBACK_SLICE_INSTRUCTIONS;
+// A 256-frame Xenia refill already takes about 3,000 instructions when silent.
+// Foreground batches are tiny to yield around costly Toolbox drawing traps;
+// applying that limit to interrupt work starves the next sample buffer.
+const SOUND_CALLBACK_SLICE_INSTRUCTIONS: usize = 25_000;
+// Cover up to five 256-frame refills in the capped 50 ms audio catch-up window,
+// while still bounding a runaway callback when foreground work spent its cap.
+const SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME: usize = 5 * SOUND_CALLBACK_SLICE_INSTRUCTIONS;
 const SCRIPT_PROCESSOR_CPU_MS_PER_PAINT: f64 = 5.0;
 const AUDIO_WORKLET_CPU_MS_PER_PAINT: f64 = 7.0;
 const PPC_AUDIO_WORKLET_CPU_MS_PER_PAINT: f64 = 13.0;
@@ -1255,28 +1260,7 @@ impl Machine {
         total_steps: &mut usize,
         reserved_sound_steps: &mut usize,
     ) {
-        if !self.runner.has_pending_sound_work() || self.runner.is_halted() {
-            return;
-        }
-
-        let remaining = MAX_STEPS_PER_PAINT.saturating_sub(*total_steps);
-        let using_reserved_slice = remaining == 0;
-        let callback_budget = if using_reserved_slice {
-            let reserved_remaining = SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME
-                .saturating_sub(*reserved_sound_steps);
-            if reserved_remaining == 0 {
-                return;
-            }
-            reserved_remaining.min(SOUND_CALLBACK_SLICE_INSTRUCTIONS)
-        } else {
-            remaining.min(SOUND_CALLBACK_SLICE_INSTRUCTIONS)
-        };
-
-        let (steps, _running) = self.runner.run_pending_sound_work(callback_budget);
-        if using_reserved_slice {
-            *reserved_sound_steps = reserved_sound_steps.saturating_add(steps);
-        }
-        *total_steps = total_steps.saturating_add(steps);
+        service_browser_sound_work(&mut self.runner, total_steps, reserved_sound_steps);
     }
 
     fn sync_save_files(&mut self) {
@@ -1379,6 +1363,36 @@ fn take_due_launch_modifiers(
     } else {
         Vec::new()
     }
+}
+
+/// Finish sample-refill interrupts independently of the small foreground trap batches.
+fn service_browser_sound_work(
+    runner: &mut FixtureRunner,
+    total_steps: &mut usize,
+    reserved_sound_steps: &mut usize,
+) {
+    if !runner.has_pending_sound_work() || runner.is_halted() {
+        return;
+    }
+
+    let remaining = MAX_STEPS_PER_PAINT.saturating_sub(*total_steps);
+    let using_reserved_slice = remaining == 0;
+    let callback_budget = if using_reserved_slice {
+        let reserved_remaining =
+            SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME.saturating_sub(*reserved_sound_steps);
+        if reserved_remaining == 0 {
+            return;
+        }
+        reserved_remaining.min(SOUND_CALLBACK_SLICE_INSTRUCTIONS)
+    } else {
+        remaining.min(SOUND_CALLBACK_SLICE_INSTRUCTIONS)
+    };
+
+    let (steps, _running) = runner.run_gui_pending_sound_work(callback_budget);
+    if using_reserved_slice {
+        *reserved_sound_steps = reserved_sound_steps.saturating_add(steps);
+    }
+    *total_steps = total_steps.saturating_add(steps);
 }
 
 fn new_web_runner(screen_depth: Option<u16>) -> FixtureRunner {
@@ -1767,6 +1781,118 @@ fn map_axis_through_copybits(
 mod tests {
     use super::*;
 
+    fn browser_refill_fixture() -> FixtureRunner {
+        use systemless::systems::macintosh::cpu::Register;
+        use systemless::systems::macintosh::memory::MemoryBus;
+        use systemless::systems::macintosh::runner::FixtureRunnerConfig;
+        use systemless::systems::macintosh::sound::{DoubleBufferState, SndChannel};
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let foreground = runner.bus_mut().alloc(2);
+        runner.bus_mut().write_word(foreground, 0x60FE); // BRA.S *
+        runner.cpu_mut().write_reg(Register::PC, foreground);
+        runner.cpu_mut().write_reg(Register::A7, 0x007F_FFC0);
+        let header = runner.bus_mut().alloc(24);
+        let buffers = [runner.bus_mut().alloc(272), runner.bus_mut().alloc(272)];
+        // Model a software mixer doing substantial work before publishing its
+        // 256-frame buffer. Xenia's measured active refill reaches 22,836 steps.
+        let callback = runner.bus_mut().alloc(46_016);
+        for offset in (0..46_000).step_by(2) {
+            runner.bus_mut().write_word(callback + offset, 0x4E71); // NOP
+        }
+        runner.bus_mut().write_word(callback + 46_000, 0x206F); // MOVEA.L 4(SP),A0
+        runner.bus_mut().write_word(callback + 46_002, 4);
+        runner.bus_mut().write_word(callback + 46_004, 0x217C); // MOVE.L #1,4(A0)
+        runner.bus_mut().write_long(callback + 46_006, 1);
+        runner.bus_mut().write_word(callback + 46_010, 4);
+        runner.bus_mut().write_word(callback + 46_012, 0x4E75); // RTS
+        for (index, &buffer) in buffers.iter().enumerate() {
+            runner
+                .bus_mut()
+                .write_long(header + 12 + index as u32 * 4, buffer);
+            runner.bus_mut().write_long(buffer, 256);
+            runner.bus_mut().write_long(buffer + 4, 1);
+            runner.bus_mut().write_bytes(buffer + 16, &[0xA0; 256]);
+        }
+        let mut channel = SndChannel::new(0x12340, false);
+        channel.double_buffer = Some(DoubleBufferState {
+            header_ptr: header,
+            current_buffer: 0,
+            callback_addr: callback,
+            chan_ptr: 0x12340,
+            sample_rate: OUTPUT_RATE << 16,
+            num_channels: 1,
+            sample_size: 8,
+            last_buffer_seen: false,
+            waiting_for_callback: false,
+            pending_callback_buffers: [false; 2],
+        });
+        systemless::systems::macintosh::trap::TrapDispatcher::load_double_buffer_samples(
+            runner.bus_mut(),
+            &mut channel,
+            buffers[0],
+            OUTPUT_RATE << 16,
+            1,
+            8,
+        );
+        runner.dispatcher_mut().add_sound_channel(channel);
+        runner
+    }
+
+    #[test]
+    fn browser_sound_refills_keep_pcm_continuous_without_advancing_guest_time() {
+        use systemless::systems::macintosh::cpu::Register;
+        for foreground_spent in [0, MAX_STEPS_PER_PAINT] {
+            let mut runner = browser_refill_fixture();
+            let tick = runner.guest_tick();
+            let pc = runner.cpu().read_reg(Register::PC);
+            let mut total = foreground_spent;
+            let mut reserved = 0;
+            // Two browser paints, with a fresh reserve for each paint.
+            for _ in 0..2 {
+                for _ in 0..3 {
+                    runner.mix_gui_audio_slice(128);
+                    service_browser_sound_work(&mut runner, &mut total, &mut reserved);
+                    assert!(
+                        !runner.has_pending_sound_work(),
+                        "refill must finish before the next audio chunk"
+                    );
+                }
+                total = foreground_spent;
+                reserved = 0;
+            }
+            let mut samples = Vec::new();
+            runner.drain_audio_into(&mut samples);
+            assert_eq!(
+                samples,
+                vec![0xA0; 768],
+                "refills must not insert silence or replay exhausted buffers"
+            );
+            assert_eq!(runner.guest_tick(), tick);
+            assert_eq!(runner.cpu().read_reg(Register::PC), pc);
+        }
+    }
+
+    #[test]
+    fn browser_sound_reserve_stops_runaway_callback_work() {
+        let mut runner = browser_refill_fixture();
+        runner.mix_gui_audio_slice(256);
+        let mut total = MAX_STEPS_PER_PAINT;
+        let mut reserved = 0;
+        service_browser_sound_work(&mut runner, &mut total, &mut reserved);
+        assert!(reserved > 23_000);
+        // Repeated refills in one paint must eventually hit the reserve cap.
+        for _ in 0..5 {
+            runner.mix_gui_audio_slice(256);
+            service_browser_sound_work(&mut runner, &mut total, &mut reserved);
+        }
+        assert!(runner.has_pending_sound_work());
+        assert_eq!(reserved, SOUND_CALLBACK_RESERVED_INSTRUCTIONS_PER_FRAME);
+        let spent = total;
+        service_browser_sound_work(&mut runner, &mut total, &mut reserved);
+        assert_eq!(total, spent);
+    }
+
     #[test]
     fn cursor_backup_restores_clipped_cursor_before_moving_it() {
         let width = 5;
@@ -2087,10 +2213,6 @@ mod tests {
             M68K_CPU_BATCH_INSTRUCTIONS <= 64,
             "68k browser CPU batches must stay short enough that heavy startup traps \
              cannot monopolize a whole animation frame"
-        );
-        assert_eq!(
-            SOUND_CALLBACK_SLICE_INSTRUCTIONS, M68K_CPU_BATCH_INSTRUCTIONS,
-            "sound callback work should use the same short browser slice"
         );
         assert!(
             MAX_STEPS_PER_PAINT.div_ceil(M68K_CPU_BATCH_INSTRUCTIONS) >= 400,
