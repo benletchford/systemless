@@ -260,6 +260,7 @@ mod draw_sprocket;
 
 mod input_sprocket;
 mod glide;
+mod speech_recognition;
 mod qd3d;
 mod menu_manager;
 mod menu_item_enabled;
