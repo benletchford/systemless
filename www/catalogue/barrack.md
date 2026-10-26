@@ -7,17 +7,40 @@ developer: Greg Lovette
 publisher: Ambrosia Software
 year: 1996
 architectures:
+- 68k
 - ppc
 default_architecture: ppc
+launch_enabled: false
 category: Arcade
 compatibility:
   status: playable
   verified:
   - date: "2026-10-27"
     tester: Catalogue maintainer
+    systemless_version: d9210e9622c520d48117eeb5819baf262876de0f
+    architecture: 68k
+    environment: "Native combined candidate SHA-256 7bb073961616428b1f96bbb09dd05bd63533b5fed9d6406e90dd8d693c7b77cd, built from the recorded combined source, including the fade preservation and animation-table synchronization repairs in #5125. Both CPU showcase suites pass against unchanged reference images. Exact managed Tucows archive and selector below, ordinary scheduler and default display/time. Not Yet, Play Barrack, gun movement and a fired barrier pass ten existing measured checks at 1632 frontend / 2232 guest ticks. The matched no-fire control passes two checks at the same clocks. Actual captures show intact menu artwork and score 90 with nine percent cleared; control remains at zero. Both runs have zero exhausted frames. This is bounded gameplay, not a completed 68K level or audio-fidelity test. Browser input/pacing and public qualification remain pending."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5124
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
+    systemless_version: d9210e9622c520d48117eeb5819baf262876de0f
+    architecture: ppc
+    environment: >-
+      Same exact archive and immutable native candidate as the current 68K row.
+      Ordinary trial dismissal, menu entry and mouse-fired barriers clear the first level
+      and advance to level 2 with score 2610. Seven fixed measured assertions pass at
+      3567 frontend / 3861 guest ticks, zero exhausted frames. Actual level-transition
+      captures inspected. This demonstrates one level transition, not a full game,
+      sustained pacing or audio fidelity. Browser qualification and independent
+      inner-installer extraction parity are pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5080
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
     systemless_version: d4e39b207e0ab8c6d02478c124f17e0047dd11b8
     architecture: ppc
-    environment: "Native optimized candidate combining streamed pictures #5072, zero-base store updates #5077 and port picture clipping #5078. Executable SHA-256 e02385344b48e7951d1cb046acc5eeb5f84c24a1103db37ebcad89e679c268da. Untouched Tucows original archive, exact executable below, default display and fixed default startup time. Dismiss the original trial notice, choose Play Barrack, move the gun and fire a barrier near the bottom of the field. Fresh replay passes eight measured pixel checks and one non-silent audio check plus six exact screenshot comparisons at 1632 frontend / 1862 guest ticks, zero exhausted frames. Captures inspected: firing clears 9 percent and scores 90 points; the matched no-fire control passes its separate check and remains at zero percent. This is bounded input and barrier play, not full levels, sustained play, settings persistence or audio-fidelity qualification. Original 68K slice remains under repair and is not offered here. Browser input/pacing, independent inner-installer fork parity and public qualification pending."
+    environment: "Native optimized candidate combining streamed pictures #5072, zero-base store updates #5077 and port picture clipping #5078. Executable SHA-256 e02385344b48e7951d1cb046acc5eeb5f84c24a1103db37ebcad89e679c268da. Untouched Tucows original archive, exact executable below, default display and fixed default startup time. Dismiss the original trial notice, choose Play Barrack, move the gun and fire a barrier near the bottom of the field. Fresh replay passes eight measured pixel checks and one non-silent audio check plus six exact screenshot comparisons at 1632 frontend / 1862 guest ticks, zero exhausted frames. Captures inspected: firing clears 9 percent and scores 90 points; the matched no-fire control passes its separate check and remains at zero percent. This is bounded input and barrier play, not full levels, sustained play, settings persistence or audio-fidelity qualification. At this historical verification, the 68K slice remained under repair; see the newer 68K record. Browser input/pacing, independent inner-installer fork parity and public qualification pending."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5080
 runtime:
@@ -57,14 +80,14 @@ artifacts:
       nineteen file records, including both original Documentation Icon records with
       different resource forks; no duplicate is removed. Independent inner-installer
       parity remains pending. The original fat application contains both 68K and PPC code;
-      only the bounded-tested PPC route is offered by this entry.
+      both original slices now have bounded native gameplay evidence.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
     type: sha256
-    sha256: 21e7e2a8481d1d27e2244fb52a5b93cac8c29db3d3bb27d40c1a3adb4cb21514
-    size_bytes: 552945
+    sha256: 91c1da601ed697169c1b7b09757d0a0b2bb35ecbbb900bb6e4df252fd4f88c40
+    size_bytes: 1091662
   provenance:
     redistribution: permitted
     content_only: true
@@ -74,15 +97,16 @@ artifacts:
       Original gameplay screenshot captured for this catalogue at the maintainer's
       request.
     notes: >-
-      Exact native PPC verified replay of the unchanged archive, after firing a
-      barrier and clearing nine percent of the field. The complete 800-by-600 frame is
-      game-owned fullscreen artwork, including its decorative border; no emulator framing,
-      host UI or Classic Mac menu bar is present. No generated artwork.
+      Exact native PPC verified replay of the unchanged archive after completing the
+      first level, at level 2 and score 2610 with restored pattern artwork. The
+      complete 800-by-600 frame is game-owned fullscreen artwork, including its decorative
+      border; no emulator framing, host UI or Classic Mac menu bar is present. No
+      generated artwork.
 references:
 - https://www.vintageapplemac.com/files/games/Barrack%201.0.4.sit
 ---
 
-![Barrack gameplay](https://assets.systemless.org/catalogue/media/sha256/21/21e7e2a8481d1d27e2244fb52a5b93cac8c29db3d3bb27d40c1a3adb4cb21514.png)
+![Barrack gameplay](https://assets.systemless.org/catalogue/media/sha256/91/91c1da601ed697169c1b7b09757d0a0b2bb35ecbbb900bb6e4df252fd4f88c40.png)
 
 Move your barrier gun with the mouse and click to fire. Clear **80% of the arena**
 to advance while keeping the bouncing balls away from your growing barriers.
@@ -93,5 +117,6 @@ at its original trial notice, then **Play Barrack**. The **Instructions** and
 
 The complete installer retains its licence, registration program, documentation
 and media. Its original 30-day trial terms still apply. Bounded native testing
-covers menu entry, movement, a scored barrier and non-silent audio; browser
-qualification is pending, so launch remains disabled.
+covers movement and scored barriers on both CPU paths, and a first-level clear
+and transition to level 2 on PPC. Browser qualification is pending, so launch
+remains disabled.
