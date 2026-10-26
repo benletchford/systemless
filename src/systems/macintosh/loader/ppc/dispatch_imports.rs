@@ -3068,6 +3068,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SoundInputCompatibility(_) => {
             unreachable!("sound imports return through dispatch_sound_import")
         }
+        PpcImportDispatcherTarget::SpeechRecognition(operation) => {
+            Some(dispatch_speech_recognition::dispatch(operation, cpu, memory))
+        }
         PpcImportDispatcherTarget::SpeechCompatibility(operation) => {
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }

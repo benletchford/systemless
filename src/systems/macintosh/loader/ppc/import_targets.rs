@@ -1421,6 +1421,7 @@ pub enum PpcImportDispatcherTarget {
     StandardFileCompatibility(PpcStandardFileOperation),
     SoundInputCompatibility(PpcSoundInputCompatibilityOperation),
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
+    SpeechRecognition(PpcSpeechRecognitionOperation),
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
     InputSprocketDriver(PpcInputSprocketDriverOperation),
@@ -1582,6 +1583,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("CarbonLib", symbol) if PPC_CARBON_PRINTING_SYMBOLS.contains(&symbol) => "CarbonLib",
         // CarbonLib re-exports the Open Transport client entry points.
         ("CarbonLib", symbol) if ppc_is_open_transport_symbol(symbol) => "OTClientLib",
+        ("CarbonLib", symbol) if PpcSpeechRecognitionOperation::from_name(symbol).is_some() => {
+            "SpeechRecognitionLib"
+        }
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
         // same PowerPC signatures as StdCLib. Leave its private symbols
@@ -1599,6 +1603,13 @@ pub(crate) fn dispatcher_target_for_import(
         return ppc_open_transport_target(symbol_name);
     }
     match (library_name, symbol_name) {
+        ("SpeechRecognitionLib", symbol)
+            if PpcSpeechRecognitionOperation::from_name(symbol).is_some() =>
+        {
+            PpcImportDispatcherTarget::SpeechRecognition(
+                PpcSpeechRecognitionOperation::from_name(symbol).expect("checked"),
+            )
+        }
         ("SoundSprocketLib", symbol) if PpcSoundSprocketFunction::from_name(symbol).is_some() => {
             PpcImportDispatcherTarget::SoundSprocket(
                 PpcSoundSprocketFunction::from_name(symbol).expect("checked"),
