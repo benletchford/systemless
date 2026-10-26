@@ -23,7 +23,8 @@ compatibility:
       Native ci-test combined candidate SHA-256
       06c2bde97f27e9e787a52fccfeb69161bb4db19eb968093e9cb7c51d82e1a308,
       including palette initialization and dialog control repairs #5109/#5114/#5117.
-      Exact unchanged installer and selector below, ordinary scheduler and default
+      Original installer (SHA-256 2d6bf65ffbb528a881f6beec3bb73a5f49bb758c51d0e289186f23209fd25ad3),
+      selector below, ordinary scheduler and default
       display/time. Dismiss the original trial notice with Not Yet; Command-B starts
       a game, J moves left, I rotates and Space slams. Fresh input and matched
       no-gameplay-input replays each pass five measured pixel assertions at
@@ -59,15 +60,16 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Hextris%20Installer.sit
-    expected_sha256: 2d6bf65ffbb528a881f6beec3bb73a5f49bb758c51d0e289186f23209fd25ad3
-    expected_size: 1663680
+    url: https://www.vintageapplemac.com/files/games/Hextris%20Installer.sit.sit
+    expected_sha256: db29b2e7753f0eda79146525c15445953d0780f3f93a87aa7a2a646ef4190fe3
+    expected_size: 1661103
   provenance:
     redistribution: permitted
     original: true
     sources:
     - https://www.vintageapplemac.com/software/games/h/
     - https://www.vintageapplemac.com/files/games/Hextris%20Installer.sit
+    - https://www.vintageapplemac.com/files/games/Hextris%20Installer.sit.sit
     - https://github.com/benletchford/systemless/issues/5121
     license: Hellosh Software original-package nonprofit distribution terms
     rights_holder: Mark S. Andersson and Hellosh Software
@@ -84,6 +86,14 @@ artifacts:
       inspection verifies the outer installer forks; independent inner-VISE
       extraction parity remains pending. Production expansion yields 18 records.
       The game contains both 68K CODE resources and PowerPC PEF/cfrg code.
+      This source adds a StuffIt wrapper around the intact installer distribution.
+      Its installer data fork, resource data and resource map match the initially
+      tested download; only 24 bytes in the resource-file header area differ.
+      Production expansion is byte-identical across all 18 records (KPK2 SHA-256
+      1e78c7f6fec506fbf1581c701046d6fb8a23d0691efe82d66998367cd99f6b7c).
+      Fresh replays of this exact wrapped download pass five gameplay assertions
+      on each CPU at the same clocks recorded above, with zero exhausted frames;
+      final captures are byte-identical to the initial source and visually checked.
 - id: gameplay-screenshot
   role: screenshot
   format: png
