@@ -1632,6 +1632,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         | PpcImportDispatcherTarget::ISpElementListNew
+        | PpcImportDispatcherTarget::ISpElementListDispose
         | PpcImportDispatcherTarget::ISpElementListAddElements
         | PpcImportDispatcherTarget::ISpElementListGetNextEvent
         | PpcImportDispatcherTarget::ISpElementListFlush
