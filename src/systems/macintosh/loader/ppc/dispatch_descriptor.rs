@@ -85,6 +85,86 @@ impl PpcDescriptorState {
     }
 }
 
+fn descriptor_path(
+    requested: &str,
+    context: &dispatch_imports::PpcDispatchContext<'_>,
+) -> Result<String, u32> {
+    if requested.is_empty() {
+        return Err(2);
+    }
+    let hfs = requested.contains(':');
+    let (base, remainder, floor) = if hfs && !requested.starts_with(':') {
+        let (name, remainder) = requested.split_once(':').unwrap();
+        let root = if name.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
+            PPC_ROOT_DIR_ID
+        } else {
+            context
+                .vfs_volumes
+                .iter()
+                .find(|volume| volume.name.eq_ignore_ascii_case(name))
+                .map(|volume| volume.root_dir_id)
+                .ok_or(2u32)?
+        };
+        let base = ppc_directory_path_for_id(context.vfs_directories, root).ok_or(2u32)?;
+        (
+            base,
+            remainder,
+            base.split('/').filter(|part| !part.is_empty()).count(),
+        )
+    } else if requested.starts_with('/') {
+        ("", requested.trim_start_matches('/'), 0)
+    } else {
+        let directory = if context.default_dir_id == 0 {
+            PPC_ROOT_DIR_ID
+        } else {
+            context.default_dir_id
+        };
+        let base = ppc_directory_path_for_id(context.vfs_directories, directory).ok_or(2u32)?;
+        let floor = context
+            .vfs_volumes
+            .iter()
+            .filter_map(|volume| {
+                ppc_directory_path_for_id(context.vfs_directories, volume.root_dir_id)
+            })
+            .filter(|root| base == *root || base.starts_with(&format!("{root}/")))
+            .map(|root| root.split('/').filter(|part| !part.is_empty()).count())
+            .max()
+            .unwrap_or(0);
+        (
+            base,
+            requested.strip_prefix(':').unwrap_or(requested),
+            floor,
+        )
+    };
+    let mut parts = base
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let components = remainder
+        .split(if hfs { ':' } else { '/' })
+        .collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        let last = index + 1 == components.len();
+        if component.is_empty() && last {
+            break;
+        }
+        let parent = (hfs && component.is_empty()) || (!hfs && *component == "..");
+        if parent {
+            if parts.len() <= floor {
+                return Err(2);
+            }
+            parts.pop();
+        } else if !component.is_empty() && (hfs || *component != ".") {
+            parts.push((*component).to_string());
+        }
+        if !last && ppc_directory_id_for_path(context.vfs_directories, &parts.join("/")).is_none() {
+            return Err(2);
+        }
+    }
+    Ok(parts.join("/"))
+}
+
 fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Result<u32, u32> {
     let mode = DescriptorMode::from_mpw_flags(context.cpu.gpr[4])?;
     let source = context.cpu.gpr[3];
@@ -104,19 +184,7 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
         return Err(22);
     }
     let requested = decode_mac_roman(&bytes);
-    let normalized = ppc_normalize_vfs_path(&requested);
-    if normalized.is_empty() {
-        return Err(2);
-    }
-    let relative =
-        !requested.starts_with('/') && (!requested.contains(':') || requested.starts_with(':'));
-    let mut path = if relative {
-        ppc_directory_path_for_id(context.vfs_directories, context.default_dir_id)
-            .map(|parent| ppc_join_vfs_path(parent, &normalized))
-            .unwrap_or(normalized)
-    } else {
-        normalized
-    };
+    let mut path = descriptor_path(&requested, context)?;
     let exists = |path: &str, context: &dispatch_imports::PpcDispatchContext<'_>| {
         ppc_vfs_file_index(context.vfs_files, path).is_some()
             || ppc_vfs_resource_file_index(context.vfs_resource_files, path).is_some()
@@ -148,6 +216,20 @@ fn open_descriptor(context: &mut dispatch_imports::PpcDispatchContext<'_>) -> Re
     }
     if !exists(&path, context) && !mode.create {
         return Err(2);
+    }
+    let volume_read_only = context.vfs_volumes.iter().any(|volume| {
+        volume.attributes & 0x8080 != 0
+            && ppc_directory_path_for_id(context.vfs_directories, volume.root_dir_id).is_some_and(
+                |root| {
+                    path.eq_ignore_ascii_case(root)
+                        || path
+                            .to_ascii_lowercase()
+                            .starts_with(&format!("{}/", root.to_ascii_lowercase()))
+                },
+            )
+    });
+    if volume_read_only && (mode.writable || !exists(&path, context)) {
+        return Err(30); // EROFS, MPW errno.h.
     }
     if !exists(&path, context) {
         let parent = path

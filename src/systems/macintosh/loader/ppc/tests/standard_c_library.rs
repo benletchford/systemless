@@ -1033,3 +1033,149 @@ fn stdclib_reopened_stdout_shares_position_with_descriptor_writes() {
     );
     assert_eq!(loaded.cpu.gpr[3], u32::MAX);
 }
+
+#[test]
+fn stdclib_descriptor_paths_resolve_hfs_parents_and_volume_roots() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"open")).unwrap();
+    for (dir_id, parent_dir_id, path) in
+        [(42, PPC_ROOT_DIR_ID, "Folder"), (43, 42, "Folder/Nested")]
+    {
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id,
+            parent_dir_id,
+            path: path.to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    loaded.default_dir_id.with_mut(|directory| *directory = 43);
+    loaded
+        .memory
+        .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, 43)
+        .unwrap();
+    let base = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(base, vec![0; 512]);
+    let absolute = format!(
+        "{}:Folder:Sibling",
+        crate::trap::TrapDispatcher::boot_volume_name()
+    );
+    for (requested, expected) in [
+        ("::Sibling", Some("Folder/Sibling")),
+        (absolute.as_str(), Some("Folder/Sibling")),
+        ("../Sibling", Some("Folder/Sibling")),
+        (":Local", Some("Folder/Nested/Local")),
+        (":::RootFile", Some("RootFile")),
+        ("::::Beyond", None),
+        ("NoSuchVolume:File", None),
+        (":Missing::Sibling", None),
+    ] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, 2 | 256 | 2048]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        let descriptor = loaded.cpu.gpr[3];
+        if let Some(expected) = expected {
+            assert_ne!(descriptor, u32::MAX, "{requested}");
+            let record = &loaded.toolbox_startup.descriptors.records[&descriptor];
+            assert_eq!(
+                loaded
+                    .files
+                    .iter()
+                    .find(|file| file.ref_num == record.ref_num)
+                    .unwrap()
+                    .path,
+                expected
+            );
+            loaded.cpu.gpr[3] = descriptor;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Close),
+            );
+        } else {
+            assert_eq!(descriptor, u32::MAX, "{requested}");
+            assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(2));
+        }
+    }
+
+    // A mounted volume's parent is not the synthetic host VFS root.
+    loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+        ref_num: -2,
+        name: "Mounted".to_string(),
+        root_dir_id: 42,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: 400,
+        allocation_block_size: 2048,
+        clump_size: 4096,
+        free_blocks: 12,
+        bitmap_start: 3,
+        allocation_pointer: 4,
+        allocation_start: 5,
+        next_catalog_id: 81,
+        created_date: 0,
+        modified_date: 0,
+    }]);
+    for requested in [":::Outside", "../../Outside", "Mounted::Outside"] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, 2 | 256 | 2048]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        assert_eq!(loaded.cpu.gpr[3], u32::MAX, "{requested}");
+        assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(2));
+    }
+
+    loaded
+        .vfs_volumes
+        .with_mut(|volumes| volumes[0].attributes = 0x8080);
+    for (requested, flags, succeeds) in [
+        ("Mounted:Sibling", 2048, true),
+        ("Mounted:Sibling", 2 | 512 | 2048, false),
+        ("Mounted:NewFile", 256 | 2048, false),
+    ] {
+        loaded
+            .memory
+            .write_bytes(base, requested.as_bytes())
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(base + requested.len() as u32, 0)
+            .unwrap();
+        loaded.cpu.gpr[3..5].copy_from_slice(&[base, flags]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Open),
+        );
+        if succeeds {
+            assert_ne!(loaded.cpu.gpr[3], u32::MAX);
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::StdDescriptor(PpcDescriptorOperation::Close),
+            );
+        } else {
+            assert_eq!(loaded.cpu.gpr[3], u32::MAX, "{requested}");
+            assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(30));
+        }
+    }
+    assert!(ppc_vfs_file_index(&loaded.vfs_files, "Folder/NewFile").is_none());
+}
