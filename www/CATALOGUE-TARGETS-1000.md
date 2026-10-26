@@ -6,7 +6,9 @@ Research snapshot: **10 October 2026**; qualification updates through **12 Octob
 
 The initial 10 October stocktake recorded **188 game records** directly under `www/catalogue/`: **170 launch enabled**, **18 launch disabled**. Architecture declarations: **155 68K only**, **15 PPC only**, **18 dual architecture**. Thus 173 records declare 68K and 33 declare PPC; dual records count once toward 1,000. These are record declarations, not a fresh runtime or rights audit. Compatibility claims can differ by architecture within a record.
 
-**188 existing + 812 primary additions = 1,000 records.** The 100 reserves below replace rejected or unavailable candidates; they are not counted in that arithmetic. Count distinct games, not archive mirrors, CPU builds, localisations, installers, demo/full variants, patches, maps or version updates. Preserve the existing 188-record baseline for planning, but audit possible overlap between `checkers-deluxe-demo` and `strategic-leap-checkers-deluxe` before final counting; any consolidation requires a reserve replacement.
+**187 baseline entries after the confirmed duplicate + 813 primary additions = 1,000 planned games.** On 27 October, the Checkers Deluxe and Strategic Leap records were confirmed to use the same original archive (370,673 bytes, SHA-256 `628df9cc8876036f1a0ed65dda10e2445f29e4f64b0e1723db8c23175cb5c95e`). They are consolidated under `checkers-deluxe-demo`; the other route remains an alias. The original 188-record stocktake above is historical, not a distinct-game count. Further baseline auditing remains pending.
+
+Reserve R50, **Hextris 1.0 (Hellosh Software, 1998)**, moves to primary slot 813 to replace this duplicate; 99 of the original reserves remain. The [downloaded original installer's readme](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) identifies Mark S. Andersson and Hellosh Software. It is distinct from David Markley's earlier MacHextris. This is only an intake lead: permission, executable architecture and gameplay still need qualification. Count distinct games, not archive mirrors, CPU builds, localisations, installers, demo/full variants, patches, maps or version updates.
 
 Baseline category declarations: Arcade: 69, Puzzle: 42, Strategy: 35, Role-Playing: 15, Simulation: 12, FPS: 12, Space Trading: 3. The catalogue is concentrated in 68K arcade and puzzle games. The first wave below gives PowerPC strategy, action and 3D games deliberate priority. Aim for at least 300 PPC-capable records and 500 68K-capable records across the eventual catalogue; overlap is welcome, and these are planning goals rather than a result proven by this list.
 
@@ -35,7 +37,7 @@ Before adding any candidate:
 
 At the initial stocktake, all 812 additions were **research targets**, with rights-route totals D: 315, S: 16, F: 8 and U: 473. That stocktake cleared zero new archives and acquired or redistributed no game binaries. Subsequent rights, runtime, hosting and public-delivery evidence is recorded in [the qualification ledger](CATALOGUE-PROGRESS.md) and linked updates below. Replace failures from the reserves and keep working until 1,000 distinct qualified games are live.
 
-## Primary additions (812)
+## Primary additions (813)
 
 Each number is an intake slot. The apparent catalogue total in the second column is arithmetic only, assuming every preceding candidate qualifies.
 
@@ -43,835 +45,836 @@ Each number is an intake slot. The apparent catalogue total in the second column
 
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
-| 1 | 189 | Sid Meier's Civilization II | 68K/PPC (demo page) | D | [Demo index](https://classicmacdemos.com/sid-meiers-civilization-ii) |
-| 2 | 190 | Myst | 68K lead | D | [Demo index](https://classicmacdemos.com/myst) |
-| 3 | 191 | Riven | PPC lead | D | [Demo index](https://classicmacdemos.com/riven) |
-| 4 | 192 | Day of the Tentacle | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/day-of-the-tentacle) |
-| 5 | 193 | Monkey Island 2: LeChuck’s Revenge | 68K era; verify | U | [Garden](https://macintoshgarden.org/games/monkey-island-2-le-chucks-revenge) |
-| 6 | 194 | The Secret of Monkey Island | 68K era; verify | U | [Garden](https://macintoshgarden.org/games/secret-of-monkey-island) |
-| 7 | 195 | The Dig | PPC lead | D | [Demo index](https://classicmacdemos.com/the-dig) |
-| 8 | 196 | Quake | PPC lead | D | [Demo index](https://classicmacdemos.com/quake); [Garden](https://macintoshgarden.org/games/quake) |
-| 9 | 197 | Unreal Tournament | PPC lead | D | [Demo index](https://classicmacdemos.com/unreal-tournament) |
-| 10 | 198 | Myth: The Fallen Lords | PPC lead | D | [Demo index](https://classicmacdemos.com/myth-i-the-fallen-lords) |
-| 11 | 199 | Myth II: Soulblighter | PPC lead | D | [Demo index](https://classicmacdemos.com/myth-ii-soulblighter); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 12 | 200 | Age of Empires | PPC lead | D | [Demo index](https://classicmacdemos.com/age-of-empires); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 13 | 201 | Total Annihilation | PPC lead | D | [Demo index](https://classicmacdemos.com/total-annihilation) |
-| 14 | 202 | Age of Empires II | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 15 | 203 | Quake II | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 16 | 204 | Sid Meier's Alpha Centauri | PPC lead | D | [Demo index](https://classicmacdemos.com/sid-meiers-alpha-centauri) |
-| 17 | 205 | The Sims | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 18 | 206 | Heroes of Might and Magic III | PPC lead | D | [Demo index](https://classicmacdemos.com/heroes-of-might-and-magic-iii) |
-| 19 | 207 | Tomb Raider (Gold demo; retired candidate) | PPC lead | D | [Demo index](https://classicmacdemos.com/tomb-raider-1-gold) |
-| 20 | 208 | Tomb Raider II | PPC lead | D | [Demo index](https://classicmacdemos.com/tomb-raider-2); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 21 | 209 | Duke Nukem 3D | PPC lead | D | [Demo index](https://classicmacdemos.com/duke-nukem-3d) |
-| 22 | 210 | A-Train | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 23 | 211 | King’s Bounty | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 24 | 212 | Shufflepuck Café | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 25 | 213 | Sid Meier’s Colonization | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 26 | 214 | SimFarm | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 27 | 215 | The Playroom | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 28 | 216 | Uninvited | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
-| 29 | 217 | Star Wars: X-Wing | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-x-wing) |
-| 30 | 218 | Star Wars: Rebel Assault | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-rebel-assault) |
-| 31 | 219 | Star Wars Episode I: Racer | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-episode-i-racer) |
-| 32 | 220 | Star Wars: Galactic Battlegrounds | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-galactic-battlegrounds) |
-| 33 | 221 | Descent II | PPC lead | D | [Demo index](https://classicmacdemos.com/descent-2) |
-| 34 | 222 | Descent 3 | PPC lead | D | [Demo index](https://classicmacdemos.com/descent-3) |
-| 35 | 223 | Carmageddon | PPC lead | D | [Demo index](https://classicmacdemos.com/carmageddon) |
-| 36 | 224 | Shadow Warrior | PPC lead | D | [Demo index](https://classicmacdemos.com/shadow-warrior); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 37 | 225 | Heretic | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/heretic); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 38 | 226 | Dark Castle (original 1986 B&W; exact archive unverified) | 68K lead; original executable uninspected | U | [Demo lead duplicates baseline color remake](CATALOGUE-SOURCES.md#dark-castle-original-target-and-existing-color-demo); [identity #4643](https://github.com/benletchford/systemless/issues/4643) |
-| 39 | 227 | Trinity | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 40 | 228 | Railroad Tycoon II | PPC lead | D | [Demo index](https://classicmacdemos.com/railroad-tycoon-ii); [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 41 | 229 | Caesar III | PPC lead | D | [Demo index](https://classicmacdemos.com/caesar-iii); [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/caesar-iii) |
-| 42 | 230 | Command & Conquer | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/command-conquer) |
-| 43 | 231 | Aliens versus Predator | PPC lead | D | [Demo index](https://classicmacdemos.com/aliens-versus-predator) |
-| 44 | 232 | Oni | PPC lead | D | [Demo index](https://classicmacdemos.com/oni) |
-| 45 | 233 | Rune | PPC lead | D | [Demo index](https://classicmacdemos.com/rune) |
-| 46 | 234 | Bugdom | PPC lead | D | [Demo index](https://classicmacdemos.com/bugdom); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 47 | 235 | Nanosaur | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/n/); [Garden](https://macintoshgarden.org/games/nanosaur) |
-| 48 | 236 | Cro-Mag Rally | PPC lead | D | [Demo index](https://classicmacdemos.com/cro-mag-rally); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 49 | 237 | Otto Matic | PPC lead | D | [Demo index](https://classicmacdemos.com/otto-matic) |
-| 50 | 238 | Avara | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 51 | 239 | Ares | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 52 | 240 | Barrack | Original fat 68K/PPC; bounded PPC barrier play verified, 68K streaming unresolved | P | [Original licence and nine-check native evidence](CATALOGUE-SOURCES.md#barrack-104--native-menu-and-barrier-qualification) |
-| 53 | 241 | Bubble Trouble | Original 68K/PPC; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/bubble-trouble.md) |
-| 54 | 242 | Chiral | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/chiral.md) |
-| 55 | 243 | Cythera | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 56 | 244 | Mars Rising | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 57 | 245 | Pillars of Garendall | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 58 | 246 | Gubble | PPC era; verify | D | [Demo index](https://classicmacdemos.com/gubble); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 59 | 247 | MacSki | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 60 | 248 | Pararena | Original demo 2.01: 68K colour steering verified | D | [Original package parity and bounded colour input; demo rights/browser held](CATALOGUE-SOURCES.md#pararena-201-original-colour-gameplay-and-package-parity); [#4750](https://github.com/benletchford/systemless/issues/4750); [fix #4753](https://github.com/benletchford/systemless/pull/4753) |
-| 61 | 249 | Bonkheads | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 62 | 250 | Bonkheads Deluxe | 68K lead | D | [Demo index](https://classicmacdemos.com/bonkheads-deluxe) |
-| 63 | 251 | Monkey Shines | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/monkey-shines.md) |
-| 64 | 252 | Space Cab | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 65 | 253 | King of Dragon Pass | PPC lead | D | [Demo index](https://classicmacdemos.com/king-of-dragon-pass) |
-| 66 | 254 | Afterlife | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/afterlife) |
-| 67 | 255 | Alley 19 Bowling | PPC lead | D | [Demo index](https://classicmacdemos.com/alley-19-bowling) |
-| 68 | 256 | Allied General | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/allied-general) |
-| 69 | 257 | Close Combat | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/close-combat) |
-| 70 | 258 | Combat Mission | Verify 68K/PPC | D | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Demo index](https://classicmacdemos.com/combat-mission-beyond-overlord) |
-| 71 | 259 | Deadlock | Verify 68K/PPC | D | [Archive index](https://www.vintageapplemac.com/software/games/d/); [Demo index](https://classicmacdemos.com/deadlock-planetary-conquest) |
-| 72 | 260 | Imperialism II | PPC lead | D | [Archive index](https://www.vintageapplemac.com/software/games/i/); [Demo index](https://classicmacdemos.com/imperialism-ii-age-of-exploration) |
-| 73 | 261 | Capitalism | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/capitalism); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 74 | 262 | MacGo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 75 | 263 | Macgammon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 76 | 264 | Solitaire Till Dawn | Original 4.0.1 CODE: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/solitaire-till-dawn.md) |
-| 77 | 265 | Mike's Cards | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 78 | 266 | Angband | Original 68K/PPC packages; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/angband.md) |
-| 79 | 267 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
-| 80 | 268 | Rogue | Original 68K only; pacing fix merged; private gameplay verified; public held | P | [Rights, architecture and gameplay/pacing evidence](CATALOGUE-SOURCES.md#rogue-iii-mac-release-6--primary-slot-80) |
-| 81 | 269 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 82 | 270 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 83 | 271 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
-| 84 | 272 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
-| 85 | 273 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 86 | 274 | MacSnake | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 87 | 275 | Tetris Max | 68K + PPC verified slices | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 88 | 276 | Oxyd | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 89 | 277 | per-oxyd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 90 | 278 | Lode Runner 2 | PPC lead | D | [Demo index](https://classicmacdemos.com/lode-runner-2); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 91 | 279 | Mantra | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 92 | 280 | Mantra II | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 93 | 281 | Sapiens | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 94 | 282 | Macnopoly | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 95 | 283 | Risk! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 96 | 284 | Monopoly | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 97 | 285 | Clue | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 98 | 286 | Game of Life | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 99 | 287 | Battleship | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 100 | 288 | Yahtzee! | Original 68K only; scoring/hosted browser verified; launch approved | P | [Original package grant and delivery evidence](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) |
-| 101 | 289 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
-| 102 | 290 | Mahjong | Original 1.0.5 International CODE-only 68K | P | [Original noncommercial grant; native and browser discard/replies verified](CATALOGUE-SOURCES.md#mahjong-105--primary-102-original-sti3-installer-intake); [#4672](https://github.com/benletchford/systemless/issues/4672)  [Qualified public v0.97.0 discard/replies](https://systemless.org/mahjong/) |
-| 103 | 291 | MacTaipei | Original CODE-only 68K; pair removal verified | U | [Exact original intake; scoped archival request, broader hosting held](CATALOGUE-SOURCES.md#mactaipei-10--primary-103-original-package-intake); [#4670](https://github.com/benletchford/systemless/issues/4670) |
-| 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 105 | 293 | Powerball | Original 1.3: actual 68K + PPC | P | [Original non-profit grant; seven files/fourteen forks matched; startup blockers](CATALOGUE-SOURCES.md#powerball-13--primary-105-original-fat-shareware-intake); [#4681](https://github.com/benletchford/systemless/issues/4681) |
-| 106 | 294 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
-| 107 | 295 | Brick Attack | Original 1.0: PPC only | P | [Original non-profit grant; exact package/forks; paddle and library rights held](CATALOGUE-SOURCES.md#brick-attack-10--primary-107-original-ppc-shareware-intake); [#4689](https://github.com/benletchford/systemless/issues/4689) |
-| 108 | 296 | Bubbles | Original 1.3: PPC verified | P | [Original Internet grant; native and hosted-browser gameplay verified; launch approved](CATALOGUE-SOURCES.md#bubbles-13--primary-108-original-ppc-shareware-intake); [entry #4719](https://github.com/benletchford/systemless/pull/4719); [qualified public v0.97.0 gameplay](https://systemless.org/bubbles/) |
-| 109 | 297 | Airburst | Original 1.0: PPC verified | S | [Complete unchanged-distribution grant; native/hosted-browser gameplay verified; entry merged; human release pending](CATALOGUE-SOURCES.md#airburst-10--primary-109-original-ppc-shareware-intake); [#4698](https://github.com/benletchford/systemless/issues/4698) |
-| 110 | 298 | DX Ball | Original Classic: PPC only | U | [Exact shareware archive; fifteen gameplay checks, hosting rights held](CATALOGUE-SOURCES.md#dx-ball--primary-110-original-classic-shareware-intake); [#4696](https://github.com/benletchford/systemless/issues/4696) |
-| 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Original demo: PPC only | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
-| 112 | 300 | 3-D Ultra Pinball: Thrillride | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-thrillride) |
-| 113 | 301 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
-| 114 | 302 | Crystal Caliburn | Original 1.02 demo: 68K only | D | [Exact original demo; twelve plunger checks, broader hosting held](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake); [#4677](https://github.com/benletchford/systemless/issues/4677) |
-| 115 | 303 | Tristan | Original demo: 68K only | D | [Demo index](https://classicmacdemos.com/tristan) |
-| 116 | 304 | Royal Flush | Original 1.2.1: actual 68K + PPC | U | [Exact fat package; rights, black 68K capture and PPC startup fault held](CATALOGUE-SOURCES.md#royal-flush-121--primary-116-original-fat-game-intake); [#4728](https://github.com/benletchford/systemless/issues/4728) |
-| 117 | 305 | F/A-18 Korea | PPC lead | D | [Demo index](https://classicmacdemos.com/fa-18-korea) |
-| 118 | 306 | Chuck Yeager's Air Combat | 68K era; verify | D | [Demo index](https://classicmacdemos.com/chuck-yeagers-air-combat) |
-| 119 | 307 | X-Plane | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/x-plane); [Archive index](https://www.vintageapplemac.com/software/games/x/) |
-| 120 | 308 | Apache Longbow | PPC lead | D | [Demo index](https://classicmacdemos.com/apache-longbow) |
-| 121 | 309 | Hind | PPC lead | D | [Demo index](https://classicmacdemos.com/hind) |
-| 122 | 310 | Achtung Spitfire! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/achtung-spitfire); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 123 | 311 | Over the Reich | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/over-the-reich) |
-| 124 | 312 | IndyCar Racing II | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/indycar-racing-ii) |
-| 125 | 313 | NASCAR Racing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/nascar-racing) |
-| 126 | 314 | 4x4 Evolution | PPC lead | D | [Demo index](https://classicmacdemos.com/4x4-evolution) |
-| 127 | 315 | F1 Championship Season 2000 | PPC lead | D | [Demo index](https://classicmacdemos.com/f1-championship-season-2000) |
-| 128 | 316 | Vette! | 68K era; verify | D | [Demo index](https://classicmacdemos.com/vette) |
-| 129 | 317 | Links Pro | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/links-pro) |
-| 130 | 318 | PGA Tour Golf | 68K era; verify | D | [Demo index](https://classicmacdemos.com/pga-tour-golf) |
-| 131 | 319 | Mario's Game Gallery | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/marios-game-gallery) |
-| 132 | 320 | The Incredible Machine | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-incredible-machine-version-30) |
-| 133 | 321 | Logical Journey of the Zoombinis | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/logical-journey-of-the-zoombinis) |
-| 134 | 322 | Where in Time Is Carmen Sandiego? | 68K era; verify | D | [Demo index](https://classicmacdemos.com/where-in-time-is-carmen-sandiego) |
-| 135 | 323 | The Time Warp of Dr. Brain | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-time-warp-of-dr-brain) |
-| 136 | 324 | Aquazone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 137 | 325 | Amber: Journeys Beyond | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/amber-journeys-beyond) |
-| 138 | 326 | Obsidian | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/obsidian); [Garden](https://macintoshgarden.org/games/obsidian) |
-| 139 | 327 | Morpheus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/morpheus); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 140 | 328 | Sensory Overload | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/sensory-overload) |
-| 141 | 329 | Prime Target | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/prime-target) |
-| 142 | 330 | Shattered Steel | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shattered-steel); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 143 | 331 | The Journeyman Project 2: Buried in Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-journeyman-project-2-buried-in-time) |
-| 144 | 332 | The Journeyman Project 3: Legacy of Time | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-journeyman-project-3-legacy-of-time) |
-| 145 | 333 | Jewels of the Oracle | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/jewels-of-the-oracle) |
-| 146 | 334 | Discworld | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/discworld) |
-| 147 | 335 | Conquest of the New World | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/conquest-of-the-new-world) |
-| 148 | 336 | Empire Deluxe | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/empire-deluxe) |
-| 149 | 337 | Civil War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 150 | 338 | Sub Battle Simulator | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/sub-battle-simulator) |
-| 151 | 339 | Worms | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/worms) |
-| 152 | 340 | Tomb Raider Chronicles | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-5-chronicles); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 153 | 341 | Tomb Raider III: Adventures of Lara Croft | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-3-adventures-of-lara-croft) |
-| 154 | 342 | Tomb Raider: The Last Revelation | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-4-the-last-revelation) |
-| 155 | 343 | Warcraft III: Reign of Chaos | PPC era; verify | D | [Demo index](https://classicmacdemos.com/warcraft-iii-reign-of-chaos) |
-| 156 | 344 | Star Wars: Rebel Assault II: The Hidden Empire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/star-wars-rebel-assault-ii-the-hidden-empire) |
-| 157 | 345 | Wing Commander IV: The Price of Freedom | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/wing-commander-iv-the-price-of-freedom) |
-| 158 | 346 | Ultima IV: Quest of the Avatar | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-iv-quest-of-the-avatar) |
-| 159 | 347 | Gabriel Knight: Sins of the Fathers | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gabriel-knight) |
-| 160 | 348 | Close Combat: A Bridge Too Far | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/close-combat-a-bridge-too-far) |
-| 161 | 349 | Combat Mission: Barbarossa to Berlin | PPC era; verify | D | [Demo index](https://classicmacdemos.com/combat-mission-barbarossa-to-berlin) |
-| 162 | 350 | Populous II: Trials of the Olympian Gods | 68K era; verify | D | [Demo index](https://classicmacdemos.com/populous-ii-trials-of-the-olympian-gods) |
-| 163 | 351 | Madden NFL 2000 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/madden-nfl-2000) |
-| 164 | 352 | Links LS 1997 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/links-ls-1997) |
-| 165 | 353 | Links LS 2000 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/links-ls-2000) |
-| 166 | 354 | Putt-Putt Enters the Race | PPC era; verify | D | [Demo index](https://classicmacdemos.com/putt-putt-enters-the-race) |
-| 167 | 355 | Putt-Putt Goes to the Moon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/putt-putt-goes-to-the-moon) |
-| 168 | 356 | Freddi Fish 3: The Case of the Stolen Conch Shell | PPC era; verify | D | [Demo index](https://classicmacdemos.com/freddi-fish-3-the-case-of-the-stolen-conch-shell) |
-| 169 | 357 | Freddi Fish 4: The Case of the Hogfish Rustlers of Briny Gulch | PPC era; verify | D | [Demo index](https://classicmacdemos.com/freddi-fish-4-the-case-of-the-hogfish-rustlers-of) |
-| 170 | 358 | Freddi Fish and the Case of the Missing Kelp Seeds | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/freddi-fish-and-the-case-of-the-missing-kelp-seeds) |
-| 171 | 359 | Pajama Sam 2: Thunder and Lightning Aren't So Frightening | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pajama-sam-2-thunder-and-lightning) |
-| 172 | 360 | Fatty Bear's Birthday Surprise | 68K era; verify | D | [Demo index](https://classicmacdemos.com/fatty-bears-birthday-surprise) |
-| 173 | 361 | Living Books Sampler | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-sampler) |
-| 174 | 362 | Living Books: Arthur's Birthday | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-arthurs-birthday) |
-| 175 | 363 | Living Books: Dr. Seuss's ABC | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-dr-seuss-abc) |
-| 176 | 364 | Living Books: Harry & the Haunted House | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-harry-the-haunted-house) |
-| 177 | 365 | Living Books: Just Grandma and Me | PPC era; verify | D | [Demo index](https://classicmacdemos.com/living-books-just-grandma-and-me) |
-| 178 | 366 | Living Books: Little Monster at School | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-little-monster-at-school) |
-| 179 | 367 | Living Books: Ruff's Bone | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-ruffs-bone) |
-| 180 | 368 | Living Books: Sheila Rae, The Brave | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-sheila-rae-the-brave) |
-| 181 | 369 | Living Books: The New Kid on the Block | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-the-new-kid-on-the-block) |
-| 182 | 370 | Living Books: The Tortoise and the Hare | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-the-tortoise-and-the-hare) |
-| 183 | 371 | Gadget: Invention, Travel, & Adventure | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gadget-invention-travel-adventure) |
-| 184 | 372 | Gadget: Past as Future | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gadget-past-future) |
-| 185 | 373 | I Have No Mouth, and I Must Scream | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/i-have-no-mouth-and-i-must-scream) |
-| 186 | 374 | Broken Sword: The Shadow of the Templars | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/broken-sword-the-shadow-of-the-templars) |
-| 187 | 375 | Harpoon 3 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/harpoon-3) |
-| 188 | 376 | The Battle of Britain II | 68K era; verify | D | [Demo index](https://classicmacdemos.com/the-battle-of-britain-ii) |
-| 189 | 377 | 3-D Ultra NASCAR Pinball | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-nascar) |
-| 190 | 378 | Absolute Zero | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/absolute-zero) |
-| 191 | 379 | Active Lancer | PPC era; verify | D | [Demo index](https://classicmacdemos.com/active-lancer) |
-| 192 | 380 | After Dark Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/after-dark-games); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 193 | 381 | Al Unser Jr. Arcade Racing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/al-unser-jr-arcade-racing) |
-| 194 | 382 | Alien Nations | PPC era; verify | D | [Demo index](https://classicmacdemos.com/alien-nations) |
-| 195 | 383 | Alone in the Dark 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-2) |
-| 196 | 384 | Alone in the Dark 3: Ghosts in Town | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-3-ghosts-in-town) |
-| 197 | 385 | AmoebArena | 68K + PPC executable verified; gameplay pending | D | [Demo index](https://classicmacdemos.com/amoebarena); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 198 | 386 | AstroRock 2000 | PPC only, original 1.2 demo; startup blocked | D | [Demo index](https://classicmacdemos.com/astrorock-2000); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 199 | 387 | Backyard Football | PPC era; verify | D | [Demo index](https://classicmacdemos.com/backyard-football) |
-| 200 | 388 | Bad Milk | PPC era; verify | D | [Demo index](https://classicmacdemos.com/bad-milk); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 1 | 188 | Sid Meier's Civilization II | 68K/PPC (demo page) | D | [Demo index](https://classicmacdemos.com/sid-meiers-civilization-ii) |
+| 2 | 189 | Myst | 68K lead | D | [Demo index](https://classicmacdemos.com/myst) |
+| 3 | 190 | Riven | PPC lead | D | [Demo index](https://classicmacdemos.com/riven) |
+| 4 | 191 | Day of the Tentacle | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/day-of-the-tentacle) |
+| 5 | 192 | Monkey Island 2: LeChuck’s Revenge | 68K era; verify | U | [Garden](https://macintoshgarden.org/games/monkey-island-2-le-chucks-revenge) |
+| 6 | 193 | The Secret of Monkey Island | 68K era; verify | U | [Garden](https://macintoshgarden.org/games/secret-of-monkey-island) |
+| 7 | 194 | The Dig | PPC lead | D | [Demo index](https://classicmacdemos.com/the-dig) |
+| 8 | 195 | Quake | PPC lead | D | [Demo index](https://classicmacdemos.com/quake); [Garden](https://macintoshgarden.org/games/quake) |
+| 9 | 196 | Unreal Tournament | PPC lead | D | [Demo index](https://classicmacdemos.com/unreal-tournament) |
+| 10 | 197 | Myth: The Fallen Lords | PPC lead | D | [Demo index](https://classicmacdemos.com/myth-i-the-fallen-lords) |
+| 11 | 198 | Myth II: Soulblighter | PPC lead | D | [Demo index](https://classicmacdemos.com/myth-ii-soulblighter); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 12 | 199 | Age of Empires | PPC lead | D | [Demo index](https://classicmacdemos.com/age-of-empires); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 13 | 200 | Total Annihilation | PPC lead | D | [Demo index](https://classicmacdemos.com/total-annihilation) |
+| 14 | 201 | Age of Empires II | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 15 | 202 | Quake II | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 16 | 203 | Sid Meier's Alpha Centauri | PPC lead | D | [Demo index](https://classicmacdemos.com/sid-meiers-alpha-centauri) |
+| 17 | 204 | The Sims | PPC lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 18 | 205 | Heroes of Might and Magic III | PPC lead | D | [Demo index](https://classicmacdemos.com/heroes-of-might-and-magic-iii) |
+| 19 | 206 | Tomb Raider (Gold demo; retired candidate) | PPC lead | D | [Demo index](https://classicmacdemos.com/tomb-raider-1-gold) |
+| 20 | 207 | Tomb Raider II | PPC lead | D | [Demo index](https://classicmacdemos.com/tomb-raider-2); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 21 | 208 | Duke Nukem 3D | PPC lead | D | [Demo index](https://classicmacdemos.com/duke-nukem-3d) |
+| 22 | 209 | A-Train | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 23 | 210 | King’s Bounty | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 24 | 211 | Shufflepuck Café | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 25 | 212 | Sid Meier’s Colonization | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 26 | 213 | SimFarm | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 27 | 214 | The Playroom | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 28 | 215 | Uninvited | 68K lead | U | [Existing research queue](CATALOGUE-CANDIDATES.md) |
+| 29 | 216 | Star Wars: X-Wing | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-x-wing) |
+| 30 | 217 | Star Wars: Rebel Assault | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-rebel-assault) |
+| 31 | 218 | Star Wars Episode I: Racer | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-episode-i-racer) |
+| 32 | 219 | Star Wars: Galactic Battlegrounds | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-galactic-battlegrounds) |
+| 33 | 220 | Descent II | PPC lead | D | [Demo index](https://classicmacdemos.com/descent-2) |
+| 34 | 221 | Descent 3 | PPC lead | D | [Demo index](https://classicmacdemos.com/descent-3) |
+| 35 | 222 | Carmageddon | PPC lead | D | [Demo index](https://classicmacdemos.com/carmageddon) |
+| 36 | 223 | Shadow Warrior | PPC lead | D | [Demo index](https://classicmacdemos.com/shadow-warrior); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 37 | 224 | Heretic | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/heretic); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 38 | 225 | Dark Castle (original 1986 B&W; exact archive unverified) | 68K lead; original executable uninspected | U | [Demo lead duplicates baseline color remake](CATALOGUE-SOURCES.md#dark-castle-original-target-and-existing-color-demo); [identity #4643](https://github.com/benletchford/systemless/issues/4643) |
+| 39 | 226 | Trinity | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 40 | 227 | Railroad Tycoon II | PPC lead | D | [Demo index](https://classicmacdemos.com/railroad-tycoon-ii); [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 41 | 228 | Caesar III | PPC lead | D | [Demo index](https://classicmacdemos.com/caesar-iii); [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/caesar-iii) |
+| 42 | 229 | Command & Conquer | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/command-conquer) |
+| 43 | 230 | Aliens versus Predator | PPC lead | D | [Demo index](https://classicmacdemos.com/aliens-versus-predator) |
+| 44 | 231 | Oni | PPC lead | D | [Demo index](https://classicmacdemos.com/oni) |
+| 45 | 232 | Rune | PPC lead | D | [Demo index](https://classicmacdemos.com/rune) |
+| 46 | 233 | Bugdom | PPC lead | D | [Demo index](https://classicmacdemos.com/bugdom); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 47 | 234 | Nanosaur | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/n/); [Garden](https://macintoshgarden.org/games/nanosaur) |
+| 48 | 235 | Cro-Mag Rally | PPC lead | D | [Demo index](https://classicmacdemos.com/cro-mag-rally); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 49 | 236 | Otto Matic | PPC lead | D | [Demo index](https://classicmacdemos.com/otto-matic) |
+| 50 | 237 | Avara | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 51 | 238 | Ares | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 52 | 239 | Barrack | Original fat 68K/PPC; bounded PPC barrier play verified, 68K streaming unresolved | P | [Original licence and nine-check native evidence](CATALOGUE-SOURCES.md#barrack-104--native-menu-and-barrier-qualification) |
+| 53 | 240 | Bubble Trouble | Original 68K/PPC; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/bubble-trouble.md) |
+| 54 | 241 | Chiral | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/chiral.md) |
+| 55 | 242 | Cythera | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 56 | 243 | Mars Rising | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 57 | 244 | Pillars of Garendall | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 58 | 245 | Gubble | PPC era; verify | D | [Demo index](https://classicmacdemos.com/gubble); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 59 | 246 | MacSki | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 60 | 247 | Pararena | Original demo 2.01: 68K colour steering verified | D | [Original package parity and bounded colour input; demo rights/browser held](CATALOGUE-SOURCES.md#pararena-201-original-colour-gameplay-and-package-parity); [#4750](https://github.com/benletchford/systemless/issues/4750); [fix #4753](https://github.com/benletchford/systemless/pull/4753) |
+| 61 | 248 | Bonkheads | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 62 | 249 | Bonkheads Deluxe | 68K lead | D | [Demo index](https://classicmacdemos.com/bonkheads-deluxe) |
+| 63 | 250 | Monkey Shines | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/monkey-shines.md) |
+| 64 | 251 | Space Cab | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 65 | 252 | King of Dragon Pass | PPC lead | D | [Demo index](https://classicmacdemos.com/king-of-dragon-pass) |
+| 66 | 253 | Afterlife | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/afterlife) |
+| 67 | 254 | Alley 19 Bowling | PPC lead | D | [Demo index](https://classicmacdemos.com/alley-19-bowling) |
+| 68 | 255 | Allied General | 68K/PPC (repo notes) | D | [Demo index](https://classicmacdemos.com/allied-general) |
+| 69 | 256 | Close Combat | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/close-combat) |
+| 70 | 257 | Combat Mission | Verify 68K/PPC | D | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Demo index](https://classicmacdemos.com/combat-mission-beyond-overlord) |
+| 71 | 258 | Deadlock | Verify 68K/PPC | D | [Archive index](https://www.vintageapplemac.com/software/games/d/); [Demo index](https://classicmacdemos.com/deadlock-planetary-conquest) |
+| 72 | 259 | Imperialism II | PPC lead | D | [Archive index](https://www.vintageapplemac.com/software/games/i/); [Demo index](https://classicmacdemos.com/imperialism-ii-age-of-exploration) |
+| 73 | 260 | Capitalism | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/capitalism); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 74 | 261 | MacGo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 75 | 262 | Macgammon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 76 | 263 | Solitaire Till Dawn | Original 4.0.1 CODE: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/solitaire-till-dawn.md) |
+| 77 | 264 | Mike's Cards | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 78 | 265 | Angband | Original 68K/PPC packages; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/angband.md) |
+| 79 | 266 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
+| 80 | 267 | Rogue | Original 68K only; pacing fix merged; private gameplay verified; public held | P | [Rights, architecture and gameplay/pacing evidence](CATALOGUE-SOURCES.md#rogue-iii-mac-release-6--primary-slot-80) |
+| 81 | 268 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 82 | 269 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 83 | 270 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
+| 84 | 271 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
+| 85 | 272 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 86 | 273 | MacSnake | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 87 | 274 | Tetris Max | 68K + PPC verified slices | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 88 | 275 | Oxyd | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 89 | 276 | per-oxyd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 90 | 277 | Lode Runner 2 | PPC lead | D | [Demo index](https://classicmacdemos.com/lode-runner-2); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 91 | 278 | Mantra | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 92 | 279 | Mantra II | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 93 | 280 | Sapiens | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 94 | 281 | Macnopoly | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 95 | 282 | Risk! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 96 | 283 | Monopoly | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 97 | 284 | Clue | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 98 | 285 | Game of Life | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 99 | 286 | Battleship | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 100 | 287 | Yahtzee! | Original 68K only; scoring/hosted browser verified; launch approved | P | [Original package grant and delivery evidence](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) |
+| 101 | 288 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
+| 102 | 289 | Mahjong | Original 1.0.5 International CODE-only 68K | P | [Original noncommercial grant; native and browser discard/replies verified](CATALOGUE-SOURCES.md#mahjong-105--primary-102-original-sti3-installer-intake); [#4672](https://github.com/benletchford/systemless/issues/4672)  [Qualified public v0.97.0 discard/replies](https://systemless.org/mahjong/) |
+| 103 | 290 | MacTaipei | Original CODE-only 68K; pair removal verified | U | [Exact original intake; scoped archival request, broader hosting held](CATALOGUE-SOURCES.md#mactaipei-10--primary-103-original-package-intake); [#4670](https://github.com/benletchford/systemless/issues/4670) |
+| 104 | 291 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 105 | 292 | Powerball | Original 1.3: actual 68K + PPC | P | [Original non-profit grant; seven files/fourteen forks matched; startup blockers](CATALOGUE-SOURCES.md#powerball-13--primary-105-original-fat-shareware-intake); [#4681](https://github.com/benletchford/systemless/issues/4681) |
+| 106 | 293 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
+| 107 | 294 | Brick Attack | Original 1.0: PPC only | P | [Original non-profit grant; exact package/forks; paddle and library rights held](CATALOGUE-SOURCES.md#brick-attack-10--primary-107-original-ppc-shareware-intake); [#4689](https://github.com/benletchford/systemless/issues/4689) |
+| 108 | 295 | Bubbles | Original 1.3: PPC verified | P | [Original Internet grant; native and hosted-browser gameplay verified; launch approved](CATALOGUE-SOURCES.md#bubbles-13--primary-108-original-ppc-shareware-intake); [entry #4719](https://github.com/benletchford/systemless/pull/4719); [qualified public v0.97.0 gameplay](https://systemless.org/bubbles/) |
+| 109 | 296 | Airburst | Original 1.0: PPC verified | S | [Complete unchanged-distribution grant; native/hosted-browser gameplay verified; entry merged; human release pending](CATALOGUE-SOURCES.md#airburst-10--primary-109-original-ppc-shareware-intake); [#4698](https://github.com/benletchford/systemless/issues/4698) |
+| 110 | 297 | DX Ball | Original Classic: PPC only | U | [Exact shareware archive; fifteen gameplay checks, hosting rights held](CATALOGUE-SOURCES.md#dx-ball--primary-110-original-classic-shareware-intake); [#4696](https://github.com/benletchford/systemless/issues/4696) |
+| 111 | 298 | 3-D Ultra Pinball: The Lost Continent | Original demo: PPC only | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
+| 112 | 299 | 3-D Ultra Pinball: Thrillride | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-thrillride) |
+| 113 | 300 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
+| 114 | 301 | Crystal Caliburn | Original 1.02 demo: 68K only | D | [Exact original demo; twelve plunger checks, broader hosting held](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake); [#4677](https://github.com/benletchford/systemless/issues/4677) |
+| 115 | 302 | Tristan | Original demo: 68K only | D | [Demo index](https://classicmacdemos.com/tristan) |
+| 116 | 303 | Royal Flush | Original 1.2.1: actual 68K + PPC | U | [Exact fat package; rights, black 68K capture and PPC startup fault held](CATALOGUE-SOURCES.md#royal-flush-121--primary-116-original-fat-game-intake); [#4728](https://github.com/benletchford/systemless/issues/4728) |
+| 117 | 304 | F/A-18 Korea | PPC lead | D | [Demo index](https://classicmacdemos.com/fa-18-korea) |
+| 118 | 305 | Chuck Yeager's Air Combat | 68K era; verify | D | [Demo index](https://classicmacdemos.com/chuck-yeagers-air-combat) |
+| 119 | 306 | X-Plane | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/x-plane); [Archive index](https://www.vintageapplemac.com/software/games/x/) |
+| 120 | 307 | Apache Longbow | PPC lead | D | [Demo index](https://classicmacdemos.com/apache-longbow) |
+| 121 | 308 | Hind | PPC lead | D | [Demo index](https://classicmacdemos.com/hind) |
+| 122 | 309 | Achtung Spitfire! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/achtung-spitfire); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 123 | 310 | Over the Reich | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/over-the-reich) |
+| 124 | 311 | IndyCar Racing II | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/indycar-racing-ii) |
+| 125 | 312 | NASCAR Racing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/nascar-racing) |
+| 126 | 313 | 4x4 Evolution | PPC lead | D | [Demo index](https://classicmacdemos.com/4x4-evolution) |
+| 127 | 314 | F1 Championship Season 2000 | PPC lead | D | [Demo index](https://classicmacdemos.com/f1-championship-season-2000) |
+| 128 | 315 | Vette! | 68K era; verify | D | [Demo index](https://classicmacdemos.com/vette) |
+| 129 | 316 | Links Pro | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/links-pro) |
+| 130 | 317 | PGA Tour Golf | 68K era; verify | D | [Demo index](https://classicmacdemos.com/pga-tour-golf) |
+| 131 | 318 | Mario's Game Gallery | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/marios-game-gallery) |
+| 132 | 319 | The Incredible Machine | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-incredible-machine-version-30) |
+| 133 | 320 | Logical Journey of the Zoombinis | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/logical-journey-of-the-zoombinis) |
+| 134 | 321 | Where in Time Is Carmen Sandiego? | 68K era; verify | D | [Demo index](https://classicmacdemos.com/where-in-time-is-carmen-sandiego) |
+| 135 | 322 | The Time Warp of Dr. Brain | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-time-warp-of-dr-brain) |
+| 136 | 323 | Aquazone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 137 | 324 | Amber: Journeys Beyond | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/amber-journeys-beyond) |
+| 138 | 325 | Obsidian | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/obsidian); [Garden](https://macintoshgarden.org/games/obsidian) |
+| 139 | 326 | Morpheus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/morpheus); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 140 | 327 | Sensory Overload | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/sensory-overload) |
+| 141 | 328 | Prime Target | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/prime-target) |
+| 142 | 329 | Shattered Steel | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shattered-steel); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 143 | 330 | The Journeyman Project 2: Buried in Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-journeyman-project-2-buried-in-time) |
+| 144 | 331 | The Journeyman Project 3: Legacy of Time | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-journeyman-project-3-legacy-of-time) |
+| 145 | 332 | Jewels of the Oracle | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/jewels-of-the-oracle) |
+| 146 | 333 | Discworld | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/discworld) |
+| 147 | 334 | Conquest of the New World | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/conquest-of-the-new-world) |
+| 148 | 335 | Empire Deluxe | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/empire-deluxe) |
+| 149 | 336 | Civil War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 150 | 337 | Sub Battle Simulator | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/sub-battle-simulator) |
+| 151 | 338 | Worms | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/worms) |
+| 152 | 339 | Tomb Raider Chronicles | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-5-chronicles); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 153 | 340 | Tomb Raider III: Adventures of Lara Croft | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-3-adventures-of-lara-croft) |
+| 154 | 341 | Tomb Raider: The Last Revelation | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tomb-raider-4-the-last-revelation) |
+| 155 | 342 | Warcraft III: Reign of Chaos | PPC era; verify | D | [Demo index](https://classicmacdemos.com/warcraft-iii-reign-of-chaos) |
+| 156 | 343 | Star Wars: Rebel Assault II: The Hidden Empire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/star-wars-rebel-assault-ii-the-hidden-empire) |
+| 157 | 344 | Wing Commander IV: The Price of Freedom | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/wing-commander-iv-the-price-of-freedom) |
+| 158 | 345 | Ultima IV: Quest of the Avatar | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-iv-quest-of-the-avatar) |
+| 159 | 346 | Gabriel Knight: Sins of the Fathers | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gabriel-knight) |
+| 160 | 347 | Close Combat: A Bridge Too Far | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/close-combat-a-bridge-too-far) |
+| 161 | 348 | Combat Mission: Barbarossa to Berlin | PPC era; verify | D | [Demo index](https://classicmacdemos.com/combat-mission-barbarossa-to-berlin) |
+| 162 | 349 | Populous II: Trials of the Olympian Gods | 68K era; verify | D | [Demo index](https://classicmacdemos.com/populous-ii-trials-of-the-olympian-gods) |
+| 163 | 350 | Madden NFL 2000 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/madden-nfl-2000) |
+| 164 | 351 | Links LS 1997 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/links-ls-1997) |
+| 165 | 352 | Links LS 2000 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/links-ls-2000) |
+| 166 | 353 | Putt-Putt Enters the Race | PPC era; verify | D | [Demo index](https://classicmacdemos.com/putt-putt-enters-the-race) |
+| 167 | 354 | Putt-Putt Goes to the Moon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/putt-putt-goes-to-the-moon) |
+| 168 | 355 | Freddi Fish 3: The Case of the Stolen Conch Shell | PPC era; verify | D | [Demo index](https://classicmacdemos.com/freddi-fish-3-the-case-of-the-stolen-conch-shell) |
+| 169 | 356 | Freddi Fish 4: The Case of the Hogfish Rustlers of Briny Gulch | PPC era; verify | D | [Demo index](https://classicmacdemos.com/freddi-fish-4-the-case-of-the-hogfish-rustlers-of) |
+| 170 | 357 | Freddi Fish and the Case of the Missing Kelp Seeds | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/freddi-fish-and-the-case-of-the-missing-kelp-seeds) |
+| 171 | 358 | Pajama Sam 2: Thunder and Lightning Aren't So Frightening | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pajama-sam-2-thunder-and-lightning) |
+| 172 | 359 | Fatty Bear's Birthday Surprise | 68K era; verify | D | [Demo index](https://classicmacdemos.com/fatty-bears-birthday-surprise) |
+| 173 | 360 | Living Books Sampler | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-sampler) |
+| 174 | 361 | Living Books: Arthur's Birthday | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-arthurs-birthday) |
+| 175 | 362 | Living Books: Dr. Seuss's ABC | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-dr-seuss-abc) |
+| 176 | 363 | Living Books: Harry & the Haunted House | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-harry-the-haunted-house) |
+| 177 | 364 | Living Books: Just Grandma and Me | PPC era; verify | D | [Demo index](https://classicmacdemos.com/living-books-just-grandma-and-me) |
+| 178 | 365 | Living Books: Little Monster at School | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-little-monster-at-school) |
+| 179 | 366 | Living Books: Ruff's Bone | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-ruffs-bone) |
+| 180 | 367 | Living Books: Sheila Rae, The Brave | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/living-books-sheila-rae-the-brave) |
+| 181 | 368 | Living Books: The New Kid on the Block | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-the-new-kid-on-the-block) |
+| 182 | 369 | Living Books: The Tortoise and the Hare | 68K era; verify | D | [Demo index](https://classicmacdemos.com/living-books-the-tortoise-and-the-hare) |
+| 183 | 370 | Gadget: Invention, Travel, & Adventure | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gadget-invention-travel-adventure) |
+| 184 | 371 | Gadget: Past as Future | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/gadget-past-future) |
+| 185 | 372 | I Have No Mouth, and I Must Scream | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/i-have-no-mouth-and-i-must-scream) |
+| 186 | 373 | Broken Sword: The Shadow of the Templars | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/broken-sword-the-shadow-of-the-templars) |
+| 187 | 374 | Harpoon 3 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/harpoon-3) |
+| 188 | 375 | The Battle of Britain II | 68K era; verify | D | [Demo index](https://classicmacdemos.com/the-battle-of-britain-ii) |
+| 189 | 376 | 3-D Ultra NASCAR Pinball | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-nascar) |
+| 190 | 377 | Absolute Zero | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/absolute-zero) |
+| 191 | 378 | Active Lancer | PPC era; verify | D | [Demo index](https://classicmacdemos.com/active-lancer) |
+| 192 | 379 | After Dark Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/after-dark-games); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 193 | 380 | Al Unser Jr. Arcade Racing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/al-unser-jr-arcade-racing) |
+| 194 | 381 | Alien Nations | PPC era; verify | D | [Demo index](https://classicmacdemos.com/alien-nations) |
+| 195 | 382 | Alone in the Dark 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-2) |
+| 196 | 383 | Alone in the Dark 3: Ghosts in Town | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-3-ghosts-in-town) |
+| 197 | 384 | AmoebArena | 68K + PPC executable verified; gameplay pending | D | [Demo index](https://classicmacdemos.com/amoebarena); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 198 | 385 | AstroRock 2000 | PPC only, original 1.2 demo; startup blocked | D | [Demo index](https://classicmacdemos.com/astrorock-2000); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 199 | 386 | Backyard Football | PPC era; verify | D | [Demo index](https://classicmacdemos.com/backyard-football) |
+| 200 | 387 | Bad Milk | PPC era; verify | D | [Demo index](https://classicmacdemos.com/bad-milk); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 
 ### Wave 2 — remaining prominent and demo leads
 
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
-| 201 | 389 | battle-girl | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/battle-girl); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 202 | 390 | Birdie Shoot | PPC era; verify | D | [Demo index](https://classicmacdemos.com/birdie-shoot) |
-| 203 | 391 | Blade | 68K era; verify | D | [Demo index](https://classicmacdemos.com/blade); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 204 | 392 | Blood Bath at Red Falls | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/blood-bath-at-red-falls) |
-| 205 | 393 | Blue's ABC Time Activities | PPC era; verify | D | [Demo index](https://classicmacdemos.com/blues-abc-activities) |
-| 206 | 394 | Bomber III | 68K era; verify | D | [Demo index](https://classicmacdemos.com/bomber-iii) |
-| 207 | 395 | Brain Pizza | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/brain-pizza) |
-| 208 | 396 | Bumbler Bee-Luxe | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/bumbler-bee-luxe); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 209 | 397 | Ceremony of Innocence | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ceremony-of-innocence) |
-| 210 | 398 | Championship Manager: Season 00/01 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-0001) |
-| 211 | 399 | Championship Manager: Season 01/02 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-0102) |
-| 212 | 400 | Championship Manager: Season 99/00 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-9900) |
-| 213 | 401 | Chaos Overlords | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/chaos-overlords) |
-| 214 | 402 | CheckMate | 68K era; verify | D | [Demo index](https://classicmacdemos.com/checkmate-aka-chess-champion-2175) |
-| 215 | 403 | Chess Mates | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/chess-mates) |
-| 216 | 404 | Command HQ | 68K era; verify | D | [Demo index](https://classicmacdemos.com/command-hq) |
-| 217 | 405 | Crop Circles: Escape from Planet 3 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/crop-circles-escape-from-planet-3) |
-| 218 | 406 | Crystal Crazy | 68K era; verify | D | [Demo index](https://classicmacdemos.com/crystal-crazy) |
-| 219 | 407 | Curse of Dragor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/curse-of-dragor) |
-| 220 | 408 | Cyberwar | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/cyberwar); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 221 | 409 | D-Day: America Invades! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/d-day-america-invades); [Garden](https://macintoshgarden.org/games/d-day-america-invades) |
-| 222 | 410 | Dark Vengeance | PPC era; verify | D | [Demo index](https://classicmacdemos.com/dark-vengeance); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 223 | 411 | Deathground | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deathground); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 224 | 412 | Deer Avenger | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deer-avenger); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 225 | 413 | Deliverance | 68K era; verify | D | [Demo index](https://classicmacdemos.com/deliverance) |
-| 226 | 414 | Der Schatz von Tattoom | PPC era; verify | D | [Demo index](https://classicmacdemos.com/der-schatz-von-tattoom) |
-| 227 | 415 | Derrat Sorcerum | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/derrat-sorcerum) |
-| 228 | 416 | Deus Ex | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deus-ex) |
-| 229 | 417 | DinoPark Tycoon | 68K era; verify | D | [Demo index](https://classicmacdemos.com/dinopark-tycoon) |
-| 230 | 418 | Doulber | PPC era; verify | D | [Demo index](https://classicmacdemos.com/doulber) |
-| 231 | 419 | Driver - You Are The Wheelman | PPC era; verify | D | [Demo index](https://classicmacdemos.com/driver-you-are-the-wheelman) |
-| 232 | 420 | Dust: A Tale of the Wired West | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/dust-a-tale-of-the-wired-west) |
-| 233 | 421 | Dynasty League Baseball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/dynasty-league-baseball) |
-| 234 | 422 | Earth 2140 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/earth-2140); [Garden](https://macintoshgarden.org/games/earth-2140) |
-| 235 | 423 | Elite Air Hockey | PPC era; verify | D | [Demo index](https://classicmacdemos.com/elite-air-hockey) |
-| 236 | 424 | Elite Darts | PPC era; verify | D | [Demo index](https://classicmacdemos.com/elite-darts); [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 237 | 425 | Escape from Monkey Island | PPC era; verify | D | [Demo index](https://classicmacdemos.com/escape-from-monkey-island) |
-| 238 | 426 | Expert Backgammon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/expert-backgammon) |
-| 239 | 427 | Flight Commander 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/flight-commander-2); [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 240 | 428 | Flying Circus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/flying-circus) |
-| 241 | 429 | Flying Nightmares | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/flying-nightmares) |
-| 242 | 430 | Foul Play: Mystery at Awkward Manor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/foul-play-mystery-at-awkward-manor) |
-| 243 | 431 | Frankenstein: Through the Eyes of the Monster | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/frankenstein) |
-| 244 | 432 | Full Tilt! Pinball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/full-tilt-pinball) |
-| 245 | 433 | Fury of the Furries | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/fury-of-the-furries) |
-| 246 | 434 | Future Boy! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/future-boy) |
-| 247 | 435 | Future Cop: LAPD | PPC era; verify | D | [Demo index](https://classicmacdemos.com/future-cop-lapd); [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 248 | 436 | Galapagos: Mendel's Escape | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/galapagos-mendels-escape) |
-| 249 | 437 | Ghosts | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ghosts) |
-| 250 | 438 | Goofy Golf Deluxe | PPC era; verify | D | [Demo index](https://classicmacdemos.com/goofy-golf-deluxe); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 251 | 439 | Harry Potter and the Chamber of Secrets | PPC era; verify | D | [Demo index](https://classicmacdemos.com/harry-potter-and-the-chamber-of-secrets) |
-| 252 | 440 | HAVOC | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/havoc) |
-| 253 | 441 | HeadRush | PPC era; verify | D | [Demo index](https://classicmacdemos.com/headrush); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 254 | 442 | Heavy Metal: F.A.K.K. 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/heavy-metal-fakk-2); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 255 | 443 | Hexen: Beyond Heretic | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/hexen-beyond-heretic) |
-| 256 | 444 | Hoyle Board Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-board-games); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 257 | 445 | Hoyle Card Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-card-games); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 258 | 446 | Hoyle Casino 1999 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-casino-1999) |
-| 259 | 447 | Hoyle Casino 5 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-casino-5) |
-| 260 | 448 | Hoyle Word Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-word-games) |
-| 261 | 449 | Ice & Fire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ice-and-fire) |
-| 262 | 450 | Icebreaker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/icebreaker) |
-| 263 | 451 | Inbred with RedNex | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/inbred-with-rednex) |
-| 264 | 452 | Infocom Sampler | 68K era; verify | D | [Demo index](https://classicmacdemos.com/infocom-sampler) |
-| 265 | 453 | Intellivision Lives! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/intellivision-lives); [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 266 | 454 | Jan Pienkowski's Haunted House | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/jan-pienkowskis-haunted-house) |
-| 267 | 455 | Jazz Jackrabbit 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/jazz-jackrabbit-2); [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 268 | 456 | Just Me & My Mom | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/just-me-my-mom) |
-| 269 | 457 | Kamikaze Chess | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/kamikaze-chess) |
-| 270 | 458 | Karma: Curse of the 12 Caves | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/karma-curse-of-the-12-caves) |
-| 271 | 459 | Kawasaki ATV PowerSports | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kawasaki-atv-powersports) |
-| 272 | 460 | Kawasaki Jet-Ski Watercraft | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kawasaki-jet-ski-watercraft) |
-| 273 | 461 | Kids Arcade Pak | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/kids-arcade-pak) |
-| 274 | 462 | Killing Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/killing-time); [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 275 | 463 | Krilo | PPC era; verify | D | [Demo index](https://classicmacdemos.com/krilo) |
-| 276 | 464 | Kuba | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kuba); [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 277 | 465 | Last Call | PPC era; verify | D | [Demo index](https://classicmacdemos.com/last-call); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 278 | 466 | Locus | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/locus) |
-| 279 | 467 | Majesty: The Fantasy Kingdom Sim | PPC era; verify | D | [Demo index](https://classicmacdemos.com/majesty-the-fantasy-kingdom-sim) |
-| 280 | 468 | Manhattan Apartment Hunter | PPC era; verify | D | [Demo index](https://classicmacdemos.com/manhattan-apartment-hunter); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 281 | 469 | Mario Teaches Typing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/mario-teaches-typing) |
-| 282 | 470 | Marty and the Trouble with Cheese | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/marty-and-the-trouble-with-cheese) |
-| 283 | 471 | Maximum Pool | PPC era; verify | D | [Demo index](https://classicmacdemos.com/maximum-pool) |
-| 284 | 472 | Mia 2: Romaine’s New Hat | PPC era; verify | D | [Demo index](https://classicmacdemos.com/mia-2-romaines-new-hat) |
-| 285 | 473 | MINDit | PPC era; verify | D | [Demo index](https://classicmacdemos.com/mindit) |
-| 286 | 474 | Multi Pong | PPC era; verify | D | [Demo index](https://classicmacdemos.com/multi-pong) |
-| 287 | 475 | Muppet Treasure Island | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/muppet-treasure-island) |
-| 288 | 476 | Myth III: The Wolf Age | PPC era; verify | D | [Demo index](https://classicmacdemos.com/myth-iii-the-wolf-age) |
-| 289 | 477 | NetherWorld | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/netherworld); [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 290 | 478 | Nightfall | PPC era; verify | D | [Demo index](https://classicmacdemos.com/nightfall); [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 291 | 479 | NOIR: A Shadowy Thriller | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/noir-a-shadowy-thriller) |
-| 292 | 480 | Nuclear Hammer | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/nuclear-hammer) |
-| 293 | 481 | Onslaught | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/onslaught) |
-| 294 | 482 | Out of the Sun | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/out-of-the-sun); [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 295 | 483 | Pac-In-Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pac-in-time); [Garden](https://macintoshgarden.org/games/pac-in-time) |
-| 296 | 484 | Panic in the Park | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/panic-in-the-park) |
-| 297 | 485 | Pax Imperia | 68K era; verify | D | [Demo index](https://classicmacdemos.com/pax-imperia) |
-| 298 | 486 | Payback | PPC era; verify | D | [Demo index](https://classicmacdemos.com/payback) |
-| 299 | 487 | PlayMaker Football | 68K era; verify | D | [Demo index](https://classicmacdemos.com/playmaker-football); [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 300 | 488 | Postal | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/postal) |
-| 301 | 489 | Power Rangers Zeo Versus The Machine Empire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/power-rangers-zeo-versus-the-machine-empire) |
-| 302 | 490 | PowerMonger | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/powermonger) |
-| 303 | 491 | PowerPOKER | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/powerpoker) |
-| 304 | 492 | Pro Pinball: The Web | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pro-pinball-the-web) |
-| 305 | 493 | PT Boat Simulator | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pt-boat-simulator) |
-| 306 | 494 | Quest for Glory V: Dragon Fire | PPC era; verify | D | [Demo index](https://classicmacdemos.com/quest-for-glory-v-dragon-fire) |
-| 307 | 495 | Racing Days R | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/racing-days-r); [Archive index](https://www.vintageapplemac.com/software/games/r/); [Garden](https://macintoshgarden.org/games/racing-days-r) |
-| 308 | 496 | realMyst | PPC era; verify | D | [Demo index](https://classicmacdemos.com/realmyst) |
-| 309 | 497 | RealPool | PPC era; verify | D | [Demo index](https://classicmacdemos.com/realpool) |
-| 310 | 498 | Redjack: Revenge of the Brethren | PPC era; verify | D | [Demo index](https://classicmacdemos.com/redjack-revenge-of-the-brethren) |
-| 311 | 499 | Remington Top Shot | PPC era; verify | D | [Demo index](https://classicmacdemos.com/remington-top-shot); [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 312 | 500 | Return of the Incredible Machine: Contraptions | PPC era; verify | D | [Demo index](https://classicmacdemos.com/return-of-the-incredible-machine-contraptions) |
-| 313 | 501 | Rugrats Adventure Game | PPC era; verify | D | [Demo index](https://classicmacdemos.com/rugrats-adventure-game) |
-| 314 | 502 | Safecracker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/safecracker); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 315 | 503 | Secrets of the Luxor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/secrets-of-the-luxor) |
-| 316 | 504 | ShadowWraith | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shadowwraith); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 317 | 505 | Sheep | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sheep) |
-| 318 | 506 | Shockwave Assault | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shockwave-assault) |
-| 319 | 507 | Shogo: Mobile Armor Division | PPC era; verify | D | [Demo index](https://classicmacdemos.com/shogo-mobile-armor-division) |
-| 320 | 508 | Shomei | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shomei) |
-| 321 | 509 | Sid Meier's Alien Crossfire | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sid-meiers-alien-crossfire) |
-| 322 | 510 | SiN | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sin) |
-| 323 | 511 | Skull Cracker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/skull-cracker) |
-| 324 | 512 | Sky Shadow | 68K era; verify | D | [Demo index](https://classicmacdemos.com/sky-shadow) |
-| 325 | 513 | SkyFighters 1945 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/skyfighters-1945) |
-| 326 | 514 | Space Girl | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/space-girl) |
-| 327 | 515 | Spaceway 2000 | 68K era; verify | D | [Demo index](https://classicmacdemos.com/spaceway-2000) |
-| 328 | 516 | speed bump | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/speed-bump) |
-| 329 | 517 | Spins! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/spins); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 330 | 518 | Star Trek: 25th Anniversary | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-trek-25th-anniversary) |
-| 331 | 519 | Star Trek: Voyager – Elite Force | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-trek-voyager-elite-force) |
-| 332 | 520 | Star Wars Episode I: The Gungan Frontier | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-episode-i-the-gungan-frontier) |
-| 333 | 521 | Star Wars: Pit Droids | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-pit-droids) |
-| 334 | 522 | Star Wars: Yoda's Challenge Activity Center | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-yodas-challenge-activity-center) |
-| 335 | 523 | Stay Tooned! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/stay-tooned) |
-| 336 | 524 | Strat-o-Matic Baseball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/strat-o-matic-baseball) |
-| 337 | 525 | Super Maze Wars | 68K era; verify | D | [Demo index](https://classicmacdemos.com/super-maze-wars) |
-| 338 | 526 | Super Wing Commander | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/super-wing-commander) |
-| 339 | 527 | System Shock | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/system-shock) |
-| 340 | 528 | TacOps | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tacops); [Archive index](https://www.vintageapplemac.com/software/games/t/); [Garden](https://macintoshgarden.org/games/tacops) |
-| 341 | 529 | Tanaka | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tanaka) |
-| 342 | 530 | Tempest 2000 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tempest-2000); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 343 | 531 | Terminal Velocity | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/terminal-velocity) |
-| 344 | 532 | Terminus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/terminus) |
-| 345 | 533 | The Alchemist | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-alchemist); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 346 | 534 | The Castle | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-castle); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 347 | 535 | The Forgotten: It Begins | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-forgotten-it-begins) |
-| 348 | 536 | The Labyrinth of Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-labyrinth-of-time) |
-| 349 | 537 | The Settlers II: Veni, Vidi, Vici | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-settlers-ii-veni-vidi-vici) |
-| 350 | 538 | The Tinies | 68K era; verify | D | [Demo index](https://classicmacdemos.com/the-tinies); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 351 | 539 | The Untouchable | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-untouchable); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 352 | 540 | Theme Park | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/theme-park) |
-| 353 | 541 | Theme Park World | PPC era; verify | D | [Demo index](https://classicmacdemos.com/theme-park-world) |
-| 354 | 542 | Time Gate: Knight's Chase | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/time-gate-knights-chase) |
-| 355 | 543 | Titanic: Adventure Out of Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/titanic-adventure-out-of-time) |
-| 356 | 544 | Tom Clancy's Ghost Recon | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-ghost-recon) |
-| 357 | 545 | Tom Clancy's Rainbow Six | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-rainbow-six) |
-| 358 | 546 | Tom Clancy's Rainbow Six: Rogue Spear | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-rainbow-six-rogue-spear) |
-| 359 | 547 | Tony Hawk's Pro Skater 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tony-hawks-pro-skater-2) |
-| 360 | 548 | Traitors Gate | PPC era; verify | D | [Demo index](https://classicmacdemos.com/traitors-gate); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 361 | 549 | TriBond | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tribond) |
-| 362 | 550 | Trophy Bass | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/trophy-bass) |
-| 363 | 551 | Tropico | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tropico) |
-| 364 | 552 | Troubled Souls | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/troubled-souls); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 365 | 553 | Tubular Worlds | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tubular-worlds); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 366 | 554 | Under a Killing Moon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/under-a-killing-moon) |
-| 367 | 555 | Virtual Pool | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/virtual-pool); [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 368 | 556 | Virtual Wings Pro | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/virtual-wings-pro); [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 369 | 557 | WaterRace | PPC era; verify | D | [Demo index](https://classicmacdemos.com/waterrace) |
-| 370 | 558 | Weekend Warrior | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/weekend-warrior) |
-| 371 | 559 | Wheels! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/wheels); [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 372 | 560 | Wingnuts: Temporal Navigator | PPC era; verify | D | [Demo index](https://classicmacdemos.com/wingnuts-temporal-navigator) |
-| 373 | 561 | World at War: Operation Crusader | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/world-at-war-operation-crusader) |
-| 374 | 562 | Worms Blast | PPC era; verify | D | [Demo index](https://classicmacdemos.com/worms-blast) |
-| 375 | 563 | Wrath of the Gods | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/wrath-of-the-gods); [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 376 | 564 | You Don't Know Jack | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack); [Archive index](https://www.vintageapplemac.com/software/games/y/) |
-| 377 | 565 | You Don't Know Jack Movies | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-movies) |
-| 378 | 566 | You Don't Know Jack Sports | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-sports) |
-| 379 | 567 | You Don't Know Jack Television | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-television) |
-| 380 | 568 | You Don't Know Jack Volume 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-volume-2) |
-| 381 | 569 | You Don't Know Jack Volume 3 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-volume-3) |
-| 382 | 570 | Zone Raiders | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/zone-raiders) |
-| 383 | 571 | Zone Warrior | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/zone-warrior) |
-| 384 | 572 | ZPC | PPC era; verify | D | [Demo index](https://classicmacdemos.com/zpc) |
-| 385 | 573 | Quagmire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/); [Garden](https://macintoshgarden.org/games/quagmire) |
-| 386 | 574 | Galactic Empire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [Garden](https://macintoshgarden.org/games/galactic-empire) |
-| 387 | 575 | Radical Castle | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radical-castle) |
-| 388 | 576 | A Day at Work | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/); [Garden](https://macintoshgarden.org/games/a-day-at-work) |
-| 389 | 577 | S.C. Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/); [Garden](https://macintoshgarden.org/games/scout) |
-| 390 | 578 | U-Boat | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/u-boat) |
-| 391 | 579 | Wagon Train 1848 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wagon-train-1848) |
-| 392 | 580 | M&M's: The Lost Formulas | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/mms-the-lost-formulas) |
-| 393 | 581 | Oberin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/oberin) |
-| 394 | 582 | Qrax / Prometheus | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qrax-aka-prometheus); [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 395 | 583 | Valley of Peril | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/valley-of-peril) |
-| 396 | 584 | Wacky Jacks | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-jacks) |
-| 397 | 585 | I Spy Fantasy | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/i-spy-fantasy) |
-| 398 | 586 | Ocean Bound | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/); [Garden](https://macintoshgarden.org/games/ocean-bound) |
-| 399 | 587 | Ultima II: The Revenge of the Enchantress | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-ii-the-revenge-of-the-enchantress) |
-| 400 | 588 | Caesar | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/caesar) |
+| 201 | 388 | battle-girl | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/battle-girl); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 202 | 389 | Birdie Shoot | PPC era; verify | D | [Demo index](https://classicmacdemos.com/birdie-shoot) |
+| 203 | 390 | Blade | 68K era; verify | D | [Demo index](https://classicmacdemos.com/blade); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 204 | 391 | Blood Bath at Red Falls | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/blood-bath-at-red-falls) |
+| 205 | 392 | Blue's ABC Time Activities | PPC era; verify | D | [Demo index](https://classicmacdemos.com/blues-abc-activities) |
+| 206 | 393 | Bomber III | 68K era; verify | D | [Demo index](https://classicmacdemos.com/bomber-iii) |
+| 207 | 394 | Brain Pizza | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/brain-pizza) |
+| 208 | 395 | Bumbler Bee-Luxe | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/bumbler-bee-luxe); [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 209 | 396 | Ceremony of Innocence | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ceremony-of-innocence) |
+| 210 | 397 | Championship Manager: Season 00/01 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-0001) |
+| 211 | 398 | Championship Manager: Season 01/02 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-0102) |
+| 212 | 399 | Championship Manager: Season 99/00 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/championship-manager-season-9900) |
+| 213 | 400 | Chaos Overlords | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/chaos-overlords) |
+| 214 | 401 | CheckMate | 68K era; verify | D | [Demo index](https://classicmacdemos.com/checkmate-aka-chess-champion-2175) |
+| 215 | 402 | Chess Mates | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/chess-mates) |
+| 216 | 403 | Command HQ | 68K era; verify | D | [Demo index](https://classicmacdemos.com/command-hq) |
+| 217 | 404 | Crop Circles: Escape from Planet 3 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/crop-circles-escape-from-planet-3) |
+| 218 | 405 | Crystal Crazy | 68K era; verify | D | [Demo index](https://classicmacdemos.com/crystal-crazy) |
+| 219 | 406 | Curse of Dragor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/curse-of-dragor) |
+| 220 | 407 | Cyberwar | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/cyberwar); [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 221 | 408 | D-Day: America Invades! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/d-day-america-invades); [Garden](https://macintoshgarden.org/games/d-day-america-invades) |
+| 222 | 409 | Dark Vengeance | PPC era; verify | D | [Demo index](https://classicmacdemos.com/dark-vengeance); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 223 | 410 | Deathground | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deathground); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 224 | 411 | Deer Avenger | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deer-avenger); [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 225 | 412 | Deliverance | 68K era; verify | D | [Demo index](https://classicmacdemos.com/deliverance) |
+| 226 | 413 | Der Schatz von Tattoom | PPC era; verify | D | [Demo index](https://classicmacdemos.com/der-schatz-von-tattoom) |
+| 227 | 414 | Derrat Sorcerum | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/derrat-sorcerum) |
+| 228 | 415 | Deus Ex | PPC era; verify | D | [Demo index](https://classicmacdemos.com/deus-ex) |
+| 229 | 416 | DinoPark Tycoon | 68K era; verify | D | [Demo index](https://classicmacdemos.com/dinopark-tycoon) |
+| 230 | 417 | Doulber | PPC era; verify | D | [Demo index](https://classicmacdemos.com/doulber) |
+| 231 | 418 | Driver - You Are The Wheelman | PPC era; verify | D | [Demo index](https://classicmacdemos.com/driver-you-are-the-wheelman) |
+| 232 | 419 | Dust: A Tale of the Wired West | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/dust-a-tale-of-the-wired-west) |
+| 233 | 420 | Dynasty League Baseball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/dynasty-league-baseball) |
+| 234 | 421 | Earth 2140 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/earth-2140); [Garden](https://macintoshgarden.org/games/earth-2140) |
+| 235 | 422 | Elite Air Hockey | PPC era; verify | D | [Demo index](https://classicmacdemos.com/elite-air-hockey) |
+| 236 | 423 | Elite Darts | PPC era; verify | D | [Demo index](https://classicmacdemos.com/elite-darts); [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 237 | 424 | Escape from Monkey Island | PPC era; verify | D | [Demo index](https://classicmacdemos.com/escape-from-monkey-island) |
+| 238 | 425 | Expert Backgammon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/expert-backgammon) |
+| 239 | 426 | Flight Commander 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/flight-commander-2); [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 240 | 427 | Flying Circus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/flying-circus) |
+| 241 | 428 | Flying Nightmares | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/flying-nightmares) |
+| 242 | 429 | Foul Play: Mystery at Awkward Manor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/foul-play-mystery-at-awkward-manor) |
+| 243 | 430 | Frankenstein: Through the Eyes of the Monster | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/frankenstein) |
+| 244 | 431 | Full Tilt! Pinball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/full-tilt-pinball) |
+| 245 | 432 | Fury of the Furries | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/fury-of-the-furries) |
+| 246 | 433 | Future Boy! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/future-boy) |
+| 247 | 434 | Future Cop: LAPD | PPC era; verify | D | [Demo index](https://classicmacdemos.com/future-cop-lapd); [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 248 | 435 | Galapagos: Mendel's Escape | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/galapagos-mendels-escape) |
+| 249 | 436 | Ghosts | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ghosts) |
+| 250 | 437 | Goofy Golf Deluxe | PPC era; verify | D | [Demo index](https://classicmacdemos.com/goofy-golf-deluxe); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 251 | 438 | Harry Potter and the Chamber of Secrets | PPC era; verify | D | [Demo index](https://classicmacdemos.com/harry-potter-and-the-chamber-of-secrets) |
+| 252 | 439 | HAVOC | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/havoc) |
+| 253 | 440 | HeadRush | PPC era; verify | D | [Demo index](https://classicmacdemos.com/headrush); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 254 | 441 | Heavy Metal: F.A.K.K. 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/heavy-metal-fakk-2); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 255 | 442 | Hexen: Beyond Heretic | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/hexen-beyond-heretic) |
+| 256 | 443 | Hoyle Board Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-board-games); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 257 | 444 | Hoyle Card Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-card-games); [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 258 | 445 | Hoyle Casino 1999 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-casino-1999) |
+| 259 | 446 | Hoyle Casino 5 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-casino-5) |
+| 260 | 447 | Hoyle Word Games | PPC era; verify | D | [Demo index](https://classicmacdemos.com/hoyle-word-games) |
+| 261 | 448 | Ice & Fire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/ice-and-fire) |
+| 262 | 449 | Icebreaker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/icebreaker) |
+| 263 | 450 | Inbred with RedNex | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/inbred-with-rednex) |
+| 264 | 451 | Infocom Sampler | 68K era; verify | D | [Demo index](https://classicmacdemos.com/infocom-sampler) |
+| 265 | 452 | Intellivision Lives! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/intellivision-lives); [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 266 | 453 | Jan Pienkowski's Haunted House | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/jan-pienkowskis-haunted-house) |
+| 267 | 454 | Jazz Jackrabbit 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/jazz-jackrabbit-2); [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 268 | 455 | Just Me & My Mom | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/just-me-my-mom) |
+| 269 | 456 | Kamikaze Chess | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/kamikaze-chess) |
+| 270 | 457 | Karma: Curse of the 12 Caves | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/karma-curse-of-the-12-caves) |
+| 271 | 458 | Kawasaki ATV PowerSports | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kawasaki-atv-powersports) |
+| 272 | 459 | Kawasaki Jet-Ski Watercraft | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kawasaki-jet-ski-watercraft) |
+| 273 | 460 | Kids Arcade Pak | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/kids-arcade-pak) |
+| 274 | 461 | Killing Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/killing-time); [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 275 | 462 | Krilo | PPC era; verify | D | [Demo index](https://classicmacdemos.com/krilo) |
+| 276 | 463 | Kuba | PPC era; verify | D | [Demo index](https://classicmacdemos.com/kuba); [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 277 | 464 | Last Call | PPC era; verify | D | [Demo index](https://classicmacdemos.com/last-call); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 278 | 465 | Locus | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/locus) |
+| 279 | 466 | Majesty: The Fantasy Kingdom Sim | PPC era; verify | D | [Demo index](https://classicmacdemos.com/majesty-the-fantasy-kingdom-sim) |
+| 280 | 467 | Manhattan Apartment Hunter | PPC era; verify | D | [Demo index](https://classicmacdemos.com/manhattan-apartment-hunter); [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 281 | 468 | Mario Teaches Typing | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/mario-teaches-typing) |
+| 282 | 469 | Marty and the Trouble with Cheese | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/marty-and-the-trouble-with-cheese) |
+| 283 | 470 | Maximum Pool | PPC era; verify | D | [Demo index](https://classicmacdemos.com/maximum-pool) |
+| 284 | 471 | Mia 2: Romaine’s New Hat | PPC era; verify | D | [Demo index](https://classicmacdemos.com/mia-2-romaines-new-hat) |
+| 285 | 472 | MINDit | PPC era; verify | D | [Demo index](https://classicmacdemos.com/mindit) |
+| 286 | 473 | Multi Pong | PPC era; verify | D | [Demo index](https://classicmacdemos.com/multi-pong) |
+| 287 | 474 | Muppet Treasure Island | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/muppet-treasure-island) |
+| 288 | 475 | Myth III: The Wolf Age | PPC era; verify | D | [Demo index](https://classicmacdemos.com/myth-iii-the-wolf-age) |
+| 289 | 476 | NetherWorld | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/netherworld); [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 290 | 477 | Nightfall | PPC era; verify | D | [Demo index](https://classicmacdemos.com/nightfall); [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 291 | 478 | NOIR: A Shadowy Thriller | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/noir-a-shadowy-thriller) |
+| 292 | 479 | Nuclear Hammer | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/nuclear-hammer) |
+| 293 | 480 | Onslaught | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/onslaught) |
+| 294 | 481 | Out of the Sun | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/out-of-the-sun); [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 295 | 482 | Pac-In-Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pac-in-time); [Garden](https://macintoshgarden.org/games/pac-in-time) |
+| 296 | 483 | Panic in the Park | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/panic-in-the-park) |
+| 297 | 484 | Pax Imperia | 68K era; verify | D | [Demo index](https://classicmacdemos.com/pax-imperia) |
+| 298 | 485 | Payback | PPC era; verify | D | [Demo index](https://classicmacdemos.com/payback) |
+| 299 | 486 | PlayMaker Football | 68K era; verify | D | [Demo index](https://classicmacdemos.com/playmaker-football); [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 300 | 487 | Postal | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/postal) |
+| 301 | 488 | Power Rangers Zeo Versus The Machine Empire | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/power-rangers-zeo-versus-the-machine-empire) |
+| 302 | 489 | PowerMonger | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/powermonger) |
+| 303 | 490 | PowerPOKER | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/powerpoker) |
+| 304 | 491 | Pro Pinball: The Web | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pro-pinball-the-web) |
+| 305 | 492 | PT Boat Simulator | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/pt-boat-simulator) |
+| 306 | 493 | Quest for Glory V: Dragon Fire | PPC era; verify | D | [Demo index](https://classicmacdemos.com/quest-for-glory-v-dragon-fire) |
+| 307 | 494 | Racing Days R | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/racing-days-r); [Archive index](https://www.vintageapplemac.com/software/games/r/); [Garden](https://macintoshgarden.org/games/racing-days-r) |
+| 308 | 495 | realMyst | PPC era; verify | D | [Demo index](https://classicmacdemos.com/realmyst) |
+| 309 | 496 | RealPool | PPC era; verify | D | [Demo index](https://classicmacdemos.com/realpool) |
+| 310 | 497 | Redjack: Revenge of the Brethren | PPC era; verify | D | [Demo index](https://classicmacdemos.com/redjack-revenge-of-the-brethren) |
+| 311 | 498 | Remington Top Shot | PPC era; verify | D | [Demo index](https://classicmacdemos.com/remington-top-shot); [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 312 | 499 | Return of the Incredible Machine: Contraptions | PPC era; verify | D | [Demo index](https://classicmacdemos.com/return-of-the-incredible-machine-contraptions) |
+| 313 | 500 | Rugrats Adventure Game | PPC era; verify | D | [Demo index](https://classicmacdemos.com/rugrats-adventure-game) |
+| 314 | 501 | Safecracker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/safecracker); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 315 | 502 | Secrets of the Luxor | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/secrets-of-the-luxor) |
+| 316 | 503 | ShadowWraith | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shadowwraith); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 317 | 504 | Sheep | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sheep) |
+| 318 | 505 | Shockwave Assault | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shockwave-assault) |
+| 319 | 506 | Shogo: Mobile Armor Division | PPC era; verify | D | [Demo index](https://classicmacdemos.com/shogo-mobile-armor-division) |
+| 320 | 507 | Shomei | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shomei) |
+| 321 | 508 | Sid Meier's Alien Crossfire | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sid-meiers-alien-crossfire) |
+| 322 | 509 | SiN | PPC era; verify | D | [Demo index](https://classicmacdemos.com/sin) |
+| 323 | 510 | Skull Cracker | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/skull-cracker) |
+| 324 | 511 | Sky Shadow | 68K era; verify | D | [Demo index](https://classicmacdemos.com/sky-shadow) |
+| 325 | 512 | SkyFighters 1945 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/skyfighters-1945) |
+| 326 | 513 | Space Girl | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/space-girl) |
+| 327 | 514 | Spaceway 2000 | 68K era; verify | D | [Demo index](https://classicmacdemos.com/spaceway-2000) |
+| 328 | 515 | speed bump | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/speed-bump) |
+| 329 | 516 | Spins! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/spins); [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 330 | 517 | Star Trek: 25th Anniversary | 68K era; verify | D | [Demo index](https://classicmacdemos.com/star-trek-25th-anniversary) |
+| 331 | 518 | Star Trek: Voyager – Elite Force | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-trek-voyager-elite-force) |
+| 332 | 519 | Star Wars Episode I: The Gungan Frontier | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-episode-i-the-gungan-frontier) |
+| 333 | 520 | Star Wars: Pit Droids | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-pit-droids) |
+| 334 | 521 | Star Wars: Yoda's Challenge Activity Center | PPC era; verify | D | [Demo index](https://classicmacdemos.com/star-wars-yodas-challenge-activity-center) |
+| 335 | 522 | Stay Tooned! | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/stay-tooned) |
+| 336 | 523 | Strat-o-Matic Baseball | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/strat-o-matic-baseball) |
+| 337 | 524 | Super Maze Wars | 68K era; verify | D | [Demo index](https://classicmacdemos.com/super-maze-wars) |
+| 338 | 525 | Super Wing Commander | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/super-wing-commander) |
+| 339 | 526 | System Shock | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/system-shock) |
+| 340 | 527 | TacOps | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tacops); [Archive index](https://www.vintageapplemac.com/software/games/t/); [Garden](https://macintoshgarden.org/games/tacops) |
+| 341 | 528 | Tanaka | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tanaka) |
+| 342 | 529 | Tempest 2000 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tempest-2000); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 343 | 530 | Terminal Velocity | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/terminal-velocity) |
+| 344 | 531 | Terminus | PPC era; verify | D | [Demo index](https://classicmacdemos.com/terminus) |
+| 345 | 532 | The Alchemist | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-alchemist); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 346 | 533 | The Castle | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-castle); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 347 | 534 | The Forgotten: It Begins | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-forgotten-it-begins) |
+| 348 | 535 | The Labyrinth of Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-labyrinth-of-time) |
+| 349 | 536 | The Settlers II: Veni, Vidi, Vici | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/the-settlers-ii-veni-vidi-vici) |
+| 350 | 537 | The Tinies | 68K era; verify | D | [Demo index](https://classicmacdemos.com/the-tinies); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 351 | 538 | The Untouchable | PPC era; verify | D | [Demo index](https://classicmacdemos.com/the-untouchable); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 352 | 539 | Theme Park | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/theme-park) |
+| 353 | 540 | Theme Park World | PPC era; verify | D | [Demo index](https://classicmacdemos.com/theme-park-world) |
+| 354 | 541 | Time Gate: Knight's Chase | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/time-gate-knights-chase) |
+| 355 | 542 | Titanic: Adventure Out of Time | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/titanic-adventure-out-of-time) |
+| 356 | 543 | Tom Clancy's Ghost Recon | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-ghost-recon) |
+| 357 | 544 | Tom Clancy's Rainbow Six | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-rainbow-six) |
+| 358 | 545 | Tom Clancy's Rainbow Six: Rogue Spear | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tom-clancys-rainbow-six-rogue-spear) |
+| 359 | 546 | Tony Hawk's Pro Skater 2 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tony-hawks-pro-skater-2) |
+| 360 | 547 | Traitors Gate | PPC era; verify | D | [Demo index](https://classicmacdemos.com/traitors-gate); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 361 | 548 | TriBond | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tribond) |
+| 362 | 549 | Trophy Bass | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/trophy-bass) |
+| 363 | 550 | Tropico | PPC era; verify | D | [Demo index](https://classicmacdemos.com/tropico) |
+| 364 | 551 | Troubled Souls | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/troubled-souls); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 365 | 552 | Tubular Worlds | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/tubular-worlds); [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 366 | 553 | Under a Killing Moon | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/under-a-killing-moon) |
+| 367 | 554 | Virtual Pool | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/virtual-pool); [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 368 | 555 | Virtual Wings Pro | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/virtual-wings-pro); [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 369 | 556 | WaterRace | PPC era; verify | D | [Demo index](https://classicmacdemos.com/waterrace) |
+| 370 | 557 | Weekend Warrior | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/weekend-warrior) |
+| 371 | 558 | Wheels! | PPC era; verify | D | [Demo index](https://classicmacdemos.com/wheels); [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 372 | 559 | Wingnuts: Temporal Navigator | PPC era; verify | D | [Demo index](https://classicmacdemos.com/wingnuts-temporal-navigator) |
+| 373 | 560 | World at War: Operation Crusader | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/world-at-war-operation-crusader) |
+| 374 | 561 | Worms Blast | PPC era; verify | D | [Demo index](https://classicmacdemos.com/worms-blast) |
+| 375 | 562 | Wrath of the Gods | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/wrath-of-the-gods); [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 376 | 563 | You Don't Know Jack | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack); [Archive index](https://www.vintageapplemac.com/software/games/y/) |
+| 377 | 564 | You Don't Know Jack Movies | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-movies) |
+| 378 | 565 | You Don't Know Jack Sports | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-sports) |
+| 379 | 566 | You Don't Know Jack Television | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-television) |
+| 380 | 567 | You Don't Know Jack Volume 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-volume-2) |
+| 381 | 568 | You Don't Know Jack Volume 3 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/you-dont-know-jack-volume-3) |
+| 382 | 569 | Zone Raiders | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/zone-raiders) |
+| 383 | 570 | Zone Warrior | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/zone-warrior) |
+| 384 | 571 | ZPC | PPC era; verify | D | [Demo index](https://classicmacdemos.com/zpc) |
+| 385 | 572 | Quagmire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/); [Garden](https://macintoshgarden.org/games/quagmire) |
+| 386 | 573 | Galactic Empire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [Garden](https://macintoshgarden.org/games/galactic-empire) |
+| 387 | 574 | Radical Castle | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radical-castle) |
+| 388 | 575 | A Day at Work | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/); [Garden](https://macintoshgarden.org/games/a-day-at-work) |
+| 389 | 576 | S.C. Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/); [Garden](https://macintoshgarden.org/games/scout) |
+| 390 | 577 | U-Boat | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/u-boat) |
+| 391 | 578 | Wagon Train 1848 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wagon-train-1848) |
+| 392 | 579 | M&M's: The Lost Formulas | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/mms-the-lost-formulas) |
+| 393 | 580 | Oberin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/oberin) |
+| 394 | 581 | Qrax / Prometheus | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qrax-aka-prometheus); [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 395 | 582 | Valley of Peril | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/valley-of-peril) |
+| 396 | 583 | Wacky Jacks | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-jacks) |
+| 397 | 584 | I Spy Fantasy | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/i-spy-fantasy) |
+| 398 | 585 | Ocean Bound | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/); [Garden](https://macintoshgarden.org/games/ocean-bound) |
+| 399 | 586 | Ultima II: The Revenge of the Enchantress | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-ii-the-revenge-of-the-enchantress) |
+| 400 | 587 | Caesar | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/caesar) |
 
 ### Wave 3 — shareware, freeware and archive research
 
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
-| 401 | 589 | Sabrina, the Teenage Witch: Brat Attack | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sabrinabratattack) |
-| 402 | 590 | Zap | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/); [Garden](https://macintoshgarden.org/games/zap) |
-| 403 | 591 | CABOL II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/cabol-ii) |
-| 404 | 592 | F-117A Nighthawk Stealth Fighter | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/f-117a-nighthawk-stealth-fighter-20) |
-| 405 | 593 | Galactic Core | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/galactic-core) |
-| 406 | 594 | P51 Mustang Flight Simulator | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/p-51-mustang) |
-| 407 | 595 | Sabrina, the Teenage Witch: Spellbound | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sabrina-the-teenage-witch-spellbound) |
-| 408 | 596 | Sacrifice | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sacrifice) |
-| 409 | 597 | U-Boat II: Drumbeat | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/u-boat-ii-drumbeat) |
-| 410 | 598 | B-Room | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/b-room) |
-| 411 | 599 | CinC | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/c-in-c) |
-| 412 | 600 | Eagle Strike | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/e/); [Garden](https://macintoshgarden.org/games/eagle-strike) |
-| 413 | 601 | Yacht-3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/yacht-3d) |
-| 414 | 602 | Abalone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 415 | 603 | Bakudanjin | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 416 | 604 | Candy Crisis | Original 1.2 PPC only; startup/continuation under test | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 417 | 605 | DragonMaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 418 | 606 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 419 | 607 | Fanorona | Original Java/MRJ game; native CPU routes unqualified | U | [Original package and runtime/rights findings](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) |
-| 420 | 608 | GL Tron | PPC-only original PEF; no CODE | F | [Original 0.61 intake and GPL/component checks](CATALOGUE-SOURCES.md#gltron-061--target-608-original-ppc-package-intake) |
-| 421 | 609 | HipHop | 68K (original 1.0.1; rights/startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/h/); [Original intake](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) |
-| 422 | 610 | Imp Fodder | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 423 | 611 | Jailbreak | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/); [Garden](https://macintoshgarden.org/games/jailbreak) |
-| 424 | 612 | Kalah | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 425 | 613 | Lunar Commando | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 426 | 614 | MacSolitaire | PPC (original 1.6; startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/m/); [Original intake](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) |
-| 427 | 615 | Nethergate | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 428 | 616 | Oilcap Pro | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 429 | 617 | Project Magellan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 430 | 618 | Quidditch Practice | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 431 | 619 | R.I.P | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/rip) |
-| 432 | 620 | Sigma Chess | Original Lite 4.0: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/sigma-chess.md) |
-| 433 | 621 | TakeAway | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 434 | 622 | Unprovoked | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 435 | 623 | Vampire Chess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 436 | 624 | Wacky Mini Golf | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-mini-golf-101) |
-| 437 | 625 | X Ball | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-ball) |
-| 438 | 626 | YA-Mancala | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/ya-mancala) |
-| 439 | 627 | Zap'T'Balls | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/); [Garden](https://macintoshgarden.org/games/zap-t-balls) |
-| 440 | 628 | À la recherche du paquet de Choco Krispies | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/à-la-recherche-du-paquet-de-choco-krispies) |
-| 441 | 629 | Ça se transforme | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ca-se-transforme) |
-| 442 | 630 | Acquire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 443 | 631 | Blood Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 444 | 632 | Classic Gin Rummy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 445 | 633 | Domitrix | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 446 | 634 | Earl Weaver Baseball | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/earl-weaver-baseball) |
-| 447 | 635 | Farkle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 448 | 636 | Gollo Obo | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 449 | 637 | Hold'em Poker Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 450 | 638 | InsectiSide | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 451 | 639 | Jared | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 452 | 640 | K'Kai Adventure | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/kkai-adventure) |
-| 453 | 641 | LandShark | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 454 | 642 | Mealy Mouse | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 455 | 643 | Net Othello | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 456 | 644 | Old Camera Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 457 | 645 | PACA PONG | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/paca-pong) |
-| 458 | 646 | Q*bert | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbert) |
-| 459 | 647 | Race Car Simulator | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/race-car-simulator) |
-| 460 | 648 | Sniffer Dog | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 461 | 649 | Tangram | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 462 | 650 | Ultimate Blackjack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/); [Garden](https://macintoshgarden.org/games/ultimate-blackjack) |
-| 463 | 651 | Valley of the Vampire | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/valley-of-the-vampire) |
-| 464 | 652 | WallRunners | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 465 | 653 | Xenos | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/x/) |
-| 466 | 654 | Yacht Race | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yacht-race) |
-| 467 | 655 | Zap'T'Balls II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 468 | 656 | Acorn on the Moon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 469 | 657 | Brick Ball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 470 | 658 | Colibricks | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 471 | 659 | David's BackGammon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 472 | 660 | Earth Command | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/earth-command) |
-| 473 | 661 | FastGun | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 474 | 662 | Grid Warrior | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 475 | 663 | Halma | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/halma.md) |
-| 476 | 664 | iConcentration | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 477 | 665 | Jetpack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 478 | 666 | Kablooey | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/); [Garden](https://macintoshgarden.org/games/kablooey) |
-| 479 | 667 | Lites Off | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 480 | 668 | Morgana | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 481 | 669 | Net Trek | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 482 | 670 | OmaMoku | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 483 | 671 | Pair Picker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 484 | 672 | QuackMan | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/quackman) |
-| 485 | 673 | Racing Days | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/racing-days) |
-| 486 | 674 | Snoop | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 487 | 675 | Tony the Turtle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 488 | 676 | Ultimate Math Machine | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 489 | 677 | Vampire Castle | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/vampire-castle) |
-| 490 | 678 | Wallup | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/); [Garden](https://macintoshgarden.org/games/wall) |
-| 491 | 679 | X-Files Trivia Challenge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/x/); [Garden](https://macintoshgarden.org/games/x-files-trivia-challenge) |
-| 492 | 680 | Yalta | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
-| 493 | 681 | Zargon Zoo | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zargon-zoo) |
-| 494 | 682 | Adventure | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 495 | 683 | Balloon Man | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 496 | 684 | Canfield | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 497 | 685 | Dawn of Aces | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 498 | 686 | Eat-o's | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 499 | 687 | Final Impact | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 500 | 688 | Grump | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 501 | 689 | Hang2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 502 | 690 | IconPuzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 503 | 691 | Jewel of Arabia | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 504 | 692 | Kaged-The Magic Orbs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/); [Garden](https://macintoshgarden.org/games/kaged-the-magic-orbs) |
-| 505 | 693 | Lites Out | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 506 | 694 | Munchkinstein | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 507 | 695 | NetBoxes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 508 | 696 | On the Edge | Original fat game; 68K native/browser and 8 MHz pacing approved, catalogue merged; PPC native/browser placement verified, rendering fix merged | P | [Original grant and intake](CATALOGUE-SOURCES.md#on-the-edge-31--primary-508-complete-original-package) |
-| 509 | 697 | Pajatso | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 510 | 698 | Quarry | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 511 | 699 | Radiant Weirdness Zone | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radiant-weirdness-zone) |
-| 512 | 700 | Soi | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 513 | 701 | Tablin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/tablin) |
-| 514 | 702 | Ultimate Pool | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 515 | 703 | Vanessa Chess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 516 | 704 | War Machines | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 517 | 705 | X-Men: The Ravages of Apocalypse | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-men-the-ravages-of-apocalypse) |
-| 518 | 706 | YAMS! | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yams) |
-| 519 | 707 | Zark | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zark) |
-| 520 | 708 | Adventure Island | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 521 | 709 | Banshee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 522 | 710 | Cannon ZERO | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 523 | 711 | Deer Avenger 2 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 524 | 712 | Ebola Monkey Bingo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 525 | 713 | Firefly Frenzy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 526 | 714 | Galactic Patrol | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 527 | 715 | Hangman | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 528 | 716 | IconQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 529 | 717 | Jewel of Arabia-Dreamers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 530 | 718 | Kai-Jin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/kai-jin) |
-| 531 | 719 | Lab-Rat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 532 | 720 | Musket Fire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 533 | 721 | NetKombat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 534 | 722 | One eyed Fred | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 535 | 723 | Palace Of Sand | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 536 | 724 | Quarters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 537 | 725 | Radical Rebound | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radical-rebound) |
-| 538 | 726 | Speed Demon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 539 | 727 | Tablut | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/tablut) |
-| 540 | 728 | Ultimaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 541 | 729 | Vic Kombat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 542 | 730 | War of Flowers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 543 | 731 | X-Moto | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-moto) |
-| 544 | 732 | Yipe III | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
-| 545 | 733 | Zauron | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zauron) |
-| 546 | 734 | Adventures of Sean | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 547 | 735 | Barney Blaster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 548 | 736 | Cannons and Castles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 549 | 737 | Demon Warrior | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 550 | 738 | Eclipse | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 551 | 739 | Fist Fighters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 552 | 740 | Galactic Alliance | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 553 | 741 | HangmanPlus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 554 | 742 | Infotron | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 555 | 743 | Jewelbox | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 556 | 744 | Kazcheckers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 557 | 745 | LaBrisca | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 558 | 746 | Mac Football | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 559 | 747 | NetLuff | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 560 | 748 | Ophiuchus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 561 | 749 | Pandora's Box | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 562 | 750 | Quarto! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 563 | 751 | Raptor | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 564 | 752 | Strategram | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 565 | 753 | Tank Run | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 566 | 754 | UltraDice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 567 | 755 | VincoBingo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 568 | 756 | Warbirds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 569 | 757 | Youngsword | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
-| 570 | 758 | Zaz | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zaz) |
-| 571 | 759 | Alan's Euchre | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 572 | 760 | BarneyCarnage | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 573 | 761 | Captain Bumper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 574 | 762 | Dragon Cavern | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 575 | 763 | Egyptian Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 576 | 764 | Five Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 577 | 765 | Galactic Conquest | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/galactic-conquest) |
-| 578 | 766 | Happyweed! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 579 | 767 | Ingemar's skiing game | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/ingemars-skiing-game.md) |
-| 580 | 768 | Jotto ][ | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 581 | 769 | Keno Buddies | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 582 | 770 | Labyrinth | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 583 | 771 | Mac Football Manager | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 584 | 772 | NetMech | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 585 | 773 | OrbMazez | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 586 | 774 | PanZee Two | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 587 | 775 | Quasar Phase II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 588 | 776 | RChess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 589 | 777 | Super Snake | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 590 | 778 | Tank Wars | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 591 | 779 | UltraYahtzee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 592 | 780 | Vintage Quest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 593 | 781 | WaterBalloons | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 594 | 782 | Yamagi Quake 2 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yamagi-quake-2) |
-| 595 | 783 | Zebulon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 596 | 784 | Alans Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 597 | 785 | BasketCase | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 598 | 786 | Captain Magneto | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 599 | 787 | Dart Board | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 600 | 788 | Elfin Clash | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 401 | 588 | Sabrina, the Teenage Witch: Brat Attack | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sabrinabratattack) |
+| 402 | 589 | Zap | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/); [Garden](https://macintoshgarden.org/games/zap) |
+| 403 | 590 | CABOL II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/cabol-ii) |
+| 404 | 591 | F-117A Nighthawk Stealth Fighter | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/f-117a-nighthawk-stealth-fighter-20) |
+| 405 | 592 | Galactic Core | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/galactic-core) |
+| 406 | 593 | P51 Mustang Flight Simulator | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/p-51-mustang) |
+| 407 | 594 | Sabrina, the Teenage Witch: Spellbound | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sabrina-the-teenage-witch-spellbound) |
+| 408 | 595 | Sacrifice | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/sacrifice) |
+| 409 | 596 | U-Boat II: Drumbeat | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/u-boat-ii-drumbeat) |
+| 410 | 597 | B-Room | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/b-room) |
+| 411 | 598 | CinC | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/); [Garden](https://macintoshgarden.org/games/c-in-c) |
+| 412 | 599 | Eagle Strike | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/e/); [Garden](https://macintoshgarden.org/games/eagle-strike) |
+| 413 | 600 | Yacht-3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/yacht-3d) |
+| 414 | 601 | Abalone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 415 | 602 | Bakudanjin | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 416 | 603 | Candy Crisis | Original 1.2 PPC only; startup/continuation under test | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 417 | 604 | DragonMaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 418 | 605 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 419 | 606 | Fanorona | Original Java/MRJ game; native CPU routes unqualified | U | [Original package and runtime/rights findings](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) |
+| 420 | 607 | GL Tron | PPC-only original PEF; no CODE | F | [Original 0.61 intake and GPL/component checks](CATALOGUE-SOURCES.md#gltron-061--target-608-original-ppc-package-intake) |
+| 421 | 608 | HipHop | 68K (original 1.0.1; rights/startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/h/); [Original intake](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) |
+| 422 | 609 | Imp Fodder | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 423 | 610 | Jailbreak | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/); [Garden](https://macintoshgarden.org/games/jailbreak) |
+| 424 | 611 | Kalah | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 425 | 612 | Lunar Commando | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 426 | 613 | MacSolitaire | PPC (original 1.6; startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/m/); [Original intake](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) |
+| 427 | 614 | Nethergate | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 428 | 615 | Oilcap Pro | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 429 | 616 | Project Magellan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 430 | 617 | Quidditch Practice | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 431 | 618 | R.I.P | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/rip) |
+| 432 | 619 | Sigma Chess | Original Lite 4.0: 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/sigma-chess.md) |
+| 433 | 620 | TakeAway | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 434 | 621 | Unprovoked | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 435 | 622 | Vampire Chess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 436 | 623 | Wacky Mini Golf | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-mini-golf-101) |
+| 437 | 624 | X Ball | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-ball) |
+| 438 | 625 | YA-Mancala | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/ya-mancala) |
+| 439 | 626 | Zap'T'Balls | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/); [Garden](https://macintoshgarden.org/games/zap-t-balls) |
+| 440 | 627 | À la recherche du paquet de Choco Krispies | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/à-la-recherche-du-paquet-de-choco-krispies) |
+| 441 | 628 | Ça se transforme | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ca-se-transforme) |
+| 442 | 629 | Acquire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 443 | 630 | Blood Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 444 | 631 | Classic Gin Rummy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 445 | 632 | Domitrix | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 446 | 633 | Earl Weaver Baseball | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/earl-weaver-baseball) |
+| 447 | 634 | Farkle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 448 | 635 | Gollo Obo | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 449 | 636 | Hold'em Poker Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 450 | 637 | InsectiSide | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 451 | 638 | Jared | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 452 | 639 | K'Kai Adventure | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/kkai-adventure) |
+| 453 | 640 | LandShark | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 454 | 641 | Mealy Mouse | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 455 | 642 | Net Othello | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 456 | 643 | Old Camera Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 457 | 644 | PACA PONG | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/paca-pong) |
+| 458 | 645 | Q*bert | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbert) |
+| 459 | 646 | Race Car Simulator | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/race-car-simulator) |
+| 460 | 647 | Sniffer Dog | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 461 | 648 | Tangram | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 462 | 649 | Ultimate Blackjack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/); [Garden](https://macintoshgarden.org/games/ultimate-blackjack) |
+| 463 | 650 | Valley of the Vampire | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/valley-of-the-vampire) |
+| 464 | 651 | WallRunners | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 465 | 652 | Xenos | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/x/) |
+| 466 | 653 | Yacht Race | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yacht-race) |
+| 467 | 654 | Zap'T'Balls II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 468 | 655 | Acorn on the Moon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 469 | 656 | Brick Ball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 470 | 657 | Colibricks | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 471 | 658 | David's BackGammon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 472 | 659 | Earth Command | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/earth-command) |
+| 473 | 660 | FastGun | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 474 | 661 | Grid Warrior | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 475 | 662 | Halma | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/halma.md) |
+| 476 | 663 | iConcentration | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 477 | 664 | Jetpack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 478 | 665 | Kablooey | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/); [Garden](https://macintoshgarden.org/games/kablooey) |
+| 479 | 666 | Lites Off | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 480 | 667 | Morgana | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 481 | 668 | Net Trek | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 482 | 669 | OmaMoku | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 483 | 670 | Pair Picker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 484 | 671 | QuackMan | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/quackman) |
+| 485 | 672 | Racing Days | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/racing-days) |
+| 486 | 673 | Snoop | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 487 | 674 | Tony the Turtle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 488 | 675 | Ultimate Math Machine | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 489 | 676 | Vampire Castle | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/vampire-castle) |
+| 490 | 677 | Wallup | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/); [Garden](https://macintoshgarden.org/games/wall) |
+| 491 | 678 | X-Files Trivia Challenge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/x/); [Garden](https://macintoshgarden.org/games/x-files-trivia-challenge) |
+| 492 | 679 | Yalta | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
+| 493 | 680 | Zargon Zoo | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zargon-zoo) |
+| 494 | 681 | Adventure | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 495 | 682 | Balloon Man | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 496 | 683 | Canfield | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 497 | 684 | Dawn of Aces | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 498 | 685 | Eat-o's | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 499 | 686 | Final Impact | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 500 | 687 | Grump | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 501 | 688 | Hang2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 502 | 689 | IconPuzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 503 | 690 | Jewel of Arabia | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 504 | 691 | Kaged-The Magic Orbs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/); [Garden](https://macintoshgarden.org/games/kaged-the-magic-orbs) |
+| 505 | 692 | Lites Out | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 506 | 693 | Munchkinstein | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 507 | 694 | NetBoxes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 508 | 695 | On the Edge | Original fat game; 68K native/browser and 8 MHz pacing approved, catalogue merged; PPC native/browser placement verified, rendering fix merged | P | [Original grant and intake](CATALOGUE-SOURCES.md#on-the-edge-31--primary-508-complete-original-package) |
+| 509 | 696 | Pajatso | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 510 | 697 | Quarry | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 511 | 698 | Radiant Weirdness Zone | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radiant-weirdness-zone) |
+| 512 | 699 | Soi | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 513 | 700 | Tablin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/tablin) |
+| 514 | 701 | Ultimate Pool | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 515 | 702 | Vanessa Chess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 516 | 703 | War Machines | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 517 | 704 | X-Men: The Ravages of Apocalypse | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-men-the-ravages-of-apocalypse) |
+| 518 | 705 | YAMS! | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yams) |
+| 519 | 706 | Zark | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zark) |
+| 520 | 707 | Adventure Island | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 521 | 708 | Banshee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 522 | 709 | Cannon ZERO | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 523 | 710 | Deer Avenger 2 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 524 | 711 | Ebola Monkey Bingo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 525 | 712 | Firefly Frenzy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 526 | 713 | Galactic Patrol | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 527 | 714 | Hangman | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 528 | 715 | IconQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 529 | 716 | Jewel of Arabia-Dreamers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 530 | 717 | Kai-Jin | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/kai-jin) |
+| 531 | 718 | Lab-Rat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 532 | 719 | Musket Fire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 533 | 720 | NetKombat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 534 | 721 | One eyed Fred | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 535 | 722 | Palace Of Sand | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 536 | 723 | Quarters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 537 | 724 | Radical Rebound | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/radical-rebound) |
+| 538 | 725 | Speed Demon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 539 | 726 | Tablut | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/tablut) |
+| 540 | 727 | Ultimaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 541 | 728 | Vic Kombat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 542 | 729 | War of Flowers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 543 | 730 | X-Moto | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-moto) |
+| 544 | 731 | Yipe III | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
+| 545 | 732 | Zauron | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zauron) |
+| 546 | 733 | Adventures of Sean | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 547 | 734 | Barney Blaster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 548 | 735 | Cannons and Castles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 549 | 736 | Demon Warrior | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 550 | 737 | Eclipse | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 551 | 738 | Fist Fighters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 552 | 739 | Galactic Alliance | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 553 | 740 | HangmanPlus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 554 | 741 | Infotron | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 555 | 742 | Jewelbox | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 556 | 743 | Kazcheckers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 557 | 744 | LaBrisca | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 558 | 745 | Mac Football | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 559 | 746 | NetLuff | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 560 | 747 | Ophiuchus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 561 | 748 | Pandora's Box | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 562 | 749 | Quarto! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 563 | 750 | Raptor | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 564 | 751 | Strategram | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 565 | 752 | Tank Run | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 566 | 753 | UltraDice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 567 | 754 | VincoBingo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 568 | 755 | Warbirds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 569 | 756 | Youngsword | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
+| 570 | 757 | Zaz | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zaz) |
+| 571 | 758 | Alan's Euchre | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 572 | 759 | BarneyCarnage | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 573 | 760 | Captain Bumper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 574 | 761 | Dragon Cavern | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 575 | 762 | Egyptian Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 576 | 763 | Five Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 577 | 764 | Galactic Conquest | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/galactic-conquest) |
+| 578 | 765 | Happyweed! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 579 | 766 | Ingemar's skiing game | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/ingemars-skiing-game.md) |
+| 580 | 767 | Jotto ][ | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 581 | 768 | Keno Buddies | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 582 | 769 | Labyrinth | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 583 | 770 | Mac Football Manager | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 584 | 771 | NetMech | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 585 | 772 | OrbMazez | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 586 | 773 | PanZee Two | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 587 | 774 | Quasar Phase II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 588 | 775 | RChess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 589 | 776 | Super Snake | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 590 | 777 | Tank Wars | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 591 | 778 | UltraYahtzee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 592 | 779 | Vintage Quest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 593 | 780 | WaterBalloons | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 594 | 781 | Yamagi Quake 2 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yamagi-quake-2) |
+| 595 | 782 | Zebulon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 596 | 783 | Alans Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 597 | 784 | BasketCase | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 598 | 785 | Captain Magneto | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 599 | 786 | Dart Board | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 600 | 787 | Elfin Clash | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 
 ### Wave 4 — deeper classic Mac coverage
 
 | Slot | Catalogue total | Target | Architecture evidence / lead | Rights route | Discovery source |
 | ---: | ---: | --- | --- | :---: | --- |
-| 601 | 789 | FiveStones | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 602 | 790 | Galactic Frontiers | Original 68K only; new game and turn advancement verified | P | [Original grant, architecture and bounded evidence](catalogue/galactic-frontiers.md) |
-| 603 | 791 | Hardwood Solitaire II | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 604 | 792 | IntelliBots | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 605 | 793 | Joy Of Hex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 606 | 794 | KeyWack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 607 | 795 | LandSlide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 608 | 796 | Mac Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 609 | 797 | NetRisk | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 610 | 798 | OTChess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 611 | 799 | Par Pyramid | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 612 | 800 | Querkz | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 613 | 801 | Re-Pete | 2.2 CODE: 68K only; native/browser rounds verified, launch approved | P | [Publisher grant, exact original and runtime evidence](CATALOGUE-SOURCES.md#re-pete-22-original-package-and-sequence-playback) |
-| 614 | 802 | Sword Dream II 3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 615 | 803 | Tanks of Terror | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 616 | 804 | Ultris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 617 | 805 | Violent Moon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 618 | 806 | Whack-a-Dole | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 619 | 807 | Yard Sale Junkie | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yard-sale-junkie) |
-| 620 | 808 | Zen | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 621 | 809 | Alien | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 622 | 810 | battalion | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 623 | 811 | Caribbean Stud Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 624 | 812 | Darts | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 625 | 813 | Enigma | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 626 | 814 | Fixation | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 627 | 815 | Galactic Revolt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 628 | 816 | Haunted House | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 629 | 817 | Invaders! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 630 | 818 | JSokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 631 | 819 | Killer Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 632 | 820 | Lazer Zone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 633 | 821 | Mac Libs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 634 | 822 | NetRPG | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 635 | 823 | Otello | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 636 | 824 | PC Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 637 | 825 | Quest of Yipe! II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 638 | 826 | Reckless Drivin' | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 639 | 827 | Same | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 640 | 828 | Techoids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 641 | 829 | Uncle Zebulon's Will | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 642 | 830 | Virtual Maze Book | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 643 | 831 | Woden | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 644 | 832 | Yellow Brick Road (イエロー・ブリック・ロード | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yellow-brick-road) |
-| 645 | 833 | ZenMac | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 646 | 834 | Alien Assault | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 647 | 835 | Battle for the Planets | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 648 | 836 | casino | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 649 | 837 | Darkwood | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 650 | 838 | Enigmatic Movements | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 651 | 839 | Flaps | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 652 | 840 | Galactic Trader | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 653 | 841 | Haunted Mansion | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 654 | 842 | iPoker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 655 | 843 | Juxto | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
-| 656 | 844 | Killer Dice Y2K | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 657 | 845 | Lines of Action | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 658 | 846 | Mac Mine Sweeper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 659 | 847 | NetTower | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 660 | 848 | Otiru | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 661 | 849 | Peg Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 662 | 850 | Quick Draw Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 663 | 851 | Reflect! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 664 | 852 | Same Game | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 665 | 853 | Tetris 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 666 | 854 | Unicycle! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 667 | 855 | Virtual Pet | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 668 | 856 | Word Find | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 669 | 857 | Yellow Brick Road II (イエロー・ブリック・ロードII | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yellow-brick-road-ii) |
-| 670 | 858 | Zonez | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 671 | 859 | Alien Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 672 | 860 | Battle Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 673 | 861 | Casino BlackJack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 674 | 862 | DeadEnd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 675 | 863 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 676 | 864 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup/login investigation](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
-| 678 | 866 | HeartQuest | Original 68K/PPC; bounded public gameplay verified on both | P | [Original grant, architecture and bounded evidence](catalogue/heartquest.md) |
-| 679 | 867 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 680 | 868 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
-| 681 | 869 | King Albert II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 682 | 870 | Lobster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 683 | 871 | Mac Pan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 684 | 872 | NetTron | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 685 | 873 | Overload | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
-| 686 | 874 | Peng! | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 687 | 875 | QuickShot | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 688 | 876 | Regicide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 689 | 877 | Samurai | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 690 | 878 | TetrisLight | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 691 | 879 | Unscramble | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
-| 692 | 880 | Virtual Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 693 | 881 | Word Math | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 694 | 882 | Zroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
-| 695 | 883 | Alien Empire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 696 | 884 | BattleTanks | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 697 | 885 | Casino Rose | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 698 | 886 | Death Blade | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 699 | 887 | Ether Contention | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 700 | 888 | Flippant | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 701 | 889 | Galaxis | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 702 | 890 | Hearts | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 703 | 891 | iPuzzle | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 704 | 892 | Jack | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack) |
-| 705 | 893 | Kingyo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 706 | 894 | Logic Puzzle DA | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 707 | 895 | Mac Video Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 708 | 896 | Netzee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 709 | 897 | O!Kay! CD-ROMs 1999 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-1999) |
-| 710 | 898 | Pente | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 711 | 899 | QuickShot Deluxe | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 712 | 900 | Renegade Space Ninja | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 713 | 901 | Samurai Guy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 714 | 902 | The 10 Tile Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 715 | 903 | UFO: Alien Invasion | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ufo-alien-invasion) |
-| 716 | 904 | VirtualHamster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 717 | 905 | Wordblock | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 718 | 906 | Zak & Jack in Showdown at Monstertown | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zak-jack-in-showdown-at-monstertown) |
-| 719 | 907 | Alien Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 720 | 908 | Baxter | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 721 | 909 | Castle in the Clouds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 722 | 910 | Death From Above | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 723 | 911 | Euchre | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 724 | 912 | Flipper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 725 | 913 | Galaxus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 726 | 914 | Hearts Deluxe | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 727 | 915 | Iraq Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 728 | 916 | Jack and the Beanstalk Starring You | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-beanstalk-starring-you) |
-| 729 | 917 | Kirei! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 730 | 918 | Lord of the Deck | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 731 | 919 | MacBandit | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 732 | 920 | Friends of Nim 1.0 (listed as Nim) | 68K only: six CODE resources, no cfrg | GPL-2.0-or-later notice verified; original source found, matching control-library source/terms review pending | [Exact archive, source/resource correspondence and bounded native move](CATALOGUE-SOURCES.md#friends-of-nim-10--primary-732); [intake #4777](https://github.com/benletchford/systemless/issues/4777), [icon-suite fix #4778](https://github.com/benletchford/systemless/issues/4778); unhosted |
-| 733 | 921 | O!Kay! CD-ROMs 2000 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2000) |
-| 734 | 922 | Pentominoes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 735 | 923 | QuickTile | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 736 | 924 | Rescue! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 737 | 925 | Save the World | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 738 | 926 | The Cow Catching Game | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 739 | 927 | Ultima III: Exodus (1985 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-iii-exodus-1985) |
-| 740 | 928 | Vortex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 741 | 929 | WordMix | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 742 | 930 | Zandronum (Doom Sourceport | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zandronum-doom-sourceport) |
-| 743 | 931 | Allostris | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 744 | 932 | BazFaz | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 745 | 933 | Castle of Lost Souls | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 746 | 934 | Deep Sea | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 747 | 935 | Evolutionary War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 748 | 936 | FlipSide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 749 | 937 | Galaxus Hydra | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 750 | 938 | Hemiroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 751 | 939 | Iris Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 752 | 940 | Jack Keane | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-keane) |
-| 753 | 941 | Klondike | 68K/PPC (original 7.7.1; startup held) | S | [Publisher original](https://www.casteel.org/klondike.html); [Original intake](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) |
-| 754 | 942 | Lose Your Marbles! | Original 68K only; native/browser 5x5 win verified | P | [Original grant, architecture and bounded evidence](catalogue/lose-your-marbles.md) |
-| 755 | 943 | MacBaseball | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 756 | 944 | Nomis | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 757 | 945 | O!Kay! CD-ROMs 2001 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2001) |
-| 758 | 946 | Pentris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 759 | 947 | Quiver | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
-| 760 | 948 | Reversi | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 761 | 949 | Scrambler | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 762 | 950 | The Cursed Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 763 | 951 | Ultimate Dozen Dash Collection | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultimate-dozen-dash-collection) |
-| 764 | 952 | V for Victory: Gold - Juno - Sword | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-gold-juno-sword) |
-| 765 | 953 | Wumpus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 766 | 954 | Zarvox Is Here | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zarvox-here) |
-| 767 | 955 | AlphaBoat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 768 | 956 | Beached | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 769 | 957 | Castle Quest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 770 | 958 | Delirium | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 771 | 959 | Exobattle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 772 | 960 | Flower Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 773 | 961 | Gamble | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 774 | 962 | Henge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
-| 775 | 963 | Island Defender | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 776 | 964 | Jack Nicklaus 4 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-nicklaus-4) |
-| 777 | 965 | Knockoff | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 778 | 966 | Lost Crystal | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 779 | 967 | MacCheckers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 780 | 968 | NotAdventure II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
-| 781 | 969 | O!Kay! CD-ROMs 2002 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay2002) |
-| 782 | 970 | PerTetride | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 783 | 971 | QBeez 2 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbeez-2) |
-| 784 | 972 | Reversi LP | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 785 | 973 | Scruffy ][ | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 786 | 974 | The Fantastic War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 787 | 975 | V for Victory: Market Garden | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-market-garden) |
-| 788 | 976 | WWII SkyFighters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
-| 789 | 977 | Zaum Gadget | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zaum-gadget) |
-| 790 | 978 | Anacrostics | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 791 | 979 | Beached II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 792 | 980 | Catacombs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
-| 793 | 981 | Deluxe Klondike | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
-| 794 | 982 | Expert Blackjack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 795 | 983 | Fly Don't Die | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 796 | 984 | Game of the Winds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 797 | 985 | Hexmines | Original 68K only; bounded native/public gameplay verified | P | [Original grant, architecture and bounded evidence](catalogue/hexmines.md) |
-| 798 | 986 | iTarget | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 799 | 987 | Jack Nicklaus' Greatest 18 Holes of Major Championship Golf | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-nicklaus-greatest-18-holes-of-major-championship-golf) |
-| 800 | 988 | Knot | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
-| 801 | 989 | Lost New York | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 802 | 990 | MacCrypt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 803 | 991 | NS-SHAFT | Original 68K only; native/browser movement and descent | P | [Original grant, architecture and bounded evidence](catalogue/ns-shaft.md) |
-| 804 | 992 | O!Kay! CD-ROMs 2003 + 2004 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay2004) |
-| 805 | 993 | Pillbug Golf | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 806 | 994 | QBz | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbz) |
-| 807 | 995 | Reversi Unlimited | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
-| 808 | 996 | Scrungle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
-| 809 | 997 | The Fishin' Hole | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
-| 810 | 998 | V for Victory: Utah Beach | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-utah-beach) |
-| 811 | 999 | Wacky Races: A Tsuyoshi Takashiro Digital film (チキチキマシン猛レース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-races-a-tsuyoshi-takashiro-digital-film) |
-| 812 | 1000 | Anagrams | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 601 | 788 | FiveStones | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 602 | 789 | Galactic Frontiers | Original 68K only; new game and turn advancement verified | P | [Original grant, architecture and bounded evidence](catalogue/galactic-frontiers.md) |
+| 603 | 790 | Hardwood Solitaire II | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 604 | 791 | IntelliBots | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 605 | 792 | Joy Of Hex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 606 | 793 | KeyWack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 607 | 794 | LandSlide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 608 | 795 | Mac Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 609 | 796 | NetRisk | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 610 | 797 | OTChess | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 611 | 798 | Par Pyramid | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 612 | 799 | Querkz | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 613 | 800 | Re-Pete | 2.2 CODE: 68K only; native/browser rounds verified, launch approved | P | [Publisher grant, exact original and runtime evidence](CATALOGUE-SOURCES.md#re-pete-22-original-package-and-sequence-playback) |
+| 614 | 801 | Sword Dream II 3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 615 | 802 | Tanks of Terror | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 616 | 803 | Ultris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 617 | 804 | Violent Moon | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 618 | 805 | Whack-a-Dole | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 619 | 806 | Yard Sale Junkie | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yard-sale-junkie) |
+| 620 | 807 | Zen | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 621 | 808 | Alien | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 622 | 809 | battalion | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 623 | 810 | Caribbean Stud Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 624 | 811 | Darts | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 625 | 812 | Enigma | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 626 | 813 | Fixation | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 627 | 814 | Galactic Revolt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 628 | 815 | Haunted House | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 629 | 816 | Invaders! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 630 | 817 | JSokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 631 | 818 | Killer Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 632 | 819 | Lazer Zone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 633 | 820 | Mac Libs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 634 | 821 | NetRPG | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 635 | 822 | Otello | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 636 | 823 | PC Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 637 | 824 | Quest of Yipe! II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 638 | 825 | Reckless Drivin' | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 639 | 826 | Same | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 640 | 827 | Techoids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 641 | 828 | Uncle Zebulon's Will | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 642 | 829 | Virtual Maze Book | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 643 | 830 | Woden | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 644 | 831 | Yellow Brick Road (イエロー・ブリック・ロード | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yellow-brick-road) |
+| 645 | 832 | ZenMac | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 646 | 833 | Alien Assault | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 647 | 834 | Battle for the Planets | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 648 | 835 | casino | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 649 | 836 | Darkwood | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 650 | 837 | Enigmatic Movements | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 651 | 838 | Flaps | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 652 | 839 | Galactic Trader | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 653 | 840 | Haunted Mansion | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 654 | 841 | iPoker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 655 | 842 | Juxto | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 656 | 843 | Killer Dice Y2K | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 657 | 844 | Lines of Action | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 658 | 845 | Mac Mine Sweeper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 659 | 846 | NetTower | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 660 | 847 | Otiru | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 661 | 848 | Peg Solitaire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 662 | 849 | Quick Draw Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 663 | 850 | Reflect! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 664 | 851 | Same Game | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 665 | 852 | Tetris 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 666 | 853 | Unicycle! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 667 | 854 | Virtual Pet | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 668 | 855 | Word Find | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 669 | 856 | Yellow Brick Road II (イエロー・ブリック・ロードII | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/yellow-brick-road-ii) |
+| 670 | 857 | Zonez | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 671 | 858 | Alien Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 672 | 859 | Battle Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 673 | 860 | Casino BlackJack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 674 | 861 | DeadEnd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 675 | 862 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 676 | 863 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 677 | 864 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup/login investigation](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
+| 678 | 865 | HeartQuest | Original 68K/PPC; bounded public gameplay verified on both | P | [Original grant, architecture and bounded evidence](catalogue/heartquest.md) |
+| 679 | 866 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 680 | 867 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
+| 681 | 868 | King Albert II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 682 | 869 | Lobster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 683 | 870 | Mac Pan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 684 | 871 | NetTron | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 685 | 872 | Overload | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
+| 686 | 873 | Peng! | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 687 | 874 | QuickShot | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 688 | 875 | Regicide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 689 | 876 | Samurai | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 690 | 877 | TetrisLight | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 691 | 878 | Unscramble | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
+| 692 | 879 | Virtual Pong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 693 | 880 | Word Math | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 694 | 881 | Zroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/z/) |
+| 695 | 882 | Alien Empire | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 696 | 883 | BattleTanks | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 697 | 884 | Casino Rose | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 698 | 885 | Death Blade | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 699 | 886 | Ether Contention | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 700 | 887 | Flippant | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 701 | 888 | Galaxis | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 702 | 889 | Hearts | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 703 | 890 | iPuzzle | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 704 | 891 | Jack | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack) |
+| 705 | 892 | Kingyo | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 706 | 893 | Logic Puzzle DA | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 707 | 894 | Mac Video Poker | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 708 | 895 | Netzee | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 709 | 896 | O!Kay! CD-ROMs 1999 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-1999) |
+| 710 | 897 | Pente | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 711 | 898 | QuickShot Deluxe | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 712 | 899 | Renegade Space Ninja | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 713 | 900 | Samurai Guy | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 714 | 901 | The 10 Tile Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 715 | 902 | UFO: Alien Invasion | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ufo-alien-invasion) |
+| 716 | 903 | VirtualHamster | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 717 | 904 | Wordblock | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 718 | 905 | Zak & Jack in Showdown at Monstertown | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zak-jack-in-showdown-at-monstertown) |
+| 719 | 906 | Alien Invaders | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 720 | 907 | Baxter | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 721 | 908 | Castle in the Clouds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 722 | 909 | Death From Above | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 723 | 910 | Euchre | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 724 | 911 | Flipper | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 725 | 912 | Galaxus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 726 | 913 | Hearts Deluxe | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 727 | 914 | Iraq Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 728 | 915 | Jack and the Beanstalk Starring You | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-beanstalk-starring-you) |
+| 729 | 916 | Kirei! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 730 | 917 | Lord of the Deck | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 731 | 918 | MacBandit | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 732 | 919 | Friends of Nim 1.0 (listed as Nim) | 68K only: six CODE resources, no cfrg | GPL-2.0-or-later notice verified; original source found, matching control-library source/terms review pending | [Exact archive, source/resource correspondence and bounded native move](CATALOGUE-SOURCES.md#friends-of-nim-10--primary-732); [intake #4777](https://github.com/benletchford/systemless/issues/4777), [icon-suite fix #4778](https://github.com/benletchford/systemless/issues/4778); unhosted |
+| 733 | 920 | O!Kay! CD-ROMs 2000 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2000) |
+| 734 | 921 | Pentominoes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 735 | 922 | QuickTile | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 736 | 923 | Rescue! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 737 | 924 | Save the World | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 738 | 925 | The Cow Catching Game | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 739 | 926 | Ultima III: Exodus (1985 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultima-iii-exodus-1985) |
+| 740 | 927 | Vortex | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
+| 741 | 928 | WordMix | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 742 | 929 | Zandronum (Doom Sourceport | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zandronum-doom-sourceport) |
+| 743 | 930 | Allostris | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 744 | 931 | BazFaz | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 745 | 932 | Castle of Lost Souls | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 746 | 933 | Deep Sea | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 747 | 934 | Evolutionary War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 748 | 935 | FlipSide | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 749 | 936 | Galaxus Hydra | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 750 | 937 | Hemiroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 751 | 938 | Iris Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 752 | 939 | Jack Keane | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-keane) |
+| 753 | 940 | Klondike | 68K/PPC (original 7.7.1; startup held) | S | [Publisher original](https://www.casteel.org/klondike.html); [Original intake](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) |
+| 754 | 941 | Lose Your Marbles! | Original 68K only; native/browser 5x5 win verified | P | [Original grant, architecture and bounded evidence](catalogue/lose-your-marbles.md) |
+| 755 | 942 | MacBaseball | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 756 | 943 | Nomis | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 757 | 944 | O!Kay! CD-ROMs 2001 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2001) |
+| 758 | 945 | Pentris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 759 | 946 | Quiver | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |
+| 760 | 947 | Reversi | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 761 | 948 | Scrambler | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 762 | 949 | The Cursed Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 763 | 950 | Ultimate Dozen Dash Collection | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/ultimate-dozen-dash-collection) |
+| 764 | 951 | V for Victory: Gold - Juno - Sword | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-gold-juno-sword) |
+| 765 | 952 | Wumpus | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 766 | 953 | Zarvox Is Here | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zarvox-here) |
+| 767 | 954 | AlphaBoat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 768 | 955 | Beached | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 769 | 956 | Castle Quest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 770 | 957 | Delirium | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 771 | 958 | Exobattle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 772 | 959 | Flower Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 773 | 960 | Gamble | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 774 | 961 | Henge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 775 | 962 | Island Defender | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 776 | 963 | Jack Nicklaus 4 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-nicklaus-4) |
+| 777 | 964 | Knockoff | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 778 | 965 | Lost Crystal | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 779 | 966 | MacCheckers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 780 | 967 | NotAdventure II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 781 | 968 | O!Kay! CD-ROMs 2002 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay2002) |
+| 782 | 969 | PerTetride | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 783 | 970 | QBeez 2 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbeez-2) |
+| 784 | 971 | Reversi LP | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 785 | 972 | Scruffy ][ | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 786 | 973 | The Fantastic War | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 787 | 974 | V for Victory: Market Garden | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-market-garden) |
+| 788 | 975 | WWII SkyFighters | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 789 | 976 | Zaum Gadget | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zaum-gadget) |
+| 790 | 977 | Anacrostics | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 791 | 978 | Beached II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 792 | 979 | Catacombs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 793 | 980 | Deluxe Klondike | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 794 | 981 | Expert Blackjack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
+| 795 | 982 | Fly Don't Die | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
+| 796 | 983 | Game of the Winds | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 797 | 984 | Hexmines | Original 68K only; bounded native/public gameplay verified | P | [Original grant, architecture and bounded evidence](catalogue/hexmines.md) |
+| 798 | 985 | iTarget | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
+| 799 | 986 | Jack Nicklaus' Greatest 18 Holes of Major Championship Golf | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-nicklaus-greatest-18-holes-of-major-championship-golf) |
+| 800 | 987 | Knot | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 801 | 988 | Lost New York | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
+| 802 | 989 | MacCrypt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 803 | 990 | NS-SHAFT | Original 68K only; native/browser movement and descent | P | [Original grant, architecture and bounded evidence](catalogue/ns-shaft.md) |
+| 804 | 991 | O!Kay! CD-ROMs 2003 + 2004 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay2004) |
+| 805 | 992 | Pillbug Golf | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 806 | 993 | QBz | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/qbz) |
+| 807 | 994 | Reversi Unlimited | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 808 | 995 | Scrungle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 809 | 996 | The Fishin' Hole | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
+| 810 | 997 | V for Victory: Utah Beach | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/v-victory-utah-beach) |
+| 811 | 998 | Wacky Races: A Tsuyoshi Takashiro Digital film (チキチキマシン猛レース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wacky-races-a-tsuyoshi-takashiro-digital-film) |
+| 812 | 999 | Anagrams | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 813 | 1000 | Hextris 1.0 (Hellosh Software; from R50) | Original installer readme requires System 7.5; CPU slices pending | U | [Exact archive identity](CATALOGUE-SOURCES.md#hextris-10--reserve-r50-identity) |
 
-## Replacement reserves (100; not counted)
+## Replacement reserves (99 original reserves remaining; not counted)
 
 Use these when an intake slot fails identity, architecture, rights or runtime qualification. These are also research leads, not cleared replacements.
 
@@ -928,7 +931,6 @@ On 2026-10-11, reserve R62 was corrected from WadTyper for Doom to NetHack 3.3.1
 | R47 | E-Racer | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/e-racer) |
 | R48 | FoodFight! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
 | R49 | Geography Challenge | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| R50 | Hextris | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | R51 | I Love Science! | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/i-love-science) |
 | R52 | Jahtzee | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jahtzee) |
 | R53 | Kaj & Andrea: Prinsessens Efterfølger | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/kaj-andrea-prinsessens-efterfolger) |
@@ -992,9 +994,9 @@ human release and independently verified public replay before it is counted live
 | R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629); [qualified public v0.97.0 walking/climbing](CATALOGUE-SOURCES.md#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay) |
 | R102 | Susan 2.5 | 68K only: three CODE resources, no cfrg | Original complete-archive free redistribution grant; unchanged files and no charges required | [Exact author archive and eight-file/sixteen-fork parity](CATALOGUE-SOURCES.md#susan-25--additional-reserve-discovery); [intake #4774](https://github.com/benletchford/systemless/issues/4774); native eight-check placement/reply verified; entry #4776 promoted and browser approved at 60.055 / 58.999 ticks/sec with merged fix #4780; entry #4776 merged d64ea276 with all four checks passing; human release/public replay pending |
 
-## Existing catalogue inventory (188; baseline)
+## Existing catalogue inventory (187 after confirmed duplicate consolidation)
 
-This inventory makes exclusions and the architecture imbalance reviewable. Launch status is copied from the current frontmatter; it does not enlarge the compatibility claim.
+This inventory preserves the original stocktake, with the confirmed Checkers Deluxe duplicate removed. Launch status reflects the recorded frontmatter; it does not enlarge the compatibility claim.
 
 | Game | Declared CPU | Launch | Recorded compatibility |
 | --- | --- | --- | --- |
@@ -1149,7 +1151,6 @@ This inventory makes exclusions and the architecture imbalance reviewable. Launc
 | [Star Wars: Dark Forces](catalogue/star-wars-dark-forces.md) | 68K | Enabled | playable |
 | [StarCraft Demo](catalogue/starcraft.md) | PPC | Enabled | playable |
 | [Step On It! Demo](catalogue/step-on-it-demo.md) | 68K | Enabled | playable |
-| [Strategic Leap / Checkers Deluxe Demo](catalogue/strategic-leap-checkers-deluxe.md) | 68K | Enabled | playable |
 | [StuntCopter 1.2 (Clouds)](catalogue/stunt-copter.md) | 68K | Enabled | boots |
 | [Sunset Over Savannah](catalogue/sunset-over-savannah.md) | 68K | Enabled | playable |
 | [Super Mines Demo](catalogue/super-mines-demo.md) | 68K | Enabled | playable |

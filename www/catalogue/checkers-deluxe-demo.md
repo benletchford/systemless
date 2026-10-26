@@ -10,6 +10,8 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+aliases:
+- /strategic-leap-checkers-deluxe
 launch_enabled: true
 compatibility:
   status: playable
@@ -35,6 +37,29 @@ compatibility:
       gameplay screenshot is a direct capture of the game board and player panels.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3640
+  - date: "2026-09-30"
+    tester: Catalogue maintainer
+    systemless_version: 03092b61 + local catalogue preview
+    architecture: 68k
+    environment: >-
+      Release-mode Chrome browser preview of the unchanged StuffIt demo. Chose Basic
+      Setup, entered two player names, and reached the Checkers Deluxe board. Selecting
+      a black checker and clicking a diagonal square moved it and cleared its old
+      square. One exact archive fetch. A 10-second active-board sample measured 60.0 host
+      FPS, 60.2 guest ticks per second, maximum measured frame 2.8 ms, and minimum audio
+      queue 131 ms.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3577
+  - date: "2026-09-30"
+    tester: Catalogue maintainer
+    systemless_version: 0.70.1 + deterministic play runner
+    architecture: 68k
+    environment: >-
+      Replayed the unchanged StuffIt demo at 800 by 600. Reached the Checkers Deluxe
+      board and moved a red checker to a new square; the original square cleared and
+      the game played its slide sound.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3577
 artifacts:
 - id: archive
   role: archive
@@ -48,6 +73,8 @@ artifacts:
     original: true
     sources:
     - https://download.classicmacdemos.com/Strategic%20Leap.sit
+    - https://classicmacdemos.com/strategic-leap-checkers-deluxe
+    - https://static.classicmacdemos.com/demos/strategic-leap-checkers-deluxe/README.txt
     rights_holder: Varcon Systems / Majestic Software / MacSoft
     permission: >-
       The unchanged archive includes a purpose-built Checkers Deluxe demo and a
@@ -79,8 +106,12 @@ artifacts:
       Direct 554-by-353 release-browser capture of the active board and player
       panels, excluding website framing, the Mac menu bar, and the window frame.
 references:
+- https://classicmacdemos.com/strategic-leap-checkers-deluxe
+- https://static.classicmacdemos.com/demos/strategic-leap-checkers-deluxe/README.txt
 - https://www.macintoshrepository.org/5342-checkers-deluxe
 ---
+
+Also distributed as **Strategic Leap**, this is the same Checkers Deluxe demo.
 
 ## Play a match
 
