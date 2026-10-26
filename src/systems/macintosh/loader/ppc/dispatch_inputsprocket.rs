@@ -253,7 +253,9 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
                 return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
             };
             // ISpElementEvent: AbsoluteTime when, element, refCon, data.
-            for (offset, word) in [0, tick_count, element, 0, data].into_iter().enumerate() {
+            let when = crate::time_manager::evaluate_microseconds(tick_count);
+            let words = [(when >> 32) as u32, when as u32, element, 0, data];
+            for (offset, word) in words.into_iter().enumerate() {
                 let _ = memory.write_u32_be(event_ptr + 4 * offset as u32, word);
             }
             let _ = memory.write_u8(was_event_ptr, 1);
