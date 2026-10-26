@@ -1029,6 +1029,12 @@ pub enum PpcImportDispatcherTarget {
     ICGetSeed,
     ICGetComponentInstance,
     ICParseURL,
+    ICGetPref,
+    ICFindPrefHandle,
+    ICSetPref,
+    ICBegin,
+    ICEnd,
+    ICFindConfigFile,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -5186,6 +5192,24 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib",
             "ICGetComponentInstance",
         ) => PpcImportDispatcherTarget::ICGetComponentInstance,
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICBegin") => {
+            PpcImportDispatcherTarget::ICBegin
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICEnd") => {
+            PpcImportDispatcherTarget::ICEnd
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICFindConfigFile") => {
+            PpcImportDispatcherTarget::ICFindConfigFile
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICSetPref") => {
+            PpcImportDispatcherTarget::ICSetPref
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICFindPrefHandle") => {
+            PpcImportDispatcherTarget::ICFindPrefHandle
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICGetPref") => {
+            PpcImportDispatcherTarget::ICGetPref
+        }
         ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICParseURL") => {
             PpcImportDispatcherTarget::ICParseURL
         }
