@@ -338,6 +338,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
     };
     let catalog_data = catalog_records.as_ref();
     let mut dirs = Vec::<ViseDirectory>::new();
+    let mut directory_stack = Vec::<usize>::new();
     let mut entries = Vec::<ViseEntry<'_>>::new();
 
     for index in 0..entry_count {
@@ -395,8 +396,17 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name =
                     decode_catalog_name(catalog_data, &mut cursor, name_len, "directory name")?;
-                let path = child_path(&dirs, parent, &name, "directory")?;
+                let parent_index = if version == VISE_VERSION_36_FULL {
+                    full_catalog_parent(&directory_stack, parent)?
+                } else {
+                    parent
+                };
+                let path = child_path(&dirs, parent_index, &name, "directory")?;
                 dirs.push(ViseDirectory { path });
+                if version == VISE_VERSION_36_FULL {
+                    directory_stack.truncate(parent);
+                    directory_stack.push(dirs.len());
+                }
             }
             b'F' => {
                 let record = range(
@@ -443,7 +453,12 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     cursor += suffix_len;
                 }
                 let name = decode_catalog_name(catalog_data, &mut cursor, name_len, "file name")?;
-                let path = child_path(&dirs, parent, &name, "file")?;
+                let parent_index = if version == VISE_VERSION_36_FULL {
+                    full_catalog_parent(&directory_stack, parent)?
+                } else {
+                    parent
+                };
+                let path = child_path(&dirs, parent_index, &name, "file")?;
                 // In VISE 3.6 full catalogs, segment zero contains installer
                 // auxiliaries and generated files outside the install tree.
                 // Only numbered segments contribute installed payload files.
@@ -1013,6 +1028,19 @@ fn decode_huffman_block(
             symbol => return Err(format!("invalid literal/length symbol {symbol}")),
         }
     }
+}
+
+// Full 3.6 catalogs are depth-first: the parent field is a nesting depth,
+// unlike the directory ordinal in Lite catalogs. Sibling subdirectories can
+// therefore use the same parent value for their files.
+fn full_catalog_parent(stack: &[usize], depth: usize) -> Result<usize, String> {
+    if depth == 0 {
+        return Ok(0);
+    }
+    stack
+        .get(depth - 1)
+        .copied()
+        .ok_or_else(|| format!("invalid VISE 3.6 parent depth {depth}"))
 }
 
 fn child_path(
@@ -1710,6 +1738,67 @@ pub(crate) mod tests {
             decode_vise_fork(game.rsrc_packed, game.rsrc_unpacked_len).unwrap(),
             b"resource fork"
         );
+    }
+
+    #[test]
+    fn full_catalog_preserves_nested_and_sibling_directory_depths() {
+        let original = make_test_archive("Empty", b"", b"");
+        let catalog_offset = read_u32(&original, 36, "catalog offset").unwrap() as usize;
+        let mut archive = original[..catalog_offset].to_vec();
+        archive[16..20].copy_from_slice(&VISE_VERSION_36_FULL.to_be_bytes());
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&9u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        for (is_directory, depth, name) in [
+            (true, 0u16, "Root"),
+            (true, 1, "First"),
+            (true, 2, "Nested"),
+            (false, 3, "DeepData"),
+            (true, 1, "Second"),
+            (false, 2, "SiblingData"),
+            (false, 1, "RootData"),
+            (true, 0, "OtherRoot"),
+            (false, 1, "OtherData"),
+        ] {
+            if is_directory {
+                archive.extend_from_slice(b"DVCT");
+                let mut record = [0u8; VISE_DIRECTORY_RECORD_LEN];
+                record[68..70].copy_from_slice(&depth.to_be_bytes());
+                record[76] = name.len() as u8;
+                archive.extend_from_slice(&record);
+                archive.extend_from_slice(&[0; VISE_36_FULL_DIRECTORY_SUFFIX_LEN]);
+            } else {
+                archive.extend_from_slice(b"FVCT");
+                let mut record = [0u8; VISE_FILE_RECORD_LEN];
+                record[92..94].copy_from_slice(&depth.to_be_bytes());
+                record[94..96].copy_from_slice(&1u16.to_be_bytes());
+                record[118] = name.len() as u8;
+                archive.extend_from_slice(&record);
+                archive.extend_from_slice(&[0; VISE_36_FULL_FILE_SUFFIX_LEN]);
+            }
+            archive.extend_from_slice(name.as_bytes());
+        }
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        let paths: Vec<_> = parsed
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "Root/First/Nested/DeepData",
+                "Root/Second/SiblingData",
+                "Root/RootData",
+                "OtherRoot/OtherData",
+            ]
+        );
+        let last_file = archive.windows(4).rposition(|bytes| bytes == b"FVCT").unwrap();
+        archive[last_file + 4 + 92..last_file + 4 + 94].copy_from_slice(&2u16.to_be_bytes());
+        assert!(parse_vise(&archive).unwrap().unwrap_err().contains("parent depth 2"));
+        assert!(full_catalog_parent(&[], 1).is_err());
+        assert!(full_catalog_parent(&[1], 2).is_err());
     }
 
     #[test]
