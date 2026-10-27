@@ -1467,6 +1467,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PtrAndHand
         | PpcImportDispatcherTarget::NewHandle { .. }
         | PpcImportDispatcherTarget::NewString
+        | PpcImportDispatcherTarget::SetString
         | PpcImportDispatcherTarget::NewHandleSys { .. }
         | PpcImportDispatcherTarget::TempNewHandle
         | PpcImportDispatcherTarget::TempDisposeHandle
@@ -2401,6 +2402,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StuffHex
         | PpcImportDispatcherTarget::GetIntlResourceTable
         | PpcImportDispatcherTarget::NumToString
+        | PpcImportDispatcherTarget::NumToCString
         | PpcImportDispatcherTarget::StringToNum
         | PpcImportDispatcherTarget::Random
         | PpcImportDispatcherTarget::SetQDGlobalsRandomSeed

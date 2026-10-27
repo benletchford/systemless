@@ -108,6 +108,16 @@ pub(super) fn dispatch_toolbox_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::NumToCString => {
+            // NumberFormatting.h declares the lowercase C-string variant
+            // separately from NumToString's Pascal-string interface.
+            let mut bytes = crate::text_utils::evaluate_num_to_string(cpu.gpr[3] as i32);
+            bytes.push(0);
+            if cpu.gpr[4] != 0 {
+                let _ = memory.write_bytes(cpu.gpr[4], &bytes);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::StringToNum => {
             ppc_string_to_num(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)

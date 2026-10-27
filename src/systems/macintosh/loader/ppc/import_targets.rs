@@ -38,6 +38,7 @@ pub enum PpcImportDispatcherTarget {
     PtrAndHand,
     NewHandle { clear: bool },
     NewString,
+    SetString,
     NewHandleSys { clear: bool },
     TempNewHandle,
     TempDisposeHandle,
@@ -914,6 +915,7 @@ pub enum PpcImportDispatcherTarget {
     IUEqualPString,
     GetIntlResourceTable,
     NumToString,
+    NumToCString,
     StringToNum,
     Random,
     SetQDGlobalsRandomSeed,
@@ -3060,6 +3062,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "RecoverHandle") => PpcImportDispatcherTarget::RecoverHandle,
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
         ("InterfaceLib", "NewString") => PpcImportDispatcherTarget::NewString,
+        ("InterfaceLib", "SetString") => PpcImportDispatcherTarget::SetString,
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
         ("InterfaceLib", "NewHandleSys") => {
             PpcImportDispatcherTarget::NewHandleSys { clear: false }
@@ -5132,6 +5135,7 @@ pub(crate) fn dispatcher_target_for_import(
             "GetIntlResourceTable" | "IUGetIntlTable" | "IUGetItlTable" | "GetItlTable",
         ) => PpcImportDispatcherTarget::GetIntlResourceTable,
         ("InterfaceLib" | "CarbonLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
+        ("InterfaceLib", "numtostring") => PpcImportDispatcherTarget::NumToCString,
         ("InterfaceLib" | "CarbonLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsRandomSeed" | "getqdglobalsrandomseed") => {
@@ -5227,7 +5231,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "StripText" | "StripDiacritics") => {
             PpcImportDispatcherTarget::StripText
         }
-        ("InterfaceLib" | "CarbonLib", "UpperText" | "UppercaseText") => {
+        ("InterfaceLib" | "CarbonLib", "UpperText" | "UppercaseText" | "UprText") => {
             PpcImportDispatcherTarget::UpperText
         }
         ("InterfaceLib" | "CarbonLib", "StripUpperText" | "UppercaseStripDiacritics") => {

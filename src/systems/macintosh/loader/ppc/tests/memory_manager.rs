@@ -5324,3 +5324,44 @@ fn reallocate_handle_gives_a_handle_a_new_block_of_the_requested_size() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
     assert_eq!(loaded.cpu.gpr[3], 16);
 }
+
+#[test]
+fn set_string_resizes_and_copies_before_relocating_its_source() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetString")).unwrap();
+    let source = PPC_DATA_BASE + 0x2f00;
+    loaded.memory.add_region(source, vec![0; 32]);
+    loaded.memory.write_bytes(source, b"\x03Mac").unwrap();
+    loaded.cpu.gpr[3] = source;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewString);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "SetString"),
+        PpcImportDispatcherTarget::SetString
+    );
+    for bytes in [&b"\x05x\x02abZ"[..], &b"\x00"[..]] {
+        loaded.memory.write_bytes(source, bytes).unwrap();
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = source;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetString);
+        assert_eq!(loaded.cpu.gpr[3], handle);
+        let data = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, data, bytes.len() as u32),
+            Some(bytes.to_vec())
+        );
+        if bytes.len() > 1 {
+            loaded.cpu.gpr[3] = handle;
+            loaded.cpu.gpr[4] = data + 2;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetString);
+            let data = loaded.memory.read_u32_be(handle).unwrap();
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, data, 3),
+                Some(b"\x02ab".to_vec())
+            );
+        }
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+        assert_eq!(loaded.cpu.gpr[3], if bytes.len() > 1 { 3 } else { 1 });
+    }
+}
