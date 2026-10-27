@@ -6664,6 +6664,28 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: FrameFinalization,
     ) -> (usize, bool) {
+        self.run_steps_with_trap_boundary(
+            max_steps,
+            tick_cap,
+            audio_samples,
+            yield_for_ui,
+            sound_work_only,
+            finish_frame,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_steps_with_trap_boundary(
+        &mut self,
+        max_steps: usize,
+        tick_cap: Option<u32>,
+        audio_samples: usize,
+        yield_for_ui: bool,
+        sound_work_only: bool,
+        finish_frame: FrameFinalization,
+        yield_after_trap: bool,
+    ) -> (usize, bool) {
         let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         let result = self.run_steps_internal_impl(
             max_steps,
@@ -6672,6 +6694,7 @@ impl FixtureRunner {
             yield_for_ui,
             sound_work_only,
             finish_frame,
+            yield_after_trap,
         );
         self.sync_guest_mouse_position(previous_mouse);
         // Returning to the embedding is a scheduler safe point. Publish any
@@ -6686,6 +6709,7 @@ impl FixtureRunner {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_steps_internal_impl(
         &mut self,
         max_steps: usize,
@@ -6694,6 +6718,7 @@ impl FixtureRunner {
         yield_for_ui: bool,
         sound_work_only: bool,
         finish_frame: FrameFinalization,
+        yield_after_trap: bool,
     ) -> (usize, bool) {
         if self.guest_work_is_suspended() {
             return (0, !self.halted);
@@ -6850,7 +6875,11 @@ impl FixtureRunner {
             .unwrap_or(false);
         let mut watch_buf = Vec::with_capacity(4);
 
+        let initial_trap_count = self.dispatcher.trap_count;
         while count < max_steps && !self.halted && !tick_cap_reached {
+            if yield_after_trap && self.dispatcher.trap_count != initial_trap_count {
+                break;
+            }
             if self.debug_finish_step_if_ready() {
                 return (count, !self.halted);
             }
@@ -10556,6 +10585,25 @@ impl FixtureRunner {
             true,
             false,
             FrameFinalization::Deferred,
+        )
+    }
+
+    /// Run a deferred CPU slice, returning after the first classic Toolbox or
+    /// OS trap. Browser callers can amortize trap-free execution without
+    /// grouping several expensive drawing traps into one uninterruptible slice.
+    pub fn run_gui_cpu_slice_until_trap(
+        &mut self,
+        max_steps: usize,
+        deadline_tick: u32,
+    ) -> (usize, bool) {
+        self.run_steps_with_trap_boundary(
+            max_steps,
+            Some(deadline_tick),
+            0,
+            true,
+            false,
+            FrameFinalization::Deferred,
+            true,
         )
     }
 
