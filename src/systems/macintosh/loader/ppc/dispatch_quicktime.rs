@@ -14,6 +14,7 @@ pub(super) struct PpcQuickTimeDispatchContext<'a> {
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
+    pub(super) current_resource_refnum: i16,
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) current_gworld: u32,
     pub(super) quicktime: &'a mut PpcQuickTimeState,
@@ -35,6 +36,7 @@ pub(super) fn dispatch_quicktime_import(
         vfs_files,
         vfs_resource_files,
         vfs_resources,
+        current_resource_refnum,
         gworlds,
         current_gworld,
         quicktime,
@@ -100,6 +102,105 @@ pub(super) fn dispatch_quicktime_import(
                 ppc_qt_record_error(quicktime, error),
             )))
         }
+        PpcImportDispatcherTarget::QtGetImageDescriptionCTable => Some(PpcImportAction::Return(
+            ppc_i16_result(quicktime::decompression::get_color_table(
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+            )),
+        )),
+        PpcImportDispatcherTarget::QtDecompressSequenceBegin => {
+            let result = quicktime::decompression::begin(
+                cpu,
+                memory,
+                handles,
+                gworlds,
+                current_gworld,
+                &mut quicktime.decompression_sequences,
+                vfs_resources,
+                current_resource_refnum,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().unwrap_or(PPC_NO_ERR),
+            )))
+        }
+        PpcImportDispatcherTarget::QtCDSequenceEnd => {
+            let result = quicktime.decompression_sequences.end(cpu.gpr[3]);
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().unwrap_or(PPC_NO_ERR),
+            )))
+        }
+        PpcImportDispatcherTarget::QtDecompressSequenceFrame => {
+            let callback = cpu.gpr[7];
+            let restore_rtoc = cpu.gpr[2];
+            let final_pc = cpu.lr;
+            let completion = if callback == 0 || callback == u32::MAX {
+                None
+            } else {
+                let target = memory.read_u32_be(callback).and_then(|procedure| {
+                    ppc_resolve_callback_target(memory, procedure, restore_rtoc, None)
+                });
+                let refcon = callback
+                    .checked_add(4)
+                    .and_then(|address| memory.read_u32_be(address));
+                match (target, refcon) {
+                    (Some(target), Some(refcon)) => Some((target, refcon)),
+                    _ => return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))),
+                }
+            };
+            let result = quicktime::decompression::frame(
+                cpu,
+                memory,
+                gworlds,
+                &mut quicktime.decompression_sequences,
+            );
+            let (error, completion_flags) = match result {
+                Ok(flags) => (PPC_NO_ERR, flags),
+                Err(error) => (error, 3),
+            };
+            let result = ppc_i16_result(error);
+            if let Some((target, refcon)) = completion {
+                if install_powerpc_call_arguments(
+                    cpu,
+                    memory,
+                    &[result, u32::from(completion_flags), refcon],
+                )
+                .is_none()
+                {
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+                }
+                return GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: target.entry,
+                        rtoc: target.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        final_pc,
+                        restore_rtoc,
+                        PpcNativeReturnGpr3::Set(result),
+                    ),
+                )
+                .into_ppc_import_action();
+            }
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::QtDecompressImage => Some(PpcImportAction::Return(
+            ppc_i16_result(super::quicktime::decompression::decompress_image(
+                cpu,
+                memory,
+                handles,
+                current_gworld,
+                vfs_resources,
+                current_resource_refnum,
+            )),
+        )),
         PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription => {
             let error = ppc_qt_graphics_import_get_image_description(
                 cpu,

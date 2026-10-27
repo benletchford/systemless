@@ -2,6 +2,7 @@
 
 pub(crate) mod callbacks;
 pub(crate) mod controller;
+pub(crate) mod decompression;
 mod toolbox;
 
 pub(crate) use toolbox::{
@@ -270,6 +271,7 @@ pub struct PpcQuickTimeControllerRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
+    pub(crate) decompression_sequences: decompression::Sequences,
     pub(crate) callbacks: callbacks::Callbacks,
     pub(crate) callback_frames: Vec<callbacks::ContinuationFrame>,
     pub movie_toolbox_enter_count: u32,
@@ -345,6 +347,7 @@ pub struct PpcQuickTimeState {
 impl Default for PpcQuickTimeState {
     fn default() -> Self {
         Self {
+            decompression_sequences: decompression::Sequences::default(),
             callbacks: callbacks::Callbacks::default(),
             callback_frames: Vec::new(),
             movie_toolbox_enter_count: 0,
@@ -5258,6 +5261,7 @@ pub(super) fn ppc_qt_decode_ima4_channel_packet(packet: &[u8]) -> Option<[i16; 6
     Some(decoded)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PpcQuickTimeCinepakDecoder {
     pub(crate) width: usize,
     pub(crate) height: usize,
