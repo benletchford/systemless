@@ -2872,6 +2872,11 @@ impl MacMemoryBus {
             .allocate(size, alignment, self.synthetic_floor)
     }
 
+    /// Publish allocation metadata for a reserved direct-loaded CODE block.
+    pub(crate) fn adopt_reserved_allocation(&self, address: u32, size: u32) {
+        self.heap_allocator.adopt_reserved_allocation(address, size);
+    }
+
     /// Return the allocated size for a given address, or None if unknown.
     pub fn get_alloc_size(&self, addr: u32) -> Option<u32> {
         self.heap_allocator.allocation_size(addr)

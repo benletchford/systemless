@@ -1078,6 +1078,18 @@ pub(crate) struct RecentColorTableFetch {
 pub use crate::callback_manager::{ProcessTimerTask as TimerTask, ProcessVblTask as VblTask};
 
 pub(crate) const LOADSEG_GETRESOURCE_SENTINEL: u16 = 0x51F0;
+pub(crate) const RESOURCE_CHECKLOAD_SENTINEL: u16 = 0x51F2;
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResourceCheckLoadState {
+    pub return_pc: u32,
+    pub result_sp: Option<u32>,
+    pub reference: u32,
+    pub temporary_map: Option<(u32, u32)>,
+    pub d_regs: [u32; 8],
+    pub a_regs: [u32; 8],
+}
+
 
 /// In-flight Segment Loader native GetResource call.
 ///
@@ -1447,6 +1459,9 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated 8-byte trampoline used to resume
     /// HLE `_LoadSeg` after that native `_GetResource` hook returns.
     pub(crate) loadseg_getresource_trampoline_addr: Option<u32>,
+    pub(crate) resource_checkload_stack: Vec<ResourceCheckLoadState>,
+    pub(crate) resource_checkload_trampoline: Option<u32>,
+
     /// One-shot flag for auto-pop traps whose HLE handler deliberately
     /// sets PC. `_LoadSeg` uses this when a guest native LoadSeg handler
     /// jumps to its saved old `$ADF0` trap: the real trap patches the
@@ -3825,6 +3840,8 @@ impl TrapDispatcher {
             mask_table_addr: None,
             loadseg_getresource_state: None,
             loadseg_getresource_trampoline_addr: None,
+            resource_checkload_stack: Vec::new(),
+            resource_checkload_trampoline: None,
             preserve_auto_pop_pc_once: false,
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
@@ -4569,6 +4586,60 @@ impl TrapDispatcher {
     /// Register loaded segments for LoadSeg trap.
     pub fn register_segments(&mut self, segments: HashMap<i16, u32>) {
         self.segment_map = segments;
+    }
+
+    /// Give loaded application CODE the same master pointers and allocation
+    /// metadata used by the Resource Manager. Executing code may recover and
+    /// detach its own handle before installing a segment decompressor.
+    pub(crate) fn bind_application_code_handles(&mut self, bus: &mut MacMemoryBus) {
+        let mut segments: Vec<_> = self
+            .segment_map
+            .iter()
+            .map(|(&id, &ptr)| (id, ptr))
+            .collect();
+        segments.sort_unstable_by_key(|&(id, _)| id);
+        for (id, ptr) in segments {
+            let key = (0, *b"CODE", id);
+            let Some(size) = self
+                .resource_backing_data
+                .get(&key)
+                .map(|data| data.len() as u32)
+            else {
+                continue;
+            };
+            let old_ptr = self
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.files.get(&0))
+                .and_then(|file| file.loaded.get(&(*b"CODE", id)))
+                .copied()
+                .unwrap_or(0);
+            let handle = self.get_or_create_resource_handle_in_file(bus, *b"CODE", id, old_ptr, 0);
+            bus.adopt_reserved_allocation(ptr, size);
+            if old_ptr != 0 && old_ptr != ptr {
+                self.untrack_handle_ptr(old_ptr);
+                bus.free(old_ptr);
+            }
+            bus.write_long(handle, ptr);
+            self.track_handle_ptr(ptr, handle);
+            self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0) | 0xA0));
+            self.with_resource_manager_mut(|manager| {
+                manager.loaded_handles.insert(handle, (ptr, *b"CODE", id));
+                manager.resident_resources.insert(key);
+                if let Some(file) = manager
+                    .resources
+                    .as_mut()
+                    .and_then(|resources| resources.files.get_mut(&0))
+                {
+                    file.loaded.insert((*b"CODE", id), ptr);
+                    for ((kind, _), (named_id, named_ptr)) in &mut file.named {
+                        if *kind == *b"CODE" && *named_id == id {
+                            *named_ptr = ptr;
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /// Mirror Segment Loader relocations into resident application CODE
@@ -8732,10 +8803,13 @@ impl TrapDispatcher {
         );
 
         if result.is_ok() && !is_tool {
-            restore_os_trap_dispatch_frame(
-                cpu,
-                os_dispatch_frame.expect("OS dispatch must retain its register frame"),
-            );
+            let mut frame = os_dispatch_frame.expect("OS dispatch must retain its register frame");
+            // jCheckLoad is called as a Resource Manager subroutine through
+            // its saved vector, whose private ABI returns the handle in A0.
+            if default_os_gateway_call && trap_num == 0xFC {
+                frame.trap_word |= 0x0100;
+            }
+            restore_os_trap_dispatch_frame(cpu, frame);
             cpu.write_reg(Register::A7, sp_before);
             apply_os_trap_dispatcher_ccr(cpu);
         }
@@ -8791,6 +8865,20 @@ impl TrapDispatcher {
         // surface it to the operator.
         if result.is_ok() {
             self.current_trap_caller = None;
+        }
+
+        if result.is_ok() && is_tool {
+            let result_sp = cpu.read_reg(Register::A7);
+            let resource_result = match trap_num {
+                0x1A0 | 0x1A1 | 0x19D | 0x01F | 0x020 | 0x00E | 0x00C => {
+                    Some((bus.read_long(result_sp), Some(result_sp)))
+                }
+                0x1A2 => Some((bus.read_long(sp_before), None)),
+                _ => None,
+            };
+            if let Some((handle, result_sp)) = resource_result {
+                self.maybe_inject_resource_checkload(bus, cpu, handle, result_sp);
+            }
         }
 
         // Accumulate per-trap timing if enabled. End-to-end wall-clock per

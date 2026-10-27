@@ -5851,6 +5851,8 @@ struct ClassicHeapAllocatorState {
     alloc_sizes: HashMap<u32, u32>,
     /// Direct-loaded application image spans that heap allocations must skip.
     reserved_heap_ranges: Vec<(u32, u32)>,
+    /// Live allocations adopted from those reserved image spans.
+    adopted_image_allocations: HashSet<u32>,
     /// Capacity retained when a best-fit recycled block exceeds its request.
     alloc_bucket_sizes: HashMap<u32, u32>,
 }
@@ -5894,6 +5896,7 @@ impl Default for ClassicHeapAllocatorState {
             free_blocks: HashMap::new(),
             alloc_sizes: HashMap::new(),
             reserved_heap_ranges: Vec::new(),
+            adopted_image_allocations: HashSet::new(),
             alloc_bucket_sizes: HashMap::new(),
         }
     }
@@ -6247,6 +6250,44 @@ impl SharedClassicHeapAllocator {
         self.0.borrow().heap_ptr
     }
 
+    /// Adopt a direct-loaded block inside an already reserved application image.
+    /// Its bytes stay in place; ordinary handle size, resize and disposal now
+    /// operate on the same allocation that the Segment Loader executes.
+    pub(crate) fn adopt_reserved_allocation(&self, address: u32, size: u32) {
+        let capacity = Self::checked_allocation_bucket_size(size).expect("CODE size overflow");
+        let end = address
+            .checked_add(capacity)
+            .expect("CODE address overflow");
+        let mut state = self.0.borrow_mut();
+        assert_eq!(address & 3, 0, "CODE allocation must be aligned");
+        assert!(
+            state
+                .reserved_heap_ranges
+                .iter()
+                .any(|&(start, stop)| { start <= address && end <= stop }),
+            "CODE allocation must lie inside the reserved image"
+        );
+        if state.adopted_image_allocations.contains(&address)
+            && state.alloc_sizes.get(&address).copied() == Some(size)
+        {
+            return;
+        }
+        assert!(
+            state.alloc_sizes.iter().all(|(&other, &length)| {
+                let other_capacity = state
+                    .alloc_bucket_sizes
+                    .get(&other)
+                    .copied()
+                    .unwrap_or_else(|| Self::allocation_bucket_size(length));
+                end <= other || address >= other.saturating_add(other_capacity)
+            }),
+            "CODE allocation overlaps a live heap block"
+        );
+        state.adopted_image_allocations.insert(address);
+        state.alloc_sizes.insert(address, size);
+        state.alloc_bucket_sizes.insert(address, capacity);
+    }
+
     pub(crate) fn set_allocation_size(&self, address: u32, size: u32) {
         let mut state = self.0.borrow_mut();
         if let Some(old_size) = state.alloc_sizes.get(&address).copied() {
@@ -6265,6 +6306,7 @@ impl SharedClassicHeapAllocator {
             return;
         }
         let mut state = self.0.borrow_mut();
+        state.adopted_image_allocations.remove(&address);
         if let Some(size) = state.alloc_sizes.remove(&address) {
             let bucket = state
                 .alloc_bucket_sizes

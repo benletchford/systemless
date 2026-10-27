@@ -612,3 +612,73 @@ fn ppc_launchapplication_switches_to_bundled_application_on_either_cpu() {
         assert!(runner.dispatcher.vfs_rsrc.contains_key("Register Helper"));
     }
 }
+
+#[test]
+fn loaded_code_recovers_its_resource_handle_and_survives_detach() {
+    let code0 = minimal_code0(0, 0x2000, 0, 0);
+    let code = [0, 0, 0, 0, 0x4e, 0x75, 0x12];
+    let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"CODE", 1, &code)]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&fork).unwrap();
+    let ptr = app.segment_bases[&1];
+    runner.init_app(&app);
+    runner.m68k.cpu.write_reg(Register::A0, ptr);
+    runner
+        .dispatcher
+        .dispatch(0xA128, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    let handle = runner.m68k.cpu.read_reg(Register::A0);
+    assert_ne!(handle, 0, "executing CODE must have a recoverable handle");
+    assert_eq!(runner.bus.read_long(handle), ptr);
+    runner
+        .dispatcher
+        .dispatch(0xA025, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D0), code.len() as u32);
+    let resource_handle = runner.dispatcher.get_or_create_resource_handle_in_file(
+        &mut runner.bus,
+        *b"CODE",
+        1,
+        ptr,
+        0,
+    );
+    assert_eq!(resource_handle, handle);
+    runner.bus.write_byte(ptr + 6, 0x34);
+    assert_eq!(
+        runner
+            .bus
+            .read_byte(runner.bus.read_long(resource_handle) + 6),
+        0x34
+    );
+    let sp = runner.m68k.cpu.read_reg(Register::A7) - 4;
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_long(sp, handle);
+    runner
+        .dispatcher
+        .dispatch(0xA992, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    runner.m68k.cpu.write_reg(Register::A0, ptr);
+    runner
+        .dispatcher
+        .dispatch(0xA128, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A0), handle);
+    runner
+        .dispatcher
+        .dispatch(0xA025, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D0), code.len() as u32);
+    assert_eq!(
+        runner.bus.read_bytes(ptr, code.len()),
+        [0, 0, 0, 0, 0x4e, 0x75, 0x34]
+    );
+    let (_, reloaded_ptr) = runner
+        .dispatcher
+        .find_or_load_resource_any(&mut runner.bus, *b"CODE", 1)
+        .unwrap();
+    assert_ne!(reloaded_ptr, ptr);
+    assert_eq!(runner.bus.read_bytes(reloaded_ptr, code.len()), code);
+    assert_eq!(runner.bus.read_long(handle), ptr);
+    assert_eq!(runner.bus.read_byte(ptr + 6), 0x34);
+}
