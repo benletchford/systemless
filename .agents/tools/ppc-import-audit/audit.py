@@ -32,8 +32,19 @@ def catalogue_ppc_archives(catalogue_dir):
         if not match:
             continue
         front = match.group(1)
-        arches = re.search(r"^architectures:\n((?:- .*\n)+)", front + "\n", re.M)
-        if not arches or "- ppc" not in arches.group(1):
+        arches = re.search(
+            r"^architectures:[ \t]*(?:\[([^\]\n]*)\]|\n((?:- .*\n)+))",
+            front + "\n",
+            re.M,
+        )
+        if not arches:
+            continue
+        architectures = (
+            [item.strip().strip("\"'") for item in arches.group(1).split(",")]
+            if arches.group(1) is not None
+            else [item[2:].strip().strip("\"'") for item in arches.group(2).splitlines()]
+        )
+        if "ppc" not in architectures:
             continue
         for block in re.split(r"^- id: ", front, flags=re.M)[1:]:
             if not re.search(r"^  role: archive$", block, re.M):
