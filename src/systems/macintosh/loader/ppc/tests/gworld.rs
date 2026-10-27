@@ -116,7 +116,7 @@ use super::*;
         let private_handle = loaded.memory.read_u32_be(record.pixmap + 42).unwrap();
         assert_ne!(private_handle, 0);
         assert_ne!(private_handle, PPC_MAIN_CTABLE_HANDLE);
-        assert_eq!(test_handle_records!(loaded).len(), handle_count + 1);
+        assert_eq!(test_handle_records!(loaded).len(), handle_count + 3);
         assert_eq!(
             ppc_copy_color_table_bytes(&mut loaded.memory, private_handle),
             Some(main_table)
@@ -1558,7 +1558,7 @@ use super::*;
             .unwrap()
             .ctable_handle;
         assert_ne!(private_ctable, 0);
-        assert_eq!(test_handle_records!(loaded).len(), initial_handle_count + 1);
+        assert_eq!(test_handle_records!(loaded).len(), initial_handle_count + 3);
 
         let sentinel_bytes = b"unrelated allocation";
         let sentinel = ppc_alloc_handle_with_bytes(
@@ -2701,5 +2701,148 @@ fn pixmap32bit_reports_live_addressing_version_independent_of_depth() {
         loaded.cpu.gpr[3] = handle;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::PixMap32Bit);
         assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
+
+#[test]
+fn new_gworld_saved_initial_clip_restores_full_drawing_and_remains_caller_owned() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewGWorld")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 4, 4).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 16, 1, 1, 3, 3).unwrap();
+    loaded.memory.write_u16_be(scratch + 24, 0xffff).unwrap();
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = 16;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let port = loaded.memory.read_u32_be(scratch + 8).unwrap();
+    let world = *loaded
+        .gworlds
+        .iter()
+        .find(|world| world.port == port)
+        .unwrap();
+    loaded.cpu.gpr[3] = port;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetGWorld);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewRgn);
+    let saved_clip = loaded.cpu.gpr[3];
+    assert_ne!(saved_clip, 0);
+    loaded.cpu.gpr[3] = saved_clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetClip);
+    loaded.cpu.gpr[3] = scratch + 16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    loaded.cpu.gpr[3] = saved_clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetClip);
+    loaded.cpu.gpr[3] = scratch + 24;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+    assert_eq!(loaded.memory.read_u16_be(world.base_addr), Some(0x7c00));
+
+    let visible = loaded
+        .memory
+        .read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    let clip = loaded
+        .memory
+        .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    assert_ne!(visible, 0);
+    assert_ne!(clip, 0);
+    assert_ne!(visible, clip);
+    assert_ne!(clip, saved_clip);
+    let allocation = loaded.toolbox_startup.gworld_allocations[&port];
+    assert_eq!(allocation.vis_rgn, visible);
+    assert_eq!(allocation.clip_rgn, clip);
+    assert!(loaded.handles().iter().any(|h| h.handle == visible));
+    assert!(loaded.handles().iter().any(|h| h.handle == clip));
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, visible),
+        Some((0, 0, 4, 4))
+    );
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, clip),
+        Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX))
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 8, 8).unwrap();
+    loaded.cpu.gpr[3] = scratch + 8;
+    loaded.cpu.gpr[4] = 16;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateGWorld);
+    assert_eq!(loaded.cpu.gpr[3] & (1 << 31), 0);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET),
+        Some(visible)
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+        Some(clip)
+    );
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, visible),
+        Some((0, 0, 8, 8))
+    );
+    let allocation = loaded.toolbox_startup.gworld_allocations[&port];
+    assert_eq!(allocation.vis_rgn, visible);
+    assert_eq!(allocation.clip_rgn, clip);
+    let saved_bytes = ppc_region_storage(&mut loaded.memory, saved_clip).unwrap();
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeGWorld);
+    assert!(!loaded
+        .handles()
+        .iter()
+        .any(|h| h.handle == visible || h.handle == clip));
+    assert!(loaded.handles().iter().any(|h| h.handle == saved_clip));
+    assert_eq!(
+        ppc_region_storage(&mut loaded.memory, saved_clip),
+        Some(saved_bytes)
+    );
+}
+#[test]
+fn new_gworld_region_allocation_failure_rolls_back_native_ownership() {
+    // Fail before either region, between the regions, and after both regions
+    // but before the nonrelocatable world storage can fit.
+    for available in [0, 16, 32, 48, 64] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewGWorld")).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 16]);
+        ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 4, 4).unwrap();
+        loaded
+            .memory
+            .write_u32_be(scratch + 8, 0xdead_beef)
+            .unwrap();
+        let cursor = loaded.heap_cursor();
+        let handles = loaded.handles().to_vec();
+        let ptrs = loaded.ptrs();
+        let worlds = loaded.gworlds.len();
+        let allocations = loaded.toolbox_startup.gworld_allocations.clone();
+        loaded.set_heap_limit(cursor + available);
+        loaded.cpu.gpr[3] = scratch + 8;
+        loaded.cpu.gpr[4] = 16;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        assert_eq!(loaded.cpu.gpr[3] as u16 as i16, PPC_MEM_FULL_ERR);
+        assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+        assert_eq!(loaded.heap_cursor(), cursor);
+        assert_eq!(loaded.handles(), handles);
+        assert_eq!(loaded.gworlds.len(), worlds);
+        assert_eq!(loaded.toolbox_startup.gworld_allocations, allocations);
+        assert_eq!(loaded.memory.read_u32_be(scratch + 8), Some(0xdead_beef));
+        assert_eq!(loaded.ptrs(), ptrs);
     }
 }

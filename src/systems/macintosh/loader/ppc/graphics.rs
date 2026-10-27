@@ -56,6 +56,8 @@ pub(crate) struct PpcGWorldAllocationRecord {
     pub(crate) origin_base: u32,
     pub(crate) pixel_capacity: u32,
     pub(crate) ctable_handle: u32,
+    pub(crate) vis_rgn: u32,
+    pub(crate) clip_rgn: u32,
     pub(crate) allocation_end: u32,
 }
 

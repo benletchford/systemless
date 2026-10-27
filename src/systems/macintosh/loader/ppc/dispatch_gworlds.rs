@@ -299,24 +299,35 @@ pub(super) fn dispatch_gworld_import(
                 {
                     owned_ptrs.push(pixel_ptr);
                 }
-                let ctable_reclaim_base = allocation.and_then(|allocation| {
-                    handles
-                        .iter()
-                        .find(|handle| handle.handle == ctable_handle && ctable_handle != 0)
-                        .filter(|handle| {
-                            allocation.allocation_end == *heap_cursor
-                                && handle
-                                    .handle
-                                    .checked_add(ppc_allocation_size(4).unwrap_or(0))
-                                    == Some(handle.ptr)
-                                && handle
-                                    .ptr
-                                    .checked_add(ppc_allocation_size(handle.capacity).unwrap_or(0))
-                                    == Some(allocation.origin_base)
-                        })
-                        .map(|handle| handle.handle)
-                });
-                if ctable_handle != 0 && ctable_handle != PPC_MAIN_CTABLE_HANDLE {
+                let owned_regions = allocation
+                    .map(|allocation| [allocation.vis_rgn, allocation.clip_rgn])
+                    .unwrap_or([0; 2]);
+                // Record the lowest owned address before disposing handles.
+                // Handles may have been recycled below the world's storage;
+                // reclaim_native_heap_tail checks for unrelated live objects
+                // before allowing any contraction across that range.
+                let reclaim_base = allocation
+                    .filter(|allocation| allocation.allocation_end == *heap_cursor)
+                    .map(|allocation| {
+                        handles
+                            .iter()
+                            .filter(|record| {
+                                record.handle == ctable_handle || owned_regions.contains(&record.handle)
+                            })
+                            .fold(allocation.origin_base, |base, record| {
+                                base.min(record.handle).min(record.ptr)
+                            })
+                    })
+                    .or_else(|| {
+                        (ppc_allocation_size(PPC_CGRAF_PORT_SIZE)
+                            .and_then(|size| record.port.checked_add(size))
+                            == Some(*heap_cursor))
+                        .then_some(record.base_addr)
+                    });
+                for handle in [ctable_handle, owned_regions[0], owned_regions[1]] {
+                    if handle == 0 || handle == PPC_MAIN_CTABLE_HANDLE {
+                        continue;
+                    }
                     let _ = ppc_dispose_process_native_handle(
                         process_memory_manager,
                         memory,
@@ -324,21 +335,14 @@ pub(super) fn dispatch_gworld_import(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        ctable_handle,
+                        handle,
                     );
+                }
+                if ctable_handle != 0 && ctable_handle != PPC_MAIN_CTABLE_HANDLE {
                     toolbox_startup
                         .indexed_screen_ctables
                         .retain(|_, handle| *handle != ctable_handle);
                 }
-                let reclaim_base = allocation
-                    .filter(|allocation| allocation.allocation_end == *heap_cursor)
-                    .map(|allocation| ctable_reclaim_base.unwrap_or(allocation.origin_base))
-                    .or_else(|| {
-                        (ppc_allocation_size(PPC_CGRAF_PORT_SIZE)
-                            .and_then(|size| record.port.checked_add(size))
-                            == Some(*heap_cursor))
-                        .then_some(record.base_addr)
-                    });
                 if let Some(reclaim_base) = reclaim_base {
                     let reclaimed_ptrs = owned_ptrs
                         .iter()
