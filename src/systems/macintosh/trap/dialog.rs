@@ -4644,6 +4644,16 @@ impl super::TrapDispatcher {
         control_handles.sort_unstable();
         control_handles.dedup();
 
+        // The dialog TERecord borrows the selected item's handle. Remove
+        // that reference before freeing the item handles and the TERecord.
+        if can_read_dialog_record {
+            let te_handle =
+                bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+            let te_ptr = Self::te_record_ptr(bus, te_handle);
+            if te_ptr != 0 && text_handles.contains(&bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET)) {
+                bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, 0);
+            }
+        }
         for handle in text_handles {
             self.dispose_dialog_handle_storage(bus, handle);
         }
@@ -4860,6 +4870,45 @@ impl super::TrapDispatcher {
         true
     }
 
+    // Dialog Manager shares the selected item's text handle with TextEdit,
+    // including disabled editText items used by applications for layout.
+    fn bind_dialog_edit_text(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        dialog_ptr: u32,
+        item_no: i16,
+        item: &DialogItem,
+    ) {
+        let te_handle =
+            bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+        let item_handle = Self::dialog_item_handle(bus, dialog_ptr, item_no);
+        let previous = bus.read_long(te_ptr + Self::TE_HTEXT_OFFSET);
+        if item_handle != 0 {
+            if previous != item_handle && !self.dialog_item_handles.contains_key(&previous) {
+                self.dispose_dialog_handle_storage(bus, previous);
+            }
+            bus.write_long(te_ptr + Self::TE_HTEXT_OFFSET, item_handle);
+        }
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, item.rect);
+        Self::te_write_rect_words(bus, te_ptr + Self::TE_VIEW_RECT_OFFSET, item.rect);
+        let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
+            .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
+        self.te_set_text_contents(bus, te_handle, &text);
+        let len = text.len().min(i16::MAX as usize) as i16;
+        bus.write_word(
+            te_ptr + Self::TE_SEL_START_OFFSET,
+            item.sel_start.clamp(0, len) as u16,
+        );
+        bus.write_word(
+            te_ptr + Self::TE_SEL_END_OFFSET,
+            item.sel_end.clamp(0, len) as u16,
+        );
+    }
+
     fn activate_dialog_edit_item<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4892,12 +4941,8 @@ impl super::TrapDispatcher {
             return true;
         }
 
-        let item_handle = Self::dialog_item_handle(bus, dialog_ptr, edit_item);
-        let text = Self::text_item_bytes_from_handle_if_present(bus, item_handle)
-            .unwrap_or_else(|| encode_mac_roman_lossy(&item.text));
-        self.te_set_text_contents(bus, text_handle, &text);
-
-        let text_len = text.len().min(u16::MAX as usize);
+        self.bind_dialog_edit_text(bus, dialog_ptr, edit_item, item);
+        let text_len = Self::te_text_length(bus, text_handle);
         let sel_start = item.sel_start.max(0) as usize;
         let sel_end = item.sel_end.max(0) as usize;
         bus.write_word(
@@ -5240,6 +5285,8 @@ impl super::TrapDispatcher {
         }
 
         let text_h = Self::allocate_te_handle(bus);
+        let port_rect = (0, 0, bounds.2 - bounds.0, bounds.3 - bounds.1);
+        self.initialize_te_record(bus, text_h, port_rect, port_rect);
         bus.write_long(
             dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
             text_h,
@@ -5259,6 +5306,16 @@ impl super::TrapDispatcher {
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
         self.dialog_items.insert(dlg_ptr, items.clone());
+        if let Some((index, item)) = items.iter().enumerate().find(|(_, item)| {
+            dialog_item_base_type(item.item_type) == DIALOG_ITEM_EDIT_TEXT
+                && Self::dialog_item_intersects_bounds(bounds, item)
+        }) {
+            bus.write_word(
+                dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET,
+                index as u16,
+            );
+            self.bind_dialog_edit_text(bus, dlg_ptr, index as i16 + 1, item);
+        }
         // A dialog's screen-backed GrafPort can receive application control
         // drawing even while its window is hidden. Establish the save-under
         // before returning the DialogPtr so those dialog-owned writes cannot
@@ -16133,6 +16190,12 @@ impl super::TrapDispatcher {
                     }
                 }
                 if let Some((dialog_ptr, item_no)) = redraw_item {
+                    if let Some(item) = self.dialog_items.get(&dialog_ptr)
+                        .and_then(|items| items.get((item_no - 1) as usize))
+                        .cloned()
+                    {
+                        self.bind_dialog_edit_text(bus, dialog_ptr, item_no, &item);
+                    }
                     self.redraw_dialog_text_item(bus, dialog_ptr, item_no);
                 }
                 cpu.write_reg(Register::A7, sp + 10);
@@ -16646,6 +16709,18 @@ impl super::TrapDispatcher {
                             crate::dialog_manager::get_item_at_1_indexed_mut(items, idx + 1)
                         {
                             item.set_text(eval.text());
+                        }
+                    }
+                    if bus.read_word(dlg_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET)
+                        == idx as u16
+                    {
+                        let te_handle = bus.read_long(
+                            dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
+                        );
+                        let te_ptr = Self::te_record_ptr(bus, te_handle);
+                        if te_ptr != 0 {
+                            bus.write_word(te_ptr + Self::TE_LENGTH_OFFSET, eval.byte_len() as u16);
+                            self.te_recalculate_layout(bus, te_handle);
                         }
                     }
                     let mut refresh_tracking = false;
