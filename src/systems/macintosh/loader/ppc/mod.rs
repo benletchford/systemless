@@ -127,6 +127,8 @@ mod dispatch_core_foundation;
 mod dispatch_internet_config;
 mod dispatch_glide;
 pub use dispatch_glide::PpcGlideOperation;
+mod dispatch_qt_atoms;
+pub use dispatch_qt_atoms::PpcQtAtomOperation;
 mod dispatch_speech_recognition;
 pub use dispatch_speech_recognition::PpcSpeechRecognitionOperation;
 mod dispatch_cursor;

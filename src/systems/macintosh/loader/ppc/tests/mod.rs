@@ -277,6 +277,7 @@ mod system_extras;
 mod icon_services;
 pub(crate) use mixed_mode::*;
 mod quicktime;
+mod quicktime_atoms;
 mod memory_manager;
 mod resource_manager;
 mod process_services;
