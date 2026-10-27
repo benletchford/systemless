@@ -523,7 +523,7 @@ impl super::TrapDispatcher {
         self.std_pix_gateway
     }
 
-    fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
+    pub(super) fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
         let needle = name.trim();
         if needle.is_empty() {
             return None;
@@ -8523,6 +8523,15 @@ impl super::TrapDispatcher {
                     super::picture_stream::PictureStreamInput::Deferred => return Some(Ok(())),
                     super::picture_stream::PictureStreamInput::Materialized(bytes) => Some(bytes),
                 };
+                if self.begin_picture_callbacks(
+                    cpu,
+                    bus,
+                    pic_handle,
+                    dst_rect_ptr,
+                    streamed_bytes.as_deref(),
+                ) {
+                    return Some(Ok(()));
+                }
                 cpu.write_reg(Register::A7, sp + 8);
 
                 if streamed_bytes.as_ref().is_some_and(|bytes| bytes.is_empty()) {
@@ -19287,7 +19296,7 @@ impl super::TrapDispatcher {
         ))
     }
 
-    fn write_port_hilite_color(
+    pub(super) fn write_port_hilite_color(
         &mut self,
         bus: &mut MacMemoryBus,
         port: u32,
@@ -22648,7 +22657,7 @@ impl super::TrapDispatcher {
         (i32::from(y) - i32::from(top)) as usize
     }
 
-    fn region_rows_for_band(
+    pub(super) fn region_rows_for_band(
         bus: &MacMemoryBus,
         rgn_handle: u32,
         top: i16,
@@ -22793,7 +22802,7 @@ impl super::TrapDispatcher {
         Some((top, rows))
     }
 
-    fn write_region_from_rows(
+    pub(super) fn write_region_from_rows(
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
         rows_top: i16,
