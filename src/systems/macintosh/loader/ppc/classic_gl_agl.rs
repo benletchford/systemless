@@ -144,6 +144,8 @@ pub struct PpcAglContext {
     pub handle: u32,
     pub format: PpcAglPixelFormatRequest,
     pub drawable: u32,
+    /// This context owns an allocated guest AGLContext record.
+    pub guest_record: bool,
     pub fullscreen: bool,
     /// Client memory attached by aglSetOffScreen.
     pub offscreen: Option<PpcFrontBuffer>,
@@ -232,6 +234,22 @@ impl PpcAglState {
     }
 
     pub fn create_context(&mut self, format: u32, share: u32) -> u32 {
+        let handle = self.next_handle;
+        let Some(next) = handle.checked_add(4) else {
+            return 0;
+        };
+        let result = self.create_context_at(format, share, handle);
+        if result != 0 {
+            self.next_handle = next;
+        }
+        result
+    }
+
+    /// Create a context backed by a guest-owned AGLContext record.
+    pub fn create_context_at(&mut self, format: u32, share: u32, handle: u32) -> u32 {
+        if handle == 0 || self.context(handle).is_some() {
+            return 0;
+        }
         // A share context joins its texture objects and display lists to the
         // new context's (AGL/agl.h aglCreateContext).
         let share_group = if share == 0 {
@@ -248,16 +266,12 @@ impl PpcAglState {
         else {
             return 0;
         };
-        let handle = self.next_handle;
-        let Some(next) = handle.checked_add(4) else {
-            return 0;
-        };
-        self.next_handle = next;
         let gl = Box::new(GlContext::new(format.double_buffered));
         self.contexts.push(PpcAglContext {
             handle,
             format,
             drawable: 0,
+            guest_record: false,
             fullscreen: false,
             offscreen: None,
             framebuffer: None,

@@ -259,6 +259,7 @@ pub mod files;
 pub mod fixmath;
 pub mod graphics;
 mod classic_gl_agl;
+mod agl_macros;
 pub(crate) use classic_gl_agl::{ppc_agl_read_pixel_format_request, PpcAglState};
 mod classic_gl_framebuffer;
 pub mod classic_gl;

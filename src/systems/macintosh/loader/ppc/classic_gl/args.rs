@@ -33,6 +33,15 @@ impl<'a> PpcCallArgs<'a> {
         }
     }
 
+    pub fn with_first_word(cpu: &'a PpcCpu, memory: &'a mut PpcSectionMem, word: usize) -> Self {
+        Self {
+            cpu,
+            memory,
+            word,
+            fpr: 0,
+        }
+    }
+
     pub fn memory(&mut self) -> &mut PpcSectionMem {
         self.memory
     }
@@ -129,5 +138,30 @@ mod tests {
             assert_eq!(args.u32(), index);
         }
         assert_eq!(args.u32(), 0xDEAD_BEEF);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn renderer_prefix_preserves_float_shadow_words_and_stack_spills() {
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    cpu.gpr[1] = 0x1000;
+    memory.add_region(0x1000, vec![0; 128]);
+    cpu.gpr[3] = 0xdead_beef;
+    for word in 1..10 {
+        if word < 8 {
+            cpu.gpr[3 + word] = word as u32;
+        }
+        memory
+            .write_u32_be(0x1000 + 24 + word as u32 * 4, word as u32)
+            .unwrap();
+    }
+    cpu.fpr[1] = 0.5_f64.to_bits();
+    let mut args = PpcCallArgs::with_first_word(&cpu, &mut memory, 1);
+    assert_eq!(args.u32(), 1);
+    assert_eq!(args.f32(), 0.5);
+    for expected in 3..10 {
+        assert_eq!(args.u32(), expected);
     }
 }
