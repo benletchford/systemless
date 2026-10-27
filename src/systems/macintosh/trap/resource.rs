@@ -830,6 +830,19 @@ impl super::TrapDispatcher {
         bus.read_byte(crate::memory::globals::addr::RES_LOAD) != 0
     }
 
+    // Resource attributes initialize a newly created or reloaded block.
+    // Resident lookups preserve later HLock/HNoPurge changes. Inside
+    // Macintosh: More Macintosh Toolbox (1993), GetResAttrs and SetResAttrs.
+    fn initial_resource_handle_state(&self, handle: u32) -> u8 {
+        let attrs = self.resource_attributes_for_handle(handle).unwrap_or(0);
+        0x20 | if attrs & 0x20 != 0 { 0x40 } else { 0 } | if attrs & 0x10 != 0 { 0x80 } else { 0 }
+    }
+
+    fn initialize_resource_handle_state(&self, handle: u32) {
+        let initial = self.initial_resource_handle_state(handle);
+        self.update_handle_state_bits(handle, |_| Some(initial));
+    }
+
     pub(crate) fn get_or_create_resource_handle_in_file(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -867,6 +880,9 @@ impl super::TrapDispatcher {
                         && (Self::resource_loading_enabled(bus) || recorded_resident)
                     {
                         bus.write_long(handle, existing_ptr);
+                        if existing_ptr != 0 {
+                            self.initialize_resource_handle_state(handle);
+                        }
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
                     if bus.read_long(handle) != 0 && existing_ptr != 0 {
@@ -875,8 +891,9 @@ impl super::TrapDispatcher {
                         });
                         self.track_handle_ptr(existing_ptr, handle);
                     }
+                    let initial = self.initial_resource_handle_state(handle);
                     self.update_handle_state_bits(handle, |state| {
-                        Some(state.unwrap_or(0x40) | 0x20)
+                        Some(state.unwrap_or(initial) | 0x20)
                     });
                     return handle;
                 }
@@ -900,7 +917,7 @@ impl super::TrapDispatcher {
             resource_manager.resource_handle_files.insert(handle, refnum);
         });
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
-        self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
+        self.initialize_resource_handle_state(handle);
         if materialize && ptr != 0 {
             self.with_resource_manager_mut(|resource_manager| {
                 resource_manager.resident_resources.insert(key);
@@ -1167,7 +1184,8 @@ impl super::TrapDispatcher {
 
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
         self.track_handle_ptr(ptr, handle);
-        self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0x40) | 0x20));
+        let initial = self.initial_resource_handle_state(handle);
+        self.update_handle_state_bits(handle, |state| Some(state.unwrap_or(initial) | 0x20));
         self.with_resource_manager_mut(|resource_manager| {
             if let (Some((_, res_type, res_id)), Some(refnum)) = (
                 resource_manager.loaded_handles.get(&handle).copied(),
@@ -2392,6 +2410,9 @@ impl super::TrapDispatcher {
                                 entry.0 = ptr;
                             }
                         });
+                        if was_empty {
+                            self.initialize_resource_handle_state(handle);
+                        }
                         self.restore_loaded_resource_handle(handle, ptr);
                         if was_empty {
                             self.add_resource_materialization_tick_cost(bus, ptr);
@@ -7878,6 +7899,7 @@ impl super::TrapDispatcher {
                 }
             });
             bus.write_long(handle, ptr);
+            self.initialize_resource_handle_state(handle);
             self.restore_loaded_resource_handle(handle, ptr);
         }
 

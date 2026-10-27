@@ -2997,7 +2997,8 @@ fn get_handle_size_tracks_resized_resource_handle_logical_size() {
     dispatcher.remember_resource_backing_data(0, *b"Xmnu", 131, resource_bytes);
     let handle =
         dispatcher.get_or_create_resource_handle_in_file(&mut bus, *b"Xmnu", 131, data_ptr, 0);
-    assert_eq!(dispatcher.handle_state_bits(handle), Some(0x60));
+    // No purgeable or locked attributes are set for this resource.
+    assert_eq!(dispatcher.handle_state_bits(handle), Some(0x20));
 
     let resized_ptr = dispatcher.resize_resource_allocation(&mut bus, handle, data_ptr, 256);
     assert_ne!(resized_ptr, 0);
@@ -3039,7 +3040,7 @@ fn get_handle_size_tracks_resized_resource_handle_logical_size() {
         .expect("PtrAndHand should be handled")
         .expect("PtrAndHand should succeed");
     assert_eq!(cpu.read_reg(Register::D0), 0);
-    assert_eq!(dispatcher.handle_state_bits(handle), Some(0x60));
+    assert_eq!(dispatcher.handle_state_bits(handle), Some(0x20));
 
     cpu.write_reg(Register::A0, handle);
     dispatcher

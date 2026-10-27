@@ -11547,3 +11547,88 @@ fn checkload_respects_resload_false_then_loadresource_materializes_the_handle() 
     assert_eq!(cpu.read_reg(Register::A0), 0x123456);
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
 }
+
+fn get_classic_attribute_test_resource(
+    disp: &mut super::super::TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut crate::memory::MacMemoryBus,
+) -> u32 {
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_word(TEST_SP, 99);
+    bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"ATTR"));
+    call(disp, true, 0x1A0, cpu, bus).unwrap();
+    assert_eq!(bus.read_word(0x0A60), 0);
+    let handle = bus.read_long(TEST_SP + 6);
+    assert_ne!(handle, 0);
+    handle
+}
+
+#[test]
+fn classic_resource_materialization_honors_lock_and_purge_attributes() {
+    for (attrs, expected) in [(0, 0x20), (0x20, 0x60), (0x10, 0xa0), (0x30, 0xe0)] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        setup_resources(&mut disp, &mut bus, b"ATTR", 99, b"resource state");
+        disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), attrs);
+        let handle = get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus);
+        cpu.write_reg(Register::A0, handle);
+        call_trap_word(&mut disp, 0xA069, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), expected, "attrs={attrs:02x}");
+        assert_ne!(bus.read_long(handle), 0);
+    }
+}
+
+#[test]
+fn classic_resource_materialization_preserves_resident_application_state() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    setup_resources(&mut disp, &mut bus, b"ATTR", 99, b"resident state");
+    disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), 0x20);
+    let handle = get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus);
+    let pointer = bus.read_long(handle);
+    cpu.write_reg(Register::A0, handle);
+    call_trap_word(&mut disp, 0xA04A, &mut cpu, &mut bus).unwrap(); // HNoPurge
+    call_trap_word(&mut disp, 0xA029, &mut cpu, &mut bus).unwrap(); // HLock
+    disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), 0);
+    assert_eq!(
+        get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus),
+        handle
+    );
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, handle);
+    call(&mut disp, true, 0x1A2, &mut cpu, &mut bus).unwrap(); // LoadResource
+    cpu.write_reg(Register::A0, handle);
+    call_trap_word(&mut disp, 0xA069, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0xa0);
+    assert_eq!(bus.read_long(handle), pointer);
+}
+
+#[test]
+fn classic_resource_materialization_applies_changed_attributes_when_loading() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    setup_resources(&mut disp, &mut bus, b"ATTR", 99, b"deferred state");
+    disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), 0x20);
+    bus.write_byte(addr::RES_LOAD, 0);
+    let handle = get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus);
+    assert_eq!(bus.read_long(handle), 0);
+    assert_eq!(disp.handle_state_bits(handle), Some(0x60));
+    disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), 0x10);
+    assert_eq!(
+        get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus),
+        handle
+    );
+    assert_eq!(disp.handle_state_bits(handle), Some(0x60));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, handle);
+    call(&mut disp, true, 0x1A2, &mut cpu, &mut bus).unwrap();
+    assert_ne!(bus.read_long(handle), 0);
+    assert_eq!(disp.handle_state_bits(handle), Some(0xa0));
+
+    bus.write_long(handle, 0);
+    bus.write_byte(addr::RES_LOAD, 1);
+    disp.insert_resource_attrs_for_test(0, (*b"ATTR", 99), 0x20);
+    assert_eq!(
+        get_classic_attribute_test_resource(&mut disp, &mut cpu, &mut bus),
+        handle
+    );
+    assert_ne!(bus.read_long(handle), 0);
+    assert_eq!(disp.handle_state_bits(handle), Some(0x60));
+}
