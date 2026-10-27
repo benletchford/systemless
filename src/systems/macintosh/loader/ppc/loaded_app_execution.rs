@@ -650,6 +650,20 @@ impl PpcLoadedApp {
                     };
                     return super::rave::ppc_rave_method(method, cpu, memory, &mut rave, &mut allocate);
                 }
+                if let Some(name) = super::agl_macros::method_name(index) {
+                    if let Some(action) = super::dispatch_imports::ppc_agl_macro_call(
+                        name,
+                        cpu,
+                        memory,
+                        &mut agl,
+                        &gworlds,
+                        &window_list,
+                    ) {
+                        return action;
+                    }
+                    unsupported_import_index = Some(index);
+                    return PpcImportAction::Halt;
+                }
                 last_import_index = Some(index);
                 // A Mixed Mode callback can advance process time while the
                 // native slice is suspended. Refresh the whole-tick baseline

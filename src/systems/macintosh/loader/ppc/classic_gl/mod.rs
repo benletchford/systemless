@@ -1537,11 +1537,23 @@ pub fn call(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> GlResult {
+    call_with_first_word(ctx, framebuffer, function, cpu, memory, 0)
+}
+
+/// AGL renderer callbacks prepend a GLIContext word without consuming an FPR.
+pub(super) fn call_with_first_word(
+    ctx: &mut GlContext,
+    framebuffer: Option<&mut ClassicGlFramebuffer>,
+    function: GlFunction,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    first_word: usize,
+) -> GlResult {
     if !gl_trace_enabled() {
-        return call_untraced(ctx, framebuffer, function, cpu, memory);
+        return call_untraced(ctx, framebuffer, function, cpu, memory, first_word);
     }
     let error_before = ctx.state.error;
-    let result = call_untraced(ctx, framebuffer, function, cpu, memory);
+    let result = call_untraced(ctx, framebuffer, function, cpu, memory, first_word);
     if error_before == NO_ERROR && ctx.state.error != NO_ERROR {
         eprintln!(
             "[GL] {function:?} raised 0x{:04X} r3=${:08X} r4=${:08X} r5=${:08X} r6=${:08X}",
@@ -1557,8 +1569,9 @@ fn call_untraced(
     function: GlFunction,
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
+    first_word: usize,
 ) -> GlResult {
-    let mut args = PpcCallArgs::new(cpu, memory);
+    let mut args = PpcCallArgs::with_first_word(cpu, memory, first_word);
     let call = match function {
         GlFunction::Vertex { size, kind, vector } => {
             let v = read_attribute(&mut args, kind, vector, size as usize);

@@ -3369,11 +3369,25 @@ pub(crate) fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AglGetError => Some(PpcImportAction::Return(agl.get_error())),
-        PpcImportDispatcherTarget::AglCreateContext => Some(PpcImportAction::Return(
-            agl.create_context(cpu.gpr[3], cpu.gpr[4]),
-        )),
+        PpcImportDispatcherTarget::AglCreateContext => {
+            Some(PpcImportAction::Return(agl_macros::create_context(
+                cpu,
+                memory,
+                process_memory_manager,
+                agl,
+                heap_cursor,
+                last_mem_error,
+            )))
+        }
         PpcImportDispatcherTarget::AglDestroyContext => Some(PpcImportAction::Return(u32::from(
-            agl.destroy_context(cpu.gpr[3]),
+            agl_macros::destroy_context(
+                cpu.gpr[3],
+                memory,
+                process_memory_manager,
+                agl,
+                heap_cursor,
+                last_mem_error,
+            ),
         ))),
         PpcImportDispatcherTarget::AglSetCurrentContext => Some(PpcImportAction::Return(
             u32::from(agl.set_current_context(cpu.gpr[3])),
@@ -3707,6 +3721,53 @@ fn ppc_agl_describe_pixel_format(
     true
 }
 
+
+/// AGL macro calls name their renderer explicitly and do not change the
+/// caller's current context. Temporarily gather its shared objects while
+/// executing the same GL implementation used by ordinary library imports.
+pub(super) fn ppc_agl_macro_call(
+    name: &str,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    agl: &mut PpcAglState,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+) -> Option<PpcImportAction> {
+    use super::classic_gl::functions::{GlFunction, GlNamed};
+    let function = GlFunction::from_name(name)?;
+    let previous = agl.current_context();
+    let handle = cpu.gpr[3];
+    if handle == 0 || !agl.set_current_context(handle) {
+        agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+        return Some(PpcImportAction::Return(0));
+    }
+    let context = agl.context_mut(handle).unwrap();
+    let result = super::classic_gl::call_with_first_word(
+        &mut context.gl,
+        context.framebuffer.as_mut(),
+        function,
+        cpu,
+        memory,
+        1,
+    );
+    if matches!(
+        function,
+        GlFunction::Named(GlNamed::Flush | GlNamed::Finish)
+    ) {
+        if let Some(surface) = agl
+            .context(handle)
+            .and_then(|context| ppc_agl_context_surface(memory, gworlds, window_list, context))
+        {
+            agl.flush(handle, memory, surface);
+        }
+    }
+    let _ = agl.set_current_context(previous);
+    Some(match result {
+        super::classic_gl::GlResult::Void => PpcImportAction::ReturnPreserve,
+        super::classic_gl::GlResult::Value(value) => PpcImportAction::Return(value),
+    })
+}
+
 fn ppc_agl_window_surface(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -3714,7 +3775,7 @@ fn ppc_agl_window_surface(
     drawable: u32,
 ) -> Option<PpcFrontBuffer> {
     // Apple Technical Q&A OGL02 (2000): an AGLDrawable is a window CGrafPtr;
-    // a DrawSprocket front buffer is not a valid AGL drawable.
+    // require a registered window port, rejecting bare screen/offscreen GWorlds.
     // https://leopard-adc.pepas.com/qa/ogl/ogl02.html
     if drawable == 0
         || matches!(drawable, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
