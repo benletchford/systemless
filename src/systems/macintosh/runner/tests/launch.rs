@@ -682,3 +682,34 @@ fn loaded_code_recovers_its_resource_handle_and_survives_detach() {
     assert_eq!(runner.bus.read_long(handle), ptr);
     assert_eq!(runner.bus.read_byte(ptr + 6), 0x34);
 }
+
+#[test]
+fn word_aligned_code_zero_keeps_its_address_and_resource_handle() {
+    let code0 = minimal_code0(2, 0x2000, 0, 0);
+    let code1 = [0, 0, 0, 0, 0x4e, 0x75, 0x12];
+    let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"CODE", 1, &code1)]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&fork).unwrap();
+    assert_eq!(app.segment_bases[&0] & 3, 2);
+    for (id, expected) in [(0, code0.as_slice()), (1, code1.as_slice())] {
+        let ptr = app.segment_bases[&id];
+        assert_eq!(runner.bus.read_bytes(ptr, expected.len()), expected);
+        runner.m68k.cpu.write_reg(Register::A0, ptr);
+        runner
+            .dispatcher
+            .dispatch(0xA128, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        let handle = runner.m68k.cpu.read_reg(Register::A0);
+        assert_ne!(handle, 0);
+        assert_eq!(runner.bus.read_long(handle), ptr);
+        runner
+            .dispatcher
+            .dispatch(0xA025, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(
+            runner.m68k.cpu.read_reg(Register::D0),
+            expected.len() as u32
+        );
+    }
+}
