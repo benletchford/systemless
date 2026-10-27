@@ -468,3 +468,207 @@ fn quicktime_atoms_copy_leaf_to_resized_handle_and_change_ids_without_moving_ato
     run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
+
+#[test]
+fn quicktime_atoms_copy_subtrees_independently_and_check_buffer_capacity() {
+    let (mut loaded, out) = fixture();
+    assert_eq!(call(&mut loaded, "QTNewAtomContainer", &[out]), 0);
+    let container = loaded.memory.read_u32_be(out).unwrap();
+    let kind = u32::from_be_bytes(*b"node");
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[container, 0, kind, 1, 0, 0, 0, out + 4]
+        ),
+        0
+    );
+    let parent = loaded.memory.read_u32_be(out + 4).unwrap();
+    loaded.memory.write_u32_be(out + 32, 0x12345678).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[container, parent, kind, 2, 0, 4, out + 32, out + 8]
+        ),
+        0
+    );
+    let leaf = loaded.memory.read_u32_be(out + 8).unwrap();
+    assert_eq!(
+        call(&mut loaded, "QTCopyAtom", &[container, parent, out + 12]),
+        0
+    );
+    let copy = loaded.memory.read_u32_be(out + 12).unwrap();
+    assert_ne!(copy, container);
+    assert_eq!(call(&mut loaded, "QTDisposeAtomContainer", &[container]), 0);
+    let copied_parent = call(&mut loaded, "QTFindChildByID", &[copy, 0, kind, 1, 0]);
+    let copied_leaf = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[copy, copied_parent, kind, 2, 0],
+    );
+    assert_eq!(copied_leaf, leaf);
+    for (allow_less, capacity) in [(0, 3), (1, 3), (0, 8)] {
+        assert_eq!(
+            call(
+                &mut loaded,
+                "QTCopyAtomDataToPtr",
+                &[copy, copied_leaf, allow_less, capacity, out + 64, out + 80]
+            ) as i32,
+            -50
+        );
+        assert_eq!(loaded.memory.read_u32_be(out + 64), Some(0xa5a5a5a5));
+        assert_eq!(loaded.memory.read_u32_be(out + 80), Some(0xa5a5a5a5));
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[copy, copied_leaf, 1, 8, out + 64, out + 80]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 64), Some(0x12345678));
+    assert_eq!(loaded.memory.read_u32_be(out + 68), Some(0xa5a5a5a5));
+    assert_eq!(loaded.memory.read_u32_be(out + 80), Some(4));
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[copy, copied_leaf, 0, 4, out + 64, 0]
+        ),
+        0
+    );
+    loaded.memory.write_u32_be(out + 64, 0xa5a5a5a5).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[copy, copied_leaf, 0, 4, out + 64, 0xffffffff]
+        ) as i32,
+        -50
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 64), Some(0xa5a5a5a5));
+}
+
+#[test]
+fn quicktime_atoms_read_borrowed_handles_and_reject_unreadable_root_extent() {
+    let (mut loaded, out) = fixture();
+    let kind = u32::from_be_bytes(*b"data");
+    let payload = atom(b"data", 1, 0, &[9, 8, 7]);
+    let mut bytes = vec![0; 12];
+    bytes.extend(atom(b"sean", 1, 1, &payload));
+    let data = PPC_DATA_BASE + 0x8000;
+    loaded.memory.add_region(data, bytes);
+    loaded.memory.write_u32_be(out, data).unwrap();
+    let child = call(&mut loaded, "QTFindChildByID", &[out, 0, kind, 1, 0]);
+    assert_eq!(child, 32);
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[out, child, 0, 3, out + 32, out + 40]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 32), Some(0x090807a5));
+    assert_eq!(loaded.memory.read_u32_be(out + 40), Some(3));
+    assert_eq!(
+        call(&mut loaded, "QTGetAtomDataPtr", &[out, child, 0, out + 44]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 44), Some(data + 52));
+    loaded.memory.write_u32_be(data + 12, 0xfffffff8).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTGetAtomDataPtr",
+            &[out, child, out + 48, out + 52]
+        ) as i32,
+        -2107
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 48), Some(0xa5a5a5a5));
+    loaded.memory.write_u32_be(data + 12, 0x1000).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTGetAtomDataPtr",
+            &[out, child, out + 48, out + 52]
+        ) as i32,
+        -2107
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 52), Some(0xa5a5a5a5));
+}
+
+#[test]
+fn quicktime_atoms_iterate_immediate_children_across_types_and_signal_end() {
+    let (mut loaded, out) = fixture();
+    assert_eq!(call(&mut loaded, "QTNewAtomContainer", &[out]), 0);
+    let handle = loaded.memory.read_u32_be(out).unwrap();
+    let kind = u32::from_be_bytes(*b"tree");
+    assert_eq!(
+        call(&mut loaded, "QTNextChildAnyType", &[handle, 0, 0, out + 4]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 4), Some(0));
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[handle, 0, kind, 1, 0, 0, 0, out + 4]
+        ),
+        0
+    );
+    let parent = loaded.memory.read_u32_be(out + 4).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[handle, parent, kind, 2, 0, 0, 0, out + 8]
+        ),
+        0
+    );
+    let nested = loaded.memory.read_u32_be(out + 8).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[handle, 0, kind + 1, 1, 0, 0, 0, out + 12]
+        ),
+        0
+    );
+    let sibling = loaded.memory.read_u32_be(out + 12).unwrap();
+    for (current, expected) in [(0, parent), (parent, sibling), (sibling, 0)] {
+        assert_eq!(
+            call(
+                &mut loaded,
+                "QTNextChildAnyType",
+                &[handle, 0, current, out + 16]
+            ),
+            0
+        );
+        assert_eq!(loaded.memory.read_u32_be(out + 16), Some(expected));
+    }
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTNextChildAnyType",
+            &[handle, parent, 0, out + 16]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 16), Some(nested));
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTNextChildAnyType",
+            &[handle, 0, nested, out + 16]
+        ) as i32,
+        -2106
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 16), Some(nested));
+    assert_eq!(
+        call(&mut loaded, "QTNextChildAnyType", &[handle, 0, 0, 0]) as i32,
+        -50
+    );
+}

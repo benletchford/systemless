@@ -19,16 +19,21 @@ pub enum PpcQtAtomOperation {
     Unlock,
     Count,
     NextType,
+    NextChild,
     Insert,
     SetData,
     Remove,
     RemoveChildren,
     CopyDataHandle,
+    CopyDataPtr,
+    CopyAtom,
     SetId,
 }
 impl PpcQtAtomOperation {
     pub(super) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
+            "QTCopyAtomDataToPtr" => Self::CopyDataPtr,
+            "QTCopyAtom" => Self::CopyAtom,
             "QTCopyAtomDataToHandle" => Self::CopyDataHandle,
             "QTSetAtomID" => Self::SetId,
             "QTNewAtomContainer" => Self::New,
@@ -41,6 +46,7 @@ impl PpcQtAtomOperation {
             "QTUnlockContainer" => Self::Unlock,
             "QTCountChildrenOfType" => Self::Count,
             "QTGetNextChildType" => Self::NextType,
+            "QTNextChildAnyType" => Self::NextChild,
             "QTInsertChild" => Self::Insert,
             "QTSetAtomData" => Self::SetData,
             "QTRemoveAtom" => Self::Remove,
@@ -170,9 +176,21 @@ pub(super) fn dispatch(
                 .iter()
                 .find(|h| h.handle == handle && h.ptr == ptr)
                 .map(|h| h.size)
+        })
+        // Apple's effect-component examples pass &data as a temporary Handle.
+        // Such borrowed containers have no Memory Manager allocation record.
+        .or_else(|| {
+            memory
+                .read_u32_be(ptr.checked_add(12)?)
+                .and_then(|size| size.checked_add(12))
         });
+
     let Some(bytes) = size
-        .filter(|size| ptr.checked_add(*size).is_some())
+        .filter(|size| {
+            *size <= i32::MAX as u32
+                && ptr.checked_add(*size).is_some()
+                && ppc_memory_can_read_bytes(memory, ptr, *size)
+        })
         .and_then(|size| ppc_memory_read_bytes(memory, ptr, size))
     else {
         return failure(INVALID_CONTAINER);
@@ -181,6 +199,86 @@ pub(super) fn dispatch(
         return failure(INVALID_CONTAINER);
     };
     match operation {
+        Op::NextChild => {
+            let parent = if g[4] == 0 { 12 } else { g[4] };
+            if !atoms.iter().any(|atom| atom.offset == parent) {
+                return result(INVALID_ATOM);
+            }
+            let children: Vec<_> = atoms.iter().filter(|atom| atom.parent == parent).collect();
+            let index = if g[5] == 0 {
+                0
+            } else {
+                let Some(index) = children.iter().position(|atom| atom.offset == g[5]) else {
+                    return result(INVALID_ATOM);
+                };
+                index + 1
+            };
+            if g[6] == 0 || !ppc_memory_can_write_bytes(memory, g[6], 4) {
+                return result(PPC_PARAM_ERR);
+            }
+            let _ = memory.write_u32_be(g[6], children.get(index).map_or(0, |atom| atom.offset));
+            result(PPC_NO_ERR)
+        }
+        Op::CopyAtom => {
+            let Some(atom) = atoms
+                .iter()
+                .find(|atom| atom.offset == g[4] && atom.offset != 12)
+            else {
+                return result(INVALID_ATOM);
+            };
+            if g[5] == 0 || !ppc_memory_can_write_bytes(memory, g[5], 4) {
+                return result(PPC_PARAM_ERR);
+            }
+            let mut copy = vec![0; 32];
+            copy[16..20].copy_from_slice(b"sean");
+            copy[20..24].copy_from_slice(&1u32.to_be_bytes());
+            copy[26..28].copy_from_slice(&1u16.to_be_bytes());
+            copy.extend_from_slice(&bytes[atom.offset as usize..atom.end as usize]);
+            let Ok(size) = u32::try_from(copy.len() - 12) else {
+                return result(PPC_MEM_FULL_ERR);
+            };
+            copy[12..16].copy_from_slice(&size.to_be_bytes());
+            let copied = ppc_process_alloc_handle_with_bytes(
+                manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                &copy,
+            );
+            if copied == 0 {
+                return result(PPC_MEM_FULL_ERR);
+            }
+            let _ = memory.write_u32_be(g[5], copied);
+            result(PPC_NO_ERR)
+        }
+        Op::CopyDataPtr => {
+            let Some(atom) = atoms.iter().find(|atom| atom.offset == g[4]) else {
+                return result(INVALID_ATOM);
+            };
+            if atom.children != 0 {
+                return result(NOT_LEAF);
+            }
+            let payload = &bytes[atom.offset as usize + 20..atom.end as usize];
+            let size = payload.len() as u32;
+            // sizeOrLessOK permits a smaller atom, not a truncated copy.
+            if (g[6] as i32) < 0 || size > g[6] || (g[5] as u8 == 0 && size != g[6]) {
+                return result(PPC_PARAM_ERR);
+            }
+            if (size != 0 && g[7] == 0)
+                || !ppc_memory_can_write_bytes(memory, g[7], size)
+                || (g[8] != 0 && !ppc_memory_can_write_bytes(memory, g[8], 4))
+            {
+                return result(PPC_PARAM_ERR);
+            }
+            for (index, byte) in payload.iter().enumerate() {
+                let _ = memory.write_u8(g[7] + index as u32, *byte);
+            }
+            if g[8] != 0 {
+                let _ = memory.write_u32_be(g[8], size);
+            }
+            result(PPC_NO_ERR)
+        }
         Op::SetId => {
             let Some(atom) = atoms
                 .iter()
