@@ -969,11 +969,18 @@ pub(crate) fn ppc_new_gworld(
         .as_deref()
         .map(|bytes| process_memory_manager.copy_bytes_to_new_native_handle(memory, bytes))
         .unwrap_or(0);
+    // NewGWorld initializes a CGrafPort through OpenCPort: its visible
+    // region matches portRect and its initial clip is unrestricted.
+    // Inside Macintosh: Imaging With QuickDraw (1994), CGrafPort, pp. 4-49--4-51.
+    // Allocate these through the process manager without publishing mirrors
+    // until the complete world succeeds, so rollback also restores ownership.
+    let vis_rgn = process_memory_manager.new_native_handle(memory, 10, true);
+    let clip_rgn = process_memory_manager.new_native_handle(memory, 10, true);
     // Keep all nonrelocatable GWorld storage in one tracked pointer block so
     // DisposeGWorld can return a middle-of-heap allocation for later reuse.
     // Allocate it after the relocatable color table so an otherwise-current
     // world can still contract the bump heap when it is disposed.
-    let base_addr = if depth <= 8 && ctable_handle == 0 {
+    let base_addr = if (depth <= 8 && ctable_handle == 0) || vis_rgn == 0 || clip_rgn == 0 {
         0
     } else {
         process_memory_manager.new_native_ptr(memory, raw_allocation_size, true)
@@ -986,9 +993,13 @@ pub(crate) fn ppc_new_gworld(
         || pixmap_handle == 0
         || (depth <= 8 && ctable_handle == 0)
         || port == 0
+        || vis_rgn == 0
+        || clip_rgn == 0
     {
-        if ctable_handle != 0 {
-            let _ = memory.write_u32_be(ctable_handle, 0);
+        for handle in [ctable_handle, vis_rgn, clip_rgn] {
+            if handle != 0 {
+                let _ = memory.write_u32_be(handle, 0);
+            }
         }
         process_memory_manager.restore_native_snapshot(native_manager_before);
         process_memory_manager.set_native_mem_error(PPC_MEM_FULL_ERR);
@@ -1005,10 +1016,16 @@ pub(crate) fn ppc_new_gworld(
         .is_none()
         || memory.write_u32_be(pixmap + 42, ctable_handle).is_none()
         || ppc_write_gworld_port(memory, port, pixmap_handle, top, left, bottom, right).is_none()
+        || memory.write_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET, vis_rgn).is_none()
+        || memory.write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, clip_rgn).is_none()
+        || ppc_write_rgn_bbox(memory, vis_rgn, top, left, bottom, right).is_none()
+        || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
         || memory.write_u32_be(gworld_out_ptr, port).is_none()
     {
-        if ctable_handle != 0 {
-            let _ = memory.write_u32_be(ctable_handle, 0);
+        for handle in [ctable_handle, vis_rgn, clip_rgn] {
+            if handle != 0 {
+                let _ = memory.write_u32_be(handle, 0);
+            }
         }
         process_memory_manager.restore_native_snapshot(native_manager_before);
         process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
@@ -1024,12 +1041,10 @@ pub(crate) fn ppc_new_gworld(
         heap_cursor,
         last_mem_error,
     );
-    if ctable_handle != 0 {
-        ppc_apply_process_native_handle(
-            process_memory_manager,
-            handles,
-            ctable_handle,
-        );
+    for handle in [ctable_handle, vis_rgn, clip_rgn] {
+        if handle != 0 {
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+        }
     }
     process_memory_manager.set_native_mem_error(PPC_NO_ERR);
     *last_mem_error = PPC_NO_ERR;
@@ -1060,6 +1075,8 @@ pub(crate) fn ppc_new_gworld(
             pixel_capacity: ppc_allocation_size(pixel_allocation_size)
                 .unwrap_or(pixel_allocation_size),
             ctable_handle,
+            vis_rgn,
+            clip_rgn,
             allocation_end: base_addr
                 .checked_add(ppc_allocation_size(raw_allocation_size).unwrap_or(0))
                 .filter(|end| *end == *heap_cursor)
@@ -1750,6 +1767,8 @@ pub(crate) fn ppc_update_gworld(
                 },
                 pixel_capacity,
                 ctable_handle: owned_ctable_handle,
+                vis_rgn: previous.vis_rgn,
+                clip_rgn: previous.clip_rgn,
                 allocation_end: *heap_cursor,
             }
         } else {
@@ -1767,6 +1786,8 @@ pub(crate) fn ppc_update_gworld(
             origin_base: if heap_grew { heap_cursor_before } else { 0 },
             pixel_capacity,
             ctable_handle: owned_ctable_handle,
+            vis_rgn: 0,
+            clip_rgn: 0,
             allocation_end: if heap_grew { *heap_cursor } else { 0 },
         }
     };
