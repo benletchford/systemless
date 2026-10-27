@@ -27,6 +27,10 @@ pub enum PpcQtAtomOperation {
     CopyDataHandle,
     CopyDataPtr,
     CopyAtom,
+    InsertChildren,
+    Replace,
+    Swap,
+    Parent,
     SetId,
 }
 impl PpcQtAtomOperation {
@@ -34,6 +38,10 @@ impl PpcQtAtomOperation {
         Some(match name {
             "QTCopyAtomDataToPtr" => Self::CopyDataPtr,
             "QTCopyAtom" => Self::CopyAtom,
+            "QTInsertChildren" => Self::InsertChildren,
+            "QTReplaceAtom" => Self::Replace,
+            "QTSwapAtoms" => Self::Swap,
+            "QTGetAtomParent" => Self::Parent,
             "QTCopyAtomDataToHandle" => Self::CopyDataHandle,
             "QTSetAtomID" => Self::SetId,
             "QTNewAtomContainer" => Self::New,
@@ -78,6 +86,7 @@ fn parse(bytes: &[u8]) -> Option<Vec<Atom>> {
         || word(12)? as usize != bytes.len() - 12
         || word(16)? != u32::from_be_bytes(*b"sean")
         || word(20)? != 1
+        || (bytes[26..28] == [0, 0] && bytes.len() != 32)
     {
         return None;
     }
@@ -118,6 +127,37 @@ fn parse(bytes: &[u8]) -> Option<Vec<Atom>> {
     Some(atoms)
 }
 
+fn container_bytes(
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+    handles: &[PpcHandleRecord],
+    handle: u32,
+) -> Option<Vec<u8>> {
+    let ptr = memory.read_u32_be(handle).filter(|p| *p != 0)?;
+    let size = manager
+        .process_handle_size_from_master_pointer(handle, ptr)
+        .or_else(|| {
+            handles
+                .iter()
+                .find(|h| h.handle == handle && h.ptr == ptr)
+                .map(|h| h.size)
+        })
+        // Apple's effect-component examples pass &data as a temporary Handle.
+        // Such borrowed containers have no Memory Manager allocation record.
+        .or_else(|| {
+            memory
+                .read_u32_be(ptr.checked_add(12)?)
+                .and_then(|size| size.checked_add(12))
+        });
+
+    size.filter(|size| {
+        *size <= i32::MAX as u32
+            && ptr.checked_add(*size).is_some()
+            && ppc_memory_can_read_bytes(memory, ptr, *size)
+    })
+    .and_then(|size| ppc_memory_read_bytes(memory, ptr, size))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch(
     operation: PpcQtAtomOperation,
@@ -156,7 +196,7 @@ pub(super) fn dispatch(
     }
     let returns_offset = matches!(
         operation,
-        Op::FindId | Op::FindIndex | Op::Count | Op::NextType
+        Op::FindId | Op::FindIndex | Op::Count | Op::NextType | Op::Parent
     );
     let failure = |error| {
         if returns_offset {
@@ -169,36 +209,19 @@ pub(super) fn dispatch(
     let Some(ptr) = memory.read_u32_be(handle).filter(|p| *p != 0) else {
         return failure(INVALID_CONTAINER);
     };
-    let size = manager
-        .process_handle_size_from_master_pointer(handle, ptr)
-        .or_else(|| {
-            handles
-                .iter()
-                .find(|h| h.handle == handle && h.ptr == ptr)
-                .map(|h| h.size)
-        })
-        // Apple's effect-component examples pass &data as a temporary Handle.
-        // Such borrowed containers have no Memory Manager allocation record.
-        .or_else(|| {
-            memory
-                .read_u32_be(ptr.checked_add(12)?)
-                .and_then(|size| size.checked_add(12))
-        });
-
-    let Some(bytes) = size
-        .filter(|size| {
-            *size <= i32::MAX as u32
-                && ptr.checked_add(*size).is_some()
-                && ppc_memory_can_read_bytes(memory, ptr, *size)
-        })
-        .and_then(|size| ppc_memory_read_bytes(memory, ptr, size))
-    else {
+    let Some(bytes) = container_bytes(memory, manager, handles, handle) else {
         return failure(INVALID_CONTAINER);
     };
     let Some(atoms) = parse(&bytes) else {
         return failure(INVALID_CONTAINER);
     };
     match operation {
+        Op::Parent => PpcImportAction::Return(
+            atoms
+                .iter()
+                .find(|atom| atom.offset == g[4])
+                .map_or(0, |atom| if atom.parent == 12 { 0 } else { atom.parent }),
+        ),
         Op::NextChild => {
             let parent = if g[4] == 0 { 12 } else { g[4] };
             if !atoms.iter().any(|atom| atom.offset == parent) {
@@ -220,24 +243,30 @@ pub(super) fn dispatch(
             result(PPC_NO_ERR)
         }
         Op::CopyAtom => {
-            let Some(atom) = atoms
-                .iter()
-                .find(|atom| atom.offset == g[4] && atom.offset != 12)
-            else {
-                return result(INVALID_ATOM);
-            };
             if g[5] == 0 || !ppc_memory_can_write_bytes(memory, g[5], 4) {
                 return result(PPC_PARAM_ERR);
             }
-            let mut copy = vec![0; 32];
-            copy[16..20].copy_from_slice(b"sean");
-            copy[20..24].copy_from_slice(&1u32.to_be_bytes());
-            copy[26..28].copy_from_slice(&1u16.to_be_bytes());
-            copy.extend_from_slice(&bytes[atom.offset as usize..atom.end as usize]);
-            let Ok(size) = u32::try_from(copy.len() - 12) else {
-                return result(PPC_MEM_FULL_ERR);
+            let mut copy = if g[4] == 0 {
+                bytes.clone()
+            } else {
+                let Some(atom) = atoms
+                    .iter()
+                    .find(|atom| atom.offset == g[4] && atom.offset != 12)
+                else {
+                    return result(INVALID_ATOM);
+                };
+                let mut copy = vec![0; 32];
+                copy[16..20].copy_from_slice(b"sean");
+                copy[20..24].copy_from_slice(&1u32.to_be_bytes());
+                copy[26..28].copy_from_slice(&1u16.to_be_bytes());
+                copy.extend_from_slice(&bytes[atom.offset as usize..atom.end as usize]);
+                let Ok(size) = u32::try_from(copy.len() - 12) else {
+                    return result(PPC_MEM_FULL_ERR);
+                };
+                copy[12..16].copy_from_slice(&size.to_be_bytes());
+                copy
             };
-            copy[12..16].copy_from_slice(&size.to_be_bytes());
+            copy[10..12].fill(0);
             let copied = ppc_process_alloc_handle_with_bytes(
                 manager,
                 memory,
@@ -334,8 +363,30 @@ pub(super) fn dispatch(
             }
             result(PPC_NO_ERR)
         }
-        Op::Insert | Op::SetData | Op::Remove | Op::RemoveChildren => {
-            let (edited, output) = match edit(operation, &g, bytes, &atoms, memory) {
+        Op::Insert
+        | Op::SetData
+        | Op::Remove
+        | Op::RemoveChildren
+        | Op::InsertChildren
+        | Op::Replace
+        | Op::Swap => {
+            let changed = if matches!(operation, Op::InsertChildren | Op::Replace | Op::Swap) {
+                let source = if operation == Op::Swap {
+                    None
+                } else {
+                    let Some(source_bytes) = container_bytes(memory, manager, handles, g[5]) else {
+                        return result(INVALID_CONTAINER);
+                    };
+                    let Some(source_atoms) = parse(&source_bytes) else {
+                        return result(INVALID_CONTAINER);
+                    };
+                    Some((source_bytes, source_atoms))
+                };
+                bulk_edit(operation, &g, bytes, &atoms, source.as_ref()).map(|bytes| (bytes, None))
+            } else {
+                edit(operation, &g, bytes, &atoms, memory)
+            };
+            let (edited, output) = match changed {
                 Ok(value) => value,
                 Err(error) => return result(error),
             };
@@ -482,7 +533,7 @@ fn edit(
 ) -> Result<(Vec<u8>, Option<(u32, u32)>), i16> {
     use PpcQtAtomOperation as Op;
     if u16::from_be_bytes([bytes[10], bytes[11]]) != 0 {
-        return Err(PPC_PARAM_ERR);
+        return Err(-117); // memLockedErr
     }
     let offset = if g[4] == 0 && matches!(operation, Op::Insert | Op::RemoveChildren) {
         12
@@ -605,4 +656,150 @@ fn edit(
     }
     bytes.splice(start as usize..end as usize, replacement);
     Ok((bytes, output))
+}
+
+// Changes are applied to a private copy. Process memory is resized only after
+// every source tree and destination constraint has been validated.
+fn bulk_edit(
+    operation: PpcQtAtomOperation,
+    g: &[u32; 32],
+    mut bytes: Vec<u8>,
+    atoms: &[Atom],
+    source: Option<&(Vec<u8>, Vec<Atom>)>,
+) -> Result<Vec<u8>, i16> {
+    use PpcQtAtomOperation as Op;
+    if u16::from_be_bytes([bytes[10], bytes[11]]) != 0 {
+        return Err(-117);
+    }
+    let offset = if operation == Op::InsertChildren && g[4] == 0 {
+        12
+    } else {
+        g[4]
+    };
+    let node = atoms
+        .iter()
+        .find(|atom| atom.offset == offset)
+        .ok_or(INVALID_ATOM)?;
+    match operation {
+        Op::InsertChildren => {
+            let (source_bytes, source_atoms) = source.ok_or(INVALID_CONTAINER)?;
+            if node.children == 0 && node.end != node.offset + 20 {
+                return Err(NOT_LEAF);
+            }
+            let incoming: Vec<_> = source_atoms.iter().filter(|a| a.parent == 12).collect();
+            for (i, child) in incoming.iter().enumerate() {
+                if atoms
+                    .iter()
+                    .any(|a| a.parent == node.offset && a.kind == child.kind && a.id == child.id)
+                    || incoming[..i]
+                        .iter()
+                        .any(|a| a.kind == child.kind && a.id == child.id)
+                {
+                    return Err(-2105);
+                }
+            }
+            let count = node
+                .children
+                .checked_add(incoming.len() as u16)
+                .ok_or(PPC_PARAM_ERR)?;
+            bytes[node.offset as usize + 14..node.offset as usize + 16]
+                .copy_from_slice(&count.to_be_bytes());
+            splice_tree(
+                &mut bytes,
+                atoms,
+                node.end,
+                node.end,
+                &source_bytes[32..],
+                node.offset,
+            )?;
+        }
+        Op::Replace => {
+            if node.offset == 12 {
+                return Err(INVALID_ATOM);
+            }
+            let (source_bytes, source_atoms) = source.ok_or(INVALID_CONTAINER)?;
+            let replacement = source_atoms
+                .iter()
+                .find(|a| a.offset == g[6] && a.offset != 12)
+                .ok_or(INVALID_ATOM)?;
+            if replacement.kind != node.kind {
+                return Err(-2103);
+            }
+            let mut data =
+                source_bytes[replacement.offset as usize..replacement.end as usize].to_vec();
+            data[8..12].copy_from_slice(&node.id.to_be_bytes());
+            splice_tree(&mut bytes, atoms, node.offset, node.end, &data, node.parent)?;
+        }
+        Op::Swap => {
+            let other = atoms
+                .iter()
+                .find(|a| a.offset == g[5])
+                .ok_or(INVALID_ATOM)?;
+            if node.kind != other.kind {
+                return Err(-2103);
+            }
+            if node.offset == other.offset {
+                return Ok(bytes);
+            }
+            let (first, second) = if node.offset < other.offset {
+                (node, other)
+            } else {
+                (other, node)
+            };
+            // An ancestor and its descendant cannot retain both positions.
+            if first.offset == 12 || second.offset < first.end {
+                return Err(PPC_PARAM_ERR);
+            }
+            let mut first_data = bytes[second.offset as usize..second.end as usize].to_vec();
+            let mut second_data = bytes[first.offset as usize..first.end as usize].to_vec();
+            first_data[8..12].copy_from_slice(&first.id.to_be_bytes());
+            second_data[8..12].copy_from_slice(&second.id.to_be_bytes());
+            splice_tree(
+                &mut bytes,
+                atoms,
+                second.offset,
+                second.end,
+                &second_data,
+                second.parent,
+            )?;
+            splice_tree(
+                &mut bytes,
+                atoms,
+                first.offset,
+                first.end,
+                &first_data,
+                first.parent,
+            )?;
+        }
+        _ => unreachable!(),
+    }
+    Ok(bytes)
+}
+
+fn splice_tree(
+    bytes: &mut Vec<u8>,
+    atoms: &[Atom],
+    start: u32,
+    end: u32,
+    replacement: &[u8],
+    mut ancestor: u32,
+) -> Result<(), i16> {
+    let delta = replacement.len() as i64 - i64::from(end - start);
+    let total = bytes.len() as i64 + delta;
+    if total < 32 || total > i64::from(i32::MAX) {
+        return Err(PPC_MEM_FULL_ERR);
+    }
+    while ancestor != 0 {
+        let atom = atoms
+            .iter()
+            .find(|a| a.offset == ancestor)
+            .ok_or(INVALID_ATOM)?;
+        let index = ancestor as usize;
+        let previous = u32::from_be_bytes(bytes[index..index + 4].try_into().unwrap());
+        let size = u32::try_from(i64::from(previous) + delta).map_err(|_| PPC_MEM_FULL_ERR)?;
+        bytes[index..index + 4].copy_from_slice(&size.to_be_bytes());
+        ancestor = atom.parent;
+    }
+    bytes.splice(start as usize..end as usize, replacement.iter().copied());
+    Ok(())
 }

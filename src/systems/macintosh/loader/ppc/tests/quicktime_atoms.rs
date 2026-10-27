@@ -195,6 +195,11 @@ fn quicktime_atoms_reject_truncated_or_inconsistent_trees_without_writing_output
         vec![0; 12],
         {
             let mut bytes = vec![0; 12];
+            bytes.extend(atom(b"sean", 1, 0, b"not children"));
+            bytes
+        },
+        {
+            let mut bytes = vec![0; 12];
             bytes.extend(atom(b"sean", 1, 1, &[0; 19]));
             bytes
         },
@@ -377,7 +382,7 @@ fn quicktime_atoms_rejected_edits_preserve_the_container_and_output() {
         ("QTRemoveAtom", vec![handle, leaf]),
         ("QTRemoveChildren", vec![handle, 0]),
     ] {
-        assert_eq!(call(&mut loaded, name, &args) as i32, -50);
+        assert_eq!(call(&mut loaded, name, &args) as i32, -117);
     }
     assert_eq!(call(&mut loaded, "QTUnlockContainer", &[handle]), 0);
     assert_eq!(
@@ -671,4 +676,270 @@ fn quicktime_atoms_iterate_immediate_children_across_types_and_signal_end() {
         call(&mut loaded, "QTNextChildAnyType", &[handle, 0, 0, 0]) as i32,
         -50
     );
+}
+
+#[test]
+fn quicktime_atoms_bulk_edits_preserve_ids_order_and_independent_sources() {
+    let (mut loaded, out) = fixture();
+    let kind = u32::from_be_bytes(*b"node");
+    let other_kind = u32::from_be_bytes(*b"data");
+    loaded.memory.write_u32_be(out + 96, 0x11223344).unwrap();
+    assert_eq!(call(&mut loaded, "QTNewAtomContainer", &[out]), 0);
+    let target = loaded.memory.read_u32_be(out).unwrap();
+    for (id, size) in [(1, 1), (2, 0)] {
+        assert_eq!(
+            call(
+                &mut loaded,
+                "QTInsertChild",
+                &[target, 0, kind, id, 0, size, out + 96, out + 4]
+            ),
+            0
+        );
+    }
+    let parent = loaded.memory.read_u32_be(out + 4).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[target, parent, other_kind, 8, 0, 3, out + 96, out + 8]
+        ),
+        0
+    );
+    let original_child = loaded.memory.read_u32_be(out + 8).unwrap();
+    assert_eq!(
+        call(&mut loaded, "QTGetAtomParent", &[target, original_child]),
+        parent
+    );
+    assert_eq!(call(&mut loaded, "QTGetAtomParent", &[target, parent]), 0);
+    assert_eq!(
+        call(&mut loaded, "QTGetAtomParent", &[target, 0xffffffff]),
+        0
+    );
+
+    // Duplicate the whole locked tree; its independent copy starts unlocked.
+    assert_eq!(call(&mut loaded, "QTLockContainer", &[target]), 0);
+    assert_eq!(call(&mut loaded, "QTCopyAtom", &[target, 0, out + 12]), 0);
+    let source = loaded.memory.read_u32_be(out + 12).unwrap();
+    let source_ptr = loaded.memory.read_u32_be(source).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(source_ptr + 10), Some(0));
+    assert_eq!(call(&mut loaded, "QTUnlockContainer", &[target]), 0);
+    assert_eq!(
+        call(&mut loaded, "QTInsertChildren", &[target, parent, source]),
+        0
+    );
+    let parent = call(&mut loaded, "QTFindChildByID", &[target, 0, kind, 2, 0]);
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, parent, 0]),
+        3
+    );
+    assert_eq!(
+        call(&mut loaded, "QTInsertChildren", &[target, parent, source]) as i32,
+        -2105
+    );
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, parent, 0]),
+        3
+    );
+
+    let source_parent = call(&mut loaded, "QTFindChildByID", &[source, 0, kind, 2, 0]);
+    let first = call(&mut loaded, "QTFindChildByID", &[target, 0, kind, 1, 0]);
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTReplaceAtom",
+            &[target, first, source, source_parent]
+        ),
+        0
+    );
+    let first = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[target, 0, kind, 1, out + 16],
+    );
+    assert_eq!(loaded.memory.read_u16_be(out + 16), Some(1));
+    let replaced_child = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[target, first, other_kind, 8, 0],
+    );
+    assert_ne!(replaced_child, 0);
+    assert_eq!(
+        call(&mut loaded, "QTGetAtomParent", &[target, replaced_child]),
+        first
+    );
+    let second = call(&mut loaded, "QTFindChildByID", &[target, 0, kind, 2, 0]);
+    assert_eq!(
+        call(&mut loaded, "QTSwapAtoms", &[target, first, second]),
+        0
+    );
+    let first = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[target, 0, kind, 1, out + 16],
+    );
+    assert_eq!(loaded.memory.read_u16_be(out + 16), Some(1));
+    let second = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[target, 0, kind, 2, out + 16],
+    );
+    assert_eq!(loaded.memory.read_u16_be(out + 16), Some(2));
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, first, 0]),
+        3
+    );
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, second, 0]),
+        1
+    );
+
+    // Replacing from the same container snapshots the source before resizing.
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTReplaceAtom",
+            &[target, first, target, second]
+        ),
+        0
+    );
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, first, 0]),
+        1
+    );
+    let source_first = call(&mut loaded, "QTFindChildByID", &[source, 0, kind, 1, 0]);
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[source, source_first, 0, 1, out + 64, 0]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(out + 64), Some(0x11));
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCountChildrenOfType",
+            &[source, source_parent, 0]
+        ),
+        1
+    );
+    let child = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[target, first, other_kind, 8, 0],
+    );
+    assert_eq!(
+        call(&mut loaded, "QTSwapAtoms", &[target, first, child]) as i32,
+        -2103
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTReplaceAtom",
+            &[target, first, target, child]
+        ) as i32,
+        -2103
+    );
+    assert_eq!(
+        call(&mut loaded, "QTCountChildrenOfType", &[target, first, 0]),
+        1
+    );
+}
+
+#[test]
+fn quicktime_atoms_swap_unequal_leaves_between_parents_and_keep_tree_sizes_valid() {
+    let (mut loaded, out) = fixture();
+    let parent_kind = u32::from_be_bytes(*b"prnt");
+    let leaf_kind = u32::from_be_bytes(*b"leaf");
+    assert_eq!(call(&mut loaded, "QTNewAtomContainer", &[out]), 0);
+    let handle = loaded.memory.read_u32_be(out).unwrap();
+    loaded.memory.write_u32_be(out + 96, 0xaabbccdd).unwrap();
+    for id in [1, 2] {
+        assert_eq!(
+            call(
+                &mut loaded,
+                "QTInsertChild",
+                &[handle, 0, parent_kind, id, 0, 0, 0, out + 4]
+            ),
+            0
+        );
+        let parent = loaded.memory.read_u32_be(out + 4).unwrap();
+        assert_eq!(
+            call(
+                &mut loaded,
+                "QTInsertChild",
+                &[
+                    handle,
+                    parent,
+                    leaf_kind,
+                    id,
+                    0,
+                    if id == 1 { 1 } else { 4 },
+                    out + 96,
+                    out + 8
+                ]
+            ),
+            0
+        );
+    }
+    let p1 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, 0, parent_kind, 1, 0],
+    );
+    let p2 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, 0, parent_kind, 2, 0],
+    );
+    let a1 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, p1, leaf_kind, 1, 0],
+    );
+    let a2 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, p2, leaf_kind, 2, 0],
+    );
+    assert_eq!(call(&mut loaded, "QTLockContainer", &[handle]), 0);
+    assert_eq!(
+        call(&mut loaded, "QTSwapAtoms", &[handle, a1, a2]) as i32,
+        -117
+    );
+    assert_eq!(call(&mut loaded, "QTUnlockContainer", &[handle]), 0);
+    assert_eq!(call(&mut loaded, "QTSwapAtoms", &[handle, a2, a1]), 0);
+    let p2 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, 0, parent_kind, 2, 0],
+    );
+    let a2 = call(
+        &mut loaded,
+        "QTFindChildByID",
+        &[handle, p2, leaf_kind, 2, 0],
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[handle, a1, 0, 4, out + 64, 0]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(out + 64), Some(0xaabbccdd));
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToPtr",
+            &[handle, a2, 0, 1, out + 68, 0]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(out + 68), Some(0xaa));
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr + p1), Some(44));
+    assert_eq!(loaded.memory.read_u32_be(ptr + p2), Some(41));
+    assert_eq!(loaded.memory.read_u32_be(ptr + 12), Some(105));
 }
