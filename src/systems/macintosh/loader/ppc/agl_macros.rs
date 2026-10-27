@@ -4,7 +4,7 @@
 //! AGL/aglContext.h, AGL/aglMacro.h and OpenGL/gliDispatch.h. The core
 //! dispatch table follows the renderer pointer inline; each CFM procedure
 //! receives that renderer pointer before the ordinary OpenGL arguments.
-//! https://github.com/phracker/MacOSX-SDKs/tree/master/MacOSX10.1.5.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers
+//! <https://github.com/phracker/MacOSX-SDKs/tree/master/MacOSX10.1.5.sdk/System/Library/Frameworks/AGL.framework/Versions/A/Headers>
 
 use super::*;
 

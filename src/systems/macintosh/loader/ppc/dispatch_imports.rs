@@ -3775,7 +3775,7 @@ fn ppc_agl_window_surface(
     drawable: u32,
 ) -> Option<PpcFrontBuffer> {
     // Apple Technical Q&A OGL02 (2000): an AGLDrawable is a window CGrafPtr;
-    // a DrawSprocket front buffer is not a valid AGL drawable.
+    // require a registered window port, rejecting bare screen/offscreen GWorlds.
     // https://leopard-adc.pepas.com/qa/ogl/ogl02.html
     if drawable == 0
         || matches!(drawable, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
