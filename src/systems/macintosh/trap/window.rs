@@ -2674,41 +2674,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn recalculate_window_regions_from_rect(
-        &self,
-        bus: &mut MacMemoryBus,
-        window_ptr: u32,
-        source_rect: (i16, i16, i16, i16),
-    ) {
-        // CalcVis / CalcVisBehind clamp the top edge against the menu bar.
-        let mbar_h = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let (bounds_top, _) = self.port_bounds_top_left(bus, window_ptr);
-        let local_mbar_bottom = mbar_h.saturating_add(bounds_top);
-        let local_vis_top = source_rect.0.max(local_mbar_bottom);
-        let local_rect = (local_vis_top, source_rect.1, source_rect.2, source_rect.3);
-        let global_content = self.window_local_rect_to_global(bus, window_ptr, local_rect);
-        let global_structure =
-            self.window_structure_global_rect_for_window(bus, window_ptr, global_content);
-
-        Self::write_region_handle_rect(
-            bus,
-            bus.read_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET),
-            Some(global_content),
-        );
-        Self::write_region_handle_rect(
-            bus,
-            bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
-            Some(global_structure),
-        );
-        for offset in [24u32, 28u32] {
-            Self::write_region_handle_rect(
-                bus,
-                bus.read_long(window_ptr + offset),
-                Some(local_rect),
-            );
-        }
-    }
-
     fn init_window_manager_fields(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5558,7 +5523,8 @@ impl super::TrapDispatcher {
             // CalcVisBehind ($A90A)
             // PROCEDURE CalcVisBehind(startWindow: WindowPeek; clobberedRgn: RgnHandle);
             // Inside Macintosh Volume I, I-297
-            // CalcVisBehind ($A90A): Recomputes vis/clip/struc/cont regions for startWindow and windows behind it that intersect clobberedRgn per IM:I I-297
+            // CalcVisBehind ($A90A): Recomputes visible regions while preserving
+            // application clipping and window geometry. IM:I, p. I-297.
             (true, 0x10A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let clobbered_rgn = bus.read_long(sp);
@@ -5582,12 +5548,8 @@ impl super::TrapDispatcher {
                             self.global_rect_to_window_local(bus, window_ptr, clobbered_rect);
                         let intersects = content_rect
                             .and_then(|content| Self::rect_intersection(content, clobbered_local));
-                        if let (Some(content_rect), Some(_)) = (content_rect, intersects) {
-                            self.recalculate_window_regions_from_rect(
-                                bus,
-                                window_ptr,
-                                content_rect,
-                            );
+                        if intersects.is_some() {
+                            self.calc_window_vis_region(bus, window_ptr);
                         }
                         window_ptr = bus.read_long(window_ptr + Self::WINDOW_NEXT_WINDOW_OFFSET);
                     }
