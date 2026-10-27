@@ -1946,7 +1946,7 @@ fn start_render_loop(
 
     let cb_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let cb_cell_self = cb_cell.clone();
-    let request_id = Rc::new(Cell::new(None));
+    let request_id = Rc::new(RuntimeFrameRequests::default());
     let request_for_callback = request_id.clone();
     *render_slot.borrow_mut() = Some(BrowserRenderLoop {
         callback: cb_cell.clone(),
@@ -1965,11 +1965,15 @@ fn start_render_loop(
     let on_first_paint = Rc::new(RefCell::new(on_first_paint));
 
     *cb_cell.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        request_for_callback.set(None);
+        request_for_callback.cancel();
         if !alive_cb.load(Ordering::Relaxed) {
             // Component unmounted. Drop the stored closure so the Rc<RefCell<Machine>>
             // capture chain breaks and the Machine can drop (closing audio, freeing RAM).
             *cb_cell_self.borrow_mut() = None;
+            return;
+        }
+        if !runtime_page_visible() {
+            schedule_runtime_raf(&cb_cell_self, &request_for_callback);
             return;
         }
         if let Err(error) = frame.poll_recovery() {
@@ -2215,28 +2219,70 @@ type PendingWorker = StoredValue<Rc<RefCell<Option<Worker>>>, LocalStorage>;
 
 struct BrowserRenderLoop {
     callback: Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
-    request: Rc<Cell<Option<i32>>>,
+    request: Rc<RuntimeFrameRequests>,
+}
+
+// rAF may be reduced to 15 Hz even for a visible, static page. Race a
+// bounded timer against it so guest time/audio do not depend on canvas damage.
+#[derive(Default)]
+struct RuntimeFrameRequests {
+    animation: Cell<Option<i32>>,
+    timer: Cell<Option<i32>>,
+}
+
+impl RuntimeFrameRequests {
+    fn take(&self) -> (Option<i32>, Option<i32>) {
+        (self.animation.take(), self.timer.take())
+    }
+
+    fn cancel(&self) {
+        let (animation, timer) = self.take();
+        if let Some(window) = web_sys::window() {
+            if let Some(animation) = animation {
+                let _ = window.cancel_animation_frame(animation);
+            }
+            if let Some(timer) = timer {
+                window.clear_timeout_with_handle(timer);
+            }
+        }
+    }
 }
 
 impl Drop for BrowserRenderLoop {
     fn drop(&mut self) {
-        if let (Some(window), Some(request)) = (web_sys::window(), self.request.take()) {
-            let _ = window.cancel_animation_frame(request);
-        }
+        self.request.cancel();
         self.callback.borrow_mut().take();
     }
 }
 
+fn runtime_page_visible() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_some_and(|document| !document.hidden())
+}
+
 fn schedule_runtime_raf(
     callback: &Rc<RefCell<Option<Closure<dyn FnMut()>>>>,
-    request: &Cell<Option<i32>>,
+    request: &RuntimeFrameRequests,
 ) {
     if let (Some(window), Some(callback)) = (web_sys::window(), callback.borrow().as_ref()) {
-        request.set(
+        request.animation.set(
             window
                 .request_animation_frame(callback.as_ref().unchecked_ref())
                 .ok(),
         );
+        // Preserve rAF's background suspension. The pending rAF resumes the
+        // loop when the page becomes visible again.
+        if runtime_page_visible() {
+            request.timer.set(
+                window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        callback.as_ref().unchecked_ref(),
+                        17,
+                    )
+                    .ok(),
+            );
+        }
     }
 }
 
@@ -2866,7 +2912,7 @@ fn start_worker_render_loop(
     *runtime.presenter.borrow_mut() = Some(presenter.clone());
     let callback_cell: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let callback_self = callback_cell.clone();
-    let request_id = Rc::new(Cell::new(None));
+    let request_id = Rc::new(RuntimeFrameRequests::default());
     let request_for_callback = request_id.clone();
     *runtime.render_loop.borrow_mut() = Some(BrowserRenderLoop {
         callback: callback_cell.clone(),
@@ -2874,10 +2920,14 @@ fn start_worker_render_loop(
     });
     let first_paint = Rc::new(RefCell::new(Some(on_first_paint)));
     *callback_cell.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        request_for_callback.set(None);
+        request_for_callback.cancel();
         if !alive.load(Ordering::Relaxed) || runtime.failed.get() {
             runtime.stop();
             *callback_self.borrow_mut() = None;
+            return;
+        }
+        if !runtime_page_visible() {
+            schedule_runtime_raf(&callback_self, &request_for_callback);
             return;
         }
         let mut renderer = presenter.borrow_mut();
