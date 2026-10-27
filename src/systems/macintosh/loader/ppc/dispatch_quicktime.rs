@@ -43,12 +43,16 @@ pub(super) fn dispatch_quicktime_import(
 
     // Native continuations return to the import with LR equal to its PC.
     // A nested guest import has its ordinary caller LR and starts a new frame.
-    if quicktime
-        .callback_frames
-        .last()
-        .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
-    {
-        let frame = quicktime.callback_frames.pop().unwrap();
+    if quicktime.callback_frames.last().is_some_and(|frame| {
+        matches!(frame,
+            quicktime::callbacks::ContinuationFrame::Delivery(frame)
+                if frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
+    }) {
+        let Some(quicktime::callbacks::ContinuationFrame::Delivery(frame)) =
+            quicktime.callback_frames.pop()
+        else {
+            unreachable!("checked movie callback continuation");
+        };
         return Some(deliver_quicktime_callbacks(
             cpu, memory, quicktime, sound, frame,
         ));
@@ -423,7 +427,9 @@ fn deliver_quicktime_callbacks(
         if install_powerpc_call_arguments(cpu, memory, &[address, registration.refcon]).is_none() {
             break;
         }
-        quicktime.callback_frames.push(frame);
+        quicktime
+            .callback_frames
+            .push(quicktime::callbacks::ContinuationFrame::Delivery(frame));
         return GuestCallEffect::call_guest(
             GuestCallRequest::new(GuestCallTarget {
                 isa: GuestIsa::PowerPc,

@@ -1,6 +1,7 @@
 //! QuickTime and Movie Media state and tracking records.
 
 pub(crate) mod callbacks;
+pub(crate) mod controller;
 mod toolbox;
 
 pub(crate) use toolbox::{
@@ -260,12 +261,13 @@ pub struct PpcQuickTimeControllerRecord {
     pub origin: u32,
     pub action_filter: u32,
     pub action_ref_con: u32,
+    pub action_filter_rtoc: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
     pub(crate) callbacks: callbacks::Callbacks,
-    pub(crate) callback_frames: Vec<callbacks::DeliveryFrame>,
+    pub(crate) callback_frames: Vec<callbacks::ContinuationFrame>,
     pub movie_toolbox_enter_count: u32,
     pub movie_toolbox_exit_count: u32,
     pub movie_toolbox_init_depth: u32,
@@ -845,6 +847,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                     origin: 0,
                     action_filter: 0,
                     action_ref_con: 0,
+                    action_filter_rtoc: 0,
                 });
             PpcImportAction::Return(handle)
         }
@@ -937,6 +940,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 return PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID));
             };
             controller.action_filter = cpu.gpr[4];
+            controller.action_filter_rtoc = if cpu.gpr[4] == 0 { 0 } else { cpu.gpr[2] };
             controller.action_ref_con = if cpu.gpr[4] == 0 { 0 } else { cpu.gpr[5] };
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }

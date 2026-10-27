@@ -3123,6 +3123,17 @@ pub(crate) fn dispatch_supported_import(
             ))
         }
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => {
+            if let Some(action) = quicktime::controller::filter_controller_action(
+                operation,
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                quicktime,
+            ) {
+                return Some(action);
+            }
             let service_callbacks = matches!(
                 operation,
                 PpcQuickTimeCompatibilityOperation::MCIdle

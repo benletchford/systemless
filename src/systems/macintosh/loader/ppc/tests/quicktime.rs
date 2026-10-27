@@ -2088,6 +2088,7 @@ fn quicktime_attached_controller_bounds_position_movie_pixels() {
             origin: 0,
             action_filter: 0,
             action_ref_con: 0,
+            action_filter_rtoc: 0,
         }],
         ..PpcQuickTimeState::default()
     };
@@ -3555,6 +3556,7 @@ fn quicktime_mc_do_action_play_starts_and_stops_controller_movie() {
                 origin: 0,
                 action_filter: 0,
                 action_ref_con: 0,
+                action_filter_rtoc: 0,
             });
         loaded.cpu.gpr[3] = controller;
         loaded.cpu.gpr[4] = 8; // mcActionPlay
@@ -3595,6 +3597,7 @@ fn quicktime_mc_do_action_idle_tasks_associated_movie() {
                 origin: 0,
                 action_filter: 0,
                 action_ref_con: 0,
+                action_filter_rtoc: 0,
             });
         loaded.quicktime.movie_active = true;
         loaded.quicktime.movie_started = true;
@@ -3657,6 +3660,7 @@ fn quicktime_dispose_movie_controller_preserves_associated_movie() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.quicktime.movie_started = true;
     loaded.cpu.gpr[3] = controller;
@@ -3683,6 +3687,7 @@ fn quicktime_mc_set_movie_updates_controller_association() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = PPC_QT_MOVIE;
@@ -3727,6 +3732,7 @@ fn quicktime_mc_get_controller_bounds_writes_recorded_rect() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     let out = PPC_DATA_BASE + 0x1b00;
     loaded.memory.add_region(out, vec![0; 8]);
@@ -3763,6 +3769,7 @@ fn quicktime_mc_set_action_filter_records_and_removes_callback() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = 0x1234_5678;
@@ -3800,6 +3807,7 @@ fn quicktime_mc_set_controller_bounds_updates_rect() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     let rect_ptr = PPC_DATA_BASE + 0x1c00;
     loaded.memory.add_region(rect_ptr, vec![0, 10, 0, 20, 1, 44, 2, 88]);
@@ -3837,6 +3845,7 @@ fn quicktime_mc_idle_services_attached_movie() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.quicktime.movie_active = true;
     loaded.cpu.gpr[3] = controller;
@@ -3878,6 +3887,7 @@ fn quicktime_mc_get_current_time_returns_value_and_scale() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.quicktime.movie_time_scale = 600;
     loaded.quicktime.movie_file_duration = 100;
@@ -4647,6 +4657,7 @@ fn quicktime_controller_idle_delivers_due_guest_callback_once() {
                 origin: 0,
                 action_filter: 0,
                 action_ref_con: 0,
+                action_filter_rtoc: 0,
             });
         let rtoc = loaded.cpu.gpr[2];
         advance_quicktime_test_clock(&mut loaded, 10_000_000);
@@ -4790,6 +4801,7 @@ fn quicktime_mc_controller_port_round_trips() {
         origin: 0,
         action_filter: 0,
         action_ref_con: 0,
+            action_filter_rtoc: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = 0x0204_0000;
@@ -5712,4 +5724,283 @@ fn quicktime_mc_set_movie_moves_pixels_and_preserves_detached_controller() {
     );
     assert_eq!(loaded.quicktime.movie_controllers[0].movie, 0);
     assert_eq!(loaded.quicktime.movie_box, (-2, -3, 2, 1));
+}
+
+fn controller_filter_fixture(consume: bool) -> (PpcLoadedApp, u32, u32, u32, u32) {
+    let (mut loaded, port, _) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = port;
+    let data = PPC_DATA_BASE + 0x6000;
+    let code = PPC_CODE_BASE + 0x8000;
+    loaded.memory.add_region(data, vec![0; 0x1000]);
+    ppc_write_rect(&mut loaded.memory, data, 0, 0, 4, 4).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, data, 0]);
+    let observed = data + 0x100;
+    let vector = data + 0x200;
+    // Record mc, action (by value), params and the callback's TOC through refCon.
+    loaded.memory.add_region(
+        code,
+        [
+            0x90660000u32,
+            0x90860004,
+            0x90a60008,
+            0x9046000c,
+            0x38600000 | u32::from(consume),
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.write_u32_be(vector, code).unwrap();
+    loaded.memory.write_u32_be(vector + 4, 0x11223344).unwrap();
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[controller, vector, observed],
+    );
+    (loaded, controller, code, vector, observed)
+}
+
+fn call_controller_with_filter(loaded: &mut PpcLoadedApp, symbol: &str, args: &[u32]) -> u32 {
+    loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+    run_quicktime_callback_test_import(
+        loaded,
+        dispatcher_target_for_import("QuickTimeLib", symbol),
+    );
+    loaded.cpu.gpr[3]
+}
+
+#[test]
+fn quicktime_controller_filter_consumes_or_permits_play_with_guest_abi() {
+    for consume in [false, true] {
+        let (mut loaded, controller, _, _, observed) = controller_filter_fixture(consume);
+        let sp = loaded.cpu.gpr[1];
+        let rtoc = loaded.cpu.gpr[2];
+        assert_eq!(
+            call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 8, 0x10000]),
+            0
+        );
+        assert_eq!(loaded.quicktime.movie_started, !consume);
+        assert_eq!(loaded.memory.read_u32_be(observed), Some(controller));
+        assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(8));
+        assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(0x10000));
+        assert_eq!(loaded.memory.read_u32_be(observed + 12), Some(0x11223344));
+        assert_eq!(loaded.cpu.gpr[1], sp);
+        assert_eq!(loaded.cpu.gpr[2], rtoc);
+    }
+    let (mut loaded, controller, code, _, observed) = controller_filter_fixture(true);
+    // A raw code pointer uses the installer TOC, not a later caller's TOC.
+    loaded.cpu.gpr[2] = 0x55667788;
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[controller, code, observed],
+    );
+    loaded.cpu.gpr[2] = 0x12345678;
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCIdle", &[controller]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(observed + 12), Some(0x55667788));
+    assert_eq!(loaded.cpu.gpr[2], 0x12345678);
+    let port = loaded.quicktime.movie_gworld;
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDraw", &[controller, port]),
+        1
+    );
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(2));
+    assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(port));
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[controller, 0, 0],
+    );
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 8, 0x10000]),
+        0
+    );
+    assert!(loaded.quicktime.movie_started);
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[controller, u32::MAX, 0],
+    );
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCIdle", &[controller]) as i32,
+        -50
+    );
+}
+
+#[test]
+fn quicktime_controller_click_filter_receives_event_and_releases_temporary_storage() {
+    let (mut loaded, controller, _, vector, observed) = controller_filter_fixture(true);
+    let code = PPC_CODE_BASE + 0x9000;
+    // Save the temporary pointer, and copy all 16 EventRecord bytes before return.
+    loaded.memory.add_region(
+        code,
+        [
+            0x90a60000u32,
+            0x80e50000,
+            0x90e60004,
+            0x80e50004,
+            0x90e60008,
+            0x80e50008,
+            0x90e6000c,
+            0x80e5000c,
+            0x90e60010,
+            0x38600001,
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.write_u32_be(vector, code).unwrap();
+    assert_eq!(
+        call_controller_with_filter(
+            &mut loaded,
+            "MCClick",
+            &[controller, 0x02345678, 0xfffe0003, 0x12345678, 0x0201]
+        ),
+        1
+    );
+    let event = loaded.memory.read_u32_be(observed).unwrap();
+    assert_ne!(event, 0);
+    assert_eq!(loaded.memory.read_u16_be(observed + 4), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(observed + 6), Some(0x02345678));
+    assert_eq!(loaded.memory.read_u32_be(observed + 10), Some(0x12345678));
+    assert_eq!(loaded.memory.read_u32_be(observed + 14), Some(0xfffe0003));
+    assert_eq!(loaded.memory.read_u16_be(observed + 18), Some(0x0201));
+    loaded.cpu.gpr[3] = event;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPtrSize);
+    assert_eq!(
+        loaded.cpu.gpr[3], 0,
+        "the callback's temporary event is not retained"
+    );
+}
+
+#[test]
+fn quicktime_controller_filter_nests_with_rate_callbacks_at_the_same_import() {
+    let (mut loaded, outer, simple_code, outer_vector, observed) = controller_filter_fixture(false);
+    let rect = observed - 0x100;
+    let inner = call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    let third = call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    let inner_output = observed + 0x300;
+    let third_output = observed + 0x400;
+    let rate_data = observed + 0x500;
+    let outer_code = PPC_CODE_BASE + 0xa000;
+    let rate_code = PPC_CODE_BASE + 0xb000;
+    let third_code = PPC_CODE_BASE + 0xc000;
+    let inner_vector = observed + 0x700;
+    let third_vector = observed + 0x710;
+    let rate_vector = observed + 0x720;
+    let d = |op: u32, reg: u32, base: u32, imm: i16| {
+        (op << 26) | (reg << 21) | (base << 16) | u32::from(imm as u16)
+    };
+    let nested_code = |refcon_register, action, rate_high| {
+        [
+            d(37, 1, 1, -64),
+            xfx_form(31, 0, 8, 339),
+            d(36, 0, 1, 68),
+            d(36, 31, 1, 60),
+            x_form(31, refcon_register, 31, refcon_register, 444, false),
+            d(32, 3, 31, 16),
+            d(14, 4, 0, action),
+            d(15, 5, 0, rate_high),
+            d(32, 12, 31, 20),
+            xfx_form(31, 12, 9, 467),
+            xl_form(19, 20, 0, 528, true),
+            d(36, 3, 31, 24),
+            d(14, 0, 0, 99),
+            d(36, 0, 31, 28),
+            d(14, 3, 0, 1),
+            d(32, 31, 1, 60),
+            d(32, 0, 1, 68),
+            xfx_form(31, 0, 8, 467),
+            d(14, 1, 1, 64),
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>()
+    };
+    // Outer filter -> inner controller -> rate callback -> third controller's
+    // filter. All three MCDoAction calls deliberately use the same import PC.
+    loaded.memory.add_region(outer_code, nested_code(6, 8, 1));
+    loaded.memory.add_region(rate_code, nested_code(4, 17, 0));
+    loaded.memory.add_region(
+        third_code,
+        [
+            0x90660000u32,
+            0x90860004,
+            0x90a60008,
+            0x38600001,
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    for (vector, code) in [
+        (outer_vector, outer_code),
+        (inner_vector, simple_code),
+        (third_vector, third_code),
+        (rate_vector, rate_code),
+    ] {
+        loaded.memory.write_u32_be(vector, code).unwrap();
+        loaded.memory.write_u32_be(vector + 4, 0x11223344).unwrap();
+    }
+    for (data, controller) in [(observed, inner), (rate_data, third)] {
+        loaded.memory.write_u32_be(data + 16, controller).unwrap();
+        loaded
+            .memory
+            .write_u32_be(data + 20, loaded.imports[0].trap_pc)
+            .unwrap();
+    }
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[inner, inner_vector, inner_output],
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetActionFilterWithRefCon",
+        &[third, third_vector, third_output],
+    );
+    let callback = call_movie_toolbox(&mut loaded, "NewCallBack", &[PPC_QT_MOVIE + 0x10, 2]);
+    assert_ne!(callback, 0);
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "CallMeWhen",
+            &[callback, rate_vector, rate_data, 0, 0, 0]
+        ),
+        0
+    );
+    let sp = loaded.cpu.gpr[1];
+    let rtoc = loaded.cpu.gpr[2];
+    let r31 = loaded.cpu.gpr[31];
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[outer, 8, 0]),
+        0
+    );
+    assert!(
+        loaded.quicktime.movie_started,
+        "outer filter consumes stop after inner play"
+    );
+    assert_eq!(loaded.memory.read_u32_be(inner_output), Some(inner));
+    assert_eq!(loaded.memory.read_u32_be(inner_output + 4), Some(8));
+    assert_eq!(loaded.memory.read_u32_be(inner_output + 8), Some(0x10000));
+    assert_eq!(loaded.memory.read_u32_be(third_output), Some(third));
+    assert_eq!(loaded.memory.read_u32_be(third_output + 4), Some(17));
+    for data in [observed, rate_data] {
+        assert_eq!(loaded.memory.read_u32_be(data + 24), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(data + 28), Some(99));
+    }
+    assert_eq!(loaded.cpu.gpr[1], sp);
+    assert_eq!(loaded.cpu.gpr[2], rtoc);
+    assert_eq!(loaded.cpu.gpr[31], r31);
 }

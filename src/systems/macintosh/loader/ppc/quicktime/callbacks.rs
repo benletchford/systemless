@@ -26,6 +26,14 @@ pub(crate) struct Callbacks {
     queued: Vec<(u32, Registration)>,
 }
 
+/// A single continuation stack preserves ordering when a controller filter
+/// calls a movie import which in turn delivers a time/drawing callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContinuationFrame {
+    Delivery(DeliveryFrame),
+    ControllerFilter(super::controller::FilterFrame),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeliveryFrame {
     pub import_pc: u32,
