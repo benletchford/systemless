@@ -3042,7 +3042,12 @@ pub(crate) fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TextEncoding(operation) => Some(
-            dispatch_text_encoding::ppc_dispatch_text_encoding(operation, cpu, memory),
+            dispatch_text_encoding::ppc_dispatch_text_encoding(
+                operation,
+                cpu,
+                memory,
+                &mut toolbox_startup.text_encoding,
+            ),
         ),
         PpcImportDispatcherTarget::AppleTalkCompatibility(operation) => Some(
             dispatch_appletalk::ppc_dispatch_appletalk_compatibility(operation, cpu, memory),
