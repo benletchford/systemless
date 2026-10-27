@@ -30,7 +30,7 @@ pub(crate) const PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE: usize = 150;
 pub(crate) const PPC_CLASSIC_ALIAS_RECORD_VERSION: u16 = 2;
 pub(crate) const PPC_CLASSIC_ALIAS_VOLUME_NAME_OFFSET: usize = 10;
 pub(crate) const PPC_CLASSIC_ALIAS_FILE_NAME_OFFSET: usize = 50;
-pub(crate) const PPC_CLASSIC_ALIAS_DIR_ID_OFFSET: usize = 114;
+pub(crate) const PPC_CLASSIC_ALIAS_DIR_ID_OFFSET: usize = 46;
 pub(crate) const PPC_CLASSIC_ALIAS_MYSTERY_WORDS_OFFSET: usize = 130;
 pub(crate) const PPC_CLASSIC_ALIAS_TAIL_TAG: u16 = 0x0009;
 pub(crate) const PPC_CLASSIC_ALIAS_FULL_PATH_TAG: u16 = 0x0002;
@@ -6176,10 +6176,12 @@ pub(super) fn ppc_resolve_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
     handles: &[PpcHandleRecord],
     aliases: &[PpcAliasRecord],
 ) -> i16 {
-    let _from_file_ptr = cpu.gpr[3];
+    let from_file_ptr = cpu.gpr[3];
     let alias_handle = cpu.gpr[4];
     let target_ptr = cpu.gpr[5];
     let was_changed_ptr = cpu.gpr[6];
@@ -6191,16 +6193,34 @@ pub(super) fn ppc_resolve_alias(
     {
         return PPC_PARAM_ERR;
     };
-    let alias = aliases
-        .iter()
-        .find(|record| record.handle == alias_handle)
-        .cloned()
-        .or_else(|| {
-            ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories))
-        });
+    let alias = ppc_relative_alias_target(
+        memory,
+        handles,
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        from_file_ptr,
+        alias_handle,
+    )
+    .or_else(|| {
+        aliases
+            .iter()
+            .find(|record| record.handle == alias_handle)
+            .cloned()
+    })
+    .or_else(|| ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories)));
     let Some(alias) = alias else {
         return PPC_PARAM_ERR;
     };
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] ResolveAlias from=${:08X} alias=${:08X} target_dir={} target_name={:?}",
+            from_file_ptr,
+            alias_handle,
+            alias.target_dir_id,
+            decode_mac_roman(&alias.target_name)
+        );
+    }
     if !ppc_write_fsspec_parts(
         memory,
         target_ptr,
@@ -6496,4 +6516,99 @@ pub(super) fn ppc_directory_id_for_path(vfs_directories: &[PpcVfsDirectory], pat
         .iter()
         .find(|directory| directory.path.eq_ignore_ascii_case(path))
         .map(|directory| directory.dir_id)
+}
+
+/// Resolve version-2 relative location metadata before the absolute alias search.
+/// The source and target each count as one level, so (1, 1) denotes siblings.
+fn ppc_relative_alias_target(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    directories: &[PpcVfsDirectory],
+    files: &[PpcVfsFileRecord],
+    resource_files: &[PpcVfsResourceFileRecord],
+    from_file: u32,
+    alias_handle: u32,
+) -> Option<PpcAliasRecord> {
+    let (vref, from_dir, _) = ppc_read_fsspec_parts(memory, from_file)?;
+    if vref != PPC_BOOT_VOLUME_REF_NUM && vref != 0 {
+        return None;
+    }
+    let source =
+        ppc_existing_path_for_fsspec(memory, directories, files, resource_files, from_file).ok()?;
+    let source_parent = ppc_directory_path_for_id(directories, from_dir)?;
+    if !ppc_join_vfs_path(source_parent, ppc_vfs_basename(&source)).eq_ignore_ascii_case(&source) {
+        return None;
+    }
+    let handle = handles
+        .iter()
+        .find(|record| record.handle == alias_handle)?;
+    let data = memory.read_u32_be(alias_handle)?;
+    let size = usize::from(memory.read_u16_be(data.checked_add(4)?)?);
+    if size < PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE || size > handle.size as usize {
+        return None;
+    }
+    let mut bytes = vec![0; size];
+    memory.read_bytes_into(data, &mut bytes)?;
+    if ppc_slice_u16_be(&bytes, 6)? != 2 {
+        return None;
+    }
+    let levels_from = ppc_slice_u16_be(&bytes, 130)? as i16;
+    let levels_to = ppc_slice_u16_be(&bytes, 132)? as i16;
+    if levels_from < 1 || levels_to < 1 {
+        return None;
+    }
+    let name = ppc_slice_fixed_pstring_bytes(&bytes, 50, PPC_FSSPEC_MAX_NAME_LEN)?;
+    let mut parent = source_parent.to_string();
+    for _ in 1..levels_from {
+        if parent.is_empty() {
+            return None;
+        }
+        parent = parent
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_string();
+    }
+    if levels_to > 1 {
+        let mut offset = PPC_CLASSIC_ALIAS_RECORD_HEADER_SIZE;
+        let mut target_path = None;
+        while offset.checked_add(4)? <= size {
+            let tag = ppc_slice_u16_be(&bytes, offset)?;
+            if tag == PPC_CLASSIC_ALIAS_END_TAG {
+                break;
+            }
+            let len = usize::from(ppc_slice_u16_be(&bytes, offset + 2)?);
+            let payload = offset.checked_add(4)?;
+            let end = payload.checked_add(len)?;
+            if end > size {
+                return None;
+            }
+            if tag == PPC_CLASSIC_ALIAS_FULL_PATH_TAG {
+                target_path = Some(decode_mac_roman(bytes.get(payload..end)?));
+                break;
+            }
+            offset = end.checked_add(len & 1)?;
+        }
+        let target_path = target_path?;
+        let parts = target_path
+            .split(':')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        let descend = levels_to as usize - 1;
+        if parts.len() < descend + 2 {
+            return None;
+        }
+        for part in &parts[parts.len() - 1 - descend..parts.len() - 1] {
+            parent = ppc_join_vfs_path(&parent, part);
+        }
+    }
+    let candidate = ppc_join_vfs_path(&parent, &decode_mac_roman(&name));
+    let found = ppc_vfs_file_or_resource_path(files, resource_files, &candidate).or_else(|| {
+        ppc_directory_id_for_path(directories, &candidate).map(|_| candidate.clone())
+    })?;
+    Some(PpcAliasRecord {
+        handle: alias_handle,
+        target_vref: PPC_BOOT_VOLUME_REF_NUM,
+        target_dir_id: ppc_directory_id_for_path(directories, &parent)?,
+        target_name: ppc_vfs_basename_bytes(&found),
+    })
 }

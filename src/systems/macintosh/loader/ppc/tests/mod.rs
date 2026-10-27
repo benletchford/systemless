@@ -219,6 +219,7 @@ mod blit;
 mod carbon_toolbox;
 mod carbon_services;
 
+mod alias_relative;
 mod file_manager;
 mod file_manager_extras;
 mod fsref;
