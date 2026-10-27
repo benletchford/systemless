@@ -21,6 +21,17 @@ pub(crate) struct Callback {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Callbacks {
     records: Vec<Callback>,
+    /// One-shot deliveries that are not QTCallBack records, such as a
+    /// movie's drawing-complete procedure: (first argument, registration).
+    queued: Vec<(u32, Registration)>,
+}
+
+/// A single continuation stack preserves ordering when a controller filter
+/// calls a movie import which in turn delivers a time/drawing callback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ContinuationFrame {
+    Delivery(DeliveryFrame),
+    ControllerFilter(super::controller::FilterFrame),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +111,7 @@ impl Callbacks {
     }
 
     pub fn retire_time_base(&mut self, time_base: u32) {
+        self.queued.clear();
         for record in &mut self.records {
             if record.time_base == time_base {
                 record.time_base = 0;
@@ -167,7 +179,19 @@ impl Callbacks {
         }
     }
 
+    /// Queues a one-shot delivery of `registration` with `argument` as the
+    /// procedure's first parameter. A delivery already pending is not
+    /// duplicated.
+    pub fn queue(&mut self, argument: u32, registration: Registration) {
+        if !self.queued.contains(&(argument, registration)) {
+            self.queued.push((argument, registration));
+        }
+    }
+
     pub fn take_ready(&mut self) -> Option<(u32, Registration)> {
+        if !self.queued.is_empty() {
+            return Some(self.queued.remove(0));
+        }
         let record = self.records.iter_mut().find(|record| record.due)?;
         record.due = false;
         Some((record.address, record.registration.take()?))

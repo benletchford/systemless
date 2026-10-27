@@ -994,6 +994,13 @@ pub(crate) fn dispatch_supported_import(
     ) {
         return Some(action);
     }
+    ppc_qt_service_clock(
+        quicktime,
+        sound,
+        callback_scheduling
+            .current_subtick()
+            .max(u64::from(*tick_count) * crate::time_manager::SUBTICKS_PER_TICK),
+    );
     if let Some(action) = dispatch_quicktime::dispatch_quicktime_import(
         dispatch_quicktime::PpcQuickTimeDispatchContext {
             binding,
@@ -3126,11 +3133,25 @@ pub(crate) fn dispatch_supported_import(
             ))
         }
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => {
+            if let Some(action) = quicktime::controller::filter_controller_action(
+                operation,
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                quicktime,
+            ) {
+                return Some(action);
+            }
             let service_callbacks = matches!(
                 operation,
                 PpcQuickTimeCompatibilityOperation::MCIdle
                     | PpcQuickTimeCompatibilityOperation::MCDoAction
+                    | PpcQuickTimeCompatibilityOperation::SetMovieRate
             );
+            let service_drawing = operation != PpcQuickTimeCompatibilityOperation::MCDoAction
+                || matches!(cpu.gpr[4] as i16, 1 | 8);
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
             let action = dispatch_quicktime_compatibility(
                 operation,
@@ -3149,7 +3170,13 @@ pub(crate) fn dispatch_supported_import(
             );
             Some(if service_callbacks {
                 dispatch_quicktime::finish_controller_callbacks(
-                    action, cpu, memory, quicktime, sound, before,
+                    action,
+                    cpu,
+                    memory,
+                    quicktime,
+                    sound,
+                    before,
+                    service_drawing,
                 )
             } else {
                 action

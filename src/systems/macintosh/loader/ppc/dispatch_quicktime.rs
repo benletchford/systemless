@@ -43,12 +43,16 @@ pub(super) fn dispatch_quicktime_import(
 
     // Native continuations return to the import with LR equal to its PC.
     // A nested guest import has its ordinary caller LR and starts a new frame.
-    if quicktime
-        .callback_frames
-        .last()
-        .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
-    {
-        let frame = quicktime.callback_frames.pop().unwrap();
+    if quicktime.callback_frames.last().is_some_and(|frame| {
+        matches!(frame,
+            quicktime::callbacks::ContinuationFrame::Delivery(frame)
+                if frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
+    }) {
+        let Some(quicktime::callbacks::ContinuationFrame::Delivery(frame)) =
+            quicktime.callback_frames.pop()
+        else {
+            unreachable!("checked movie callback continuation");
+        };
         return Some(deliver_quicktime_callbacks(
             cpu, memory, quicktime, sound, frame,
         ));
@@ -197,6 +201,9 @@ pub(super) fn dispatch_quicktime_import(
             let playing = quicktime.movie_started;
             let rate_before = quicktime_callback_rate(quicktime);
             let error = ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
+            if error == PPC_NO_ERR {
+                ppc_qt_mark_drawing_complete(quicktime, quicktime.movie_active);
+            }
             if error == PPC_NO_ERR && playing {
                 let after = quicktime_callback_time(quicktime);
                 quicktime.callbacks.mark_time_due(
@@ -315,24 +322,13 @@ pub(super) fn dispatch_quicktime_import(
 }
 
 pub(super) fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
-    let duration = if quicktime.movie_file_duration == 0 {
-        600
-    } else {
-        quicktime.movie_file_duration
-    };
-    let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
-    i64::try_from(
-        u64::from(quicktime.movie_task_count)
-            .min(tasks)
-            .saturating_mul(duration)
-            / tasks,
-    )
-    .unwrap_or(i64::MAX)
+    let duration = ppc_qt_movie_duration_value(quicktime);
+    i64::try_from(ppc_qt_movie_position_in_scale(quicktime, duration)).unwrap_or(i64::MAX)
 }
 
 fn quicktime_callback_rate(quicktime: &PpcQuickTimeState) -> i32 {
     if quicktime.movie_started {
-        quicktime.movie_preferred_rate
+        quicktime.movie_playback_rate
     } else {
         0
     }
@@ -353,12 +349,16 @@ pub(super) fn finish_controller_callbacks(
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
     before: (i64, i32, bool),
+    service_drawing: bool,
 ) -> PpcImportAction {
     if !matches!(action, PpcImportAction::Return(0)) {
         return action;
     }
     let (before_time, before_rate, was_playing) = before;
     let (after_time, after_rate, is_playing) = quicktime_callback_progress(quicktime);
+    if service_drawing {
+        ppc_qt_mark_drawing_complete(quicktime, was_playing && quicktime.movie_active);
+    }
     if was_playing {
         quicktime.callbacks.mark_time_due(
             PPC_QT_MOVIE + 0x10,
@@ -430,7 +430,9 @@ fn deliver_quicktime_callbacks(
         if install_powerpc_call_arguments(cpu, memory, &[address, registration.refcon]).is_none() {
             break;
         }
-        quicktime.callback_frames.push(frame);
+        quicktime
+            .callback_frames
+            .push(quicktime::callbacks::ContinuationFrame::Delivery(frame));
         return GuestCallEffect::call_guest(
             GuestCallRequest::new(GuestCallTarget {
                 isa: GuestIsa::PowerPc,
