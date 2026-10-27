@@ -17,6 +17,37 @@ compatibility:
   verified:
   - date: "2026-10-27"
     tester: Catalogue maintainer
+    systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
+    architecture: 68k
+    environment: >-
+      Native ci-test dialog-repair candidate #5155, executable SHA-256
+      666aad38bc6fffede6def2ec97aae497817022ff7b84f87b32d91bccde307b9d.
+      Exact catalogue archive and executable selector below, through production archive
+      expansion, ordinary scheduler and default display/time. The original Not Yet trial
+      flow, Command-B, J, I and Space pass five measured pixel checks at 2330 frontend /
+      2930 guest ticks with zero exhausted frames. The inspected capture shows score 100,
+      moves 2, rotation 1 and slam 1. Separately, unchanged original installer forks pass
+      nine completion-message, Quit/Continue-label and Continue-dismissal checks at 2832 /
+      3432 ticks. This is bounded native input and installer UI evidence; full levels,
+      audio fidelity, browser approval and public launch qualification remain pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5155
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
+    systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
+    architecture: ppc
+    environment: >-
+      Same exact catalogue archive and immutable candidate as the current 68K row.
+      Accept the original eight-bit display-depth prompt, then choose Not Yet. Command-B,
+      J, I and Space pass five measured pixel checks at 2933 frontend / guest ticks,
+      zero exhausted frames. The actual capture shows score 100, moves 2, rotation 1 and
+      slam 1. Both CPU routes retain the original trial. This is bounded input evidence;
+      full levels, audio fidelity, browser pacing/input and public qualification remain
+      pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5155
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
     systemless_version: c67b094c303187f464a58be2a00b967af366b310
     architecture: 68k
     environment: "Native ci-test combined candidate SHA-256 06c2bde97f27e9e787a52fccfeb69161bb4db19eb968093e9cb7c51d82e1a308, including palette initialization and dialog control repairs #5109/#5114/#5117. Original installer (SHA-256 2d6bf65ffbb528a881f6beec3bb73a5f49bb758c51d0e289186f23209fd25ad3), selector below, ordinary scheduler and default display/time. Dismiss the original trial notice with Not Yet; Command-B starts a game, J moves left, I rotates and Space slams. Fresh input and matched no-gameplay-input replays each pass five measured pixel assertions at 2330 frontend / 2930 guest ticks, zero exhausted frames. Actual input capture shows score 100, moves 2, rotations 1 and slams 1; the control remains at zero. Five further checks verify the restored registration logo, trial text, labels and second field at 1200 / 1800 ticks. These are bounded input checks, not a completed level, sound or full-game qualification. Browser approval pending."
@@ -71,7 +102,10 @@ artifacts:
       or music is separately redistributed. Independent unar inspection verifies the
       outer installer forks. Original-installer execution now independently verifies all
       18 payload paths and 36 forks from the corrected VISE parser in #5143; Finder
-      flags are recorded separately. The original installer final alert remains blank.
+      flags are recorded separately. The original installer completion message,
+      Quit/Continue labels and Continue dismissal now pass nine measured native checks
+      with repair candidate #5155.
+      The prior blank alert is recorded in #5147; browser approval remains pending.
       Production expansion yields 18 records. The game contains both 68K CODE resources
       and PowerPC PEF/cfrg code. This source adds a StuffIt wrapper around the intact
       installer distribution. Its installer data fork, resource data and resource map
