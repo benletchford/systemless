@@ -134,6 +134,17 @@ pub(super) fn dispatch_math_import(
         PpcImportDispatcherTarget::Fix2Long => Some(PpcImportAction::Return(ppc_fix_to_long(
             cpu.gpr[3] as i32,
         ) as u32)),
+        PpcImportDispatcherTarget::AngleFromSlope => {
+            // Inside Macintosh I-476: signed 16.16 slope to an INTEGER
+            // angle in 1..180, with zero slope mapping to 180 degrees.
+            // Match the classic QuickDraw angle convention and rounding.
+            let slope = f64::from(cpu.gpr[3] as i32) / 65536.0;
+            let mut angle = (180.0 - slope.atan().to_degrees()).round() as i32 % 180;
+            if angle <= 0 {
+                angle += 180;
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(angle as i16)))
+        }
         PpcImportDispatcherTarget::FixRound => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_fix_round(cpu.gpr[3] as i32),
         ))),

@@ -437,3 +437,37 @@ fn hle_import_runner_converts_fixed_to_extended_result_register() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), -1.5);
 }
+
+#[test]
+fn ppc_angle_from_slope_executes_signed_fixed_input_through_pef() {
+    // Inside Macintosh I-476: zero maps to 180; slopes -1 and +1
+    // map to 45 and 135. Extreme signed Fixed values approach 90.
+    for (slope, expected) in [
+        (0i32, 180u32),
+        (-65536, 45),
+        (65536, 135),
+        (i32::MIN, 90),
+        (i32::MAX, 90),
+        (-1, 180),
+        (1, 180),
+        (-32768, 27),
+        (32768, 153),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"AngleFromSlope")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::AngleFromSlope
+        );
+        loaded.cpu.gpr[3] = slope as u32;
+        loaded.cpu.gpr[4] = 0x12345678;
+        let stack = loaded.cpu.gpr[1];
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let result = loaded.run_with_hle_imports(64);
+        assert_eq!(result.handled_import_count, 1, "slope={slope}");
+        assert_eq!(loaded.cpu.gpr[3], expected, "slope={slope}");
+        assert_eq!(loaded.cpu.gpr[1], stack);
+        assert_eq!(loaded.cpu.gpr[4], 0x12345678);
+    }
+}

@@ -1982,6 +1982,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::Long2Fix
         | PpcImportDispatcherTarget::Fix2Long
         | PpcImportDispatcherTarget::FixRound
+        | PpcImportDispatcherTarget::AngleFromSlope
         | PpcImportDispatcherTarget::Fix2Frac
         | PpcImportDispatcherTarget::Frac2Fix
         | PpcImportDispatcherTarget::Frac2X
