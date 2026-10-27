@@ -7727,7 +7727,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
                 handle: new_handle,
                 locked: false,
                 high_locked: false,
-                no_purge: false,
+                no_purge: true,
                 resource: true,
             }]
         );

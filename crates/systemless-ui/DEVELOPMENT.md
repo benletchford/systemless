@@ -106,3 +106,18 @@ Retain the existing guest-only presentation path while proving the workspace int
 - Additional PowerPC UI integration: the shared Balloon Help dispatcher preserves master’s disabled/aborted results without shadowing egui balloons; `TEReplaceStyle` uses the host-aware TextEdit renderer; and `GetColor` preserves the input RGB in its headless cancellation result while retaining the egui picker when enabled.
 - Final runtime qualification: 7,295 library tests and 213 desktop tests pass after the latest rebase. A separate real-time runtime-owner regression delivers a projected checkbox click through the mailbox and observes its guest state; frontend AccessKit tests cover Focus/Click with an active text editor. The Windows platform trace confirms the guest mouse press/release, revised dialog value and UI Automation On state, followed by Cancel dismissal. The platform check now toggles both ways and requires each value to persist across two observations.
 - Remaining, reported honestly: content an application draws itself (user items, custom CDEFs) is necessarily its own pixels, embedded in native dialogs rather than rebuilt as egui widgets; menus with a custom MDEF are listed by their item text in the workspace menu bar rather than drawn by the MDEF (none of the 42 swept applications uses one); dialogs with custom window definitions are framed whole; macOS VoiceOver is not covered by the automated check, because querying another process's accessibility tree needs a permission hosted runners cannot grant, and none of the checks is a person listening to a screen reader; CI's native qualification is scripted rather than hands-on use.
+
+## Current-master qualification (2026-10-27)
+
+Rebased onto master `16377f36`, preserving the earlier branch work. Integration
+fixes update CFM and Apple Event test fixtures for master's new state fields,
+retain resource-map no-purge expectations, and use valid TextEdit records,
+automatic initial edit-field focus and port-relative caret pixels in dialog
+fixtures. PowerPC `SetDialogItemText` keeps egui-owned dialog pixels untouched
+while publishing the updated text; a regression checks both properties.
+
+Local qualification: `cargo check --all-targets`, all 7,499 library tests
+(6 ignored), 214 desktop tests (18 opt-in ignored), six opt-in GPU workspace
+tests, five release-mode Showcase matches (four driver round trips and the
+runtime-owner checkbox round trip), and all 28 design-crate tests pass.
+CI on the final pushed head must complete before review readiness.

@@ -554,6 +554,7 @@ pub(super) fn dispatch_dialog_import(
                                 .map(|kind| kind as i16);
                             if evaluate_get_dialog_from_window(dialog, kind) == 0
                                 || !ppc_window_is_visible(memory, dialog)
+                                || toolbox_startup.host_ui.dialog_presented(dialog)
                             {
                                 continue;
                             }

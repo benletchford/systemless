@@ -153,6 +153,9 @@ fn cfm_symbol_enumeration_uses_stack_selectors_and_atomic_pascal_results() {
     const OUTPUT: u32 = STACK + 0x100;
     let cfm = CfmState {
         connections: vec![CfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
             id: 7,
             library_name: "fragment".into(),
             main_addr: 0,
@@ -16751,6 +16754,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_DESIRED_CLASS,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_TYPE,
             data: docu.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16760,6 +16764,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_CONTAINER,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_NULL,
             data: Vec::new(),
             fields: HashMap::new(),
@@ -16769,6 +16774,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_KEY_FORM,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"enum"),
             data: form_absolute_position.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16778,6 +16784,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     inner_fields.insert(
         AE_KEY_KEY_DATA,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"long"),
             data: 1u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16785,6 +16792,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         },
     );
     let inner_object = AeDescriptor {
+        attributes: Default::default(),
         desc_type: AE_TYPE_OBJECT_SPECIFIER,
         data: Vec::new(),
         fields: inner_fields,
@@ -16795,6 +16803,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_DESIRED_CLASS,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_TYPE,
             data: cwin.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16805,6 +16814,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_KEY_FORM,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"enum"),
             data: form_absolute_position.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16814,6 +16824,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
     outer_fields.insert(
         AE_KEY_KEY_DATA,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: u32::from_be_bytes(*b"long"),
             data: 1u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16824,6 +16835,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         object_specifier,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: AE_TYPE_OBJECT_SPECIFIER,
             data: Vec::new(),
             fields: outer_fields,
@@ -16866,6 +16878,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         first_state.current_token_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: token_type,
             data: 0x1111_2222u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16895,6 +16908,7 @@ fn pack8_aeresolve_dispatches_nested_object_accessors() {
         &mut bus,
         second_state.current_token_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: token_type,
             data: 0x3333_4444u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -16973,6 +16987,7 @@ fn pack8_object_accessor_get_remove_and_direct_call_round_trip() {
         &mut bus,
         container_desc,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: container_type,
             data: 0x1111_2222u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),
@@ -17030,6 +17045,7 @@ fn pack8_object_accessor_get_remove_and_direct_call_round_trip() {
         &mut bus,
         final_token,
         AeDescriptor {
+            attributes: Default::default(),
             desc_type: container_type,
             data: 0x3333_4444u32.to_be_bytes().to_vec(),
             fields: HashMap::new(),

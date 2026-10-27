@@ -9509,5 +9509,30 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
     }
 }
 
-
-
+#[test]
+fn set_dialog_item_text_keeps_projected_powerpc_dialog_pixels_untouched() {
+    let items = vec![
+        make_test_ditl_item(70, 100, 90, 170, b"OK"),
+        make_test_ditl_item_typed(10, 20, 30, 180, 8, b"Before"),
+    ];
+    let (mut loaded, dialog, _) = modal_dialog_with_items(0, true, items);
+    loaded.run_with_hle_imports(128);
+    assert!(loaded.host_dialog().is_some());
+    let items =
+        ppc_dialog_items_for_dialog(&mut loaded.memory, &test_handle_records!(loaded), dialog)
+            .unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let len = front.row_bytes * front.height;
+    let before = ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap();
+    let text = PPC_DATA_BASE + 0x7000;
+    loaded.memory.add_region(text, vec![0; 256]);
+    write_ppc_pstring(&mut loaded.memory, text, b"After");
+    loaded.cpu.gpr[3] = items[1].handle;
+    loaded.cpu.gpr[4] = text;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+    assert_eq!(loaded.host_dialog().unwrap().items[1].text, "After");
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, len).unwrap(),
+        before
+    );
+}

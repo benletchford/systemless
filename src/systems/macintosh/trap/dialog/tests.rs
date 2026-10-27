@@ -4957,8 +4957,8 @@
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_ui_theme_id(theme_id);
         let dialog_ptr = bus.alloc(170);
-        let text_handle = bus.alloc(4);
-        let te_ptr = bus.alloc(0x40);
+        let text_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        let te_ptr = bus.read_long(text_handle);
 
         bus.write_long(dialog_ptr + 160, text_handle);
         bus.write_long(text_handle, te_ptr);
@@ -8137,7 +8137,7 @@
         );
         assert!(classic.new_update_region.is_some());
         assert!(classic.new_update_event_queued);
-        assert_eq!(classic.new_edit_field, 0xFFFF);
+        assert_eq!(classic.new_edit_field, 0);
         assert_eq!(classic.new_default_item, 1);
 
         assert_ne!(classic.get_dialog_ptr, 0);
@@ -8166,7 +8166,7 @@
         );
         assert!(classic.get_update_region.is_some());
         assert!(classic.get_update_event_queued);
-        assert_eq!(classic.get_edit_field, 0xFFFF);
+        assert_eq!(classic.get_edit_field, 0);
         assert_eq!(classic.get_default_item, 1);
         assert_eq!(
             themed, classic,
@@ -9121,7 +9121,10 @@
         let text_item_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 0);
         let text_h = make_te_with_text(&mut disp, &mut bus, b"");
         let te_ptr = bus.read_long(text_h);
-        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        let screen_base = bus.read_long(0x181000 + 2);
+        let row_bytes = u32::from(bus.read_word(0x181000 + 6));
+        // Match this fixture's 512-wide monochrome GrafPort.
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
 
         for i in 0..(row_bytes * 80) {
             bus.write_byte(screen_base + i, 0);
@@ -9198,7 +9201,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect editText mouse-down should display the insertion caret"
         );
 
@@ -9211,7 +9214,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event before 32 ticks should keep the caret visible"
         );
 
@@ -9225,7 +9228,7 @@
             1
         );
         assert!(
-            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event at the 32-tick boundary should hide the caret"
         );
 
@@ -9239,7 +9242,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "the next DialogSelect null-event blink interval should show the caret again"
         );
     }
