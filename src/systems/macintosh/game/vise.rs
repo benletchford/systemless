@@ -38,6 +38,15 @@ const VISE_PACKED_FILE_SUFFIX_LEN: usize = 66;
 const VISE_36_FULL_DIRECTORY_SUFFIX_LEN: usize = 22;
 const VISE_36_FULL_FILE_SUFFIX_LEN: usize = 16;
 
+// Original 0x80010307 installers also encode parent nesting depth, not
+// an index into every directory seen so far. Siblings therefore reuse depth.
+fn depth_catalog(version: u32) -> bool {
+    matches!(
+        version,
+        VISE_VERSION_36_FULL | VISE_VERSION_36_LITE | VISE_VERSION_EXTENDED_CATALOG
+    )
+}
+
 fn uncompressed_extended_catalog(version: u32) -> bool {
     matches!(
         version,
@@ -396,14 +405,14 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name =
                     decode_catalog_name(catalog_data, &mut cursor, name_len, "directory name")?;
-                let parent_index = if matches!(version, VISE_VERSION_36_FULL | VISE_VERSION_36_LITE) {
+                let parent_index = if depth_catalog(version) {
                     depth_catalog_parent(&directory_stack, parent)?
                 } else {
                     parent
                 };
                 let path = child_path(&dirs, parent_index, &name, "directory")?;
                 dirs.push(ViseDirectory { path });
-                if matches!(version, VISE_VERSION_36_FULL | VISE_VERSION_36_LITE) {
+                if depth_catalog(version) {
                     directory_stack.truncate(parent);
                     directory_stack.push(dirs.len());
                 }
@@ -453,7 +462,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     cursor += suffix_len;
                 }
                 let name = decode_catalog_name(catalog_data, &mut cursor, name_len, "file name")?;
-                let parent_index = if matches!(version, VISE_VERSION_36_FULL | VISE_VERSION_36_LITE) {
+                let parent_index = if depth_catalog(version) {
                     depth_catalog_parent(&directory_stack, parent)?
                 } else {
                     parent
@@ -1742,7 +1751,11 @@ pub(crate) mod tests {
 
     #[test]
     fn catalog_preserves_nested_and_sibling_directory_depths() {
-        for version in [VISE_VERSION_36_FULL, VISE_VERSION_36_LITE] {
+        for version in [
+            VISE_VERSION_36_FULL,
+            VISE_VERSION_36_LITE,
+            VISE_VERSION_EXTENDED_CATALOG,
+        ] {
             let original = make_test_archive("Empty", b"", b"");
             let catalog_offset = read_u32(&original, 36, "catalog offset").unwrap() as usize;
             let mut archive = original[..catalog_offset].to_vec();
@@ -1751,6 +1764,11 @@ pub(crate) mod tests {
             catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
             catalog[16..18].copy_from_slice(&9u16.to_be_bytes());
             archive.extend_from_slice(&catalog);
+            if version == VISE_VERSION_EXTENDED_CATALOG {
+                let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+                prefix[..4].copy_from_slice(b"PACK");
+                archive.extend_from_slice(&prefix);
+            }
             for (is_directory, depth, name) in [
                 (true, 0u16, "Root"),
                 (true, 1, " "),
@@ -1772,6 +1790,8 @@ pub(crate) mod tests {
                         0;
                         if version == VISE_VERSION_36_FULL {
                             VISE_36_FULL_DIRECTORY_SUFFIX_LEN
+                        } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                            VISE_EXTENDED_DIRECTORY_SUFFIX_LEN
                         } else {
                             6
                         }
@@ -1785,6 +1805,8 @@ pub(crate) mod tests {
                     archive.extend_from_slice(&record);
                     if version == VISE_VERSION_36_FULL {
                         archive.extend_from_slice(&[0; VISE_36_FULL_FILE_SUFFIX_LEN]);
+                    } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                        archive.extend_from_slice(&[0; VISE_EXTENDED_FILE_SUFFIX_LEN]);
                     }
                 }
                 archive.extend_from_slice(name.as_bytes());
