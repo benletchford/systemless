@@ -2,6 +2,10 @@
 
 pub(crate) mod callbacks;
 
+use super::{
+    ppc_local_point_in_port_regions, ppc_port_clip_storage, ppc_region_storage,
+    PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -1077,14 +1081,12 @@ pub(crate) fn ppc_qt_open_default_component(
     quicktime: &mut PpcQuickTimeState,
 ) -> i16 {
     const GRAPHICS_IMPORTER: u32 = u32::from_be_bytes(*b"grip");
-    const TGA_SUBTYPE: u32 = u32::from_be_bytes(*b"TGA ");
-    const GIF_SUBTYPE: u32 = u32::from_be_bytes(*b"GIF ");
     let out = cpu.gpr[5];
     // Component Manager dispatch: only the 'grip' graphics importer types are
     // synthesized. Other component types remain unsupported instead of being
     // silently mapped onto the graphics importer.
     match (cpu.gpr[3], cpu.gpr[4]) {
-        (GRAPHICS_IMPORTER, TGA_SUBTYPE) | (GRAPHICS_IMPORTER, GIF_SUBTYPE) => {}
+        (GRAPHICS_IMPORTER, subtype) if ppc_qt_graphics_image_format(subtype).is_some() => {}
         (component_type, component_subtype) => {
             eprintln!(
                 "[PPC-QT] OpenADefaultComponent unsupported type={} subtype={}",
@@ -1115,23 +1117,36 @@ const PPC_QT_GRAPHICS_IMPORTER_MAX_DATA: u32 = 16 * 1024 * 1024;
 const PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION: u32 = 8192;
 const PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS: u32 = 16 * 1024 * 1024;
 
+fn ppc_qt_graphics_image_format(subtype: u32) -> Option<image::ImageFormat> {
+    match subtype.to_be_bytes() {
+        [b'G', b'I', b'F', b' '] => Some(image::ImageFormat::Gif),
+        [b'T', b'G', b'A', b' '] => Some(image::ImageFormat::Tga),
+        [b'j', b'p', b'e', b'g'] | [b'J', b'P', b'E', b'G'] => Some(image::ImageFormat::Jpeg),
+        [b'p', b'n', b'g', b' '] | [b'P', b'N', b'G', b'f'] => Some(image::ImageFormat::Png),
+        _ => None,
+    }
+}
+
 fn ppc_qt_decode_graphics_image(subtype: u32, data: &[u8]) -> Option<PpcQtGraphicsImage> {
-    let format = if subtype == u32::from_be_bytes(*b"GIF ") {
-        image::ImageFormat::Gif
-    } else if subtype == u32::from_be_bytes(*b"TGA ") {
-        image::ImageFormat::Tga
-    } else {
+    let format = ppc_qt_graphics_image_format(subtype)?;
+    if data.len() > PPC_QT_GRAPHICS_IMPORTER_MAX_DATA as usize {
         return None;
-    };
+    }
     // The `image` crate's TGA decoder rejects 16-bit truecolor, which is the
     // depth Deimos Rising's startup art actually ships. Decode that case here
     // and keep the crate for GIF and the TGA depths it supports.
     if format == image::ImageFormat::Tga && ppc_qt_tga_is_truecolor_16(data) {
         return ppc_qt_decode_tga_truecolor_16(data);
     }
-    // `load_from_memory_with_format` decodes the first GIF frame (composited
-    // onto the logical screen with alpha) or the whole TGA.
-    let decoded = image::load_from_memory_with_format(data, format).ok()?;
+    // Decode the first GIF frame or the complete still image. Apply limits
+    // before decoding as well as checking the decoded pixel count below.
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(data), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION);
+    limits.max_image_height = Some(PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    let decoded = reader.decode().ok()?;
     let width = decoded.width();
     let height = decoded.height();
     if width == 0
@@ -1259,9 +1274,8 @@ pub(crate) fn ppc_qt_graphics_import_set_data_handle(
         return PPC_PARAM_ERR;
     }
     const TGA_SUBTYPE: u32 = u32::from_be_bytes(*b"TGA ");
-    const GIF_SUBTYPE: u32 = u32::from_be_bytes(*b"GIF ");
     let subtype = quicktime.graphics_importer_subtype;
-    if subtype != TGA_SUBTYPE && subtype != GIF_SUBTYPE {
+    if ppc_qt_graphics_image_format(subtype).is_none() {
         return PPC_PARAM_ERR;
     }
     let Some(source) = handles.iter().find(|record| record.handle == cpu.gpr[4]) else {
@@ -1274,8 +1288,8 @@ pub(crate) fn ppc_qt_graphics_import_set_data_handle(
     if memory.read_bytes_into(source.ptr, &mut data).is_none() {
         return PPC_PARAM_ERR;
     }
-    // The reported source depth follows the container: GIF is always indexed
-    // 8-bit; TGA declares its pixel depth in the 18-byte header.
+    // GIF is indexed; TGA declares its depth; JPEG carries RGB samples and
+    // PNG is decoded to RGBA for the graphics importer's image description.
     let declared_depth = if subtype == TGA_SUBTYPE {
         let Some(header) = data.get(..18) else {
             return PPC_PARAM_ERR;
@@ -1285,7 +1299,11 @@ pub(crate) fn ppc_qt_graphics_import_set_data_handle(
         }
         header[16]
     } else {
-        8
+        match ppc_qt_graphics_image_format(subtype) {
+            Some(image::ImageFormat::Jpeg) => 24,
+            Some(image::ImageFormat::Png) => 32,
+            _ => 8,
+        }
     };
     if !matches!(declared_depth, 8 | 15 | 16 | 24 | 32) {
         return PPC_PARAM_ERR;
@@ -1310,12 +1328,18 @@ fn ppc_qt_image_description_bytes(
     width: i16,
     height: i16,
     source_depth: u16,
+    encoded_size: usize,
 ) -> [u8; 86] {
     // ImageDescription follows the packed QuickTime layout, including its
     // two-byte alignment gap before the 32-bit vendor field on PPC.
     let mut description = [0u8; 86];
     description[..4].copy_from_slice(&86u32.to_be_bytes());
-    description[4..8].copy_from_slice(&subtype.to_be_bytes());
+    let codec = match ppc_qt_graphics_image_format(subtype) {
+        Some(image::ImageFormat::Jpeg) => u32::from_be_bytes(*b"jpeg"),
+        Some(image::ImageFormat::Png) => u32::from_be_bytes(*b"png "),
+        _ => subtype,
+    };
+    description[4..8].copy_from_slice(&codec.to_be_bytes());
     description[32..34].copy_from_slice(&width.to_be_bytes());
     description[34..36].copy_from_slice(&height.to_be_bytes());
     description[36..40].copy_from_slice(&(72i32 << 16).to_be_bytes());
@@ -1323,20 +1347,21 @@ fn ppc_qt_image_description_bytes(
     let depth = match source_depth {
         8 => 8i16,
         15 | 16 => 16,
+        24 if codec == u32::from_be_bytes(*b"jpeg") => 24,
         24 | 32 => 32,
         _ => 32,
     };
-    let data_size = i32::from(width)
-        .saturating_mul(i32::from(height))
-        .saturating_mul(i32::from(depth / 8));
+    let data_size = i32::try_from(encoded_size).unwrap_or(i32::MAX);
     description[44..48].copy_from_slice(&data_size.to_be_bytes());
     description[48..50].copy_from_slice(&1i16.to_be_bytes());
-    description[50] = 3;
-    description[51..54].copy_from_slice(if subtype == u32::from_be_bytes(*b"GIF ") {
-        b"GIF"
-    } else {
-        b"TGA"
-    });
+    let name: &[u8] = match ppc_qt_graphics_image_format(subtype) {
+        Some(image::ImageFormat::Jpeg) => b"JPEG",
+        Some(image::ImageFormat::Png) => b"PNG",
+        Some(image::ImageFormat::Gif) => b"GIF",
+        _ => b"TGA",
+    };
+    description[50] = name.len() as u8;
+    description[51..51 + name.len()].copy_from_slice(name);
     description[82..84].copy_from_slice(&depth.to_be_bytes());
     description[84..86].copy_from_slice(&(-1i16).to_be_bytes());
     description
@@ -1355,8 +1380,7 @@ pub(crate) fn ppc_qt_graphics_import_get_image_description(
     let out = cpu.gpr[4];
     if cpu.gpr[3] != PPC_QT_GRAPHICS_IMPORTER
         || !quicktime.graphics_importer_open
-        || (quicktime.graphics_importer_subtype != u32::from_be_bytes(*b"TGA ")
-            && quicktime.graphics_importer_subtype != u32::from_be_bytes(*b"GIF "))
+        || ppc_qt_graphics_image_format(quicktime.graphics_importer_subtype).is_none()
         || out == 0
         || !ppc_memory_can_write_bytes(memory, out, 4)
     {
@@ -1368,6 +1392,7 @@ pub(crate) fn ppc_qt_graphics_import_get_image_description(
         right - left,
         bottom - top,
         quicktime.graphics_importer_depth,
+        quicktime.graphics_importer_data.len(),
     );
     let handle = ppc_process_alloc_handle_with_bytes(
         process_memory_manager,
@@ -1434,9 +1459,53 @@ pub(crate) fn ppc_qt_get_graphics_importer_for_file(
         }
         return PPC_NO_ERR;
     };
+    // Select from file contents: classic applications commonly omit extensions
+    // and may retain a generic Finder type. TGA has no reliable magic, so its
+    // established file type or extension is used only after signature detection.
+    let subtype = match image::guess_format(&file.data) {
+        Ok(image::ImageFormat::Jpeg) => Some(u32::from_be_bytes(*b"jpeg")),
+        Ok(image::ImageFormat::Png) => Some(u32::from_be_bytes(*b"png ")),
+        Ok(image::ImageFormat::Gif) => Some(u32::from_be_bytes(*b"GIF ")),
+        Ok(image::ImageFormat::Tga) => Some(u32::from_be_bytes(*b"TGA ")),
+        Ok(_) => {
+            ppc_qt_clear_graphics_importer(quicktime);
+            let _ = memory.write_u32_be(importer_out_ptr, 0);
+            return -8961; // noCodecErr: recognized format without an installed importer.
+        }
+        Err(_)
+            if file.file_type == u32::from_be_bytes(*b"TPIC")
+                || file.file_type == u32::from_be_bytes(*b"TGA ")
+                || path.to_ascii_lowercase().ends_with(".tga") =>
+        {
+            Some(u32::from_be_bytes(*b"TGA "))
+        }
+        _ => None,
+    };
+    if let Some(subtype) = subtype {
+        let Some(image) = ppc_qt_decode_graphics_image(subtype, &file.data) else {
+            ppc_qt_clear_graphics_importer(quicktime);
+            let _ = memory.write_u32_be(importer_out_ptr, 0);
+            return -8969; // codecBadDataErr, Universal Interfaces MacErrors.h.
+        };
+        quicktime.graphics_importer_subtype = subtype;
+        quicktime.graphics_importer_depth = match ppc_qt_graphics_image_format(subtype) {
+            Some(image::ImageFormat::Jpeg) => 24,
+            Some(image::ImageFormat::Gif) => 8,
+            Some(image::ImageFormat::Tga) => u16::from(file.data[16]),
+            _ => 32,
+        };
+        quicktime.graphics_importer_bounds = Some((0, 0, image.height as i16, image.width as i16));
+        quicktime.graphics_importer_image = Some(image);
+    } else {
+        quicktime.graphics_importer_bounds = ppc_qt_pict_bounds(&file.data);
+        if quicktime.graphics_importer_bounds.is_none() {
+            ppc_qt_clear_graphics_importer(quicktime);
+            let _ = memory.write_u32_be(importer_out_ptr, 0);
+            return -8961; // noCodecErr, Universal Interfaces MacErrors.h.
+        }
+    }
     quicktime.graphics_importer_path = path;
     quicktime.graphics_importer_data = file.data.to_vec();
-    quicktime.graphics_importer_bounds = ppc_qt_pict_bounds(&quicktime.graphics_importer_data);
     if qt_trace_enabled() {
         eprintln!(
             "[QT-TRACE] GetGraphicsImporterForFile path='{}' data_len={} bounds={:?}",
@@ -1517,7 +1586,7 @@ pub(crate) fn ppc_qt_graphics_import_draw(
     let source_drawn = if quicktime.graphics_importer_subtype == 0 {
         ppc_qt_draw_pict_source_to_16bpp(memory, front_buffer, &quicktime.graphics_importer_data)
     } else {
-        ppc_qt_draw_graphics_image(memory, surface, quicktime)
+        ppc_qt_draw_graphics_image(memory, surface, gworld, quicktime)
     };
     if source_drawn {
         quicktime.graphics_import_source_draw_count = quicktime
@@ -1628,6 +1697,7 @@ fn ppc_qt_write_graphics_pixel(
 fn ppc_qt_draw_graphics_image(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
+    gworld: u32,
     quicktime: &PpcQuickTimeState,
 ) -> bool {
     let Some(image) = quicktime.graphics_importer_image.as_ref() else {
@@ -1637,19 +1707,29 @@ fn ppc_qt_draw_graphics_image(
     if front_buffer.base_addr == 0 || front_buffer.width == 0 || front_buffer.height == 0 {
         return false;
     }
-    let width = image.width.min(front_buffer.width);
-    let height = image.height.min(front_buffer.height);
-    if width == 0 || height == 0 {
-        return false;
-    }
-    let mut wrote_any = false;
+    let x0 = i32::from(surface.left).max(0) as u32;
+    let y0 = i32::from(surface.top).max(0) as u32;
+    let x1 = image
+        .width
+        .min((i64::from(surface.left) + i64::from(front_buffer.width)).max(0) as u32);
+    let y1 = image
+        .height
+        .min((i64::from(surface.top) + i64::from(front_buffer.height)).max(0) as u32);
+    let clip = ppc_port_clip_storage(memory, gworld, None);
+    let vis = memory
+        .read_u32_be(gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|handle| ppc_region_storage(memory, handle));
     // The destination depth and ColorTable are fixed for this draw, so the
     // RGB -> pixel mapping only depends on the source color. Cache it per
     // distinct RGB instead of re-running the guest ColorTable search for
     // every pixel of a sprite sheet.
     let mut color_cache: HashMap<[u8; 3], Option<u32>> = HashMap::new();
-    for y in 0..height {
-        for x in 0..width {
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let point = surface.local_point((x as i32, y as i32));
+            if !ppc_local_point_in_port_regions(surface, point, vis.as_deref(), clip.as_deref()) {
+                continue;
+            }
             let Some(offset) = (y as usize)
                 .checked_mul(image.width as usize)
                 .and_then(|base| base.checked_add(x as usize))
@@ -1660,7 +1740,7 @@ fn ppc_qt_draw_graphics_image(
             let Some(rgba) = image.rgba.get(offset..offset.saturating_add(4)) else {
                 continue;
             };
-            // GIF/TGA transparency leaves the destination pixel untouched,
+            // Transparent source pixels leave the destination pixel untouched,
             // matching a QuickDraw transparent-mode draw.
             if rgba[3] == 0 {
                 continue;
@@ -1682,12 +1762,13 @@ fn ppc_qt_draw_graphics_image(
             let Some(value) = value else {
                 continue;
             };
-            if ppc_qt_write_graphics_pixel(memory, front_buffer, (x as i32, y as i32), value) {
-                wrote_any = true;
+            if !ppc_qt_write_graphics_pixel(memory, front_buffer, point, value) {
+                return false;
             }
         }
     }
-    wrote_any
+    // A fully clipped or transparent image is still a successful draw.
+    true
 }
 
 pub(crate) fn ppc_qt_pict_record_offset_and_bounds(
