@@ -43,6 +43,62 @@
     }
 
     #[test]
+    fn drawpicture_trace_pixel_rejects_offscreen_and_overflowing_samples() {
+        let (_, _, mut bus) = setup();
+        bus.write_byte(0x190000, 0x5a);
+        let mode = (0x190000, 816, 800, 600, 8);
+        assert_eq!(super::drawpicture_trace_pixel(&bus, mode, 0, 0), Some(0x5a));
+        // Ares PICT 502 is partly offscreen: top=60, left=-100.
+        assert_eq!(super::drawpicture_trace_pixel(&bus, mode, 70, -90), None);
+        for (y, x) in [(-1, 0), (0, -1), (600, 0), (0, 800), (i32::MAX, 0)] {
+            assert_eq!(super::drawpicture_trace_pixel(&bus, mode, y, x), None);
+        }
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (u32::MAX, 4, 4, 4, 8), 1, 0),
+            None
+        );
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (u32::MAX, 4, 1, 1, 32), 0, 0),
+            None
+        );
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (0x190000, u32::MAX, 1, 4, 8), 2, 0),
+            None
+        );
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (0x190000, 1, 2, 1, 16), 0, 1),
+            None
+        );
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (0x190000, 4, 1, 1, 24), 0, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn drawpicture_trace_pixel_reads_pixel_depth_and_row_stride() {
+        let (_, _, mut bus) = setup();
+        let base = 0x190000;
+        bus.write_byte(base + 8, 0b1011_0110);
+        for (depth, x, expected) in [(1, 1, 0), (2, 1, 3), (4, 1, 6), (8, 0, 182)] {
+            assert_eq!(
+                super::drawpicture_trace_pixel(&bus, (base, 8, 2, 2, depth), 1, x),
+                Some(expected)
+            );
+        }
+        bus.write_word(base + 10, 0x7c00);
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (base, 8, 2, 2, 16), 1, 1),
+            Some(0x7c00)
+        );
+        bus.write_long(base + 12, 0x12345678);
+        assert_eq!(
+            super::drawpicture_trace_pixel(&bus, (base, 8, 2, 2, 32), 1, 1),
+            Some(0x12345678)
+        );
+    }
+
+    #[test]
     fn appearance_registration_tracks_state_and_pascal_result_slot() {
         let (mut d, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::D0, 0x15);
