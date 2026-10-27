@@ -3101,6 +3101,15 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SoundInputCompatibility(_) => {
             unreachable!("sound imports return through dispatch_sound_import")
         }
+        PpcImportDispatcherTarget::QtAtom(operation) => Some(dispatch_qt_atoms::dispatch(
+            operation,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            handles,
+        )),
         PpcImportDispatcherTarget::SpeechRecognition(operation) => {
             Some(dispatch_speech_recognition::dispatch(operation, cpu, memory))
         }

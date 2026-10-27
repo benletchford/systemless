@@ -1442,6 +1442,7 @@ pub enum PpcImportDispatcherTarget {
     StandardFileCompatibility(PpcStandardFileOperation),
     SoundInputCompatibility(PpcSoundInputCompatibilityOperation),
     SpeechCompatibility(PpcSpeechCompatibilityOperation),
+    QtAtom(PpcQtAtomOperation),
     SpeechRecognition(PpcSpeechRecognitionOperation),
     QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation),
     InputSprocketCompatibility(PpcInputSprocketCompatibilityOperation),
@@ -1607,6 +1608,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("CarbonLib", symbol) if PpcSpeechRecognitionOperation::from_name(symbol).is_some() => {
             "SpeechRecognitionLib"
         }
+        ("CarbonLib", symbol) if PpcQtAtomOperation::from_name(symbol).is_some() => "QuickTimeLib",
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
         // same PowerPC signatures as StdCLib. Leave its private symbols
@@ -1660,6 +1662,11 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("USBServicesLib", "USBMakeBMRequestType") => {
             PpcImportDispatcherTarget::USBMakeBMRequestType
+        }
+        ("QuickTimeLib", symbol) if PpcQtAtomOperation::from_name(symbol).is_some() => {
+            PpcImportDispatcherTarget::QtAtom(
+                PpcQtAtomOperation::from_name(symbol).expect("checked"),
+            )
         }
         ("SpeechRecognitionLib", symbol)
             if PpcSpeechRecognitionOperation::from_name(symbol).is_some() =>
