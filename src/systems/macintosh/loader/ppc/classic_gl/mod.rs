@@ -11,6 +11,7 @@
 //! <https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf>
 
 pub mod args;
+mod attributes;
 mod bitmap;
 pub mod consts;
 pub mod functions;
@@ -854,32 +855,8 @@ impl GlContext {
                 }
             }
             GlCall::ListBase(base) => raster.list_base = base,
-            GlCall::PushAttrib(mask) => {
-                if mask & !ALL_ATTRIB_BITS != 0 {
-                    state.set_error(INVALID_VALUE);
-                } else if state.attrib_stack.len() >= 16 {
-                    state.set_error(STACK_OVERFLOW);
-                } else {
-                    let saved = state.raster.clone();
-                    state.attrib_stack.push((mask, saved));
-                }
-            }
-            GlCall::PopAttrib => match state.attrib_stack.pop() {
-                Some((mask, saved)) => {
-                    let hints = if mask & HINT_BIT != 0 {
-                        saved.hints
-                    } else {
-                        state.raster.hints
-                    };
-                    // A hint-only or empty snapshot must not restore unrelated
-                    // state. Other groups retain their existing snapshot path.
-                    if mask & !HINT_BIT != 0 {
-                        state.raster = saved;
-                    }
-                    state.raster.hints = hints;
-                }
-                None => state.set_error(STACK_UNDERFLOW),
-            },
+            GlCall::PushAttrib(mask) => state.push_attributes(mask),
+            GlCall::PopAttrib => state.pop_attributes(),
             GlCall::PixelTransfer(pname, value) => {
                 let transfer = &mut raster.transfer;
                 match pname {
@@ -1383,7 +1360,9 @@ fn get_values(ctx: &GlContext, pname: u32) -> Option<(Vec<f64>, bool)> {
         MAX_CLIP_PLANES => scalar(MAX_CLIP_PLANES_COUNT as f64),
         MAX_TEXTURE_SIZE => scalar(f64::from(MAX_TEXTURE_DIMENSION)),
         MAX_PIXEL_MAP_TABLE => scalar(256.0),
-        MAX_ATTRIB_STACK_DEPTH => scalar(16.0),
+        MAX_ATTRIB_STACK_DEPTH | MAX_CLIENT_ATTRIB_STACK_DEPTH => scalar(16.0),
+        ATTRIB_STACK_DEPTH => scalar(state.attrib_stack.len() as f64),
+        CLIENT_ATTRIB_STACK_DEPTH => scalar(state.client_attrib_stack.len() as f64),
         MAX_MODELVIEW_STACK_DEPTH => scalar(MAX_STACK_DEPTH as f64),
         MAX_NAME_STACK_DEPTH => scalar(64.0),
         MAX_PROJECTION_STACK_DEPTH => scalar(MAX_PROJECTION_STACK as f64),
@@ -2491,7 +2470,16 @@ fn decode_named(
         GlNamed::ListBase => Call(GlCall::ListBase(args.u32())),
         GlNamed::PushAttrib => Call(GlCall::PushAttrib(args.u32())),
         GlNamed::PopAttrib => Call(GlCall::PopAttrib),
-        GlNamed::PushClientAttrib | GlNamed::PopClientAttrib => done(),
+        GlNamed::PushClientAttrib | GlNamed::PopClientAttrib => {
+            if ctx.inside_begin() {
+                ctx.state.set_error(INVALID_OPERATION);
+            } else if named == GlNamed::PushClientAttrib {
+                ctx.state.push_client_attributes(args.u32());
+            } else {
+                ctx.state.pop_client_attributes();
+            }
+            done()
+        }
         GlNamed::Finish | GlNamed::Flush => done(),
         GlNamed::GetError => value(ctx.state.take_error()),
         GlNamed::GetString => {

@@ -652,3 +652,257 @@ fn hint_attribute_mask_isolated_through_public_entry_points() {
         assert_eq!(ctx.state.error, NO_ERROR);
     }
 }
+
+#[test]
+fn attribute_groups_preserve_unselected_viewport_and_depth_changes() {
+    let (mut ctx, mut fb) = context();
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::PushAttrib(COLOR_BUFFER_BIT),
+            GlCall::ClearColor([1.0, 0.0, 0.0, 1.0]),
+            GlCall::Viewport([1, 2, 3, 4]),
+            GlCall::Enable(DEPTH_TEST, true),
+            GlCall::PopAttrib,
+        ],
+    );
+    assert_eq!(ctx.state.raster.clear_color, [0.0; 4]);
+    assert_eq!(ctx.state.raster.viewport, [1, 2, 3, 4]);
+    assert!(ctx.state.raster.enables.depth_test);
+    assert_eq!(ctx.state.error, NO_ERROR);
+}
+
+#[test]
+fn current_and_transform_groups_restore_values_without_restoring_matrices() {
+    let (mut ctx, mut fb) = context();
+    let initial_color = ctx.state.current.color;
+    let initial_raster = ctx.state.raster.position.window;
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::PushAttrib(CURRENT_BIT | TRANSFORM_BIT),
+            GlCall::Color([0.25, 0.5, 0.75, 1.0]),
+            GlCall::RasterPos([0.5, 0.5, 0.0, 1.0]),
+            GlCall::MatrixMode(PROJECTION),
+            GlCall::LoadMatrix(Mat4::ortho(0.0, 10.0, 0.0, 10.0, -1.0, 1.0)),
+            GlCall::Enable(NORMALIZE, true),
+            GlCall::PopAttrib,
+        ],
+    );
+    assert_eq!(ctx.state.current.color, initial_color);
+    assert_eq!(ctx.state.raster.position.window, initial_raster);
+    assert_eq!(ctx.state.raster.matrix_mode, MODELVIEW);
+    assert!(!ctx.state.raster.enables.normalize);
+    assert_ne!(ctx.state.projection[0].0, Mat4::IDENTITY.0);
+    assert_eq!(ctx.state.error, NO_ERROR);
+}
+
+#[test]
+fn enable_snapshot_does_not_restore_light_or_texture_parameters() {
+    let (mut ctx, _) = context();
+    ctx.state.push_attributes(ENABLE_BIT);
+    ctx.state.raster.lights[2].enabled = true;
+    ctx.state.raster.lights[2].ambient = [0.5; 4];
+    ctx.state.raster.units[1].enabled_2d = true;
+    ctx.state.raster.units[1].gen[2].enabled = true;
+    ctx.state.raster.units[1].gen[2].object_plane = [0.25; 4];
+    ctx.state.pop_attributes();
+    assert!(!ctx.state.raster.lights[2].enabled);
+    assert_eq!(ctx.state.raster.lights[2].ambient, [0.5; 4]);
+    assert!(!ctx.state.raster.units[1].enabled_2d);
+    assert!(!ctx.state.raster.units[1].gen[2].enabled);
+    assert_eq!(ctx.state.raster.units[1].gen[2].object_plane, [0.25; 4]);
+}
+
+#[test]
+fn texture_attribute_snapshot_restores_bound_parameters_but_keeps_image_changes() {
+    let (mut ctx, _) = context();
+    ctx.state.raster.units[0].binding_2d = 7;
+    ctx.state.raster.units[1].binding_2d = 8;
+    for name in [7, 8, 9] {
+        ctx.state.textures.insert(name, texture::Texture::default());
+    }
+    ctx.state.push_attributes(TEXTURE_BIT);
+    ctx.state.raster.units[0].binding_2d = 9;
+    ctx.state.raster.active_unit = 1;
+    for name in [7, 8, 9] {
+        let texture = ctx.state.textures.get_mut(&name).unwrap();
+        texture.wrap_s = CLAMP;
+        texture.levels.push(Some(texture::TexImage {
+            width: 1,
+            height: 1,
+            texels: vec![[255, 0, 0, 255]],
+        }));
+    }
+    ctx.state.pop_attributes();
+    assert_eq!(ctx.state.raster.units[0].binding_2d, 7);
+    assert_eq!(ctx.state.raster.units[1].binding_2d, 8);
+    assert_eq!(ctx.state.raster.active_unit, 0);
+    for name in [7, 8, 9] {
+        let texture = &ctx.state.textures[&name];
+        assert_eq!(texture.wrap_s, if name == 9 { CLAMP } else { REPEAT });
+        assert_eq!(
+            texture.levels[0].as_ref().unwrap().texels,
+            [[255, 0, 0, 255]]
+        );
+    }
+}
+
+#[test]
+fn client_attribute_groups_execute_immediately_during_list_compilation() {
+    for mask in [
+        CLIENT_PIXEL_STORE_BIT,
+        CLIENT_VERTEX_ARRAY_BIT,
+        CLIENT_ALL_ATTRIB_BITS,
+        0,
+    ] {
+        let (mut ctx, mut fb) = context();
+        let mut cpu = PpcCpu::new();
+        let mut memory = PpcSectionMem::new();
+        ctx.compiling = Some((17, false, Vec::new()));
+        cpu.gpr[3] = mask;
+        call(
+            &mut ctx,
+            Some(&mut fb),
+            GlFunction::from_name("glPushClientAttrib").unwrap(),
+            &cpu,
+            &mut memory,
+        );
+        assert_eq!(ctx.state.client_attrib_stack.len(), 1);
+        ctx.state.client.unpack.alignment = 1;
+        ctx.state.client.vertex.pointer = 0x1234;
+        ctx.state.client.active_unit = 1;
+        call(
+            &mut ctx,
+            Some(&mut fb),
+            GlFunction::from_name("glPopClientAttrib").unwrap(),
+            &cpu,
+            &mut memory,
+        );
+        assert_eq!(
+            ctx.state.client.unpack.alignment,
+            if mask & CLIENT_PIXEL_STORE_BIT != 0 {
+                4
+            } else {
+                1
+            }
+        );
+        assert_eq!(
+            ctx.state.client.vertex.pointer,
+            if mask & CLIENT_VERTEX_ARRAY_BIT != 0 {
+                0
+            } else {
+                0x1234
+            }
+        );
+        assert_eq!(
+            ctx.state.client.active_unit,
+            if mask & CLIENT_VERTEX_ARRAY_BIT != 0 {
+                0
+            } else {
+                1
+            }
+        );
+        assert!(ctx.compiling.as_ref().unwrap().2.is_empty());
+        assert_eq!(ctx.state.error, NO_ERROR);
+    }
+}
+
+#[test]
+fn attribute_stacks_report_limits_without_corrupting_saved_entries() {
+    let (mut ctx, _) = context();
+    ctx.state.push_attributes(0x8000_0000);
+    ctx.state.push_client_attributes(0x100);
+    assert_eq!(ctx.state.take_error(), INVALID_VALUE);
+    assert!(ctx.state.attrib_stack.is_empty());
+    assert!(ctx.state.client_attrib_stack.is_empty());
+    for _ in 0..16 {
+        ctx.state.push_attributes(0);
+        ctx.state.push_client_attributes(0);
+    }
+    ctx.state.push_attributes(0);
+    assert_eq!(ctx.state.take_error(), STACK_OVERFLOW);
+    ctx.state.push_client_attributes(0);
+    assert_eq!(ctx.state.take_error(), STACK_OVERFLOW);
+    for _ in 0..16 {
+        ctx.state.pop_attributes();
+        ctx.state.pop_client_attributes();
+    }
+    assert_eq!(ctx.state.take_error(), NO_ERROR);
+    ctx.state.pop_attributes();
+    assert_eq!(ctx.state.take_error(), STACK_UNDERFLOW);
+    ctx.state.pop_client_attributes();
+    assert_eq!(ctx.state.take_error(), STACK_UNDERFLOW);
+}
+
+#[test]
+fn server_attribute_stacks_are_nested_and_evaluated_when_lists_execute() {
+    let (mut ctx, mut fb) = context();
+    ctx.compiling = Some((21, false, Vec::new()));
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::PushAttrib(COLOR_BUFFER_BIT),
+            GlCall::ClearColor([1.0, 0.0, 0.0, 1.0]),
+            GlCall::PushAttrib(VIEWPORT_BIT),
+            GlCall::Viewport([2, 3, 4, 5]),
+            GlCall::PopAttrib,
+            GlCall::PopAttrib,
+        ],
+    );
+    let (name, _, commands) = ctx.compiling.take().unwrap();
+    assert!(ctx.state.attrib_stack.is_empty());
+    ctx.lists.insert(name, Rc::new(commands));
+    ctx.state.raster.clear_color = [0.0, 0.0, 1.0, 1.0];
+    ctx.state.raster.viewport = [0, 0, 6, 7];
+    run(&mut ctx, &mut fb, vec![GlCall::CallList(21)]);
+    assert_eq!(ctx.state.raster.clear_color, [0.0, 0.0, 1.0, 1.0]);
+    assert_eq!(ctx.state.raster.viewport, [0, 0, 6, 7]);
+    assert!(ctx.state.attrib_stack.is_empty());
+    assert_eq!(ctx.state.error, NO_ERROR);
+}
+
+#[test]
+fn client_attribute_operations_inside_begin_do_not_change_the_stack() {
+    let (mut ctx, mut fb) = context();
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    ctx.state.push_client_attributes(CLIENT_ALL_ATTRIB_BITS);
+    run(&mut ctx, &mut fb, vec![GlCall::Begin(POINTS)]);
+    cpu.gpr[3] = CLIENT_ALL_ATTRIB_BITS;
+    for function in ["glPushClientAttrib", "glPopClientAttrib"] {
+        call(
+            &mut ctx,
+            Some(&mut fb),
+            GlFunction::from_name(function).unwrap(),
+            &cpu,
+            &mut memory,
+        );
+        assert_eq!(ctx.state.take_error(), INVALID_OPERATION);
+        assert_eq!(ctx.state.client_attrib_stack.len(), 1);
+    }
+    run(&mut ctx, &mut fb, vec![GlCall::End]);
+    ctx.state.pop_client_attributes();
+    assert_eq!(ctx.state.error, NO_ERROR);
+}
+
+#[test]
+fn polygon_group_restores_stipple_enable_without_restoring_line_state() {
+    let (mut ctx, mut fb) = context();
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::PushAttrib(POLYGON_BIT),
+            GlCall::Enable(POLYGON_STIPPLE, true),
+            GlCall::Enable(LINE_STIPPLE, true),
+            GlCall::PopAttrib,
+        ],
+    );
+    assert!(!ctx.state.raster.enables.polygon_stipple);
+    assert!(ctx.state.raster.enables.line_stipple);
+    assert_eq!(ctx.state.error, NO_ERROR);
+}

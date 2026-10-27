@@ -156,8 +156,7 @@ pub struct ClientArray {
     pub pointer: u32,
 }
 
-/// Server state saved by glPushAttrib. Hint state honors its attribute mask;
-/// other groups still use the legacy whole-block snapshot.
+/// Fixed-function server state, grouped by `attributes` when saving snapshots.
 #[derive(Debug, Clone)]
 pub struct Raster {
     pub position: super::bitmap::RasterPosition,
@@ -377,7 +376,8 @@ pub struct ContextState {
     /// Name 0 is each unit's default texture object.
     pub default_texture: Texture,
     pub next_texture_name: u32,
-    pub attrib_stack: Vec<(u32, Raster)>,
+    pub attrib_stack: Vec<super::attributes::ServerSnapshot>,
+    pub client_attrib_stack: Vec<(u32, ClientState)>,
     pub error: u32,
     pub viewport_initialised: bool,
 }
@@ -395,6 +395,7 @@ impl Default for ContextState {
             default_texture: Texture::default(),
             next_texture_name: 1,
             attrib_stack: Vec::new(),
+            client_attrib_stack: Vec::new(),
             error: NO_ERROR,
             viewport_initialised: false,
         }
