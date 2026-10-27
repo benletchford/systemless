@@ -23,10 +23,14 @@ pub enum PpcQtAtomOperation {
     SetData,
     Remove,
     RemoveChildren,
+    CopyDataHandle,
+    SetId,
 }
 impl PpcQtAtomOperation {
     pub(super) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
+            "QTCopyAtomDataToHandle" => Self::CopyDataHandle,
+            "QTSetAtomID" => Self::SetId,
             "QTNewAtomContainer" => Self::New,
             "QTDisposeAtomContainer" => Self::Dispose,
             "QTFindChildByID" => Self::FindId,
@@ -177,6 +181,61 @@ pub(super) fn dispatch(
         return failure(INVALID_CONTAINER);
     };
     match operation {
+        Op::SetId => {
+            let Some(atom) = atoms
+                .iter()
+                .find(|atom| atom.offset == g[4] && atom.offset != 12)
+            else {
+                return result(INVALID_ATOM);
+            };
+            if g[5] == 0 {
+                return result(PPC_PARAM_ERR);
+            }
+            if atoms.iter().any(|other| {
+                other.offset != atom.offset
+                    && other.parent == atom.parent
+                    && other.kind == atom.kind
+                    && other.id == g[5]
+            }) {
+                return result(-2105);
+            }
+            if memory.write_u32_be(ptr + atom.offset + 8, g[5]).is_none() {
+                return result(PPC_PARAM_ERR);
+            }
+            result(PPC_NO_ERR)
+        }
+        Op::CopyDataHandle => {
+            let Some(atom) = atoms.iter().find(|atom| atom.offset == g[4]) else {
+                return result(INVALID_ATOM);
+            };
+            if atom.children != 0 {
+                return result(NOT_LEAF);
+            }
+            let payload = &bytes[atom.offset as usize + 20..atom.end as usize];
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: manager,
+            };
+            let error = allocator.resize_handle(
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                g[5],
+                payload.len() as u32,
+            );
+            if error != PPC_NO_ERR {
+                return result(error);
+            }
+            if !payload.is_empty() {
+                let Some(target) = memory.read_u32_be(g[5]).filter(|p| *p != 0) else {
+                    return result(PPC_PARAM_ERR);
+                };
+                for (index, byte) in payload.iter().enumerate() {
+                    let _ = memory.write_u8(target + index as u32, *byte);
+                }
+            }
+            result(PPC_NO_ERR)
+        }
         Op::Insert | Op::SetData | Op::Remove | Op::RemoveChildren => {
             let (edited, output) = match edit(operation, &g, bytes, &atoms, memory) {
                 Ok(value) => value,

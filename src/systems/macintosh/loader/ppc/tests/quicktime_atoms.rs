@@ -385,3 +385,86 @@ fn quicktime_atoms_rejected_edits_preserve_the_container_and_output() {
         before
     );
 }
+
+#[test]
+fn quicktime_atoms_copy_leaf_to_resized_handle_and_change_ids_without_moving_atoms() {
+    let (mut loaded, out) = fixture();
+    assert_eq!(call(&mut loaded, "QTNewAtomContainer", &[out]), 0);
+    let container = loaded.memory.read_u32_be(out).unwrap();
+    let kind = u32::from_be_bytes(*b"test");
+    loaded.memory.write_u32_be(out + 32, 0x12345678).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[container, 0, kind, 10, 0, 4, out + 32, out + 4]
+        ),
+        0
+    );
+    let first = loaded.memory.read_u32_be(out + 4).unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTInsertChild",
+            &[container, 0, kind, 20, 0, 0, 0, out + 8]
+        ),
+        0
+    );
+    let second = loaded.memory.read_u32_be(out + 8).unwrap();
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let destination = loaded.cpu.gpr[3];
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToHandle",
+            &[container, first, destination]
+        ),
+        0
+    );
+    let copied = loaded.memory.read_u32_be(destination).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(copied), Some(0x12345678));
+    loaded.cpu.gpr[3] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+    assert_eq!(loaded.cpu.gpr[3], 4);
+    assert_eq!(
+        call(&mut loaded, "QTSetAtomID", &[container, first, 20]) as i32,
+        -2105
+    );
+    assert_eq!(call(&mut loaded, "QTSetAtomID", &[container, first, 30]), 0);
+    assert_eq!(
+        call(&mut loaded, "QTFindChildByID", &[container, 0, kind, 30, 0]),
+        first
+    );
+    assert_eq!(
+        call(&mut loaded, "QTFindChildByID", &[container, 0, kind, 10, 0]),
+        0
+    );
+    assert_eq!(call(&mut loaded, "QTSetAtomID", &[container, first, 30]), 0);
+    assert_eq!(
+        call(&mut loaded, "QTSetAtomID", &[container, 0, 30]) as i32,
+        -2106
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToHandle",
+            &[container, 12, destination]
+        ) as i32,
+        -2102
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            "QTCopyAtomDataToHandle",
+            &[container, second, destination]
+        ),
+        0
+    );
+    loaded.cpu.gpr[3] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
