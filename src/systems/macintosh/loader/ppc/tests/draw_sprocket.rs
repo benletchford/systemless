@@ -2978,3 +2978,104 @@ fn alternate_buffer_invalidation_rejects_unknown_and_truncated_inputs_atomically
         assert_eq!(loaded.draw_sprocket, before);
     }
 }
+
+#[test]
+fn active_draw_sprocket_front_buffer_is_an_agl_window_and_expires_on_deactivation() {
+    use super::super::classic_gl_agl::PpcAglPixelFormatRequest;
+    use super::super::classic_gl_framebuffer::ClassicGlColorBuffer;
+
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetFrontBuffer");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.draw_sprocket.started = true;
+    loaded.draw_sprocket.reserved_context = Some(PPC_DSP_CONTEXT);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextGetFrontBuffer,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let port = loaded.memory.read_u32_be(output).unwrap();
+    assert_eq!(Some(port), loaded.draw_sprocket.blanking_window);
+    assert!(loaded.window_list.contains_window(port));
+    let format = loaded.agl.choose_pixel_format(PpcAglPixelFormatRequest {
+        rgba: true,
+        double_buffered: true,
+        ..Default::default()
+    });
+    let context = loaded.agl.create_context(format, 0);
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AglSetDrawable);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    let framebuffer = loaded
+        .agl
+        .context_mut(context)
+        .unwrap()
+        .framebuffer
+        .as_mut()
+        .unwrap();
+    assert!(framebuffer.clear_color(ClassicGlColorBuffer::Back, [0, 255, 0, 255]));
+    loaded.cpu.gpr[3] = context;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AglSwapBuffers);
+    assert_eq!(loaded.agl.get_error(), 0);
+    assert_eq!(
+        loaded.memory.read_u16_be(PPC_MAIN_SCREEN_BASE),
+        Some(0x03e0)
+    );
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(!loaded.window_list.contains_window(port));
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AglSetDrawable);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn active_single_buffer_draw_sprocket_exposes_the_same_window_for_both_buffers() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_Reserve");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 8]);
+    loaded.draw_sprocket.context_attributes.page_count = 1;
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextGetFrontBuffer,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
+    loaded.cpu.gpr[5] = output + 4;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextGetBackBuffer,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(output),
+        loaded.draw_sprocket.blanking_window
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(output + 4),
+        loaded.memory.read_u32_be(output)
+    );
+}
