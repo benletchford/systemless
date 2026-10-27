@@ -7176,6 +7176,10 @@ impl super::TrapDispatcher {
                 let operation = pack8_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
 
+                if selector == super::dispatch::RESOURCE_CHECKLOAD_SENTINEL {
+                    return Some(self.resume_resource_checkload(bus, cpu));
+                }
+
                 if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
                     return Some(self.resume_loadseg_after_getresource(bus, cpu));
                 }

@@ -560,7 +560,12 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        let Some(handler_addr) = self.native_trap_handler(bus, 0xA9A0) else {
+        let handler_addr = if let Some(handler) = self.native_trap_handler(bus, 0xA9A0) {
+            handler
+        } else if self.native_trap_handler(bus, 0xA0FC).is_some() {
+            // The default GetResource gateway also traverses jCheckLoad.
+            self.get_or_create_tool_trap_trampoline(bus, 0xA9A0)
+        } else {
             return false;
         };
 
@@ -621,7 +626,15 @@ impl super::TrapDispatcher {
         }
 
         Self::restore_regs(cpu, state.d_regs, state.a_regs);
-        self.finish_loadseg(bus, cpu, state.seg_num, Some(state.entry_addr), true)
+        // A resource-load hook may resize or replace the CODE block. The
+        // returned handle is authoritative: copying into the original image
+        // allocation truncates expanded code and leaves its entry points stale.
+        let ptr = if handle == 0 { 0 } else { bus.read_long(handle) };
+        if ptr != 0 {
+            self.segment_map.insert(state.seg_num, ptr);
+            super::dispatch::record_segment_base(state.seg_num, ptr);
+        }
+        self.finish_loadseg(bus, cpu, state.seg_num, Some(state.entry_addr), false)
     }
 
     fn finish_loadseg<C: CpuOps>(
@@ -1779,6 +1792,129 @@ impl super::TrapDispatcher {
         true
     }
 
+    // The private Resource Manager jCheckLoad vector uses A2 for the
+    // reference record and A4 for its map handle (Apple ResourceMgr.a).
+    // Prefer the live application map; other files receive a complete map
+    // snapshot, keeping type/name/reference offsets meaningful to guest hooks.
+    fn checkload_reference(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+    ) -> Option<(u32, u32, Option<(u32, u32)>)> {
+        let (refnum, res_type, res_id) = self.resource_record_for_handle(handle)?;
+        let path = if refnum == 0 {
+            self.launched_app_path()
+        } else {
+            self.resource_file_name(refnum)
+        };
+        let fork = path
+            .and_then(|path| self.vfs_rsrc.get(path))
+            .and_then(|bytes| ResourceFork::parse(bytes))
+            .or_else(|| {
+                let file = self.resources.as_ref()?.files.get(&refnum)?;
+                let bytes = self.serialize_resource_file_map_for_writeback(bus, refnum, file)?;
+                ResourceFork::parse(&bytes)
+            })?;
+        let reference_offset = fork.get(res_type, res_id)?.reference_offset as u32;
+        let top_handle = bus.read_long(0x0A50);
+        if refnum == 0 && top_handle != 0 {
+            let map = bus.read_long(top_handle);
+            if map != 0 && bus.read_word(map + 20) == refnum {
+                let reference = map + reference_offset;
+                bus.write_long(reference + 8, handle);
+                return Some((reference, top_handle, None));
+            }
+        }
+        let map = bus.alloc(fork.map().len() as u32);
+        if map == 0 {
+            return None;
+        }
+        let map_handle = bus.alloc(4);
+        if map_handle == 0 {
+            bus.free(map);
+            return None;
+        }
+        bus.write_bytes(map, fork.map());
+        bus.write_long(map + 16, 0);
+        bus.write_word(map + 20, refnum);
+        bus.write_long(map_handle, map);
+        for resource in fork.resources().values() {
+            let key = (refnum, resource.res_type, resource.id);
+            let loaded = self.resource_handles_by_key.get(&key).copied().unwrap_or(0);
+            bus.write_long(map + resource.reference_offset as u32 + 8, loaded);
+        }
+        let reference = map + reference_offset;
+        bus.write_long(reference + 8, handle);
+        Some((reference, map_handle, Some((map, map_handle))))
+    }
+
+    pub(crate) fn maybe_inject_resource_checkload<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        handle: u32,
+        result_sp: Option<u32>,
+    ) {
+        if handle == 0 || bus.read_word(0x0A60) != 0 {
+            return;
+        }
+        let Some(handler) = self.native_trap_handler(bus, 0xA0FC) else {
+            return;
+        };
+        let Some((reference, map_handle, temporary_map)) = self.checkload_reference(bus, handle)
+        else {
+            return;
+        };
+        let trampoline = if let Some(addr) = self.resource_checkload_trampoline {
+            addr
+        } else {
+            let addr = bus.alloc(8);
+            bus.write_word(addr, 0x303C); // MOVE.W #sentinel,D0
+            bus.write_word(addr + 2, super::dispatch::RESOURCE_CHECKLOAD_SENTINEL);
+            bus.write_word(addr + 4, 0xA816); // Pack8 continuation
+            self.resource_checkload_trampoline = Some(addr);
+            addr
+        };
+        self.resource_checkload_stack
+            .push(super::dispatch::ResourceCheckLoadState {
+                return_pc: cpu.read_reg(Register::PC),
+                result_sp,
+                reference,
+                temporary_map,
+                d_regs: Self::save_d_regs(cpu),
+                a_regs: Self::save_a_regs(cpu),
+            });
+        let sp = cpu.read_reg(Register::A7).wrapping_sub(4);
+        bus.write_long(sp, trampoline);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A2, reference);
+        cpu.write_reg(Register::A4, map_handle);
+        cpu.write_reg(Register::PC, handler);
+    }
+
+    pub(crate) fn resume_resource_checkload<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+    ) -> Result<()> {
+        let state = self
+            .resource_checkload_stack
+            .pop()
+            .expect("CheckLoad continuation without saved call");
+        let handle = bus.read_long(state.reference + 8);
+        Self::restore_regs(cpu, state.d_regs, state.a_regs);
+        if let Some(result_sp) = state.result_sp {
+            bus.write_long(result_sp, handle);
+            cpu.write_reg(Register::A0, handle);
+        }
+        cpu.write_reg(Register::PC, state.return_pc);
+        if let Some((map, map_handle)) = state.temporary_map {
+            bus.free(map_handle);
+            bus.free(map);
+        }
+        Ok(())
+    }
+
     pub(crate) fn dispatch_resource<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -1788,6 +1924,26 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         self.read_tick_count(bus);
         Some(match (is_tool, trap_num) {
+            // jCheckLoad ($A0FC), Resource Manager private vector.
+            // A2 points to a 12-byte resource reference; A4 is its map handle.
+            (false, 0xFC) => {
+                let reference = cpu.read_reg(Register::A2);
+                let handle = if reference == 0 { 0 } else { bus.read_long(reference + 8) };
+                if handle != 0 && Self::resource_loading_enabled(bus) {
+                    let sp = cpu.read_reg(Register::A7);
+                    bus.write_long(sp.wrapping_sub(4), handle);
+                    cpu.write_reg(Register::A7, sp.wrapping_sub(4));
+                    let result = self.dispatch_resource(true, 0x1A2, cpu, bus);
+                    cpu.write_reg(Register::A7, sp);
+                    if let Some(Err(err)) = result {
+                        return Some(Err(err));
+                    }
+                } else {
+                    bus.write_word(0x0A60, if handle == 0 { Self::RES_NOT_FOUND as u16 } else { 0 });
+                }
+                cpu.write_reg(Register::A0, handle);
+                Ok(())
+            }
             // ServerDispatch ($A094)
             // Dispatches synchronous Macintosh File Sharing server-control calls.
             // FUNCTION SyncServerDispatch(pb: SCParamBlockPtr): OSErr;
@@ -2137,10 +2293,10 @@ impl super::TrapDispatcher {
             }
 
             // DetachResource ($A992)
-            // Sets the resource's master pointer so the resource data won't be released.
+            // Remove the resource association while retaining its handle and data.
             // PROCEDURE DetachResource(theResource: Handle);
             // Inside Macintosh Volume I, I-122
-            // DetachResource ($A992): Clones shared resource data into a detached private handle and stops treating that handle as resource-backed
+            // DetachResource ($A992): Keep the allocation while removing its resource association
             (true, 0x192) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
@@ -2149,27 +2305,19 @@ impl super::TrapDispatcher {
                     if (attrs & Self::RES_CHANGED_ATTR) != 0 {
                         bus.write_word(0x0A60, 0);
                     } else {
-                        // DetachResource keeps the current handle/data valid but removes
-                        // the link from the resource map. In this HLE, GetResource hands
-                        // out per-call master pointers to shared guest data, so detaching
-                        // must clone the block to keep subsequent SetHandleSize and
-                        // DisposeHandle calls from mutating or freeing the shared resource.
-                        // Macintosh Revealed 1987, p. 306
-                        if handle != 0 && ptr != 0 {
-                            if let Some(size) = bus.get_alloc_size(ptr) {
-                                let detached_ptr = bus.alloc(size);
-                                for offset in 0..size {
-                                    bus.write_byte(
-                                        detached_ptr + offset,
-                                        bus.read_byte(ptr + offset),
-                                    );
-                                }
-                                bus.write_long(handle, detached_ptr);
-                            }
+                        // Keep the existing allocation and master pointer intact,
+                        // including locked/executing CODE. Detaching only removes
+                        // the Resource Manager association; a later lookup loads
+                        // a new handle from the original backing bytes.
+                        // More Macintosh Toolbox (1993), p. 1-108.
+                        if res_type == *b"CODE"
+                            && self.resource_handle_files.get(&handle).copied() == Some(0)
+                            && self.segment_map.get(&res_id).copied() == Some(ptr)
+                        {
+                            // The detached allocation is now caller-owned. Future
+                            // loads must use the file, not this mutable code image.
+                            self.segment_map.remove(&res_id);
                         }
-                        // Detaching severs this handle from the resource map without
-                        // deleting the resource reference. Mark its shared data as
-                        // unloaded so a later lookup reloads pristine fork bytes.
                         self.unload_resource_live_map_entry_for_handle(handle);
                         self.forget_resource_residency_for_handle(handle);
                         self.forget_resource_handle_index_for_handle(handle);

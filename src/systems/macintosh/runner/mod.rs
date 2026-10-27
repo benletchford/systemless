@@ -3736,7 +3736,7 @@ impl FixtureRunner {
 
         let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
         self.dispatcher.register_segments(segments);
-        self.dispatcher.mirror_application_code_relocations(&mut self.bus);
+        self.dispatcher.bind_application_code_handles(&mut self.bus);
 
         Some(app)
     }
