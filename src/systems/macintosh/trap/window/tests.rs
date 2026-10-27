@@ -5210,7 +5210,7 @@ fn calcvisbehind_consumes_startwindow_and_clobberedrgn_arguments() {
 }
 
 #[test]
-fn calcvisbehind_recomputes_regions_for_startwindow_and_windows_behind_it() {
+fn calcvisbehind_preserves_other_regions_and_start_window_boundary() {
     // CalcVisBehind recalculates the visible-region state for
     // startWindow and the windows behind it that intersect clobberedRgn.
     // Inside Macintosh Volume I (1985), p. I-297;
@@ -5279,11 +5279,30 @@ fn calcvisbehind_recomputes_regions_for_startwindow_and_windows_behind_it() {
 
     let (front_vis, front_clip, front_struc, front_cont) =
         setup_window_regions(&mut bus, front, 10, 20, 110, 210, 0x310000);
-    let (middle_vis, middle_clip, middle_struc, middle_cont) =
+    let (_, middle_clip, middle_struc, middle_cont) =
         setup_window_regions(&mut bus, middle, 10, 20, 110, 210, 0x320000);
-    let (back_vis, back_clip, back_struc, back_cont) =
+    let (_, back_clip, back_struc, back_cont) =
         setup_window_regions(&mut bus, back, 10, 20, 110, 210, 0x330000);
 
+    for window in [front, middle, back] {
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+            0xff,
+        );
+    }
+    let preserved = [
+        ("front_vis", front_vis),
+        ("front_clip", front_clip),
+        ("front_cont", front_cont),
+        ("front_struc", front_struc),
+        ("middle_clip", middle_clip),
+        ("middle_cont", middle_cont),
+        ("middle_struc", middle_struc),
+        ("back_clip", back_clip),
+        ("back_cont", back_cont),
+        ("back_struc", back_struc),
+    ]
+    .map(|(name, ptr)| (name, ptr, bus.read_bytes(ptr, 10)));
     disp.window_list.replace(vec![front, middle, back]);
     disp.sync_window_list_links(&mut bus);
     disp.menu_bar_hidden = false;
@@ -5308,70 +5327,21 @@ fn calcvisbehind_recomputes_regions_for_startwindow_and_windows_behind_it() {
     assert!(result.unwrap().is_ok());
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
 
-    for (label, rgn_data) in [
-        ("middle_cont", middle_cont),
-        ("middle_vis", middle_vis),
-        ("middle_clip", middle_clip),
-    ] {
-        assert_eq!(bus.read_word(rgn_data + 2) as i16, 18, "{}.top", label);
-        assert_eq!(bus.read_word(rgn_data + 4) as i16, 20, "{}.left", label);
-        assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
-        assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
+    // The identical front window covers both windows behind it. The API
+    // recalculates visibility, not their geometry or application clipRgn.
+    for window in [middle, back] {
+        assert_eq!(
+            super::super::TrapDispatcher::region_handle_rect(&bus, bus.read_long(window + 24)),
+            None,
+            "fully covered windows must retain an empty visible region",
+        );
     }
-    assert_eq!(
-        bus.read_word(middle_struc + 2) as i16,
-        18,
-        "middle_struc.top"
-    );
-    assert_eq!(
-        bus.read_word(middle_struc + 4) as i16,
-        19,
-        "middle_struc.left"
-    );
-    assert_eq!(
-        bus.read_word(middle_struc + 6) as i16,
-        112,
-        "middle_struc.bottom"
-    );
-    assert_eq!(
-        bus.read_word(middle_struc + 8) as i16,
-        212,
-        "middle_struc.right"
-    );
-
-    for (label, rgn_data) in [
-        ("back_cont", back_cont),
-        ("back_vis", back_vis),
-        ("back_clip", back_clip),
-    ] {
-        assert_eq!(bus.read_word(rgn_data + 2) as i16, 18, "{}.top", label);
-        assert_eq!(bus.read_word(rgn_data + 4) as i16, 20, "{}.left", label);
-        assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
-        assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
-    }
-    assert_eq!(bus.read_word(back_struc + 2) as i16, 18, "back_struc.top");
-    assert_eq!(bus.read_word(back_struc + 4) as i16, 19, "back_struc.left");
-    assert_eq!(
-        bus.read_word(back_struc + 6) as i16,
-        112,
-        "back_struc.bottom"
-    );
-    assert_eq!(
-        bus.read_word(back_struc + 8) as i16,
-        212,
-        "back_struc.right"
-    );
-
-    for (label, rgn_data) in [
-        ("front_cont", front_cont),
-        ("front_struc", front_struc),
-        ("front_vis", front_vis),
-        ("front_clip", front_clip),
-    ] {
-        assert_eq!(bus.read_word(rgn_data + 2) as i16, 10, "{}.top", label);
-        assert_eq!(bus.read_word(rgn_data + 4) as i16, 20, "{}.left", label);
-        assert_eq!(bus.read_word(rgn_data + 6) as i16, 110, "{}.bottom", label);
-        assert_eq!(bus.read_word(rgn_data + 8) as i16, 210, "{}.right", label);
+    for (name, ptr, original) in preserved {
+        assert_eq!(
+            bus.read_bytes(ptr, 10),
+            original,
+            "{name} must remain unchanged"
+        );
     }
 }
 
@@ -9380,4 +9350,63 @@ fn sizewindow_hidden_growth_does_not_paint_screen_pixels() {
     bus.write_long(sp + 6, window);
     dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().unwrap();
     assert!(bus.read_bytes(screen, 96 * 80).iter().all(|&value| value == 0x7B));
+}
+#[test]
+fn calcvisbehind_cannot_erase_fully_occluded_front_content() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen = bus.alloc(64 * 64);
+    disp.set_screen_mode_for_test(screen, 64, 64, 64, 8);
+    disp.menu_bar_hidden = true;
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    let back = bus.alloc(256);
+    let front = bus.alloc(256);
+    for window in [back, front] {
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, window, screen, 0, 0, 64, 64, "", 2, true, false, false, 0,
+        );
+    }
+    let back_vis = bus.read_long(back + 24);
+    assert!(!super::super::TrapDispatcher::region_contains_point(
+        &bus, back_vis, 32, 32
+    ));
+    bus.fill_bytes(screen, 64 * 64, 0x5a);
+    let clobbered =
+        super::super::TrapDispatcher::alloc_rect_region_handle(&mut bus, Some((0, 0, 64, 64)));
+    let sp = TEST_SP - 8;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, clobbered);
+    bus.write_long(sp + 4, front);
+    dispatch(&mut disp, 0x10A, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+
+    let update = bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
+    super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update, Some((0, 0, 64, 64)));
+    disp.set_current_port_state(&mut bus, &mut cpu, back, None);
+    disp.begin_update_window(&mut bus, back);
+    let rect = bus.alloc(8);
+    bus.write_word(rect, 0);
+    bus.write_word(rect + 2, 0);
+    bus.write_word(rect + 4, 64);
+    bus.write_word(rect + 6, 64);
+    let pattern = bus.alloc(8);
+    bus.fill_bytes(pattern, 8, 0xff);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, pattern);
+    bus.write_long(sp + 4, rect);
+    disp.dispatch_quickdraw(true, 0x0A5, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        bus.read_byte(screen + 32 * 64 + 32),
+        0x5a,
+        "a rear-window update must not erase the front window's pixels",
+    );
+    assert!(!super::super::TrapDispatcher::region_contains_point(
+        &bus, back_vis, 32, 32
+    ));
+    disp.end_update_window(&mut bus, back);
+    assert!(!super::super::TrapDispatcher::region_contains_point(
+        &bus, back_vis, 32, 32
+    ));
 }
