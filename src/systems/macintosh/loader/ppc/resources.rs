@@ -420,7 +420,9 @@ pub(crate) fn ppc_materialize_vfs_resource_handle(
     load_data: bool,
     last_resource_error: &mut i16,
 ) -> u32 {
-    if vfs_resources[index].handle == 0 {
+    let existing = vfs_resources[index].handle;
+    let materialized = existing == 0 || (load_data && memory.read_u32_be(existing) == Some(0));
+    if existing == 0 {
         // Inside Macintosh Volume I (1985), I-118 through I-120:
         // SetResLoad(FALSE) still returns a resource Handle, but its master
         // pointer remains NIL until LoadResource (or a later loading lookup).
@@ -484,8 +486,19 @@ pub(crate) fn ppc_materialize_vfs_resource_handle(
         }
     }
     let handle = vfs_resources[index].handle;
-    process_memory_manager.set_process_handle_purgeable(handle, true);
-    process_memory_manager.set_process_handle_resource(handle, true);
+    if materialized {
+        // Resource-map attributes initialize a newly loaded block. A lookup
+        // of an already resident block must preserve HLock/HNoPurge changes;
+        // SetResAttrs changes take effect on the next load, not each lookup.
+        let attrs = vfs_resources[index].attrs;
+        process_memory_manager.set_process_handle_purgeable(handle, attrs & 0x20 != 0);
+        if attrs & 0x10 != 0 {
+            process_memory_manager.lock_process_handle(handle, false);
+        } else {
+            process_memory_manager.unlock_process_handle(handle);
+        }
+        process_memory_manager.set_process_handle_resource(handle, true);
+    }
     *last_mem_error = PPC_NO_ERR;
     *last_resource_error = PPC_NO_ERR;
     handle

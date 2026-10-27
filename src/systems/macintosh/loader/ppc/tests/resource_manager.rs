@@ -404,3 +404,141 @@ fn hle_import_runner_lm_set_boot_drive_writes_low_memory_word() {
         Some((-3i16) as u16)
     );
 }
+
+#[test]
+fn resource_materialization_honors_attributes_and_preserves_resident_state() {
+    for (attrs, expected) in [(0, 0x20), (0x20, 0x60), (0x10, 0xa0)] {
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"GetResource")).unwrap();
+        native.with_process_memory_manager(|native, manager| {
+            let allocator = manager.native_allocator_snapshot().unwrap();
+            let mut cursor = allocator.heap.heap_cursor;
+            let limit = allocator.heap.heap_limit;
+            let mut mem_error = PPC_NO_ERR;
+            let mut res_error = PPC_NO_ERR;
+            let mut handles = manager.native_handle_records().to_vec();
+            let mut resources = vec![PpcVfsResourceRecord {
+                ref_num: 0,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"TEST"),
+                res_id: 42,
+                name: Vec::new(),
+                data: b"resource state".to_vec().into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs,
+                handle: 0,
+            }];
+            let handle = ppc_materialize_vfs_resource_handle(
+                manager,
+                &mut native.memory,
+                &mut cursor,
+                limit,
+                &mut mem_error,
+                &mut handles,
+                &mut resources,
+                0,
+                true,
+                &mut res_error,
+            );
+            assert_ne!(handle, 0);
+            assert_eq!(res_error, PPC_NO_ERR);
+            assert_eq!(
+                manager.state_for_handle(handle),
+                Some(expected),
+                "attrs={attrs:02x}"
+            );
+            manager.set_process_handle_purgeable(handle, false);
+            manager.lock_process_handle(handle, true);
+            let pointer = native.memory.read_u32_be(handle).unwrap();
+            let again = ppc_materialize_vfs_resource_handle(
+                manager,
+                &mut native.memory,
+                &mut cursor,
+                limit,
+                &mut mem_error,
+                &mut handles,
+                &mut resources,
+                0,
+                true,
+                &mut res_error,
+            );
+            assert_eq!(again, handle);
+            assert_eq!(native.memory.read_u32_be(handle), Some(pointer));
+            assert_eq!(
+                manager.state_for_handle(handle),
+                Some(0xa0),
+                "resident state must survive lookup"
+            );
+        });
+    }
+}
+
+#[test]
+fn resource_materialization_applies_changed_attributes_only_when_loading_data() {
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"GetResource")).unwrap();
+    native.with_process_memory_manager(|native, manager| {
+        let allocator = manager.native_allocator_snapshot().unwrap();
+        let mut cursor = allocator.heap.heap_cursor;
+        let limit = allocator.heap.heap_limit;
+        let mut mem_error = PPC_NO_ERR;
+        let mut res_error = PPC_NO_ERR;
+        let mut handles = manager.native_handle_records().to_vec();
+        let mut resources = vec![PpcVfsResourceRecord {
+            ref_num: 0,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 42,
+            name: Vec::new(),
+            data: b"deferred resource".to_vec().into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0x20,
+            handle: 0,
+        }];
+        macro_rules! lookup {
+            ($load:expr) => {
+                ppc_materialize_vfs_resource_handle(
+                    manager,
+                    &mut native.memory,
+                    &mut cursor,
+                    limit,
+                    &mut mem_error,
+                    &mut handles,
+                    &mut resources,
+                    0,
+                    $load,
+                    &mut res_error,
+                )
+            };
+        }
+        let handle = lookup!(false);
+        assert_ne!(handle, 0);
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(manager.state_for_handle(handle), Some(0x60));
+        resources[0].attrs = 0x10;
+        assert_eq!(lookup!(false), handle);
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(manager.state_for_handle(handle), Some(0x60));
+        assert_eq!(lookup!(true), handle);
+        assert_ne!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(manager.state_for_handle(handle), Some(0xa0));
+        manager.unlock_process_handle(handle);
+        manager.set_process_handle_purgeable(handle, false);
+        resources[0].attrs = 0x20;
+        assert_eq!(lookup!(true), handle);
+        assert_eq!(manager.state_for_handle(handle), Some(0x20));
+        assert_eq!(
+            manager.empty_native_handle(&mut native.memory, handle),
+            PPC_NO_ERR
+        );
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(lookup!(true), handle);
+        assert_eq!(manager.state_for_handle(handle), Some(0x60));
+        assert_eq!(
+            ppc_handle_bytes(&mut native.memory, &handles, handle).unwrap(),
+            b"deferred resource"
+        );
+        assert_eq!(mem_error, PPC_NO_ERR);
+        assert_eq!(res_error, PPC_NO_ERR);
+    });
+}
