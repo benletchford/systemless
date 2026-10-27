@@ -11,6 +11,7 @@
 //! <https://registry.khronos.org/OpenGL/specs/gl/glspec121.pdf>
 
 pub mod args;
+mod bitmap;
 pub mod consts;
 pub mod functions;
 pub mod glu;
@@ -58,6 +59,8 @@ const MAX_ARRAY_VERTICES: usize = 1 << 20;
 /// A decoded OpenGL command that may be executed or compiled into a list.
 #[derive(Debug, Clone)]
 pub enum GlCall {
+    RasterPos([f32; 4]),
+    Bitmap(bitmap::Bitmap),
     Begin(u32),
     End,
     Vertex([f32; 4]),
@@ -315,6 +318,20 @@ impl GlContext {
         let state = &mut self.state;
         let raster = &mut state.raster;
         match call {
+            GlCall::RasterPos(position) => {
+                let vertex = self.current_vertex(position);
+                self.state.raster.position = pipeline::raster_position(&self.state, &vertex);
+            }
+            GlCall::Bitmap(bitmap) => {
+                if !raster.position.valid {
+                    return;
+                }
+                self.with_target(framebuffer, |state, target| {
+                    raster::draw_bitmap(state, target, &bitmap);
+                });
+                self.state.raster.position.window[0] += bitmap.advance[0];
+                self.state.raster.position.window[1] += bitmap.advance[1];
+            }
             GlCall::Begin(mode) => {
                 if mode > POLYGON {
                     state.set_error(INVALID_ENUM);
@@ -1278,6 +1295,14 @@ fn get_values(ctx: &GlContext, pname: u32) -> Option<(Vec<f64>, bool)> {
         return Some(scalar(b(enabled)));
     }
     Some(match pname {
+        CURRENT_RASTER_POSITION => (r.position.window.iter().map(|&v| f(v)).collect(), false),
+        CURRENT_RASTER_POSITION_VALID => scalar(b(r.position.valid)),
+        CURRENT_RASTER_DISTANCE => scalar(f(r.position.distance)),
+        CURRENT_RASTER_COLOR => colors(r.position.color),
+        CURRENT_RASTER_INDEX => scalar(1.0),
+        CURRENT_RASTER_TEXTURE_COORDS => {
+            (r.position.tex[unit].iter().map(|&v| f(v)).collect(), false)
+        }
         CURRENT_COLOR => colors(state.current.color),
         CURRENT_NORMAL => (
             state.current.normal.iter().map(|&v| f64::from(v)).collect(),
@@ -1573,6 +1598,10 @@ fn call_untraced(
 ) -> GlResult {
     let mut args = PpcCallArgs::with_first_word(cpu, memory, first_word);
     let call = match function {
+        GlFunction::RasterPos { size, kind, vector } => {
+            let v = read_attribute(&mut args, kind, vector, size as usize);
+            Some(GlCall::RasterPos(four(&v, [0.0, 0.0, 0.0, 1.0])))
+        }
         GlFunction::Vertex { size, kind, vector } => {
             let v = read_attribute(&mut args, kind, vector, size as usize);
             Some(GlCall::Vertex(four(&v, [0.0, 0.0, 0.0, 1.0])))
@@ -1659,6 +1688,10 @@ fn decode_named(
 ) -> Decoded {
     use Decoded::Call;
     match named {
+        GlNamed::Bitmap => match bitmap::decode(args, &ctx.state.client.unpack) {
+            Ok(bitmap) => Call(GlCall::Bitmap(bitmap)),
+            Err(error) => Call(GlCall::Error(error)),
+        },
         GlNamed::Begin => Call(GlCall::Begin(args.u32())),
         GlNamed::End => Call(GlCall::End),
         GlNamed::EdgeFlag => Call(GlCall::EdgeFlag(args.u32() as u8 != 0)),

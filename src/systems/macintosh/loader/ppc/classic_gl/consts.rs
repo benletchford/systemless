@@ -430,3 +430,11 @@ pub const POINT_DISTANCE_ATTENUATION: u32 = 0x8129;
 
 // Attribute bits for glPushAttrib.
 pub const ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
+
+// OpenGL 1.2.1 current raster state.
+pub const CURRENT_RASTER_COLOR: u32 = 0x0B04;
+pub const CURRENT_RASTER_INDEX: u32 = 0x0B05;
+pub const CURRENT_RASTER_TEXTURE_COORDS: u32 = 0x0B06;
+pub const CURRENT_RASTER_POSITION: u32 = 0x0B07;
+pub const CURRENT_RASTER_POSITION_VALID: u32 = 0x0B08;
+pub const CURRENT_RASTER_DISTANCE: u32 = 0x0B09;

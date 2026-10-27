@@ -63,7 +63,7 @@ macro_rules! named_functions {
 
 named_functions! {
     Accum, ActiveTextureARB, AlphaFunc, AreTexturesResident, ArrayElement, Begin,
-    BindTexture, BlendColorEXT, BlendFunc, CallList, CallLists, Clear, ClearAccum,
+    Bitmap, BindTexture, BlendColorEXT, BlendFunc, CallList, CallLists, Clear, ClearAccum,
     ClearColor, ClearDepth, ClearIndex, ClearStencil, ClientActiveTextureARB,
     ClipPlane, ColorMask, ColorMaterial, ColorPointer, CopyTexImage2D,
     CopyTexSubImage2D, CullFace, DeleteLists, DeleteTextures, DepthFunc, DepthMask,
@@ -91,6 +91,11 @@ named_functions! {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlFunction {
+    RasterPos {
+        size: u8,
+        kind: AttribType,
+        vector: bool,
+    },
     Vertex {
         size: u8,
         kind: AttribType,
@@ -162,6 +167,14 @@ impl GlFunction {
                     return Some(Self::TexCoord { size, kind, vector });
                 }
             }
+        }
+        if let Some(rest) = suffix.strip_prefix("RasterPos") {
+            let (size, kind, vector) = parse_family(rest, &[2, 3, 4])?;
+            return matches!(
+                kind,
+                AttribType::Short | AttribType::Int | AttribType::Float | AttribType::Double
+            )
+            .then_some(Self::RasterPos { size, kind, vector });
         }
         if let Some(rest) = suffix.strip_prefix("Vertex") {
             if let Some((size, kind, vector)) = parse_family(rest, &[2, 3, 4]) {

@@ -668,3 +668,42 @@ pub fn draw_point(state: &ContextState, target: &mut RasterTarget, v: &WindowVer
         }
     }
 }
+
+/// Bitmap fragments use the latched raster attributes and ordinary fragment tests.
+pub(super) fn draw_bitmap(
+    state: &ContextState,
+    target: &mut RasterTarget,
+    bitmap: &super::bitmap::Bitmap,
+) {
+    let position = &state.raster.position;
+    let x0 = (position.window[0] - bitmap.origin[0]).floor() as i64;
+    let y0 = (position.window[1] - bitmap.origin[1]).floor() as i64;
+    let units = active_units(state);
+    for row in 0..bitmap.height {
+        let y = y0.saturating_add(row as i64);
+        if y < 0 || y >= target.height as i64 {
+            continue;
+        }
+        for col in 0..bitmap.width {
+            let x = x0.saturating_add(col as i64);
+            if x < 0 || x >= target.width as i64 || bitmap.pixels[row * bitmap.width + col] == 0 {
+                continue;
+            }
+            process_fragment(
+                state,
+                target,
+                &units,
+                Fragment {
+                    x: x as usize,
+                    y: y as usize,
+                    z: position.window[2],
+                    color: position.color,
+                    specular: [0.0; 3],
+                    texcoords: position.tex.map(|t| [t[0] / t[3], t[1] / t[3]]),
+                    lambda: [0.0; TEXTURE_UNITS],
+                    fog: position.distance,
+                },
+            );
+        }
+    }
+}

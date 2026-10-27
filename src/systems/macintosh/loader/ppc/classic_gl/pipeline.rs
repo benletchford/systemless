@@ -713,3 +713,31 @@ pub fn draw_primitives(
         _ => {}
     }
 }
+
+/// RasterPos follows vertex transformation, lighting and point clipping.
+pub(super) fn raster_position(
+    state: &ContextState,
+    vertex: &Vertex,
+) -> super::bitmap::RasterPosition {
+    let clip = process_vertex(state, &VertexTransform::new(state), vertex);
+    if !clip.clip.iter().all(|v| v.is_finite())
+        || clip.clip[3] == 0.0
+        || active_planes(state).any(|plane| inside(state, plane, &clip) < 0.0)
+    {
+        return super::bitmap::RasterPosition {
+            valid: false,
+            ..Default::default()
+        };
+    }
+    let window = to_window(state, &clip, false);
+    super::bitmap::RasterPosition {
+        window: [window.x, window.y, window.z, clip.clip[3]],
+        valid: true,
+        color: clip.front,
+        tex: clip.tex,
+        distance: (clip.eye[0] * clip.eye[0]
+            + clip.eye[1] * clip.eye[1]
+            + clip.eye[2] * clip.eye[2])
+            .sqrt(),
+    }
+}
