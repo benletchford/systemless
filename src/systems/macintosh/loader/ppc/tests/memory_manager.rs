@@ -2473,8 +2473,8 @@ fn ppc_resource_materialization_mutates_process_manager_immediately() {
             assert_ne!(handle, 0);
             assert!(handle >= cursor_after_canonical_allocation);
             assert_eq!(memory_manager.native_allocation(handle).unwrap().ptr, 0);
-            assert_eq!(memory_manager.state_for_handle(handle), Some(0x60));
-            assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x60));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x20));
+            assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x20));
             let detached = memory_manager.detached_clone();
 
             let loaded = ppc_materialize_vfs_resource_handle(
@@ -2499,7 +2499,7 @@ fn ppc_resource_materialization_mutates_process_manager_immediately() {
                 b"process resource"
             );
             assert_eq!(memory_manager.recover_handle(record.ptr), Some(handle));
-            assert_eq!(memory_manager.state_for_handle(handle), Some(0x60));
+            assert_eq!(memory_manager.state_for_handle(handle), Some(0x20));
             assert_eq!(detached.native_allocation(handle).unwrap().ptr, 0);
             assert_eq!(detached.recover_handle(record.ptr), None);
             assert_eq!(last_mem_error, PPC_NO_ERR);
@@ -2537,10 +2537,10 @@ fn ppc_resource_materialization_mutates_process_manager_immediately() {
                 memory_manager.recover_handle(external_ptr),
                 Some(external_handle)
             );
-            assert_eq!(memory_manager.state_for_handle(external_handle), Some(0x60));
+            assert_eq!(memory_manager.state_for_handle(external_handle), Some(0x20));
             assert_eq!(
                 classic_dispatcher.handle_state_bits(external_handle),
-                Some(0x60)
+                Some(0x20)
             );
             assert_eq!(
                 classic_bus.read_bytes(external_ptr, b"PEF master pointer".len()),
