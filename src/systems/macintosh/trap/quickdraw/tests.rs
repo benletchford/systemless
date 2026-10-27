@@ -27718,3 +27718,38 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(TEST_SP + 4), 0xdead_beef);
     }
+
+    #[test]
+    fn drawpicture_dispatches_paintrect_to_guest_rectproc() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let globals = bus.read_long(cpu.read_reg(Register::A5));
+        let port = bus.read_long(globals);
+        let procs = 0x350000;
+        let callback = 0x360000;
+        bus.fill_zeros(procs, 52);
+        bus.write_long(port + 104, procs);
+        bus.write_long(procs + 8, callback); // QDProcs.rectProc
+        bus.write_word(callback, 0x4e75); // mapped guest code
+
+        let picture = 0x351000;
+        write_v1_paintrect_picture(&mut bus, picture, (0, 0, 8, 8), (2, 3, 6, 7));
+        let handle = 0x351100;
+        bus.write_long(handle, picture);
+        let destination = 0x351200;
+        write_rect(&mut bus, destination, 0, 0, 8, 8);
+        bus.write_long(TEST_SP, destination);
+        bus.write_long(TEST_SP + 4, handle);
+        cpu.write_reg(Register::PC, 0x340002);
+
+        d.dispatch_quickdraw(true, 0x0f6, &mut cpu, &mut bus)
+            .expect("DrawPicture")
+            .unwrap();
+
+        // Picture playback must reach the port's live drawing bottleneck,
+        // even when the application uses drawing to interpret data.
+        assert_eq!(cpu.read_reg(Register::PC), callback);
+        let callback_sp = cpu.read_reg(Register::A7);
+        assert_eq!(bus.read_byte(callback_sp + 8), 1); // paint verb
+        let rect = bus.read_long(callback_sp + 4);
+        assert_eq!(read_rect(&bus, rect), (2, 3, 6, 7));
+    }

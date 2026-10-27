@@ -2228,6 +2228,7 @@ pub struct TrapDispatcher {
     /// we are nested inside the proc, so CopyBits performs the blit itself.
     pub(crate) bits_proc_reentry: Option<(u32, u32)>,
     pub(crate) picture_stream_stack: Vec<super::picture_stream::PictureStreamFrame>,
+    pub(crate) picture_callback_stack: Vec<super::picture_callbacks::PictureCallbackFrame>,
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: crate::process_context::SharedProcessTimerTasks,
@@ -4104,6 +4105,7 @@ impl TrapDispatcher {
             pending_native_trap_calls: HashMap::default(),
             bits_proc_reentry: None,
             picture_stream_stack: Vec::new(),
+            picture_callback_stack: Vec::new(),
             timer_tasks: Default::default(),
             deferred_tasks: VecDeque::new(),
             deferred_install_in_interrupt: false,
@@ -8252,6 +8254,9 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        if let Some(result) = self.resume_picture_callbacks(cpu, bus) {
+            return Some(result);
+        }
         if let Some(result) = self.resume_picture_stream(cpu, bus) {
             return Some(result);
         }

@@ -2383,11 +2383,36 @@ pub(crate) enum PictureStreamProgress {
 /// trusting picSize or reading through EndOfPicture into a following record.
 pub(crate) fn picture_stream_progress(data: &[u8]) -> PictureStreamProgress {
     let bytes = PictureBytes::new(data);
-    match walk_picture_bytes(&bytes, |_, _| Some(())) {
+    match walk_picture_bytes(&bytes, |_, _, _| Some(())) {
         Some(length) => PictureStreamProgress::Complete(length),
         None if bytes.needed.get() > data.len() => PictureStreamProgress::Need(bytes.needed.get()),
         None => PictureStreamProgress::Invalid,
     }
+}
+
+/// A validated PICT operation, excluding its opcode but retaining any
+/// format-required payload padding. Data remains independent of guest memory
+/// while a cooperative callback is executing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PictureCommand {
+    pub opcode: u16,
+    pub data: Vec<u8>,
+}
+
+/// Decode the same bounded stream used by getPicProc and picture metadata.
+/// Validate every complete operation before exposing it to guest playback;
+/// malformed or truncated streams must not execute a partial script.
+pub(crate) fn picture_commands(data: &[u8]) -> Option<Vec<PictureCommand>> {
+    let bytes = PictureBytes::new(data);
+    let mut commands = Vec::new();
+    walk_picture_bytes(&bytes, |opcode, start, end| {
+        commands.push(PictureCommand {
+            opcode,
+            data: data.get(start..end)?.to_vec(),
+        });
+        Some(())
+    })?;
+    Some(commands)
 }
 
 /// Basic Picture Utilities metadata, independent of the destination display.
@@ -2416,7 +2441,7 @@ pub(crate) fn picture_basic_info(data: &[u8]) -> Option<PictureBasicInfo> {
         v_res: 72 << 16,
         source_rect: rect_at(2)?,
     };
-    walk_picture_bytes(bytes, |opcode, pos| {
+    walk_picture_bytes(bytes, |opcode, pos, _end| {
         let pixmap = match opcode {
             0x90 | 0x91 | 0x98 | 0x99 if read_pict_u16(bytes, pos)? & 0x8000 != 0 => Some(pos),
             0x9A | 0x9B => Some(pos + 4),
@@ -2441,7 +2466,7 @@ pub(crate) fn picture_basic_info(data: &[u8]) -> Option<PictureBasicInfo> {
 
 fn walk_picture_bytes(
     bytes: &PictureBytes<'_>,
-    mut visit: impl FnMut(u16, usize) -> Option<()>,
+    mut visit: impl FnMut(u16, usize, usize) -> Option<()>,
 ) -> Option<usize> {
     if !bytes.require(10) {
         return None;
@@ -2471,7 +2496,7 @@ fn walk_picture_bytes(
             op
         };
 
-        visit(opcode, pos)?;
+        let payload_start = pos;
         pos = match opcode {
             0x00
             | 0x1C
@@ -2554,7 +2579,7 @@ fn walk_picture_bytes(
                 }
                 next
             }
-            0xFF => return Some(pos),
+            0xFF => pos,
             0x0C00 => pict_add(pos, 24, bytes)?,
             0x02FF => pict_add(pos, 2, bytes)?,
             _ if is_v2 => {
@@ -2577,6 +2602,10 @@ fn walk_picture_bytes(
             }
             _ => skip_v1_reserved_bytes(bytes, opcode, pos)?,
         };
+        visit(opcode, payload_start, pos)?;
+        if opcode == 0xff {
+            return Some(pos);
+        }
     }
 }
 

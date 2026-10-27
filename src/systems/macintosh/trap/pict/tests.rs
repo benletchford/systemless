@@ -3089,3 +3089,41 @@ fn indexed_bits_region_masks_intersect_picture_clip_at_translated_scaled_destina
         }
     }
 }
+
+#[test]
+fn callback_commands_preserve_v1_order_and_reject_partial_streams() {
+    let data = [
+        0, 0, 0, 0, 0, 0, 0, 8, 0, 8, // header
+        0x11, 1, // v1
+        0xa0, 0, 150, // TextBegin
+        0x28, 0, 2, 0, 3, 3, b'a', b'b', b'c', // LongText
+        0xa0, 0, 151, // TextEnd
+        0x31, 0, 1, 0, 2, 0, 6, 0, 7, // PaintRect
+        0xff,
+    ];
+    let commands = super::picture_commands(&data).unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .map(|command| command.opcode)
+            .collect::<Vec<_>>(),
+        [0x11, 0xa0, 0x28, 0xa0, 0x31, 0xff]
+    );
+    assert_eq!(commands[2].data, [0, 2, 0, 3, 3, b'a', b'b', b'c']);
+    assert_eq!(commands[4].data, [0, 1, 0, 2, 0, 6, 0, 7]);
+    for end in 0..data.len() {
+        assert!(super::picture_commands(&data[..end]).is_none(), "end={end}");
+    }
+}
+
+#[test]
+fn callback_commands_validate_v2_comment_padding_and_following_shapes() {
+    let mut data = vec![0, 0, 0, 0, 0, 0, 0, 8, 0, 8, 0x11, 2, 0xff, 0];
+    data.extend_from_slice(&[0, 0xa1, 0, 150, 0, 3, 1, 2, 3, 0]);
+    data.extend_from_slice(&[0, 0x31, 0, 1, 0, 2, 0, 6, 0, 7, 0, 0xff]);
+    let commands = super::picture_commands(&data).unwrap();
+    assert_eq!(commands[1].opcode, 0xa1);
+    assert_eq!(commands[1].data, [0, 150, 0, 3, 1, 2, 3, 0]);
+    assert_eq!(commands[2].opcode, 0x31);
+    assert_eq!(commands[2].data, [0, 1, 0, 2, 0, 6, 0, 7]);
+}
