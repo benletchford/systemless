@@ -17,6 +17,37 @@ compatibility:
   verified:
   - date: "2026-10-27"
     tester: Catalogue maintainer
+    systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
+    architecture: 68k
+    environment: >-
+      Native ci-test dialog-repair candidate #5155, executable SHA-256
+      666aad38bc6fffede6def2ec97aae497817022ff7b84f87b32d91bccde307b9d.
+      Exact Tucows catalogue archive and executable selector below, through production
+      archive expansion with the directory-depth fix #5149. Original trial dismissal,
+      Play Barrack, gun movement and a fired barrier pass ten measured checks at 1632
+      frontend / 2232 guest ticks, zero exhausted frames. The inspected capture shows
+      score 90, level 1 and eight lives. Separately, unchanged original installer forks
+      pass nine completion-message, Quit/Continue-label and Continue-dismissal checks at
+      3012 / 3577 ticks, zero exhausted frames. This is bounded native gameplay and
+      installer UI evidence; browser pacing/input, audio fidelity and public qualification
+      remain pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5155
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
+    systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
+    architecture: ppc
+    environment: >-
+      Same exact catalogue archive and immutable candidate as the current 68K row.
+      Original trial dismissal, menu entry and mouse-fired barriers clear level 1 and
+      advance to level 2 with score 2610 and five lives. Seven measured pixel checks pass
+      at 3567 frontend / 3861 guest ticks, zero exhausted frames; the actual capture was
+      inspected. This is one bounded level transition, not a full-game or audio-fidelity
+      qualification. Browser input/pacing and public qualification remain pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5155
+  - date: "2026-10-27"
+    tester: Catalogue maintainer
     systemless_version: d9210e9622c520d48117eeb5819baf262876de0f
     architecture: 68k
     environment: "Native combined candidate SHA-256 7bb073961616428b1f96bbb09dd05bd63533b5fed9d6406e90dd8d693c7b77cd, built from the recorded combined source, including the fade preservation and animation-table synchronization repairs in #5125. Both CPU showcase suites pass against unchanged reference images. Exact managed Tucows archive and selector below, ordinary scheduler and default display/time. Not Yet, Play Barrack, gun movement and a fired barrier pass ten existing measured checks at 1632 frontend / 2232 guest ticks. The matched no-fire control passes two checks at the same clocks. Actual captures show intact menu artwork and score 90 with nine percent cleared; control remains at zero. Both runs have zero exhausted frames. This is bounded gameplay, not a completed 68K level or audio-fidelity test. Browser input/pacing and public qualification remain pending."
@@ -32,8 +63,8 @@ compatibility:
       and advance to level 2 with score 2610. Seven fixed measured assertions pass at
       3567 frontend / 3861 guest ticks, zero exhausted frames. Actual level-transition
       captures inspected. This demonstrates one level transition, not a full game,
-      sustained pacing or audio fidelity. Browser qualification and independent
-      inner-installer extraction parity are pending.
+      sustained pacing or audio fidelity. Browser qualification remains pending. This
+      historical run preceded the independent inner-installer parity verification below.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5080
   - date: "2026-10-27"
@@ -77,9 +108,16 @@ artifacts:
       independent emulator oracle. Retains the game, registration application, licence,
       release notes, FAQs, web references, icons and media. The original 30-day shareware
       trial remains intact; no registration code or bypass. Production expansion yields
-      nineteen file records, including both original Documentation Icon records with
-      different resource forks; no duplicate is removed. Independent inner-installer
-      parity remains pending. The original fat application contains both 68K and PPC code;
+      nineteen distinct paths after directory repair #5149, retaining the separate
+      Documentation and Web Site URL folder icons and their original resource forks.
+      Independent execution of the original installer with CODE-loading repair #5150
+      verifies all nineteen payload paths and thirty-eight forks against corrected
+      production extraction, with matching file types and creators. Finder flags
+      are recorded separately; no complete Finder-metadata parity claim is made.
+      With the word-aligned CODE repair #5154 and dialog-repair candidate #5155,
+      the original completion message, Quit/Continue labels and Continue dismissal
+      pass nine measured native checks. The original fat application contains both
+      68K and PPC code;
       both original slices now have bounded native gameplay evidence.
 - id: gameplay-screenshot
   role: screenshot
