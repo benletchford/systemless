@@ -10905,32 +10905,10 @@ impl super::TrapDispatcher {
             // invoked instead, and the custom routine MAY chain to StdRect
             // for the actual drawing.
             //
-            // Systemless's HLE compromise: every high-level QD trap (FrameRect
-            // $A8A1, PaintRect $A8A2, EraseRect $A8A3, etc.) draws DIRECTLY
-            // via Rust drawing code — it does NOT consult grafProcs.rectProc
-            // before dispatching, and it does NOT JSR to the slot. The
-            // standard bottleneck traps are therefore reachable only by:
-            //   (a) An app that explicitly JSRs through grafProcs.<slot>
-            //       (e.g. via SetStdProcs to capture defaults, then calls
-            //       the captured ProcPtr later), OR
-            //   (b) An app that installs a custom proc, does setup work,
-            //       and then chains to the standard one with JSR through
-            //       its saved-default-proc pointer.
-            // In (a) the no-op is safe because no actual drawing was
-            // intended — the call is a probe/no-op anyway. In (b) the
-            // custom proc has already done whatever drawing it needed
-            // (typically: route through Systemless's high-level FrameRect
-            // etc. via direct trap dispatch), and the chained Std* call
-            // is just for "make sure the default ALSO got to run." The
-            // no-op is correct because Systemless's high-level paths have
-            // already drawn — the bottleneck would be a duplicate.
-            //
-            // No corpus title relies on the standard bottleneck procs
-            // executing real drawing — verified by tracing the Pack6 +
-            // Marathon + Glider PRO + Centaurian games' trap histograms
-            // (none of them invoke any Std* trap except $A8EB StdBits,
-            // which IS implemented as a proper CopyBits delegation at
-            // line 7621 below).
+            // Standard bottlenecks are callable by applications and by
+            // custom procedures chaining to the defaults. StdRect and StdBits
+            // perform drawing; other entries below retain their documented
+            // implementation limitations.
             //
             // The Pascal stack convention for these traps follows the
             // MPW / Toolbox standard:
@@ -10991,44 +10969,52 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // StdRect ($A8A0)
-            // PROCEDURE StdRect(verb: GrafVerb; r: Rect);
-            // Inside Macintosh Volume I, I-197 + Imaging With QuickDraw 1994 3-132:
-            //   "The StdRect procedure draws the rectangle specified in the r
-            //    parameter according to the action specified in the verb parameter."
-            //
-            // MPW Universal Headers Quickdraw.h declares the C-callable form
-            // with the Rect passed by pointer (not inlined by value):
-            //   EXTERN_API(void) StdRect(GrafVerb verb, const Rect *r)
-            //                                          ONEWORDINLINE(0xA8A0);
-            //
-            // Stack frame at trap entry (Pascal LR push, first arg deepest):
-            //   sp+0..3  rect_ptr   (last pushed → shallowest)
-            //   sp+4..5  verb_word  (first pushed → deepest)
-            // 6-byte total pop, no result slot (PROCEDURE).
-            //
-            // Real-Mac semantic: dispatches Frame/Paint/Erase/Invert/Fill verb
-            // on the rect via the current pen state / fill pattern.
-            //
-            // Systemless HLE compromise — every high-level QuickDraw rect trap
-            // (FrameRect / PaintRect / EraseRect / InvertRect / FillRect)
-            // draws directly via the Rust framebuffer code, bypassing the
-            // bottleneck dispatch through grafProcs.rectProc.  StdRect
-            // itself is reachable only via explicit SetStdProcs → JSR-
-            // through-slot — a non-corpus pattern.  Therefore the HLE pops
-            // the 6-byte stack frame and returns without performing any
-            // drawing.  caller_observable = false because no corpus caller
-            // depends on StdRect producing pixels.
-            //
-            // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
-            // the rect AND mutates A0/A1/D0/D1 during rasterisation.  Both
-            // engines agree on the 6-byte pop; they diverge on pixel side-
-            // effect and register mutation.
-            // The Systemless-only register-preservation contract is pinned by
-            // `stdrect_stub_preserves_non_stack_registers_in_hle_compromise_path`.
+            // StdRect ($A8A0): standard rectangle bottleneck. The last
+            // Pascal argument (Rect pointer) is nearest SP; GrafVerb follows.
+            // Draw directly so a custom rectProc can chain here without
+            // recursively invoking itself.
             (true, 0x0A0) => {
                 let sp = cpu.read_reg(Register::A7);
+                let rect_ptr = bus.read_long(sp);
+                let verb = bus.read_word(sp + 4);
                 cpu.write_reg(Register::A7, sp + 6);
+                if rect_ptr == 0 || !Self::guest_range_in_ram(bus, rect_ptr, 8) {
+                    return Some(Ok(()));
+                }
+                let r = read_rect(bus, rect_ptr);
+                let saved_fg = self.fg_color;
+                let saved_bg = self.bg_color;
+                let op = match verb {
+                    0 => ShapeOp::Frame,
+                    1 => ShapeOp::Paint,
+                    2 => ShapeOp::Erase,
+                    3 => ShapeOp::Invert,
+                    4 => {
+                        let globals = bus.read_long(cpu.read_reg(Register::A5));
+                        let port = bus.read_long(globals);
+                        let mut pattern = [0xff; 8];
+                        if port != 0 && Self::guest_range_in_ram(bus, port, 108) {
+                            if bus.read_word(port + 6) & 0xc000 == 0xc000 {
+                                if let Some((pat, rgb)) =
+                                    self.pixpat_fill_pattern(bus, bus.read_long(port + 62))
+                                {
+                                    pattern = pat;
+                                    if let Some(rgb) = rgb {
+                                        self.fg_color = rgb;
+                                        self.bg_color = rgb;
+                                    }
+                                }
+                            } else {
+                                bus.read_bytes_into(port + 40, &mut pattern);
+                            }
+                        }
+                        ShapeOp::Fill(pattern)
+                    }
+                    _ => return Some(Ok(())),
+                };
+                self.draw_rect(cpu, bus, &r, op);
+                self.fg_color = saved_fg;
+                self.bg_color = saved_bg;
                 Ok(())
             }
 
