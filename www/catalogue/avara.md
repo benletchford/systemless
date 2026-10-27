@@ -6,6 +6,7 @@ summary: Pilot a bipedal HECTOR through three-dimensional training and combat mi
 developer: Juri Munkki
 publisher: Ambrosia Software
 year: 1996
+launch_enabled: true
 architectures:
 - 68k
 default_architecture: 68k
@@ -13,6 +14,20 @@ category: FPS
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: 1de46fee91b97548477f7a940248df803b75ecb6
+    architecture: 68k
+    environment: "Fresh native ci-test recheck on merged source 1de46fee91b97548477f7a940248df803b75ecb6, executable SHA-256 2e35b7da019d98b1f7a9d8eccd91a6fc36681dba59895fd8dd960702adfd89dd. Exact unchanged managed original and selector below, explicit classic 68K, depth 8, ordinary scheduler and fixed default time. Not Yet, name Pilot, Training Grounds, Start Server, Game > Start; held Up, Right and mouse firing. Six observed pixel checks and one non-silent audio check pass at 1340 frontend / 1916 guest ticks, zero exhaustion. A matched no-fire replay passes six checks including absence of the firing-colour sample; actual captures inspected. This is bounded movement, turning, firing-control feedback and audio-output evidence, not projectile hits, full missions, multiplayer, audio fidelity or independent-emulator equivalence."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4355#issuecomment-6443635939
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: 4959dbea1860ca8acb89823456a307594bcdc078
+    architecture: 68k
+    environment: "Browser launch approved after fresh release-profile local preview of public runtime source 4959dbea1860ca8acb89823456a307594bcdc078, with only a temporary local launch flag for testing. Chrome for Testing 156.0.8078.47 mac-arm64, ordinary worker/WebGL, 68K 25 MHz and max ticks per paint 2. Trusted inputs dismiss the intact trial, enter Pilot, select Training Grounds, start the local server and game, move, turn, and exercise held mouse firing/release; actual captures inspected. Two steady 20-second gameplay samples measure 54.634 / 54.417 guest ticks/sec against the unchanged minimum 50, 62.689 / 62.370 runtime replies/sec and audio queue minimums 486.71 / 487.21 ms. No runtime exceptions or console errors; no debug overlay, clock increase, throttle/security override or guest patch. Exact managed original bytes are delivered by the existing local CDP preview archive-redirection method because the asset host excludes localhost by CORS. Full missions, projectile hits, multiplayer, audible-playback fidelity and public released qualification remain unverified. Final committed-head replay and CI are recorded in the contribution before merge."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4355#issuecomment-6444158927
   - date: "2026-10-27"
     tester: Catalogue maintainer
     systemless_version: 974aa935fec1322bd1341c4eae2dfa010093b2ec
@@ -92,6 +107,6 @@ trial notice, enter a player name, select **Training Grounds**, click **Start
 Server**, then choose **Game > Start**. The complete package retains its licence,
 documentation, missions and editing tools. Its original 30-day trial terms apply.
 
-Native testing covers mission loading, movement, turning and non-silent audio
-output on the 68K route. Full missions, multiplayer and browser qualification
-remain pending, so browser launch is disabled.
+Testing covers Training Grounds loading, movement, turning and firing controls
+on the 68K route, natively and in a staged browser. Full missions, projectile
+hits and multiplayer remain unverified.
