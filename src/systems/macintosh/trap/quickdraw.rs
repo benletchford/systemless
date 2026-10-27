@@ -366,6 +366,45 @@ fn trace_drawpicture_enabled() -> bool {
     *TRACE_DRAWPICTURE.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DRAWPICTURE").is_some())
 }
 
+// Trace coordinates are relative to pixel storage, and may lie outside it.
+fn drawpicture_trace_pixel(
+    bus: &MacMemoryBus,
+    mode: (u32, u32, u16, u16, u16),
+    y: i32,
+    x: i32,
+) -> Option<u32> {
+    let (base, row_bytes, width, height, depth) = mode;
+    let row = u32::try_from(y).ok()?;
+    let col = u32::try_from(x).ok()?;
+    if row >= u32::from(height) || col >= u32::from(width) {
+        return None;
+    }
+    let bits = u32::from(depth);
+    if !matches!(bits, 1 | 2 | 4 | 8 | 16 | 32) {
+        return None;
+    }
+    let bit_offset = col.checked_mul(bits)?;
+    let byte_offset = bit_offset / 8;
+    let pixel_bytes = (bits / 8).max(1);
+    if byte_offset.checked_add(pixel_bytes)? > row_bytes {
+        return None;
+    }
+    let address = base
+        .checked_add(row.checked_mul(row_bytes)?)?
+        .checked_add(byte_offset)?;
+    address.checked_add(pixel_bytes - 1)?;
+    Some(match bits {
+        1 | 2 | 4 => {
+            let shift = 8 - bits - bit_offset % 8;
+            u32::from((bus.read_byte(address) >> shift) & ((1u8 << bits) - 1))
+        }
+        8 => u32::from(bus.read_byte(address)),
+        16 => u32::from(bus.read_word(address)),
+        32 => bus.read_long(address),
+        _ => unreachable!(),
+    })
+}
+
 fn trace_pict_inline_enabled() -> bool {
     *TRACE_PICT.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_PICT").is_some())
 }
@@ -9244,22 +9283,19 @@ impl super::TrapDispatcher {
                     }
 
                     if trace_drawpicture_enabled() {
-                        // Probe some pixels in the drawn area to verify they were written
-                        let probe_y = (adj_top + adj_bottom) / 2; // middle row
-                        let probe_x = (adj_left + adj_right) / 2; // middle col
-                        let probe_addr =
-                            port_mode.0 + (probe_y as u32) * port_mode.1 + (probe_x as u32);
-                        let probe_val = bus.read_byte(probe_addr);
-                        let probe2_addr = port_mode.0
-                            + ((adj_top + 10) as u32) * port_mode.1
-                            + ((adj_left + 10) as u32);
-                        let probe2_val = bus.read_byte(probe2_addr);
+                        // Use wide signed coordinates before bounds-checked sampling.
+                        let probe_y = (i32::from(adj_top) + i32::from(adj_bottom)) / 2;
+                        let probe_x = (i32::from(adj_left) + i32::from(adj_right)) / 2;
+                        let probe2_y = i32::from(adj_top) + 10;
+                        let probe2_x = i32::from(adj_left) + 10;
+                        let probe_val = drawpicture_trace_pixel(bus, port_mode, probe_y, probe_x);
+                        let probe2_val = drawpicture_trace_pixel(bus, port_mode, probe2_y, probe2_x);
                         eprintln!(
-                            "[DRAWPICTURE] result ok={} adj=({},{}..{},{}) port_mode=({:08X},{},{},{},{}) probe@({},{})=idx{} probe2@({},{})=idx{}",
+                            "[DRAWPICTURE] result ok={} adj=({},{}..{},{}) port_mode=({:08X},{},{},{},{}) probe@({},{})={:?} probe2@({},{})={:?}",
                             ok, adj_top, adj_left, adj_bottom, adj_right,
                             port_mode.0, port_mode.1, port_mode.2, port_mode.3, port_mode.4,
                             probe_y, probe_x, probe_val,
-                            adj_top + 10, adj_left + 10, probe2_val,
+                            probe2_y, probe2_x, probe2_val,
                         );
                     }
 
