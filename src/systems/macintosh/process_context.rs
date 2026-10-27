@@ -6259,7 +6259,10 @@ impl SharedClassicHeapAllocator {
             .checked_add(capacity)
             .expect("CODE address overflow");
         let mut state = self.0.borrow_mut();
-        assert_eq!(address & 3, 0, "CODE allocation must be aligned");
+        // CODE 0 follows the A5 world, whose size may be only word-aligned.
+        // Keep its original executable address; ordinary heap allocations
+        // still use their usual four-byte alignment.
+        assert_eq!(address & 1, 0, "CODE allocation must be word-aligned");
         assert!(
             state
                 .reserved_heap_ranges
