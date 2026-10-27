@@ -10970,13 +10970,13 @@ impl super::TrapDispatcher {
             }
 
             // StdRect ($A8A0): standard rectangle bottleneck. The last
-            // Pascal argument (Rect pointer) is nearest SP; GrafVerb follows.
+            // Pascal argument (Rect pointer) is nearest SP; GrafVerb follows as one byte in a two-byte stack slot.
             // Draw directly so a custom rectProc can chain here without
             // recursively invoking itself.
             (true, 0x0A0) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
-                let verb = bus.read_word(sp + 4);
+                let verb = bus.read_byte(sp + 4);
                 cpu.write_reg(Register::A7, sp + 6);
                 if rect_ptr == 0 || !Self::guest_range_in_ram(bus, rect_ptr, 8) {
                     return Some(Ok(()));

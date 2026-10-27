@@ -8496,7 +8496,8 @@
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 30, 40);
         bus.write_long(TEST_SP, rect_ptr);
-        bus.write_word(TEST_SP + 4, 0u16); // frame verb
+        bus.write_byte(TEST_SP + 4, 0); // frame verb
+        bus.write_byte(TEST_SP + 5, 0xa5); // padding is not part of GrafVerb
 
         let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -8515,7 +8516,8 @@
         cpu.write_reg(Register::D0, 0x99AA_BBCC);
         cpu.write_reg(Register::D1, 0xDDEE_F012);
         bus.write_long(TEST_SP, rect_ptr);
-        bus.write_word(TEST_SP + 4, 0u16); // frame verb
+        bus.write_byte(TEST_SP + 4, 0); // frame verb
+        bus.write_byte(TEST_SP + 5, 0xa5); // padding is not part of GrafVerb
 
         let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -8538,7 +8540,8 @@
         let mut sp = TEST_SP;
         for verb in 0u16..5 {
             bus.write_long(sp, rect_ptr);
-            bus.write_word(sp + 4, verb);
+            bus.write_byte(sp + 4, verb as u8);
+            bus.write_byte(sp + 5, 0xa5);
             cpu.write_reg(Register::A7, sp);
             let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
@@ -27562,7 +27565,8 @@ fn copy_bits_converts_between_direct_color_depths() {
                 write_rect(&mut bus, rect, 0, 0, 8, 8);
             }
             bus.write_long(TEST_SP, rect);
-            bus.write_word(TEST_SP + 4, verb);
+            bus.write_byte(TEST_SP + 4, verb);
+            bus.write_byte(TEST_SP + 5, 0xa5);
             d.dispatch_quickdraw(true, 0x0a0, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
@@ -27597,7 +27601,8 @@ fn copy_bits_converts_between_direct_color_depths() {
         write_rect(&mut bus, bounds, 0, 1, 1, 2);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, bounds);
-        bus.write_word(TEST_SP + 4, 1);
+        bus.write_byte(TEST_SP + 4, 1);
+        bus.write_byte(TEST_SP + 5, 0xa5);
         d.dispatch_quickdraw(true, 0x0a0, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
