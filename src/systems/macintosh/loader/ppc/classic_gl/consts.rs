@@ -209,6 +209,7 @@ pub const POINT_SMOOTH_HINT: u32 = 0x0C51;
 pub const LINE_SMOOTH_HINT: u32 = 0x0C52;
 pub const POLYGON_SMOOTH_HINT: u32 = 0x0C53;
 pub const FOG_HINT: u32 = 0x0C54;
+pub const TRANSFORM_HINT_APPLE: u32 = 0x85B1;
 
 // Lighting.
 pub const AMBIENT: u32 = 0x1200;
@@ -430,6 +431,7 @@ pub const POINT_DISTANCE_ATTENUATION: u32 = 0x8129;
 
 // Attribute bits for glPushAttrib.
 pub const ALL_ATTRIB_BITS: u32 = 0x000F_FFFF;
+pub const HINT_BIT: u32 = 0x0000_8000;
 
 // OpenGL 1.2.1 current raster state.
 pub const CURRENT_RASTER_COLOR: u32 = 0x0B04;
