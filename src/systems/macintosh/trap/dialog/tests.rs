@@ -4885,8 +4885,8 @@
         let (mut disp, mut cpu, mut bus) = setup();
         disp.set_ui_theme_id(theme_id);
         let dialog_ptr = bus.alloc(170);
-        let text_handle = bus.alloc(4);
-        let te_ptr = bus.alloc(0x40);
+        let text_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        let te_ptr = bus.read_long(text_handle);
 
         bus.write_long(dialog_ptr + 160, text_handle);
         bus.write_long(text_handle, te_ptr);
@@ -8065,7 +8065,7 @@
         );
         assert!(classic.new_update_region.is_some());
         assert!(classic.new_update_event_queued);
-        assert_eq!(classic.new_edit_field, 0xFFFF);
+        assert_eq!(classic.new_edit_field, 0);
         assert_eq!(classic.new_default_item, 1);
 
         assert_ne!(classic.get_dialog_ptr, 0);
@@ -8094,7 +8094,7 @@
         );
         assert!(classic.get_update_region.is_some());
         assert!(classic.get_update_event_queued);
-        assert_eq!(classic.get_edit_field, 0xFFFF);
+        assert_eq!(classic.get_edit_field, 0);
         assert_eq!(classic.get_default_item, 1);
         assert_eq!(
             themed, classic,
@@ -9049,7 +9049,11 @@
         let text_item_handle = TrapDispatcher::allocate_handle_with_data(&mut bus, 0);
         let text_h = make_te_with_text(&mut disp, &mut bus, b"");
         let te_ptr = bus.read_long(text_h);
-        let (screen_base, row_bytes, _screen_w, _screen_h, _pixel_size) = disp.screen_mode;
+        let screen_base = bus.read_long(0x181000 + 2);
+        let row_bytes = u32::from(bus.read_word(0x181000 + 6));
+        // This fixture's GrafPort is a 512-wide monochrome bitmap. Keep
+        // screen drawing and pixel assertions on that same row stride.
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
 
         for i in 0..(row_bytes * 80) {
             bus.write_byte(screen_base + i, 0);
@@ -9126,7 +9130,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect editText mouse-down should display the insertion caret"
         );
 
@@ -9139,7 +9143,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event before 32 ticks should keep the caret visible"
         );
 
@@ -9153,7 +9157,7 @@
             1
         );
         assert!(
-            !screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            !screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "DialogSelect null event at the 32-tick boundary should hide the caret"
         );
 
@@ -9167,7 +9171,7 @@
             0
         );
         assert!(
-            screen_pixel_is_set(&bus, screen_base, row_bytes, 1, 0),
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 21, 20),
             "the next DialogSelect null-event blink interval should show the caret again"
         );
     }
@@ -22455,5 +22459,146 @@
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn disabled_dialog_edit_field_has_live_textedit_layout() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(640 * 480);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 640, 640, 480, 8);
+        let dlog = build_test_dlog((40, 50, 180, 450), 2201, 0);
+        let ditl = build_test_ditl_items(&[
+            (144, (13, 75, 45, 390), b"Initial"),
+            (16, (60, 75, 92, 390), b"Other"),
+        ]);
+        disp.install_test_resource(&mut bus, *b"DLOG", 2200, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 2201, &ditl);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 2200);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let dialog = bus.read_long(TEST_SP + 10);
+        let te_handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te_ptr = bus.read_long(te_handle);
+        let first = TrapDispatcher::dialog_item_handle(&bus, dialog, 1);
+        let second = TrapDispatcher::dialog_item_handle(&bus, dialog, 2);
+        assert_eq!(
+            bus.read_word(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+            0
+        );
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET),
+            first
+        );
+        assert!(bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) > 0);
+        let message = b"Installation was successful. If you are finished, click Quit to leave the Installer. If you wish to perform additional installations, click Continue.";
+        let text = bus.alloc(256);
+        for (handle, bytes) in [
+            (first, message.as_slice()),
+            (second, b"Unselected".as_slice()),
+        ] {
+            bus.write_pstring(text, bytes);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, text);
+            bus.write_long(TEST_SP + 4, handle);
+            disp.dispatch_dialog(true, 0x18F, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        disp.dispatch_dialog(true, 0x1D0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET),
+            first
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET) as usize,
+            message.len()
+        );
+        assert!(bus.read_word(te_ptr + 0x5E) > 1);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET), 0);
+        // Selecting the other field must rebind the shared record without
+        // replacing the first field's text or retaining its layout bounds.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4);
+        bus.write_word(TEST_SP + 2, 1);
+        bus.write_word(TEST_SP + 4, 2);
+        bus.write_long(TEST_SP + 6, dialog);
+        disp.dispatch_dialog(true, 0x17E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(te_ptr + TrapDispatcher::TE_HTEXT_OFFSET),
+            second
+        );
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            1
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 4);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"Unselected"
+        );
+        assert_eq!(bus.read_bytes(bus.read_long(first), message.len()), message);
+    }
+
+    #[test]
+    fn dialog_redraw_preserves_setctitle_for_standard_controls() {
+        fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
+            let ditl = build_test_ditl_item(item_type, (20, 20, 42, 160), initial);
+            let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+            let (_, dialog) = call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                (80, 90, 160, 280),
+                true,
+                4,
+                0xFFFF_FFFF,
+                items,
+            );
+            if let Some(title) = replacement {
+                let control = TrapDispatcher::dialog_item_handle(&bus, dialog, 1);
+                let text = bus.alloc(256);
+                bus.write_pstring(text, title);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, text);
+                bus.write_long(TEST_SP + 4, control);
+                disp.dispatch_control(true, 0x15F, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+            // Isolate DrawDialog's rendering from the earlier Control
+            // Manager paint. Both paths must redraw the new title on a
+            // fresh surface, regardless of their previous chrome pixels.
+            bus.write_bytes(screen, &vec![0; 640 * 480]);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, dialog);
+            disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            bus.read_bytes(screen, 640 * 480)
+        }
+        for kind in [4, 5, 6] {
+            let expected = render(kind, b"Continue", None);
+            assert!(
+                render(kind, b"x", None) != expected,
+                "fixture must distinguish titles"
+            );
+            assert!(
+                render(kind, b"x", Some(b"Continue")) == expected,
+                "DrawDialog must retain the SetCTitle label for control type {kind}"
+            );
         }
     }

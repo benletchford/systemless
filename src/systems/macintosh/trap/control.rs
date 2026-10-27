@@ -3444,6 +3444,26 @@ impl super::TrapDispatcher {
                 if ctrl_ptr != 0 {
                     let title = Self::read_pascal_string(bus, title_ptr);
                     Self::set_control_title_bytes(bus, ctrl_ptr, &title);
+                    // Dialog redraws also retain standard control titles in
+                    // their item list. Keep that view in sync with SetCTitle.
+                    if let Some((dialog_ptr, item_no)) =
+                        self.dialog_control_handles.get(&ctrl_handle).copied()
+                    {
+                        let index = (item_no as usize).wrapping_sub(1);
+                        let text = decode_mac_roman(&title);
+                        if let Some(item) = self.dialog_items.get_mut(&dialog_ptr)
+                            .and_then(|items| items.get_mut(index))
+                        {
+                            item.set_text(&text);
+                        }
+                        if let Some(tracking) = self.dialog_tracking.as_mut() {
+                            if tracking.dialog_ptr == dialog_ptr {
+                                if let Some(item) = tracking.items.get_mut(index) {
+                                    item.set_text(&text);
+                                }
+                            }
+                        }
+                    }
                     if !self.arm_control_def_messages(
                         cpu,
                         bus,
