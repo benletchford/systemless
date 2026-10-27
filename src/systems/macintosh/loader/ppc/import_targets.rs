@@ -7576,6 +7576,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("ObjectSupportLib" | "InterfaceLib", "CreateOffsetDescriptor") => {
             PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor
         }
+        ("ObjectSupportLib" | "InterfaceLib", "CreateRangeDescriptor") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::CreateRangeDescriptor,
+            )
+        }
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
             PpcImportDispatcherTarget::AglChoosePixelFormat
         }

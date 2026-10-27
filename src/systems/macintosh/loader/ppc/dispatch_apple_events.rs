@@ -1164,6 +1164,7 @@ pub enum PpcAppleEventCompatibilityOperation {
     CoercePtr,
     SizeOfNthItem,
     GetTheCurrentEvent,
+    CreateRangeDescriptor,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1179,6 +1180,77 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
     apple_events: &mut PpcAppleEventState,
 ) -> PpcImportAction {
     let result = match operation {
+        PpcAppleEventCompatibilityOperation::CreateRangeDescriptor => {
+            // AEPackObject.h and AEObjects.h: a 'rang' record contains the
+            // 'star' and 'stop' descriptors, copied before disposing inputs.
+            let result_ptr = cpu.gpr[6];
+            let inputs = [cpu.gpr[3], cpu.gpr[4]];
+            if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let mut fields = HashMap::new();
+            let mut input_handles = Vec::new();
+            for (input, keyword) in inputs.into_iter().zip([*b"star", *b"stop"]) {
+                if input == 0 || !ppc_memory_can_read_bytes(memory, input, 8) {
+                    return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                }
+                let Some(value) = ppc_ae_descriptor(memory, &apple_events.descriptors, input)
+                else {
+                    return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                };
+                fields.insert(u32::from_be_bytes(keyword), value);
+                input_handles.push(memory.read_u32_be(input + 4).unwrap_or(0));
+            }
+            let result = ppc_create_process_owned_ae_desc(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                Some(&apple_events.descriptors),
+                result_ptr,
+                u32::from_be_bytes(*b"rang"),
+                &[],
+            );
+            if result == PPC_NO_ERR {
+                ppc_store_ae_descriptor_semantics(
+                    memory,
+                    &apple_events.descriptors,
+                    result_ptr,
+                    ProcessAeDescriptor {
+                        desc_type: u32::from_be_bytes(*b"rang"),
+                        fields,
+                        ..Default::default()
+                    },
+                );
+                if cpu.gpr[5] & 0xff != 0 {
+                    let mut disposed = Vec::new();
+                    for (input, handle) in inputs.into_iter().zip(input_handles) {
+                        if handle != 0 && !disposed.contains(&handle) {
+                            let _ = ppc_dispose_process_native_handle(
+                                process_memory_manager,
+                                memory,
+                                heap_cursor,
+                                heap_limit,
+                                last_mem_error,
+                                handles,
+                                handle,
+                            );
+                            disposed.push(handle);
+                        }
+                        if input != result_ptr {
+                            let _ = ppc_write_ae_desc(memory, input, 0, 0);
+                            apple_events.descriptors.with_mut(|state| {
+                                state.descriptors.remove(&input);
+                                state.events.remove(&input);
+                            });
+                        }
+                    }
+                }
+            }
+            result
+        }
         PpcAppleEventCompatibilityOperation::CreateList => {
             // AECreateList (Pack8 selector $0706)
             // FUNCTION AECreateList(factoringPtr: Ptr; factoredSize: Size;

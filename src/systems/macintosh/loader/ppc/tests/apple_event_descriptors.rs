@@ -2153,3 +2153,101 @@ fn apple_event_automatic_return_ids_are_distinct() {
     assert_ne!(ids[0], ids[1]);
     assert!(!ids.contains(&u16::MAX));
 }
+
+#[test]
+fn range_descriptors_copy_endpoints_and_optionally_dispose_inputs() {
+    for (dispose, alias_output) in [(false, false), (true, false), (true, true)] {
+        let target = dispatcher_target_for_import("ObjectSupportLib", "CreateRangeDescriptor");
+        assert_eq!(
+            target,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::CreateRangeDescriptor,
+            ),
+        );
+        for library in ["InterfaceLib", "CarbonLib"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, "CreateRangeDescriptor"),
+                target
+            );
+        }
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"ObjectSupportLib",
+            b"CreateRangeDescriptor",
+        ))
+        .unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let start = scratch;
+        let stop = scratch + 8;
+        let output = if alias_output { start } else { scratch + 16 };
+        let mut endpoint_handles = Vec::new();
+        for (input, value) in [(start, 3), (stop, 7)] {
+            loaded.memory.write_u32_be(scratch + 0x40, value).unwrap();
+            loaded.cpu.gpr[3] = u32::from_be_bytes(*b"long");
+            loaded.cpu.gpr[4] = scratch + 0x40;
+            loaded.cpu.gpr[5] = 4;
+            loaded.cpu.gpr[6] = input;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::CreateDesc,
+                ),
+            );
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            endpoint_handles.push(loaded.memory.read_u32_be(input + 4).unwrap());
+        }
+        loaded.cpu.gpr[3] = start;
+        loaded.cpu.gpr[4] = stop;
+        loaded.cpu.gpr[5] = u32::from(dispose);
+        loaded.cpu.gpr[6] = output;
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let range = dispatch_apple_events::ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            output,
+        )
+        .unwrap();
+        assert_eq!(range.desc_type, u32::from_be_bytes(*b"rang"));
+        for (keyword, value) in [(*b"star", 3u32), (*b"stop", 7u32)] {
+            let endpoint = &range.fields[&u32::from_be_bytes(keyword)];
+            assert_eq!(endpoint.desc_type, u32::from_be_bytes(*b"long"));
+            assert_eq!(endpoint.data, value.to_be_bytes());
+        }
+        for (input, handle) in [start, stop].into_iter().zip(endpoint_handles) {
+            if dispose {
+                assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
+                if input != output {
+                    assert_eq!(loaded.memory.read_u64_be(input), Some(0));
+                }
+            } else {
+                assert_eq!(loaded.memory.read_u32_be(input + 4), Some(handle));
+                assert_ne!(loaded.memory.read_u32_be(handle), Some(0));
+            }
+        }
+    }
+}
+
+#[test]
+fn range_descriptor_rejects_invalid_endpoints_without_modifying_output() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"ObjectSupportLib",
+        b"CreateRangeDescriptor",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0xaa; 32]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("ObjectSupportLib", "CreateRangeDescriptor"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(
+        loaded.memory.read_u64_be(scratch + 16),
+        Some(0xaaaa_aaaa_aaaa_aaaa)
+    );
+}
