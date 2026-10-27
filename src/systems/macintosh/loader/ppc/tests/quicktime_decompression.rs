@@ -154,14 +154,14 @@ fn decompress_image_scales_into_offset_pixmaps_with_mask_and_transfer_mode() {
             ppc_read_pixmap_raw_pixel(&mut app.memory, bits, 21, 11),
             Some(0)
         );
-        // DontOffscreen applies to explicitly buffered PNG sequences too.
-        app.cpu.gpr[3..8].copy_from_slice(&[sequence, scratch + 512, 32, scratch + 20, 0]);
+        // DontOffscreen controls temporal decompression; a PNG ignores it.
+        app.cpu.gpr[3..8].copy_from_slice(&[sequence, scratch + 512, 32 | 8, scratch + 20, 0]);
         run_test_import(
             &mut app,
             PpcImportDispatcherTarget::QtDecompressSequenceFrame,
         );
-        assert_eq!(app.cpu.gpr[3], ppc_i16_result(-8968));
-        assert_eq!(app.memory.read_u16_be(scratch + 20), Some(0xc000));
+        assert_eq!(app.cpu.gpr[3], 0);
+        assert_eq!(app.memory.read_u16_be(scratch + 20), Some(0x8000));
         let callback_code = scratch + 1200;
         let tvector = scratch + 1240;
         let completion = scratch + 1260;
@@ -272,6 +272,27 @@ fn decompress_image_scales_into_offset_pixmaps_with_mask_and_transfer_mode() {
             assert_eq!(app.cpu.gpr[3], 0);
             let unbuffered = app.memory.read_u32_be(scratch + 12).unwrap();
             assert_ne!(unbuffered, sequence);
+            // NoScreenUpdate does not require a retained image buffer. Decode
+            // and discard the image, without touching the destination.
+            ppc_write_pixmap_raw_pixel(&mut app.memory, bits, 21, 11, 0).unwrap();
+            app.cpu.gpr[3..8].copy_from_slice(&[
+                unbuffered,
+                scratch + 512,
+                8,
+                scratch + 20,
+                completion,
+            ]);
+            run_test_import(
+                &mut app,
+                PpcImportDispatcherTarget::QtDecompressSequenceFrame,
+            );
+            assert_eq!(app.cpu.gpr[3], 0);
+            assert_eq!(app.memory.read_u16_be(scratch + 20), Some(0));
+            assert_eq!(app.memory.read_u32_be(scratch + 1284), Some(3));
+            assert_eq!(
+                ppc_read_pixmap_raw_pixel(&mut app.memory, bits, 21, 11),
+                Some(0)
+            );
             app.cpu.gpr[3..8].copy_from_slice(&[
                 unbuffered,
                 scratch + 512,

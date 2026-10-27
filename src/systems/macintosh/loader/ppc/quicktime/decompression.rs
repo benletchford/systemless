@@ -577,13 +577,13 @@ pub(crate) fn frame(
     // Cinepak needs a retained reference image for temporal decoding. Other
     // codecs retain a redrawable image only when requested at sequence begin.
     let buffered = sequence.use_image_buffer || matches!(sequence.decoder, Decoder::Cinepak(_));
-    if flags & (8 | 256) != 0 && !buffered {
-        return Err(-8965); // codecImageBufErr: no image buffer to update/redraw.
+    if flags & 256 != 0 && !buffered {
+        return Err(-8965); // codecImageBufErr: no image buffer to redraw.
     }
     if flags & 1024 != 0 && buffered && first {
         return Err(-8965); // codecImageBufErr: no existing image buffer.
     }
-    if flags & 32 != 0 && (buffered || sequence.use_screen_buffer) {
+    if flags & 32 != 0 && matches!(sequence.decoder, Decoder::Cinepak(_)) {
         return Err(-8968); // codecWouldOffscreenErr.
     }
     let mut temporary_frame = None;
@@ -693,11 +693,13 @@ pub(crate) fn frame(
     }
     // Completion flags describe source/destination lifetime separately from
     // the retained-image-buffer status written to outFlags above.
-    Ok(3 | if buffered || sequence.use_screen_buffer {
-        8
-    } else {
-        0
-    })
+    Ok(
+        3 | if buffered || (sequence.use_screen_buffer && flags & 8 == 0) {
+            8
+        } else {
+            0
+        },
+    )
 }
 
 /// Decode a single image into a caller-owned PixMap. Rectangles use that
