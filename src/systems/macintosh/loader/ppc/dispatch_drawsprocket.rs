@@ -306,19 +306,31 @@ pub(super) fn dispatch_drawsprocket_import(
             )))
         }
         PpcImportDispatcherTarget::DSpContextGetFrontBuffer => {
+            // The active context owns a screen-backed window. Expose that
+            // window port so both QuickDraw and AGL can identify its display.
             let front_buffer_out_ptr = cpu.gpr[4];
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_dsp_context_get_buffer(
                     cpu,
                     memory,
-                    draw_sprocket.front_buffer_gworld,
+                    draw_sprocket
+                        .blanking_window
+                        .unwrap_or(draw_sprocket.front_buffer_gworld),
                     front_buffer_out_ptr,
                 ),
             )))
         }
-        PpcImportDispatcherTarget::DSpContextGetBackBuffer => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_get_back_buffer(cpu, memory, draw_sprocket, gworlds)),
-        )),
+        PpcImportDispatcherTarget::DSpContextGetBackBuffer => {
+            let result = ppc_dsp_context_get_back_buffer(cpu, memory, draw_sprocket, gworlds);
+            if result == PPC_NO_ERR
+                && draw_sprocket.back_buffer_gworld == draw_sprocket.front_buffer_gworld
+            {
+                if let Some(window) = draw_sprocket.blanking_window {
+                    let _ = memory.write_u32_be(cpu.gpr[5], window);
+                }
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::DSpContextSwapBuffers => {
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_dsp_context_swap_buffers(cpu, memory, draw_sprocket, gworlds),
