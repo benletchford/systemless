@@ -8495,8 +8495,9 @@
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 30, 40);
-        bus.write_word(TEST_SP, 0u16); // frame verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_byte(TEST_SP + 4, 0); // frame verb
+        bus.write_byte(TEST_SP + 5, 0xa5); // padding is not part of GrafVerb
 
         let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -8504,17 +8505,9 @@
     }
 
     #[test]
-    fn stdrect_stub_preserves_non_stack_registers_in_hle_compromise_path() {
-        // Inside Macintosh Volume I (1985), pp. I-197..I-198: StdRect is
-        // the bottleneck installed in QDProcs.rectProc.  Systemless's HLE
-        // compromise (quickdraw.rs:8625..8641) leaves A0/A1/D0/D1
-        // unchanged because high-level FrameRect/PaintRect/EraseRect/
-        // InvertRect/FillRect draw directly via Rust framebuffer code;
-        // StdRect itself is reachable only via SetStdProcs → JSR-through-
-        // slot, a non-corpus pattern.  BasiliskII's real-ROM StdRect
-        // mutates A0/A1/D0/D1 during rectangle rasterisation, so this
-        // register-preservation contract is Systemless-HLE-only and is
-        // pinned by this contract test.
+    fn stdrect_preserves_non_stack_registers() {
+        // Drawing may clobber scratch registers on a real ROM; retaining
+        // them is the existing HLE contract, independent of pixel effects.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 30, 40);
@@ -8522,8 +8515,9 @@
         cpu.write_reg(Register::A1, 0x5566_7788);
         cpu.write_reg(Register::D0, 0x99AA_BBCC);
         cpu.write_reg(Register::D1, 0xDDEE_F012);
-        bus.write_word(TEST_SP, 0u16); // frame verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_byte(TEST_SP + 4, 0); // frame verb
+        bus.write_byte(TEST_SP + 5, 0xa5); // padding is not part of GrafVerb
 
         let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -8545,8 +8539,9 @@
         write_rect(&mut bus, rect_ptr, 0, 0, 50, 50);
         let mut sp = TEST_SP;
         for verb in 0u16..5 {
-            bus.write_word(sp, verb);
-            bus.write_long(sp + 2, rect_ptr);
+            bus.write_long(sp, rect_ptr);
+            bus.write_byte(sp + 4, verb as u8);
+            bus.write_byte(sp + 5, 0xa5);
             cpu.write_reg(Register::A7, sp);
             let result = d.dispatch_quickdraw(true, 0x0A0, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
@@ -27535,4 +27530,83 @@ fn copy_bits_converts_between_direct_color_depths() {
             0x22,
             "NQDMisc should leave the sentinel byte unchanged on the no-op path"
         );
+    }
+
+
+    #[test]
+    fn stdrect_rasterizes_all_verbs_and_honors_port_clipping_and_fill_pattern() {
+        for (verb, initial, expected) in [
+            (0, 0x00, [0x00, 0x7e, 0x42, 0x42, 0x42, 0x42, 0x7e, 0x00]),
+            (1, 0x55, [0x55, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x55]),
+            (2, 0xff, [0xff, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xff]),
+            (3, 0x55, [0x55, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x55]),
+            (4, 0x55, [0x55, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x2b, 0x55]),
+        ] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let base = bus.alloc(8);
+            bus.write_bytes(base, &[initial; 8]);
+            let port = bus.alloc(108);
+            write_bitmap_1bpp(&mut bus, port + 2, base, 1, (0, 0, 8, 8));
+            write_rect(&mut bus, port + 16, 0, 0, 8, 8);
+            let vis = make_complex_rgn(&mut bus, (0, 0, 8, 8), &[]);
+            let clip = make_complex_rgn(&mut bus, (1, 1, 7, 7), &[]);
+            bus.write_long(port + 24, vis);
+            bus.write_long(port + 28, clip);
+            bus.write_bytes(port + 40, &[0xaa; 8]);
+            d.set_current_port_state(&mut bus, &mut cpu, port, None);
+            d.pn_pat = [0xff; 8];
+            d.bk_pat = [0; 8];
+            d.pn_size = (1, 1);
+            d.pn_mode = 8;
+            let rect = bus.alloc(8);
+            if verb == 0 {
+                write_rect(&mut bus, rect, 1, 1, 7, 7);
+            } else {
+                write_rect(&mut bus, rect, 0, 0, 8, 8);
+            }
+            bus.write_long(TEST_SP, rect);
+            bus.write_byte(TEST_SP + 4, verb);
+            bus.write_byte(TEST_SP + 5, 0xa5);
+            d.dispatch_quickdraw(true, 0x0a0, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_bytes(base, 8), expected, "verb={verb}");
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        }
+    }
+
+    #[test]
+    fn stdrect_paints_selected_pixel_in_32bit_offscreen_world() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds = 0x300000;
+        let output = 0x300100;
+        write_rect(&mut bus, bounds, 0, 0, 1, 2);
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, 0);
+        bus.write_long(TEST_SP + 12, bounds);
+        bus.write_word(TEST_SP + 16, 32);
+        bus.write_long(TEST_SP + 18, output);
+        d.dispatch_quickdraw(true, 0x31d, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let port = bus.read_long(output);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        let pixmap = bus.read_long(bus.read_long(port + 2));
+        let base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pixmap);
+        bus.write_bytes(base, &[0x77; 8]);
+        d.fg_color = (0x1212, 0x3434, 0x5656);
+        d.pn_pat = [0xff; 8];
+        d.pn_mode = 8;
+        write_rect(&mut bus, bounds, 0, 1, 1, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, bounds);
+        bus.write_byte(TEST_SP + 4, 1);
+        bus.write_byte(TEST_SP + 5, 0xa5);
+        d.dispatch_quickdraw(true, 0x0a0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(base, 4), [0x77; 4]);
+        assert_eq!(bus.read_bytes(base + 5, 3), [0x12, 0x34, 0x56]);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
     }
