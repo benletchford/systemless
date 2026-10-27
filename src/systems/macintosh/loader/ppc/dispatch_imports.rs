@@ -1014,6 +1014,7 @@ pub(crate) fn dispatch_supported_import(
             vfs_files,
             vfs_resource_files,
             vfs_resources,
+            current_resource_refnum: *current_resource_refnum,
             gworlds,
             current_gworld: *current_gworld,
             quicktime,
@@ -1718,6 +1719,11 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::QtGetGraphicsImporterForFile
         | PpcImportDispatcherTarget::QtOpenADefaultComponent
         | PpcImportDispatcherTarget::QtGraphicsImportSetDataHandle
+        | PpcImportDispatcherTarget::QtDecompressSequenceBegin
+        | PpcImportDispatcherTarget::QtDecompressSequenceFrame
+        | PpcImportDispatcherTarget::QtCDSequenceEnd
+        | PpcImportDispatcherTarget::QtGetImageDescriptionCTable
+        | PpcImportDispatcherTarget::QtDecompressImage
         | PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription
         | PpcImportDispatcherTarget::QtGraphicsImportGetBoundsRect
         | PpcImportDispatcherTarget::QtGraphicsImportSetGWorld

@@ -1336,6 +1336,11 @@ pub enum PpcImportDispatcherTarget {
     QtOpenADefaultComponent,
     QtGraphicsImportSetDataHandle,
     QtGraphicsImportGetImageDescription,
+    QtDecompressImage,
+    QtGetImageDescriptionCTable,
+    QtDecompressSequenceBegin,
+    QtDecompressSequenceFrame,
+    QtCDSequenceEnd,
     QtGraphicsImportGetBoundsRect,
     QtGraphicsImportSetGWorld,
     QtGraphicsImportDraw,
@@ -5419,6 +5424,17 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GraphicsImportSetDataHandle") => {
             PpcImportDispatcherTarget::QtGraphicsImportSetDataHandle
         }
+        ("QuickTimeLib", "GetImageDescriptionCTable") => {
+            PpcImportDispatcherTarget::QtGetImageDescriptionCTable
+        }
+        ("QuickTimeLib", "DecompressImage") => PpcImportDispatcherTarget::QtDecompressImage,
+        ("QuickTimeLib", "DecompressSequenceBegin") => {
+            PpcImportDispatcherTarget::QtDecompressSequenceBegin
+        }
+        ("QuickTimeLib", "DecompressSequenceFrame") => {
+            PpcImportDispatcherTarget::QtDecompressSequenceFrame
+        }
+        ("QuickTimeLib", "CDSequenceEnd") => PpcImportDispatcherTarget::QtCDSequenceEnd,
         ("QuickTimeLib", "GraphicsImportGetImageDescription") => {
             PpcImportDispatcherTarget::QtGraphicsImportGetImageDescription
         }

@@ -282,6 +282,7 @@ pub(crate) use mixed_mode::*;
 mod quicktime;
 mod quicktime_atoms;
 mod quicktime_file_images;
+mod quicktime_decompression;
 mod memory_manager;
 mod resource_manager;
 mod process_services;
