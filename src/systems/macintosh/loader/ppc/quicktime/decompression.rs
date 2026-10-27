@@ -408,6 +408,8 @@ pub(crate) struct Sequence {
     pub transform: Transform,
     pub mode: u16,
     pub mask: u32,
+    pub use_image_buffer: bool,
+    pub use_screen_buffer: bool,
     pub frame: Option<PpcQtGraphicsImage>,
 }
 
@@ -506,7 +508,7 @@ pub(crate) fn begin(
     if !matches!(codec, 0 | 0xffff_ffff | 0xffff_fffe | 0xffff_fffd) {
         return Err(NO_CODEC);
     }
-    if flags & !(1 | 2 | 32) != 0 {
+    if flags & !(1 | 2) != 0 {
         return Err(-8962);
     }
     let mut description = Description::read(memory, handles, cpu.gpr[4])?;
@@ -548,6 +550,8 @@ pub(crate) fn begin(
         transform,
         mode,
         mask: cpu.gpr[10],
+        use_image_buffer: flags & 1 != 0,
+        use_screen_buffer: flags & 2 != 0,
         frame: None,
     })?;
     memory.write_u32_be(out, id).ok_or(PPC_PARAM_ERR)?;
@@ -560,7 +564,6 @@ pub(crate) fn frame(
     gworlds: &[PpcGWorldRecord],
     sequences: &mut Sequences,
 ) -> Result<u16, i16> {
-    use super::super::PpcPixMapBits;
     let flags = cpu.gpr[5] as u16;
     if flags & !(8 | 32 | 256 | 512 | 1024) != 0 {
         return Err(-8962);
@@ -571,12 +574,19 @@ pub(crate) fn frame(
     }
     let sequence = sequences.get_mut(cpu.gpr[3])?;
     let first = sequence.frame.is_none();
-    if flags & 1024 != 0 && first {
+    // Cinepak needs a retained reference image for temporal decoding. Other
+    // codecs retain a redrawable image only when requested at sequence begin.
+    let buffered = sequence.use_image_buffer || matches!(sequence.decoder, Decoder::Cinepak(_));
+    if flags & (8 | 256) != 0 && !buffered {
+        return Err(-8965); // codecImageBufErr: no image buffer to update/redraw.
+    }
+    if flags & 1024 != 0 && buffered && first {
         return Err(-8965); // codecImageBufErr: no existing image buffer.
     }
-    if flags & 32 != 0 && matches!(sequence.decoder, Decoder::Cinepak(_)) {
+    if flags & 32 != 0 && (buffered || sequence.use_screen_buffer) {
         return Err(-8968); // codecWouldOffscreenErr.
     }
+    let mut temporary_frame = None;
     if flags & 256 == 0 {
         if cpu.gpr[4] == 0 {
             return Err(PPC_PARAM_ERR);
@@ -599,9 +609,18 @@ pub(crate) fn frame(
         memory
             .read_bytes_into(cpu.gpr[4], &mut data)
             .ok_or(PPC_PARAM_ERR)?;
-        sequence.frame = Some(sequence.decoder.decode(&sequence.description, &data)?);
+        let decoded = sequence.decoder.decode(&sequence.description, &data)?;
+        if buffered {
+            sequence.frame = Some(decoded);
+        } else {
+            temporary_frame = Some(decoded);
+        }
     }
-    let image = sequence.frame.as_ref().ok_or(BAD_DATA)?;
+    let image = sequence
+        .frame
+        .as_ref()
+        .or(temporary_frame.as_ref())
+        .ok_or(-8965i16)?;
     if flags & 8 == 0 {
         let surface =
             ppc_live_quickdraw_surface(memory, gworlds, sequence.port).ok_or(PPC_PARAM_ERR)?;
@@ -613,7 +632,7 @@ pub(crate) fn frame(
             .map_err(|_| PPC_PARAM_ERR)?;
         let right = i16::try_from(i64::from(surface.left) + i64::from(fb.width))
             .map_err(|_| PPC_PARAM_ERR)?;
-        let bits = PpcPixMapBits {
+        let bits = super::super::PpcPixMapBits {
             base_addr: fb.base_addr,
             row_bytes: fb.row_bytes,
             top: surface.top,
@@ -661,13 +680,24 @@ pub(crate) fn frame(
             [32768; 3],
             [65535; 3],
             Some(&sequence.transform.inverse()?),
+            sequence.use_screen_buffer,
         )?;
     }
-    let result = 0x8000 | if first { 0x4000 } else { 0 };
+    let result = if buffered {
+        0x8000 | if first { 0x4000 } else { 0 }
+    } else {
+        0
+    };
     if out != 0 {
         memory.write_u16_be(out, result).ok_or(PPC_PARAM_ERR)?;
     }
-    Ok(result)
+    // Completion flags describe source/destination lifetime separately from
+    // the retained-image-buffer status written to outFlags above.
+    Ok(3 | if buffered || sequence.use_screen_buffer {
+        8
+    } else {
+        0
+    })
 }
 
 /// Decode a single image into a caller-owned PixMap. Rectangles use that
@@ -777,6 +807,7 @@ fn decompress_image_inner(
         op,
         back,
         None,
+        false,
     )
 }
 
@@ -834,7 +865,23 @@ fn draw_image(
     op: [u16; 3],
     back: [u16; 3],
     inverse: Option<&[f64; 9]>,
+    use_screen_buffer: bool,
 ) -> Result<(), i16> {
+    // Stage destination pixels until conversion completes. Unlike the retained
+    // source image, this buffer is in destination coordinates and is temporary.
+    let mut screen = if use_screen_buffer {
+        let count = (bits.width as usize)
+            .checked_mul(bits.height as usize)
+            .ok_or(-8964i16)?;
+        if count > MAX_DATA / std::mem::size_of::<(i32, i32, u32)>() {
+            return Err(-8964); // codecScreenBufErr.
+        }
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(count).map_err(|_| -8964i16)?;
+        Some(pixels)
+    } else {
+        None
+    };
     let mut diffusion =
         (mode & 64 != 0 && bits.depth < 32).then(|| ErrorDiffusion::new(bits.width as usize));
     let mode = mode & !64;
@@ -939,10 +986,29 @@ fn draw_image(
                 }
                 _ => unreachable!(),
             } & pixel_mask;
-            ppc_write_pixmap_raw_pixel(memory, bits, x, y, pixel).ok_or(PPC_PARAM_ERR)?;
+            if let Some(screen) = screen.as_mut() {
+                let row = (y - i32::from(bits.top)) as u32;
+                let column = (x - i32::from(bits.left)) as u32;
+                let address = row
+                    .checked_mul(bits.row_bytes)
+                    .and_then(|offset| bits.base_addr.checked_add(offset))
+                    .and_then(|address| address.checked_add(column * bits.depth / 8))
+                    .ok_or(PPC_PARAM_ERR)?;
+                if !ppc_memory_can_write_bytes(memory, address, (bits.depth / 8).max(1)) {
+                    return Err(PPC_PARAM_ERR);
+                }
+                screen.push((x, y, pixel));
+            } else {
+                ppc_write_pixmap_raw_pixel(memory, bits, x, y, pixel).ok_or(PPC_PARAM_ERR)?;
+            }
         }
         if let Some(diffusion) = diffusion.as_mut() {
             diffusion.next_row();
+        }
+    }
+    if let Some(screen) = screen {
+        for (x, y, pixel) in screen {
+            ppc_write_pixmap_raw_pixel(memory, bits, x, y, pixel).ok_or(PPC_PARAM_ERR)?;
         }
     }
     Ok(())
@@ -951,6 +1017,51 @@ fn draw_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_buffer_defers_destination_writes_until_conversion_finishes() {
+        for buffered in [false, true] {
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(0x1000, vec![0xaa; 4]);
+            let bits = super::super::super::PpcPixMapBits {
+                base_addr: 0x1000,
+                row_bytes: 8,
+                top: 0,
+                left: 0,
+                bottom: 1,
+                right: 2,
+                width: 2,
+                height: 1,
+                depth: 32,
+            };
+            let image = PpcQtGraphicsImage {
+                width: 2,
+                height: 1,
+                rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+            };
+            assert_eq!(
+                draw_image(
+                    &mut memory,
+                    &image,
+                    bits,
+                    (0, 0, 1, 2),
+                    (0, 0, 1, 2),
+                    0,
+                    &[],
+                    None,
+                    [0; 3],
+                    [65535; 3],
+                    None,
+                    buffered
+                ),
+                Err(PPC_PARAM_ERR)
+            );
+            assert_eq!(
+                memory.read_u32_be(0x1000),
+                Some(if buffered { 0xaaaa_aaaa } else { 0x00ff_0000 })
+            );
+        }
+    }
 
     fn description(codec: &[u8; 4], width: u16, height: u16) -> Vec<u8> {
         let mut bytes = vec![0; 86];
@@ -1036,6 +1147,8 @@ mod tests {
             transform: Transform::default(),
             mode: 0,
             mask: 0,
+            use_image_buffer: false,
+            use_screen_buffer: false,
             frame: None,
         };
         let mut sequences = Sequences::default();

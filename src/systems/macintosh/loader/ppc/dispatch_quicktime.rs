@@ -159,16 +159,16 @@ pub(super) fn dispatch_quicktime_import(
                 gworlds,
                 &mut quicktime.decompression_sequences,
             );
-            let (error, flags) = match result {
+            let (error, completion_flags) = match result {
                 Ok(flags) => (PPC_NO_ERR, flags),
-                Err(error) => (error, 0),
+                Err(error) => (error, 3),
             };
             let result = ppc_i16_result(error);
             if let Some((target, refcon)) = completion {
                 if install_powerpc_call_arguments(
                     cpu,
                     memory,
-                    &[result, 3 | if flags & 0x8000 != 0 { 8 } else { 0 }, refcon],
+                    &[result, u32::from(completion_flags), refcon],
                 )
                 .is_none()
                 {

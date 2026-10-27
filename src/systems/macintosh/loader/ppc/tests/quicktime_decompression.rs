@@ -131,7 +131,7 @@ fn decompress_image_scales_into_offset_pixmaps_with_mask_and_transfer_mode() {
             0,
         ]);
         app.cpu.gpr[1] = scratch + 1536;
-        for (offset, value) in [(56, 0), (60, 1024), (64, 0)] {
+        for (offset, value) in [(56, 3), (60, 1024), (64, 0)] {
             app.memory
                 .write_u32_be(app.cpu.gpr[1] + offset, value)
                 .unwrap();
@@ -154,6 +154,14 @@ fn decompress_image_scales_into_offset_pixmaps_with_mask_and_transfer_mode() {
             ppc_read_pixmap_raw_pixel(&mut app.memory, bits, 21, 11),
             Some(0)
         );
+        // DontOffscreen applies to explicitly buffered PNG sequences too.
+        app.cpu.gpr[3..8].copy_from_slice(&[sequence, scratch + 512, 32, scratch + 20, 0]);
+        run_test_import(
+            &mut app,
+            PpcImportDispatcherTarget::QtDecompressSequenceFrame,
+        );
+        assert_eq!(app.cpu.gpr[3], ppc_i16_result(-8968));
+        assert_eq!(app.memory.read_u16_be(scratch + 20), Some(0xc000));
         let callback_code = scratch + 1200;
         let tvector = scratch + 1240;
         let completion = scratch + 1260;
@@ -240,6 +248,61 @@ fn decompress_image_scales_into_offset_pixmaps_with_mask_and_transfer_mode() {
         );
         assert_eq!(app.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
         assert_eq!(app.memory.read_u32_be(scratch + 1280), Some(0xdead_beef));
+        // A stateless sequence without an image buffer can decode with
+        // DontOffscreen/DontUseNewImageBuffer, but cannot redraw old pixels.
+        for screen_flag in [0, 2] {
+            app.memory.write_u32_be(matrix, 2 * 65536).unwrap();
+            app.memory
+                .write_u32_be(app.cpu.gpr[1] + 56, screen_flag)
+                .unwrap();
+            app.cpu.gpr[3..11].copy_from_slice(&[
+                scratch + 12,
+                scratch,
+                port,
+                0,
+                scratch + 64,
+                matrix,
+                0,
+                0,
+            ]);
+            run_test_import(
+                &mut app,
+                PpcImportDispatcherTarget::QtDecompressSequenceBegin,
+            );
+            assert_eq!(app.cpu.gpr[3], 0);
+            let unbuffered = app.memory.read_u32_be(scratch + 12).unwrap();
+            assert_ne!(unbuffered, sequence);
+            app.cpu.gpr[3..8].copy_from_slice(&[
+                unbuffered,
+                scratch + 512,
+                if screen_flag == 0 { 32 | 1024 } else { 1024 },
+                scratch + 20,
+                completion,
+            ]);
+            run_test_import(
+                &mut app,
+                PpcImportDispatcherTarget::QtDecompressSequenceFrame,
+            );
+            assert_eq!(app.cpu.gpr[3], 0);
+            assert_eq!(app.memory.read_u16_be(scratch + 20), Some(0));
+            assert_eq!(
+                app.memory.read_u32_be(scratch + 1284),
+                Some(if screen_flag == 0 { 3 } else { 11 })
+            );
+            assert_eq!(
+                ppc_read_pixmap_raw_pixel(&mut app.memory, bits, 21, 11),
+                Some(red)
+            );
+            app.cpu.gpr[3..8].copy_from_slice(&[unbuffered, 0, 256, scratch + 20, 0]);
+            run_test_import(
+                &mut app,
+                PpcImportDispatcherTarget::QtDecompressSequenceFrame,
+            );
+            assert_eq!(app.cpu.gpr[3], ppc_i16_result(-8965));
+            app.cpu.gpr[3] = unbuffered;
+            run_test_import(&mut app, PpcImportDispatcherTarget::QtCDSequenceEnd);
+            assert_eq!(app.cpu.gpr[3], 0);
+        }
         app.memory.write_u32_be(scratch + 128, 17).unwrap();
         invoke(&mut app, 0);
         assert_eq!(app.cpu.gpr[3], ppc_i16_result(-8969));
