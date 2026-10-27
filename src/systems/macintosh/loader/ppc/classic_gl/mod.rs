@@ -51,7 +51,7 @@ pub const GL_EXTENSIONS: &str = "GL_ARB_multitexture GL_ARB_texture_env_add \
 GL_ARB_texture_env_combine GL_EXT_texture_env_add GL_EXT_compiled_vertex_array \
 GL_EXT_blend_color GL_EXT_bgra GL_APPLE_packed_pixels GL_EXT_packed_pixels \
 GL_SGIS_texture_edge_clamp GL_EXT_rescale_normal GL_EXT_separate_specular_color \
-GL_ARB_point_parameters GL_EXT_point_parameters";
+GL_ARB_point_parameters GL_EXT_point_parameters GL_APPLE_transform_hint";
 
 const MAX_LIST_NESTING_DEPTH: u32 = 64;
 const MAX_ARRAY_VERTICES: usize = 1 << 20;
@@ -151,7 +151,7 @@ pub enum GlCall {
     CallList(u32),
     CallLists(Vec<u32>),
     ListBase(u32),
-    PushAttrib,
+    PushAttrib(u32),
     PopAttrib,
     PixelTransfer(u32, f32),
     Error(u32),
@@ -566,12 +566,19 @@ impl GlContext {
                 }
             }
             GlCall::Hint(target, mode) => {
+                if !matches!(mode, DONT_CARE | FASTEST | NICEST) {
+                    state.set_error(INVALID_ENUM);
+                    return;
+                }
                 let index = match target {
                     PERSPECTIVE_CORRECTION_HINT => 0,
                     POINT_SMOOTH_HINT => 1,
                     LINE_SMOOTH_HINT => 2,
                     POLYGON_SMOOTH_HINT => 3,
                     FOG_HINT => 4,
+                    // APPLE_transform_hint permits (but does not require)
+                    // FASTEST optimizations. Keep the precise transform path.
+                    TRANSFORM_HINT_APPLE => 5,
                     _ => {
                         state.set_error(INVALID_ENUM);
                         return;
@@ -847,16 +854,30 @@ impl GlContext {
                 }
             }
             GlCall::ListBase(base) => raster.list_base = base,
-            GlCall::PushAttrib => {
-                if state.attrib_stack.len() >= 16 {
+            GlCall::PushAttrib(mask) => {
+                if mask & !ALL_ATTRIB_BITS != 0 {
+                    state.set_error(INVALID_VALUE);
+                } else if state.attrib_stack.len() >= 16 {
                     state.set_error(STACK_OVERFLOW);
                 } else {
                     let saved = state.raster.clone();
-                    state.attrib_stack.push(saved);
+                    state.attrib_stack.push((mask, saved));
                 }
             }
             GlCall::PopAttrib => match state.attrib_stack.pop() {
-                Some(saved) => state.raster = saved,
+                Some((mask, saved)) => {
+                    let hints = if mask & HINT_BIT != 0 {
+                        saved.hints
+                    } else {
+                        state.raster.hints
+                    };
+                    // A hint-only or empty snapshot must not restore unrelated
+                    // state. Other groups retain their existing snapshot path.
+                    if mask & !HINT_BIT != 0 {
+                        state.raster = saved;
+                    }
+                    state.raster.hints = hints;
+                }
                 None => state.set_error(STACK_UNDERFLOW),
             },
             GlCall::PixelTransfer(pname, value) => {
@@ -1407,7 +1428,11 @@ fn get_values(ctx: &GlContext, pname: u32) -> Option<(Vec<f64>, bool)> {
         UNPACK_ROW_LENGTH => scalar(f64::from(state.client.unpack.row_length)),
         PACK_ROW_LENGTH => scalar(f64::from(state.client.pack.row_length)),
         PERSPECTIVE_CORRECTION_HINT => scalar(f64::from(r.hints[0])),
+        POINT_SMOOTH_HINT => scalar(f64::from(r.hints[1])),
+        LINE_SMOOTH_HINT => scalar(f64::from(r.hints[2])),
+        POLYGON_SMOOTH_HINT => scalar(f64::from(r.hints[3])),
         FOG_HINT => scalar(f64::from(r.hints[4])),
+        TRANSFORM_HINT_APPLE => scalar(f64::from(r.hints[5])),
         VERTEX_ARRAY_SIZE => scalar(f64::from(state.client.vertex.size)),
         POINT_SIZE_MIN => scalar(f(r.point_size_min)),
         POINT_SIZE_MAX => scalar(f(r.point_size_max)),
@@ -2464,10 +2489,7 @@ fn decode_named(
             Call(GlCall::CallLists(lists))
         }
         GlNamed::ListBase => Call(GlCall::ListBase(args.u32())),
-        GlNamed::PushAttrib => {
-            let _mask = args.u32();
-            Call(GlCall::PushAttrib)
-        }
+        GlNamed::PushAttrib => Call(GlCall::PushAttrib(args.u32())),
         GlNamed::PopAttrib => Call(GlCall::PopAttrib),
         GlNamed::PushClientAttrib | GlNamed::PopClientAttrib => done(),
         GlNamed::Finish | GlNamed::Flush => done(),

@@ -539,3 +539,116 @@ fn raster_position_vector_queries_and_bitmap_depth_test_use_latched_state() {
     assert_eq!(fb.depth_at(4, 4), Some(0.25));
     assert_eq!(ctx.state.take_error(), NO_ERROR);
 }
+
+#[test]
+fn apple_transform_hint_round_trips_lists_and_saved_state() {
+    let (mut ctx, mut fb) = context();
+    assert!(GL_EXTENSIONS
+        .split_whitespace()
+        .any(|name| name == "GL_APPLE_transform_hint"));
+    assert_eq!(
+        get_values(&ctx, TRANSFORM_HINT_APPLE),
+        Some((vec![f64::from(DONT_CARE)], false))
+    );
+    ctx.compiling = Some((9, false, Vec::new()));
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![GlCall::Hint(TRANSFORM_HINT_APPLE, FASTEST)],
+    );
+    let (list, _, recorded) = ctx.compiling.take().unwrap();
+    ctx.lists.insert(list, Rc::new(recorded));
+    assert_eq!(ctx.state.raster.hints[5], DONT_CARE);
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::CallList(9),
+            GlCall::PushAttrib(HINT_BIT),
+            GlCall::Hint(TRANSFORM_HINT_APPLE, NICEST),
+        ],
+    );
+    assert_eq!(
+        get_values(&ctx, TRANSFORM_HINT_APPLE),
+        Some((vec![f64::from(NICEST)], false))
+    );
+    run(&mut ctx, &mut fb, vec![GlCall::PopAttrib]);
+    assert_eq!(
+        get_values(&ctx, TRANSFORM_HINT_APPLE),
+        Some((vec![f64::from(FASTEST)], false))
+    );
+    assert_eq!(ctx.state.error, NO_ERROR);
+}
+
+#[test]
+fn hint_rejects_invalid_modes_without_changing_state() {
+    for target in [
+        PERSPECTIVE_CORRECTION_HINT,
+        POINT_SMOOTH_HINT,
+        LINE_SMOOTH_HINT,
+        POLYGON_SMOOTH_HINT,
+        FOG_HINT,
+        TRANSFORM_HINT_APPLE,
+    ] {
+        let (mut ctx, mut fb) = context();
+        run(
+            &mut ctx,
+            &mut fb,
+            vec![GlCall::Hint(target, NICEST), GlCall::Hint(target, 0)],
+        );
+        assert_eq!(ctx.state.error, INVALID_ENUM);
+        assert_eq!(
+            get_values(&ctx, target),
+            Some((vec![f64::from(NICEST)], false))
+        );
+    }
+}
+
+#[test]
+fn hint_attribute_mask_isolated_through_public_entry_points() {
+    for mask in [0, HINT_BIT, COLOR_BUFFER_BIT, ALL_ATTRIB_BITS] {
+        let (mut ctx, mut fb) = context();
+        let mut cpu = PpcCpu::new();
+        let mut memory = PpcSectionMem::new();
+        cpu.gpr[3] = mask;
+        call(
+            &mut ctx,
+            Some(&mut fb),
+            GlFunction::from_name("glPushAttrib").unwrap(),
+            &cpu,
+            &mut memory,
+        );
+        run(
+            &mut ctx,
+            &mut fb,
+            vec![
+                GlCall::Hint(TRANSFORM_HINT_APPLE, FASTEST),
+                GlCall::ClearColor([1.0, 0.0, 0.0, 1.0]),
+            ],
+        );
+        call(
+            &mut ctx,
+            Some(&mut fb),
+            GlFunction::from_name("glPopAttrib").unwrap(),
+            &cpu,
+            &mut memory,
+        );
+        assert_eq!(
+            ctx.state.raster.hints[5],
+            if mask & HINT_BIT != 0 {
+                DONT_CARE
+            } else {
+                FASTEST
+            }
+        );
+        assert_eq!(
+            ctx.state.raster.clear_color,
+            if mask & COLOR_BUFFER_BIT != 0 {
+                [0.0; 4]
+            } else {
+                [1.0, 0.0, 0.0, 1.0]
+            }
+        );
+        assert_eq!(ctx.state.error, NO_ERROR);
+    }
+}

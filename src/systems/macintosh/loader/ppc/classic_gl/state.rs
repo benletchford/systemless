@@ -156,9 +156,8 @@ pub struct ClientArray {
     pub pointer: u32,
 }
 
-/// Server state saved by glPushAttrib. Only state that this renderer keeps is
-/// recorded; the whole server block is restored regardless of `mask`, which
-/// is a superset of the requested groups.
+/// Server state saved by glPushAttrib. Hint state honors its attribute mask;
+/// other groups still use the legacy whole-block snapshot.
 #[derive(Debug, Clone)]
 pub struct Raster {
     pub position: super::bitmap::RasterPosition,
@@ -213,7 +212,7 @@ pub struct Raster {
     pub clip_planes: [[f32; 4]; MAX_CLIP_PLANES_COUNT],
     pub units: [TextureUnit; TEXTURE_UNITS],
     pub active_unit: usize,
-    pub hints: [u32; 5],
+    pub hints: [u32; 6],
     pub matrix_mode: u32,
     pub list_base: u32,
     pub transfer: PixelTransfer,
@@ -304,7 +303,7 @@ impl Default for Raster {
             clip_planes: [[0.0; 4]; MAX_CLIP_PLANES_COUNT],
             units: [TextureUnit::default(); TEXTURE_UNITS],
             active_unit: 0,
-            hints: [DONT_CARE; 5],
+            hints: [DONT_CARE; 6],
             matrix_mode: MODELVIEW,
             list_base: 0,
             transfer: PixelTransfer::default(),
@@ -378,7 +377,7 @@ pub struct ContextState {
     /// Name 0 is each unit's default texture object.
     pub default_texture: Texture,
     pub next_texture_name: u32,
-    pub attrib_stack: Vec<Raster>,
+    pub attrib_stack: Vec<(u32, Raster)>,
     pub error: u32,
     pub viewport_initialised: bool,
 }
