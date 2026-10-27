@@ -256,6 +256,7 @@ mod native_exceptions;
 mod collection_manager;
 mod drag_manager;
 
+mod agl_fonts;
 mod draw_sprocket;
 mod agl_macros;
 

@@ -3979,10 +3979,25 @@ fn ppc_agl_function(
             PpcImportAction::ReturnPreserve
         }
         F::UseFont => {
-            // Bitmap font display lists need glBitmap support; report the
-            // documented failure rather than empty lists.
-            agl.set_error(classic_gl_agl::AGL_BAD_VALUE);
-            boolean(false)
+            let handle = cpu.gpr[3];
+            let previous = agl.current_context();
+            if handle == 0 || !agl.set_current_context(handle) {
+                agl.set_error(classic_gl_agl::AGL_BAD_CONTEXT);
+                return boolean(false);
+            }
+            let result = agl.context_mut(handle).unwrap().gl.use_font(
+                cpu.gpr[4] as i16,
+                cpu.gpr[5] as u8,
+                cpu.gpr[6] as i32,
+                cpu.gpr[7] as i32,
+                cpu.gpr[8] as i32,
+                cpu.gpr[9],
+            );
+            let _ = agl.set_current_context(previous);
+            if let Err(error) = result {
+                agl.set_error(error);
+            }
+            boolean(result.is_ok())
         }
         F::SetFullScreen => {
             let screen = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);

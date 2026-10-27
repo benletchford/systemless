@@ -161,6 +161,7 @@ pub struct ClientArray {
 /// is a superset of the requested groups.
 #[derive(Debug, Clone)]
 pub struct Raster {
+    pub position: super::bitmap::RasterPosition,
     pub enables: Enables,
     pub cull_face_mode: u32,
     pub front_face: u32,
@@ -248,6 +249,7 @@ pub struct Enables {
 impl Default for Raster {
     fn default() -> Self {
         Self {
+            position: super::bitmap::RasterPosition::default(),
             enables: Enables {
                 dither: true,
                 ..Enables::default()

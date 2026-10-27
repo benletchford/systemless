@@ -358,3 +358,184 @@ fn linear_fog_blends_toward_the_fog_color() {
     let p = pixel(&fb, 4, 4);
     assert!((126..=129).contains(&p[0]), "{p:?}");
 }
+
+#[test]
+fn bitmap_latches_raster_color_obeys_scissor_and_advances_even_when_clipped() {
+    let (mut ctx, mut fb) = context();
+    let bitmap = bitmap::Bitmap {
+        width: 2,
+        height: 2,
+        origin: [0.0; 2],
+        advance: [3.0, 1.0],
+        pixels: Rc::new(vec![1, 0, 1, 1]),
+    };
+    let mut calls = ortho();
+    calls.extend([
+        GlCall::Color([1.0, 0.0, 0.0, 1.0]),
+        GlCall::RasterPos([2.0, 2.0, 0.0, 1.0]),
+        GlCall::Color([0.0, 1.0, 0.0, 1.0]),
+        GlCall::Scissor([2, 2, 1, 2]),
+        GlCall::Enable(SCISSOR_TEST, true),
+        GlCall::Bitmap(bitmap.clone()),
+    ]);
+    run(&mut ctx, &mut fb, calls);
+    assert_eq!(pixel(&fb, 2, 2), [255, 0, 0, 255]);
+    assert_eq!(pixel(&fb, 2, 3), [255, 0, 0, 255]);
+    assert_eq!(pixel(&fb, 3, 3), [0; 4]);
+    assert_eq!(ctx.state.raster.position.window, [5.0, 3.0, 0.5, 1.0]);
+    run(&mut ctx, &mut fb, vec![GlCall::Bitmap(bitmap.clone())]);
+    assert_eq!(ctx.state.raster.position.window[0], 8.0);
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![GlCall::RasterPos([-1.0, 0.0, 0.0, 1.0])],
+    );
+    assert!(!ctx.state.raster.position.valid);
+    let before = ctx.state.raster.position.window;
+    run(&mut ctx, &mut fb, vec![GlCall::Bitmap(bitmap)]);
+    assert_eq!(ctx.state.raster.position.window, before);
+}
+
+#[test]
+fn bitmap_unpacking_captures_guest_bits_in_display_lists() {
+    let (mut ctx, mut fb) = context();
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    let pointer = 0x10000;
+    // Skip one row and three bits. LSB-first, rows padded to four bytes.
+    memory.add_region(
+        pointer,
+        vec![0, 0, 0, 0, 0b0010_1000, 0, 0, 0, 0b0011_0000, 0, 0, 0],
+    );
+    ctx.state.client.unpack.skip_rows = 1;
+    ctx.state.client.unpack.skip_pixels = 3;
+    ctx.state.client.unpack.lsb_first = true;
+    ctx.compiling = Some((77, false, Vec::new()));
+    cpu.gpr[3] = 3;
+    cpu.gpr[4] = 2;
+    cpu.gpr[9] = pointer;
+    cpu.fpr[3] = 4.0f64.to_bits();
+    call(
+        &mut ctx,
+        Some(&mut fb),
+        GlFunction::from_name("glBitmap").unwrap(),
+        &cpu,
+        &mut memory,
+    );
+    let (_, _, commands) = ctx.compiling.take().unwrap();
+    ctx.lists.insert(77, Rc::new(commands));
+    for i in 0..12 {
+        memory.write_u8(pointer + i, 0).unwrap();
+    }
+    let mut calls = ortho();
+    calls.extend([
+        GlCall::RasterPos([1.0, 1.0, 0.0, 1.0]),
+        GlCall::CallList(77),
+    ]);
+    run(&mut ctx, &mut fb, calls);
+    for (x, y) in [(1, 1), (3, 1), (2, 2), (3, 2)] {
+        assert_eq!(pixel(&fb, x, y), [255; 4]);
+    }
+    assert_eq!(pixel(&fb, 2, 1), [0; 4]);
+    assert_eq!(pixel(&fb, 1, 2), [0; 4]);
+    assert_eq!(ctx.state.raster.position.window[0], 5.0);
+    // Invalid dimensions must not replace the raster state or read memory.
+    cpu.gpr[3] = u32::MAX;
+    call(
+        &mut ctx,
+        Some(&mut fb),
+        GlFunction::from_name("glBitmap").unwrap(),
+        &cpu,
+        &mut memory,
+    );
+    assert_eq!(ctx.state.take_error(), INVALID_VALUE);
+}
+
+#[test]
+fn agl_font_lists_draw_glyphs_and_keep_spacing_when_shared() {
+    let mut ctx = GlContext::new(true);
+    ctx.attach_drawable(64, 32);
+    let mut fb = ClassicGlFramebuffer::new(64, 32, true).unwrap();
+    ctx.use_font(4, 0, 12, i32::from(b'A'), 2, 200).unwrap();
+    assert_eq!(ctx.lists.len(), 2);
+    // Lists are shared objects, so they can render after ownership moves.
+    let objects = ctx.take_shared_objects();
+    let mut other = GlContext::new(true);
+    other.attach_drawable(64, 32);
+    other.put_shared_objects(objects);
+    let calls = vec![
+        GlCall::MatrixMode(PROJECTION),
+        GlCall::LoadMatrix(Mat4::ortho(0.0, 64.0, 0.0, 32.0, -1.0, 1.0)),
+        GlCall::RasterPos([2.0, 10.0, 0.0, 1.0]),
+        GlCall::CallList(200),
+        GlCall::CallList(201),
+    ];
+    run(&mut other, &mut fb, calls);
+    let advance = crate::quickdraw::text::get_glyph(4, 12, 'A')
+        .unwrap()
+        .0
+        .advance as f32;
+    assert_eq!(other.state.raster.position.window[0], 2.0 + 2.0 * advance);
+    assert!((10..24).any(|y| (2..9).any(|x| pixel(&fb, x, y)[0] != 0)));
+    assert!((10..24).any(|y| (9..18).any(|x| pixel(&fb, x, y)[0] != 0)));
+    assert!(other.use_font(4, 0, 12, 0, -1, 300).is_err());
+    assert!(!other.lists.contains_key(&300));
+}
+
+#[test]
+fn raster_position_vector_queries_and_bitmap_depth_test_use_latched_state() {
+    let (mut ctx, mut fb) = context();
+    let mut cpu = PpcCpu::new();
+    let mut memory = PpcSectionMem::new();
+    let pointer = 0x20000;
+    memory.add_region(pointer, vec![0; 64]);
+    for (index, value) in [0.0f64, 0.0, -0.5, 1.0].into_iter().enumerate() {
+        memory
+            .write_u64_be(pointer + index as u32 * 8, value.to_bits())
+            .unwrap();
+    }
+    cpu.gpr[3] = pointer;
+    call(
+        &mut ctx,
+        Some(&mut fb),
+        GlFunction::from_name("glRasterPos4dv").unwrap(),
+        &cpu,
+        &mut memory,
+    );
+    cpu.gpr[3] = CURRENT_RASTER_POSITION;
+    cpu.gpr[4] = pointer + 32;
+    call(
+        &mut ctx,
+        Some(&mut fb),
+        GlFunction::from_name("glGetFloatv").unwrap(),
+        &cpu,
+        &mut memory,
+    );
+    assert_eq!(
+        (0..4)
+            .map(|i| f32::from_bits(memory.read_u32_be(pointer + 32 + 4 * i).unwrap()))
+            .collect::<Vec<_>>(),
+        vec![4.0, 4.0, 0.25, 1.0]
+    );
+    let bitmap = bitmap::Bitmap {
+        width: 1,
+        height: 1,
+        origin: [0.0; 2],
+        advance: [0.0; 2],
+        pixels: Rc::new(vec![1]),
+    };
+    run(
+        &mut ctx,
+        &mut fb,
+        vec![
+            GlCall::Enable(DEPTH_TEST, true),
+            GlCall::Bitmap(bitmap.clone()),
+            GlCall::Color([1.0, 0.0, 0.0, 1.0]),
+            GlCall::RasterPos([0.0, 0.0, 0.5, 1.0]),
+            GlCall::Bitmap(bitmap),
+        ],
+    );
+    assert_eq!(pixel(&fb, 4, 4), [255; 4]);
+    assert_eq!(fb.depth_at(4, 4), Some(0.25));
+    assert_eq!(ctx.state.take_error(), NO_ERROR);
+}
