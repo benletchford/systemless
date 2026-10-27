@@ -7070,9 +7070,9 @@
     }
 
     #[test]
-    fn stdline_stub_preserves_non_stack_registers_in_hle_compromise_path() {
+    fn stdline_preserves_non_stack_registers() {
         // Inside Macintosh Volume I (1985), pp. I-197..I-198:
-        // StdLine is a QDProcs bottleneck; Systemless's compromise path
+        // StdLine is a QDProcs bottleneck; the direct drawing path
         // must preserve non-stack registers while consuming the frame.
         let (mut d, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::A0, 0x1111_2222);
@@ -7124,7 +7124,7 @@
     fn stdrrect_consumes_verb_rect_and_corner_diameter_arguments() {
         // Inside Macintosh Volume I (1985), p. I-197 + Imaging With QuickDraw
         // 1994 p. 3-133: PROCEDURE StdRRect(verb: GrafVerb; r: Rect;
-        // ovalWidth, ovalHeight: INTEGER) consumes a word + pointer + 2-word
+        // ovalWidth, ovalHeight: INTEGER) consumes an aligned byte + pointer + 2-word
         // frame.  MPW Universal Headers Quickdraw.h declares the C form
         // `EXTERN_API(void) StdRRect(GrafVerb verb, const Rect *r,
         // short ovalWidth, short ovalHeight) ONEWORDINLINE(0xA8AF)` —
@@ -7132,10 +7132,11 @@
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300180u32;
         write_rect(&mut bus, rect_ptr, 10, 20, 40, 80);
-        bus.write_word(TEST_SP, 0u16); // frame verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
-        bus.write_word(TEST_SP + 6, 12u16); // ovalWidth
-        bus.write_word(TEST_SP + 8, 16u16); // ovalHeight
+        bus.write_byte(TEST_SP + 8, 0);
+        bus.write_byte(TEST_SP + 9, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_word(TEST_SP + 2, 12u16); // ovalWidth
+        bus.write_word(TEST_SP, 16u16); // ovalHeight
 
         let result = d.dispatch_quickdraw(true, 0x0AF, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7153,10 +7154,11 @@
         write_rect(&mut bus, rect_ptr, 0, 0, 50, 50);
         let mut sp = TEST_SP;
         for verb in 0u16..5 {
-            bus.write_word(sp, verb);
-            bus.write_long(sp + 2, rect_ptr);
-            bus.write_word(sp + 6, 12 + verb * 2); // ovalWidth varies
-            bus.write_word(sp + 8, 16 + verb * 2); // ovalHeight varies
+            bus.write_byte(sp + 8, verb as u8);
+            bus.write_byte(sp + 9, 0xa5);
+            bus.write_long(sp + 4, rect_ptr);
+            bus.write_word(sp + 2, 12 + verb * 2); // ovalWidth varies
+            bus.write_word(sp, 16 + verb * 2); // ovalHeight varies
             cpu.write_reg(Register::A7, sp);
             let result = d.dispatch_quickdraw(true, 0x0AF, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
@@ -7167,9 +7169,9 @@
     }
 
     #[test]
-    fn stdrrect_stub_preserves_non_stack_registers_in_hle_compromise_path() {
+    fn stdrrect_preserves_non_stack_registers() {
         // Inside Macintosh Volume I (1985), pp. I-197..I-198:
-        // StdRRect is a QDProcs bottleneck; compromise path preserves
+        // StdRRect is a QDProcs bottleneck that preserves
         // non-stack registers.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x3001A0u32;
@@ -7178,10 +7180,11 @@
         cpu.write_reg(Register::A1, 0xCCC0_DDD0);
         cpu.write_reg(Register::D0, 0xEEE0_FFF0);
         cpu.write_reg(Register::D1, 0x1234_5678);
-        bus.write_word(TEST_SP, 1u16); // paint verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
-        bus.write_word(TEST_SP + 6, 8u16);
-        bus.write_word(TEST_SP + 8, 8u16);
+        bus.write_byte(TEST_SP + 8, 1);
+        bus.write_byte(TEST_SP + 9, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_word(TEST_SP + 2, 8u16);
+        bus.write_word(TEST_SP, 8u16);
 
         let result = d.dispatch_quickdraw(true, 0x0AF, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7196,15 +7199,16 @@
     fn stdoval_consumes_verb_and_rect_pointer_arguments() {
         // Inside Macintosh Volume I (1985), p. I-197 + Imaging With QuickDraw
         // 1994 p. 3-133: PROCEDURE StdOval(verb: GrafVerb; r: Rect) consumes
-        // a word + pointer frame.  MPW Universal Headers Quickdraw.h declare
+        // an aligned byte + pointer frame.  MPW Universal Headers Quickdraw.h declare
         // the C form `EXTERN_API(void) StdOval(GrafVerb verb, const Rect *r)
         // ONEWORDINLINE(0xA8B6)` — same layout as StdRect (sp+0..3 rect_ptr,
         // sp+4..5 verb, 6-byte pop, no result).
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x3001C0u32;
         write_rect(&mut bus, rect_ptr, 5, 6, 50, 60);
-        bus.write_word(TEST_SP, 2u16); // erase verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
+        bus.write_byte(TEST_SP + 4, 2);
+        bus.write_byte(TEST_SP + 5, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP, rect_ptr);
 
         let result = d.dispatch_quickdraw(true, 0x0B6, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7220,8 +7224,9 @@
         write_rect(&mut bus, rect_ptr, 0, 0, 50, 50);
         let mut sp = TEST_SP;
         for verb in 0u16..5 {
-            bus.write_word(sp, verb);
-            bus.write_long(sp + 2, rect_ptr);
+            bus.write_byte(sp + 4, verb as u8);
+            bus.write_byte(sp + 5, 0xa5);
+            bus.write_long(sp, rect_ptr);
             cpu.write_reg(Register::A7, sp);
             let result = d.dispatch_quickdraw(true, 0x0B6, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
@@ -7232,9 +7237,9 @@
     }
 
     #[test]
-    fn stdoval_stub_preserves_non_stack_registers_in_hle_compromise_path() {
+    fn stdoval_preserves_non_stack_registers() {
         // Inside Macintosh Volume I (1985), pp. I-197..I-198:
-        // StdOval compromise path preserves non-stack registers.
+        // StdOval preserves non-stack registers.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x3001E0u32;
         write_rect(&mut bus, rect_ptr, 2, 4, 22, 44);
@@ -7242,8 +7247,9 @@
         cpu.write_reg(Register::A1, 0x1B1B_1B1B);
         cpu.write_reg(Register::D0, 0x2C2C_2C2C);
         cpu.write_reg(Register::D1, 0x3D3D_3D3D);
-        bus.write_word(TEST_SP, 3u16); // invert verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
+        bus.write_byte(TEST_SP + 4, 3);
+        bus.write_byte(TEST_SP + 5, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP, rect_ptr);
 
         let result = d.dispatch_quickdraw(true, 0x0B6, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7258,7 +7264,7 @@
     fn stdarc_consumes_verb_rect_and_angle_arguments() {
         // Inside Macintosh Volume I (1985), p. I-197 + Imaging With QuickDraw
         // 1994 p. 3-134: PROCEDURE StdArc(verb: GrafVerb; r: Rect;
-        // startAngle, arcAngle: INTEGER) consumes a word + pointer + 2-word
+        // startAngle, arcAngle: INTEGER) consumes an aligned byte + pointer + 2-word
         // frame.  MPW Universal Headers Quickdraw.h declares the C form
         // `EXTERN_API(void) StdArc(GrafVerb verb, const Rect *r,
         // short startAngle, short arcAngle) ONEWORDINLINE(0xA8BD)` —
@@ -7266,10 +7272,11 @@
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300200u32;
         write_rect(&mut bus, rect_ptr, 0, 0, 100, 100);
-        bus.write_word(TEST_SP, 1u16); // paint verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
-        bus.write_word(TEST_SP + 6, 45u16); // startAngle
-        bus.write_word(TEST_SP + 8, 90u16); // arcAngle
+        bus.write_byte(TEST_SP + 8, 1);
+        bus.write_byte(TEST_SP + 9, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_word(TEST_SP + 2, 45u16); // startAngle
+        bus.write_word(TEST_SP, 90u16); // arcAngle
 
         let result = d.dispatch_quickdraw(true, 0x0BD, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7287,10 +7294,11 @@
         write_rect(&mut bus, rect_ptr, 0, 0, 80, 80);
         let mut sp = TEST_SP;
         for verb in 0u16..5 {
-            bus.write_word(sp, verb);
-            bus.write_long(sp + 2, rect_ptr);
-            bus.write_word(sp + 6, verb * 45); // startAngle varies
-            bus.write_word(sp + 8, 90); // arcAngle
+            bus.write_byte(sp + 8, verb as u8);
+            bus.write_byte(sp + 9, 0xa5);
+            bus.write_long(sp + 4, rect_ptr);
+            bus.write_word(sp + 2, verb * 45); // startAngle varies
+            bus.write_word(sp, 90); // arcAngle
             cpu.write_reg(Register::A7, sp);
             let result = d.dispatch_quickdraw(true, 0x0BD, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
@@ -7301,9 +7309,9 @@
     }
 
     #[test]
-    fn stdarc_stub_preserves_non_stack_registers_in_hle_compromise_path() {
+    fn stdarc_preserves_non_stack_registers() {
         // Inside Macintosh Volume I (1985), pp. I-197..I-198:
-        // StdArc compromise path preserves non-stack registers.
+        // StdArc preserves non-stack registers.
         let (mut d, mut cpu, mut bus) = setup();
         let rect_ptr = 0x300220u32;
         write_rect(&mut bus, rect_ptr, 1, 2, 30, 40);
@@ -7311,10 +7319,11 @@
         cpu.write_reg(Register::A1, 0xABC0_0002);
         cpu.write_reg(Register::D0, 0xABC0_0003);
         cpu.write_reg(Register::D1, 0xABC0_0004);
-        bus.write_word(TEST_SP, 4u16); // fill verb
-        bus.write_long(TEST_SP + 2, rect_ptr);
-        bus.write_word(TEST_SP + 6, 0u16);
-        bus.write_word(TEST_SP + 8, 180u16);
+        bus.write_byte(TEST_SP + 8, 4);
+        bus.write_byte(TEST_SP + 9, 0xa5); // ignored stack padding
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        bus.write_word(TEST_SP + 2, 0u16);
+        bus.write_word(TEST_SP, 180u16);
 
         let result = d.dispatch_quickdraw(true, 0x0BD, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
@@ -7324,7 +7333,6 @@
         assert_eq!(cpu.read_reg(Register::D0), 0xABC0_0003);
         assert_eq!(cpu.read_reg(Register::D1), 0xABC0_0004);
     }
-
     #[test]
     fn stdpoly_consumes_verb_and_polygon_handle_arguments() {
         // Inside Macintosh Volume I (1985), p. I-198 + Imaging With QuickDraw
@@ -27609,4 +27617,104 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_eq!(bus.read_bytes(base, 4), [0x77; 4]);
         assert_eq!(bus.read_bytes(base + 5, 3), [0x12, 0x34, 0x56]);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    #[test]
+    fn standard_shape_bottlenecks_match_visible_high_level_drawing_for_all_verbs() {
+        for (standard, first_high_level) in [(0x0af, 0x0b0), (0x0b6, 0x0b7), (0x0bd, 0x0be)] {
+            for verb in 0u8..5 {
+                let mut images = Vec::new();
+                for direct in [false, true] {
+                    let (mut d, mut cpu, mut bus) = setup();
+                    let base = bus.alloc(32);
+                    bus.write_bytes(base, &[0x55; 32]);
+                    let port = bus.alloc(108);
+                    write_bitmap_1bpp(&mut bus, port + 2, base, 2, (0, 0, 16, 16));
+                    write_rect(&mut bus, port + 16, 0, 0, 16, 16);
+                    let vis = make_complex_rgn(&mut bus, (0, 0, 16, 16), &[]);
+                    let clip = make_complex_rgn(&mut bus, (1, 1, 13, 12), &[]);
+                    bus.write_long(port + 24, vis);
+                    bus.write_long(port + 28, clip);
+                    bus.write_bytes(port + 40, &[0xaa; 8]);
+                    d.set_current_port_state(&mut bus, &mut cpu, port, None);
+                    d.pn_pat = [0xff; 8];
+                    d.bk_pat = [0; 8];
+                    d.pn_size = (1, 1);
+                    d.pn_mode = 8;
+                    let rect = bus.alloc(8);
+                    write_rect(&mut bus, rect, 2, 2, 14, 14);
+                    let mut arguments = Vec::new();
+                    if !direct && verb == 4 {
+                        arguments.extend_from_slice(&(port + 40).to_be_bytes());
+                    }
+                    if standard == 0x0af {
+                        arguments.extend_from_slice(&4u16.to_be_bytes()); // height
+                        arguments.extend_from_slice(&8u16.to_be_bytes()); // width
+                    } else if standard == 0x0bd {
+                        arguments.extend_from_slice(&100u16.to_be_bytes()); // sweep
+                        arguments.extend_from_slice(&20u16.to_be_bytes()); // start
+                    }
+                    arguments.extend_from_slice(&rect.to_be_bytes());
+                    if direct {
+                        arguments.extend_from_slice(&[verb, 0xa5]);
+                    }
+                    bus.write_bytes(TEST_SP, &arguments);
+                    bus.write_long(TEST_SP + arguments.len() as u32, 0xdead_beef);
+                    let trap = if direct {
+                        standard
+                    } else {
+                        first_high_level + u16::from(verb)
+                    };
+                    d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + arguments.len() as u32);
+                    assert_eq!(bus.read_long(cpu.read_reg(Register::A7)), 0xdead_beef);
+                    let pixels = bus.read_bytes(base, 32);
+                    assert_ne!(pixels, [0x55; 32], "trap={trap:x}, verb={verb}");
+                    for y in 0..16 {
+                        for x in 0..16 {
+                            if !(1..13).contains(&y) || !(1..12).contains(&x) {
+                                let mask = 0x80 >> (x % 8);
+                                assert_eq!(pixels[y * 2 + x / 8] & mask, 0x55 & mask);
+                            }
+                        }
+                    }
+                    images.push(pixels);
+                }
+                assert_eq!(images[0], images[1], "standard={standard:x}, verb={verb}");
+            }
+        }
+    }
+
+    #[test]
+    fn stdline_draws_clipped_pixels_and_advances_the_pen() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(8);
+        bus.write_bytes(base, &[0; 8]);
+        let port = bus.alloc(108);
+        write_bitmap_1bpp(&mut bus, port + 2, base, 1, (0, 0, 8, 8));
+        write_rect(&mut bus, port + 16, 0, 0, 8, 8);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 8, 8), &[]);
+        let clip = make_complex_rgn(&mut bus, (1, 2, 7, 6), &[]);
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.pn_loc = (3, 0);
+        d.pn_size = (1, 1);
+        d.pn_pat = [0xff; 8];
+        d.pn_mode = 8;
+        d.sync_current_port_draw_state(&mut bus);
+        bus.write_word(TEST_SP, 3);
+        bus.write_word(TEST_SP + 2, 7);
+        bus.write_long(TEST_SP + 4, 0xdead_beef);
+        d.dispatch_quickdraw(true, 0x090, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(base, 8), [0, 0, 0, 0x3c, 0, 0, 0, 0]);
+        assert_eq!(d.pn_loc, (3, 7));
+        assert_eq!(bus.read_word(port + 48), 3);
+        assert_eq!(bus.read_word(port + 50), 7);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(TEST_SP + 4), 0xdead_beef);
     }

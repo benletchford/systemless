@@ -1766,9 +1766,9 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // LineTo ($A891)
-            // LineTo ($A891): Draws line to point, renders to framebuffer
-            (true, 0x091) => {
+            // StdLine ($A890) and LineTo ($A891) share direct rasterization,
+            // recording, and pen advancement; neither re-enters lineProc.
+            (true, 0x090 | 0x091) => {
                 let sp = cpu.read_reg(Register::A7);
                 let v = bus.read_word(sp) as i16;
                 let h = bus.read_word(sp + 2) as i16;
@@ -10925,59 +10925,22 @@ impl super::TrapDispatcher {
             // applies only to higher-level dispatchers like _PaletteDispatch
             // or _SCSIDispatch, not to the bottleneck family.
 
-            // StdLine ($A890)
-            // PROCEDURE StdLine(newPt: Point);
-            // Inside Macintosh Volume I (1985), I-197 + Imaging With QuickDraw 1994 p. 3-132:
-            //   "The StdLine procedure draws a line from the current pen
-            //    location to newPt in local coordinates and updates the
-            //    pen location to newPt. The pen state (size, pattern,
-            //    mode) determines the line's appearance."
-            //
-            // MPW Universal Headers Quickdraw.h declares the C-callable
-            // form with Point passed by value (4-byte record):
-            //   EXTERN_API(void) StdLine(Point newPt) ONEWORDINLINE(0xA890);
-            //
-            // Stack frame at trap entry (Pascal LR push; Point is a
-            // 4-byte record {v: INTEGER; h: INTEGER} pushed in declaration
-            // order — v first, h second — so newPt.h ends up at the lowest
-            // address):
-            //   sp+0..1  newPt.v   (Point.v, shallowest)
-            //   sp+2..3  newPt.h   (Point.h, deepest)
-            // 4-byte total pop, no result slot (PROCEDURE).
-            //
-            // BII-vs-Systemless divergence:
-            //   - BII System 7.5 ROM rasterises a line from the current
-            //     pen location to newPt AND mutates A0/A1/D0/D1 as part
-            //     of the bottleneck-proc bookkeeping.
-            //   - Systemless HLE is a stub-noop: high-level Line ($A892) and
-            //     LineTo ($A891) draw directly via the Rust framebuffer
-            //     pen-state path (see quickdraw.rs draw_line), so this
-            //     bottleneck is reachable only via SetStdProcs →
-            //     JSR-through-slot (a non-corpus pattern).  The HLE
-            //     leaves A0/A1/D0/D1 unchanged and pops only the 4 bytes.
-            //
-            // Both engines share the stack discipline (4-byte pop) —
-            // pinned by the in-Rust tests
-            // stdline_consumes_point_argument_by_value +
-            // stdline_five_call_composition_pops_twenty_bytes_total.
-            //
-            // Systemless-only contract: register preservation A0/A1/D0/D1 —
-            // pinned by stdline_stub_preserves_non_stack_registers_in_hle_compromise_path.
-            (true, 0x090) => {
+            // Standard shape bottlenecks draw directly so custom grafProcs
+            // can chain here without recursion. GrafVerb occupies the first
+            // byte of its aligned stack slot. RRect and Arc have two trailing
+            // integer arguments nearest SP, ahead of the rectangle pointer.
+            (true, 0x0A0 | 0x0AF | 0x0B6 | 0x0BD) => {
                 let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 4);
-                Ok(())
-            }
-
-            // StdRect ($A8A0): standard rectangle bottleneck. The last
-            // Pascal argument (Rect pointer) is nearest SP; GrafVerb follows as one byte in a two-byte stack slot.
-            // Draw directly so a custom rectProc can chain here without
-            // recursively invoking itself.
-            (true, 0x0A0) => {
-                let sp = cpu.read_reg(Register::A7);
-                let rect_ptr = bus.read_long(sp);
-                let verb = bus.read_byte(sp + 4);
-                cpu.write_reg(Register::A7, sp + 6);
+                let prefix = if matches!(trap_num, 0x0AF | 0x0BD) {
+                    4
+                } else {
+                    0
+                };
+                let rect_ptr = bus.read_long(sp + prefix);
+                let verb = bus.read_byte(sp + prefix + 4);
+                let last_argument = bus.read_word(sp) as i16;
+                let previous_argument = bus.read_word(sp + 2) as i16;
+                cpu.write_reg(Register::A7, sp + prefix + 6);
                 if rect_ptr == 0 || !Self::guest_range_in_ram(bus, rect_ptr, 8) {
                     return Some(Ok(()));
                 }
@@ -11012,137 +10975,14 @@ impl super::TrapDispatcher {
                     }
                     _ => return Some(Ok(())),
                 };
-                self.draw_rect(cpu, bus, &r, op);
+                match trap_num {
+                    0x0AF => self.draw_round_rect(cpu, bus, &r, previous_argument, last_argument, op),
+                    0x0B6 => self.draw_oval(cpu, bus, &r, op),
+                    0x0BD => self.draw_arc(cpu, bus, &r, previous_argument, last_argument, op),
+                    _ => self.draw_rect(cpu, bus, &r, op),
+                }
                 self.fg_color = saved_fg;
                 self.bg_color = saved_bg;
-                Ok(())
-            }
-
-            // StdRRect ($A8AF)
-            // PROCEDURE StdRRect(verb: GrafVerb; r: Rect; ovalWidth, ovalHeight: INTEGER);
-            // Inside Macintosh Volume I, I-197 + Imaging With QuickDraw 1994 3-133:
-            //   "The StdRRect procedure draws the specified rounded-corner
-            //    rectangle, applying the indicated verb.  The ovalWidth and
-            //    ovalHeight parameters specify the diameters of curvature
-            //    for the corners."
-            //
-            // MPW Universal Headers Quickdraw.h declares the C-callable form
-            // with the Rect passed by pointer plus two short INTEGER args:
-            //   EXTERN_API(void) StdRRect(GrafVerb verb, const Rect *r,
-            //                             short ovalWidth, short ovalHeight)
-            //                                          ONEWORDINLINE(0xA8AF);
-            //
-            // Stack frame at trap entry (Pascal LR push, first arg deepest):
-            //   sp+0..1  ovalHeight (last pushed → shallowest)
-            //   sp+2..3  ovalWidth
-            //   sp+4..7  rect_ptr
-            //   sp+8..9  verb_word  (first pushed → deepest)
-            // 10-byte total pop, no result slot (PROCEDURE).
-            //
-            // Real-Mac semantic: dispatches Frame/Paint/Erase/Invert/Fill verb
-            // on the rounded-corner rectangle inscribed in r with corner
-            // diameters (ovalWidth, ovalHeight) via the current pen state /
-            // fill pattern.
-            //
-            // Systemless HLE compromise — every high-level QuickDraw round-rect
-            // trap (FrameRoundRect / PaintRoundRect / EraseRoundRect /
-            // InvertRoundRect / FillRoundRect) draws directly via the Rust
-            // framebuffer code, bypassing the bottleneck dispatch through
-            // grafProcs.rRectProc.  StdRRect itself is reachable only via
-            // explicit SetStdProcs → JSR-through-slot — a non-corpus pattern.
-            // Therefore the HLE pops the 10-byte stack frame and returns
-            // without performing any drawing.  caller_observable = false
-            // because no corpus caller depends on StdRRect producing pixels.
-            //
-            // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
-            // the rounded rect AND mutates A0/A1/D0/D1 during rasterisation.
-            // Both engines agree on the 10-byte pop; they diverge on pixel
-            // side-effect and register mutation.  The Systemless-only
-            // register-preservation contract is pinned by
-            // `stdrrect_stub_preserves_non_stack_registers_in_hle_compromise_path`.
-            (true, 0x0AF) => {
-                let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 10);
-                Ok(())
-            }
-
-            // StdOval ($A8B6)
-            // PROCEDURE StdOval(verb: GrafVerb; r: Rect);
-            // Inside Macintosh Volume I, I-197 + Imaging With QuickDraw 1994 3-133.
-            //
-            // MPW Universal Headers Quickdraw.h declares the C-callable form
-            // with the Rect passed by pointer:
-            //   EXTERN_API(void) StdOval(GrafVerb verb, const Rect *r)
-            //                                          ONEWORDINLINE(0xA8B6);
-            //
-            // Same stack-frame layout as StdRect ($A8A0):
-            //   sp+0..3  rect_ptr   (last pushed → shallowest)
-            //   sp+4..5  verb_word  (first pushed → deepest)
-            // 6-byte total pop, no result slot.
-            //
-            // Real-Mac semantic: draws oval inscribed in r per verb.
-            //
-            // Systemless HLE compromise — high-level FrameOval ($A8B7) /
-            // PaintOval / EraseOval / InvertOval / FillOval draw directly via
-            // Rust circle/ellipse code; StdOval itself is reachable only via
-            // SetStdProcs → JSR-through-slot.  caller_observable = false.
-            //
-            // BasiliskII divergence: BII's real ROM rasterises the oval AND
-            // mutates A0/A1/D0/D1.  Both engines agree on the 6-byte pop
-            // only.  The Systemless-only register-preservation contract is
-            // pinned by `stdoval_stub_preserves_non_stack_registers_in_hle_compromise_path`.
-            (true, 0x0B6) => {
-                let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 6);
-                Ok(())
-            }
-
-            // StdArc ($A8BD)
-            // PROCEDURE StdArc(verb: GrafVerb; r: Rect; startAngle, arcAngle: INTEGER);
-            // Inside Macintosh Volume I, I-197 + Imaging With QuickDraw 1994 3-134:
-            //   "The StdArc procedure draws an arc or wedge of the oval that
-            //    fits inside the rectangle r.  The startAngle parameter
-            //    specifies where the arc begins and the arcAngle parameter
-            //    specifies the angular extent of the arc.  Both angles are
-            //    measured clockwise from 12 o'clock."
-            //
-            // MPW Universal Headers Quickdraw.h declares the C-callable form
-            // with the Rect passed by pointer plus two short INTEGER args:
-            //   EXTERN_API(void) StdArc(GrafVerb verb, const Rect *r,
-            //                           short startAngle, short arcAngle)
-            //                                          ONEWORDINLINE(0xA8BD);
-            //
-            // Stack frame at trap entry (Pascal LR push, first arg deepest):
-            //   sp+0..1  arcAngle   (last pushed → shallowest)
-            //   sp+2..3  startAngle
-            //   sp+4..7  rect_ptr
-            //   sp+8..9  verb_word  (first pushed → deepest)
-            // 10-byte total pop, no result slot (PROCEDURE).
-            //
-            // Real-Mac semantic: dispatches Frame verb to draw an arc outline
-            // along the oval boundary; Paint/Erase/Invert/Fill verbs draw a
-            // closed wedge (pie slice) using the current pen state / fill
-            // pattern.
-            //
-            // Systemless HLE compromise — every high-level QuickDraw arc trap
-            // (FrameArc / PaintArc / EraseArc / InvertArc / FillArc) draws
-            // directly via the Rust arc/wedge rasteriser, bypassing the
-            // bottleneck dispatch through grafProcs.arcProc.  StdArc itself
-            // is reachable only via explicit SetStdProcs → JSR-through-slot
-            // — a non-corpus pattern.  Therefore the HLE pops the 10-byte
-            // stack frame and returns without performing any drawing.
-            // caller_observable = false because no corpus caller depends on
-            // StdArc producing pixels.
-            //
-            // BasiliskII divergence: BII's System 7.5 ROM faithfully draws
-            // the arc/wedge AND mutates A0/A1/D0/D1 during rasterisation.
-            // Both engines agree on the 10-byte pop; they diverge on pixel
-            // side-effect and register mutation.  The Systemless-only
-            // register-preservation contract is pinned by
-            // `stdarc_stub_preserves_non_stack_registers_in_hle_compromise_path`.
-            (true, 0x0BD) => {
-                let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
             }
 
