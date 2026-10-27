@@ -3140,6 +3140,8 @@ pub(crate) fn dispatch_supported_import(
                     | PpcQuickTimeCompatibilityOperation::MCDoAction
                     | PpcQuickTimeCompatibilityOperation::SetMovieRate
             );
+            let service_drawing = operation != PpcQuickTimeCompatibilityOperation::MCDoAction
+                || matches!(cpu.gpr[4] as i16, 1 | 8);
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
             let action = dispatch_quicktime_compatibility(
                 operation,
@@ -3158,7 +3160,13 @@ pub(crate) fn dispatch_supported_import(
             );
             Some(if service_callbacks {
                 dispatch_quicktime::finish_controller_callbacks(
-                    action, cpu, memory, quicktime, sound, before,
+                    action,
+                    cpu,
+                    memory,
+                    quicktime,
+                    sound,
+                    before,
+                    service_drawing,
                 )
             } else {
                 action

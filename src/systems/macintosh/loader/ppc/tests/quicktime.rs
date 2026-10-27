@@ -4929,7 +4929,23 @@ fn quicktime_imports_aiff_and_compressed_aifc_as_audio_movies() {
         assert!(playback.samples.iter().any(|sample| *sample != 128));
         let initial_samples = playback.samples.clone();
         let midpoint = (count / 2) as u32;
-        call_movie_toolbox(&mut loaded, "SetMovieTimeValue", &[PPC_QT_MOVIE, midpoint]);
+        // Seek through a movie controller, using a different time scale.
+        ppc_write_rect(&mut loaded.memory, SCRATCH + 100, 0, 0, 4, 4).unwrap();
+        let controller = call_movie_toolbox(
+            &mut loaded,
+            "NewMovieController",
+            &[PPC_QT_MOVIE, SCRATCH + 100, 0],
+        );
+        loaded
+            .memory
+            .write_u64_be(SCRATCH + 120, u64::from(midpoint) * 2)
+            .unwrap();
+        loaded.memory.write_u32_be(SCRATCH + 128, rate * 2).unwrap();
+        loaded.memory.write_u32_be(SCRATCH + 132, 0).unwrap();
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 12, SCRATCH + 120]),
+            0
+        );
         assert_eq!(
             call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
             midpoint
@@ -6003,4 +6019,121 @@ fn quicktime_controller_filter_nests_with_rate_callbacks_at_the_same_import() {
     assert_eq!(loaded.cpu.gpr[1], sp);
     assert_eq!(loaded.cpu.gpr[2], rtoc);
     assert_eq!(loaded.cpu.gpr[31], r31);
+}
+
+#[test]
+fn quicktime_controller_seek_converts_signed_wide_times_and_reports_play_rate() {
+    let mut loaded = movie_toolbox_fixture();
+    let data = PPC_DATA_BASE + 0x4000;
+    ppc_write_rect(&mut loaded.memory, data, 0, 0, 240, 320).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, data, 0]);
+    loaded.quicktime.movie_tasks_until_done = 120;
+    let record = data + 32;
+    let time_base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    for (value, scale, expected) in [(1000i64, 1000u32, 60), (-1, 60, 0), (i64::MAX, 1, 120)] {
+        loaded.memory.write_u64_be(record, value as u64).unwrap();
+        loaded.memory.write_u32_be(record + 8, scale).unwrap();
+        loaded.memory.write_u32_be(record + 12, time_base).unwrap();
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 12, record]),
+            0
+        );
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+            expected
+        );
+    }
+    for (scale, base) in [(0, 0), (u32::MAX, 0), (60, 123)] {
+        loaded.memory.write_u32_be(record + 8, scale).unwrap();
+        loaded.memory.write_u32_be(record + 12, base).unwrap();
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 12, record]) as i32,
+            -50
+        );
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]),
+            120
+        );
+    }
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 12, 0xfffffff8]) as i32,
+        -50
+    );
+    loaded.quicktime.movie_playback_rate = -0x8000;
+    for playing in [true, false] {
+        loaded.quicktime.movie_started = playing;
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 42, record]),
+            0
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(record).unwrap() as i32,
+            if playing { -0x8000 } else { 0 }
+        );
+    }
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 42, 0]) as i32,
+        -50
+    );
+    loaded.quicktime.movie_disposed = true;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 12, record]) as i32,
+        -2010
+    );
+}
+
+#[test]
+fn quicktime_controller_seek_delivers_jump_without_spurious_drawing_callback() {
+    let mut loaded = movie_toolbox_fixture();
+    let data = PPC_DATA_BASE + 0x4000;
+    let code = PPC_CODE_BASE + 0x8000;
+    loaded.memory.add_region(
+        code,
+        [0x90640000u32, 0x4e800020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.write_u32_be(data + 200, code).unwrap();
+    loaded
+        .memory
+        .write_u32_be(data + 204, loaded.cpu.gpr[2])
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, data, 0, 0, 240, 320).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, data, 0]);
+    // Flag 1 requests drawing notifications even when MoviesTask draws nothing;
+    // a query or explicit seek is not a MoviesTask/drawing request at all.
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieDrawingCompleteProc",
+        &[PPC_QT_MOVIE, 1, data + 200, data + 224],
+    );
+    assert!(loaded.quicktime.movie_drawing_complete.is_some());
+    let base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let callback = call_movie_toolbox(&mut loaded, "NewCallBack", &[base, 3]);
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "CallMeWhen",
+            &[callback, data + 200, data + 220, 0, 0, 0]
+        ),
+        0
+    );
+    loaded.memory.write_u64_be(data + 32, 60).unwrap();
+    loaded.memory.write_u32_be(data + 40, 60).unwrap();
+    loaded.memory.write_u32_be(data + 44, base).unwrap();
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 42, data + 64]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 220), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(data + 224), Some(0));
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 12, data + 32]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 220), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(data + 224), Some(0));
 }

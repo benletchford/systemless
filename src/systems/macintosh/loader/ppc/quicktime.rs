@@ -556,26 +556,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
                 return PpcImportAction::ReturnPreserve;
             }
-            let duration = ppc_qt_movie_duration_value(quicktime);
-            let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
-            let time = ((cpu.gpr[4] as i32).max(0) as u64).min(duration);
-            let before = super::dispatch_quicktime::quicktime_callback_time(quicktime);
-            let position =
-                (u128::from(time) * u128::from(tasks) * 65536 / u128::from(duration.max(1))) as u64;
-            quicktime.movie_task_count = (position >> 16) as u32;
-            quicktime.movie_task_fraction = position as u16;
-            quicktime.movie_clock_remainder = 0;
-            quicktime.movie_at_beginning = time == 0;
-            ppc_qt_reset_movie_video_decode_cache(quicktime);
-            ppc_qt_stop_movie_audio(sound);
-            if quicktime.movie_started && quicktime.movie_active {
-                let _ = ppc_qt_start_movie_audio(quicktime, sound);
-            }
-            if before != super::dispatch_quicktime::quicktime_callback_time(quicktime) {
-                quicktime
-                    .callbacks
-                    .mark_event(PPC_QT_TIME_BASE, callbacks::Event::Jump);
-            }
+            ppc_qt_seek_movie(quicktime, sound, (cpu.gpr[4] as i32).max(0) as u64);
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::ReturnPreserve
         }
@@ -819,6 +800,48 @@ pub(super) fn dispatch_quicktime_compatibility(
                     );
                     cpu.gpr[3] = controller;
                     PpcImportAction::Return(ppc_i16_result(error))
+                }
+                12 => {
+                    // mcActionGoToTime takes a TimeRecord, not a TimeValue.
+                    if !compatibility_valid_movie(quicktime, movie) {
+                        return PpcImportAction::Return(ppc_i16_result(-2010));
+                    }
+                    let record = cpu.gpr[5];
+                    if record == 0 {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                    let time = memory.read_u64_be(record);
+                    let scale = record.checked_add(8).and_then(|p| memory.read_u32_be(p));
+                    let base = record.checked_add(12).and_then(|p| memory.read_u32_be(p));
+                    let (Some(time), Some(scale), Some(base)) = (time, scale, base) else {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    };
+                    if scale as i32 <= 0 || (base != 0 && base != PPC_QT_TIME_BASE) {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                    let time = (i128::from(time as i64).max(0)
+                        * i128::from(quicktime.movie_time_scale)
+                        / i128::from(scale))
+                    .min(i128::from(u64::MAX)) as u64;
+                    ppc_qt_seek_movie(quicktime, sound, time);
+                    PpcImportAction::Return(0)
+                }
+                42 => {
+                    // mcActionGetPlayRate writes a Fixed to the caller's pointer.
+                    if !compatibility_valid_movie(quicktime, movie) {
+                        return PpcImportAction::Return(ppc_i16_result(-2010));
+                    }
+                    let out = cpu.gpr[5];
+                    if out == 0 || !ppc_memory_can_write_bytes(memory, out, 4) {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                    let rate = if quicktime.movie_started {
+                        quicktime.movie_playback_rate
+                    } else {
+                        0
+                    };
+                    let _ = memory.write_u32_be(out, rate as u32);
+                    PpcImportAction::Return(0)
                 }
                 _ => PpcImportAction::Return(ppc_i16_result(PPC_INVALID_COMPONENT_ID)),
             }
@@ -4135,6 +4158,31 @@ pub(crate) fn ppc_qt_start_movie(
 ) -> i16 {
     let rate = quicktime.movie_preferred_rate;
     ppc_qt_set_movie_rate(cpu, memory, gworlds, current_gworld, quicktime, sound, rate)
+}
+
+/// Seek both direct movie calls and controller actions through the same
+/// decoder, audio and jump-callback lifecycle. The caller converts time scales.
+fn ppc_qt_seek_movie(quicktime: &mut PpcQuickTimeState, sound: &mut PpcSoundState, time: u64) {
+    let duration = ppc_qt_movie_duration_value(quicktime);
+    let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
+    let time = time.min(duration);
+    let before = super::dispatch_quicktime::quicktime_callback_time(quicktime);
+    let position =
+        (u128::from(time) * u128::from(tasks) * 65536 / u128::from(duration.max(1))) as u64;
+    quicktime.movie_task_count = (position >> 16) as u32;
+    quicktime.movie_task_fraction = position as u16;
+    quicktime.movie_clock_remainder = 0;
+    quicktime.movie_at_beginning = time == 0;
+    ppc_qt_reset_movie_video_decode_cache(quicktime);
+    ppc_qt_stop_movie_audio(sound);
+    if quicktime.movie_started && quicktime.movie_active {
+        let _ = ppc_qt_start_movie_audio(quicktime, sound);
+    }
+    if before != super::dispatch_quicktime::quicktime_callback_time(quicktime) {
+        quicktime
+            .callbacks
+            .mark_event(PPC_QT_TIME_BASE, callbacks::Event::Jump);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

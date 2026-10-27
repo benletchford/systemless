@@ -349,13 +349,16 @@ pub(super) fn finish_controller_callbacks(
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
     before: (i64, i32, bool),
+    service_drawing: bool,
 ) -> PpcImportAction {
     if !matches!(action, PpcImportAction::Return(0)) {
         return action;
     }
     let (before_time, before_rate, was_playing) = before;
     let (after_time, after_rate, is_playing) = quicktime_callback_progress(quicktime);
-    ppc_qt_mark_drawing_complete(quicktime, was_playing && quicktime.movie_active);
+    if service_drawing {
+        ppc_qt_mark_drawing_complete(quicktime, was_playing && quicktime.movie_active);
+    }
     if was_playing {
         quicktime.callbacks.mark_time_due(
             PPC_QT_MOVIE + 0x10,
