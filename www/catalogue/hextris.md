@@ -10,11 +10,54 @@ architectures:
 - 68k
 - ppc
 default_architecture: 68k
-launch_enabled: false
+launch_enabled: true
 category: Puzzle
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: a8fc87bd37c90a2ccb82b0ecd0c5afb75a8bee3a
+    architecture: 68k
+    environment: >-
+      Staged release-profile browser approval, merged runtime repair #5210
+      (ccecad13b44125c5ff7e49993c683da62bb34706 has the identical tested tree).
+      Exact managed original installer, selector below, Chrome for Testing
+      156.0.8078.47 mac-arm64, ordinary worker/WebGL, 25 MHz, max two ticks per
+      paint. Two visible 20-second manual-game samples pass 60.158 / 60.137
+      guest ticks/sec and 60.058 / 59.987 worker replies/sec against unchanged
+      minima 50 / 55. Browser response clone verifies the pinned archive hash
+      and size; localhost delivery uses the hash-identical hosted original.
+      Inspected Get Ready, moved and rotated pieces, then slam: score 55,
+      moves 5, rotation 1, slam 1. Original autoplay and post-game samples are
+      excluded from manual progress. Fresh native replay passes three checks
+      at 2115 frontend / 2715 guest ticks, zero exhaustion; all six PNGs match
+      merged pre-pacing source. Native executable SHA-256
+      99a17863cdf26ba5566ea83f0725a26786585b83afcc6a432cf2e695000002e1.
+      Original trial retained. Full levels, audio fidelity and released/live
+      qualification remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5210
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: a8fc87bd37c90a2ccb82b0ecd0c5afb75a8bee3a
+    architecture: ppc
+    environment: >-
+      Same exact original and staged release-profile candidate as the current
+      68K row, separate fresh browser profile and ordinary PowerPC selector.
+      Accept the original eight-bit warning and Not Yet trial flow; do not
+      force depth to hide the warning. Custom warning artwork is readable
+      after #5208. A visible 20-second manual-game sample passes 60.152 guest
+      ticks/sec and 60.002 replies/sec against unchanged minima 50 / 55.
+      Actual captures show score 50, moves 2, rotation 1 and slam 1, followed
+      by continued falling/placement. Browser response verifies both archive
+      pins. A later sample ending at Game Over is excluded as a full active
+      gameplay window. Fresh native replay passes six checks at 2718 ticks,
+      zero exhaustion; all seven PNGs match merged pre-pacing source.
+      The original 30-day trial and unregistered level-3 limit remain intact.
+      Full levels, audio fidelity and released/live qualification are pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5210
   - date: "2026-10-27"
     tester: Catalogue maintainer
     systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
@@ -105,7 +148,8 @@ artifacts:
       flags are recorded separately. The original installer completion message,
       Quit/Continue labels and Continue dismissal now pass nine measured native checks
       with repair candidate #5155.
-      The prior blank alert is recorded in #5147; browser approval remains pending.
+      The installer alert recorded in #5147 was repaired by #5155. Current browser
+      approval includes the custom-control repair #5208 and clock-polling repair #5210.
       Production expansion yields 18 records. The game contains both 68K CODE resources
       and PowerPC PEF/cfrg code. This source adds a StuffIt wrapper around the intact
       installer distribution. Its installer data fork, resource data and resource map
@@ -152,5 +196,4 @@ PowerPC version may first ask to switch to an eight-bit colour display.
 
 The complete installer includes the instructions, music and registration
 application. Its original 30-day trial terms and level-3 unregistered limit still
-apply. Native input checks pass on both CPU paths; browser qualification is
-pending, so launch remains disabled.
+apply. Play using either **68K** or **PowerPC** above.
