@@ -1882,6 +1882,13 @@ impl PpcLoadedApp {
                                             current_gworld.with_mut(|current_gworld| {
                                             current_gdevice.with_mut(|current_gdevice| {
                                             files.with_mut(|files| {
+                                            let resumed_control = ppc_control_definition_continuation(
+                                                binding, cpu, memory, &mut *process_memory_manager, &mut heap_cursor,
+                                                heap_limit, &mut last_mem_error, controls, &gworlds,
+                                                vfs_resources, *current_resource_refnum, &mut last_resource_error,
+                                                &mut toolbox_startup, current_gworld, current_gdevice, None,
+                                            );
+                                            let action = if let Some(action) = resumed_control { Some(action) } else {
                                             let action = dispatch_supported_import(PpcDispatchContext {
                                             binding,
                                             agl: &mut agl,
@@ -1998,6 +2005,13 @@ impl PpcLoadedApp {
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
                                             });
+                                            action.and_then(|action| ppc_control_definition_continuation(
+                                                binding, cpu, memory, &mut *process_memory_manager, &mut heap_cursor,
+                                                heap_limit, &mut last_mem_error, controls, &gworlds,
+                                                vfs_resources, *current_resource_refnum, &mut last_resource_error,
+                                                &mut toolbox_startup, current_gworld, current_gdevice, Some(action),
+                                            ))
+                                            };
                                             // QDGlobals.thePort is guest-visible state. Keep it
                                             // consistent with every explicit port selection,
                                             // including reselection after a window operation

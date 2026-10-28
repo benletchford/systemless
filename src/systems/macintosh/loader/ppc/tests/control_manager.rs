@@ -177,6 +177,8 @@ fn hle_import_runner_creates_and_links_a_classic_control_record() {
             has_focus: false,
             focus_part: 0,
             drag_tracking_enabled: false,
+            native_definition_pending_init: false,
+            native_definition_draws: Default::default(),
         }]
     );
 }
@@ -4566,4 +4568,210 @@ fn multiline_control_titles_draw_two_separate_text_bands() {
             "proc_id={proc_id}: both explicit lines must be visible"
         );
     }
+}
+
+#[test]
+fn native_custom_control_loads_and_enters_its_classic_definition() {
+    for resource_id in [1002i16, 319, 4095] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+        let scratch = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            64,
+            true,
+        );
+        ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 40, 140).unwrap();
+        write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Definition metadata");
+        // Pascal CDEF: LINK A6,#0; CLR.L result(A6); UNLK A6; RTD #12.
+        let definition = [0x4e56u16, 0, 0x42ae, 20, 0x4e5e, 0x4e74, 12]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>();
+        let ref_num = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num,
+                path: String::new(),
+                res_type: u32::from_be_bytes(*b"CDEF"),
+                res_id: resource_id,
+                name: Vec::new(),
+                data: definition.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = u32::from((resource_id as u16).wrapping_mul(16) | 7);
+
+        let probe = loaded.run_with_hle_imports(128);
+        assert_eq!(probe.unsupported_import_index, None);
+        let records = loaded.controls.records();
+        assert_eq!(records.len(), 1);
+        let control = &records[0];
+        assert_eq!(control.popup_menu_id, 0);
+        assert_eq!(loaded.memory.read_u32_be(control.pointer + 28), Some(0));
+        let definition_handle = loaded.memory.read_u32_be(control.pointer + 24).unwrap();
+        assert_ne!(
+            definition_handle, 0,
+            "custom controls must retain their CDEF handle"
+        );
+        let entry = loaded.memory.read_u32_be(definition_handle).unwrap();
+        let call = loaded
+            .guest_calls()
+            .activate_m68k()
+            .expect("native creation must execute initCntl");
+        assert_eq!(call.entry, entry);
+        assert_eq!(loaded.memory.read_u32_be(call.initial_sp + 4), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(call.initial_sp + 8), Some(3));
+        assert_eq!(
+            loaded.memory.read_u32_be(call.initial_sp + 10),
+            Some(control.handle)
+        );
+        assert_eq!(loaded.memory.read_u16_be(call.initial_sp + 14), Some(7));
+        assert_eq!(call.final_sp, call.initial_sp + 16);
+    }
+}
+
+#[test]
+fn custom_definition_lookup_preserves_full_resource_ids_and_builtin_fallbacks() {
+    let resource = |id, words: &[u16]| PpcVfsResourceRecord {
+        ref_num: 128,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"CDEF"),
+        res_id: id,
+        name: Vec::new(),
+        data: words
+            .iter()
+            .copied()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+            .into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    };
+    let resources = vec![
+        resource(1002, &[0x600a]),
+        resource(319, &[0x4e56, 0]),
+        resource(4095, &[0x48e7, 0]),
+        resource(1000, &[0x4e75]),
+        resource(0, &[0x4e56, 0]),
+        resource(63, &[0x4e56, 0]),
+    ];
+    assert_eq!(
+        ppc_application_control_definition(&resources, 128, 1002 * 16 + 7),
+        Some(0)
+    );
+    // Masking off the top four procID bits misidentifies this as popup 1009.
+    assert_eq!(
+        ppc_application_control_definition(&resources, 128, 319 * 16 + 1),
+        Some(1)
+    );
+    assert_eq!(
+        ppc_application_control_definition(&resources, 128, -1),
+        Some(2)
+    );
+    for proc_id in [1000 * 16, 1001 * 16, 0, 1, 2, 16, 1008, 1023] {
+        assert_eq!(
+            ppc_application_control_definition(&resources, 128, proc_id),
+            None
+        );
+    }
+}
+
+#[test]
+fn native_custom_control_executes_a_powerpc_definition_descriptor() {
+    const VECTOR: u32 = 0x0180_0000;
+    const MARKER: u32 = VECTOR + 0x80;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        64,
+        true,
+    );
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 40, 140).unwrap();
+    write_ppc_pstring(&mut loaded.memory, scratch + 8, b"Native definition");
+    loaded.memory.add_region(VECTOR, vec![0; 0x100]);
+    loaded.memory.write_u32_be(VECTOR, VECTOR + 8).unwrap();
+    loaded
+        .memory
+        .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+        .unwrap();
+    // Record the four native CDEF arguments and count both init and draw.
+    for (index, word) in [
+        0x3d80_0180u32,
+        0x618c_0080,
+        0x906c_0000,
+        0x908c_0004,
+        0x90ac_0008,
+        0x90cc_000c,
+        0x816c_0010,
+        0x396b_0001,
+        0x916c_0010,
+        0x3860_0000,
+        0x4e80_0020,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(VECTOR + 8 + index as u32 * 4, word)
+            .unwrap();
+    }
+    let mut descriptor =
+        vec![0; (PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE) as usize];
+    descriptor[..2].copy_from_slice(&PPC_MIXED_MODE_TRAP.to_be_bytes());
+    descriptor[2] = PPC_ROUTINE_DESCRIPTOR_VERSION;
+    let record = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE as usize;
+    descriptor[record..record + 4].copy_from_slice(&0x3bb0u32.to_be_bytes());
+    descriptor[record + 5] = PPC_ROUTINE_RECORD_POWERPC_ISA;
+    descriptor[record + 6..record + 8]
+        .copy_from_slice(&PPC_ROUTINE_FLAG_USE_NATIVE_ISA.to_be_bytes());
+    descriptor[record + 8..record + 12].copy_from_slice(&VECTOR.to_be_bytes());
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: *loaded.process_file_system.current_resource_file,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"CDEF"),
+            res_id: 1002,
+            name: Vec::new(),
+            data: descriptor.into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 1002 * 16 + 7;
+    let probe = loaded.run_with_hle_imports(512);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+    let handle = loaded.controls.records()[0].handle;
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(loaded.memory.read_u32_be(MARKER), Some(7));
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 4), Some(handle));
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 8), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 12), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 16), Some(2));
+    assert!(loaded.guest_calls().is_empty());
 }

@@ -2501,3 +2501,166 @@ fn parked_event_loop_timer_masks_timers_but_not_interrupts_during_its_68k_call()
     assert_eq!(irq_read(&runner, IRQ_PRIVATE), IRQ_PRIVATE_VALUE);
     irq_assert_foreground_intact(&runner, &expected);
 }
+
+#[test]
+fn native_control_executes_original_classic_definition_and_returns_to_caller() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    use crate::process_context::ProcessVfsResourceRecord;
+
+    const SCRATCH: u32 = 0x0180_0000;
+    const MARKER: u32 = SCRATCH + 64;
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    native.memory.add_region(SCRATCH, vec![0; 512]);
+    for (index, value) in [10u16, 20, 40, 140].into_iter().enumerate() {
+        native
+            .memory
+            .write_u16_be(SCRATCH + index as u32 * 2, value)
+            .unwrap();
+    }
+    native.memory.write_u8(SCRATCH + 8, 0).unwrap();
+    // Pascal CDEF records its message, variant, and invocation count. Both
+    // initCntl and drawCntl must execute real guest instructions before the
+    // original NewControl import returns its ControlHandle.
+    let words = [
+        0x4e56u16,
+        0,
+        // Append each message to the guest log in invocation order.
+        0x207c,
+        ((MARKER + 20) >> 16) as u16,
+        (MARKER + 20) as u16,
+        0x2250,
+        0x32ee,
+        12,
+        0x2089,
+        0x4879,
+        ((MARKER + 8) >> 16) as u16,
+        (MARKER + 8) as u16,
+        0xa874, // GetPort
+        0xa89e, // PenNormal
+        0x206e,
+        14,     // MOVEA.L controlHandle(A6),A0
+        0x2050, // MOVEA.L (A0),A0
+        // The CDEF must still see its live ControlRecord during disposal.
+        0x23e8,
+        24,
+        ((MARKER + 16) >> 16) as u16,
+        (MARKER + 16) as u16,
+        0x4868,
+        8,      // PEA contrlRect(A0)
+        0xa8a2, // PaintRect must draw through the owner's live native port.
+        0x33ee,
+        12,
+        (MARKER >> 16) as u16,
+        MARKER as u16,
+        0x33ee,
+        18,
+        ((MARKER + 2) >> 16) as u16,
+        (MARKER + 2) as u16,
+        0x52b9,
+        ((MARKER + 4) >> 16) as u16,
+        (MARKER + 4) as u16,
+        0x42ae,
+        20,
+        0x4e5e,
+        0x4e74,
+        12,
+    ];
+    native
+        .process_file_system
+        .push_vfs_resource(ProcessVfsResourceRecord {
+            ref_num: *native.process_file_system.current_resource_file,
+            path: String::new(),
+            res_type: u32::from_be_bytes(*b"CDEF"),
+            res_id: 1002,
+            name: Vec::new(),
+            data: words
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect::<Vec<_>>()
+                .into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    native
+        .memory
+        .write_u32_be(MARKER + 20, MARKER + 32)
+        .unwrap();
+    let mut dispose = test_ppc_import_binding(1, "InterfaceLib", "DisposeControl");
+    dispose.dispatcher_target =
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl);
+    dispose.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+    native.memory.add_region(dispose.trap_pc, vec![0; 4]);
+    let program = SCRATCH + 0x100;
+    // One actual guest invocation creates, uses and disposes the control.
+    // Returning from its first import is ordinary control flow, so the
+    // debugger's intentional halt/pause state never needs to be reset.
+    let words = [
+        ppc_test_relative_branch(program, native.imports[0].trap_pc) | 1,
+        0x3d80_0000 | (MARKER >> 16),
+        0x618c_0000 | (MARKER & 0xffff),
+        0x906c_000c, // stw r3,12(r12): retain NewControl's return value.
+        ppc_test_relative_branch(program + 16, dispose.trap_pc) | 1,
+        ppc_test_relative_branch(program + 20, native.halt_pc),
+    ];
+    for (index, word) in words.into_iter().enumerate() {
+        native
+            .memory
+            .write_u32_be(program + index as u32 * 4, word)
+            .unwrap();
+    }
+    native.imports.push(dispose);
+    native.import_count = 2;
+    native.entry_pc = program;
+    native.cpu.pc = program;
+    native.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    native.cpu.gpr[4] = SCRATCH;
+    native.cpu.gpr[5] = SCRATCH + 8;
+    native.cpu.gpr[6] = 1;
+    native.cpu.gpr[7] = 0;
+    native.cpu.gpr[8] = 0;
+    native.cpu.gpr[9] = 1;
+    native.cpu.gpr[10] = 1002 * 16 + 7;
+    native.current_gworld.set(PPC_DSP_BACK_GWORLD);
+    let original_port = *native.current_gworld;
+    let original_device = *native.current_gdevice;
+    let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    let native = runner.native.application_mut().unwrap();
+    let attached = native
+        .gworlds
+        .iter()
+        .find(|world| world.port == PPC_MAIN_GWORLD)
+        .unwrap();
+    assert_eq!(attached.depth, 8);
+    let painted_pixel = attached.base_addr + 25 * attached.row_bytes + 25;
+    // Standard 8-bit device palette: white is index 0, black is index 255.
+    native.memory.write_u8(painted_pixel, 0).unwrap();
+    let (_, running) = runner.run_steps(4096, None);
+    assert!(!running);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.cpu.pc, native.halt_pc);
+    assert_eq!(native.memory.read_u32_be(MARKER + 8), Some(PPC_MAIN_GWORLD));
+    assert_eq!(
+        native.memory.read_u8(painted_pixel),
+        Some(0xff),
+        "CDEF PaintRect must reach its owner port"
+    );
+    assert_eq!(native.memory.read_u16_be(MARKER), Some(4));
+    assert_eq!(native.memory.read_u16_be(MARKER + 2), Some(7));
+    assert_eq!(native.memory.read_u32_be(MARKER + 4), Some(3));
+    assert_eq!(native.memory.read_u16_be(MARKER + 32), Some(3));
+    assert_eq!(native.memory.read_u16_be(MARKER + 34), Some(0));
+    assert_eq!(native.memory.read_u16_be(MARKER + 36), Some(4));
+    let control = native.memory.read_u32_be(MARKER + 12).unwrap();
+    assert_ne!(control, 0);
+    assert_eq!(native.cpu.gpr[3], control);
+    let definition = native.memory.read_u32_be(MARKER + 16).unwrap();
+    assert_ne!(definition, 0);
+    assert!(native.controls.records().is_empty());
+    assert_ne!(native.memory.read_u32_be(definition), Some(0));
+    assert_eq!(*native.current_gworld, original_port);
+    assert_eq!(*native.current_gdevice, original_device);
+    assert!(native.guest_calls().is_empty());
+}

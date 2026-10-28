@@ -78,6 +78,8 @@ pub(crate) struct ProcessControlRecord {
     pub(crate) has_focus: bool,
     pub(crate) focus_part: i16,
     pub(crate) drag_tracking_enabled: bool,
+    pub(crate) native_definition_pending_init: bool,
+    pub(crate) native_definition_draws: std::cell::RefCell<Vec<u64>>,
 }
 
 /// The Appearance Manager style override associated with a ControlRef.
@@ -138,6 +140,8 @@ impl ProcessControlManagerState {
             has_focus: false,
             focus_part: 0,
             drag_tracking_enabled: false,
+            native_definition_pending_init: false,
+            native_definition_draws: Default::default(),
         });
     }
 

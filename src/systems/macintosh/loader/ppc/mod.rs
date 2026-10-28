@@ -123,6 +123,7 @@ mod dispatch_collection;
 mod dispatch_drag;
 mod dispatch_color_tables;
 mod dispatch_control;
+mod dispatch_control_definition;
 mod dispatch_core_foundation;
 mod dispatch_internet_config;
 mod dispatch_glide;
@@ -187,6 +188,7 @@ mod dispatch_window;
 pub(crate) use dispatch_collection::PpcCollectionCallbackState;
 pub(crate) use dispatch_drag::{PpcDragHilite, PpcDragTrackingState};
 use dispatch_control::*;
+use dispatch_control_definition::*;
 pub(crate) use dispatch_dialog::PpcDialogCallbackState;
 use dispatch_dialog::*;
 #[cfg(test)]
