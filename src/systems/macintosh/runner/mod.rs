@@ -999,6 +999,13 @@ const PC_SAMPLE_INTERVAL: u64 = 1000;
 /// loop overhead to well under 0.1%.
 const BATCH_CHUNK: usize = 8192;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrapBoundary {
+    None,
+    Any,
+    ExceptDefaultTickCount,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_pc_range_active() -> bool {
     trace_pc_range().is_some()
@@ -5343,6 +5350,116 @@ impl FixtureRunner {
         self.finish_audio_frame(audio_samples, false);
     }
 
+    /// Replace complete passes of a counted clock wait, retaining its counter.
+    ///
+    /// ADDQ.L #n,Dc; SUBQ #4,A7; TickCount; MOVE.L (A7)+,Ds;
+    /// CMP.L Ddeadline,Ds; BCS back to ADDQ.
+    ///
+    /// At this post-trap boundary a pass changes only Dc: Ds and the result
+    /// slot already hold this tick, and the ADDQ flags stay identical. Charge
+    /// all six instructions per pass, stopping strictly before a tick, timer,
+    /// counter flag transition or caller instruction limit. The CPU executes
+    /// every boundary crossing and the loop's eventual exit normally.
+    fn try_counted_tick_poll(
+        &mut self,
+        pc: u32,
+        max_steps: usize,
+        count: &mut usize,
+        tick_cap: Option<u32>,
+    ) -> usize {
+        if per_instruction_diagnostics_active()
+            || self.debug_step_units_remaining().is_some()
+            || self.debug_breakpoint_rearming()
+            || !self.debug_m68k_breakpoint_addresses().is_empty()
+            || self.active_interrupt_callback.is_some()
+            || self.m68k.cpu.core.int_level != 0
+            || self.m68k.cpu.core.virq_state != 0
+            || self.m68k.cpu.core.nmi_pending != 0
+            || self.m68k.cpu.core.exception_processing
+            || self.m68k.cpu.core.loop_mode
+            || self.m68k.cpu.core.get_sr() & 0xc000 != 0
+            || self.m68k.cpu.core.pmmu_enabled
+            || self.frozen_ticks.is_some()
+            || self.pass_recorder.is_some()
+            || self.dispatcher.has_native_trap_patch(&self.bus, 0xa975)
+        {
+            return 0;
+        }
+        let Some(start) = pc.checked_sub(6) else {
+            return 0;
+        };
+        let add = self.bus.read_word(start);
+        let sample = self.bus.read_word(pc);
+        let compare = self.bus.read_word(pc.wrapping_add(2));
+        if add & 0xf1f8 != 0x5080
+            || !matches!(self.bus.read_word(start + 2), 0x594f | 0x598f)
+            || self.bus.read_word(start + 4) != 0xa975
+            || sample & 0xf1ff != 0x201f
+            || compare & 0xf1f8 != 0xb080
+            || self.bus.read_word(pc.wrapping_add(4)) != 0x65f4
+        {
+            return 0;
+        }
+        let counter = (add & 7) as usize;
+        let sample_reg = ((sample >> 9) & 7) as usize;
+        let deadline_reg = (compare & 7) as usize;
+        if ((compare >> 9) & 7) as usize != sample_reg
+            || counter == sample_reg
+            || counter == deadline_reg
+        {
+            return 0;
+        }
+        let tick = self.guest_tick();
+        let sp = self.m68k.cpu.core.a(7);
+        if tick_cap.is_some_and(|cap| tick >= cap)
+            || self.m68k.cpu.core.d(sample_reg) != tick
+            || tick >= self.m68k.cpu.core.d(deadline_reg)
+            || sp < 0x10000
+            || u64::from(sp) + 4 > u64::from(self.bus.ram_size())
+            || self.bus.range_translates_contiguously(sp, 4) != Some(sp)
+            || self.bus.read_long(sp) != tick
+        {
+            return 0;
+        }
+        let value = self.m68k.cpu.core.d(counter);
+        let step = u32::from((add >> 9) & 7);
+        let step = if step == 0 { 8 } else { step };
+        // Away from carry/overflow/zero transitions, the preceding ADDQ set
+        // only N for a negative result. Do not assume how this code was entered.
+        let flags = if value & 0x8000_0000 != 0 { 8 } else { 0 };
+        if self.m68k.cpu.core.get_ccr() != flags {
+            return 0;
+        }
+        let budget = i64::from(self.tick_budget);
+        let mut passes = i64::from(passes_with_unchanged_flags(value, step, 4))
+            .min((budget - 1).max(0) / 6)
+            .min((max_steps.saturating_sub(*count) / 6) as i64);
+        if let Some(due) = self.next_m68k_timer_subtick() {
+            let per_tick = i128::from(self.instructions_per_tick.max(1));
+            let tick_base = u64::from(tick) * 1_000_000;
+            let room = i128::from(due.saturating_sub(tick_base)) * per_tick - 1;
+            let elapsed = per_tick - i128::from(budget);
+            let allowed = (room - elapsed * 1_000_000).div_euclid(6 * 1_000_000);
+            passes = passes.min(allowed.clamp(0, i128::from(i64::MAX)) as i64);
+        }
+        if passes <= 0 {
+            return 0;
+        }
+        self.cancel_idle_cycle_observation();
+        self.m68k
+            .cpu
+            .core
+            .set_d(counter, value.wrapping_add(step * passes as u32));
+        // The last skipped A-line fetch also takes this rollback snapshot.
+        self.m68k.cpu.core.dar_save = self.m68k.cpu.core.dar;
+        self.m68k.cpu.core.sr_save = self.m68k.cpu.core.get_sr();
+        let units = passes as usize * 6;
+        self.tick_budget -= units as i32;
+        *count += units;
+        self.total_instructions = self.total_instructions.wrapping_add(units as u64);
+        passes as usize
+    }
+
     /// Try to fast-forward past a TickCount spin-wait loop. Returns
     /// true iff the `tick_cap` was hit during advancement (caller
     /// should break the outer run loop); returns false if no match,
@@ -6671,7 +6788,7 @@ impl FixtureRunner {
             yield_for_ui,
             sound_work_only,
             finish_frame,
-            false,
+            TrapBoundary::None,
         )
     }
 
@@ -6684,7 +6801,7 @@ impl FixtureRunner {
         yield_for_ui: bool,
         sound_work_only: bool,
         finish_frame: FrameFinalization,
-        yield_after_trap: bool,
+        trap_boundary: TrapBoundary,
     ) -> (usize, bool) {
         let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         let result = self.run_steps_internal_impl(
@@ -6694,7 +6811,7 @@ impl FixtureRunner {
             yield_for_ui,
             sound_work_only,
             finish_frame,
-            yield_after_trap,
+            trap_boundary,
         );
         self.sync_guest_mouse_position(previous_mouse);
         // Returning to the embedding is a scheduler safe point. Publish any
@@ -6718,7 +6835,7 @@ impl FixtureRunner {
         yield_for_ui: bool,
         sound_work_only: bool,
         finish_frame: FrameFinalization,
-        yield_after_trap: bool,
+        trap_boundary: TrapBoundary,
     ) -> (usize, bool) {
         if self.guest_work_is_suspended() {
             return (0, !self.halted);
@@ -6875,10 +6992,18 @@ impl FixtureRunner {
             .unwrap_or(false);
         let mut watch_buf = Vec::with_capacity(4);
 
-        let initial_trap_count = self.dispatcher.trap_count;
+        let mut previous_trap_count = self.dispatcher.trap_count;
         while count < max_steps && !self.halted && !tick_cap_reached {
-            if yield_after_trap && self.dispatcher.trap_count != initial_trap_count {
-                break;
+            if trap_boundary != TrapBoundary::None
+                && self.dispatcher.trap_count != previous_trap_count
+            {
+                let default_tick_count = trap_boundary == TrapBoundary::ExceptDefaultTickCount
+                    && self.dispatcher.trap_count == previous_trap_count.wrapping_add(1)
+                    && self.dispatcher.last_trap_is_default_tick_count(&self.bus);
+                if !default_tick_count {
+                    break;
+                }
+                previous_trap_count = self.dispatcher.trap_count;
             }
             if self.debug_finish_step_if_ready() {
                 return (count, !self.halted);
@@ -7578,11 +7703,18 @@ impl FixtureRunner {
                                 && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
                                 && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
                             {
-                                let hit_cap = self.try_tickcount_spin_fastfwd(
+                                let skipped = self.try_counted_tick_poll(
                                     pc.wrapping_add(2),
-                                    tick_cap,
+                                    max_steps,
                                     &mut count,
+                                    tick_cap,
                                 );
+                                let hit_cap = skipped == 0
+                                    && self.try_tickcount_spin_fastfwd(
+                                        pc.wrapping_add(2),
+                                        tick_cap,
+                                        &mut count,
+                                    );
                                 if hit_cap {
                                     break;
                                 }
@@ -10603,7 +10735,27 @@ impl FixtureRunner {
             true,
             false,
             FrameFinalization::Deferred,
+            TrapBoundary::Any,
+        )
+    }
+
+    /// Run a bounded browser CPU batch while retaining default TickCount polls.
+    /// The unpatched HLE only reads the clock and writes its result. All other
+    /// traps, including guest-patched TickCount, still return to the host budget
+    /// check. Instruction and guest tick caps remain unchanged.
+    pub fn run_gui_cpu_slice_until_host_work(
+        &mut self,
+        max_steps: usize,
+        deadline_tick: u32,
+    ) -> (usize, bool) {
+        self.run_steps_with_trap_boundary(
+            max_steps,
+            Some(deadline_tick),
+            0,
             true,
+            false,
+            FrameFinalization::Deferred,
+            TrapBoundary::ExceptDefaultTickCount,
         )
     }
 

@@ -26,6 +26,7 @@ mod audio;
 mod boot;
 mod cfm;
 mod cursor;
+mod counted_tick_poll;
 mod debug;
 mod dialog;
 mod display;
