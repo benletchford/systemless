@@ -8696,15 +8696,21 @@ impl TrapDispatcher {
         // adapter ahead of it in the chain would decline them after its own
         // entry work (re-reading Ticks, loading the current port's drawing
         // state), none of which SANE uses, so they go straight to it.
-        let sane = if is_tool && matches!(trap_num, 0x1EB | 0x1EC) {
-            self.dispatch_sane(is_tool, trap_num, cpu, bus)
-        } else {
-            None
+        // TickCount likewise needs no drawing, resource or dialog adapter.
+        // Keep normal trap-table routing above and common accounting/auto-pop
+        // completion below; only bypass adapters that would decline this call.
+        let fast_result = match (is_tool, trap_num) {
+            (true, 0x175) => {
+                selected_adapter = TrapAdapterId::Toolbox;
+                self.dispatch_toolbox(is_tool, trap_num, cpu, bus)
+            }
+            (true, 0x1EB | 0x1EC) => {
+                selected_adapter = TrapAdapterId::Sane;
+                self.dispatch_sane(is_tool, trap_num, cpu, bus)
+            }
+            _ => None,
         };
-        if sane.is_some() {
-            selected_adapter = TrapAdapterId::Sane;
-        }
-        let result = sane
+        let result = fast_result
             .or_else(|| {
                 self.dispatch_unimplemented(is_tool, trap_num, cpu, bus)
                     .map(|result| {
