@@ -9498,6 +9498,39 @@
     }
 
     #[test]
+    fn dialog_items_draw_in_the_dialog_ports_text_state() {
+        // Items are drawn in the dialog's own port (IM:I I-412), not in the
+        // text style of whichever port was current.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 120, 220);
+        let items = vec![DialogItem {
+            item_type: 0x88,
+            rect: (10, 10, 30, 170),
+            text: "Save document as:".to_string(),
+            ..Default::default()
+        }];
+        let draw = |face: i16| {
+            let (mut disp, _cpu, mut bus) = setup();
+            disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+            let dialog_ptr = bus.alloc(170);
+            disp.tx_face = face;
+            disp.draw_dialog(&mut bus, bounds, 1, "", &items, 0, "", 0, false, dialog_ptr);
+            let plain_draw = bus.read_bytes(screen_base, (row_bytes * 342) as usize);
+            for offset in 0..row_bytes * 342 {
+                bus.write_byte(screen_base + offset, 0);
+            }
+            disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 0, "", 0, dialog_ptr, None);
+            (plain_draw, bus.read_bytes(screen_base, (row_bytes * 342) as usize))
+        };
+        let plain = draw(0);
+        let outlined_port = draw(8);
+        assert!(plain.0.iter().any(|&byte| byte != 0));
+        assert_eq!(outlined_port.0, plain.0, "DrawDialog");
+        assert_eq!(outlined_port.1, plain.1, "retained redraw");
+    }
+
+    #[test]
     fn draw_dialog_honors_live_standard_control_visibility() {
         // HideControl sets contrlVis to zero and DrawDialog redraws the
         // dialog's controls through the Control Manager (IM:I I-329/I-417).
