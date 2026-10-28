@@ -31,10 +31,13 @@ const MAX_STEPS_PER_PAINT: usize = 2_000_000;
 /// CPU batches stay short enough that long startup/loading phases re-check the
 /// browser frame budget frequently, but not so short that JS clock calls become
 /// a significant part of the rAF slice.
-// Keep costly Toolbox traps interruptible within one browser frame. Koji's
-// shareware dialog runs several drawing traps close together; larger slices
-// can spend over 50 ms in a single callback before the time budget is checked.
-const M68K_CPU_BATCH_INSTRUCTIONS: usize = 64;
+// Keep presentation-grace probes short so their existing drawing checks run
+// frequently after the ordinary CPU phase.
+const M68K_PRESENTATION_CPU_BATCH_INSTRUCTIONS: usize = 64;
+// Ordinary execution yields at every classic trap. A larger instruction cap
+// lets portable CPU traces run while the host can recheck its time budget
+// between costly Toolbox calls.
+const M68K_TRAP_BOUNDED_CPU_BATCH_INSTRUCTIONS: usize = 8192;
 /// Allow a short trap-free 68k drawing burst before the canvas samples RAM,
 /// subject to the same browser time budget as ordinary CPU work.
 const M68K_PRESENTATION_GRACE_INSTRUCTIONS: usize = 100_000;
@@ -637,8 +640,12 @@ impl Machine {
             let remaining_audio = audio_samples.saturating_sub(audio_mixed);
             let batch_audio = remaining_audio.min(AUDIO_CALLBACK_CHUNK_SAMPLES);
 
-            let (steps, still_running) =
-                self.runner.run_gui_cpu_slice(batch_steps, effective_target);
+            let (steps, still_running) = if self.runner.is_powerpc_app() {
+                self.runner.run_gui_cpu_slice(batch_steps, effective_target)
+            } else {
+                self.runner
+                    .run_gui_cpu_slice_until_trap(batch_steps, effective_target)
+            };
             total_steps = total_steps.saturating_add(steps);
             visual_steps = visual_steps.saturating_add(steps);
             running = still_running;
@@ -671,7 +678,7 @@ impl Machine {
             self.runner.dispatcher().trap_count,
         ) && web_cpu_budget_remaining(frame_start_ms, performance_now(), cpu_budget_ms)
         {
-            let batch_steps = M68K_CPU_BATCH_INSTRUCTIONS
+            let batch_steps = M68K_PRESENTATION_CPU_BATCH_INSTRUCTIONS
                 .min(M68K_PRESENTATION_GRACE_INSTRUCTIONS.saturating_sub(presentation_grace_steps));
             let (steps, still_running) = self
                 .runner
@@ -1553,7 +1560,7 @@ fn browser_cpu_batch_instructions(powerpc: bool) -> usize {
     if powerpc {
         PPC_CPU_BATCH_INSTRUCTIONS
     } else {
-        M68K_CPU_BATCH_INSTRUCTIONS
+        M68K_TRAP_BOUNDED_CPU_BATCH_INSTRUCTIONS
     }
 }
 
@@ -2210,25 +2217,20 @@ mod tests {
     #[test]
     fn browser_cpu_batches_balance_responsiveness_and_ppc_sync_overhead() {
         assert!(
-            M68K_CPU_BATCH_INSTRUCTIONS <= 64,
-            "68k browser CPU batches must stay short enough that heavy startup traps \
-             cannot monopolize a whole animation frame"
-        );
-        assert!(
-            MAX_STEPS_PER_PAINT.div_ceil(M68K_CPU_BATCH_INSTRUCTIONS) >= 400,
-            "max 68k paint work should be split into many interruptible browser batches"
+            M68K_PRESENTATION_CPU_BATCH_INSTRUCTIONS <= 64,
+            "presentation-grace probes must retain their short instruction cap"
         );
         assert_eq!(
             browser_cpu_batch_instructions(false),
-            M68K_CPU_BATCH_INSTRUCTIONS
+            M68K_TRAP_BOUNDED_CPU_BATCH_INSTRUCTIONS
         );
         assert_eq!(
             browser_cpu_batch_instructions(true),
             PPC_CPU_BATCH_INSTRUCTIONS
         );
         assert!(
-            PPC_CPU_BATCH_INSTRUCTIONS >= M68K_CPU_BATCH_INSTRUCTIONS * 20,
-            "PPC batches must amortize runner synchronization overhead"
+            M68K_TRAP_BOUNDED_CPU_BATCH_INSTRUCTIONS <= MAX_STEPS_PER_PAINT / 10,
+            "trap-free classic execution must still return within a bounded batch"
         );
         assert!(
             PPC_CPU_BATCH_INSTRUCTIONS <= MAX_STEPS_PER_PAINT / 10,

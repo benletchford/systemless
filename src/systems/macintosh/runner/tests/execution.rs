@@ -1140,3 +1140,39 @@ fn ppc_retained_drag_wait_advances_clock_and_timers_without_executing_idle_cycle
     assert!(runner.is_drag_presentation_wait());
     assert_eq!(runner.guest_tick(), before + 2);
 }
+
+#[test]
+fn gui_trap_bounded_slice_runs_long_cpu_bursts_but_stops_between_traps() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let entry = 0x0020_0000;
+    for i in 0..256 {
+        runner.bus.write_word(entry + i * 2, 0x4e71); // NOP
+    }
+    runner.bus.write_word(entry + 512, 0xa975); // TickCount
+    runner.bus.write_word(entry + 514, 0x7207); // MOVEQ #7,D1
+    runner.bus.write_word(entry + 516, 0xa975); // TickCount
+    runner.bus.write_word(entry + 518, 0x7209); // MOVEQ #9,D1
+    runner.m68k.cpu.write_reg(Register::PC, entry);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+    let traps = runner.dispatcher.trap_count;
+
+    let (steps, running) = runner.run_gui_cpu_slice_until_trap(64, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 64);
+    assert_eq!(runner.dispatcher.trap_count, traps);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 128);
+
+    let (steps, running) = runner.run_gui_cpu_slice_until_trap(8192, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 193);
+    assert_eq!(runner.dispatcher.trap_count, traps + 1);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 514);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+
+    let (steps, running) = runner.run_gui_cpu_slice_until_trap(8192, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 2);
+    assert_eq!(runner.dispatcher.trap_count, traps + 2);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 518);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+}
