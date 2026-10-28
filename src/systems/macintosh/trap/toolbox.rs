@@ -13361,8 +13361,10 @@ impl super::TrapDispatcher {
                     if let Some((num_types_offset, type_list_offset)) = get_filter_offsets {
                         let num_types = bus.read_word(sp + num_types_offset) as i16;
                         let type_list_ptr = bus.read_long(sp + type_list_offset);
+                        // `where` is pushed first, above the prompt: SP+24 for
+                        // SFGetFile, SP+30 for SFPGetFile.
                         let requested_origin = matches!(selector, 0x0002 | 0x0004).then(|| {
-                            let where_offset = if selector == 0x0002 { 22 } else { 28 };
+                            let where_offset = if selector == 0x0002 { 24 } else { 30 };
                             (
                                 bus.read_word(sp + where_offset) as i16,
                                 bus.read_word(sp + where_offset + 2) as i16,
