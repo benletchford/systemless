@@ -7642,6 +7642,11 @@ impl TrapDispatcher {
         bus.try_read_trap_manager_long(TrapManager::table_address(canonical, kind)) == Some(default)
     }
 
+    pub(crate) fn last_trap_is_default_tick_count(&self, bus: &MacMemoryBus) -> bool {
+        self.current_trap_word & !0x0400 == 0xa975
+            && self.trap_table_cell_is_default(bus, 0xa975)
+    }
+
     /// Return the current non-default handler for a canonical trap slot.
     /// Once low-memory tables exist, their bytes are the source of truth so a
     /// guest can patch a trap with an ordinary longword store.

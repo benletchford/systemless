@@ -999,6 +999,13 @@ const PC_SAMPLE_INTERVAL: u64 = 1000;
 /// loop overhead to well under 0.1%.
 const BATCH_CHUNK: usize = 8192;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrapBoundary {
+    None,
+    Any,
+    ExceptDefaultTickCount,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn trace_pc_range_active() -> bool {
     trace_pc_range().is_some()
@@ -6671,7 +6678,7 @@ impl FixtureRunner {
             yield_for_ui,
             sound_work_only,
             finish_frame,
-            false,
+            TrapBoundary::None,
         )
     }
 
@@ -6684,7 +6691,7 @@ impl FixtureRunner {
         yield_for_ui: bool,
         sound_work_only: bool,
         finish_frame: FrameFinalization,
-        yield_after_trap: bool,
+        trap_boundary: TrapBoundary,
     ) -> (usize, bool) {
         let previous_mouse = self.bus.read_long(crate::memory::globals::addr::MOUSE_LOC2);
         let result = self.run_steps_internal_impl(
@@ -6694,7 +6701,7 @@ impl FixtureRunner {
             yield_for_ui,
             sound_work_only,
             finish_frame,
-            yield_after_trap,
+            trap_boundary,
         );
         self.sync_guest_mouse_position(previous_mouse);
         // Returning to the embedding is a scheduler safe point. Publish any
@@ -6718,7 +6725,7 @@ impl FixtureRunner {
         yield_for_ui: bool,
         sound_work_only: bool,
         finish_frame: FrameFinalization,
-        yield_after_trap: bool,
+        trap_boundary: TrapBoundary,
     ) -> (usize, bool) {
         if self.guest_work_is_suspended() {
             return (0, !self.halted);
@@ -6875,10 +6882,18 @@ impl FixtureRunner {
             .unwrap_or(false);
         let mut watch_buf = Vec::with_capacity(4);
 
-        let initial_trap_count = self.dispatcher.trap_count;
+        let mut previous_trap_count = self.dispatcher.trap_count;
         while count < max_steps && !self.halted && !tick_cap_reached {
-            if yield_after_trap && self.dispatcher.trap_count != initial_trap_count {
-                break;
+            if trap_boundary != TrapBoundary::None
+                && self.dispatcher.trap_count != previous_trap_count
+            {
+                let default_tick_count = trap_boundary == TrapBoundary::ExceptDefaultTickCount
+                    && self.dispatcher.trap_count == previous_trap_count.wrapping_add(1)
+                    && self.dispatcher.last_trap_is_default_tick_count(&self.bus);
+                if !default_tick_count {
+                    break;
+                }
+                previous_trap_count = self.dispatcher.trap_count;
             }
             if self.debug_finish_step_if_ready() {
                 return (count, !self.halted);
@@ -10603,7 +10618,27 @@ impl FixtureRunner {
             true,
             false,
             FrameFinalization::Deferred,
+            TrapBoundary::Any,
+        )
+    }
+
+    /// Run a bounded browser CPU batch while retaining default TickCount polls.
+    /// The unpatched HLE only reads the clock and writes its result. All other
+    /// traps, including guest-patched TickCount, still return to the host budget
+    /// check. Instruction and guest tick caps remain unchanged.
+    pub fn run_gui_cpu_slice_until_host_work(
+        &mut self,
+        max_steps: usize,
+        deadline_tick: u32,
+    ) -> (usize, bool) {
+        self.run_steps_with_trap_boundary(
+            max_steps,
+            Some(deadline_tick),
+            0,
             true,
+            false,
+            FrameFinalization::Deferred,
+            TrapBoundary::ExceptDefaultTickCount,
         )
     }
 

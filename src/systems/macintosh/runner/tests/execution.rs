@@ -1176,3 +1176,70 @@ fn gui_trap_bounded_slice_runs_long_cpu_bursts_but_stops_between_traps() {
     assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 518);
     assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
 }
+
+#[test]
+fn gui_host_work_boundary_batches_clock_reads_but_yields_after_other_traps() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let entry = 0x0020_0000;
+    for (i, word) in [0xa975, 0x7207, 0xa975, 0x2417, 0xa974, 0x7209]
+        .into_iter()
+        .enumerate()
+    {
+        runner.bus.write_word(entry + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, entry);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+    runner.dispatcher.set_tick_count_for_test(&mut runner.bus, 50);
+    let tick = runner.guest_tick();
+    let traps = runner.dispatcher.trap_count;
+    let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 5);
+    assert_eq!(runner.dispatcher.trap_count, traps + 3);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 10);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D2), tick);
+}
+
+#[test]
+fn gui_host_work_boundary_keeps_clock_poll_instruction_and_tick_caps() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let entry = 0x0020_0000;
+    runner.bus.write_word(entry, 0xa975);
+    runner.bus.write_word(entry + 2, 0x5283); // ADDQ.L #1,D3 keeps this a counting loop
+    runner.bus.write_word(entry + 4, 0x60fa); // BRA back to TickCount
+    runner.m68k.cpu.write_reg(Register::PC, entry);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+    runner.dispatcher.set_tick_count_for_test(&mut runner.bus, 50);
+    let tick = runner.guest_tick();
+    let (steps, running) = runner.run_gui_cpu_slice_until_host_work(64, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 64);
+    assert_eq!(runner.guest_tick(), tick);
+    runner.tick_budget = 3;
+    let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, tick + 1);
+    assert!(running);
+    assert!(steps <= 3);
+    assert_eq!(runner.guest_tick(), tick + 1);
+}
+
+#[test]
+fn gui_host_work_boundary_yields_before_running_patched_clock_handler() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let entry = 0x0020_0000;
+    let handler = 0x0021_0000;
+    runner.bus.write_word(entry, 0xa975);
+    runner.bus.write_word(handler, 0x7207); // MOVEQ #7,D1
+    runner.bus.write_word(handler + 2, 0x4e75);
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xa975, handler)
+        .unwrap();
+    runner.m68k.cpu.write_reg(Register::PC, entry);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+    let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 1);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), handler);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+}
