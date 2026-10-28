@@ -1401,6 +1401,7 @@ pub(super) fn ppc_begin_m68k_universal_proc(
         final_pc,
         return_gpr3,
         None,
+        None,
     )
 }
 
@@ -1434,6 +1435,39 @@ pub(super) fn ppc_begin_m68k_universal_proc_with_operation(
         final_pc,
         return_gpr3,
         Some(operation),
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_begin_m68k_universal_proc_with_a5(
+    cpu: &PpcCpu,
+    process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    startup: &mut PpcToolboxStartupState,
+    target: GuestProcedure,
+    proc_info: u32,
+    arguments: Vec<u32>,
+    final_pc: u32,
+    a5: u32,
+) -> Option<PpcImportAction> {
+    ppc_begin_m68k_universal_proc_inner(
+        cpu,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        startup,
+        target,
+        proc_info,
+        None,
+        arguments,
+        final_pc,
+        PpcNativeReturnGpr3::Preserve,
+        None,
+        Some(a5),
     )
 }
 
@@ -1452,6 +1486,7 @@ fn ppc_begin_m68k_universal_proc_inner(
     final_pc: u32,
     return_gpr3: PpcNativeReturnGpr3,
     operation: Option<crate::guest_call::ManagerContinuation>,
+    a5: Option<u32>,
 ) -> Option<PpcImportAction> {
     use crate::guest_call::{M68kRegisterState, M68kResultSource};
 
@@ -1471,9 +1506,10 @@ fn ppc_begin_m68k_universal_proc_inner(
         (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x03
     };
     let mut registers = M68kRegisterState::default();
-    // Native processes expose their compatibility globals through the
-    // synthetic mini-A5 world returned by SetCurrentA5/LMGetCurrentA5.
-    registers.address[5] = PPC_DATA_BASE;
+    // Legacy Mixed Mode callers use the compatibility A5 value returned by
+    // SetCurrentA5/LMGetCurrentA5. Resource managers can supply a real
+    // QuickDraw globals pointer chain for code that draws through A5.
+    registers.address[5] = a5.unwrap_or(PPC_DATA_BASE);
     let mut stack_arguments = Vec::<(u32, u32)>::new();
     let mut special_stack = Vec::new();
     let mut special_result = None;

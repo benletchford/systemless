@@ -31,6 +31,8 @@ pub struct PpcToolboxStartupState {
     /// whenever native PowerPC enters classic code through Mixed Mode.
     pub(crate) mixed_mode_m68k: SharedProcessMixedModeM68kState,
     pub(super) system_allocations: PpcSystemAllocationPool,
+    pub(super) control_definition_stack: Vec<PpcControlDefinitionFrame>,
+    pub(super) control_definition_globals: u32,
     pub(super) kchr_cache_ptr: u32,
     pub(crate) pending_launch: Option<dispatch_launch::PpcPendingLaunch>,
     /// Bounded USB Expert diagnostic log: device, status, Pascal-string bytes, value.
@@ -160,6 +162,8 @@ impl Default for PpcToolboxStartupState {
             execution: ExecutionMenuViews::detached(),
             mixed_mode_m68k: SharedProcessMixedModeM68kState::default(),
             system_allocations: PpcSystemAllocationPool::default(),
+            control_definition_stack: Vec::new(),
+            control_definition_globals: 0,
             kchr_cache_ptr: 0,
             pending_launch: None,
             usb_expert_log: Vec::new(),

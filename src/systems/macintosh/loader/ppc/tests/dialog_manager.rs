@@ -1414,6 +1414,8 @@ fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
             has_focus: false,
             focus_part: 0,
             drag_tracking_enabled: false,
+            native_definition_pending_init: false,
+            native_definition_draws: Default::default(),
         }]
     );
     // The dialog item hit test only accepts control items whose record

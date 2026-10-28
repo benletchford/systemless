@@ -120,7 +120,7 @@ pub(super) fn dispatch_control_import(
                 // value into a menu ID/title-width value.
                 let is_popup = controls.iter().any(|record| {
                     record.handle == control_handle
-                        && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+                        && (1008..=1023).contains(&record.proc_id)
                 });
                 if !is_popup {
                     ppc_clamp_control_value(memory, control);
@@ -257,7 +257,7 @@ fn ppc_dispatch_popup_track_control(
     start_h: i16,
 ) -> Option<PpcImportAction> {
     let record = controls.iter().find(|record| {
-        record.handle == control_handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+        record.handle == control_handle && (1008..=1023).contains(&record.proc_id)
     })?;
     // TrackControl's CDEF must not begin a retained popup session for an
     // invisible, inactive, or missed control. Keep this guard in the helper
@@ -1383,7 +1383,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .iter()
                 .find(|record| {
                     record.handle == cpu.gpr[3]
-                        && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+                        && (1008..=1023).contains(&record.proc_id)
                 })
                 .map_or(0, |record| record.popup_menu_id);
             Some(PpcImportAction::Return(id as i32 as u32))
@@ -1784,7 +1784,7 @@ pub(super) fn ppc_new_control_record_values(
     let old_head = memory
         .read_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
         .unwrap_or(0);
-    let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
+    let popup = (1008..=1023).contains(&proc_id);
     let popup_data = if popup {
         // Inside Macintosh VI (1991), pp. 3-18--3-19: the pop-up CDEF
         // publishes a handle to popupPrivateData through contrlData.
@@ -1814,7 +1814,7 @@ pub(super) fn ppc_new_control_record_values(
     // for the title width, so their value is a menu item number rather than
     // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
     // pp. 5-25--5-27.
-    let initial_value = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+    let initial_value = if (1008..=1023).contains(&proc_id) {
         value
     } else {
         value.clamp(min.min(max), min.max(max))
@@ -1894,6 +1894,8 @@ pub(super) fn ppc_new_control_record_values(
         has_focus: false,
         focus_part: 0,
         drag_tracking_enabled: false,
+        native_definition_pending_init: true,
+        native_definition_draws: Default::default(),
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -1917,7 +1919,7 @@ pub(super) fn ppc_initialize_popup_control(
     handle: u32,
 ) {
     let Some(record) = controls.iter().find(|record| {
-        record.handle == handle && (1008..=1023).contains(&(record.proc_id & 0x0fff))
+        record.handle == handle && (1008..=1023).contains(&record.proc_id)
     }) else {
         return;
     };
@@ -2676,7 +2678,7 @@ pub(super) fn ppc_control_part_at_point(
         .iter()
         .find(|record| record.handle == handle)
         .map_or(0, |record| record.proc_id);
-    match proc_id & 0x0fff {
+    match proc_id {
         0 => Some(10),
         1 | 2 => Some(11),
         16 => {
@@ -2723,7 +2725,7 @@ pub(super) fn ppc_control_part_at_point(
         // box reports for a click in its body.
         160..=166 => {
             let title_bottom = top.saturating_add(10);
-            if matches!(proc_id & 0x0fff, 161 | 162 | 165 | 166)
+            if matches!(proc_id, 161 | 162 | 165 | 166)
                 && v < title_bottom
                 && h >= left.saturating_add(8)
             {
@@ -2752,7 +2754,6 @@ pub(super) fn ppc_track_scroll_control_value(
         .iter()
         .find(|record| record.handle == handle)?
         .proc_id
-        & 0x0fff
         != 16
     {
         return None;
@@ -3241,7 +3242,23 @@ pub(super) fn ppc_draw_control_inner(
     };
     let palette = ppc_ui_theme(gworlds).provider().palette();
     let record = controls.iter().find(|record| record.handle == handle);
-    let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
+    if let Some(record) = record.filter(|record| {
+        ppc_control_definition_resource(memory, vfs_resources, current_resource_refnum, record)
+            .is_some()
+    }) {
+        // Preserve actual drawing requests, including repeated requests for the
+        // same control. The import continuation executes guest code after HLE
+        // has released its process-manager borrows.
+        let sequence = controls
+            .iter()
+            .flat_map(|record| record.native_definition_draws.borrow().last().copied())
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        record.native_definition_draws.borrow_mut().push(sequence);
+        return true;
+    }
+    let proc_id = record.map_or(0, |record| record.proc_id);
     // Appearance Manager DeactivateControl dims a control without touching
     // contrlHilite. Draw its frame and title with the same 50% blend the 68K
     // control manager uses for an inactive title, so a non-hittable control
