@@ -10,11 +10,49 @@ architectures:
 - 68k
 - ppc
 default_architecture: ppc
-launch_enabled: false
+launch_enabled: true
 category: Arcade
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: 054d3f10dad7cfee524217ff65e0cd290db69a87
+    architecture: 68k
+    environment: >-
+      Chrome for Testing 156.0.8078.47 mac-arm64, ordinary visible-page worker/WebGL,
+      release-profile SIMD build with 4 MiB worker stack, default 25 MHz and two ticks
+      per paint. Exact managed original and selector below; local preview redirects
+      only its pinned URL to identical original bytes. The browser archive response
+      matches the pinned hash and size. Original splash/trial dismissal, intact menu,
+      gun movement, extending barriers, collisions/life loss and six-percent arena
+      clearance are visible in inspected captures. The bonus timer had elapsed on
+      the cleared frame, so no nonzero browser score is claimed for this slice.
+      Before repair #5205, sustained gameplay fails at 44.803 guest ticks/sec. The
+      repaired candidate passes two 20-second samples at 53.946 / 53.912, above the
+      unchanged minimum 50, with 61.945 / 62.114 worker replies/sec. No CPU-speed or
+      frame-budget increase. Repair #5205 merged as bbb4bfaef340f6bd850b70a73815f619b2ea90e8
+      after all fifteen CI/CLA checks passed on this exact head. Bounded native scored
+      barriers remain documented below. Full browser levels, audio fidelity and
+      released public qualification remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5204
+  - date: "2026-10-28"
+    tester: Catalogue maintainer
+    systemless_version: 054d3f10dad7cfee524217ff65e0cd290db69a87
+    architecture: ppc
+    environment: >-
+      Same exact original package and release-profile browser candidate as the current
+      68K row, with the original PPC slice selected. Inspected captures show original
+      trial dismissal, menu, patterned arena, gun movement and fired barriers reaching
+      fourteen-percent clearance, score 140 and eight lives. A visible 20-second sample
+      passes at 60.152 guest ticks/sec and 60.452 worker replies/sec, with healthy audio
+      queue occupancy. Earlier source-parent PPC samples pass at 60.148 / 60.144; the
+      failed 68K route was repaired rather than omitted. Existing native evidence below
+      completes one PPC level and enters level 2. No complete browser level, settings
+      persistence, audio-fidelity or released public qualification claim.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5204
   - date: "2026-10-27"
     tester: Catalogue maintainer
     systemless_version: 317f7ef37bca989b5f08931053408c097fa9b830
@@ -156,5 +194,6 @@ at its original trial notice, then **Play Barrack**. The **Instructions** and
 The complete installer retains its licence, registration program, documentation
 and media. Its original 30-day trial terms still apply. Bounded native testing
 covers movement and scored barriers on both CPU paths, and a first-level clear
-and transition to level 2 on PPC. Browser qualification is pending, so launch
-remains disabled.
+and transition to level 2 on PPC. Browser testing on both CPU paths covers mouse
+movement, fired barriers and arena clearance. Full-game completion and audio
+fidelity remain unverified.

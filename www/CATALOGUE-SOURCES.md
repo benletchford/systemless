@@ -2742,3 +2742,68 @@ The [matching source-parent preview](https://github.com/benletchford/systemless/
 The local previews use the existing CDP archive-redirection approach to serve the unchanged pinned production download, because the production asset host excludes localhost by CORS. This is staged evidence, distinct from the production-origin archive/input checks and the public pacing failure. No debug overlay, presentation/audio diagnostic option, throttle/security override, guest patch or CPU-clock change is used in the primary runs. Scripts, receipts and captures remain outside tracked source.
 
 Full games, sliding, learning persistence, saves and audible playback remain unverified. A human-published release containing the repair and a new production check are still needed. Source stock remains **221 records**, with **no qualified-live increment**; the baseline qualified-live total remains unaudited.
+
+
+## Barrack browser approval and trap-boundary pacing repair (28 October 2026)
+
+The unchanged managed Tucows original rechecks at **3,081,907 bytes**, SHA-256
+`1d02dfb509546b8fc2962823537119c95a835a7621dbdd9abab192c656677974`, exact selector
+`Barrack Installer/Barrack 1.0.4 ƒ/Barrack`. The complete unchanged nonprofit grant,
+original trial and independently compared nineteen payload paths / thirty-eight forks
+remain as recorded in the entry and [intake #5080](https://github.com/benletchford/systemless/issues/5080).
+The original-installer comparison matches file types and creators; complete Finder-flag
+parity is not claimed. A fresh hosted GET of the existing 800×600 content-only level-2
+screenshot matches **1,091,662 bytes**, SHA-256
+`91c1da601ed697169c1b7b09757d0a0b2bb35ecbbb900bb6e4df252fd4f88c40`; the actual image
+is inspected and shows score 2610, level 2 and five lives. No assets are replaced.
+
+The first ordinary 68K browser gameplay sample **fails at 44.803 guest ticks/sec**
+against the unchanged minimum 50, despite 61.604 runtime replies/sec and healthy audio.
+Actual captures show gameplay and a scored cleared area, so this is not an idle/menu
+measurement. [Issue #5204](https://github.com/benletchford/systemless/issues/5204)
+retains the failure. The browser's 64-instruction execution batches also prevent
+portable CPU traces longer than that cap from running. A separate diagnostic profile
+maps its dominant function to `M68kCpu::run_batch`; all 7,834 optimized function bodies
+match the named reconstruction. The reconstruction is not substituted into primary
+browser measurements.
+
+[Repair #5205](https://github.com/benletchford/systemless/pull/5205), tested head
+**`054d3f10dad7cfee524217ff65e0cd290db69a87`**, adds a deferred classic slice that returns
+after the first OS/Toolbox trap. Ordinary browser 68K execution can then use up to
+8,192 instructions while retaining host time-budget checks between expensive traps.
+CPU speed, frame budgets, presentation-grace probes and PPC settings are unchanged.
+All **422 local runner tests** pass, including instruction-cap and consecutive-trap
+coverage. All **fifteen CI/CLA checks** pass on that exact head; normal squash merge is
+**`bbb4bfaef340f6bd850b70a73815f619b2ea90e8`**. Its source tree matches the tested head.
+Koji's original startup regression reaches its readable trial, title and arena;
+J moves left. Maximum sampled worker startup work is **29.365 ms**, zero above the
+prior 35 ms check. A separate deliberate worker-construction-failure diagnostic
+reaches the same dialog/title/arena on the normal main-thread fallback, with maximum
+startup work **29.750 ms**; this is not an ordinary-worker pacing sample.
+
+Fresh candidate browser verification uses Chrome for Testing **156.0.8078.47 mac-arm64**,
+release profile, SIMD, a 4 MiB worker stack, ordinary worker/WebGL, visible page,
+**25 MHz**, and at most two ticks per paint. Candidate WASM SHA-256 is
+`97629d6a42c582a117b862420fe93266c4e48d75ea802f9e7b004d147c3c244f` (15,017,681 bytes).
+A temporary local Barrack launch flag is restored after building. Explicit preview
+redirection serves the exact original; the actual browser response hash/size match.
+This is staged-browser evidence, not production-route evidence.
+
+| Slice/sample | Guest ticks/sec | Runtime replies/sec | Observed input/gameplay |
+| --- | ---: | ---: | --- |
+| 68K candidate 1 | 53.946 | 61.945 | Original trial/menu, gun movement, extending barriers and collisions |
+| 68K candidate 2 | 53.912 | 62.114 | Continued level-one play; a later shot clears six percent |
+| PPC candidate | 60.152 | 60.452 | Fourteen-percent clearance, score 140, eight lives |
+
+Each steady sample is twenty seconds with no concurrent local build/native replay;
+the minimums remain **50 guest ticks/sec** and **55 runtime replies/sec**. Actual
+screenshots are inspected. The 68K cleared frame follows bonus-timer expiry and shows
+score zero; its earlier native scored-barrier evidence is separate. No full browser
+level, settings persistence or audio fidelity is established. The [public evidence](https://github.com/benletchford/systemless/issues/5204#issuecomment-6445826286)
+and [main-thread diagnostic](https://github.com/benletchford/systemless/pull/5205#issuecomment-6445932108)
+retain those boundaries.
+
+Approve the existing entry's two browser CPU routes. The contribution still requires
+validation and a replay of its final committed head before normal merge. **Human release
+and exact released production-route verification remain pending.** Source stock remains
+**221 records**; this approval adds no source game and no qualified-live increment.
