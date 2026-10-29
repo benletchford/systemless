@@ -1607,6 +1607,8 @@ fn parse_compressed_quicktime(
 
     let _version = bus.read_word(cursor);
     cursor += 2;
+    let fallback_matrix =
+        [0, 4, 12, 16, 24, 28].map(|offset| bus.read_long(cursor + offset) as i32);
     cursor += 36; // MatrixRecord
     let matte_size = bus.read_long(cursor);
     cursor += 4;
@@ -1860,10 +1862,120 @@ fn parse_compressed_quicktime(
         end.saturating_add(6)
             .saturating_add(u32::from(bus.read_word(end + 4)))
     } else {
-        end
+        skip_quicktime_bitmap_fallback(bus, end, (src_top, src_left, src_bottom, src_right), fallback_matrix)
+            .unwrap_or(end)
     };
 
     (final_pos, if is_still_image { None } else { Some(source_clut) })
+}
+
+// A 1-bit PackBitsRect immediately after a compressed image can be the
+// QuickDraw-only warning. Require its destination to match the transformed
+// image and validate every row before skipping it. Apple DTS, develop 11 (1992).
+fn skip_quicktime_bitmap_fallback(
+    bus: &MacMemoryBus,
+    pos: u32,
+    source: (i16, i16, i16, i16),
+    matrix: [i32; 6],
+) -> Option<u32> {
+    let limit = bus.ram_size();
+    if pos.checked_add(30)? > limit || bus.read_word(pos) != 0x0098 {
+        return None;
+    }
+    let row_bytes = bus.read_word(pos + 2);
+    if row_bytes & 0xc000 != 0 || row_bytes == 0 {
+        return None;
+    }
+    let bounds = [4, 6, 8, 10].map(|offset| bus.read_word(pos + offset) as i16);
+    let src = [12, 14, 16, 18].map(|offset| bus.read_word(pos + offset) as i16);
+    let dst = [20, 22, 24, 26].map(|offset| bus.read_word(pos + offset) as i16);
+    let height = i32::from(bounds[2]) - i32::from(bounds[0]);
+    let width = i32::from(bounds[3]) - i32::from(bounds[1]);
+    if height <= 0
+        || height > 8192
+        || width <= 0
+        || width > i32::from(row_bytes) * 8
+        || src != bounds
+        || bus.read_word(pos + 28) != 0
+    {
+        return None;
+    }
+    let (top, left, bottom, right) = source;
+    if top >= bottom || left >= right {
+        return None;
+    }
+    let [a, b, c, d, tx, ty] = matrix.map(i64::from);
+    let mut points = [(0i64, 0i64); 4];
+    for (index, (x, y)) in [(left, top), (right, top), (left, bottom), (right, bottom)]
+        .into_iter()
+        .enumerate()
+    {
+        let x = i64::from(x);
+        let y = i64::from(y);
+        let px = a * x + c * y + tx;
+        let py = b * x + d * y + ty;
+        if px % 65536 != 0 || py % 65536 != 0 {
+            return None;
+        }
+        points[index] = (px / 65536, py / 65536);
+    }
+    let expected = [
+        points.iter().map(|p| p.1).min()?,
+        points.iter().map(|p| p.0).min()?,
+        points.iter().map(|p| p.1).max()?,
+        points.iter().map(|p| p.0).max()?,
+    ];
+    if dst.map(i64::from) != expected {
+        return None;
+    }
+    let mut cursor = pos + 30;
+    for _ in 0..height {
+        let count = if row_bytes < 8 {
+            u32::from(row_bytes)
+        } else if row_bytes > 250 {
+            if cursor.checked_add(2)? > limit {
+                return None;
+            }
+            let count = u32::from(bus.read_word(cursor));
+            cursor += 2;
+            count
+        } else {
+            if cursor.checked_add(1)? > limit {
+                return None;
+            }
+            let count = u32::from(bus.read_byte(cursor));
+            cursor += 1;
+            count
+        };
+        let end = cursor.checked_add(count)?;
+        if end > limit {
+            return None;
+        }
+        if row_bytes >= 8 {
+            let mut decoded = 0u32;
+            while cursor < end {
+                let control = bus.read_byte(cursor) as i8;
+                cursor += 1;
+                if control >= 0 {
+                    let literal = u32::from(control as u8) + 1;
+                    cursor = cursor.checked_add(literal)?;
+                    decoded = decoded.checked_add(literal)?;
+                } else if control != -128 {
+                    cursor = cursor.checked_add(1)?;
+                    decoded = decoded.checked_add(1 + u32::from(control.unsigned_abs()))?;
+                }
+                if cursor > end || decoded > u32::from(row_bytes) {
+                    return None;
+                }
+            }
+            if decoded != u32::from(row_bytes) {
+                return None;
+            }
+        }
+        cursor = end;
+    }
+    let aligned = cursor.checked_add(cursor & 1)?;
+    (aligned <= limit).then_some(aligned)
 }
 
 pub(crate) fn peek_initial_packbits_clut(
