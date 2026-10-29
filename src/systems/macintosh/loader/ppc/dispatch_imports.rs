@@ -1912,6 +1912,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::WriteResource
         | PpcImportDispatcherTarget::RemoveResource
         | PpcImportDispatcherTarget::ReadPartialResource
+        | PpcImportDispatcherTarget::WritePartialResource
+        | PpcImportDispatcherTarget::SetResourceSize
         | PpcImportDispatcherTarget::CloseResFile
         | PpcImportDispatcherTarget::GetPicture
         | PpcImportDispatcherTarget::GetIconSuite

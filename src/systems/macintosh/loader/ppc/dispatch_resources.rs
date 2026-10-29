@@ -48,6 +48,15 @@ pub(super) fn dispatch_resource_import(
             .iter()
             .find(|resource| resource.handle == cpu.gpr[3])
             .map(|resource| resource.ref_num),
+        PpcImportDispatcherTarget::WritePartialResource
+        | PpcImportDispatcherTarget::SetResourceSize => vfs_resources
+            .iter()
+            .find(|resource| {
+                cpu.gpr[3] != 0
+                    && resource.handle == cpu.gpr[3]
+                    && resource.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
+            })
+            .map(|resource| resource.ref_num),
         _ => None,
     };
     if mutation_ref.is_some_and(|reference| {
@@ -55,7 +64,15 @@ pub(super) fn dispatch_resource_import(
             .iter()
             .any(|file| file.ref_num == reference && file.writable == Some(false))
     }) {
-        *last_resource_error = PPC_RES_ATTR_ERR;
+        *last_resource_error = if matches!(
+            binding.dispatcher_target,
+            PpcImportDispatcherTarget::WritePartialResource
+                | PpcImportDispatcherTarget::SetResourceSize
+        ) {
+            PPC_WR_PERM_ERR
+        } else {
+            PPC_RES_ATTR_ERR
+        };
         return Some(PpcImportAction::ReturnPreserve);
     }
 
@@ -405,6 +422,18 @@ pub(super) fn dispatch_resource_import(
         }
         PpcImportDispatcherTarget::ReadPartialResource => {
             ppc_read_partial_resource(cpu, memory, vfs_resources, last_resource_error);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::WritePartialResource
+        | PpcImportDispatcherTarget::SetResourceSize => {
+            ppc_mutate_partial_resource(
+                cpu,
+                memory,
+                vfs_resource_files,
+                vfs_resources,
+                last_resource_error,
+                binding.dispatcher_target == PpcImportDispatcherTarget::WritePartialResource,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CloseResFile => {

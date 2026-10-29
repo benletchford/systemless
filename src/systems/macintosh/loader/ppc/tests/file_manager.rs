@@ -8659,6 +8659,190 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn partial_resource_mutations_update_backing_without_changing_loaded_handle() {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0; 64]);
+        memory.write_u32_be(0x1000, 0x1010).unwrap();
+        memory.write_bytes(0x1010, b"original").unwrap();
+        memory.write_bytes(0x1020, b"XY").unwrap();
+        let mut resources = vec![PpcVfsResourceRecord {
+            ref_num: 1,
+            path: "Game".to_string(),
+            res_type: u32::from_be_bytes(*b"DATA"),
+            res_id: 128,
+            name: Vec::new(),
+            data: b"abcdefgh".to_vec().into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0x1000,
+        }];
+        let mut files = vec![PpcVfsResourceFileRecord {
+            path: "Game".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 8,
+            raw_data: None,
+            map_attrs: 0,
+            dirty: false,
+        }];
+        let mut cpu = PpcCpu::new();
+        let mut error = 0;
+        cpu.gpr[3] = 0x1000;
+        cpu.gpr[4] = 2;
+        cpu.gpr[5] = 0x1020;
+        cpu.gpr[6] = 2;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            true,
+        );
+        assert_eq!(error, PPC_RESOURCE_IN_MEMORY_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXYefgh");
+        assert!(files[0].dirty);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut memory, 0x1010, 8).unwrap(),
+            b"original"
+        );
+        cpu.gpr[4] = 8;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            true,
+        );
+        assert_eq!(error, PPC_WRITING_PAST_END_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXYefghXY");
+        cpu.gpr[4] = 4;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            false,
+        );
+        assert_eq!(error, PPC_RESOURCE_IN_MEMORY_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXY");
+        memory.write_u32_be(0x1000, 0).unwrap();
+        cpu.gpr[4] = 6;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            false,
+        );
+        assert_eq!(error, PPC_NO_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXY\0\0");
+        cpu.gpr[4] = u32::MAX;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            true,
+        );
+        assert_eq!(error, PPC_INPUT_OUT_OF_BOUNDS_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXY\0\0");
+        cpu.gpr[4] = 0;
+        cpu.gpr[5] = 0xffff_fffe;
+        cpu.gpr[6] = 4;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            true,
+        );
+        assert_eq!(error, PPC_PARAM_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXY\0\0");
+        cpu.gpr[4] = 100;
+        cpu.gpr[6] = 0;
+        ppc_mutate_partial_resource(
+            &cpu,
+            &mut memory,
+            &mut files,
+            &mut resources,
+            &mut error,
+            true,
+        );
+        assert_eq!(error, PPC_NO_ERR);
+        assert_eq!(resources[0].data.as_slice(), b"abXY\0\0");
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "WritePartialResource"),
+            PpcImportDispatcherTarget::WritePartialResource
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetResourceSize"),
+            PpcImportDispatcherTarget::SetResourceSize
+        );
+    }
+
+    #[test]
+    fn partial_resource_mutations_reject_read_only_files() {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"WritePartialResource")).unwrap();
+        let handle = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(handle, vec![0; 32]);
+        loaded.push_resource_file(PpcResourceFileRecord {
+            ref_num: 5,
+            path: "Game".to_string(),
+            writable: Some(false),
+        });
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: 5,
+                path: "Game".to_string(),
+                res_type: u32::from_be_bytes(*b"DATA"),
+                res_id: 128,
+                name: Vec::new(),
+                data: b"original".to_vec().into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle,
+            });
+        for target in [
+            PpcImportDispatcherTarget::WritePartialResource,
+            PpcImportDispatcherTarget::SetResourceSize,
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.imports[0].dispatcher_target = target;
+            loaded.cpu.gpr[3] = handle;
+            loaded.cpu.gpr[4] = 2;
+            loaded.cpu.gpr[5] = handle + 8;
+            loaded.cpu.gpr[6] = 1;
+            assert_eq!(
+                loaded.run_with_hle_imports(64).unsupported_import_index,
+                None
+            );
+            assert_eq!(loaded.test_resource_error(), PPC_WR_PERM_ERR);
+            assert_eq!(
+                loaded.process_file_system.vfs_resources[0].data.as_slice(),
+                b"original"
+            );
+        }
+        let mut unloaded = loaded.process_file_system.vfs_resources[0].clone();
+        unloaded.handle = 0;
+        loaded.process_file_system.push_vfs_resource(unloaded);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
     fn read_partial_resource_streams_empty_handles_and_reports_loaded_handles() {
         let pef = synthetic_pef_with_import(b"GetResource");
         let mut loaded = load_pef_application(&pef).unwrap();
