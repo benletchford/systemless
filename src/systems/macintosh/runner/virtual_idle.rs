@@ -156,6 +156,8 @@ impl RecordedPass {
 /// A pass being observed from a poll site.
 pub(crate) struct PassRecorder {
     pub(crate) prover: IdleProverState,
+    /// Host mirrors must also return to their starting state.
+    pub(crate) host: IdleCycleHostSnapshot,
     pub(crate) trap_pc: u32,
     pub(crate) tick: u32,
     pub(crate) cpu: CpuArchitecturalSnapshot,
@@ -241,6 +243,7 @@ impl FixtureRunner {
         self.bus.begin_write_probe();
         self.pass_recorder = Some(PassRecorder {
             prover: self.idle_prover_state(),
+            host: IdleCycleHostSnapshot::capture(&self.dispatcher),
             trap_pc,
             tick,
             cpu,
@@ -295,6 +298,7 @@ impl FixtureRunner {
             && self.bus.read_word(self.m68k.cpu.core.a(7)) as i16 == SOUND_QUEUE_FULL;
         !self.idle_prover_owns_journal()
             && self.active_interrupt_callback.is_none()
+            && !self.idle_query_has_unsafe_dispatch(opcode)
             && virtual_idle_trap_is_journal_complete(
                 opcode,
                 null_event,
@@ -392,6 +396,7 @@ impl FixtureRunner {
         if !journal_ok
             || restored.as_ref().is_none_or(|changes| !changes.is_empty())
             || recorder.prover != self.idle_prover_state()
+            || recorder.host != IdleCycleHostSnapshot::capture(&self.dispatcher)
             || recorder.native_returns != self.native_trap_return_pcs()
             || steps == 0
             || steps > VIRTUAL_IDLE_MAX_PASS_STEPS
