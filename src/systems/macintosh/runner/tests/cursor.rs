@@ -37,6 +37,57 @@ fn cursor_state_is_immediately_shared_between_cpu_adapters() {
     );
 }
 
+#[test]
+fn ppc_cursor_device_move_reaches_frontend_warp() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"CrsrDevMove")).unwrap();
+    let device = PPC_DATA_BASE + 0x1000;
+    native.memory.add_region(device, vec![0; 138]);
+    let app = LoadedApp::from_ppc(native);
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_mouse_position(100, 200);
+    let native = runner.native.application_mut().expect("PPC app installed");
+    native.cpu.gpr[3] = device;
+    native.cpu.gpr[4] = (-20i32) as u32;
+    native.cpu.gpr[5] = 5;
+    runner.run_steps(64, None);
+    assert_eq!(runner.dispatcher.mouse_position(), (105, 180));
+    assert_eq!(runner.take_guest_cursor_warp(), Some((105, 180)));
+}
+
+#[test]
+fn ppc_cursor_device_warp_preserves_motion_at_coordinate_limit() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"CrsrDevMove")).unwrap();
+    let device = PPC_DATA_BASE + 0x1000;
+    native.memory.add_region(device, vec![0; 138]);
+    let app = LoadedApp::from_ppc(native);
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_mouse_position(100, 200);
+    let native = runner.native.application_mut().expect("PPC app installed");
+    native.input_sprocket.device_mouse_h = Some(i16::MIN);
+    native.cpu.gpr[3] = device;
+    native.cpu.gpr[4] = (-20i32) as u32;
+    native.cpu.gpr[5] = 5;
+    runner.run_steps(64, None);
+    assert_eq!(runner.dispatcher.mouse_position(), (105, 180));
+    assert_eq!(runner.take_guest_cursor_warp(), Some((105, 180)));
+    let app = runner.native.application_mut().unwrap();
+    let input = app.current_input_snapshot();
+    assert_eq!(
+        crate::loader::ppc::sprockets::ppc_isp_device_element_next_event(
+            crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut app.input_sprocket,
+        ),
+        Some(32968i32.wrapping_shl(16) as u32)
+    );
+}
+
 fn cursor_warp_runner() -> FixtureRunner {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let app = LoadedApp {

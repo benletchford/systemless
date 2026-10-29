@@ -248,6 +248,8 @@ pub struct PpcInputSprocketState {
     /// device's own elements, so ISpElement_GetNextEvent can report changes.
     pub device_mouse_h: Option<i16>,
     pub device_mouse_v: Option<i16>,
+    pub device_mouse_h_carry: i32,
+    pub device_mouse_v_carry: i32,
     pub device_mouse_button: bool,
 }
 
@@ -267,6 +269,8 @@ impl Default for PpcInputSprocketState {
             keyboard_default_cursor: 0,
             device_mouse_h: None,
             device_mouse_v: None,
+            device_mouse_h_carry: 0,
+            device_mouse_v_carry: 0,
             device_mouse_button: false,
         }
     }
@@ -2704,12 +2708,14 @@ pub(crate) fn ppc_isp_device_element_next_event(
     match element {
         PPC_ISP_MOUSE_X_ELEMENT => {
             let last = input_sprocket.device_mouse_h.replace(input.mouse_h);
-            let delta = i32::from(input.mouse_h) - i32::from(last?);
+            let delta = (i32::from(input.mouse_h) - i32::from(last?))
+                .wrapping_add(std::mem::take(&mut input_sprocket.device_mouse_h_carry));
             (delta != 0).then_some(delta.wrapping_shl(16) as u32)
         }
         PPC_ISP_MOUSE_Y_ELEMENT => {
             let last = input_sprocket.device_mouse_v.replace(input.mouse_v);
-            let delta = i32::from(last?) - i32::from(input.mouse_v);
+            let delta = (i32::from(last?) - i32::from(input.mouse_v))
+                .wrapping_add(std::mem::take(&mut input_sprocket.device_mouse_v_carry));
             (delta != 0).then_some(delta.wrapping_shl(16) as u32)
         }
         PPC_ISP_MOUSE_BUTTON_ELEMENT => {
@@ -3511,6 +3517,8 @@ pub(crate) fn ppc_isp_device_is_active(
 fn ppc_isp_clear_mouse_tracking(input_sprocket: &mut PpcInputSprocketState) {
     input_sprocket.device_mouse_h = None;
     input_sprocket.device_mouse_v = None;
+    input_sprocket.device_mouse_h_carry = 0;
+    input_sprocket.device_mouse_v_carry = 0;
     input_sprocket.device_mouse_button = false;
 }
 
