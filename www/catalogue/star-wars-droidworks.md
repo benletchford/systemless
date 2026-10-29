@@ -45,6 +45,17 @@ compatibility:
       exhausted frames; gameplay was not requalified in this run.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3249
+  - date: "2026-10-30"
+    tester: Catalogue maintainer
+    systemless_version: b3db53c3e597b9fba27a4d389b442a3143465b63
+    architecture: ppc
+    environment: >-
+      Native release replay reached the workshop and a click opened the head-part
+      choices at frontend tick 7,500. One startup pixel assertion passed with no
+      exhausted frames; the workshop response was inspected, and part placement and
+      mission gameplay were not established.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/3249
 artifacts:
 - id: archive
   role: archive
