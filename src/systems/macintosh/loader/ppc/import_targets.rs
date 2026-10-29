@@ -7257,6 +7257,19 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "SetMovieTimeValue") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetMovieTimeValue,
         ),
+        ("QuickTimeLib", "SetMovieTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetMovieTime,
+        ),
+        ("QuickTimeLib", "GetMovieActiveSegment") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMovieActiveSegment,
+            )
+        }
+        ("QuickTimeLib", "SetMovieActiveSegment") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment,
+            )
+        }
         ("QuickTimeLib", "GetMovieTimeScale") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeScale,
         ),

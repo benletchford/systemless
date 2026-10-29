@@ -3167,6 +3167,7 @@ pub(crate) fn dispatch_supported_import(
                 PpcQuickTimeCompatibilityOperation::MCIdle
                     | PpcQuickTimeCompatibilityOperation::MCDoAction
                     | PpcQuickTimeCompatibilityOperation::SetMovieRate
+                    | PpcQuickTimeCompatibilityOperation::SetMovieTime
             );
             let service_drawing = operation != PpcQuickTimeCompatibilityOperation::MCDoAction
                 || matches!(cpu.gpr[4] as i16, 1 | 8);
