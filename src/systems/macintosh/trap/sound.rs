@@ -846,36 +846,32 @@ impl super::TrapDispatcher {
                     // computes $05100008 (paramSize = 5 = 10 bytes).
                     // Inside Macintosh: Sound 1994, 2-101 + 2-200 (line 6267..6300)
                     //
-                    // HLE: zero-fill the 24-byte SCStatus record per
-                    // IM:Sound 7182..7194 layout. With no async audio
-                    // playback in Systemless, all fields are documented-
-                    // correct at zero: scStartTime/scEndTime/
-                    // scCurrentTime = 0 (not playing from disk),
-                    // scChannelBusy = FALSE (no commands processing),
-                    // scChannelDisposed = FALSE (channel still
-                    // valid), scChannelPaused = FALSE, scUnused = 0,
-                    // scChannelAttributes = 0 (no init flags set),
-                    // scCPULoad = 0 (per IM:Sound 3043: "this field
-                    // is obsolete, and you should not rely on its
-                    // value"). Apps using Listing 2-13's pattern
-                    // (reading scChannelPaused) get the IM-correct
-                    // FALSE; apps polling scChannelBusy (Listing 2-25)
-                    // get FALSE — exactly what they'd see on real
-                    // Mac after the channel has finished processing
-                    // all commands.
+                    // Sound Manager status follows the selected channel's
+                    // current playback and pending commands. A caller may
+                    // supply a shorter record, so do not write past it.
                     0x10 => {
                         let the_status = bus.read_long(sp);
-                        let _the_length = bus.read_word(sp + 4) as i16;
-                        let _chan = bus.read_long(sp + 6);
+                        let the_length = (bus.read_word(sp + 4) as i16).max(0) as u32;
+                        let chan_ptr = bus.read_long(sp + 6);
+                        let channel = self.sound_manager.find_channel(chan_ptr);
+                        let guest_queue_pending = channel.is_some_and(|channel| {
+                            channel.guest_visible()
+                                && bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET)
+                                    != bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET)
+                        });
+                        let busy = self.sound_channel_has_pending_work(chan_ptr)
+                            || guest_queue_pending;
+                        let paused = self.sound_manager.file_playback_paused(chan_ptr).unwrap_or(false);
                         if the_status != 0 {
-                            // SCStatus is 24 bytes per IM:Sound 7182..7194:
-                            //   scStartTime Fixed(4) + scEndTime Fixed(4)
-                            //   + scCurrentTime Fixed(4) + scChannelBusy Bool(1)
-                            //   + scChannelDisposed Bool(1) + scChannelPaused Bool(1)
-                            //   + scUnused Bool(1) + scChannelAttributes LongInt(4)
-                            //   + scCPULoad LongInt(4) = 24 bytes total
-                            for off in 0..24 {
+                            let len = the_length.min(24);
+                            for off in 0..len {
                                 bus.write_byte(the_status + off, 0);
+                            }
+                            if len > 12 {
+                                bus.write_byte(the_status + 12, u8::from(busy));
+                            }
+                            if len > 14 {
+                                bus.write_byte(the_status + 14, u8::from(paused));
                             }
                         }
                         bus.write_word(sp + param_bytes, 0); // noErr
