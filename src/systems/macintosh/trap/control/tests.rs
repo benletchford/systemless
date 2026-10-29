@@ -370,6 +370,25 @@ fn new_control_initializes_record_and_links_window() {
 }
 
 #[test]
+fn newcontrol_creates_auxiliary_record_on_direct_color_screens() {
+    for depth in [16, 32] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(200);
+        disp.set_screen_mode_for_test(0x200000, 640 * u32::from(depth) / 8, 640, 480, depth);
+        let handle = new_control_handle(&mut disp, &mut cpu, &mut bus, window, false, 0);
+        assert_ne!(handle, 0);
+        let aux = disp
+            .control_aux_state(handle)
+            .expect("control has an auxiliary record");
+        let record = bus.read_long(aux.handle);
+        assert_eq!(bus.read_long(record + 4), handle);
+        let table_handle = bus.read_long(record + 8);
+        assert_ne!(table_handle, 0);
+        assert_eq!(bus.read_word(bus.read_long(table_handle) + 6), 0);
+    }
+}
+
+#[test]
 fn newcontrol_creates_aux_record_and_getauxctl_returns_true() {
     let (mut disp, mut cpu, mut bus) = setup();
     let window_ptr = bus.alloc(200);

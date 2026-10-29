@@ -43,6 +43,28 @@
     }
 
     #[test]
+    fn main_gdevice_initializes_direct_color_pixmaps() {
+        for (depth, components, component_size) in [(16, 3, 5), (32, 3, 8)] {
+            let (mut d, _, mut bus) = setup();
+            d.set_screen_mode_for_test(0x200000, 640 * u32::from(depth) / 8, 640, 480, depth);
+            let handle = d.ensure_main_gdevice(&mut bus);
+            let device = bus.read_long(handle);
+            let pixmap = bus.read_long(bus.read_long(device + 22));
+            assert_eq!(bus.read_word(pixmap + 30), 16);
+            assert_eq!(bus.read_word(pixmap + 32), depth);
+            assert_eq!(bus.read_word(pixmap + 34), components);
+            assert_eq!(bus.read_word(pixmap + 36), component_size);
+            assert_eq!(bus.read_word(device + 4), 2);
+            let table_handle = bus.read_long(pixmap + 42);
+            assert_ne!(table_handle, 0);
+            let table = bus.read_long(table_handle);
+            assert_eq!(bus.read_long(table), u32::from(components * component_size));
+            assert_eq!(bus.read_word(table + 4), 0x8000);
+            assert_eq!(bus.read_word(table + 6), 0);
+        }
+    }
+
+    #[test]
     fn drawpicture_trace_pixel_rejects_offscreen_and_overflowing_samples() {
         let (_, _, mut bus) = setup();
         bus.write_byte(0x190000, 0x5a);

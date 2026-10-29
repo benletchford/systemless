@@ -16276,8 +16276,13 @@ impl super::TrapDispatcher {
         }
 
         let (screen_base, row_bytes, screen_width, screen_height, screen_depth) = self.screen_mode;
-        let (screen_clut, color_count) = Self::standard_mac_indexed_clut(screen_depth)
-            .expect("main screen uses a supported indexed depth");
+        let direct = matches!(screen_depth, 16 | 32);
+        let (screen_clut, color_count) = if direct {
+            ([[0; 3]; 256], 1)
+        } else {
+            Self::standard_mac_indexed_clut(screen_depth)
+                .expect("main screen uses a supported depth")
+        };
 
         // Allocate the screen's indexed ColorTable.
         // ColorTable record: ctSeed(4) + ctFlags(2) + ctSize(2) + ctTable(n*8)
@@ -16292,7 +16297,15 @@ impl super::TrapDispatcher {
         // ship with ctSeed=8 (depth). Initialising here with 8 lets the
         // PICT seed-match identity gate fire without remap on
         // those authored-for-standard PICTs.
-        bus.write_long(ctab, u32::from(screen_depth)); // ctSeed: depth convention
+        // A direct PixMap uses a one-entry dummy table; QD13 initializes its
+        // seed to the number of meaningful component bits. GDevice tables keep
+        // the device flag even when the pixels themselves are direct RGB.
+        let seed = match screen_depth {
+            16 => 15,
+            32 => 24,
+            _ => screen_depth,
+        };
+        bus.write_long(ctab, u32::from(seed));
         bus.write_word(ctab + 4, 0x8000); // ctFlags (+4, 2 bytes): bit 15 = device color table
         bus.write_word(ctab + 6, color_count as u16 - 1); // ctSize: entries - 1
         for i in 0..color_count as u32 {
@@ -16329,10 +16342,15 @@ impl super::TrapDispatcher {
         bus.write_long(pixmap + 18, 0); // packSize (+18)
         bus.write_long(pixmap + 22, 0x00480000); // hRes (+22) = 72.0 fixed
         bus.write_long(pixmap + 26, 0x00480000); // vRes (+26) = 72.0 fixed
-        bus.write_word(pixmap + 30, 0); // pixelType (+30) (chunky)
+        let (pixel_type, component_count, component_size) = match screen_depth {
+            16 => (16, 3, 5),
+            32 => (16, 3, 8),
+            _ => (0, 1, screen_depth),
+        };
+        bus.write_word(pixmap + 30, pixel_type);
         bus.write_word(pixmap + 32, screen_depth);
-        bus.write_word(pixmap + 34, 1); // cmpCount (+34)
-        bus.write_word(pixmap + 36, screen_depth);
+        bus.write_word(pixmap + 34, component_count);
+        bus.write_word(pixmap + 36, component_size);
         bus.write_long(pixmap + 38, 0); // planeBytes (+38)
         bus.write_long(pixmap + 42, ctab_handle); // pmTable (+42) = CTabHandle
         bus.write_long(pixmap + 46, 0); // pmReserved (+46)
@@ -16344,7 +16362,7 @@ impl super::TrapDispatcher {
         let gd = bus.alloc(50);
         bus.write_word(gd, 0); // gdRefNum
         bus.write_word(gd + 2, 0); // gdID
-        bus.write_word(gd + 4, 0); // gdType (CLUT)
+        bus.write_word(gd + 4, if direct { 2 } else { 0 }); // directType / clutType
         bus.write_long(gd + 6, 0); // gdITable
         bus.write_word(gd + 10, 4); // gdResPref
         bus.write_long(gd + 12, 0); // gdSearchProc
