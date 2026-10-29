@@ -55,8 +55,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/marathon/gameplay.png
+    type: sha256
+    sha256: f585ef4e3e3df1203204336cc9e081e8a316874029b165b71e223e102225d5da
+    size_bytes: 107139
   provenance:
     redistribution: permitted
     content_only: true
@@ -66,8 +67,8 @@ artifacts:
       Original gameplay screenshot captured for this catalogue at the maintainer's
       request.
     notes: >-
-      Captured from the original Trilogy Release archive during verified native
-      68K movement, cropped to the game content surface.
+      Captured from the original Trilogy Release archive during verified native 68K
+      movement, cropped to the game content surface.
 references:
 - https://trilogyrelease.bungie.org/
 - https://github.com/benletchford/systemless/issues/5284
@@ -79,6 +80,6 @@ This entry tracks the original [Trilogy Release archive](https://assets.systemle
 
 ## Aboard the Marathon
 
-![The player approaches a terminal aboard the Marathon](incoming/marathon/gameplay.png)
+![The player approaches a terminal aboard the Marathon](https://assets.systemless.org/catalogue/media/sha256/f5/f585ef4e3e3df1203204336cc9e081e8a316874029b165b71e223e102225d5da.png)
 
 The UESC Marathon hangs above Tau Ceti with its crew under attack and its three shipboard AIs pulling you in different directions. The corridors are spare, lonely places: exploration, switches, lifts and terminal messages matter as much as a quick trigger. Reading those terminals is the game; Durandal's voice slowly turns a rescue mission into something more unsettling.
