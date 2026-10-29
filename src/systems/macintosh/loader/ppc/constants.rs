@@ -121,6 +121,7 @@ pub const PPC_INVALID_COMPONENT_ID: i16 = -3000;
 pub const PPC_RES_NOT_FOUND_ERR: i16 = -192;
 pub const PPC_RES_F_NOT_FOUND_ERR: i16 = -193;
 pub const PPC_RESOURCE_IN_MEMORY_ERR: i16 = -188;
+pub const PPC_WRITING_PAST_END_ERR: i16 = -189;
 pub const PPC_INPUT_OUT_OF_BOUNDS_ERR: i16 = -190;
 pub const PPC_ADD_RES_FAILED: i16 = -194;
 pub const PPC_RMV_RES_FAILED: i16 = -196;

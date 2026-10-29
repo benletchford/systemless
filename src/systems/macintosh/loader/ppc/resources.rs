@@ -1034,6 +1034,75 @@ pub(crate) fn ppc_detach_resource(
     *last_resource_error = PPC_NO_ERR;
 }
 
+pub(crate) fn ppc_mutate_partial_resource(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_resource_files: &mut [PpcVfsResourceFileRecord],
+    vfs_resources: &mut [PpcVfsResourceRecord],
+    last_resource_error: &mut i16,
+    write: bool,
+) {
+    let handle = cpu.gpr[3];
+    let Some(record) = vfs_resources.iter_mut().find(|record| {
+        handle != 0 && record.handle == handle && record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
+    }) else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        return;
+    };
+    if record.attrs & PPC_RES_PROTECTED_ATTR != 0 {
+        *last_resource_error = PPC_RES_ATTR_ERR;
+        return;
+    }
+    let offset = cpu.gpr[4] as i32;
+    let count = if write { cpu.gpr[6] as i32 } else { 0 };
+    let Some(end) = offset
+        .checked_add(count)
+        .filter(|_| offset >= 0 && count >= 0)
+    else {
+        *last_resource_error = PPC_INPUT_OUT_OF_BOUNDS_ERR;
+        return;
+    };
+    if write && count == 0 {
+        *last_resource_error = PPC_NO_ERR;
+        return;
+    }
+    if write && count != 0 && !ppc_memory_can_read_bytes(memory, cpu.gpr[5], count as u32) {
+        *last_resource_error = PPC_PARAM_ERR;
+        return;
+    }
+    let Some(source) = (if write && count != 0 {
+        ppc_memory_read_bytes(memory, cpu.gpr[5], count as u32)
+    } else {
+        Some(Vec::new())
+    }) else {
+        *last_resource_error = PPC_PARAM_ERR;
+        return;
+    };
+    let size = end as usize;
+    let old_size = record.data.len();
+    let new_size = if write { old_size.max(size) } else { size };
+    let mut data = Vec::new();
+    if data.try_reserve_exact(new_size).is_err() {
+        *last_resource_error = PPC_MEM_FULL_ERR;
+        return;
+    }
+    data.extend_from_slice(&record.data[..old_size.min(new_size)]);
+    data.resize(new_size, 0);
+    if write {
+        data[offset as usize..size].copy_from_slice(&source);
+    }
+    record.data = data.into();
+    ppc_drop_raw_resource_data(record);
+    ppc_mark_resource_file_contents_dirty(vfs_resource_files, &record.path);
+    *last_resource_error = if write && size > old_size {
+        PPC_WRITING_PAST_END_ERR
+    } else if memory.read_u32_be(handle).unwrap_or(0) != 0 {
+        PPC_RESOURCE_IN_MEMORY_ERR
+    } else {
+        PPC_NO_ERR
+    };
+}
+
 pub(crate) fn ppc_read_partial_resource(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
