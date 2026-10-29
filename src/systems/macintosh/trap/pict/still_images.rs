@@ -138,3 +138,64 @@ fn quicktime_png_obeys_source_crop_and_destination_clip() {
         assert_eq!(bus.read_long(0x2004), 0x0000FF00);
     }
 }
+
+#[test]
+fn quicktime_skips_only_matching_complete_bitmap_fallback_after_success() {
+    for (damaged, mismatch, truncated) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let (pos, end) = png_record(&mut bus, damaged);
+        // Identity matrix with translation (3, 2), applied to a 2x1 image.
+        bus.write_long(pos + 6, 0x10000);
+        bus.write_long(pos + 22, 0x10000);
+        bus.write_long(pos + 30, 3 << 16);
+        bus.write_long(pos + 34, 2 << 16);
+        bus.write_long(pos + 38, 0x4000_0000);
+        bus.write_word(end, 0x0098);
+        bus.write_word(end + 2, if truncated { 0x3fff } else { 2 });
+        for (offset, value) in [
+            (4, 0),
+            (6, 0),
+            (8, 1),
+            (10, 2),
+            (12, 0),
+            (14, 0),
+            (16, 1),
+            (18, 2),
+            (20, 2),
+            (22, if mismatch { 4 } else { 3 }),
+            (24, 3),
+            (26, 5),
+            (28, 0),
+            (30, 0x8000),
+        ] {
+            bus.write_word(end + offset, value);
+        }
+        let (next, _) = parse_compressed_quicktime(
+            &mut bus,
+            pos,
+            0,
+            0,
+            0,
+            0,
+            1.0,
+            1.0,
+            (0x2000, 16, 4, 4, 32),
+            &[[0; 3]; 256],
+            None,
+            None,
+        );
+        assert_eq!(
+            next,
+            if !damaged && !mismatch && !truncated {
+                end + 32
+            } else {
+                end
+            }
+        );
+    }
+}
