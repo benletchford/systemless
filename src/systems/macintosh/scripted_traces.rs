@@ -1459,7 +1459,7 @@ mod tests {
         assert!(trace.contains("highlighted=false result=pending outcome=button_unhighlighted"));
         assert!(trace.contains("highlighted=true result=pending outcome=button_highlighted"));
         assert!(trace.contains("A991 action=release"));
-        assert!(trace.contains("highlighted=true result=pending outcome=start_flash"));
+        assert!(trace.contains("highlighted=true result=pending outcome=button_selected"));
         assert!(trace.contains("A991 action=finish"));
         assert!(trace.contains("tracking=menu:idle dialog:idle control:idle"));
         assert!(trace.contains(
