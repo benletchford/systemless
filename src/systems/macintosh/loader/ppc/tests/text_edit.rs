@@ -1260,6 +1260,18 @@ fn te_get_style_scrap_handle_describes_each_run_in_the_selection() {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
     }
 
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TENumStyles"),
+        PpcImportDispatcherTarget::TENumStyles
+    );
+    for (start, end, expected) in [(0, 6, 2), (0, 3, 1), (3, 6, 1), (1, 5, 2), (3, 3, 1)] {
+        loaded.cpu.gpr[3] = start;
+        loaded.cpu.gpr[4] = end;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TENumStyles);
+        assert_eq!(loaded.cpu.gpr[3], expected);
+    }
+
     loaded.cpu.gpr[3] = 1;
     loaded.cpu.gpr[4] = 5;
     loaded.cpu.gpr[5] = te_handle;
@@ -1312,11 +1324,17 @@ fn te_get_style_scrap_handle_returns_nil_for_a_monostyled_record() {
     loaded.cpu.gpr[3] = scratch;
     loaded.cpu.gpr[4] = scratch + 8;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let te_handle = loaded.cpu.gpr[3];
     run_test_import(
         &mut loaded,
         PpcImportDispatcherTarget::TEGetStyleScrapHandle,
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 5;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENumStyles);
+    assert_eq!(loaded.cpu.gpr[3], 1);
 }
 
 #[test]
