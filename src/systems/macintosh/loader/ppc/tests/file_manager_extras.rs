@@ -594,3 +594,88 @@ fn cat_move_moves_directory_descendants_and_rejects_collisions_without_mutation(
     ]);
     assert_eq!(run(&mut loaded), -122);
 }
+
+#[test]
+fn pb_cat_move_uses_catalog_fields_and_reports_io_result() {
+    let target = PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbCatMove);
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PBCatMoveSync"),
+        target
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "PBCatMoveSync"),
+        target
+    );
+    let mut loaded = loaded_with(b"PBCatMoveSync");
+    let pb = SCRATCH;
+    let name = SCRATCH + 0x80;
+    let destination = SCRATCH + 0xc0;
+    loaded.push_test_vfs_file(data_file("Notes", b"notes", b"ttxt"));
+    loaded.push_vfs_resource_file(resource_fork("Notes", b"fork"));
+    write_ppc_pstring(&mut loaded.memory, name, b"Notes");
+    write_ppc_pstring(&mut loaded.memory, destination, b"Preferences");
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+    loaded.memory.write_u32_be(pb + 28, destination).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 36, PPC_SYSTEM_FOLDER_DIR_ID)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_ROOT_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+    assert!(loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "System Folder/Preferences/Notes"));
+    assert!(loaded
+        .vfs_resource_files
+        .iter()
+        .any(|file| file.path == "System Folder/Preferences/Notes"));
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_FNF_ERR);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_FNF_ERR as u16));
+}
+
+#[test]
+fn new_alias_minimal_allocates_independent_records_and_clears_failed_output() {
+    let target = PpcImportDispatcherTarget::NewAliasMinimal;
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NewAliasMinimal"),
+        target
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewAliasMinimal"),
+        target
+    );
+    let mut loaded = loaded_with(b"NewAliasMinimal");
+    let spec = SCRATCH;
+    let out = SCRATCH + 0x80;
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Notes",
+    );
+    loaded.cpu.gpr[3] = spec;
+    loaded.cpu.gpr[4] = out;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let first = loaded.memory.read_u32_be(out).unwrap();
+    assert_ne!(first, 0);
+    loaded.cpu.gpr[3] = spec;
+    loaded.cpu.gpr[4] = out + 4;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let second = loaded.memory.read_u32_be(out + 4).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(loaded.aliases.len(), 2);
+    assert_eq!(loaded.aliases[0].target_name, b"Notes");
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = out;
+    assert_eq!(run(&mut loaded), PPC_PARAM_ERR);
+    assert_eq!(loaded.memory.read_u32_be(out), Some(0));
+}

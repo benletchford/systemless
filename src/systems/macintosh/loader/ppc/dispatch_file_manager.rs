@@ -23,6 +23,8 @@ pub enum PpcFileManagerOperation {
     CreateResFile,
     /// CatMove(vRefNum, dirID, oldName, newDirID, newName)
     CatMove,
+    /// PBCatMoveSync(paramBlock)
+    PbCatMove,
     /// FSpCatMove(source, dest)
     FSpCatMove,
     /// FSpExchangeFiles(source, dest)
@@ -123,12 +125,38 @@ pub(super) fn ppc_dispatch_file_manager(
             );
             return PpcImportAction::ReturnPreserve;
         }
-        PpcFileManagerOperation::CatMove => {
+        PpcFileManagerOperation::CatMove | PpcFileManagerOperation::PbCatMove => {
+            let pb = if operation == PpcFileManagerOperation::PbCatMove {
+                let pb = cpu.gpr[3];
+                if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 52) {
+                    return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                }
+                Some(pb)
+            } else {
+                None
+            };
+            let (vref, source_dir, source_name, dest_dir, dest_name) = if let Some(pb) = pb {
+                (
+                    memory.read_u16_be(pb + 22).unwrap() as i16,
+                    memory.read_u32_be(pb + 48).unwrap(),
+                    memory.read_u32_be(pb + 18).unwrap(),
+                    memory.read_u32_be(pb + 36).unwrap(),
+                    memory.read_u32_be(pb + 28).unwrap(),
+                )
+            } else {
+                (
+                    cpu.gpr[3] as u16 as i16,
+                    cpu.gpr[4],
+                    cpu.gpr[5],
+                    cpu.gpr[6],
+                    cpu.gpr[7],
+                )
+            };
             // Inside Macintosh: Files, CatMove. Empty names identify the
             // directory itself; otherwise dirID names the parent directory.
             let mut resolve = |dir_id: u32, name_ptr: u32| -> Result<(i16, String), i16> {
                 let (volume, directory) = ppc_volume_and_directory(
-                    cpu.gpr[3] as u16 as i16,
+                    vref,
                     dir_id,
                     vfs_volumes,
                     default_dir_id,
@@ -143,19 +171,26 @@ pub(super) fn ppc_dispatch_file_manager(
                 } else {
                     ppc_read_pstring_bytes(memory, name_ptr).ok_or(PPC_PARAM_ERR)?
                 };
-                let path = ppc_resolved_fsspec_target_path(
-                    vfs_directories,
-                    vfs_files,
-                    vfs_resource_files,
-                    directory,
-                    &name,
-                )
+                let path = if !name.is_empty() && !name.contains(&b':') {
+                    let parent = ppc_directory_path_for_id(vfs_directories, directory)
+                        .ok_or(PPC_DIR_NF_ERR)?;
+                    let path = ppc_join_vfs_path(parent, &decode_mac_roman(&name));
+                    ppc_vfs_target_path(vfs_directories, vfs_files, vfs_resource_files, &path)
+                } else {
+                    ppc_resolved_fsspec_target_path(
+                        vfs_directories,
+                        vfs_files,
+                        vfs_resource_files,
+                        directory,
+                        &name,
+                    )
+                }
                 .ok_or(PPC_FNF_ERR)?;
                 Ok((volume, path))
             };
-            let source = resolve(cpu.gpr[4], cpu.gpr[5]);
-            let dest = resolve(cpu.gpr[6], cpu.gpr[7]);
-            match (source, dest) {
+            let source = resolve(source_dir, source_name);
+            let dest = resolve(dest_dir, dest_name);
+            let result = match (source, dest) {
                 (Err(error), _) => error,
                 (_, Err(PPC_FNF_ERR)) => PPC_DIR_NF_ERR,
                 (_, Err(error)) => error,
@@ -179,6 +214,11 @@ pub(super) fn ppc_dispatch_file_manager(
                         vfs_resources,
                     )
                 }
+            };
+            if let Some(pb) = pb {
+                ppc_complete_pb(memory, pb, result)
+            } else {
+                result
             }
         }
         PpcFileManagerOperation::FSpCatMove => ppc_fsp_cat_move(

@@ -1873,6 +1873,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::MatchAlias
         | PpcImportDispatcherTarget::UpdateAlias
         | PpcImportDispatcherTarget::NewAlias
+        | PpcImportDispatcherTarget::NewAliasMinimal
         | PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
         | PpcImportDispatcherTarget::FileCompatibility(_)
         | PpcImportDispatcherTarget::FileManager(_)
