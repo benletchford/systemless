@@ -2452,3 +2452,72 @@ fn apple_event_put_ptr_copies_and_replaces_list_data() {
     run_test_import(&mut loaded, ae(PpcAppleEventCompatibilityOperation::PutPtr));
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_ILLEGAL_INDEX));
 }
+
+#[test]
+fn apple_event_integer_coercions_preserve_values_and_reject_overflow() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    let source = scratch;
+    let result = scratch + 8;
+    let data = scratch + 32;
+    loaded.memory.write_u16_be(data, (-123i16) as u16).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"shor");
+    loaded.cpu.gpr[4] = data;
+    loaded.cpu.gpr[5] = 2;
+    loaded.cpu.gpr[6] = source;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "AECreateDesc"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let source_handle = loaded.memory.read_u32_be(source + 4).unwrap();
+
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"long");
+    loaded.cpu.gpr[5] = result;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "AECoerceDesc"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(result),
+        Some(u32::from_be_bytes(*b"long"))
+    );
+    let result_handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    assert_ne!(source_handle, result_handle);
+    let result_data = loaded.memory.read_u32_be(result_handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(result_data),
+        Some((-123i32) as u32)
+    );
+
+    loaded.memory.write_u64_be(data, i64::MAX as u64).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"comp");
+    loaded.cpu.gpr[4] = data;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = u32::from_be_bytes(*b"long");
+    loaded.cpu.gpr[7] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "AECoercePtr"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u64_be(scratch + 16), Some(0));
+
+    loaded.memory.write_u64_be(data, (-123i64) as u64).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"comp");
+    loaded.cpu.gpr[4] = data;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = u32::from_be_bytes(*b"shor");
+    loaded.cpu.gpr[7] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "AECoercePtr"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(scratch + 20).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(ptr), Some((-123i16) as u16));
+}
