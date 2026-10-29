@@ -2949,7 +2949,7 @@ impl super::TrapDispatcher {
         behind: u32,
         old_front: u32,
     ) {
-        if behind == 0xFFFF_FFFF {
+        if behind == 0xFFFF_FFFF || (visible && old_front == 0 && self.front_window == window_ptr) {
             // Native Mac OS 8.1 leaves activation unchanged for invisible
             // creations, despite the broader wording in Macintosh Toolbox
             // Essentials (1992), pp. 4-81 and 4-84. ShowWindow activates a

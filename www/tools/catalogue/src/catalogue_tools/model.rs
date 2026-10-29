@@ -8,6 +8,7 @@ pub const COMPILED_SCHEMA_VERSION: u32 = 3;
 /// Stable category labels exposed by the public library filters.
 pub const CATEGORIES: &[&str] = &[
     "Arcade",
+    "Art",
     "FPS",
     "Puzzle",
     "Role-Playing",
@@ -206,6 +207,9 @@ pub struct Runtime {
     pub show_menu_bar: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_depth: Option<u16>,
+    pub addressing_24_bit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_size: Option<(u16, u16)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application_partition_size: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,6 +228,8 @@ impl Default for Runtime {
             launch_modifiers: Vec::new(),
             show_menu_bar: false,
             screen_depth: None,
+            addressing_24_bit: false,
+            screen_size: None,
             application_partition_size: None,
             executable_path: None,
             remove_paths: Vec::new(),

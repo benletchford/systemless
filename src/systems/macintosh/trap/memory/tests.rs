@@ -45,6 +45,23 @@ fn standalone_classic_traps_retain_the_process_memory_manager() {
 }
 
 #[test]
+fn dispose_handle_strips_master_pointer_flags_in_24_bit_mode() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    bus.set_addressing_32_bit(false);
+    cpu.write_reg(Register::D0, 128);
+    dispatcher.current_trap_word = 0xA022;
+    dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus).unwrap().unwrap();
+    let handle = cpu.read_reg(Register::A0);
+    let ptr = bus.read_long(handle);
+    let manager = dispatcher.process_memory_manager();
+    assert_eq!(manager.borrow().classic_allocation_size(ptr), Some(128));
+    bus.write_long(handle, ptr | 0x8000_0000);
+    cpu.write_reg(Register::A0, handle);
+    dispatcher.dispatch_memory(false, 0x23, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(manager.borrow().classic_allocation_size(ptr), None);
+}
+
+#[test]
 fn classic_allocation_traps_mutate_the_process_owned_heap() {
     let (mut dispatcher, mut cpu, mut bus) = setup();
     let mut context = ProcessContext::default();
@@ -6047,6 +6064,58 @@ fn test_max_mem() {
         0,
         "MaxMem should return zero application-zone growth after MaxApplZone"
     );
+}
+
+#[test]
+fn max_mem_does_not_promise_more_than_new_handle_can_allocate() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    bus.write_long(addr::MEM_TOP, bus.ram_size());
+    dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus).unwrap().unwrap();
+    let max = cpu.read_reg(Register::D0);
+    assert!(max > 0);
+    cpu.write_reg(Register::D0, max);
+    dispatcher.current_trap_word = 0xA022;
+    dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_ne!(cpu.read_reg(Register::A0), 0);
+}
+
+#[test]
+fn max_mem_leaves_space_below_live_stack_for_new_handle() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    bus.write_long(addr::MEM_TOP, bus.ram_size());
+    let stack = 0x0030_0000;
+    cpu.write_reg(Register::A7, stack);
+    bus.write_long(stack - 0x1000, 0x1234_5678);
+    dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus).unwrap().unwrap();
+    let max = cpu.read_reg(Register::D0);
+    assert!(max > 0);
+    cpu.write_reg(Register::D0, max);
+    dispatcher.current_trap_word = 0xA022;
+    dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_ne!(cpu.read_reg(Register::A0), 0);
+    assert_eq!(bus.read_long(stack - 0x1000), 0x1234_5678);
+}
+
+#[test]
+fn max_mem_counts_reusable_large_handle_after_disposal() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    bus.write_long(addr::MEM_TOP, bus.ram_size());
+    cpu.write_reg(Register::A7, 0x0030_0000);
+    dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus).unwrap().unwrap();
+    let first = cpu.read_reg(Register::D0) & !511;
+    assert!(first > 1024);
+    cpu.write_reg(Register::D0, first);
+    dispatcher.current_trap_word = 0xA022;
+    dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus).unwrap().unwrap();
+    let handle = cpu.read_reg(Register::A0);
+    assert_ne!(handle, 0);
+    dispatcher.dispatch_memory(false, 0x23, &mut cpu, &mut bus).unwrap().unwrap();
+    dispatcher.dispatch_memory(false, 0x1D, &mut cpu, &mut bus).unwrap().unwrap();
+    let second = cpu.read_reg(Register::D0) & !511;
+    assert!(second >= first);
+    cpu.write_reg(Register::D0, second);
+    dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_ne!(cpu.read_reg(Register::A0), 0);
 }
 
 #[test]

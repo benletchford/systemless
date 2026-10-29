@@ -199,6 +199,8 @@ fn screen_depth_is_validated_and_reaches_generated_settings() {
         .unwrap()
         .contains("screen_depth"));
     entry.runtime.screen_depth = Some(4);
+    entry.runtime.addressing_24_bit = true;
+    entry.runtime.screen_size = Some((512, 342));
     validate::entry(&entry).unwrap();
 
     let root = repo();
@@ -207,6 +209,8 @@ fn screen_depth_is_validated_and_reaches_generated_settings() {
     assert_eq!(loaded.documents[0].entry.runtime.screen_depth, Some(4));
     let generated = site::rust_games(&compiled(&loaded)).unwrap();
     assert!(generated.contains("screen_depth: Some(4)"));
+    assert!(generated.contains("addressing_24_bit: true"));
+    assert!(generated.contains("screen_size: Some((512, 342))"));
 
     entry.runtime.screen_depth = Some(3);
     assert!(validate::entry(&entry)

@@ -321,6 +321,12 @@ pub fn entry(e: &Entry) -> Result<()> {
     );
     ensure!(
         e.runtime
+            .screen_size
+            .is_none_or(|(w, h)| w > 0 && h > 0 && w <= 800 && h <= 600),
+        "screen_size must fit within 800 by 600"
+    );
+    ensure!(
+        e.runtime
             .application_partition_size
             .is_none_or(|n| n >= 128 * 1024),
         "application_partition_size must be at least 128 KiB"

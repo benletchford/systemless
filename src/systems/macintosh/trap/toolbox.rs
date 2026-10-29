@@ -644,13 +644,14 @@ const STANDARD_FILE_SAVE_ITEM: i16 = 1;
 const STANDARD_FILE_NAME_ITEM: i16 = 9;
 const STANDARD_FILE_DIALOG_WIDTH: i16 = 360;
 const STANDARD_FILE_DIALOG_HEIGHT: i16 = 260;
-const STANDARD_FILE_PUT_VOLUME_RECT: (i16, i16, i16, i16) = (12, 24, 31, 116);
-const STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 124, 31, 336);
-const STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (38, 18, 156, 316);
-const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 315, 156, 331);
+const STANDARD_FILE_PUT_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
+const STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 268, 31, 336);
+const STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (38, 18, 156, 236);
+const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 235, 156, 251);
+const STANDARD_FILE_PUT_EJECT_RECT: (i16, i16, i16, i16) = (38, 258, 59, 338);
 const STANDARD_FILE_PROMPT_RECT: (i16, i16, i16, i16) = (166, 24, 184, 330);
 const STANDARD_FILE_NAME_RECT: (i16, i16, i16, i16) = (188, 24, 208, 330);
-const STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (220, 24, 242, 104);
+const STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
 const STANDARD_FILE_CANCEL_RECT: (i16, i16, i16, i16) = (220, 166, 242, 246);
 const STANDARD_FILE_SAVE_RECT: (i16, i16, i16, i16) = (220, 258, 242, 338);
 const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
@@ -2147,11 +2148,11 @@ impl super::TrapDispatcher {
         let (requested_top, requested_left) =
             requested_origin.unwrap_or((centered_top, centered_left));
         let left = requested_left
-            .max(0)
-            .min((screen_width as i16 - STANDARD_FILE_GET_DIALOG_WIDTH).max(0));
+            .max(4)
+            .min((screen_width as i16 - STANDARD_FILE_GET_DIALOG_WIDTH - 4).max(4));
         let top = requested_top
-            .max(0)
-            .min((screen_height as i16 - STANDARD_FILE_GET_DIALOG_HEIGHT).max(0));
+            .max(24)
+            .min((screen_height as i16 - STANDARD_FILE_GET_DIALOG_HEIGHT - 4).max(24));
         (
             top,
             left,
@@ -2160,7 +2161,7 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn standard_file_get_dialog_items(tracking: &StandardFileGetTrackingState) -> Vec<DialogItem> {
+    fn standard_file_get_dialog_items(tracking: &StandardFileGetTrackingState, location_label: &str) -> Vec<DialogItem> {
         let open_enabled = tracking
             .entries
             .get(tracking.selected)
@@ -2193,13 +2194,13 @@ impl super::TrapDispatcher {
             DialogItem {
                 item_type: 8,
                 rect: STANDARD_FILE_GET_VOLUME_LABEL_RECT,
-                text: super::dispatch::BOOT_VOLUME_NAME.to_string(),
+                text: location_label.to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
                 item_type: 0,
                 rect: STANDARD_FILE_GET_VOLUME_RECT,
-                text: super::dispatch::BOOT_VOLUME_NAME.to_string(),
+                text: location_label.to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2225,7 +2226,8 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFileGetTrackingState,
     ) {
-        let items = Self::standard_file_get_dialog_items(tracking);
+        let (_, _, location_label, _) = self.standard_file_put_directory_location(tracking.current_dir_id);
+        let items = Self::standard_file_get_dialog_items(tracking, &location_label);
         self.draw_dialog(
             bus,
             tracking.bounds,
@@ -2261,7 +2263,7 @@ impl super::TrapDispatcher {
             left + vleft,
             top + vbottom,
             left + vright,
-            super::dispatch::BOOT_VOLUME_NAME,
+            &location_label,
         );
         let (stop, sleft, sbottom, sright) = STANDARD_FILE_GET_SEPARATOR_RECT;
         self.draw_rect_border(
@@ -2273,6 +2275,31 @@ impl super::TrapDispatcher {
         );
         self.draw_standard_file_get_list(bus, tracking);
         self.standard_file_drawn = bus.screen_mark();
+    }
+
+    fn draw_standard_file_entry_icon(
+        &self,
+        bus: &mut MacMemoryBus,
+        left: i16,
+        top: i16,
+        directory: bool,
+        selected: bool,
+    ) {
+        // The classic list uses small monochrome document and folder icons.
+        let rows: [u16; 11] = if directory {
+            [0x000, 0x3c0, 0x420, 0xffe, 0x801, 0x801, 0x801, 0x801, 0x801, 0xfff, 0x000]
+        } else {
+            [0x7e0, 0x420, 0x430, 0x428, 0x427, 0x401, 0x401, 0x401, 0x401, 0x7ff, 0x000]
+        };
+        let (base, row_bytes, width, height, depth) = self.get_screen_params();
+        for (y, row) in rows.into_iter().enumerate() {
+            for x in 0..12 {
+                if row & (1 << (11 - x)) != 0 {
+                    Self::fb_set_pixel(bus, base, row_bytes, depth, width, height,
+                        left + x, top + y as i16, !selected);
+                }
+            }
+        }
     }
 
     fn draw_standard_file_get_list(
@@ -2380,14 +2407,8 @@ impl super::TrapDispatcher {
                     true,
                 );
             }
-            let text = if entry.is_directory {
-                format!(
-                    "{} ▸",
-                    Self::standard_file_get_display_name(&entry.display_name)
-                )
-            } else {
-                Self::standard_file_get_display_name(&entry.display_name)
-            };
+            self.draw_standard_file_entry_icon(bus, left + 4, row_top + 1, entry.is_directory, selected);
+            let text = Self::standard_file_get_display_name(&entry.display_name);
             if selected {
                 Self::fb_draw_string_styled_ink(
                     bus,
@@ -2396,7 +2417,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 6,
+                    left + 20,
                     row_top + 11,
                     &text,
                     0,
@@ -2412,7 +2433,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 6,
+                    left + 20,
                     row_top + 11,
                     &text,
                     0,
@@ -2489,9 +2510,67 @@ impl super::TrapDispatcher {
             selected: 0,
             bounds,
             saved_pixels,
+            active_button: None,
         };
         self.draw_standard_file_get_dialog(bus, &tracking);
         self.standard_file_get_tracking = Some(tracking);
+    }
+
+    pub(crate) fn update_standard_file_button_for_mouse(&mut self, bus: &mut MacMemoryBus) {
+        let (v, h) = self.input_state.mouse_position();
+        if let Some(mut tracking) = self.standard_file_get_tracking.take() {
+            if let Some((rect, highlighted)) = tracking.active_button {
+                let inside = Self::standard_file_point_in_rect(v - tracking.bounds.0, h - tracking.bounds.1, rect);
+                if inside != highlighted {
+                    self.draw_standard_file_button(bus, tracking.bounds, rect, true, inside);
+                    tracking.active_button = Some((rect, inside));
+                }
+            }
+            self.standard_file_get_tracking = Some(tracking);
+        }
+        if let Some(mut tracking) = self.standard_file_put_tracking.take() {
+            if let Some((rect, highlighted)) = tracking.active_button {
+                let inside = Self::standard_file_point_in_rect(v - tracking.bounds.0, h - tracking.bounds.1, rect);
+                if inside != highlighted {
+                    self.draw_standard_file_button(bus, tracking.bounds, rect, false, inside);
+                    tracking.active_button = Some((rect, inside));
+                }
+            }
+            self.standard_file_put_tracking = Some(tracking);
+        }
+    }
+
+    fn draw_standard_file_button(&self, bus: &mut MacMemoryBus, bounds: (i16, i16, i16, i16), rect: (i16, i16, i16, i16), get: bool, highlighted: bool) {
+        let default = if get { rect == STANDARD_FILE_GET_OPEN_RECT } else { rect == STANDARD_FILE_SAVE_RECT };
+        let desktop = if get { STANDARD_FILE_GET_DESKTOP_RECT } else { STANDARD_FILE_PUT_DESKTOP_RECT };
+        let title = if default {
+            if get { "Open" } else { "Save" }
+        } else if rect == desktop {
+            "Desktop"
+        } else {
+            "Cancel"
+        };
+        let global = (bounds.0 + rect.0, bounds.1 + rect.1, bounds.0 + rect.2, bounds.1 + rect.3);
+        self.draw_dialog_button_highlight_state(bus, global, title, default, highlighted);
+    }
+
+    fn service_standard_file_button(&mut self, bus: &mut MacMemoryBus, bounds: (i16, i16, i16, i16), active: &mut Option<((i16, i16, i16, i16), bool)>, get: bool) -> Option<(i16, i16)> {
+        let (rect, highlighted) = (*active)?;
+        let release = self.event_queue.iter().position(|event| event.what == 2)
+            .and_then(|index| self.event_queue.remove(index));
+        let (v, h) = release.as_ref().map(|event| (event.where_v, event.where_h))
+            .unwrap_or_else(|| self.input_state.mouse_position());
+        let inside = Self::standard_file_point_in_rect(v - bounds.0, h - bounds.1, rect);
+        if inside != highlighted {
+            self.draw_standard_file_button(bus, bounds, rect, get, inside);
+            *active = Some((rect, inside));
+        }
+        if release.is_some() {
+            if inside { self.draw_standard_file_button(bus, bounds, rect, get, false); }
+            *active = None;
+            return Some(if inside { (v, h) } else { (bounds.0.saturating_sub(1), bounds.1.saturating_sub(1)) });
+        }
+        None
     }
 
     fn service_standard_file_get_tracking<C: CpuOps>(
@@ -2502,10 +2581,30 @@ impl super::TrapDispatcher {
     ) {
         let mut action = None;
         let mut consumed_event = false;
-        while let Some(event) = self.event_queue.pop_front() {
+        if tracking.active_button.is_some() {
+            if let Some((v, h)) = self.service_standard_file_button(bus, tracking.bounds, &mut tracking.active_button, true) {
+                action = Self::standard_file_get_mouse_action(&mut tracking, v, h);
+            } else {
+                self.standard_file_get_tracking = Some(tracking);
+                return;
+            }
+        }
+        while action.is_none() && tracking.active_button.is_none() {
+            let Some(event) = self.event_queue.pop_front() else { break; };
             consumed_event = true;
             match event.what {
                 1 => {
+                    let local = (event.where_v - tracking.bounds.0, event.where_h - tracking.bounds.1);
+                    if let Some(rect) = [STANDARD_FILE_GET_OPEN_RECT, STANDARD_FILE_GET_CANCEL_RECT, STANDARD_FILE_GET_DESKTOP_RECT]
+                        .into_iter().find(|&rect| Self::standard_file_point_in_rect(local.0, local.1, rect)) {
+                        if rect == STANDARD_FILE_GET_OPEN_RECT && tracking.entries.is_empty() {
+                            break;
+                        }
+                        tracking.active_button = Some((rect, true));
+                        self.draw_standard_file_button(bus, tracking.bounds, rect, true, true);
+                        consumed_event = false;
+                        break;
+                    }
                     action = Self::standard_file_get_mouse_action(
                         &mut tracking,
                         event.where_v,
@@ -2707,10 +2806,11 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn standard_file_put_dialog_bounds(&self) -> (i16, i16, i16, i16) {
+    fn standard_file_put_dialog_bounds(&self, requested_origin: Option<(i16, i16)>) -> (i16, i16, i16, i16) {
         let (_, _, screen_width, screen_height, _) = self.screen_mode;
-        let left = ((screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH) / 2).max(8);
-        let top = ((screen_height as i16 - STANDARD_FILE_DIALOG_HEIGHT) / 2).max(24);
+        let (requested_top, requested_left) = requested_origin.unwrap_or(((screen_height as i16 - STANDARD_FILE_DIALOG_HEIGHT) / 2, (screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH) / 2));
+        let left = requested_left.max(4).min((screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH - 4).max(4));
+        let top = requested_top.max(24).min((screen_height as i16 - STANDARD_FILE_DIALOG_HEIGHT - 4).max(24));
         (
             top,
             left,
@@ -2777,6 +2877,12 @@ impl super::TrapDispatcher {
                 text: tracking.name.clone(),
                 sel_start: tracking.sel_start,
                 sel_end: tracking.sel_end,
+                ..DialogItem::default()
+            },
+            DialogItem {
+                item_type: 0x84,
+                rect: STANDARD_FILE_PUT_EJECT_RECT,
+                text: "Eject".to_string(),
                 ..DialogItem::default()
             },
         ]
@@ -2963,14 +3069,8 @@ impl super::TrapDispatcher {
                     true,
                 );
             }
-            let text = if entry.is_directory {
-                format!(
-                    "{} ▸",
-                    Self::standard_file_get_display_name(&entry.display_name)
-                )
-            } else {
-                Self::standard_file_get_display_name(&entry.display_name)
-            };
+            self.draw_standard_file_entry_icon(bus, left + 4, row_top + 1, entry.is_directory, selected);
+            let text = Self::standard_file_get_display_name(&entry.display_name);
             if selected {
                 Self::fb_draw_string_styled_ink(
                     bus,
@@ -2979,7 +3079,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 6,
+                    left + 20,
                     row_top + 11,
                     &text,
                     0,
@@ -2995,7 +3095,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 6,
+                    left + 20,
                     row_top + 11,
                     &text,
                     0,
@@ -3077,11 +3177,12 @@ impl super::TrapDispatcher {
         pop_total: u32,
         prompt_ptr: u32,
         default_name_ptr: u32,
+        requested_origin: Option<(i16, i16)>,
     ) {
         let default_name = standard_file_default_name(bus, default_name_ptr);
         let mut name = decode_mac_roman(&default_name);
         Self::standard_file_clamp_name(&mut name);
-        let bounds = self.standard_file_put_dialog_bounds();
+        let bounds = self.standard_file_put_dialog_bounds(requested_origin);
         let saved_pixels = self.save_dialog_pixels(bus, bounds);
         let name_len = name.len().min(i16::MAX as usize) as i16;
         let current_dir_id = *self.default_dir_id;
@@ -3100,6 +3201,7 @@ impl super::TrapDispatcher {
             sel_end: name_len,
             bounds,
             saved_pixels,
+            active_button: None,
         };
         self.draw_standard_file_put_dialog(bus, &tracking);
         self.standard_file_put_tracking = Some(tracking);
@@ -3113,10 +3215,31 @@ impl super::TrapDispatcher {
     ) {
         let mut action = None;
         let mut consumed_event = false;
-        while let Some(event) = self.event_queue.pop_front() {
+        if tracking.active_button.is_some() {
+            if let Some((v, h)) = self.service_standard_file_button(bus, tracking.bounds, &mut tracking.active_button, false) {
+                action = self.standard_file_put_mouse_action(&mut tracking, v, h);
+            } else {
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
+        }
+        while action.is_none() && tracking.active_button.is_none() {
+            let Some(event) = self.event_queue.pop_front() else { break; };
             consumed_event = true;
             match event.what {
                 1 => {
+                    let local = (event.where_v - tracking.bounds.0, event.where_h - tracking.bounds.1);
+                    if let Some(rect) = [STANDARD_FILE_SAVE_RECT, STANDARD_FILE_CANCEL_RECT, STANDARD_FILE_PUT_DESKTOP_RECT]
+                        .into_iter().find(|&rect| Self::standard_file_point_in_rect(local.0, local.1, rect)) {
+                        if rect == STANDARD_FILE_SAVE_RECT {
+                            let (_, _, _, writable) = self.standard_file_put_directory_location(tracking.current_dir_id);
+                            if !writable || tracking.name.trim().is_empty() { break; }
+                        }
+                        tracking.active_button = Some((rect, true));
+                        self.draw_standard_file_button(bus, tracking.bounds, rect, false, true);
+                        consumed_event = false;
+                        break;
+                    }
                     action = self.standard_file_put_mouse_action(
                         &mut tracking,
                         event.where_v,
@@ -3823,6 +3946,38 @@ impl super::TrapDispatcher {
             return crate::text_utils::MEM_FULL_ERR;
         }
         0
+    }
+
+    fn ensure_scrap_file(&mut self, bus: &mut MacMemoryBus) -> (String, u32) {
+        if let Some(file) = self.scrap.disk_file() {
+            return file;
+        }
+        let directory = self.directory_path_for_id(*self.default_dir_id).unwrap_or("");
+        let path = if directory.is_empty() { "System Clipboard".to_string() } else { format!("{directory}/System Clipboard") };
+        let mac_path = path.replace('/', ":");
+        let name = crate::mac_roman::encode_mac_roman_lossy(&mac_path);
+        let string_ptr = bus.alloc((name.len().min(255) + 1) as u32);
+        bus.write_pstring(string_ptr, &name[..name.len().min(255)]);
+        self.scrap.set_disk_file(path.clone(), string_ptr);
+        (path, string_ptr)
+    }
+
+    fn refresh_scrap_from_file(&mut self) {
+        let Some((path, _)) = self.scrap.disk_file() else { return; };
+        let Some(bytes) = self.vfs_data_fork_bytes(&path) else { return; };
+        let mut entries = Vec::new();
+        let mut offset = 0usize;
+        while offset + 8 <= bytes.len() {
+            let flavor = bytes[offset..offset + 4].try_into().unwrap();
+            let len = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let Some(end) = offset.checked_add(8).and_then(|n| n.checked_add(len)) else { return; };
+            if end > bytes.len() { return; }
+            entries.push((flavor, bytes[offset + 8..end].to_vec()));
+            // A directly written final flavor need not include the optional
+            // alignment byte; only skip padding when another byte exists.
+            offset = if end == bytes.len() { end } else { end + (len & 1) };
+        }
+        if offset == bytes.len() { self.scrap.replace_entries(entries); }
     }
 
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -9392,6 +9547,10 @@ impl super::TrapDispatcher {
             // until LoadScrap/ZeroScrap marks it resident again.
             (true, 0x1F9) => {
                 let sp = cpu.read_reg(Register::A7);
+                let (_, scrap_name) = self.ensure_scrap_file(bus);
+                if !self.scrap.summary().in_memory {
+                    self.refresh_scrap_from_file();
+                }
                 // Allocate ScrapStuff at a fixed location if not yet done
                 let ptr = self.scrap.ensure_stuff_ptr(|| {
                     bus.alloc(crate::scrap_manager::SCRAP_STUFF_RECORD_SIZE as u32)
@@ -9413,7 +9572,7 @@ impl super::TrapDispatcher {
                 bus.write_word(ptr + 8, evaluated.scrap_count); // scrapCount
                                                                 // IM:I I-457: scrapState is positive when the scrap is in memory.
                 bus.write_word(ptr + 10, evaluated.scrap_state as u16);
-                bus.write_long(ptr + 12, evaluated.scrap_name); // scrapName (NIL)
+                bus.write_long(ptr + 12, scrap_name); // scrapName (StringPtr)
                 bus.write_long(sp, ptr); // return value
                 Ok(())
             }
@@ -9450,15 +9609,31 @@ impl super::TrapDispatcher {
             (true, 0x1FA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let _action = crate::scrap_manager::evaluate_unload_scrap();
+                let was_in_memory = self.scrap.summary().in_memory;
+                let bytes = self.scrap.serialized_entries();
                 match self.scrap.unload() {
                     Err(()) => bus.write_long(sp, (-1i32) as u32), // generic non-zero OSErr
                     Ok(Some(handle)) => {
+                        if was_in_memory {
+                            let (path, _) = self.ensure_scrap_file(bus);
+                            self.vfs.insert(path.clone(), bytes);
+                            self.ensure_vfs_file_metadata(&path);
+                            self.publish_vfs_entry_to_process(&path);
+                        }
                         let _ = self.write_bytes_to_handle(bus, handle, &[]);
                         bus.free(handle);
                         bus.write_long(sp, crate::scrap_manager::NO_ERR as u32);
-                        // noErr (Systemless HLE: no scrap-file IO)
+                        // noErr
                     }
-                    Ok(None) => bus.write_long(sp, crate::scrap_manager::NO_ERR as u32), // already on disk; noErr
+                    Ok(None) => {
+                        if was_in_memory {
+                            let (path, _) = self.ensure_scrap_file(bus);
+                            self.vfs.insert(path.clone(), bytes);
+                            self.ensure_vfs_file_metadata(&path);
+                            self.publish_vfs_entry_to_process(&path);
+                        }
+                        bus.write_long(sp, crate::scrap_manager::NO_ERR as u32);
+                    }
                 }
                 Ok(())
             }
@@ -9494,6 +9669,7 @@ impl super::TrapDispatcher {
             (true, 0x1FB) => {
                 let sp = cpu.read_reg(Register::A7);
                 let _action = crate::scrap_manager::evaluate_load_scrap();
+                if !self.scrap.summary().in_memory { self.refresh_scrap_from_file(); }
                 self.scrap.load();
                 bus.write_long(sp, crate::scrap_manager::NO_ERR as u32); // noErr
                 Ok(())
@@ -9533,6 +9709,7 @@ impl super::TrapDispatcher {
             // GetScrap ($A9FD): Reads scrap data by type; supports NIL handle query; returns noTypeErr (-102) if not found per IM:I I-458
             (true, 0x1FD) => {
                 let sp = cpu.read_reg(Register::A7);
+                if !self.scrap.summary().in_memory { self.refresh_scrap_from_file(); }
                 let offset_ptr = bus.read_long(sp); // VAR offset: LONGINT
                 let the_type = bus.read_long(sp + 4).to_be_bytes(); // theType: ResType
                 let h_dest = bus.read_long(sp + 8); // hDest: Handle
@@ -13121,6 +13298,10 @@ impl super::TrapDispatcher {
                         .map(|offset| bus.read_long(sp + offset))
                         .unwrap_or(0);
                     if self.yield_for_ui {
+                        let requested_origin = matches!(selector, 0x0001 | 0x0003).then(|| {
+                            let where_offset = if selector == 0x0001 { 18 } else { 24 };
+                            (bus.read_word(sp + where_offset) as i16, bus.read_word(sp + where_offset + 2) as i16)
+                        });
                         self.begin_standard_file_put_tracking(
                             bus,
                             modern_reply,
@@ -13129,6 +13310,7 @@ impl super::TrapDispatcher {
                             pop_total,
                             prompt_ptr,
                             default_name_ptr,
+                            requested_origin,
                         );
                         return Some(Ok(()));
                     }

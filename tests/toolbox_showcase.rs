@@ -2544,7 +2544,7 @@ fn test_toolbox_showcase() {
     let page_dialog_sample = screen_rgb(&mut runner, 212, 223);
     let page_save_dialog_sample = screen_rgb(&mut runner, 227, 221);
     // Sample persistent page/dialog contrast outside font-dependent ink.
-    let legacy_get_sample_point = if powerpc { (160, 10) } else { (50, 0) };
+    let legacy_get_sample_point = if powerpc { (160, 10) } else { (50, 10) };
     let legacy_save_sample_point = if powerpc { (71, 200) } else { (227, 221) };
     let page_legacy_get_sample = screen_rgb(
         &mut runner,

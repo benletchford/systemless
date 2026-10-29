@@ -1900,12 +1900,13 @@ impl MacMemoryBus {
         bus
     }
 
-    pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
+    pub(crate) fn configure_screen(&mut self, profile: crate::machine_profile::MachineProfile, depth: u16) {
         debug_assert!(matches!(depth, 1 | 2 | 4 | 8));
-        let profile = crate::machine_profile::reference_machine_profile();
         let row_bytes = profile.screen_row_bytes_at_depth(depth);
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
+        self.write_word(super::globals::addr::SCREEN_BITS + 10, profile.screen_height);
+        self.write_word(super::globals::addr::SCREEN_BITS + 12, profile.screen_width);
     }
 
     /// Create a memory bus wrapping an external RAM slice

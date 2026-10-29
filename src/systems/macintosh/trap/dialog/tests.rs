@@ -813,7 +813,7 @@
         }
 
         disp.push_key_down(0x24, b'\r');
-        for _ in 0..4 {
+        for _ in 0..64 {
             let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
             if disp.dialog_tracking.is_none() {
@@ -7496,7 +7496,7 @@
                 .unwrap()
                 .unwrap();
             disp.push_key_down(0x24, b'\r');
-            for _ in 0..4 {
+            for _ in 0..64 {
                 disp.dispatch_dialog(true, trap_word, &mut cpu, &mut bus)
                     .unwrap()
                     .unwrap();
@@ -9429,10 +9429,44 @@
     }
 
     #[test]
+    fn ordinary_dialog_does_not_automatically_outline_default_button() {
+        let screen_base = 0x300000;
+        let row_bytes = 64;
+        let bounds = (40, 40, 120, 220);
+        let dialog_ptr = 0x2000;
+        let items = vec![DialogItem { item_type: 4, rect: (20, 20, 40, 100), text: "OK".into(), ..Default::default() }];
+        let (mut disp, _, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        disp.draw_dialog(&mut bus, bounds, 1, "", &items, 1, "", 0, false, dialog_ptr);
+        assert!(!screen_pixel_is_set(&bus, screen_base, row_bytes, 56, 70));
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 1, "", 0, dialog_ptr, None);
+        assert!(!screen_pixel_is_set(&bus, screen_base, row_bytes, 56, 70));
+    }
+
+    #[test]
+    fn retained_dialog_redraw_preserves_icon_overlapping_text_rect() {
+        let screen_base = 0x300000;
+        let row_bytes = 64;
+        let bounds = (40, 40, 120, 220);
+        let dialog_ptr = 0x2000;
+        let items = vec![
+            DialogItem { item_type: 8, rect: (10, 10, 40, 150), text: "Title".into(), ..Default::default() },
+            DialogItem { item_type: 32, rect: (15, 100, 31, 116), resource_id: 1, ..Default::default() },
+        ];
+        let (mut disp, _, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        let x = 144u32;
+        let y = 60u32;
+        bus.write_byte(screen_base + y * row_bytes + x / 8, 0x80);
+        assert!(screen_pixel_is_set(&bus, screen_base, row_bytes, x as i16, y as i16));
+        disp.redraw_standard_dialog_items(&mut bus, bounds, &items, 0, "", 0, dialog_ptr, None);
+        assert!(screen_pixel_is_set(&bus, screen_base, row_bytes, x as i16, y as i16));
+    }
+
+    #[test]
     fn draw_dialog_and_retained_redraw_outline_default_button() {
-        // DialogRecord.aDefItem identifies the standard push button that
-        // receives Return/Enter. Initial and retained composition must render
-        // its default outline after the standard button itself.
+        // Alert and explicitly configured default buttons retain their outline
+        // across the initial draw and retained composition.
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
         let bounds = (40, 40, 120, 220);
@@ -9445,6 +9479,7 @@
         }];
         let (mut disp, _cpu, mut bus) = setup();
         disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        disp.dialog_default_outlines.insert(dialog_ptr);
 
         disp.draw_dialog(&mut bus, bounds, 1, "", &items, 1, "", 0, false, dialog_ptr);
         assert!(

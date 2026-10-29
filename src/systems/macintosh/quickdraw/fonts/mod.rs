@@ -363,6 +363,17 @@ mod tests {
         assert_eq!(face.metrics.ascent, 1);
     }
 
+    #[test]
+    fn resource_font_can_draw_del_character() {
+        let mut font = minimal_nfnt();
+        font[2..4].copy_from_slice(&127u16.to_be_bytes());
+        font[4..6].copy_from_slice(&127u16.to_be_bytes());
+        assert!(register_resource_font_strike_for_family(30002, 17, &font));
+        let (glyph, data) = crate::quickdraw::text::get_glyph(30002, 17, '\u{7f}').unwrap();
+        assert_eq!(glyph.width, 1);
+        assert_eq!(data[glyph.data_offset], 255);
+    }
+
     fn distinctive_override_blob(font_id: i16, size: i16) -> override_format::Blob {
         let glyphs: Vec<Glyph> = (0..override_format::GLYPH_COUNT)
             .map(|_| Glyph {

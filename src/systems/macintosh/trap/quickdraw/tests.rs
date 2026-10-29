@@ -4754,6 +4754,19 @@
     // ==================== Region Operations ====================
 
     #[test]
+    fn open_and_close_region_balance_pen_visibility() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(d.pn_vis, -1);
+        d.dispatch_quickdraw(true, 0x097, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(d.pn_vis, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(d.pn_vis, 1);
+    }
+
+    #[test]
     fn closergn_preserves_multiple_recorded_line_loops_as_complex_region() {
         // Imaging With QuickDraw (1994), p. 3-87..3-89: OpenRgn collects
         // line outlines and CloseRgn organizes them into the resulting region.
@@ -5761,6 +5774,30 @@
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         let width = bus.read_word(TEST_SP + 4) as i16;
         assert!(width >= 0);
+    }
+
+    #[test]
+    fn zero_text_size_measures_default_font_strike() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.tx_size = 0;
+        bus.write_word(TEST_SP, b'A' as u16);
+        d.dispatch_quickdraw(true, 0x08D, &mut cpu, &mut bus).unwrap().unwrap();
+        let width = bus.read_word(TEST_SP + 2);
+        let (glyph, _) = crate::quickdraw::text::get_glyph(d.tx_font, 0, 'A').unwrap();
+        assert_eq!(width, d.glyph_advance(glyph) as u16);
+    }
+
+    #[test]
+    fn classic_port_direct_text_field_writes_are_loaded() {
+        let (mut d, _, mut bus) = setup_with_port();
+        let port = 0x181000;
+        d.port_draw_states.insert(port, Default::default());
+        bus.write_word(port + 68, 1234);
+        bus.write_word(port + 70, 0x0100);
+        bus.write_word(port + 72, 2);
+        bus.write_word(port + 74, 18);
+        assert!(d.load_port_draw_state(&bus, port));
+        assert_eq!((d.tx_font, d.tx_face, d.tx_mode, d.tx_size), (1234, 1, 2, 18));
     }
 
     #[test]
@@ -8443,6 +8480,37 @@
             bus.read_word(pic_ptr) > 32,
             "recorded CopyBits must produce bitmap picture data"
         );
+    }
+
+    #[test]
+    fn picture_recording_retains_multiple_bitmap_bands() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port.set(0x181000);
+        let (_, _, dst_rect) = setup_copybits_through_port_bottleneck(&mut bus, 0);
+        let frame = bus.alloc(8);
+        write_rect(&mut bus, frame, 0, 0, 1, 2);
+        bus.write_long(TEST_SP, frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus).unwrap().unwrap();
+        let handle = bus.read_long(TEST_SP + 4);
+        for x in 0..2 {
+            setup_copybits_through_port_bottleneck(&mut bus, 0);
+            write_rect(&mut bus, dst_rect, 0, x, 1, x + 1);
+            cpu.write_reg(Register::A7, TEST_SP);
+            d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus).unwrap().unwrap();
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus).unwrap().unwrap();
+        let picture = bus.read_long(handle);
+        assert_eq!(read_rect(&bus, picture + 2), (0, 0, 1, 2));
+        let size = bus.read_word(picture) as usize;
+        let data = bus.read_bytes(picture, size);
+        assert!(matches!(crate::trap::pict::picture_stream_progress(&data), crate::trap::pict::PictureStreamProgress::Complete(end) if end == size));
+        let screen = bus.alloc(8);
+        bus.fill_zeros(screen, 8);
+        let clut = *d.device_clut;
+        let (drawn, _) = crate::trap::pict::draw_picture(&mut bus, picture, 0, 0, 1, 2, (screen, 1, 8, 1, 1), &clut, 0, None);
+        assert!(drawn);
+        assert_eq!(bus.read_byte(screen) & 0xc0, 0xc0);
     }
 
     #[test]
@@ -25329,6 +25397,30 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
         assert_eq!(bus.read_long(sp_before), 0x12345678);
+    }
+
+    #[test]
+    fn closepicture_calls_custom_put_picture_proc_with_stream() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000;
+        d.current_port.set(port);
+        let procs = bus.alloc(52);
+        bus.fill_zeros(procs, 52);
+        let callback = 0x300100;
+        bus.write_long(procs + 48, callback);
+        bus.write_long(port + 104, procs);
+        let handle = bus.alloc(4);
+        let initial = bus.alloc(12);
+        bus.write_long(handle, initial);
+        d.recording_picture = Some((handle, 0, 0, 10, 10, vec![0, 0]));
+        cpu.write_reg(Register::PC, 0x123456);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), callback);
+        let sp = cpu.read_reg(Register::A7);
+        assert_eq!(bus.read_long(sp), 0x123456);
+        assert_eq!(bus.read_long(sp + 6), bus.read_long(handle) + 10);
+        assert_eq!(u32::from(bus.read_word(sp + 4)), bus.get_alloc_size(bus.read_long(handle)).unwrap() - 10);
     }
 
     #[test]

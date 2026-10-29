@@ -5,7 +5,7 @@ use crate::sound::{PendingSoundCallback, SndCommand};
 use crate::systems::macintosh::runner::{
     ActiveInterruptCallbackSource, DIALOG_CALLBACK_SCRATCH_SIZE,
 };
-use crate::trap::dispatch::{DialogTrackingState, QueuedEvent};
+use crate::trap::dispatch::{DialogButtonTrackingState, DialogTrackingState, QueuedEvent};
 use std::collections::VecDeque;
 
 pub(crate) fn dialog_tracking_for_test(filter_proc: u32, item_hit_ptr: u32) -> DialogTrackingState {
@@ -39,6 +39,21 @@ pub(crate) fn dialog_tracking_for_test(filter_proc: u32, item_hit_ptr: u32) -> D
         active_button: None,
         active_user_item: None,
     }
+}
+
+#[test]
+fn mouse_move_updates_held_dialog_button_before_release() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let mut tracking = dialog_tracking_for_test(0, 0);
+    tracking.bounds = (20, 20, 120, 220);
+    tracking.active_button = Some(DialogButtonTrackingState {
+        mouse_down: QueuedEvent { what: 1, message: 0, when: 0, where_v: 50, where_h: 60, modifiers: 0 },
+        item_no: 1, rect: (20, 20, 40, 100), title: "OK".into(), is_default: false, highlighted: true,
+    });
+    runner.dispatcher.dialog_tracking = Some(tracking);
+    runner.dispatcher.input_state.set_mouse_button_for_test(true);
+    runner.set_mouse_position(180, 250);
+    assert!(!runner.dispatcher.dialog_tracking.as_ref().unwrap().active_button.as_ref().unwrap().highlighted);
 }
 
 #[test]

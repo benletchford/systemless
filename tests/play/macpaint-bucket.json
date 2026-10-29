@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 320,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 194,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 194,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 190,
+      "h": 260
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 190,
+      "h": 260
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "screenshot",
+      "name": "oval"
+    },
+    {
+      "type": "mouse_down",
+      "v": 83,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 83,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_down",
+      "v": 145,
+      "h": 205
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 145,
+      "h": 205
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "screenshot",
+      "name": "bucket"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 205,
+      "y": 145,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 140,
+      "y": 145,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}

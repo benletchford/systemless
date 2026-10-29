@@ -4054,6 +4054,7 @@ impl super::TrapDispatcher {
             None,
             None,
             false,
+            true,
         );
         if dialog_ptr == 0 {
             return false;
@@ -4324,7 +4325,18 @@ impl super::TrapDispatcher {
                 })
                 .unwrap_or(0);
                 if hit > 0 {
-                    self.finish_interactive_alert(cpu, bus, hit);
+                    let button = self.dialog_tracking.as_ref().and_then(|tracking| {
+                        tracking.items.get((hit - 1) as usize).and_then(|item| {
+                            (dialog_item_base_type(item.item_type) == DIALOG_ITEM_BUTTON
+                                && !is_dialog_item_disabled(item.item_type))
+                                .then(|| (tracking.bounds, item.rect, item.text.clone(), hit == tracking.default_item))
+                        })
+                    });
+                    if let Some((bounds, rect, title, is_default)) = button {
+                        self.start_dialog_button_flash(bus, bounds, hit, rect, &title, is_default, false);
+                    } else {
+                        self.finish_interactive_alert(cpu, bus, hit);
+                    }
                 }
             }
             6 => {
@@ -4571,6 +4583,7 @@ impl super::TrapDispatcher {
 
     fn clear_dialog_scoped_item_state(&mut self, dialog_ptr: u32) {
         self.dialogs_drawn_by_app.remove(&dialog_ptr);
+        self.dialog_default_outlines.remove(&dialog_ptr);
         self.dialog_items.remove(&dialog_ptr);
         self.dialog_item_handles
             .retain(|_, (dlg, _)| *dlg != dialog_ptr);
@@ -5180,6 +5193,7 @@ impl super::TrapDispatcher {
         dialog_color_table: Option<u32>,
         dialog_item_color_table: Option<u32>,
         color_port: bool,
+        alert: bool,
     ) -> u32 {
         let previous_port = *self.current_port;
         let previous_gdevice = *self.current_gdevice;
@@ -5194,6 +5208,7 @@ impl super::TrapDispatcher {
                 bus.alloc_aligned(170, MANAGER_DIALOG_RECORD_ALIGNMENT)
             }
         };
+        if alert { self.dialog_default_outlines.insert(dlg_ptr); }
 
         self.window_stack.push((
             self.front_window,
@@ -6563,7 +6578,7 @@ impl super::TrapDispatcher {
         // aDefItem is authoritative for both Return/Enter semantics and the
         // standard button's default chrome. Drawing that chrome here keeps
         // the initial dialog shell coherent before application userItems run.
-        let auto_default_outline = true;
+        let auto_default_outline = dialog_ptr == 0 || self.dialog_default_outlines.contains(&dialog_ptr);
 
         // Draw each item
         for (i, item) in items.iter().enumerate() {
@@ -6957,8 +6972,20 @@ impl super::TrapDispatcher {
         // Apply default chrome after restoring guest-owned pixels and
         // redrawing live standard controls so retained composition cannot
         // drop the aDefItem outline.
-        let auto_default_outline = true;
-        for (i, item) in items.iter().enumerate() {
+        let auto_default_outline = dialog_ptr == 0 || self.dialog_default_outlines.contains(&dialog_ptr);
+        let saved_icons: Vec<_> = items.iter().enumerate().filter_map(|(index, item)| {
+            if dialog_item_base_type(item.item_type) != DIALOG_ITEM_ICON { return None; }
+            let rect = Self::dialog_item_screen_rect(bounds, item.rect);
+            Some((index, rect, self.save_rect_pixels(bus, rect)))
+        }).collect();
+        // Static and editable text erase their full rectangles. Draw them
+        // before icons and controls, which can overlap those rectangles.
+        let ordered_items = items.iter().enumerate().filter(|(_, item)| {
+            matches!(dialog_item_base_type(item.item_type), DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT)
+        }).chain(items.iter().enumerate().filter(|(_, item)| {
+            !matches!(dialog_item_base_type(item.item_type), DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT)
+        }));
+        for (i, item) in ordered_items {
             let item_num = (i + 1) as i16;
             if only_item.is_some_and(|only| item_num != only) {
                 continue;
@@ -6980,6 +7007,11 @@ impl super::TrapDispatcher {
             }
             let enabled = is_dialog_item_enabled(item.item_type);
             match base_type {
+                DIALOG_ITEM_ICON => {
+                    if let Some((_, rect, pixels)) = saved_icons.iter().find(|(index, _, _)| *index == i) {
+                        self.restore_rect_pixels(bus, *rect, pixels);
+                    }
+                }
                 DIALOG_ITEM_BUTTON => self.draw_button_with_enabled(
                     bus,
                     abs_top,
@@ -8415,7 +8447,7 @@ impl super::TrapDispatcher {
         self.fill_dialog_rect(bus, bottom - 1, left + 3, bottom, right - 3, true);
     }
 
-    fn draw_dialog_button_highlight_state(
+    pub(super) fn draw_dialog_button_highlight_state(
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
@@ -10611,7 +10643,7 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, saved.stack_ptr + 8);
     }
 
-    fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
+    pub(crate) fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
         let Some((
             dialog_ptr,
             bounds,
@@ -10697,17 +10729,16 @@ impl super::TrapDispatcher {
                 Some(item_type),
                 Some(true),
                 "pending",
-                "start_flash",
+                "button_selected",
             );
-            self.start_dialog_button_flash(
-                bus,
-                bounds,
-                item_no,
-                rect,
-                &title,
-                is_default,
-                highlighted,
-            );
+            self.draw_dialog_button_highlight_state(bus, (top, left, bottom, right), &title, is_default, false);
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                // Reuse the completion path without flashing after a mouse
+                // release. Keyboard activation still uses the full flash.
+                tracking.flash_item = item_no;
+                tracking.flash_remaining = 1;
+                tracking.flash_delay = 0;
+            }
         } else if highlighted {
             self.draw_dialog_button_highlight_state(
                 bus,
@@ -10986,6 +11017,7 @@ impl super::TrapDispatcher {
                         dialog_color_table,
                         dialog_item_color_table,
                         dialog_color_table.is_some(),
+                        false,
                     );
                     // Install any 'pltt' resource whose id matches the
                     // dialog id onto the freshly-created window. This
@@ -16307,6 +16339,7 @@ impl super::TrapDispatcher {
                     None,
                     None,
                     params.is_color(),
+                    false,
                 );
                 // Honor Pascal `behind` param at SP+10 per IM:I I-412.
                 self.apply_behind_parameter(bus, dlg_ptr, params.behind());
@@ -16940,6 +16973,7 @@ impl super::TrapDispatcher {
                             None,
                             None,
                             true,
+                            false,
                         );
                         self.apply_behind_parameter(bus, dlg_ptr, params.behind());
                         bus.write_long(sp + param_bytes, dlg_ptr);
@@ -17034,6 +17068,7 @@ impl super::TrapDispatcher {
                         let result = evaluate_set_dialog_default_item_parameters(dialog_ptr, new_item);
                         let os_err = match result {
                             Ok(params) => {
+                                self.dialog_default_outlines.insert(params.dialog_ptr());
                                 bus.write_word(
                                     params.dialog_ptr() + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
                                     params.item_no() as u16,

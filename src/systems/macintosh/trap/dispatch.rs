@@ -770,6 +770,7 @@ pub(crate) struct StandardFilePutTrackingState {
     pub sel_end: i16,
     pub bounds: (i16, i16, i16, i16),
     pub saved_pixels: SavedPixels,
+    pub active_button: Option<((i16, i16, i16, i16), bool)>,
 }
 
 /// Candidate file shown by a retained Standard File get dialog.
@@ -802,6 +803,7 @@ pub(crate) struct StandardFileGetTrackingState {
     pub selected: usize,
     pub bounds: (i16, i16, i16, i16),
     pub saved_pixels: SavedPixels,
+    pub active_button: Option<((i16, i16, i16, i16), bool)>,
 }
 
 /// Popup-menu control state owned by an active ModalDialog loop.
@@ -1049,7 +1051,7 @@ pub(crate) struct PortStateSnapshot {
     pub clip_region: Option<PortRegionSnapshot>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CachedCopyBitmapInfo {
     pub base: u32,
     pub row_bytes: u32,
@@ -2228,6 +2230,7 @@ pub struct TrapDispatcher {
     /// we are nested inside the proc, so CopyBits performs the blit itself.
     pub(crate) bits_proc_reentry: Option<(u32, u32)>,
     pub(crate) picture_stream_stack: Vec<super::picture_stream::PictureStreamFrame>,
+    pub(crate) picture_write_stack: Vec<super::picture_stream::PictureWriteFrame>,
     pub(crate) picture_callback_stack: Vec<super::picture_callbacks::PictureCallbackFrame>,
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
@@ -2261,6 +2264,7 @@ pub struct TrapDispatcher {
     pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: FastHashMap<u32, Vec<DialogItem>>,
+    pub(crate) dialog_default_outlines: FastHashSet<u32>,
     /// Original rects for items hidden via HideDialogItem,
     /// keyed by (dialog_ptr, 1-based item_no). Restored by ShowDialogItem.
     pub(crate) hidden_dialog_item_rects: HashMap<(u32, i16), (i16, i16, i16, i16)>,
@@ -4105,6 +4109,7 @@ impl TrapDispatcher {
             pending_native_trap_calls: HashMap::default(),
             bits_proc_reentry: None,
             picture_stream_stack: Vec::new(),
+            picture_write_stack: Vec::new(),
             picture_callback_stack: Vec::new(),
             timer_tasks: Default::default(),
             deferred_tasks: VecDeque::new(),
@@ -4119,6 +4124,7 @@ impl TrapDispatcher {
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),
+            dialog_default_outlines: HashSet::default(),
             hidden_dialog_item_rects: HashMap::default(),
             dialog_item_handles: HashMap::default(),
             dialog_control_values: HashMap::default(),
@@ -8263,6 +8269,9 @@ impl TrapDispatcher {
             return Some(result);
         }
         if let Some(result) = self.resume_picture_stream(cpu, bus) {
+            return Some(result);
+        }
+        if let Some(result) = self.resume_picture_write(cpu, bus) {
             return Some(result);
         }
         if self.resume_completed_menu_bar_build(cpu, bus)

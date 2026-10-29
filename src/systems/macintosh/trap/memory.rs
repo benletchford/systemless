@@ -1816,7 +1816,12 @@ impl super::TrapDispatcher {
             // it cannot represent the remaining launch-time growth allowance.
             // $A11D dispatches here via the OS-trap low-byte (0x1D) decode.
             (false, 0x1D) => {
-                let free = free_heap_estimate(bus);
+                let mut free = free_heap_estimate(bus);
+                if bus.read_long(addr::MEM_TOP) != 0 {
+                    let manager = self.process_memory_manager();
+                    manager.borrow_mut().attach_classic_memory_bus(bus);
+                    free = free.min(manager.borrow().classic_new_handle_capacity(cpu.read_reg(Register::A7)));
+                }
                 cpu.write_reg(Register::D0, free);
                 let heap_end = bus.read_long(addr::HEAP_END);
                 let appl_limit = bus.read_long(addr::APPL_LIMIT);

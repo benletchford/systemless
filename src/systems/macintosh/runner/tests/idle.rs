@@ -213,6 +213,8 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
     for opcode in [
         0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917, 0xA924,
         0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA, 0xACAD,
+        0xA858, 0xA85D, 0xA86B, 0xA873, 0xA875, 0xA9F1, 0xAC58, 0xAC5D, 0xAC6B,
+        0xAC73, 0xAC75, 0xADF1,
     ] {
         runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
@@ -640,6 +642,37 @@ fn host_snapshot_tracks_window_list_and_pending_native_menu_selection() {
         .dispatcher
         .pending_native_menu_selection
         .stage((3, 1));
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+}
+
+#[test]
+fn volume_query_idle_proof_tracks_working_directory_changes() {
+    let runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+    let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.app_wd_refnum.with_mut(|refnum| *refnum = -42);
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    let volume = crate::process_context::ProcessVfsVolumeRecord {
+        ref_num: -1, name: "Disk".into(), root_dir_id: 2, attributes: 0,
+        file_count: 1, allocation_block_count: 100, allocation_block_size: 4096,
+        clump_size: 4096, free_blocks: 50, bitmap_start: 3, allocation_pointer: 4,
+        allocation_start: 5, next_catalog_id: 17, created_date: 1, modified_date: 2,
+    };
+    runner.dispatcher.vfs_volumes.with_mut(|volumes| volumes.push(volume));
+    let mounted = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.vfs_volumes.with_mut(|volumes| volumes[0].free_blocks -= 1);
+    assert_ne!(mounted, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    assert!(idle_cycle_trap_is_journal_complete(0xA007, true, true, true, 0, false));
+    assert!(!idle_cycle_trap_is_journal_complete(0xA407, true, true, true, 0, false));
+}
+
+#[test]
+fn port_idle_proof_tracks_quickdraw_host_state() {
+    let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+    let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.qddone_seen_ports.insert(0x1234);
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    runner.dispatcher.qddone_seen_ports.clear();
+    runner.dispatcher.tx_size = 14;
     assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
 }
 

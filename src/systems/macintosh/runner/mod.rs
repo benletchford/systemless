@@ -1359,6 +1359,18 @@ fn idle_cycle_trap_is_journal_complete(
         (true, 0x0003) => sound_command_rejected,
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
+        // These utilities read only guest memory or stack operands and write
+        // their results through the bus, where the idle journal observes them.
+        (true, 0x0058) | (true, 0x005D) | (true, 0x006B) => true, // BitAnd, BitTst, LoWord
+        // UnloadSeg currently only pops its argument; all segments stay resident.
+        (true, 0x01F1) => true,
+        // Port selection and bitmap replacement journal their RAM writes;
+        // the host snapshot includes their QuickDraw cache side effects.
+        (true, 0x0073) | (true, 0x0075) => true,
+        // The synchronous volume-info query writes its complete result to
+        // guest RAM. The host snapshot also records the volume and working
+        // directory state it reads. Async requests remain excluded.
+        (false, 0x0007) => matches!(opcode, 0xA007 | 0xA207),
         // PtInRect: reads pt+rect from the stack/RAM, writes a Boolean at
         // sp+8 (journaled) and pops A7 (CPU state the proof compares).
         (true, 0x00AD) => true, // PtInRect
@@ -1673,6 +1685,8 @@ pub struct FixtureRunnerConfig {
     /// retain their architecture default unless
     /// [`FixtureRunner::set_powerpc_screen_depth`] is called explicitly.
     pub screen_depth: u16,
+    /// Optional initial screen geometry, bounded by the reference framebuffer.
+    pub screen_size: Option<(u16, u16)>,
 }
 
 impl Default for FixtureRunnerConfig {
@@ -1686,6 +1700,7 @@ impl Default for FixtureRunnerConfig {
             theme_metrics_mode: ThemeMetricsMode::ClassicGuestMetrics,
             addressing_32_bit: true,
             screen_depth: 8,
+            screen_size: None,
         }
     }
 }
@@ -2011,7 +2026,13 @@ impl FixtureRunner {
         dispatcher.set_ui_theme_id(config.ui_theme);
         let mut bus = MacMemoryBus::new(ram_size);
         bus.set_addressing_32_bit(config.addressing_32_bit);
-        bus.configure_screen_depth(config.screen_depth);
+        let mut profile = crate::machine_profile::reference_machine_profile();
+        if let Some((width, height)) = config.screen_size {
+            assert!(width > 0 && height > 0 && width <= profile.screen_width && height <= profile.screen_height);
+            profile.screen_width = width;
+            profile.screen_height = height;
+        }
+        bus.configure_screen(profile, config.screen_depth);
         process_context.attach_classic_memory_bus(&mut bus);
         bus.write_word(
             crate::memory::globals::addr::SYS_EVT_MASK,
@@ -2021,10 +2042,7 @@ impl FixtureRunner {
             crate::memory::globals::addr::MENU_FLASH,
             crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
         );
-        let profile = crate::machine_profile::reference_machine_profile();
-        let visible_row_bytes =
-            (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
-        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
+        let row_bytes = profile.screen_row_bytes_at_depth(config.screen_depth);
         dispatcher.screen_mode = (
             bus.read_long(crate::memory::globals::addr::SCRN_BASE),
             row_bytes,
@@ -2032,6 +2050,7 @@ impl FixtureRunner {
             profile.screen_height,
             config.screen_depth,
         );
+        dispatcher.native_screen_geometry = (profile.screen_width, profile.screen_height);
         let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(config.screen_depth)
             .expect("validated indexed screen depth");
         dispatcher.device_clut.replace(clut);
@@ -3007,6 +3026,12 @@ impl FixtureRunner {
         }
         let (v, h) = self.canonical_mouse_position(v, h);
         self.dispatcher.set_mouse_position(v, h);
+        if self.dispatcher.input_state.mouse_button_pressed() {
+            if self.dispatcher.dialog_tracking.as_ref().is_some_and(|tracking| tracking.active_button.is_some()) {
+                self.dispatcher.handle_dialog_button_tracking(&mut self.bus);
+            }
+            self.dispatcher.update_standard_file_button_for_mouse(&mut self.bus);
+        }
         self.sync_mouse_position_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -3794,6 +3819,7 @@ impl FixtureRunner {
             theme_metrics_mode: self.config.theme_metrics_mode,
             addressing_32_bit: self.bus.addressing_32_bit(),
             screen_depth: self.config.screen_depth,
+            screen_size: self.config.screen_size,
         };
         let menu_bar_policy = self.dispatcher.menu_bar_policy;
         let menu_bar_hidden = self.dispatcher.menu_bar_hidden;

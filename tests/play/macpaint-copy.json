@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 450,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 39,
+      "h": 55
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 39,
+      "h": 55
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_down",
+      "v": 90,
+      "h": 140
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 140,
+      "h": 220
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 140,
+      "h": 220
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "screenshot",
+      "name": "selected"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 85
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 64,
+      "h": 93
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 64,
+      "h": 93
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "screenshot",
+      "name": "copy"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 175,
+      "y": 115,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "mouse_down",
+      "v": 220,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 220,
+      "h": 100
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 85
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 80,
+      "h": 95
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 80,
+      "h": 95
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "name": "paste"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 280,
+      "y": 165,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 250,
+      "y": 150,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 175,
+      "y": 115,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
