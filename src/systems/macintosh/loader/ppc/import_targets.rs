@@ -7010,6 +7010,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbHSetVolSync,
         ),
+        ("InterfaceLib", "PBSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbSetVolSync,
+        ),
         ("InterfaceLib", "PBOpenWDSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbOpenWdSync,
         ),

@@ -10228,6 +10228,7 @@ fn file_compatibility_imports_pre_resolve_to_typed_operations() {
         ("PBHGetVolParmsSync", PpcFileCompatibilityOperation::PbHGetVolParmsSync),
         ("PBHGetVolSync", PpcFileCompatibilityOperation::PbHGetVolSync),
         ("PBHSetVolSync", PpcFileCompatibilityOperation::PbHSetVolSync),
+        ("PBSetVolSync", PpcFileCompatibilityOperation::PbSetVolSync),
         ("PBOpenWDSync", PpcFileCompatibilityOperation::PbOpenWdSync),
         ("create", PpcFileCompatibilityOperation::Create),
         ("fsopen", PpcFileCompatibilityOperation::FsOpen),
@@ -10237,6 +10238,33 @@ fn file_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcImportDispatcherTarget::FileCompatibility(operation),
         );
     }
+}
+
+#[test]
+fn pbsetvolsync_sets_volume_and_reports_errors_in_ioresult() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBSetVolSync")).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 64]);
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbSetVolSync),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NO_ERR as u16));
+
+    loaded.memory.write_u16_be(pb + 22, 0x7fff).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::PbSetVolSync),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NSV_ERR as u16));
 }
 
 

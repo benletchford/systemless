@@ -473,7 +473,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::SetVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_set_vol(
-                cpu,
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
                 memory,
                 vfs_volumes,
                 working_directories,
@@ -1149,6 +1150,7 @@ pub enum PpcFileCompatibilityOperation {
     PbHGetVolParmsSync,
     PbHGetVolSync,
     PbHSetVolSync,
+    PbSetVolSync,
     PbOpenWdSync,
 }
 
@@ -1242,6 +1244,23 @@ pub(super) fn ppc_dispatch_file_compatibility(
     application_working_directory_ref_num: &mut i16,
 ) -> PpcImportAction {
     match operation {
+        PpcFileCompatibilityOperation::PbSetVolSync => {
+            let pb = cpu.gpr[3];
+            if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 24) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let name = memory.read_u32_be(pb + 18).unwrap_or(0);
+            let vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+            let result = ppc_set_vol(
+                name,
+                vref,
+                memory,
+                vfs_volumes,
+                working_directories,
+                application_working_directory_ref_num,
+            );
+            PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
+        }
         PpcFileCompatibilityOperation::PbGetFPosSync => {
             let pb = cpu.gpr[3];
             let ref_num = memory.read_u16_be(pb + 24).map(|value| value as i16);
@@ -1563,13 +1582,13 @@ pub(super) fn ppc_hget_vol(
 /// FUNCTION SetVol (volName: StringPtr; vRefNum: Integer): OSErr;
 /// Inside Macintosh: Files (1992), p. 2-135.
 fn ppc_set_vol(
-    cpu: &PpcCpu,
+    name_ptr: u32,
+    requested_vref: i16,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
     working_directories: &HashMap<i16, ProcessWorkingDirectory>,
     application_working_directory_ref_num: &mut i16,
 ) -> i16 {
-    let requested_vref = cpu.gpr[4] as u16 as i16;
     let (target_ref_num, target_dir_id) = if let Some(record) = working_directories.get(&requested_vref)
     {
         (record.ref_num, record.dir_id)
@@ -1583,7 +1602,6 @@ fn ppc_set_vol(
     } else if requested_vref != 0 {
         return PPC_NSV_ERR;
     } else {
-        let name_ptr = cpu.gpr[3];
         if name_ptr == 0 {
             return PPC_PARAM_ERR;
         }
