@@ -44,3 +44,9 @@ references:
 Pegasus Prime revisits The Journeyman Project with reconstructed scenes and
 PowerPC-native presentation. The demo is a self-contained sample kept exactly
 as Presto Studios supplied it. Systemless compatibility is not yet verified.
+
+On 30 October 2026, the PowerPC import audit on Systemless master `7aec9eea`
+reported missing QuickTime time-base and picture-file imports. An experimental
+build combining four unmerged fixes reached the full splash at frontend tick
+600 and passed a pixel assertion against the source image. This does not verify
+startup on master or gameplay; see [issue #5288](https://github.com/benletchford/systemless/issues/5288).
