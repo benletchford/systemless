@@ -1,5 +1,175 @@
 use super::*;
 
+fn ppc_get_ind_help_message(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    resources: &mut Vec<PpcVfsResourceRecord>,
+    current_refnum: i16,
+    last_resource_error: &mut i16,
+) -> i16 {
+    use crate::systems::macintosh::help_manager::{
+        menu_help_message, positioned_help_message, HelpMessage, HelpResourceError,
+    };
+
+    let resource_type = cpu.gpr[3].to_be_bytes();
+    if !matches!(
+        &resource_type,
+        b"hmnu" | b"hdlg" | b"hrct" | b"hovr" | b"hfdr"
+    ) {
+        return -50;
+    }
+    let mut outputs = [cpu.gpr[7], cpu.gpr[8], cpu.gpr[9], cpu.gpr[10], 0, 0, 0];
+    for (slot, output) in outputs[4..].iter_mut().enumerate() {
+        let Some(value) = ppc_parameter_area_slot_addr(cpu.gpr[1], 8 + slot)
+            .and_then(|address| memory.read_u32_be(address))
+        else {
+            return -50;
+        };
+        *output = value;
+    }
+    if outputs.contains(&0) {
+        return -50;
+    }
+    // Apple's develop 11 Q&A (August 1992), page 117: 'hrct' uses
+    // Get1Resource; 'hdlg' searches the resource chain via GetResource.
+    let Some(resource_index) = ppc_vfs_resource_index(
+        resources,
+        current_refnum,
+        cpu.gpr[3],
+        cpu.gpr[4] as i16,
+        resource_type == *b"hrct",
+    ) else {
+        return -192;
+    };
+    let handle = ppc_materialize_vfs_resource_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        resources,
+        resource_index,
+        true,
+        last_resource_error,
+    );
+    if handle == 0 {
+        return if *last_mem_error == PPC_MEM_FULL_ERR {
+            -108
+        } else {
+            -192
+        };
+    }
+    let Some(pointer) = memory.read_u32_be(handle).filter(|pointer| *pointer != 0) else {
+        return -192;
+    };
+    let length = handles
+        .iter()
+        .find(|record| record.handle == handle)
+        .map(|record| record.size as usize)
+        .unwrap_or(resources[resource_index].data.len());
+    let mut data = Vec::new();
+    if data.try_reserve_exact(length).is_err() {
+        return -108;
+    }
+    for offset in 0..length {
+        let Some(byte) = u32::try_from(offset)
+            .ok()
+            .and_then(|offset| pointer.checked_add(offset))
+            .and_then(|address| memory.read_u8(address))
+        else {
+            return -192;
+        };
+        data.push(byte);
+    }
+    let index = cpu.gpr[5] as u16;
+    let state = cpu.gpr[6] as u16;
+    let parsed = if resource_type == *b"hmnu" {
+        menu_help_message(&data, index, state).map(|value| {
+            (
+                value.options,
+                value.proc_id,
+                value.variant,
+                value.count,
+                [0; 4],
+                [0; 8],
+                value.message,
+            )
+        })
+    } else {
+        positioned_help_message(&data, resource_type, index, state).map(|value| {
+            (
+                value.options,
+                value.proc_id,
+                value.variant,
+                value.count,
+                value.tip,
+                value.rect,
+                value.message,
+            )
+        })
+    };
+    let (options, proc_id, variant, count, tip, rect, message) = match parsed {
+        Ok(value) => value,
+        Err(HelpResourceError::WrongVersion) => return -858,
+        Err(HelpResourceError::Skipped) => return -857,
+        Err(HelpResourceError::Unsupported) => return -859,
+        Err(HelpResourceError::Malformed) => return -192,
+        Err(HelpResourceError::OutOfMemory) => return -108,
+    };
+    let mut message_bytes = Vec::new();
+    if message_bytes.try_reserve_exact(258).is_err() {
+        return -108;
+    }
+    match message {
+        HelpMessage::String(text) => {
+            message_bytes.extend_from_slice(&1u16.to_be_bytes());
+            message_bytes.push(text.len() as u8);
+            message_bytes.extend_from_slice(&text);
+        }
+        HelpMessage::Resource { kind, id, index } => {
+            message_bytes.extend_from_slice(&kind.to_be_bytes());
+            message_bytes.extend_from_slice(&id.to_be_bytes());
+            if let Some(index) = index {
+                message_bytes.extend_from_slice(&index.to_be_bytes());
+            }
+        }
+    }
+    let fields: [(u32, &[u8]); 7] = [
+        (outputs[0], &options.to_be_bytes()),
+        (outputs[1], &tip),
+        (outputs[2], &rect),
+        (outputs[3], &proc_id.to_be_bytes()),
+        (outputs[4], &variant.to_be_bytes()),
+        (outputs[5], &message_bytes),
+        (outputs[6], &count.to_be_bytes()),
+    ];
+    // Validate every output before publishing any of them.
+    if fields
+        .iter()
+        .any(|(address, bytes)| !ppc_memory_can_write_bytes(memory, *address, bytes.len() as u32))
+    {
+        return -50;
+    }
+    for (address, bytes) in fields {
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            if address
+                .checked_add(offset as u32)
+                .and_then(|address| memory.write_u8(address, byte))
+                .is_none()
+            {
+                return -50;
+            }
+        }
+    }
+    0
+}
+
 pub(super) struct PpcResourceDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -77,6 +247,14 @@ pub(super) fn dispatch_resource_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::HMGetIndHelpMsg => {
+            let result = ppc_get_ind_help_message(
+                cpu, memory, process_memory_manager, heap_cursor, heap_limit,
+                last_mem_error, handles, vfs_resources, *current_resource_refnum,
+                last_resource_error,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::SetResLoad => {
             // Inside Macintosh Volume I (1985), I-118: SetResLoad controls
             // whether subsequent Resource Manager lookups load resource data.

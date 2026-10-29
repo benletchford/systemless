@@ -904,6 +904,9 @@ impl super::TrapDispatcher {
         }
 
         let handle = bus.alloc(4);
+        if handle == 0 {
+            return 0;
+        }
         // IM:More Macintosh Toolbox 1993, 1-79: SetResLoad(FALSE) returns
         // an empty handle (master pointer NIL) for resource data that is not
         // already in memory. Keep the true data pointer in loaded_handles so

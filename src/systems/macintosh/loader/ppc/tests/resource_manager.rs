@@ -1,6 +1,142 @@
 use super::*;
 
 #[test]
+fn help_message_import_reads_stack_outputs_and_live_resource_data() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"HMGetIndHelpMsg")).unwrap();
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HMGetIndHelpMsg"),
+        PpcImportDispatcherTarget::HMGetIndHelpMsg
+    );
+    loaded.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM);
+    let data = vec![
+        0, 2, 0, 0, 0, 5, 0, 126, 0, 3, 0, 1, 0, 4, 1, 0, 0, 12, 0, 1, 1, b'A', 0, 0, 0, 0, 0, 0,
+    ];
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM,
+            path: "Application".to_string(),
+            res_type: u32::from_be_bytes(*b"hmnu"),
+            res_id: 200,
+            name: Vec::new(),
+            data: data.into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 512]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hmnu");
+    loaded.cpu.gpr[4] = 200;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = output;
+    loaded.cpu.gpr[8] = output + 4;
+    loaded.cpu.gpr[9] = output + 8;
+    loaded.cpu.gpr[10] = output + 16;
+    loaded.cpu.gpr[1] -= 128;
+    for (slot, pointer) in [(8, output + 18), (9, output + 20), (10, output + 300)] {
+        let address = ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], slot).unwrap();
+        loaded.memory.write_u32_be(address, pointer).unwrap();
+    }
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(5));
+    assert_eq!(loaded.memory.read_u16_be(output + 16), Some(126));
+    assert_eq!(loaded.memory.read_u16_be(output + 18), Some(3));
+    assert_eq!(loaded.memory.read_u16_be(output + 20), Some(1));
+    assert_eq!(loaded.memory.read_u8(output + 22), Some(1));
+    assert_eq!(loaded.memory.read_u8(output + 23), Some(b'A'));
+    assert_eq!(loaded.memory.read_u16_be(output + 300), Some(1));
+    // A bad final output must not publish any earlier output fields.
+    let count_slot = ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], 10).unwrap();
+    loaded.memory.write_u32_be(output, 0xfeed_beef).unwrap();
+    loaded.memory.write_u32_be(count_slot, 0xffff_fffe).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hmnu");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-50));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0xfeed_beef));
+    loaded
+        .memory
+        .write_u32_be(count_slot, output + 300)
+        .unwrap();
+    let handle = loaded.process_file_system.vfs_resources[0].handle;
+    let resource_pointer = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_u8(resource_pointer + 21, b'B').unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hmnu");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u8(output + 23), Some(b'B'));
+
+    loaded.memory.write_u16_be(resource_pointer, 1).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hmnu");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-858));
+    loaded.memory.write_u16_be(resource_pointer, 2).unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hmnu");
+    loaded.cpu.gpr[5] = 2;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-857));
+
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM + 1,
+            path: "Other".to_string(),
+            res_type: u32::from_be_bytes(*b"hrct"),
+            res_id: 200,
+            name: Vec::new(),
+            data: vec![
+                0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 18, 0, 1, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0,
+                6, 1, b'R',
+            ]
+            .into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hrct");
+    loaded.cpu.gpr[5] = 1;
+    loaded.memory.write_u32_be(output, 0xfeed_beef).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-192));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0xfeed_beef));
+    loaded.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM + 1);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hrct");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output + 4), Some(0x0001_0002));
+    assert_eq!(loaded.memory.read_u8(output + 23), Some(b'R'));
+
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: PPC_FIRST_FILE_REF_NUM + 1,
+            path: "Other".to_string(),
+            res_type: u32::from_be_bytes(*b"hdlg"),
+            res_id: 200,
+            name: Vec::new(),
+            data: vec![
+            0, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 1, 0, 0, 22, 0, 1, 0, 7, 0, 8, 0,
+                0, 0, 0, 0, 0, 0, 0, 1, b'D', 0, 0, 0, 0,
+            ]
+            .into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    loaded.set_current_resource_refnum(PPC_FIRST_FILE_REF_NUM);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"hdlg");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HMGetIndHelpMsg);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output + 4), Some(0x0007_0008));
+    assert_eq!(loaded.memory.read_u8(output + 23), Some(b'D'));
+}
+
+#[test]
 fn get_intl_resource_supplies_roman_numeric_format_from_system_file() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetIntlResource")).unwrap();
     loaded.cpu.gpr[3] = 0;
