@@ -13,46 +13,44 @@ architectures:
 - ppc
 default_architecture: 68k
 category: FPS
-launch_enabled: false
+compatibility:
+  status: unknown
 controls:
   arrows_as_numpad: true
   mobile:
-    enabled: true
     buttons:
-    - label: "A"
-      key: "Space"
-    - label: "B"
-      key: "Tab"
-    - label: "C"
-      key: "Enter"
-compatibility:
-  status: unknown
+    - key: Space
+      label: A
+    - key: Tab
+      label: B
+    - key: Enter
+      label: C
+    enabled: true
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: url
-    url: https://files3.bungie.org/trilogy/marathon.sit
-    expected_sha256: eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10
-    expected_size: 4996142
+    type: sha256
+    sha256: eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10
+    size_bytes: 4996142
   provenance:
-    original: true
     redistribution: permitted
+    original: true
     sources:
     - https://trilogyrelease.bungie.org/
     - https://trilogyrelease.bungie.org/faq.html
     - https://github.com/benletchford/systemless/issues/5284
     rights_holder: Bungie
     permission: >-
-      The Trilogy Release FAQ states that Bungie permits free distribution of
-      the released files while retaining copyright and prohibiting sale. This
-      is the unchanged Marathon archive linked from that release page.
+      The Trilogy Release FAQ states that Bungie permits free distribution of the
+      released files while retaining copyright and prohibiting sale. This is the unchanged
+      Marathon archive linked from that release page.
     notes: >-
       Original Trilogy Release StuffIt archive, 4,996,142 bytes, SHA-256
-      eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10.
-      This replaces the previously hosted archive, whose active Music file was
-      patched and whose additional components have not been separately cleared.
+      eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10. This replaces the
+      previously hosted archive, whose active Music file was patched and whose additional
+      components have not been separately cleared.
 references:
 - https://trilogyrelease.bungie.org/
 - https://github.com/benletchford/systemless/issues/5284
@@ -60,7 +58,7 @@ references:
 
 ## Source and version
 
-This entry tracks the original [Trilogy Release archive](https://files3.bungie.org/trilogy/marathon.sit). Its compatibility and browser launch are pending validation.
+This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/eb/eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10.sit). Its compatibility and browser launch are pending validation.
 
 ## Aboard the Marathon
 
