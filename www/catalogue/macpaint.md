@@ -10,7 +10,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Art
-launch_enabled: false
 compatibility:
   status: boots
   verified:
@@ -20,24 +19,25 @@ compatibility:
     architecture: 68k
     environment: >-
       Native headless runner, original Gryphel gry2 disk image, 1-bit screen and
-      24-bit addressing. Drawing and text work but brush, bucket, selection,
-      dialogs, FatBits and saving have defects; see the linked report.
+      24-bit addressing. Drawing and text work but brush, bucket, selection, dialogs,
+      FatBits and saving have defects; see the linked report.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/5211
 runtime:
-  screen_depth: 1
-  screen_size: [512, 342]
   addressing_24_bit: true
+  screen_depth: 1
+  screen_size:
+  - 512
+  - 342
   show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
   format: zip
   source:
-    type: url
-    url: https://www.gryphel.com/d/sw/general/macpaint/c/macpaint-1.3-gry2.zip
-    expected_sha256: 1ce6185ce816c42aa8a4d15dff87335c5e09491ce333dd34a5acd07c57950926
-    expected_size: 117158
+    type: sha256
+    sha256: 1ce6185ce816c42aa8a4d15dff87335c5e09491ce333dd34a5acd07c57950926
+    size_bytes: 117158
   provenance:
     redistribution: permitted
     original: true
@@ -49,25 +49,26 @@ artifacts:
       Gryphel describes the build and source as available only for non-commercial
       use. Preserve the unchanged archive and its accompanying terms.
     notes: >-
-      Gryphel's 2014 gry2 build adapts the donated source to MPW Pascal and fixes
-      HFS clipboard operations. The ZIP contains an 800K HFS image and checksum.
+      Gryphel's 2014 gry2 build adapts the donated source to MPW Pascal and fixes HFS
+      clipboard operations. The ZIP contains an 800K HFS image and checksum.
 - id: screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/macpaint/screenshot.png
+    type: sha256
+    sha256: c7b39d03b3f306e4c243c8c49f0bbfccfcbb3025af007afc4b8c5a0aec3c2cfd
+    size_bytes: 11413
   provenance:
     redistribution: permitted
     content_only: true
     sources:
     - https://www.gryphel.com/c/sw/general/macpaint/
     permission: >-
-      Captured from the non-commercial-use build; the application artwork
-      remains the property of its rights holder.
+      Captured from the non-commercial-use build; the application artwork remains the
+      property of its rights holder.
     notes: >-
-      Systemless capture of drawing and Copy/Paste using the verified gry2
-      disk image, cropped to remove the Classic Mac menu bar.
+      Systemless capture of drawing and Copy/Paste using the verified gry2 disk
+      image, cropped to remove the Classic Mac menu bar.
 references:
 - https://www.gryphel.com/c/sw/general/macpaint/
 - https://github.com/benletchford/systemless/issues/5211
@@ -79,7 +80,7 @@ modified 1.3 build was compiled by the Gryphel Project from the source Apple
 donated to the Computer History Museum. The download is available for
 non-commercial use only.
 
-![MacPaint drawing and copied selection](incoming/macpaint/screenshot.png)
+![MacPaint drawing and copied selection](https://assets.systemless.org/catalogue/media/sha256/c7/c7b39d03b3f306e4c243c8c49f0bbfccfcbb3025af007afc4b8c5a0aec3c2cfd.png)
 
 MacPaint requires 24-bit addressing and a compact monochrome display. Browser
 launch has not been qualified.
