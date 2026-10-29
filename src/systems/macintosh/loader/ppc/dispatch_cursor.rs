@@ -210,7 +210,7 @@ pub(super) fn dispatch_cursor_import(
                 heap_cursor,
                 last_mem_error,
                 vfs_resources,
-                current_resource_refnum,
+                PpcIconResourceScope::SearchChain(current_resource_refnum),
                 gworlds,
                 current_gworld,
                 screen_clut,
@@ -908,10 +908,31 @@ fn ppc_get_cursor(
     )
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum PpcIconResourceScope<'a> {
+    SearchChain(i16),
+    Application(&'a str),
+}
+
+pub(super) fn ppc_icon_resource_index(
+    resources: &[PpcVfsResourceRecord],
+    scope: PpcIconResourceScope<'_>,
+    kind: u32,
+    id: i16,
+) -> Option<usize> {
+    match scope {
+        PpcIconResourceScope::SearchChain(refnum) => {
+            ppc_vfs_resource_index(resources, refnum, kind, id, false)
+        }
+        PpcIconResourceScope::Application(path) => {
+            ppc_application_resource_index(resources, path, kind, id)
+        }
+    }
+}
+
 // Icons.h: PlotIconID draws an icon family from the current resource chain.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn ppc_plot_icon_id(
+pub(super) fn ppc_plot_icon_id(
     rect: u32,
     alignment: u16,
     transform: u16,
@@ -921,7 +942,7 @@ fn ppc_plot_icon_id(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     resources: &[PpcVfsResourceRecord],
-    refnum: i16,
+    resource_scope: PpcIconResourceScope<'_>,
     gworlds: &[PpcGWorldRecord],
     port: u32,
     screen_clut: &[[u16; 3]; 256],
@@ -947,7 +968,7 @@ fn ppc_plot_icon_id(
             _ => (16, 12, *b"icm#", *b"icm4", *b"icm8"),
         };
         let find = |kind: [u8; 4]| {
-            ppc_vfs_resource_index(resources, refnum, u32::from_be_bytes(kind), id, false)
+            ppc_icon_resource_index(resources, resource_scope, u32::from_be_bytes(kind), id)
                 .map(|index| resources[index].data.as_slice())
         };
         let Some(bitmap) = find(mono) else {

@@ -542,3 +542,57 @@ fn resource_materialization_applies_changed_attributes_only_when_loading_data() 
         assert_eq!(res_error, PPC_NO_ERR);
     });
 }
+
+#[test]
+fn application_resource_lookup_excludes_colliding_driver_and_system_records() {
+    use super::super::dispatch_cursor::{ppc_icon_resource_index, PpcIconResourceScope};
+    let kind = u32::from_be_bytes(*b"ICN#");
+    let record = |path: &str, ref_num, res_id| PpcVfsResourceRecord {
+        ref_num,
+        path: path.to_owned(),
+        res_type: kind,
+        res_id,
+        name: Vec::new(),
+        data: Vec::new().into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    };
+    let records = vec![
+        record("__system__/ICN#", 0, 100),
+        record("Drivers/Mouse", 128, 100),
+        record("Games/Example", PPC_CLOSED_RESOURCE_REF_NUM, 100),
+        record("Games/Example", 0, 101),
+        record("Games/Example", 0, 100),
+    ];
+    assert_eq!(
+        ppc_application_resource_index(&records, "games/example", kind, 100),
+        Some(4)
+    );
+    assert_eq!(
+        ppc_application_resource_index(&records[..4], "Games/Example", kind, 100),
+        None
+    );
+    assert_eq!(
+        ppc_application_resource_index(&records, "", kind, 100),
+        None
+    );
+    assert_eq!(
+        ppc_application_resource_index(&records, "Games/Example", kind, 999),
+        None
+    );
+    assert_eq!(
+        ppc_icon_resource_index(&records, PpcIconResourceScope::SearchChain(128), kind, 100),
+        Some(1)
+    );
+    assert_eq!(
+        ppc_icon_resource_index(
+            &records,
+            PpcIconResourceScope::Application("Games/Example"),
+            kind,
+            100
+        ),
+        Some(4)
+    );
+}

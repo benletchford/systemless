@@ -797,6 +797,25 @@ pub(crate) fn ppc_vfs_resource_index(
     })
 }
 
+/// Find an open resource in the launched application's own fork. Native
+/// application and synthetic system resources can both use refnum zero.
+pub(crate) fn ppc_application_resource_index(
+    vfs_resources: &[PpcVfsResourceRecord],
+    application_path: &str,
+    res_type: u32,
+    res_id: i16,
+) -> Option<usize> {
+    if application_path.is_empty() {
+        return None;
+    }
+    vfs_resources.iter().position(|record| {
+        record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
+            && record.path.eq_ignore_ascii_case(application_path)
+            && record.res_type == res_type
+            && record.res_id == res_id
+    })
+}
+
 fn ppc_write_empty_pstring(memory: &mut PpcSectionMem, addr: u32) -> bool {
     addr == 0 || memory.write_u8(addr, 0).is_some()
 }
