@@ -1357,11 +1357,6 @@ fn idle_cycle_trap_is_journal_complete(
         // (`IdleCycleHostSnapshot` records channel activity for resumes). Any
         // accepted command changes channel state and cancels.
         (true, 0x0003) => sound_command_rejected,
-        // SndChannelStatus reads guest queue indices through the bus and
-        // host playback/queue/callback state from the idle host snapshot.
-        // Its status record and stack result are journaled. Other Sound
-        // Dispatch selectors may mutate the manager and remain excluded.
-        (true, 0x0000) => matches!(selector, 0x0010_0008 | 0x0510_0008),
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
         // These utilities read only guest memory or stack operands and write
@@ -7779,7 +7774,12 @@ impl FixtureRunner {
                             {
                                 tick_cap_reached = true;
                             }
-                            self.record_pass_trap(opcode, null_event, extra_tick_cost);
+                            self.record_pass_trap(
+                                opcode,
+                                null_event,
+                                input_selector,
+                                extra_tick_cost,
+                            );
                             // The m68k CPU already advanced PC past the A-line
                             // instruction during fetch (read_imm_16 does pc += 2).
                             //

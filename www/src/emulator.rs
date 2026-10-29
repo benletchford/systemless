@@ -84,6 +84,13 @@ const LAUNCH_MODIFIER_HOLD_TICKS: u32 = 120;
 
 thread_local! {
     static PENDING_AUDIO_BOOTSTRAP: RefCell<Option<AudioBootstrap>> = const { RefCell::new(None) };
+    // A browser or worker keeps the same Performance object for its lifetime.
+    // Resolve it once instead of converting the property name and reflecting
+    // on the global object for every CPU-budget check.
+    static PERFORMANCE: Option<web_sys::Performance> =
+        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
+            .ok()
+            .and_then(|value| value.dyn_into::<web_sys::Performance>().ok());
 }
 
 /// The ordinary Mac cursor is a 16x16 monochrome overlay. Keep only the
@@ -1565,11 +1572,12 @@ fn current_mac_epoch_seconds() -> u32 {
 }
 
 pub(crate) fn performance_now() -> f64 {
-    js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance"))
-        .ok()
-        .and_then(|value| value.dyn_into::<web_sys::Performance>().ok())
-        .map(|performance| performance.now())
-        .unwrap_or_else(js_sys::Date::now)
+    PERFORMANCE.with(|performance| {
+        performance
+            .as_ref()
+            .map(web_sys::Performance::now)
+            .unwrap_or_else(js_sys::Date::now)
+    })
 }
 
 fn browser_cpu_batch_instructions(powerpc: bool) -> usize {

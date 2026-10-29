@@ -3738,10 +3738,13 @@ fn virtual_idle_rejects_a_pass_that_changes_quickdraw_mirrors() {
 #[test]
 fn sound_status_idle_snapshot_tracks_queued_work_and_callbacks() {
     for selector in [0x0010_0008, 0x0510_0008] {
-        assert!(idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+        assert!(!idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+        assert!(virtual_idle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+        assert!(!virtual_idle_trap_is_journal_complete(0xA800, true, true, true, selector, true));
     }
     for selector in [0x0014_0008, 0x0510_0009, 0x0000_0008] {
         assert!(!idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+        assert!(!virtual_idle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
     }
     let runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
     let initial = IdleCycleHostSnapshot::capture(&runner.dispatcher);
@@ -3764,47 +3767,68 @@ fn sound_status_idle_snapshot_tracks_queued_work_and_callbacks() {
 }
 
 #[test]
-fn sound_status_poll_loop_parks_and_wakes_for_new_channel_work() {
-    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-    let code = 0x0002_0000u32;
-    let channel = 0x0030_0000u32;
-    let status = 0x0030_1000u32;
-    // Poll the tick and the Sound Manager status repeatedly, as real guest
-    // code does. Both stack and status writes must settle to a fixed point.
-    let mut words = vec![
-        0x594F, 0xA975, 0x588F, // TickCount; discard result
-        0x554F, // reserve OSErr
-        0x2F3C, (channel >> 16) as u16, channel as u16,
-        0x3F3C, 24, // status length
-        0x4879, (status >> 16) as u16, status as u16,
-        0x203C, 0x0510, 0x0008, // SndChannelStatus selector
-        0xA800, 0x4A5F, // dispatch; discard OSErr
-        0x6000,
-    ];
-    let branch_offset = -((words.len() as i32 - 1) * 2 + 2);
-    words.push(branch_offset as i16 as u16);
-    for (i, word) in words.into_iter().enumerate() {
-        runner.bus.write_word(code + i as u32 * 2, word);
+fn sound_status_poll_cursor_preserves_slices_and_observes_new_work() {
+    fn arm(virtual_idle: bool) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.virtual_idle_enabled = virtual_idle;
+        let code = 0x0002_0000u32;
+        let channel = 0x0030_0000u32;
+        let status = 0x0030_1000u32;
+        let mut words = vec![
+            0x594F, 0xA975, 0x588F, // TickCount; discard result
+            0x554F, // reserve OSErr
+            0x2F3C, (channel >> 16) as u16, channel as u16,
+            0x3F3C, 24,
+            0x4879, (status >> 16) as u16, status as u16,
+            0x203C, 0x0510, 0x0008, 0xA800, 0x4A5F, 0x6000,
+        ];
+        let branch_offset = -((words.len() as i32 - 1) * 2 + 2);
+        words.push(branch_offset as i16 as u16);
+        for (i, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(code + i as u32 * 2, word);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(20_000);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent {
+            what: 1, message: 0, when: 0, where_v: 10, where_h: 20, modifiers: 0,
+        });
+        runner.dispatcher.sound_manager.with_mut(|sound| {
+            sound.channels.push(crate::sound::SndChannel::new(channel, false));
+        });
+        runner
     }
-    runner.m68k.cpu.write_reg(Register::PC, code);
-    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
-    runner.bus.write_long(0x016A, 100);
-    runner.set_guest_tick_for_test(100);
-    runner.dispatcher.set_sent_open_app_event_for_test(true);
-    runner.dispatcher.sound_manager.with_mut(|sound| {
-        sound.channels.push(crate::sound::SndChannel::new(channel, false));
-    });
-    let (_, running) = runner.run_steps_internal(
-        2_000, Some(100), 0, true, false, FrameFinalization::Deferred,
-    );
-    assert!(running);
-    assert!(runner.idle_cycle_sleep.is_some(), "the real status poll should park");
-    assert_eq!(runner.bus.read_byte(status + 12), 0);
-    runner.dispatcher.sound_manager.with_mut(|sound| {
-        assert!(sound.enqueue_command(channel, crate::sound::SndCommand { cmd: 1, param1: 0, param2: 0 }));
-    });
-    assert!(!runner.try_resume_proven_idle_cycle(Some(102)), "new sound work must wake the guest");
-    assert!(runner.idle_cycle_sleep.is_none());
+    let mut plain = arm(false);
+    let mut cursor = arm(true);
+    for round in 0..12 {
+        if round == 5 {
+            for runner in [&mut plain, &mut cursor] {
+                runner.dispatcher.sound_manager.with_mut(|sound| {
+                    assert!(sound.enqueue_command(0x0030_0000, crate::sound::SndCommand {
+                        cmd: 1, param1: 0, param2: 0,
+                    }));
+                });
+            }
+        }
+        let a = plain.run_steps(3_331, None);
+        let b = cursor.run_steps(3_331, None);
+        assert_eq!(a, b);
+        assert_eq!(plain.guest_tick(), cursor.guest_tick());
+        assert_eq!(plain.tick_budget, cursor.tick_budget);
+        assert_eq!(plain.total_instructions, cursor.total_instructions);
+        assert_eq!(CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core),
+                   CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core));
+        assert_eq!(plain.bus.ram_slice(0, plain.bus.ram_size()),
+                   cursor.bus.ram_slice(0, cursor.bus.ram_size()));
+    }
+    assert_eq!(plain.virtual_idle_entries, 0);
+    assert_eq!(plain.dispatcher.event_queue.len(), cursor.dispatcher.event_queue.len());
+    assert_eq!(cursor.dispatcher.event_queue.len(), 1, "the queued event must remain available");
+    assert!(cursor.virtual_idle_entries > 0, "the status poll must use the cursor");
+    assert_eq!(cursor.bus.read_byte(0x0030_1000 + 12), 1, "new queued work must reach the guest");
 }
 
 #[test]
