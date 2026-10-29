@@ -1701,6 +1701,8 @@ pub struct TrapDispatcher {
     /// HLE keeps the source RGB so color fills can resolve it for the current
     /// destination depth at draw time.
     pub(crate) makergbpat_colors: FastHashMap<u32, (u16, u16, u16)>,
+    /// Bit-pattern PixPats allocated by PenPat and BackPat for color ports.
+    pub(crate) owned_bit_pixpats: FastHashSet<u32>,
     /// Extra horizontal pixels added to each non-space character
     /// when drawing text, expressed as a Fixed16.16 value. Set by
     /// CharExtra ($AA23) per IM:V V-149.
@@ -3919,6 +3921,7 @@ impl TrapDispatcher {
             pm_fg_color: None,
             pm_bg_color: None,
             makergbpat_colors: HashMap::default(),
+            owned_bit_pixpats: Default::default(),
             char_extra: 0,
             bk_pat: [0x00; 8],
             pn_loc: (0, 0),
