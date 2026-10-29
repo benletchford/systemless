@@ -121,3 +121,18 @@ Local qualification: `cargo check --all-targets`, all 7,499 library tests
 tests, five release-mode Showcase matches (four driver round trips and the
 runtime-owner checkbox round trip), and all 28 design-crate tests pass.
 CI on the final pushed head must complete before review readiness.
+
+## Current-master qualification (2026-10-29)
+
+Rebased onto master `037b03d1`, preserving both sets of runner tests. Master's
+PowerPC application-defined control support uses the full control procID; the
+egui dialog projection, drawing and popup tracking now do too. A custom CDEF
+whose low bits resemble a built-in control remains embedded, and a PowerPC
+callback regression verifies it still draws while the host presents the dialog.
+The original native CDEF test case remains covered.
+
+Local qualification: `cargo check --all-targets`, 7,530 library tests
+(6 ignored), 214 desktop tests (18 opt-in ignored), the custom CDEF callback
+regression, six opt-in GPU workspace tests, five release-mode Showcase matches
+and all 28 design-crate tests pass. CI on the pushed head must pass before
+this qualification is complete.

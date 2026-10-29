@@ -2963,7 +2963,7 @@ fn ppc_draw_host_control(
     let standard = controls
         .iter()
         .find(|r| r.handle == handle)
-        .is_none_or(|r| matches!(r.proc_id & 0x0fff, 0..=2));
+        .is_none_or(|r| matches!(r.proc_id, 0..=2));
     if standard && host_ui.dialog_presented(owner) {
         return true;
     }
@@ -3954,10 +3954,10 @@ fn ppc_take_host_control_click(
         .iter()
         .find(|record| record.handle == handle)?
         .proc_id;
-    let part = if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+    let part = if (1008..=1023).contains(&proc_id) {
         10
     } else {
-        match proc_id & !8 {
+        match proc_id {
             0 => 10,
             1 | 2 => 11,
             _ => return None,

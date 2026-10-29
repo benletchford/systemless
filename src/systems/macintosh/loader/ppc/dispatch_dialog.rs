@@ -4802,7 +4802,7 @@ fn ppc_host_dialog_item_kind(
     let proc = controls
         .iter()
         .find(|control| control.handle == item.handle)
-        .map(|control| control.proc_id & 0x0fff);
+        .map(|control| control.proc_id);
     crate::systems::macintosh::host_ui::standard_dialog_item_kind(item.item_type, proc)
 }
 
@@ -5103,7 +5103,7 @@ fn ppc_draw_dialog_items(
     // made before the dialog is positioned cannot leave them missing or at
     // stale local coordinates.
     for record in controls {
-        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
+        if !(1008..=1023).contains(&record.proc_id) {
             continue;
         }
         let Some(control) = ppc_control_ptr(memory, record.handle) else {
@@ -5183,7 +5183,7 @@ pub(super) fn ppc_track_dialog_popup(
     input: PpcInputSnapshot,
 ) -> bool {
     let Some((record, control)) = controls.iter().find_map(|record| {
-        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
+        if !(1008..=1023).contains(&record.proc_id) {
             return None;
         }
         let control = ppc_control_ptr(memory, record.handle)?;

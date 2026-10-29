@@ -7424,6 +7424,24 @@ fn host_preference_choices_powerpc_report_live_values_and_guest_hits() {
                 .active = true
         });
         if resource {
+            for proc_id in [4096, 319 * 16 + 1] {
+                loaded.controls.with_mut(|records| {
+                    records
+                        .iter_mut()
+                        .find(|r| r.handle == handle)
+                        .unwrap()
+                        .proc_id = proc_id;
+                });
+                assert!(
+                    loaded
+                        .host_dialog()
+                        .unwrap()
+                        .items
+                        .iter()
+                        .any(|item| { item.kind == 0 && item.guest_rect.is_some() }),
+                    "custom control procID {proc_id} must retain guest drawing"
+                );
+            }
             loaded.controls.with_mut(|records| {
                 records
                     .iter_mut()
