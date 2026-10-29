@@ -1829,6 +1829,36 @@ fn parse_compressed_quicktime(
                 let y =
                     ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
                 let source_index = pixels[source_y as usize * width + source_x as usize];
+                let rgb = source_clut[usize::from(source_index)];
+                if pixel_size == 16 {
+                    let pixel = ((rgb[0] >> 11) << 10) | ((rgb[1] >> 11) << 5) | (rgb[2] >> 11);
+                    write_rgb555_pixel_clipped(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        y,
+                        pixel,
+                        screen_w,
+                        screen_h,
+                        dst_clip,
+                    );
+                    continue;
+                }
+                if pixel_size == 32 {
+                    write_rgb32_pixel_clipped(
+                        bus,
+                        screen_base,
+                        screen_rb,
+                        x,
+                        y,
+                        rgb,
+                        screen_w,
+                        screen_h,
+                        dst_clip,
+                    );
+                    continue;
+                }
                 write_pixel_clipped(
                     bus,
                     screen_base,

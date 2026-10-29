@@ -2,6 +2,69 @@ use super::*;
 use crate::trap::TrapDispatcher;
 use image::ImageEncoder;
 
+#[test]
+fn indexed_quicktime_preserves_source_colors_on_direct_destinations() {
+    let rle = [0, 0, 0, 13, 0, 0, 1, 1, 1, 1, 1, 1, 0xff];
+    let smc = [0, 0, 0, 6, 0x60, 1];
+    for (codec, compressed, height) in [(b"rle ", &rle[..], 1), (b"smc ", &smc[..], 4)] {
+        for depth in [8, 16, 32] {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            let pos = 0x1000;
+            let description_size = 110;
+            bus.write_long(pos, 68 + description_size + compressed.len() as u32);
+            bus.write_word(pos + 4 + 52 + 4, height);
+            bus.write_word(pos + 4 + 52 + 6, 4);
+            let desc = pos + 4 + 68;
+            bus.write_long(desc, description_size);
+            bus.write_long(desc + 4, u32::from_be_bytes(*codec));
+            bus.write_word(desc + 32, 4);
+            bus.write_word(desc + 34, height);
+            bus.write_long(desc + 44, compressed.len() as u32);
+            bus.write_word(desc + 82, 8);
+            bus.write_word(desc + 92, 1); // two ColorTable entries
+            bus.write_word(desc + 102, 1);
+            bus.write_word(desc + 104, 0x1234);
+            bus.write_word(desc + 106, 0x5678);
+            bus.write_word(desc + 108, 0x9abc);
+            for (index, byte) in compressed.iter().enumerate() {
+                bus.write_byte(desc + description_size + index as u32, *byte);
+            }
+            let clut = TrapDispatcher::standard_mac_8bpp_clut();
+            let rb = 4 * u32::from(depth) / 8;
+            let clip = DstClip::new((0, 0, 1, 1), vec![]);
+            let clipped_pixel = 0x2000 + u32::from(depth) / 8;
+            bus.write_long(clipped_pixel, 0xdeadbeef);
+            parse_compressed_quicktime(
+                &mut bus,
+                pos,
+                0,
+                0,
+                0,
+                0,
+                1.0,
+                1.0,
+                (0x2000, rb, 4, height, depth),
+                &clut,
+                None,
+                Some(&clip),
+            );
+            match depth {
+                8 => assert_eq!(
+                    bus.read_byte(0x2000),
+                    closest_clut_index(0x1234, 0x5678, 0x9abc, &clut)
+                ),
+                16 => assert_eq!(
+                    bus.read_word(0x2000),
+                    (0x1234 >> 11) << 10 | (0x5678 >> 11) << 5 | (0x9abcu16 >> 11)
+                ),
+                32 => assert_eq!(bus.read_long(0x2000), 0x0012569a),
+                _ => unreachable!(),
+            }
+            assert_eq!(bus.read_long(clipped_pixel), 0xdeadbeef);
+        }
+    }
+}
+
 fn png_record(bus: &mut MacMemoryBus, damaged: bool) -> (u32, u32) {
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
