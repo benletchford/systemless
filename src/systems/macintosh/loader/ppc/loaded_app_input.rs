@@ -5,6 +5,12 @@ use super::*;
 use crate::memory::globals::addr;
 
 impl PpcLoadedApp {
+    pub(crate) fn rebase_physical_mouse_position(&mut self, position: (i16, i16)) {
+        self.input.mouse_v = position.0;
+        self.input.mouse_h = position.1;
+        self.process_input.set_mouse_position(position);
+    }
+
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
         self.mirror_input_low_memory(input);
         self.input = input;

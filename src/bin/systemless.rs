@@ -1038,6 +1038,8 @@ struct App {
     game_path: PathBuf,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
+    /// Guest position expected from a successful host cursor warp.
+    mouse_warp_feedback: Option<(i16, i16)>,
     /// Guest displacement used when the window system cannot warp its pointer.
     mouse_guest_offset: (i16, i16),
     /// Current game screen dimensions (tracks screen_mode changes)
@@ -1071,6 +1073,17 @@ struct App {
     native_app_name: String,
     #[cfg(target_os = "macos")]
     native_app_icon: Option<game::ApplicationIcon>,
+}
+
+fn consume_warp_feedback(expected: &mut Option<(i16, i16)>, position: (i16, i16)) -> bool {
+    expected.take() == Some(position)
+}
+
+fn cursor_warp_offset(desired: (i16, i16), host: (i16, i16)) -> (i16, i16) {
+    (
+        desired.0.saturating_sub(host.0),
+        desired.1.saturating_sub(host.1),
+    )
 }
 
 impl App {
@@ -1213,6 +1226,7 @@ impl App {
             scaled_frame: Vec::new(),
             game_path,
             mouse_physical: (0.0, 0.0),
+            mouse_warp_feedback: None,
             mouse_guest_offset: (0, 0),
             current_screen_width: initial_screen_width(),
             current_screen_height: initial_screen_height(),
@@ -1539,16 +1553,26 @@ impl App {
         else {
             return;
         };
+        let (px, py) = (px.round(), py.round());
         if window
             .set_cursor_position(winit::dpi::PhysicalPosition::new(px, py))
             .is_ok()
         {
             self.mouse_physical = (px, py);
-            self.mouse_guest_offset = (0, 0);
+            let (host_v, host_h) = self.physical_to_mac(px, py);
+            self.mouse_guest_offset = cursor_warp_offset((v, h), (host_v, host_h));
+            // CGWarpMouseCursorPosition does not generate a mouse event.
+            // Other window systems can deliver a cursor-moved notification.
+            self.mouse_warp_feedback = if cfg!(target_os = "macos") {
+                None
+            } else {
+                Some((v, h))
+            };
         } else {
+            self.mouse_warp_feedback = None;
             let (host_v, host_h) =
                 self.physical_to_mac(self.mouse_physical.0, self.mouse_physical.1);
-            self.mouse_guest_offset = (v.saturating_sub(host_v), h.saturating_sub(host_h));
+            self.mouse_guest_offset = cursor_warp_offset((v, h), (host_v, host_h));
         }
         self.send_command(runtime_protocol::GuiCommand::AcknowledgeWarp {
             generation: self.guest_state.generation,
@@ -3197,6 +3221,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.mouse_guest_offset = (0, 0);
+                self.mouse_warp_feedback = None;
                 #[cfg(target_os = "macos")]
                 self.host_cursor.set_pointer_inside(false);
             }
@@ -3209,7 +3234,10 @@ impl ApplicationHandler for App {
                 self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.host_mouse_to_mac(position.x, position.y);
-                self.send_command(runtime_protocol::GuiCommand::MouseMove { v, h });
+                let warp_feedback = consume_warp_feedback(&mut self.mouse_warp_feedback, (v, h));
+                if !warp_feedback {
+                    self.send_command(runtime_protocol::GuiCommand::MouseMove { v, h });
+                }
                 if let Some(driver) = self.driver.as_mut() {
                     driver.capture_state(&mut self.guest_state, false);
                 }
@@ -4456,6 +4484,39 @@ mod tests {
     use clap::error::ErrorKind;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn cursor_warp_feedback_does_not_swallow_a_real_move() {
+        let mut expected = Some((300, 296));
+        assert!(consume_warp_feedback(&mut expected, (300, 296)));
+        assert!(!consume_warp_feedback(&mut expected, (300, 296)));
+        expected = Some((300, 296));
+        assert!(!consume_warp_feedback(&mut expected, (300, 301)));
+        assert!(!consume_warp_feedback(&mut expected, (300, 296)));
+    }
+
+    #[test]
+    fn cursor_warp_offset_preserves_guest_coordinates_when_scaled_down() {
+        let content = ContentRect {
+            left: 0,
+            top: 0,
+            width: 640,
+            height: 480,
+        };
+        let desired = (1, 1);
+        let (px, py) =
+            mac_to_physical_in_viewport(desired.0, desired.1, content, 320, 240).unwrap();
+        let physical = (px.round(), py.round());
+        let host = physical_to_mac_in_viewport(physical.0, physical.1, content, 320, 240);
+        let offset = cursor_warp_offset(desired, host);
+        let mut expected = Some(desired);
+        assert!(consume_warp_feedback(
+            &mut expected,
+            (host.0 + offset.0, host.1 + offset.1)
+        ));
+        let moved = physical_to_mac_in_viewport(physical.0 + 1.0, physical.1, content, 320, 240);
+        assert_eq!(moved.1 + offset.1 - desired.1, 2);
+    }
 
     struct CountingAudioBackend {
         queued_stereo_bytes: Rc<RefCell<usize>>,
