@@ -36,6 +36,38 @@ pub(super) fn dispatch_memory_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::SetString => {
+            // TextUtils.h: SetString(StringHandle, ConstStr255Param) is void.
+            // Copy the source before resizing: it can be in the same handle.
+            let handle = cpu.gpr[3];
+            let source = cpu.gpr[4];
+            let bytes = memory
+                .read_u8(source)
+                .and_then(|length| ppc_memory_read_bytes(memory, source, u32::from(length) + 1));
+            let Some(bytes) = bytes else {
+                process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                *last_mem_error = PPC_PARAM_ERR;
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            *last_mem_error = process_memory_manager.set_process_handle_size_from_native_import(
+                memory,
+                handle,
+                bytes.len() as u32,
+            );
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+            if *last_mem_error == PPC_NO_ERR {
+                if let Some(data) = memory.read_u32_be(handle) {
+                    let _ = memory.write_bytes(data, &bytes);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NewString => {
             // NewString copies the Pascal string into a relocatable block
             // sized to its actual length. Inside Macintosh I (1985), I-468.

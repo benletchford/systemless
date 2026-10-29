@@ -455,3 +455,39 @@ fn set_mc_entries_merges_menu_color_entries() {
     let current = ppc_menu_color_table_bytes(&mut loaded.memory, &handles);
     assert_eq!(current, entry(128, 0));
 }
+
+#[test]
+fn lowercase_numtostring_writes_a_c_string() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"numtostring")).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xaa; 32]);
+    let target = dispatcher_target_for_import("InterfaceLib", "numtostring");
+    assert_eq!(target, PpcImportDispatcherTarget::NumToCString);
+    for number in [0, -1, i32::MIN, i32::MAX] {
+        loaded.cpu.gpr[3] = number as u32;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, target.clone());
+        let mut expected = number.to_string().into_bytes();
+        expected.push(0);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, output, expected.len() as u32),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn uprtext_uses_mac_roman_uppercase_conversion() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"UprText")).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"caf\x8e!".to_vec());
+    loaded.cpu.gpr[3] = text;
+    loaded.cpu.gpr[4] = 4;
+    let target = dispatcher_target_for_import("InterfaceLib", "UprText");
+    assert_eq!(target, PpcImportDispatcherTarget::UpperText);
+    run_test_import(&mut loaded, target);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, text, 5),
+        Some(b"CAF\x83!".to_vec())
+    );
+}
