@@ -35,6 +35,16 @@ compatibility:
       disabled pending the published runtime release.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/3249
+  - date: "2026-10-29"
+    tester: Catalogue maintainer
+    systemless_version: fad019f79731f2eb7d308ab486bab20d6102a313
+    architecture: ppc
+    environment: >-
+      Native release replay of the unchanged demo reached the original introductory
+      screen at frontend tick 600. One observed-pixel assertion passed with no
+      exhausted frames; gameplay was not requalified in this run.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/3249
 artifacts:
 - id: archive
   role: archive
