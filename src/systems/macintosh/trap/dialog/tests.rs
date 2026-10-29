@@ -12457,6 +12457,34 @@
     }
 
     #[test]
+    fn consumed_retained_modal_click_makes_null_event_poll_yield() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog = bus.alloc(170);
+        let previous = bus.alloc(170);
+        let screen_base = 0x300000u32;
+        let row_bytes = 320u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 320, 200, 8);
+        seed_retained_modal_dialog(&mut disp, &mut bus, dialog, previous, 1);
+        disp.menu_bar_hidden = true;
+        disp.event_queue.take_menu_bar_invalidation();
+        let probe = screen_base + 70 * row_bytes + 150;
+        bus.write_byte(probe, 17);
+        let event = bus.alloc(16);
+        bus.write_long(TEST_SP, event);
+        bus.write_word(TEST_SP + 4, 0xffff);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.push_mouse_down(70, 150);
+
+        assert!(disp
+            .dispatch_toolbox(true, 0x170, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 6), 0, "event is consumed");
+        assert_eq!(bus.read_byte(probe), 238, "button is highlighted");
+        assert!(!disp.last_null_event_poll, "drawing must end the batch");
+    }
+
+    #[test]
     fn retained_modal_dialog_button_click_highlights_then_dismisses() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);

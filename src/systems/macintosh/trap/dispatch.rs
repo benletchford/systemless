@@ -1973,6 +1973,10 @@ pub struct TrapDispatcher {
     /// Full trap word currently being dispatched. Some OS traps share the
     /// low 8-bit trap number and require bit 8 to distinguish variants.
     pub(crate) current_trap_word: u16,
+    /// Whether the last GetNextEvent returned no event and did no host-visible work.
+    pub(crate) last_null_event_poll: bool,
+    /// Whether the current event scan performed host-visible work.
+    pub(crate) event_poll_requires_yield: bool,
     /// Generated canonical operation row and the actual first-match adapter
     /// selected for the current default dispatch.
     pub(crate) current_trap_operation: u16,
@@ -4021,6 +4025,8 @@ impl TrapDispatcher {
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
             current_trap_word: 0,
+            last_null_event_poll: false,
+            event_poll_requires_yield: false,
             current_trap_operation: 0,
             current_trap_adapter: TrapAdapterId::Nonterminal,
             current_selector_operation: None,
@@ -7648,9 +7654,18 @@ impl TrapDispatcher {
         bus.try_read_trap_manager_long(TrapManager::table_address(canonical, kind)) == Some(default)
     }
 
-    pub(crate) fn last_trap_is_default_tick_count(&self, bus: &MacMemoryBus) -> bool {
-        self.current_trap_word & !0x0400 == 0xa975
-            && self.trap_table_cell_is_default(bus, 0xa975)
+    pub(crate) fn last_trap_is_bounded_query(&self, bus: &MacMemoryBus) -> bool {
+        let trap = self.current_trap_word & !0x0400;
+        (matches!(trap, 0xa858 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4)
+            || (trap == 0xa970 && self.last_null_event_poll))
+            && (self.trap_table_cell_is_default(bus, trap)
+                // Some profiles have a permanent come-from head. Resolve its
+                // successor so a patched handler still ends the batch.
+                || self
+                    .trap_table_address(bus, trap)
+                    .zip(self.default_trap_gateway(bus, trap))
+                    .is_some_and(|(head, default)| head == default))
+            && (trap != 0xa9b4 || !self.system_task_has_periodic_work(bus))
     }
 
     /// Return the current non-default handler for a canonical trap slot.
@@ -8313,6 +8328,7 @@ impl TrapDispatcher {
 
         self.trap_count += 1;
         self.current_trap_word = trap;
+        self.last_null_event_poll = false;
         self.current_selector_operation = None;
         let pc = cpu.read_reg(Register::PC);
         // Append (trap-instruction PC, trap word) to the file named by
@@ -8693,7 +8709,7 @@ impl TrapDispatcher {
             }
         }
 
-        // Track consecutive SANE and TickCount calls. The generated registry
+        // Track consecutive SANE and Toolbox calls. The generated registry
         // names the canonical operation and expected first adapter; recording
         // the actual first match makes a declared nonterminal row distinct
         // from registry drift.
@@ -8705,13 +8721,18 @@ impl TrapDispatcher {
         // adapter ahead of it in the chain would decline them after its own
         // entry work (re-reading Ticks, loading the current port's drawing
         // state), none of which SANE uses, so they go straight to it.
-        // TickCount likewise needs no drawing, resource or dialog adapter.
+        // These small Toolbox queries and PtInRect likewise need no preceding
+        // adapters; the generated route names their first match.
         // Keep normal trap-table routing above and common accounting/auto-pop
         // completion below; only bypass adapters that would decline this call.
         let fast_result = match (is_tool, trap_num) {
-            (true, 0x175) => {
+            (true, 0x058 | 0x170 | 0x172 | 0x175 | 0x1b4) => {
                 selected_adapter = TrapAdapterId::Toolbox;
                 self.dispatch_toolbox(is_tool, trap_num, cpu, bus)
+            }
+            (true, 0x0ad) => {
+                selected_adapter = TrapAdapterId::QuickDraw;
+                self.dispatch_quickdraw(is_tool, trap_num, cpu, bus)
             }
             (true, 0x1EB | 0x1EC) => {
                 selected_adapter = TrapAdapterId::Sane;

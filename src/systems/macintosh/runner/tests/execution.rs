@@ -1243,3 +1243,125 @@ fn gui_host_work_boundary_yields_before_running_patched_clock_handler() {
     assert_eq!(runner.m68k.cpu.read_reg(Register::PC), handler);
     assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
 }
+
+#[test]
+fn gui_host_work_batches_default_queries_and_preserves_results() {
+    for trap in [0xa858, 0xa8ad, 0xa972, 0xa97f, 0xa9b4] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let sp = 0x007f_ff00;
+        runner.bus.write_word(entry, trap);
+        runner.bus.write_word(entry + 2, 0x7207); // MOVEQ #7,D1
+        runner.bus.write_word(entry + 4, 0x2417); // MOVE.L (A7),D2
+        runner.bus.write_word(entry + 6, 0xa974); // Button: host boundary
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        match trap {
+            0xa858 => {
+                runner.bus.write_long(sp, 0xff00_ff00);
+                runner.bus.write_long(sp + 4, 0xf0f0_f0f0);
+            }
+            0xa8ad => {
+                runner.bus.write_long(sp, 0x0021_0000);
+                runner.bus.write_word(sp + 4, 2);
+                runner.bus.write_word(sp + 6, 3);
+                runner.bus.write_word(0x0021_0000, 0);
+                runner.bus.write_word(0x0021_0002, 0);
+                runner.bus.write_word(0x0021_0004, 8);
+                runner.bus.write_word(0x0021_0006, 8);
+                runner.bus.write_long(sp + 8, 0);
+            }
+            0xa972 => {
+                runner.bus.write_long(sp, 0x0021_0000);
+                runner.bus.write_long(0x0021_0000, 0xdead_beef);
+            }
+            0xa97f => {
+                runner.bus.write_long(sp, 0);
+                runner.bus.write_long(sp + 4, 0xfeed_beef);
+            }
+            _ => {}
+        }
+        let before = runner.dispatcher.trap_count;
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running, "trap {trap:04x}");
+        assert_eq!(steps, 4, "trap {trap:04x}");
+        assert_eq!(runner.dispatcher.trap_count, before + 2);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 8);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+        match trap {
+            0xa858 => assert_eq!(runner.m68k.cpu.read_reg(Register::D2), 0xf000_f000),
+            0xa8ad => assert_eq!(runner.m68k.cpu.read_reg(Register::D2), 0x0100_0000),
+            0xa972 => assert_ne!(runner.bus.read_long(0x0021_0000), 0xdead_beef),
+            0xa97f => assert_eq!(runner.m68k.cpu.read_reg(Register::D2), 0x00ed_beef),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn gui_host_work_yields_for_each_patched_query() {
+    for trap in [0xa858, 0xa8ad, 0xa970, 0xa972, 0xa97f, 0xa9b4] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let handler = 0x0021_0000;
+        runner.bus.write_word(entry, trap);
+        runner.bus.write_word(handler, 0x7207);
+        runner.bus.write_word(handler + 2, 0x4e75);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, trap, handler)
+            .unwrap();
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running, "trap {trap:04x}");
+        assert_eq!(steps, 1, "trap {trap:04x}");
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), handler);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+    }
+}
+
+#[test]
+fn gui_host_work_batches_only_quiet_null_event_polls() {
+    for (real_event, invalid_menu) in [(false, false), (true, false), (false, true)] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let event = 0x0021_0000;
+        let sp = 0x007f_ff00;
+        runner.bus.write_word(entry, 0xa970); // GetNextEvent
+        runner.bus.write_word(entry + 2, 0x7207); // MOVEQ #7,D1
+        runner.bus.write_word(entry + 4, 0xa974); // Button: host boundary
+        runner.bus.write_long(sp, event);
+        runner
+            .bus
+            .write_word(sp + 4, if real_event { 2 } else { 0 });
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        if real_event {
+            runner.dispatcher.event_queue.push_back(QueuedEvent {
+                what: 1,
+                message: 0,
+                when: 0,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0,
+            });
+        }
+        if invalid_menu {
+            runner.dispatcher.event_queue.invalidate_menu_bar();
+        }
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running);
+        assert_eq!(runner.bus.read_word(event), u16::from(real_event));
+        if real_event || invalid_menu {
+            assert_eq!(steps, 1);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 2);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+        } else {
+            assert_eq!(steps, 3);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), entry + 6);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+        }
+    }
+}

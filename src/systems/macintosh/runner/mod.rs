@@ -1003,7 +1003,7 @@ const BATCH_CHUNK: usize = 8192;
 enum TrapBoundary {
     None,
     Any,
-    ExceptDefaultTickCount,
+    ExceptBoundedQueries,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -7023,10 +7023,10 @@ impl FixtureRunner {
             if trap_boundary != TrapBoundary::None
                 && self.dispatcher.trap_count != previous_trap_count
             {
-                let default_tick_count = trap_boundary == TrapBoundary::ExceptDefaultTickCount
+                let bounded_query = trap_boundary == TrapBoundary::ExceptBoundedQueries
                     && self.dispatcher.trap_count == previous_trap_count.wrapping_add(1)
-                    && self.dispatcher.last_trap_is_default_tick_count(&self.bus);
-                if !default_tick_count {
+                    && self.dispatcher.last_trap_is_bounded_query(&self.bus);
+                if !bounded_query {
                     break;
                 }
                 previous_trap_count = self.dispatcher.trap_count;
@@ -10765,10 +10765,13 @@ impl FixtureRunner {
         )
     }
 
-    /// Run a bounded browser CPU batch while retaining default TickCount polls.
-    /// The unpatched HLE only reads the clock and writes its result. All other
-    /// traps, including guest-patched TickCount, still return to the host budget
-    /// check. Instruction and guest tick caps remain unchanged.
+    /// Run a bounded browser CPU batch while retaining small default HLE queries.
+    /// BitAnd, PtInRect, GetMouse, TickCount and IsDialogEvent cannot draw or
+    /// call guest code; SystemTask qualifies only while its periodic work is empty. Every
+    /// call still executes. A null GetNextEvent also qualifies if it did not
+    /// redraw or consume an event. Real events, drawing and patches
+    /// return to the host budget check. Instruction and guest tick caps remain
+    /// unchanged.
     pub fn run_gui_cpu_slice_until_host_work(
         &mut self,
         max_steps: usize,
@@ -10781,7 +10784,7 @@ impl FixtureRunner {
             true,
             false,
             FrameFinalization::Deferred,
-            TrapBoundary::ExceptDefaultTickCount,
+            TrapBoundary::ExceptBoundedQueries,
         )
     }
 

@@ -5674,7 +5674,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
-                self.service_invalid_menu_bar(bus);
+                self.event_poll_requires_yield = self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
@@ -5682,6 +5682,7 @@ impl super::TrapDispatcher {
 
                 let (what, message, when, where_v, where_h, modifiers, has_event) =
                     self.dequeue_toolbox_event(cpu, bus, event_mask);
+                self.last_null_event_poll = !has_event && !self.event_poll_requires_yield;
                 self.write_event_record(
                     bus, event_ptr, what, message, when, where_v, where_h, modifiers,
                 );
