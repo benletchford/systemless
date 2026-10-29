@@ -2577,3 +2577,78 @@ fn sound_disposal_true_boolean_cancels_playback_without_waiting() {
         .iter()
         .all(|sample| *sample == 128));
 }
+
+#[test]
+fn snd_channel_status_tracks_active_sample_playback() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP + 0x80;
+    let channel_ptr = 0x0039_38C8;
+    let status_ptr = 0x230A80;
+    let mut channel = SndChannel::new(channel_ptr, false);
+    channel.play_buffer(vec![0x40, 0x80, 0xC0, 0xFF], crate::sound::OUTPUT_RATE << 16, crate::sound::PlaybackKind::Buffer, 0);
+    disp.sound_manager.add_channel(channel);
+
+    for expected_busy in [1u8, 0] {
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0510_0008);
+        bus.write_long(sp, status_ptr);
+        bus.write_word(sp + 4, 24);
+        bus.write_long(sp + 6, channel_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+        assert!(disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(bus.read_byte(status_ptr + 12), expected_busy);
+        if expected_busy == 1 {
+            disp.sound_manager.mix_frame(4);
+        }
+    }
+}
+
+#[test]
+fn snd_channel_status_is_specific_to_channel_and_record_length() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP + 0x80;
+    let active_ptr = 0x0039_38C8;
+    let idle_ptr = 0x0039_4000;
+    let status_ptr = 0x230A80;
+    let mut active = SndChannel::new(active_ptr, false);
+    active.play_buffer(vec![0x80; 40], crate::sound::OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+    disp.sound_manager.add_channel(active);
+    disp.sound_manager.add_channel(SndChannel::new(idle_ptr, false));
+    for (channel_ptr, len, expected) in [(idle_ptr, 24, 0), (active_ptr, 13, 1)] {
+        bus.write_byte(status_ptr + 13, 0xA5);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0510_0008);
+        bus.write_long(sp, status_ptr);
+        bus.write_word(sp + 4, len);
+        bus.write_long(sp + 6, channel_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+        assert!(disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus).unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(bus.read_byte(status_ptr + 12), expected);
+        if len == 13 {
+            assert_eq!(bus.read_byte(status_ptr + 13), 0xA5);
+        }
+    }
+}
+
+#[test]
+fn snd_channel_status_reports_paused_file_playback() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP + 0x80;
+    let channel_ptr = 0x0039_38C8;
+    let status_ptr = 0x230A80;
+    let mut channel = SndChannel::new(channel_ptr, false);
+    channel.play_buffer(vec![0x80; 40], crate::sound::OUTPUT_RATE << 16, PlaybackKind::File, 0);
+    channel.pause_file_playback_toggle();
+    disp.sound_manager.add_channel(channel);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0510_0008);
+    bus.write_long(sp, status_ptr);
+    bus.write_word(sp + 4, 24);
+    bus.write_long(sp + 6, channel_ptr);
+    bus.write_word(sp + 10, 0xFFFF);
+    assert!(disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus).unwrap().is_ok());
+    assert_eq!(bus.read_word(sp + 10), 0);
+    assert_eq!(bus.read_byte(status_ptr + 14), 1);
+}
