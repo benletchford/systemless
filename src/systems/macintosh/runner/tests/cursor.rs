@@ -639,3 +639,45 @@ fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
     assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x4444_4444);
     assert!(!runner.is_halted());
 }
+
+#[test]
+fn guest_cursor_recenter_preserves_inputsprocket_physical_delta() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    use crate::loader::ppc::{
+        PpcInputSprocketCompatibilityOperation, PPC_ISP_ELEMENT_EVENT_SIZE, PPC_ISP_MOUSE_X_ELEMENT,
+    };
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    native.imports[0].library_name = "InputSprocketLib".into();
+    native.imports[0].dispatcher_target = PpcImportDispatcherTarget::InputSprocketCompatibility(
+        PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+    );
+    let scratch = PPC_DATA_BASE + 0x1000;
+    native.memory.add_region(scratch, vec![0; 64]);
+    let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    runner.set_mouse_position(100, 100);
+    let read_event = |runner: &mut FixtureRunner| {
+        let app = runner.native.application_mut().unwrap();
+        app.cpu.pc = app.entry_pc;
+        app.cpu.lr = PPC_HALT_PC;
+        app.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+        app.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        app.cpu.gpr[5] = scratch;
+        app.cpu.gpr[6] = scratch + 24;
+        let probe = runner.process_context.with_memory_and_cfm(|memory, cfm| {
+            app.run_with_process_services(64, false, false, memory, cfm)
+        });
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(app.cpu.gpr[3], 0);
+        (app.memory.read_u8(scratch + 24).unwrap() != 0)
+            .then(|| app.memory.read_u32_be(scratch + 16).unwrap())
+    };
+    assert_eq!(read_event(&mut runner), None);
+    let previous_mouse = runner.bus.read_long(addr::MOUSE_LOC2);
+    runner.bus.write_long(addr::MOUSE_LOC2, (300 << 16) | 296);
+    runner.sync_guest_mouse_position(previous_mouse);
+    assert_eq!(read_event(&mut runner), None);
+    runner.set_mouse_position(100, 120);
+    assert_eq!(read_event(&mut runner), Some(20 << 16));
+    assert_eq!(read_event(&mut runner), None);
+}

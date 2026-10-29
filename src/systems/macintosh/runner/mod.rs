@@ -3037,9 +3037,20 @@ impl FixtureRunner {
             }
             self.dispatcher.update_standard_file_button_for_mouse(&mut self.bus);
         }
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_position_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
+    }
+
+    fn note_ppc_physical_mouse_input(&mut self) {
+        let input = self.ppc_input_snapshot();
+        let tick = self.guest_tick();
+        for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+            if let Some(app) = self.native.adapter_mut(role) {
+                app.note_physical_mouse_input(input, tick);
+            }
+        }
     }
 
     /// Drain the latest cursor position adopted from guest low memory.
@@ -3211,6 +3222,7 @@ impl FixtureRunner {
         self.dispatcher.read_tick_count(&self.bus);
         self.dispatcher
             .with_process_state(|d| d.push_mouse_down(v, h));
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -3256,6 +3268,7 @@ impl FixtureRunner {
         self.dispatcher.read_tick_count(&self.bus);
         self.dispatcher
             .with_process_state(|d| d.push_mouse_up(v, h));
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
