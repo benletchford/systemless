@@ -664,3 +664,532 @@ fn native_drag_image_preserves_custom_palettes_at_all_indexed_depths() {
         );
     }
 }
+
+#[test]
+fn zoom_rects_advances_once_per_tick_and_restores_screen() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::Drag(PpcDragOperation::ZoomRects)
+    );
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3] = from;
+    loaded.cpu.gpr[4] = to;
+    loaded.cpu.gpr[5] = 4;
+    loaded.cpu.gpr[6] = 0;
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)).unwrap();
+    let mut startup = PpcToolboxStartupState::default();
+    macro_rules! run {
+        ($tick:expr) => {
+            dispatch_drag::zoom_rects(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &mut startup,
+                $tick,
+                100,
+            )
+        };
+    }
+    assert!(matches!(run!(0), PpcImportAction::Yield(_)));
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+    assert!(matches!(run!(0), PpcImportAction::Yield(_)));
+    assert!(matches!(run!(1), PpcImportAction::Yield(_)));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+    assert!(matches!(run!(2), PpcImportAction::Yield(_)));
+    assert!(matches!(run!(3), PpcImportAction::Yield(_)));
+    assert!(matches!(run!(4), PpcImportAction::Yield(_)));
+    assert!(matches!(run!(5), PpcImportAction::Return(0)));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+}
+
+#[test]
+fn zoom_rects_catches_up_after_missed_ticks() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let initial = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10));
+    let late = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25));
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            0,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            3,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        initial
+    );
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25)),
+        late
+    );
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            5,
+            100
+        ),
+        PpcImportAction::Return(0)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25)),
+        late
+    );
+}
+
+#[test]
+fn zoom_rects_catches_up_across_tick_wrap() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let initial = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10));
+    let late = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25));
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            u32::MAX - 2,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            0,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        initial
+    );
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25)),
+        late
+    );
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            2,
+            100
+        ),
+        PpcImportAction::Return(0)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 25)),
+        late
+    );
+}
+
+#[test]
+fn zoom_rects_nested_calls_restore_each_saved_frame() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)).unwrap();
+    let mut startup = PpcToolboxStartupState::default();
+    macro_rules! run {
+        ($tick:expr) => {
+            dispatch_drag::zoom_rects(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &mut startup,
+                $tick,
+                100,
+            )
+        };
+    }
+    let outer_sp = loaded.cpu.gpr[1];
+    assert!(matches!(run!(0), PpcImportAction::Yield(_)));
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+    loaded.cpu.gpr[1] = outer_sp - 128;
+    assert!(matches!(run!(0), PpcImportAction::Yield(_)));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+    for tick in 1..=4 {
+        assert!(matches!(run!(tick), PpcImportAction::Yield(_)));
+    }
+    assert!(matches!(run!(5), PpcImportAction::Return(0)));
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+    loaded.cpu.gpr[1] = outer_sp;
+    for tick in 6..=9 {
+        assert!(matches!(run!(tick), PpcImportAction::Yield(_)));
+    }
+    assert!(matches!(run!(10), PpcImportAction::Return(0)));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(before)
+    );
+}
+
+#[test]
+fn zoom_rects_allocation_failure_restores_pixels_and_unwinds() {
+    for stage in [1, 2, 3] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects"))
+                .unwrap();
+        let from = PPC_DATA_BASE + 0x1000;
+        let to = PPC_DATA_BASE + 0x1010;
+        loaded.memory.add_region(from, vec![0; 32]);
+        ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+        ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+        loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10));
+        let mut startup = PpcToolboxStartupState::default();
+        if stage < 3 {
+            dispatch_drag::fail_zoom_reservation_for_test(stage);
+        }
+        let first = dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            0,
+            100,
+        );
+        let result = if stage == 3 {
+            assert!(matches!(first, PpcImportAction::Yield(_)));
+            assert_ne!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+                before
+            );
+            dispatch_drag::fail_zoom_reservation_for_test(2);
+            dispatch_drag::zoom_rects(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &mut startup,
+                1,
+                100,
+            )
+        } else {
+            first
+        };
+        assert!(
+            matches!(result, PpcImportAction::Return(value) if value == ppc_i16_result(PPC_MEM_FULL_ERR))
+        );
+        assert!(startup.zoom_rect.is_empty());
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+            before
+        );
+    }
+}
+
+#[test]
+fn zoom_rects_moves_feedback_to_replaced_screen_surface() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let old =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let original = ppc_quickdraw_read_pixel(&mut loaded.memory, old, (10, 10));
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            0,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, old, (10, 10)),
+        original
+    );
+    let new_address = 0x5100_0000;
+    loaded
+        .memory
+        .add_region(new_address, vec![0; (old.row_bytes * old.height) as usize]);
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_PIXMAP, new_address)
+        .unwrap();
+    let new_front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    assert_eq!(new_front.base_addr, new_address);
+    let before = ppc_quickdraw_read_pixel(&mut loaded.memory, new_front, (15, 15));
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            1,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, old, (10, 10)),
+        original
+    );
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, new_front, (15, 15)),
+        before
+    );
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            5,
+            100
+        ),
+        PpcImportAction::Return(0)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, new_front, (15, 15)),
+        before
+    );
+}
+
+#[test]
+fn zoom_rects_rejects_invalid_arguments_without_retaining_a_frame() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let mut startup = PpcToolboxStartupState::default();
+    loaded.cpu.gpr[3] = 0;
+    let action = dispatch_drag::zoom_rects(
+        &loaded.cpu,
+        &mut loaded.memory,
+        &loaded.gworlds,
+        &mut startup,
+        0,
+        100,
+    );
+    assert!(
+        matches!(action, PpcImportAction::Return(value) if value == ppc_i16_result(PPC_PARAM_ERR))
+    );
+    assert!(startup.zoom_rect.is_empty());
+}
+
+#[test]
+fn zoom_rects_draws_single_pixel_and_clips_without_double_inversion() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 0, 0, 1, 1).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, -3, -3, 2, 2).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)).unwrap();
+    let mut startup = PpcToolboxStartupState::default();
+    macro_rules! run {
+        ($tick:expr) => {
+            dispatch_drag::zoom_rects(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &mut startup,
+                $tick,
+                100,
+            )
+        };
+    }
+    assert!(matches!(run!(0), PpcImportAction::Yield(_)));
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+        Some(before)
+    );
+    for tick in 1..=4 {
+        assert!(matches!(run!(tick), PpcImportAction::Yield(_)));
+    }
+    assert!(matches!(run!(5), PpcImportAction::Return(0)));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+        Some(before)
+    );
+}
+
+#[test]
+fn zoom_rects_preserves_pixels_redrawn_between_frames() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)).unwrap();
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            0,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    let overlay = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)).unwrap();
+    let replacement = (0u16..=255)
+        .find(|value| *value != before && *value != overlay)
+        .unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (10, 10),
+        replacement
+    ));
+    assert!(matches!(
+        dispatch_drag::zoom_rects(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &mut startup,
+            1,
+            100
+        ),
+        PpcImportAction::Yield(_)
+    ));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        Some(replacement)
+    );
+}
+
+#[test]
+fn zoom_rects_guest_import_remains_parked_until_animation_finishes() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"DragLib", b"ZoomRects")).unwrap();
+    let from = PPC_DATA_BASE + 0x1000;
+    let to = PPC_DATA_BASE + 0x1010;
+    loaded.memory.add_region(from, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, from, 10, 10, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, to, 30, 30, 40, 40).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[from, to, 4, 0]);
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    loaded.set_tick_count(42);
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let original = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10));
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 64 });
+    assert_eq!(loaded.cpu.pc, loaded.import_trap_base);
+    assert_ne!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        original
+    );
+    for tick in 43..=46 {
+        loaded.set_tick_count(tick);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 64 });
+    }
+    loaded.set_tick_count(47);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 10)),
+        original
+    );
+}
