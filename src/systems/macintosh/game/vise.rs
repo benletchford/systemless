@@ -38,12 +38,16 @@ const VISE_PACKED_FILE_SUFFIX_LEN: usize = 66;
 const VISE_36_FULL_DIRECTORY_SUFFIX_LEN: usize = 22;
 const VISE_36_FULL_FILE_SUFFIX_LEN: usize = 16;
 
-// Original 0x80010307 installers also encode parent nesting depth, not
-// an index into every directory seen so far. Siblings therefore reuse depth.
+// These catalogs encode parent nesting depth rather than a global directory
+// index. Sibling directories therefore reuse the same depth.
 fn depth_catalog(version: u32) -> bool {
     matches!(
         version,
-        VISE_VERSION_36_FULL | VISE_VERSION_36_LITE | VISE_VERSION_EXTENDED_CATALOG
+        VISE_VERSION_36_FULL
+            | VISE_VERSION_36_LITE
+            | VISE_VERSION_EXTENDED_CATALOG
+            | VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_LATE_PACKED_CATALOG
     )
 }
 
@@ -1684,6 +1688,112 @@ pub(crate) mod tests {
         truncated[catalog_offset + 4..catalog_offset + 8]
             .copy_from_slice(&((packed_records.len() - 2) as u32).to_be_bytes());
         assert!(parse_vise(&truncated).unwrap().is_err());
+    }
+
+    #[test]
+    fn late_packed_catalog_uses_directory_depth_for_siblings() {
+        let mut records = Vec::new();
+        for (directory, depth, name) in [
+            (true, 0u16, "Root"),
+            (true, 1, "Data"),
+            (false, 2, "Sprites"),
+            (true, 1, "Documentation"),
+            (false, 2, "License"),
+            (true, 1, "GameRanger"),
+            (false, 2, "Application"),
+        ] {
+            if directory {
+                records.extend_from_slice(b"DVCT");
+                let mut record = [0u8; VISE_DIRECTORY_RECORD_LEN];
+                record[68..70].copy_from_slice(&depth.to_be_bytes());
+                record[76] = name.len() as u8;
+                records.extend_from_slice(&record);
+                records.extend_from_slice(&[0; VISE_PACKED_DIRECTORY_SUFFIX_LEN]);
+            } else {
+                records.extend_from_slice(b"FVCT");
+                let mut record = [0u8; VISE_FILE_RECORD_LEN];
+                record[92..94].copy_from_slice(&depth.to_be_bytes());
+                record[118] = name.len() as u8;
+                records.extend_from_slice(&record);
+                records.extend_from_slice(&[0; VISE_PACKED_FILE_SUFFIX_LEN]);
+            }
+            records.extend_from_slice(name.as_bytes());
+        }
+        records.extend_from_slice(b"PACK");
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&records).unwrap();
+        let mut packed = encoder.finish().unwrap();
+        for pair in packed.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_LATE_PACKED_CATALOG.to_be_bytes());
+        archive[36..40].copy_from_slice(&(VISE_HEADER_LEN as u32).to_be_bytes());
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[4..8].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        catalog[16..18].copy_from_slice(&7u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+        prefix[..4].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&prefix);
+        archive.extend_from_slice(&packed);
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        let paths: Vec<_> = parsed
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "Root/Data/Sprites",
+                "Root/Documentation/License",
+                "Root/GameRanger/Application",
+            ]
+        );
+
+        let last_file = records
+            .windows(4)
+            .rposition(|bytes| bytes == b"FVCT")
+            .unwrap();
+        records[last_file + 4 + 92..last_file + 4 + 94]
+            .copy_from_slice(&4u16.to_be_bytes());
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&records).unwrap();
+        let mut invalid_packed = encoder.finish().unwrap();
+        for pair in invalid_packed.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        let mut invalid = archive[..VISE_HEADER_LEN + VISE_CATALOG_HEADER_LEN
+            + VISE_EXTENDED_CATALOG_PREFIX_LEN]
+            .to_vec();
+        invalid[VISE_HEADER_LEN + 4..VISE_HEADER_LEN + 8]
+            .copy_from_slice(&(invalid_packed.len() as u32).to_be_bytes());
+        invalid.extend_from_slice(&invalid_packed);
+        assert!(parse_vise(&invalid)
+            .unwrap()
+            .unwrap_err()
+            .contains("parent depth 4"));
+
+        // The earlier packed variant also uses parent depth.
+        archive[16..20].copy_from_slice(&VISE_VERSION_PACKED_CATALOG.to_be_bytes());
+        let earlier = parse_vise(&archive).unwrap().unwrap();
+        let earlier_paths: Vec<_> = earlier
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(
+            earlier_paths,
+            [
+                "Root/Data/Sprites",
+                "Root/Documentation/License",
+                "Root/GameRanger/Application",
+            ]
+        );
     }
 
     #[test]
