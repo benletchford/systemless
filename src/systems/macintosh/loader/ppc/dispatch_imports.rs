@@ -1956,6 +1956,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
         | PpcImportDispatcherTarget::SetRect
+        | PpcImportDispatcherTarget::Pt2Rect
         | PpcImportDispatcherTarget::SectRect
         | PpcImportDispatcherTarget::UnionRect
         | PpcImportDispatcherTarget::EqualRect
