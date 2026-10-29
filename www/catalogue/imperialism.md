@@ -41,3 +41,8 @@ references:
 Imperialism makes railways, raw materials and diplomacy the machinery behind
 national power. The demo is preserved as SSI distributed it, with no files
 removed or repacked. Its Systemless compatibility is not yet verified.
+
+On 29 October 2026, a PowerPC headless startup run of the original demo
+passed its earlier low-memory import failure and loaded picture resources. The
+application then returned before a title screen appeared, at guest tick 1.
+Gameplay remains unverified; see [issue #2337](https://github.com/benletchford/systemless/issues/2337).
