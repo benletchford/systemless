@@ -74,6 +74,7 @@ impl PluginMetadata {
 pub struct WorkerMachine {
     machine: Machine,
     painted_once: bool,
+    rgba_cache: crate::frame_dedup::RgbaFrameCache,
     gpu_renderer_enabled: bool,
     gpu_compute: Option<crate::gpu_proxy::GpuProxy>,
 }
@@ -149,6 +150,7 @@ impl WorkerMachine {
         Ok(Self {
             machine,
             painted_once: false,
+            rgba_cache: crate::frame_dedup::RgbaFrameCache::default(),
             gpu_renderer_enabled: false,
             gpu_compute: None,
         })
@@ -165,6 +167,7 @@ impl WorkerMachine {
         compact_render: bool,
         measure_presentation: bool,
         cursor_scale: f64,
+        deduplicate_rgba: bool,
     ) -> Object {
         let started = measured_now(measure_presentation);
         self.machine.set_output_scale(output_scale);
@@ -204,8 +207,15 @@ impl WorkerMachine {
         } else {
             None
         };
-        let frame =
-            (should_render && indexed_frame.is_none() && compact_frame.is_none()).then(|| {
+        if !deduplicate_rgba
+            || gpu_frame.is_some()
+            || indexed_frame.is_some()
+            || compact_frame.is_some()
+        {
+            self.rgba_cache.invalidate();
+        }
+        let frame = (should_render && indexed_frame.is_none() && compact_frame.is_none())
+            .then(|| {
                 self.painted_once = true;
                 let stats = debug.then_some(DebugOverlayFrameStats {
                     host_fps: None,
@@ -217,12 +227,24 @@ impl WorkerMachine {
                     cpu_budget_ms: Some(counters.cpu_budget_ms),
                     audio_queue_ms: counters.audio_queue_ms,
                 });
-                let pixels = self.machine.render_rgba(stats).1;
+                let cursor_changed =
+                    deduplicate_rgba && self.rgba_cache.update_cursor(self.machine.cursor_css());
+                let (size, pixels) = self.machine.render_rgba(stats);
+                if deduplicate_rgba
+                    && !self.rgba_cache.should_send(
+                        size,
+                        pixels,
+                        debug || force_render || cursor_changed,
+                    )
+                {
+                    return None;
+                }
                 let before_copy = measured_now(measure_presentation);
                 let packet = Uint8Array::from(pixels);
                 js_copy_ms += measured_now(measure_presentation) - before_copy;
-                packet
-            });
+                Some(packet)
+            })
+            .flatten();
         let prepared = measured_now(measure_presentation);
         if indexed_frame.is_some() || compact_frame.is_some() {
             self.painted_once = true;
