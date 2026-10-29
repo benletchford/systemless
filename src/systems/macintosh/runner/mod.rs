@@ -1371,6 +1371,11 @@ fn idle_cycle_trap_is_journal_complete(
         // guest RAM. The host snapshot also records the volume and working
         // directory state it reads. Async requests remain excluded.
         (false, 0x0007) => matches!(opcode, 0xA007 | 0xA207),
+        // IsDialogEvent reads its EventRecord and dialog bounds from guest
+        // memory, and front-window/dialog membership from the host snapshot.
+        // Its Boolean result is a journaled stack write; it does not dispatch
+        // the event or invoke guest callbacks.
+        (true, 0x017F) => true,
         // PtInRect: reads pt+rect from the stack/RAM, writes a Boolean at
         // sp+8 (journaled) and pops A7 (CPU state the proof compares).
         (true, 0x00AD) => true, // PtInRect
@@ -6083,6 +6088,16 @@ impl FixtureRunner {
         }
     }
 
+    /// The new query admissions require their default HLE handlers. A
+    /// guest patch can have effects outside the journal. IsDialogEvent also
+    /// traverses the menu adapter, which can retire a pending manager call.
+    fn idle_query_has_unsafe_dispatch(&self, opcode: u16) -> bool {
+        let trap = canonical_trap_number(opcode);
+        (matches!(trap, (true, 0x0058 | 0x017F))
+            && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
+            || (trap == (true, 0x017F) && !self.dispatcher.guest_calls.is_empty())
+    }
+
     /// Record whether a returned HLE trap remained quiescent during an exact
     /// cycle probe. Null GetNextEvent/EventAvail and non-sleeping WaitNextEvent
     /// calls are deterministic while
@@ -7682,15 +7697,22 @@ impl FixtureRunner {
                             &self.bus,
                             self.bus.read_word(self.m68k.cpu.core.a(7)) as i16,
                         );
+                    let unsafe_idle_query = self.idle_query_has_unsafe_dispatch(opcode);
+                    if unsafe_idle_query {
+                        // A manager return can retire during dispatch, so the
+                        // virtual recorder must reject it before that happens.
+                        self.cancel_pass_recording();
+                    }
                     if self.idle_cycle_probe.is_some()
-                        && !idle_cycle_trap_is_journal_complete(
-                            opcode,
-                            true,
-                            true,
-                            true,
-                            self.m68k.cpu.read_reg(Register::D0),
-                            hilite_menu_noop,
-                        )
+                        && (unsafe_idle_query
+                            || !idle_cycle_trap_is_journal_complete(
+                                opcode,
+                                true,
+                                true,
+                                true,
+                                self.m68k.cpu.read_reg(Register::D0),
+                                hilite_menu_noop,
+                            ))
                     {
                         if opcode == 0xAB1D {
                             ws_note_cancel_ab1d_selector(self.m68k.cpu.read_reg(Register::D0));

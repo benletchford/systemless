@@ -20187,7 +20187,7 @@ impl super::TrapDispatcher {
         // pp. V-48 and V-163.
     }
 
-    fn known_port(&self, port: u32) -> bool {
+    pub(crate) fn known_port(&self, port: u32) -> bool {
         self.port_draw_states.contains_key(&port)
             || self.cport_ports.contains(&port)
             || self.gworld_devices.contains_key(&port)

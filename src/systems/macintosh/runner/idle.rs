@@ -315,6 +315,15 @@ pub(crate) struct IdleCycleHostSnapshot {
     /// chain (journaled), so this is belt-and-braces: a parked cycle must
     /// not resume across a reordering the journal somehow missed.
     pub(crate) window_list: Vec<u32>,
+    /// IsDialogEvent consults the front window and dialog membership held by
+    /// the dispatcher. Preserve both across a recorded or parked cycle.
+    pub(crate) front_window: u32,
+    pub(crate) dialog_windows: Vec<u32>,
+    /// Declining adapters on the IsDialogEvent path can sync QuickDraw
+    /// mirrors and retire a manager return before the handler runs.
+    pub(crate) guest_calls_idle: bool,
+    pub(crate) quickdraw_attached: bool,
+    pub(crate) quickdraw_port_known: bool,
     /// A native menu selection staged for MenuSelect. It is always paired
     /// with a pending event the resume gate sees; recorded here so the
     /// pairing is not the only thing standing between it and a proof.
@@ -340,6 +349,8 @@ pub(crate) struct IdleCycleHostSnapshot {
 
 impl IdleCycleHostSnapshot {
     pub(crate) fn capture(dispatcher: &TrapDispatcher) -> Self {
+        let mut dialog_windows: Vec<_> = dispatcher.dialog_items.keys().copied().collect();
+        dialog_windows.sort_unstable();
         Self {
             task: dispatcher.guest_calls.current_task(),
             mouse_pos: dispatcher.input_state.mouse_position(),
@@ -349,6 +360,11 @@ impl IdleCycleHostSnapshot {
                 .input_state
                 .caps_lock_physically_pressed(),
             window_list: dispatcher.window_list.to_vec(),
+            front_window: dispatcher.front_window,
+            dialog_windows,
+            guest_calls_idle: dispatcher.guest_calls.is_empty(),
+            quickdraw_attached: dispatcher.process_quickdraw_port_state_attached,
+            quickdraw_port_known: dispatcher.known_port(*dispatcher.current_port),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
             sound_channels_busy: dispatcher.sound_channels_busy(),
             volumes: dispatcher.vfs_volumes.to_vec(),

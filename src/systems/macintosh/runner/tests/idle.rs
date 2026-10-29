@@ -214,7 +214,7 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
         0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917, 0xA924,
         0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA, 0xACAD,
         0xA858, 0xA85D, 0xA86B, 0xA873, 0xA875, 0xA9F1, 0xAC58, 0xAC5D, 0xAC6B,
-        0xAC73, 0xAC75, 0xADF1,
+        0xAC73, 0xAC75, 0xADF1, 0xA97F, 0xAD7F,
     ] {
         runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
@@ -3511,4 +3511,226 @@ fn changing_menu_clear_cancels_an_idle_probe_before_it_can_park() {
     assert!(idle_cycle_trap_is_journal_complete(
         0xAD38, true, true, true, 0, true
     ));
+}
+
+#[test]
+fn dialog_host_snapshot_changes_with_front_and_membership() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let initial = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.front_window = 0x1234;
+    let front_changed = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert_ne!(initial, front_changed);
+    runner.dispatcher.dialog_items.insert(0x1234, Vec::new());
+    let dialog_added = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert_ne!(front_changed, dialog_added);
+    runner.dispatcher.dialog_items.remove(&0x1234);
+    assert_eq!(front_changed, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+}
+
+#[test]
+fn dialog_state_changes_cancel_a_parked_idle_cycle() {
+    for change_membership in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000;
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.park_proven_idle_cycle(trap_pc, 103);
+        if change_membership {
+            runner.dispatcher.dialog_items.insert(0x1234, Vec::new());
+        } else {
+            runner.dispatcher.front_window = 0x1234;
+        }
+        assert!(!runner.try_resume_proven_idle_cycle(Some(102)));
+        assert_eq!(runner.guest_tick(), 100);
+        assert!(runner.idle_cycle_sleep.is_none());
+    }
+}
+#[test]
+fn exact_idle_cycle_admits_real_dialog_and_bit_queries() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let event = 0x0020_0000u32;
+    let stack = 0x0010_0000u32;
+    // TickCount; discard result; IsDialogEvent(null); discard result;
+    // BitAnd(1, 1); discard result; branch back to TickCount.
+    let words = [
+        0x594F, 0xA975, 0x588F,
+        0x554F, 0x4879, (event >> 16) as u16, event as u16, 0xA97F, 0x4A1F,
+        0x594F, 0x2F3C, 0, 1, 0x2F3C, 0, 1, 0xA858, 0x588F, 0x6000, 0xFFDA,
+    ];
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + (i as u32 * 2), word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, stack);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = runner.run_steps_internal(
+        2_000, Some(100), 0, true, false, FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(runner.idle_cycle_sleep.is_some(), "the real query cycle must be proven");
+}
+
+#[test]
+fn patched_dialog_and_bit_queries_cancel_an_idle_probe() {
+    for opcode in [0xA858u16, 0xA97F] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let code = 0x0002_0000u32;
+        let handler = 0x0020_0000u32;
+        let anchor = 0x0003_0000u32;
+        runner.bus.write_word(code, opcode);
+        runner.bus.write_word(handler, 0x4E75); // RTS from a guest patch.
+        assert!(!runner.idle_query_has_unsafe_dispatch(opcode));
+        runner.dispatcher.install_trap_address(&mut runner.bus, opcode, handler).unwrap();
+        assert!(runner.idle_query_has_unsafe_dispatch(opcode));
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(anchor, 101, Some(100)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(anchor, 101, Some(100)));
+        assert!(runner.idle_cycle_probe.is_some());
+        let (_, running) = runner.run_steps_internal(
+            1, Some(100), 0, true, false, FrameFinalization::Deferred,
+        );
+        assert!(running);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), handler);
+        assert!(runner.idle_cycle_probe.is_none(), "patched {opcode:04X} must cancel");
+    }
+}
+
+#[test]
+fn quickdraw_mirror_and_cached_port_changes_revoke_idle_proofs() {
+    for mutate_cache in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000;
+        let port = 0x0020_0000;
+        runner.dispatcher.current_port.with_mut(|current| *current = port);
+        runner.dispatcher.process_quickdraw_port_state_attached = true;
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA975;
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.park_proven_idle_cycle(trap_pc, 103);
+        if mutate_cache {
+            runner.dispatcher.port_draw_states.insert(port, Default::default());
+        } else {
+            runner.dispatcher.fg_color = (123, 456, 789);
+        }
+        assert!(!runner.try_resume_proven_idle_cycle(Some(102)));
+        assert_eq!(runner.guest_tick(), 100);
+        assert!(runner.idle_cycle_sleep.is_none());
+    }
+}
+
+#[test]
+fn dialog_event_dispatch_syncs_quickdraw_mirror_before_handler() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let port = 0x0020_0000u32;
+    let event = 0x0021_0000u32;
+    let sp = 0x0010_0000u32;
+    runner.dispatcher.current_port.with_mut(|current| *current = port);
+    runner.dispatcher.process_quickdraw_port_state_attached = true;
+    runner.dispatcher.port_draw_states.insert(port, Default::default());
+    runner.dispatcher.fg_color = (1, 2, 3);
+    runner.bus.write_word(port + 6, 0xC000);
+    runner.bus.write_word(port + 36, 123);
+    runner.bus.write_word(port + 38, 456);
+    runner.bus.write_word(port + 40, 789);
+    runner.bus.write_word(event, 0);
+    runner.bus.write_long(sp, event);
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.dispatch(0xA97F, &mut runner.m68k.cpu, &mut runner.bus).unwrap();
+    assert_eq!(runner.dispatcher.fg_color, (123, 456, 789));
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+}
+
+#[test]
+fn pending_manager_calls_keep_dialog_queries_out_of_idle_proofs() {
+    let runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    assert!(!runner.idle_query_has_unsafe_dispatch(0xA97F));
+    let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert!(runner.dispatcher.guest_calls.begin_m68k(
+        crate::guest_call::GuestCallTarget {
+            isa: crate::guest_procedure::GuestIsa::M68k,
+            entry: 0x1000,
+            rtoc: 0,
+        },
+        0x2000,
+        0x3000,
+    ));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA97F));
+    assert!(!runner.idle_query_has_unsafe_dispatch(0xA858));
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+}
+
+#[test]
+fn pending_guest_call_cancels_dialog_query_pass_recording() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let anchor = 0x0003_0000u32;
+    let event = 0x0020_0000u32;
+    let sp = 0x0010_0000u32;
+    runner.bus.write_word(code, 0xA97F);
+    runner.bus.write_long(sp, event);
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    assert!(runner.dispatcher.guest_calls.begin_m68k(
+        crate::guest_call::GuestCallTarget {
+            isa: crate::guest_procedure::GuestIsa::M68k,
+            entry: 0x1000,
+            rtoc: 0,
+        },
+        0x4000,
+        0x5000,
+    ));
+    runner.idle_cycle_sites[0].site = anchor;
+    runner.idle_cycle_sites[0].tick = 100;
+    runner.idle_cycle_sites[0].probes = IDLE_CYCLE_MAX_PROBES_PER_TICK + 1;
+    runner.note_virtual_anchor_arrival(anchor);
+    assert!(runner.pass_recorder.is_some());
+    let (_, running) = runner.run_steps_internal(
+        1, Some(100), 0, true, false, FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), code + 2);
+    assert!(runner.pass_recorder.is_none());
+}
+
+#[test]
+fn virtual_idle_rejects_a_pass_that_changes_quickdraw_mirrors() {
+    for mutate_mirror in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let anchor = 0x0002_0000u32;
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.idle_cycle_sites[0].site = anchor;
+        runner.idle_cycle_sites[0].tick = 100;
+        runner.idle_cycle_sites[0].probes = IDLE_CYCLE_MAX_PROBES_PER_TICK + 1;
+        runner.note_virtual_anchor_arrival(anchor);
+        assert!(runner.pass_recorder.is_some());
+        runner.total_instructions += 1;
+        runner.tick_budget -= 1;
+        runner.pass_recorder.as_mut().unwrap().executed = 1;
+        if mutate_mirror {
+            runner.dispatcher.fg_color = (123, 456, 789);
+        }
+        runner.note_virtual_anchor_arrival(anchor);
+        assert_eq!(runner.virtual_idle_cycle.is_some(), !mutate_mirror);
+    }
 }
