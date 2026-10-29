@@ -1407,13 +1407,19 @@ fn service_browser_sound_work(
     *total_steps = total_steps.saturating_add(steps);
 }
 
-fn new_web_runner(screen_depth: Option<u16>, addressing_24_bit: bool, screen_size: Option<(u16, u16)>) -> FixtureRunner {
+fn new_web_runner(
+    screen_depth: Option<u16>,
+    addressing_24_bit: bool,
+    screen_size: Option<(u16, u16)>,
+) -> FixtureRunner {
     let mut runner = if screen_size.is_some() {
         game::new_runner_with_display(!addressing_24_bit, screen_depth.unwrap_or(8), screen_size)
-    } else { match screen_depth {
-        Some(depth) => game::new_runner_with_configuration(!addressing_24_bit, depth),
-        None => game::new_runner_with_addressing(!addressing_24_bit),
-    }};
+    } else {
+        match screen_depth {
+            Some(depth) => game::new_runner_with_configuration(!addressing_24_bit, depth),
+            None => game::new_runner_with_addressing(!addressing_24_bit),
+        }
+    };
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner
 }
@@ -1944,8 +1950,14 @@ mod tests {
             new_web_runner(None, false, None).ui_theme_id(),
             UiThemeId::ClassicSystem7
         );
-        assert_eq!(new_web_runner(None, false, None).configured_screen_depth(), 8);
-        assert_eq!(new_web_runner(Some(4), false, None).configured_screen_depth(), 4);
+        assert_eq!(
+            new_web_runner(None, false, None).configured_screen_depth(),
+            8
+        );
+        assert_eq!(
+            new_web_runner(Some(4), false, None).configured_screen_depth(),
+            4
+        );
     }
 
     #[test]

@@ -320,7 +320,9 @@ pub fn entry(e: &Entry) -> Result<()> {
         "screen_depth must be 1, 2, 4, or 8 bits"
     );
     ensure!(
-        e.runtime.screen_size.is_none_or(|(w, h)| w > 0 && h > 0 && w <= 800 && h <= 600),
+        e.runtime
+            .screen_size
+            .is_none_or(|(w, h)| w > 0 && h > 0 && w <= 800 && h <= 600),
         "screen_size must fit within 800 by 600"
     );
     ensure!(
