@@ -673,6 +673,8 @@ fn load_pef_application_with_optional_disk_fragment(
         crate::memory::globals::DEFAULT_DEFLT_STACK_SIZE,
     );
     let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_STACK_BASE, stack_base);
+    // Mac OS 9 reports a positive FSFCBLen of 4 when HFS is available.
+    let _ = memory.write_u16_be(crate::memory::globals::addr::FS_FCB_LEN, 4);
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
