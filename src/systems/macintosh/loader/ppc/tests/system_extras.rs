@@ -261,10 +261,12 @@ fn cursor_device_records_hold_settings_and_move_the_mouse_globals() {
 
     loaded.set_input_snapshot(PpcInputSnapshot {
         key_map: [0; 16],
-        mouse_button: false,
+        mouse_button: true,
         mouse_v: 100,
         mouse_h: 200,
     });
+    loaded.input_sprocket.device_mouse_h = Some(190);
+    loaded.input_sprocket.device_mouse_v = Some(95);
     loaded.cpu.gpr[3] = device;
     loaded.cpu.gpr[4] = (-20i32) as u32;
     loaded.cpu.gpr[5] = 5;
@@ -275,6 +277,38 @@ fn cursor_device_records_hold_settings_and_move_the_mouse_globals() {
     for global in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
         assert_eq!(loaded.memory.read_u32_be(global), Some((105 << 16) | 180));
     }
+
+    loaded.cpu.gpr[3] = device;
+    run_test_import(
+        &mut loaded,
+        system(PpcSystemCompatibilityOperation::CursorDeviceFlush),
+    );
+    assert_eq!(loaded.current_input_snapshot().mouse_v, 105);
+    assert_eq!(loaded.current_input_snapshot().mouse_h, 180);
+    assert!(loaded.current_input_snapshot().mouse_button);
+    assert_eq!(loaded.input_sprocket.device_mouse_h, Some(180));
+    assert_eq!(loaded.input_sprocket.device_mouse_v, Some(105));
+    let input = loaded.current_input_snapshot();
+    assert_eq!(
+        ppc_isp_device_element_next_event(
+            PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut loaded.input_sprocket,
+        ),
+        Some(10 << 16)
+    );
+    assert_eq!(
+        ppc_isp_device_element_next_event(
+            PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut loaded.input_sprocket,
+        ),
+        None
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(addr::MOUSE_LOC2),
+        Some((105 << 16) | 180)
+    );
 
     loaded.cpu.gpr[3] = device;
     run_test_import(

@@ -3001,6 +3001,10 @@ impl std::fmt::Debug for SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
     fn with_ref<R>(&self, operation: impl FnOnce(&ProcessInputState) -> R) -> R {
         self.0.with_ref(operation)
     }

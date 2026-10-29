@@ -231,8 +231,9 @@ impl PpcLoadedApp {
                 binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewEndRendering
             })
             .map(|binding| binding.symbol_index);
-        let input = self.current_input_snapshot();
+        let mut input = self.current_input_snapshot();
         self.mirror_input_low_memory(input);
+        let process_input = self.process_input.shared_handle();
         let event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
         let _ = self.current_tick();
@@ -2051,6 +2052,36 @@ impl PpcLoadedApp {
                     action
                 };
 
+                if binding.dispatcher_target
+                    == PpcImportDispatcherTarget::SystemCompatibility(
+                        PpcSystemCompatibilityOperation::CursorDeviceMove,
+                    )
+                    && action.is_some()
+                {
+                    if let Some(point) =
+                        memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2)
+                    {
+                        let (v, h) = ((point >> 16) as i16, point as i16);
+                        // A programmatic warp is not physical mouse movement.
+                        // Carry unread motion separately while rebasing the
+                        // anchors, including at the 16-bit coordinate limits.
+                        if let Some(anchor) = input_sprocket.device_mouse_v.as_mut() {
+                            input_sprocket.device_mouse_v_carry = input_sprocket
+                                .device_mouse_v_carry
+                                .wrapping_add(i32::from(*anchor) - i32::from(input.mouse_v));
+                            *anchor = v;
+                        }
+                        if let Some(anchor) = input_sprocket.device_mouse_h.as_mut() {
+                            input_sprocket.device_mouse_h_carry = input_sprocket
+                                .device_mouse_h_carry
+                                .wrapping_add(i32::from(input.mouse_h) - i32::from(*anchor));
+                            *anchor = h;
+                        }
+                        input.mouse_v = v;
+                        input.mouse_h = h;
+                        process_input.set_mouse_position((input.mouse_v, input.mouse_h));
+                    }
+                }
                 ppc_sync_process_window_list(memory, &window_list);
 
                 // MemError is process Memory Manager state even when a
