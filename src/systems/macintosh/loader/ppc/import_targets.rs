@@ -4173,6 +4173,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetROM85") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetRom85)
         }
+        ("InterfaceLib", "LMGetDoubleTime") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetDoubleTime)
+        }
+        ("InterfaceLib", "LMGetFSFCBLen") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetFsFcbLen)
+        }
+        ("InterfaceLib", "LMGetGZMoveHnd") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetGzMoveHnd)
+        }
+        ("InterfaceLib", "LMGetGZRootHnd") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetGzRootHnd)
+        }
+        ("InterfaceLib", "LMGetTheMenu") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetTheMenu)
+        }
         ("InterfaceLib", "LMSetCursorNew") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetCursorNew)
         }

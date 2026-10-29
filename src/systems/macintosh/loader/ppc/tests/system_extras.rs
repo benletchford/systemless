@@ -352,6 +352,42 @@ fn replace_gestalt_value_requires_an_existing_selector() {
 }
 
 #[test]
+fn imperialism_low_memory_getters_read_current_values() {
+    use crate::memory::globals::addr;
+    let mut loaded = loaded_with(b"LMGetFSFCBLen");
+    assert_eq!(loaded.memory.read_u16_be(addr::FS_FCB_LEN), Some(4));
+    for (symbol, address, value) in [
+        ("LMGetDoubleTime", addr::DOUBLE_TIME, 0xfedc_ba98),
+        ("LMGetGZMoveHnd", addr::GZ_MOVE_HND, 0x1234_5678),
+        ("LMGetGZRootHnd", addr::GZ_ROOT_HND, 0x8765_4321),
+    ] {
+        let target = dispatcher_target_for_import("InterfaceLib", symbol);
+        assert_ne!(target, PpcImportDispatcherTarget::Unsupported, "{symbol}");
+        assert_eq!(dispatcher_target_for_import("CarbonLib", symbol), target);
+        loaded.memory.write_u32_be(address, value).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], value, "{symbol}");
+        loaded.memory.write_u32_be(address, 0).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], 0, "{symbol}");
+    }
+    for (symbol, address) in [
+        ("LMGetFSFCBLen", addr::FS_FCB_LEN),
+        ("LMGetTheMenu", addr::THE_MENU),
+    ] {
+        let target = dispatcher_target_for_import("InterfaceLib", symbol);
+        assert_ne!(target, PpcImportDispatcherTarget::Unsupported, "{symbol}");
+        assert_eq!(dispatcher_target_for_import("CarbonLib", symbol), target);
+        loaded.memory.write_u16_be(address, 0x8001).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], 0xffff_8001, "{symbol}");
+        loaded.memory.write_u16_be(address, 0x1234).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], 0x1234, "{symbol}");
+    }
+}
+
+#[test]
 fn low_memory_driver_paging_and_printing_calls_report_the_runtime_state() {
     use crate::memory::globals::addr;
     let mut loaded = loaded_with(b"LMGetROM85");

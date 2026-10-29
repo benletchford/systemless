@@ -6,6 +6,11 @@ use super::*;
 pub enum PpcLowMemoryAccessor {
     /// LMGetROM85: the ROM85 word at $028E.
     GetRom85,
+    GetDoubleTime,
+    GetFsFcbLen,
+    GetGzMoveHnd,
+    GetGzRootHnd,
+    GetTheMenu,
     /// LMSetCursorNew: the CrsrNew byte at $08CE.
     SetCursorNew,
     /// LMSetMouseTemp: the MTemp Point at $0828.
@@ -43,6 +48,35 @@ pub(super) fn dispatch_low_memory_import(
                     return Some(
                         memory
                             .read_u16_be(addr::ROM85)
+                            .map_or(PpcImportAction::Halt, |value| {
+                                PpcImportAction::Return(ppc_i16_result(value as i16))
+                            }),
+                    );
+                }
+                PpcLowMemoryAccessor::GetDoubleTime
+                | PpcLowMemoryAccessor::GetGzMoveHnd
+                | PpcLowMemoryAccessor::GetGzRootHnd => {
+                    let address = match accessor {
+                        PpcLowMemoryAccessor::GetDoubleTime => addr::DOUBLE_TIME,
+                        PpcLowMemoryAccessor::GetGzMoveHnd => addr::GZ_MOVE_HND,
+                        PpcLowMemoryAccessor::GetGzRootHnd => addr::GZ_ROOT_HND,
+                        _ => unreachable!(),
+                    };
+                    return Some(
+                        memory
+                            .read_u32_be(address)
+                            .map_or(PpcImportAction::Halt, PpcImportAction::Return),
+                    );
+                }
+                PpcLowMemoryAccessor::GetFsFcbLen | PpcLowMemoryAccessor::GetTheMenu => {
+                    let address = if *accessor == PpcLowMemoryAccessor::GetFsFcbLen {
+                        addr::FS_FCB_LEN
+                    } else {
+                        addr::THE_MENU
+                    };
+                    return Some(
+                        memory
+                            .read_u16_be(address)
                             .map_or(PpcImportAction::Halt, |value| {
                                 PpcImportAction::Return(ppc_i16_result(value as i16))
                             }),
