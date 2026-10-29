@@ -7592,6 +7592,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("MathLib", "x80tod") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::X80ToD)
         }
+        ("MathLib", "x80told") => {
+            PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::X80ToLd)
+        }
         ("MathLib", "num2dec") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Num2Dec)
         }

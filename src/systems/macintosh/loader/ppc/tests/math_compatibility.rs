@@ -149,6 +149,7 @@ fn native_ppc_math_compatibility_maps_each_export_to_a_typed_operation() {
         ("num2dec", PpcMathCompatibilityOperation::Num2Dec),
         ("str2dec", PpcMathCompatibilityOperation::Str2Dec),
         ("x80tod", PpcMathCompatibilityOperation::X80ToD),
+        ("x80told", PpcMathCompatibilityOperation::X80ToLd),
     ] {
         assert_eq!(
             dispatcher_target_for_import("MathLib", symbol),
@@ -1093,6 +1094,40 @@ fn x80tod(sign_exponent: u16, significand: u64) -> u64 {
         PpcImportAction::ReturnPreserve,
     );
     cpu.fpr[1]
+}
+
+#[test]
+fn native_ppc_x80told_preserves_extended_precision() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x1000, vec![0; 32]);
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x1000;
+    cpu.gpr[4] = 0x1010;
+    for (sign_exponent, significand, head, tail) in [
+        (0x3fff, 0x8000_0000_0000_0001, 1.0f64, 2f64.powi(-63)),
+        (0xbfff, 0x8000_0000_0000_0001, -1.0, -2f64.powi(-63)),
+        (0x3fff, u64::MAX, 2.0, -2f64.powi(-63)),
+        (
+            0x3fff,
+            0x8000_0000_0000_0401,
+            1.0 + f64::EPSILON,
+            -2f64.powi(-53) + 2f64.powi(-63),
+        ),
+        (0x8000, 0, -0.0, 0.0),
+        (0x3bcd, 0x8000_0000_0000_0000, f64::from_bits(1), 0.0),
+        (0x3bcc, 0x8000_0000_0000_0000, 0.0, 0.0),
+        (0x43ff, 0x8000_0000_0000_0000, f64::INFINITY, 0.0),
+        (0x7fff, 0x8000_0000_0000_0000, f64::INFINITY, 0.0),
+    ] {
+        memory.write_u16_be(0x1000, sign_exponent).unwrap();
+        memory.write_u64_be(0x1002, significand).unwrap();
+        assert_eq!(
+            ppc_dispatch_math_compatibility(math_operation("x80told"), &mut cpu, &mut memory),
+            PpcImportAction::ReturnPreserve,
+        );
+        assert_eq!(memory.read_u64_be(0x1010), Some(head.to_bits()));
+        assert_eq!(memory.read_u64_be(0x1018), Some(tail.to_bits()));
+    }
 }
 
 #[test]

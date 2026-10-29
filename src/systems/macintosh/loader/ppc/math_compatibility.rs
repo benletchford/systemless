@@ -359,6 +359,7 @@ pub enum PpcMathCompatibilityOperation {
     Num2Dec,
     Str2Dec,
     X80ToD,
+    X80ToLd,
 }
 
 pub(super) fn ppc_dispatch_math_compatibility(
@@ -422,6 +423,49 @@ pub(super) fn ppc_dispatch_math_compatibility(
                         (u16::from(extended.sign) << 15) | extended.exponent,
                     );
                     let _ = memory.write_u64_be(destination + 2, extended.significand);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcMathCompatibilityOperation::X80ToLd => {
+            // fp.h: x80told takes pointers to an extended80 and a PowerPC
+            // long double, which consists of a double head and a double tail.
+            let source = cpu.gpr[3];
+            let destination = cpu.gpr[4];
+            if ppc_memory_can_read_bytes(memory, source, 10)
+                && ppc_memory_can_write_bytes(memory, destination, 16)
+            {
+                if let (Some(sign_exponent), Some(significand)) =
+                    (memory.read_u16_be(source), memory.read_u64_be(source + 2))
+                {
+                    let head = ppc_x80_to_f64_bits(sign_exponent, significand);
+                    let head_value = f64::from_bits(head);
+                    let tail = if head_value.is_normal() && significand != 0 {
+                        let shift = significand.leading_zeros();
+                        let source_exponent =
+                            i32::from((sign_exponent & 0x7fff).max(1)) - shift as i32;
+                        let normalized = significand << shift;
+                        let rounded = Extended80::from(head_value.abs());
+                        let head_shift = (i32::from(rounded.exponent) - source_exponent) as u32;
+                        let difference = i128::from(normalized)
+                            - (i128::from(rounded.significand) << head_shift);
+                        if difference == 0 {
+                            0
+                        } else {
+                            let magnitude = difference.unsigned_abs() as u64;
+                            let normalize = magnitude.leading_zeros();
+                            let exponent = source_exponent - normalize as i32;
+                            let sign = (sign_exponent & 0x8000 != 0) ^ (difference < 0);
+                            ppc_x80_to_f64_bits(
+                                (u16::from(sign) << 15) | exponent as u16,
+                                magnitude << normalize,
+                            )
+                        }
+                    } else {
+                        0
+                    };
+                    let _ = memory.write_u64_be(destination, head);
+                    let _ = memory.write_u64_be(destination + 8, tail);
                 }
             }
             PpcImportAction::ReturnPreserve
