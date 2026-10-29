@@ -6208,6 +6208,27 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEDisposeDesc") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::DisposeDesc,
         ),
+        ("InterfaceLib", "AEGetAttributeDesc") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::GetAttributeDesc,
+            )
+        }
+        ("InterfaceLib", "AEPutAttributeDesc") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutAttributeDesc,
+            )
+        }
+        ("InterfaceLib", "AEPutAttributePtr") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutAttributePtr,
+            )
+        }
+        ("InterfaceLib", "AEDeleteParam") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DeleteParam,
+        ),
+        ("InterfaceLib", "AEPutPtr") => PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::PutPtr,
+        ),
         ("InterfaceLib", "AEGetAttributePtr") => {
             PpcImportDispatcherTarget::AppleEventCompatibility(
                 PpcAppleEventCompatibilityOperation::GetAttributePtr,
