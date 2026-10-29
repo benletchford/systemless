@@ -19,8 +19,8 @@ compatibility:
     architecture: ppc
     environment: >-
       The unchanged MacBinary installer was parsed with the packed VISE catalog
-      decoder. Its installed game executable is PPC-only, but the large pak0.pk3 payload
-      still fails VISE decompression. Gameplay and browser launch have not been verified.
+      decoder. Its installed game executable is PPC-only, but at this revision the large
+      pak0.pk3 payload failed VISE decompression. Gameplay and browser launch were not verified.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/3196
 artifacts:
@@ -49,14 +49,19 @@ artifacts:
       b30063f6e1c3c715f2e6d3e9cdefb3942f0c573fcc33a1a66a20dbe9326be831. Its installer wrapper uses 68K code; the
       installed MacQuake3 game has a PowerPC PEF data fork and pwpc cfrg resource with
       no 68K CODE resources. The official release archive identifies this as the
-      December 15, 1999 Macintosh demo version 1.11.
+      December 15, 1999 Macintosh demo version 1.11. On 2026-10-29, a standalone
+      diagnostic using VISE decoder revision 954a38342cf4cee663310d668a582468e67bad1a
+      extracted the 46,853,694-byte pak0.pk3; all 1,387 ZIP entries passed CRC checks.
+      This archive check did not run the game. See issue #3589, comment
+      6495330868, for evidence.
 references:
 - https://github.com/Jason2Brownlee/Quake3OfficialArchive
 - https://github.com/benletchford/systemless/issues/3196
+- https://github.com/benletchford/systemless/issues/3589
 ---
 
 ## The original Mac demo
 
 This unchanged demo installer includes the PPC-only game and its original
-agreement. Browser launch is disabled until Systemless can unpack the game data
-and gameplay has been verified.
+agreement. Browser launch is disabled while visible startup and gameplay are
+being investigated.
