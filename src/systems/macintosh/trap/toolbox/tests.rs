@@ -2477,7 +2477,9 @@ fn infoscrap_reports_in_memory_scrapstate_and_entry_size() {
     assert_eq!(bus.get_alloc_size(scrap_ptr), Some(12));
     assert_eq!(bus.read_word(scrap_info + 8), 1); // scrapCount after first ZeroScrap
     assert_eq!(bus.read_word(scrap_info + 10), 1); // positive = in memory (IM:I I-457)
-    assert_eq!(bus.read_long(scrap_info + 12), 0); // scrapName = NIL in HLE
+    let scrap_name = bus.read_long(scrap_info + 12);
+    assert_ne!(scrap_name, 0);
+    assert!(!bus.read_pstring(scrap_name).is_empty());
 }
 
 // Inside Macintosh Volume I, I-457: ScrapHandle is a handle to the desk
@@ -2564,6 +2566,23 @@ fn zeroscrap_clears_contents_and_changes_scrapcount() {
     let scrap_info_after = bus.read_long(sp);
     assert_eq!(bus.read_long(scrap_info_after), 0);
     assert_eq!(bus.read_word(scrap_info_after + 8), 2);
+}
+
+#[test]
+fn unloaded_scrap_reads_flavors_written_directly_to_its_file() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.dispatch_toolbox(true, 0x1FC, &mut cpu, &mut bus).unwrap().unwrap();
+    disp.dispatch_toolbox(true, 0x1FA, &mut cpu, &mut bus).unwrap().unwrap();
+    let (path, name_ptr) = disp.scrap.disk_file().unwrap();
+    assert!(!bus.read_pstring(name_ptr).is_empty());
+    disp.vfs.insert(path, b"PICT\0\0\0\x03abc".to_vec());
+    let offset_ptr = 0x300000;
+    bus.write_long(TEST_SP, offset_ptr);
+    bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"PICT"));
+    bus.write_long(TEST_SP + 8, 0);
+    disp.dispatch_toolbox(true, 0x1FD, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(bus.read_long(TEST_SP + 12), 3);
+    assert_eq!(bus.read_long(offset_ptr), 8);
 }
 
 // Inside Macintosh Volume I, I-459: GetScrap returns byte length on
@@ -12545,7 +12564,7 @@ fn standard_get_file_gui_empty_directory_uses_complete_classic_model() {
         .standard_file_get_tracking
         .as_ref()
         .expect("Open dialog should remain active");
-    let items = TrapDispatcher::standard_file_get_dialog_items(tracking);
+    let items = TrapDispatcher::standard_file_get_dialog_items(tracking, super::super::dispatch::BOOT_VOLUME_NAME);
     assert!(tracking.entries.is_empty());
     assert_eq!(
         tracking.bounds.2 - tracking.bounds.0,
@@ -12848,6 +12867,32 @@ fn standard_put_file_sets_replacing_for_existing_current_directory_file() {
 // Retained Standard File tracking re-enters on every frame. A pass that
 // consumes no event leaves an intact dialog as it is, and repaints it
 // when something drew over it or a key edited the name.
+#[test]
+fn standard_put_cancel_tracks_release_and_drag_out() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(800 * 600);
+    disp.set_screen_mode_for_test(base, 800, 800, 600, 8);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005);
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
+    let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+    let v = bounds.0 + super::STANDARD_FILE_CANCEL_RECT.0 + 4;
+    let h = bounds.1 + super::STANDARD_FILE_CANCEL_RECT.1 + 4;
+    let event = |what, v, h| QueuedEvent { what, message: 0, when: 0, where_v: v, where_h: h, modifiers: 0 };
+    disp.event_queue.push_back(event(1, v, h));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
+    assert!(disp.standard_file_put_tracking.as_ref().unwrap().active_button.is_some());
+    disp.event_queue.push_back(event(2, bounds.0 + 5, bounds.1 + 5));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
+    assert!(disp.standard_file_put_tracking.as_ref().unwrap().active_button.is_none());
+    disp.event_queue.push_back(event(1, v, h));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
+    disp.event_queue.push_back(event(2, v, h));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
+    assert!(!disp.is_standard_file_put_tracking());
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();
@@ -13166,6 +13211,20 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
     disp.event_queue.push_back(QueuedEvent {
         what: 1,
+        message: 0,
+        when: 0,
+        where_v: bounds.0
+            + (STANDARD_FILE_PUT_DESKTOP_RECT.0 + STANDARD_FILE_PUT_DESKTOP_RECT.2) / 2,
+        where_h: bounds.1
+            + (STANDARD_FILE_PUT_DESKTOP_RECT.1 + STANDARD_FILE_PUT_DESKTOP_RECT.3) / 2,
+        modifiers: 0,
+    });
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().current_dir_id, locked_dir);
+    disp.event_queue.push_back(QueuedEvent {
+        what: 2,
         message: 0,
         when: 0,
         where_v: bounds.0

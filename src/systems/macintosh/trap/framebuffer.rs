@@ -3385,6 +3385,8 @@ impl super::TrapDispatcher {
         if menu_bar_height <= 0 {
             return;
         }
+        let standard_file_active = self.standard_file_get_tracking.is_some()
+            || self.standard_file_put_tracking.is_some();
         let cache_key = (pixel_size == 8).then(|| MenuBarCacheKey {
             screen: self.get_screen_params(),
             height: menu_bar_height,
@@ -3397,10 +3399,10 @@ impl super::TrapDispatcher {
                 .filter_map(|(i, region)| {
                     self.menus
                         .get(i)
-                        .map(|menu| (menu.id, menu.title.clone(), menu.enabled, region))
+                        .map(|menu| (menu.id, menu.title.clone(), menu.enabled && !standard_file_active, region))
                 })
                 .collect(),
-            highlighted: self.current_menu_bar_highlight_index(bus),
+            highlighted: if standard_file_active { None } else { self.current_menu_bar_highlight_index(bus) },
             outline_scale: bus.outline_presentation_scale(),
         });
         // A palette change alone need not invalidate the cached bar: replay
@@ -3582,7 +3584,7 @@ impl super::TrapDispatcher {
                 region.left,
                 menu_bar_height - 1,
                 region.right,
-                menu.enabled,
+                menu.enabled && !standard_file_active,
                 false,
             );
             let title_index = Self::menu_title_pixel_index(bus, menu.id, pixel_size);
@@ -3593,7 +3595,8 @@ impl super::TrapDispatcher {
             // p. V-142) and draws solid grey glyphs; a device with no
             // intermediate shade gets the title drawn and then knocked back
             // with the 50% grey pattern.
-            let dim_title = self.ui_theme_id() == UiThemeId::ClassicSystem7 && !menu.enabled;
+            let dim_title = self.ui_theme_id() == UiThemeId::ClassicSystem7
+                && (!menu.enabled || standard_file_active);
             let dim_index = if dim_title {
                 Self::menu_dim_pixel_index(bus, pixel_size, title_index, title_bg_index)
             } else {
@@ -3664,8 +3667,10 @@ impl super::TrapDispatcher {
             }
         }
 
-        if let Some(menu_idx) = self.current_menu_bar_highlight_index(bus) {
-            self.highlight_menu_title(bus, menu_idx);
+        if !standard_file_active {
+            if let Some(menu_idx) = self.current_menu_bar_highlight_index(bus) {
+                self.highlight_menu_title(bus, menu_idx);
+            }
         }
 
         let color_queries = recording.and_then(ColorQueryRecording::finish);
@@ -6137,6 +6142,13 @@ impl super::TrapDispatcher {
 
     fn redraw_chrome_inner(&mut self, bus: &mut MacMemoryBus) {
 
+        // Standard File is a retained host overlay, not a WindowList entry.
+        // Preserve it while the underlying window's content and frame are
+        // recomposited, then put it back above those windows.
+        let file_overlays: Vec<_> = self.active_host_overlay_rects()
+            .map(|bounds| (bounds, self.save_dialog_pixels(bus, bounds)))
+            .collect();
+
         // Blit front window's port pixels to screen framebuffer if they differ.
         // On real Mac OS the Window Manager composites windows to the screen.
         // In HLE, games draw to the window's GrafPort which may have a different
@@ -6337,6 +6349,15 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if let Some(button) = tracking.active_button.as_ref().filter(|button| button.highlighted) {
+                    let (top, left, _, _) = tracking.bounds;
+                    let (it, il, ib, ir) = button.rect;
+                    self.draw_dialog_button_highlight_state(
+                        bus, (top + it, left + il, top + ib, left + ir),
+                        &button.title, button.is_default, button.highlighted,
+                    );
+                }
+
                 if let Some(ref popup) = tracking.active_popup {
                     self.draw_menu_dropdown(bus, popup.active_menu, popup.dropdown_rect);
                 }
@@ -6344,6 +6365,10 @@ impl super::TrapDispatcher {
         } else {
             self.restore_visible_dialog_snapshots(bus);
             self.redraw_retained_modal_dialog_click(bus);
+        }
+
+        for (bounds, pixels) in file_overlays {
+            self.restore_dialog_pixels(bus, bounds, &pixels);
         }
 
         // TrackControl popup menus are live overlays, just like ModalDialog's
@@ -8891,6 +8916,7 @@ mod redraw_chrome_tests {
             selected: 0,
             bounds: get_bounds,
             saved_pixels: SavedPixels::default(),
+            active_button: None,
         });
         bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
         let get_probe = screen_base + 50 * row_bytes;
@@ -8929,6 +8955,7 @@ mod redraw_chrome_tests {
             sel_end: 0,
             bounds: put_bounds,
             saved_pixels: SavedPixels::default(),
+            active_button: None,
         });
         bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
         let put_probe = screen_base + 200 * row_bytes + 8;

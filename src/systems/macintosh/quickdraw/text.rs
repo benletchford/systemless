@@ -155,6 +155,10 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         return None;
     }
 
+    if ch == '\u{7f}' {
+        return get_macroman_glyph(font_id, size, 0x7f);
+    }
+
     // Mac Roman extended characters (0x80-0xFF). The raw byte was cast
     // to char so char code == Mac Roman code for this range.
     let mac_code = ch as u32;

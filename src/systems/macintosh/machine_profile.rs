@@ -170,6 +170,11 @@ impl MachineProfile {
     /// the same way as [`Self::screen_row_bytes`].
     pub const fn screen_row_bytes_at_depth(self, depth: u16) -> u32 {
         let bytes = (self.screen_width as u32 * depth as u32).div_ceil(8);
+        // Compact Macintosh software can address the 512×342 bitmap
+        // directly using its fixed 64-byte stride.
+        if self.screen_width == 512 && self.screen_height == 342 && depth == 1 {
+            return 64;
+        }
         (bytes / 16 + 1) * 16
     }
 }
@@ -259,6 +264,16 @@ fn resolve_reference_machine_profile() -> MachineProfile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compact_monochrome_screen_has_classic_stride() {
+        let profile = super::MachineProfile {
+            screen_width: 512,
+            screen_height: 342,
+            ..super::REFERENCE_MACHINE_PROFILE
+        };
+        assert_eq!(profile.screen_row_bytes_at_depth(1), 64);
+        assert_eq!(profile.screen_row_bytes_at_depth(8), 528);
+    }
     use super::*;
 
     #[test]

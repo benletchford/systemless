@@ -323,6 +323,19 @@ pub(crate) struct IdleCycleHostSnapshot {
     /// queues a command or executes it. Playback ends only in frame-boundary
     /// audio servicing, so a parked cycle must not resume across a change.
     pub(crate) sound_channels_busy: Vec<(u32, bool)>,
+    /// PBGetVInfo reads these host-side volume and working-directory records.
+    pub(crate) volumes: Vec<crate::process_context::ProcessVfsVolumeRecord>,
+    pub(crate) working_directories: std::collections::HashMap<i16, crate::process_context::ProcessWorkingDirectory>,
+    pub(crate) app_wd_refnum: i16,
+    pub(crate) current_port: u32,
+    pub(crate) current_gdevice: u32,
+    pub(crate) main_gdevice_handle: u32,
+    pub(crate) screen_mode: (u32, u32, u16, u16, u16),
+    pub(crate) draw_state: crate::trap::dispatch::PortDrawState,
+    pub(crate) port_draw_states: crate::fast_hash::FastHashMap<u32, crate::trap::dispatch::PortDrawState>,
+    pub(crate) qddone_seen_ports: crate::fast_hash::FastHashSet<u32>,
+    pub(crate) gworld_devices: crate::fast_hash::FastHashMap<u32, u32>,
+    pub(crate) disposed_gworld_portbits: crate::fast_hash::FastHashMap<u32, crate::trap::dispatch::CachedCopyBitmapInfo>,
 }
 
 impl IdleCycleHostSnapshot {
@@ -338,6 +351,18 @@ impl IdleCycleHostSnapshot {
             window_list: dispatcher.window_list.to_vec(),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
             sound_channels_busy: dispatcher.sound_channels_busy(),
+            volumes: dispatcher.vfs_volumes.to_vec(),
+            working_directories: (*dispatcher.working_directories).clone(),
+            app_wd_refnum: *dispatcher.app_wd_refnum,
+            current_port: *dispatcher.current_port,
+            current_gdevice: *dispatcher.current_gdevice,
+            main_gdevice_handle: dispatcher.main_gdevice_handle,
+            screen_mode: dispatcher.screen_mode,
+            draw_state: dispatcher.current_draw_state(),
+            port_draw_states: dispatcher.port_draw_states.clone(),
+            qddone_seen_ports: dispatcher.qddone_seen_ports.clone(),
+            gworld_devices: dispatcher.gworld_devices.clone(),
+            disposed_gworld_portbits: dispatcher.disposed_gworld_portbits.clone(),
         }
     }
 }

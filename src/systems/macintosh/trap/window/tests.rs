@@ -1605,6 +1605,24 @@ fn new_window_behind_nil_places_new_window_at_back() {
     );
 }
 
+#[test]
+fn first_visible_window_behind_nil_is_activated() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let bounds = 0x300000;
+    for (offset, value) in [(0, 40), (2, 0), (4, 200), (6, 300)] {
+        bus.write_word(bounds + offset, value);
+    }
+    let sp = TEST_SP - 26;
+    cpu.write_reg(Register::A7, sp);
+    for i in 0..30 { bus.write_byte(sp + i, 0); }
+    bus.write_long(sp + 18, bounds);
+    bus.write_byte(sp + 12, 1);
+    dispatch(&mut disp, 0x113, &mut cpu, &mut bus).unwrap().unwrap();
+    let window = bus.read_long(cpu.read_reg(Register::A7));
+    assert_eq!(disp.front_window, window);
+    assert_ne!(bus.read_byte(window + 111), 0);
+}
+
 // NewWindow / NewCWindow / GetNewWindow / GetNewCWindow must honor
 // the Pascal `wStorage` parameter per IM:I I-299: "If wStorage is
 // NIL, NewWindow allocates the necessary storage itself; otherwise

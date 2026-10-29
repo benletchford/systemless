@@ -352,6 +352,8 @@ impl Machine {
         launch_modifiers: &[LaunchModifier],
         show_menu_bar: bool,
         screen_depth: Option<u16>,
+        addressing_24_bit: bool,
+        screen_size: Option<(u16, u16)>,
         application_partition_size: Option<u32>,
         executable_path: Option<&str>,
         remove_paths: &[&str],
@@ -366,7 +368,10 @@ impl Machine {
         if screen_depth.is_some_and(|depth| !matches!(depth, 1 | 2 | 4 | 8)) {
             return Err("Unsupported screen depth; expected 1, 2, 4, or 8 bits".into());
         }
-        let mut runner = new_web_runner(screen_depth);
+        if screen_size.is_some_and(|(w, h)| w == 0 || h == 0 || w > 800 || h > 600) {
+            return Err("Unsupported screen size".into());
+        }
+        let mut runner = new_web_runner(screen_depth, addressing_24_bit, screen_size);
         runner.set_prefer_powerpc_executables(architecture == GameArchitecture::PowerPc);
         runner.set_app_start_time(current_mac_epoch_seconds());
         runner.set_application_partition_size(application_partition_size);
@@ -1402,8 +1407,13 @@ fn service_browser_sound_work(
     *total_steps = total_steps.saturating_add(steps);
 }
 
-fn new_web_runner(screen_depth: Option<u16>) -> FixtureRunner {
-    let mut runner = screen_depth.map_or_else(game::new_runner, game::new_runner_with_screen_depth);
+fn new_web_runner(screen_depth: Option<u16>, addressing_24_bit: bool, screen_size: Option<(u16, u16)>) -> FixtureRunner {
+    let mut runner = if screen_size.is_some() {
+        game::new_runner_with_display(!addressing_24_bit, screen_depth.unwrap_or(8), screen_size)
+    } else { match screen_depth {
+        Some(depth) => game::new_runner_with_configuration(!addressing_24_bit, depth),
+        None => game::new_runner_with_addressing(!addressing_24_bit),
+    }};
     runner.set_ui_theme(UiThemeId::ClassicSystem7);
     runner
 }
@@ -1931,11 +1941,11 @@ mod tests {
     #[test]
     fn web_runtime_uses_systemless_presentation_theme() {
         assert_eq!(
-            new_web_runner(None).ui_theme_id(),
+            new_web_runner(None, false, None).ui_theme_id(),
             UiThemeId::ClassicSystem7
         );
-        assert_eq!(new_web_runner(None).configured_screen_depth(), 8);
-        assert_eq!(new_web_runner(Some(4)).configured_screen_depth(), 4);
+        assert_eq!(new_web_runner(None, false, None).configured_screen_depth(), 8);
+        assert_eq!(new_web_runner(Some(4), false, None).configured_screen_depth(), 4);
     }
 
     #[test]

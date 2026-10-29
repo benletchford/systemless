@@ -24,6 +24,17 @@ pub(crate) struct PictureStreamFrame {
     ready: bool,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PictureWriteFrame {
+    caller_sp: u32,
+    caller_pc: u32,
+    callback: u32,
+    data: u32,
+    length: usize,
+    offset: usize,
+    return_gate: u32,
+}
+
 pub(super) enum PictureStreamInput {
     Resident,
     Deferred,
@@ -31,6 +42,57 @@ pub(super) enum PictureStreamInput {
 }
 
 impl TrapDispatcher {
+    /// Call putPicProc repeatedly when the picture exceeds a signed INTEGER.
+    pub(super) fn begin_picture_write<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus,
+        callback: u32, data: u32, length: usize,
+    ) -> bool {
+        let gate = bus.alloc(2);
+        if gate == 0 { return false; }
+        bus.write_word(gate, 0xa8f4);
+        self.picture_write_stack.push(PictureWriteFrame {
+            caller_sp: cpu.read_reg(Register::A7), caller_pc: cpu.read_reg(Register::PC),
+            callback, data, length, offset: 0, return_gate: gate,
+        });
+        if self.advance_picture_write(cpu, bus) { true } else {
+            let frame = self.picture_write_stack.pop().unwrap();
+            bus.free(frame.return_gate);
+            false
+        }
+    }
+
+    fn advance_picture_write<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) -> bool {
+        let frame = self.picture_write_stack.last_mut().unwrap();
+        let count = (frame.length - frame.offset).min(MAX_READ);
+        let Some(sp) = frame.caller_sp.checked_sub(10) else { return false; };
+        if !bus.is_guest_address_writable(sp, 10)
+            || !self.guest_calls.begin_m68k_with_operation(
+                GuestCallTarget { isa: GuestIsa::M68k, entry: frame.callback, rtoc: 0 },
+                frame.return_gate, frame.caller_sp, None, None,
+            ) { return false; }
+        bus.write_long(sp, frame.return_gate);
+        bus.write_word(sp + 4, count as u16);
+        bus.write_long(sp + 6, frame.data + frame.offset as u32);
+        frame.offset += count;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, frame.callback);
+        true
+    }
+
+    pub(crate) fn resume_picture_write<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) -> Option<crate::Result<()>> {
+        let frame = self.picture_write_stack.last()?;
+        if cpu.read_reg(Register::PC) != frame.return_gate + 2 || cpu.read_reg(Register::A7) != frame.caller_sp {
+            return None;
+        }
+        if frame.offset < frame.length && self.advance_picture_write(cpu, bus) {
+            return Some(Ok(()));
+        }
+        let frame = self.picture_write_stack.pop().unwrap();
+        bus.free(frame.return_gate);
+        cpu.write_reg(Register::PC, frame.caller_pc);
+        Some(Ok(()))
+    }
+
     pub(super) fn prepare_picture_stream<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -210,6 +272,44 @@ mod tests {
     use super::*;
     use crate::cpu::{M68kCpu, StepResult};
     use crate::trap::test_helpers::{setup_with_port, TEST_SP};
+
+    #[test]
+    fn classic_put_picture_streams_multiple_chunks_through_guest_callback() {
+        let (mut dispatcher, _, mut bus) = setup_with_port();
+        let mut cpu = M68kCpu::new();
+        let caller_pc = 0x340002;
+        let cursor = 0x350100;
+        let callback = 0x360000;
+        let source = 0x250000;
+        let destination = 0x270000;
+        let bytes: Vec<u8> = (0..40_000).map(|i| (i % 251) as u8).collect();
+        bus.write_bytes(source, &bytes);
+        bus.write_long(cursor, destination);
+        let words = [
+            0x302f, 4, // move.w 4(sp),d0
+            0x226f, 6, // movea.l 6(sp),a1
+            0x2079, 0x0035, 0x0100, // movea.l cursor,a0
+            0x5340, 0x10d9, 0x51c8, 0xfffc, // copy
+            0x23c8, 0x0035, 0x0100, // move.l a0,cursor
+            0x225f, 0x5c8f, 0x4ed1, // pop return and args, jump
+        ];
+        for (i, word) in words.into_iter().enumerate() { bus.write_word(callback + i as u32 * 2, word); }
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, caller_pc);
+        assert!(dispatcher.begin_picture_write(&mut cpu, &mut bus, callback, source, bytes.len()));
+        for _ in 0..1_000_000 {
+            if cpu.read_reg(Register::PC) == caller_pc && dispatcher.picture_write_stack.is_empty() { break; }
+            match cpu.step(&mut bus) {
+                StepResult::Ok => {}
+                StepResult::Aline(opcode) => dispatcher.dispatch(opcode, &mut cpu, &mut bus).unwrap(),
+                _ => panic!("unexpected callback CPU result"),
+            }
+        }
+        assert_eq!(cpu.read_reg(Register::PC), caller_pc);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_bytes(destination, bytes.len()), bytes);
+        assert_eq!(dispatcher.guest_calls.depth(), 0);
+    }
 
     #[test]
     fn classic_drawpicture_streams_native_getpicproc_and_preserves_header() {

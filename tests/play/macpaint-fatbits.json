@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 350,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 130
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "screenshot",
+      "name": "menu"
+    },
+    {
+      "type": "mouse_move",
+      "v": 42,
+      "h": 130
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 42,
+      "h": 130
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "name": "fatbits"
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "screenshot",
+      "name": "zoom"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 140,
+      "y": 90,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 400,
+      "y": 200,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}

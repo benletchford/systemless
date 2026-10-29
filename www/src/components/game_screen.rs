@@ -363,6 +363,8 @@ fn GameRuntime(
         let launch_modifiers = game.settings.launch_modifiers;
         let show_menu_bar = game.settings.show_menu_bar;
         let screen_depth = game.settings.screen_depth;
+        let addressing_24_bit = game.settings.addressing_24_bit;
+        let screen_size = game.settings.screen_size;
         let application_partition_size = game.settings.application_partition_size;
         let executable_path = game.settings.executable_path;
         let remove_paths = game.settings.remove_paths;
@@ -537,6 +539,8 @@ fn GameRuntime(
                 launch_modifiers,
                 show_menu_bar,
                 screen_depth,
+                addressing_24_bit,
+                screen_size,
                 application_partition_size,
                 executable_path,
                 remove_paths,
@@ -2549,6 +2553,8 @@ async fn boot_catalogue_worker(
         "launch_modifiers": game.settings.launch_modifiers,
         "show_menu_bar": game.settings.show_menu_bar,
         "screen_depth": game.settings.screen_depth,
+        "addressing_24_bit": game.settings.addressing_24_bit,
+        "screen_size": game.settings.screen_size,
         "application_partition_size": game.settings.application_partition_size,
         "executable_path": game.settings.executable_path,
         "remove_paths": game.settings.remove_paths,

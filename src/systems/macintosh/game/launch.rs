@@ -77,10 +77,16 @@ pub fn new_runner_with_screen_depth(screen_depth: u16) -> FixtureRunner {
 /// Create a standard runner with explicit addressing and one indexed display
 /// depth applied to both 68K and native PowerPC launches.
 pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16) -> FixtureRunner {
+    new_runner_with_display(addressing_32_bit, screen_depth, None)
+}
+
+/// Create a runner with explicit addressing, depth and initial screen size.
+pub fn new_runner_with_display(addressing_32_bit: bool, screen_depth: u16, screen_size: Option<(u16, u16)>) -> FixtureRunner {
     let config = FixtureRunnerConfig {
         load_address: 0x10000,
         max_instructions: MAX_INSTRUCTIONS_PER_FRAME,
         addressing_32_bit,
+        screen_size,
         ..FixtureRunnerConfig::default()
     }
     .with_screen_depth(screen_depth)

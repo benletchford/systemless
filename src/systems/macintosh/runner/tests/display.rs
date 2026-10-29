@@ -1,4 +1,20 @@
 use super::*;
+
+#[test]
+fn compact_screen_configuration_sets_bitmap_and_stride() {
+    let runner = FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig {
+        addressing_32_bit: false,
+        screen_depth: 1,
+        screen_size: Some((512, 342)),
+        ..FixtureRunnerConfig::default()
+    });
+    let bus = runner.bus();
+    let bits = crate::memory::globals::addr::SCREEN_BITS;
+    assert_eq!(bus.read_word(bits + 4), 64);
+    assert_eq!(bus.read_word(bits + 10), 342);
+    assert_eq!(bus.read_word(bits + 12), 512);
+    assert_eq!(runner.dispatcher.screen_mode.1, 64);
+}
 use crate::memory::globals::addr;
 use crate::trap::TrapDispatcher;
 

@@ -436,8 +436,8 @@ fn trace_dialog_rect_intersects(top: i16, left: i16, bottom: i16, right: i16) ->
 
 fn normalize_boolean_transfer_mode(mode: i16) -> i16 {
     match mode {
-        0..=3 => mode,
-        8..=11 => mode - 8,
+        0..=7 => mode,
+        8..=15 => mode - 8,
         _ => 0,
     }
 }
@@ -515,7 +515,9 @@ fn invert_indexed_pixel(old: u8) -> u8 {
 }
 
 fn apply_boolean_transfer_1(old: bool, mode: i16, source_is_black: bool) -> bool {
-    match normalize_boolean_transfer_mode(mode) {
+    let mode = normalize_boolean_transfer_mode(mode);
+    let source_is_black = source_is_black ^ (mode & 4 != 0);
+    match mode & 3 {
         0 => source_is_black,
         1 => old || source_is_black,
         2 => old ^ source_is_black,
@@ -531,7 +533,9 @@ fn apply_boolean_transfer_8(
     fg_idx: u8,
     bg_idx: u8,
 ) -> u8 {
-    match normalize_boolean_transfer_mode(mode) {
+    let mode = normalize_boolean_transfer_mode(mode);
+    let source_is_black = source_is_black ^ (mode & 4 != 0);
+    match mode & 3 {
         0 => {
             if source_is_black {
                 fg_idx
@@ -571,7 +575,9 @@ fn apply_boolean_transfer_32(
     fg_color: u32,
     bg_color: u32,
 ) -> u32 {
-    match normalize_boolean_transfer_mode(mode) {
+    let mode = normalize_boolean_transfer_mode(mode);
+    let source_is_black = source_is_black ^ (mode & 4 != 0);
+    match mode & 3 {
         0 => {
             if source_is_black {
                 fg_color
@@ -2865,6 +2871,25 @@ mod tests {
         assert_eq!(normalize_boolean_transfer_mode(3), 3);
         assert_eq!(normalize_boolean_transfer_mode(8), 0);
         assert_eq!(normalize_boolean_transfer_mode(11), 3);
+        assert_eq!(normalize_boolean_transfer_mode(15), 7);
+    }
+
+    #[test]
+    fn inverted_pattern_modes_invert_source_before_boolean_operation() {
+        for mode in 0..4 {
+            for old in [false, true] {
+                for source in [false, true] {
+                    assert_eq!(
+                        apply_boolean_transfer_1(old, mode + 12, source),
+                        apply_boolean_transfer_1(old, mode + 8, !source)
+                    );
+                    assert_eq!(
+                        apply_boolean_transfer_8(u8::from(old) * 77, mode + 12, source, 255, 0),
+                        apply_boolean_transfer_8(u8::from(old) * 77, mode + 8, !source, 255, 0)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 300,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 39,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 39,
+      "h": 28
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "name": "held"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 175,
+      "y": 115,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 210,
+      "y": 130,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "released"
+    }
+  ]
+}

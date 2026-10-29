@@ -2598,6 +2598,7 @@ pub(crate) struct ProcessScrapState {
     handle: Option<u32>,
     handle_dirty: bool,
     stuff_ptr: Option<u32>,
+    disk_file: Option<(String, u32)>,
 }
 
 /// Copied process Scrap Manager summary returned across an ABI boundary.
@@ -2625,10 +2626,11 @@ impl Default for ProcessScrapState {
             count: 0,
             initialized: false,
             in_memory: true,
-            clipboard_writable: false,
+            clipboard_writable: true,
             handle: None,
             handle_dirty: false,
             stuff_ptr: None,
+            disk_file: None,
         }
     }
 }
@@ -2739,9 +2741,9 @@ impl ProcessScrapState {
         self.clipboard_writable = writable;
     }
 
-    #[cfg(test)]
     fn replace_entries(&mut self, entries: Vec<([u8; 4], Vec<u8>)>) {
         self.entries = entries;
+        self.handle_dirty = true;
     }
 }
 
@@ -3836,6 +3838,14 @@ impl SharedProcessScrapState {
         self.with_mut(|scrap| scrap.ensure_stuff_ptr(allocate))
     }
 
+    pub(crate) fn disk_file(&self) -> Option<(String, u32)> {
+        self.with_ref(|scrap| scrap.disk_file.clone())
+    }
+
+    pub(crate) fn set_disk_file(&self, path: String, name_ptr: u32) {
+        self.with_mut(|scrap| scrap.disk_file = Some((path, name_ptr)));
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_clipboard_writable(&self, writable: bool) {
         self.with_mut(|scrap| scrap.set_clipboard_writable(writable));
@@ -3846,7 +3856,6 @@ impl SharedProcessScrapState {
         self.with_ref(|scrap| scrap.clipboard_writable)
     }
 
-    #[cfg(test)]
     pub(crate) fn replace_entries(&self, entries: Vec<([u8; 4], Vec<u8>)>) {
         self.with_mut(|scrap| scrap.replace_entries(entries));
     }
@@ -6699,6 +6708,50 @@ impl ProcessNativeMemoryManager {
         self.classic_allocator().heap_bump_ptr()
     }
 
+    /// Conservative contiguous space for a new handle and its master pointer.
+    /// Use the suffix beyond reserved ranges: the allocator can always bump
+    /// both blocks there even when its free lists are fragmented.
+    pub(crate) fn classic_new_handle_capacity(&self, stack_pointer: u32) -> u32 {
+        let state = self.classic_allocator().0.borrow();
+        let process_ceiling = self.classic_heap_ceiling();
+        // Keep space below the live 68K stack for nested guest calls. The
+        // classic allocator's synthetic ceiling can otherwise include it.
+        let stack_ceiling = stack_pointer.saturating_sub(64 * 1024) & !3;
+        let ceiling = if stack_pointer > state.heap_ptr {
+            process_ceiling.min(stack_ceiling)
+        } else {
+            process_ceiling
+        };
+        let start = state.reserved_heap_ranges.iter().fold(state.heap_ptr, |cursor, &(start, end)| {
+            if start < ceiling { cursor.max(end) } else { cursor }
+        });
+        let bump_capacity = ceiling.saturating_sub(start).saturating_sub(8) & !3;
+        let master_ceiling = if stack_pointer > state.heap_ptr {
+            process_ceiling.min(stack_pointer.saturating_sub(4096))
+        } else {
+            process_ceiling
+        };
+        let available_master = state.free_blocks.get(&4).is_some_and(|blocks| {
+            blocks.iter().any(|&address| address.saturating_add(4) < master_ceiling
+                && !SharedClassicHeapAllocator::range_overlaps_reserved(&state, address, 4))
+        }) || ceiling.saturating_sub(start) > 4;
+        let mut reusable = 0;
+        if available_master {
+            for (&size, blocks) in &state.free_blocks {
+                for &address in blocks {
+                    let candidate = size.min(ceiling.saturating_sub(address).saturating_sub(4)) & !3;
+                    if candidate > 4
+                        && SharedClassicHeapAllocator::can_reuse_bucket_for_request(size, candidate)
+                        && !SharedClassicHeapAllocator::range_overlaps_reserved(&state, address, size)
+                    {
+                        reusable = reusable.max(candidate);
+                    }
+                }
+            }
+        }
+        bump_capacity.max(reusable)
+    }
+
     pub(crate) fn reserve_classic_heap(&mut self, size: u32) {
         self.classic_allocator()
             .reserve_until(0x20_0000 + ((size + 3) & !3));
@@ -7052,6 +7105,8 @@ impl ProcessNativeMemoryManager {
             return;
         }
         let ptr = bus.read_long(handle);
+        // In 24-bit mode the master pointer's high byte holds handle flags.
+        let ptr = if bus.addressing_32_bit() { ptr } else { ptr & 0x00ff_ffff };
         if dispose_data {
             self.classic_allocator().free(ptr);
         }

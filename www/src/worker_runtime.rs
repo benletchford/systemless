@@ -12,6 +12,10 @@ struct BootConfig {
     launch_modifiers: Vec<LaunchModifier>,
     show_menu_bar: bool,
     screen_depth: Option<u16>,
+    #[serde(default)]
+    addressing_24_bit: bool,
+    #[serde(default)]
+    screen_size: Option<(u16, u16)>,
     application_partition_size: Option<u32>,
     #[serde(default)]
     executable_path: Option<String>,
@@ -130,6 +134,8 @@ impl WorkerMachine {
             &config.launch_modifiers,
             config.show_menu_bar,
             config.screen_depth,
+            config.addressing_24_bit,
+            config.screen_size,
             config.application_partition_size,
             config.executable_path.as_deref(),
             &paths,
