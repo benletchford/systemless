@@ -767,6 +767,20 @@ pub(super) fn dispatch_textedit_import(
             let offset = ppc_te_point_to_offset(memory, handles, cpu.gpr[4], v, h).unwrap_or(0);
             Some(PpcImportAction::Return(offset as u32))
         }
+        PpcImportDispatcherTarget::TENumStyles => {
+            let te_handle = cpu.gpr[5];
+            let text_len = ppc_te_text_bytes(memory, handles, te_handle)
+                .map(|text| text.len())
+                .unwrap_or(0);
+            let start = (cpu.gpr[3] as i32).max(0) as usize;
+            let end = (cpu.gpr[4] as i32).max(0) as usize;
+            let runs = ppc_te_style_runs(memory, handles, te_handle, text_len);
+            let changes = runs
+                .iter()
+                .filter(|run| run.start > start && run.start < end)
+                .count();
+            Some(PpcImportAction::Return(1 + changes as u32))
+        }
         PpcImportDispatcherTarget::TEGetStyleHandle => {
             // Inside Macintosh: Text (TEGetStyleHandle): a styled record
             // (txSize -1) keeps its TEStyleHandle in txFont/txFace; a

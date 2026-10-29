@@ -442,6 +442,7 @@ pub enum PpcImportDispatcherTarget {
     LCellSize,
     LRect,
     TEGetStyleHandle,
+    TENumStyles,
     TEReplaceStyle,
     DisposeIconSuite,
     QuickDrawShape(PpcQuickDrawShapeOperation),
@@ -4104,6 +4105,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LCellSize") => PpcImportDispatcherTarget::LCellSize,
         ("InterfaceLib", "LRect") => PpcImportDispatcherTarget::LRect,
         ("InterfaceLib", "TEGetStyleHandle") => PpcImportDispatcherTarget::TEGetStyleHandle,
+        ("InterfaceLib", "TENumStyles") => PpcImportDispatcherTarget::TENumStyles,
         ("InterfaceLib", "TEReplaceStyle") => PpcImportDispatcherTarget::TEReplaceStyle,
         ("InterfaceLib", "DisposeIconSuite") => PpcImportDispatcherTarget::DisposeIconSuite,
         ("InterfaceLib", "FillOval") => {

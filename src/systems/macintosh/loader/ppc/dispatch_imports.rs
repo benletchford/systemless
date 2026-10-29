@@ -1633,6 +1633,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TEScrapHandle
         | PpcImportDispatcherTarget::TEGetStyleScrapHandle
         | PpcImportDispatcherTarget::TEGetStyleHandle
+        | PpcImportDispatcherTarget::TENumStyles
         | PpcImportDispatcherTarget::TEReplaceStyle
         | PpcImportDispatcherTarget::TEScrapLength { .. } => {
             unreachable!("textedit imports return through dispatch_textedit_import")
