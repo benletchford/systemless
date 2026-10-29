@@ -975,6 +975,25 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 aliases,
             ))))
         }
+        PpcImportDispatcherTarget::NewAliasMinimal => {
+            let mut call = cpu.clone();
+            call.gpr[3] = 0;
+            call.gpr[4] = cpu.gpr[3];
+            call.gpr[5] = cpu.gpr[4];
+            let result = ppc_new_alias(
+                &mut call,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                aliases,
+            );
+            if result != PPC_NO_ERR && cpu.gpr[4] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[4], 0);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::NewAliasMinimalFromFullPath => {
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_new_alias_minimal_from_full_path(

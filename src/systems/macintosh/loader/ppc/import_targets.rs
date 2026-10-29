@@ -537,6 +537,7 @@ pub enum PpcImportDispatcherTarget {
     PBStatus,
     FindFolder,
     NewAlias,
+    NewAliasMinimal,
     NewAliasMinimalFromFullPath,
     UpdateAlias,
     ResolveAlias,
@@ -4025,6 +4026,7 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBStatusAsync") => PpcImportDispatcherTarget::PBStatus,
         ("InterfaceLib", "FindFolder") => PpcImportDispatcherTarget::FindFolder,
         ("InterfaceLib", "NewAlias") => PpcImportDispatcherTarget::NewAlias,
+        ("InterfaceLib", "NewAliasMinimal") => PpcImportDispatcherTarget::NewAliasMinimal,
         ("InterfaceLib", "NewAliasMinimalFromFullPath") => {
             PpcImportDispatcherTarget::NewAliasMinimalFromFullPath
         }
@@ -4378,6 +4380,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "CatMove") => {
             PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::CatMove)
+        }
+        ("InterfaceLib", "PBCatMoveSync") => {
+            PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::PbCatMove)
         }
         ("InterfaceLib", "FSpCatMove") => {
             PpcImportDispatcherTarget::FileManager(PpcFileManagerOperation::FSpCatMove)
