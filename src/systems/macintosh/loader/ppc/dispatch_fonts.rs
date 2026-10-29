@@ -73,6 +73,13 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::GetPreserveGlyph => {
             Some(PpcImportAction::Return(u32::from(toolbox_startup.preserve_glyph)))
         }
+        PpcImportDispatcherTarget::SetOutlinePreferred => {
+            toolbox_startup.outline_preferred = cpu.gpr[3] != 0;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetOutlinePreferred => Some(PpcImportAction::Return(u32::from(
+            toolbox_startup.outline_preferred,
+        ))),
         PpcImportDispatcherTarget::IsMetric => {
             // The active Roman numeric-format resource has metricSys = 0.
             // Inside Macintosh: Operating System Utilities (1994), 4-48.

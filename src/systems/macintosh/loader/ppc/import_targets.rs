@@ -877,6 +877,8 @@ pub enum PpcImportDispatcherTarget {
     FontToScript,
     SetPreserveGlyph,
     GetPreserveGlyph,
+    SetOutlinePreferred,
+    GetOutlinePreferred,
     IsMetric,
     VisibleLength,
     GetIntlResource,
@@ -4054,7 +4056,8 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ReturnError(-1)
         }
         // Font rendering is the same either way.
-        ("InterfaceLib", "SetOutlinePreferred") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "SetOutlinePreferred") => PpcImportDispatcherTarget::SetOutlinePreferred,
+        ("InterfaceLib", "GetOutlinePreferred") => PpcImportDispatcherTarget::GetOutlinePreferred,
         ("InterfaceLib" | "NavigationLib", "DisposeNavEventUPP") => {
             PpcImportDispatcherTarget::DisposeRoutineDescriptor
         }
