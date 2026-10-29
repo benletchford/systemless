@@ -1420,6 +1420,26 @@ impl super::TrapDispatcher {
         );
     }
 
+    /// Host-side inputs to SndChannelStatus, including callbacks for a
+    /// channel that has already been removed. Guest queue indices remain in
+    /// guest RAM and are covered by the idle journal.
+    pub(crate) fn sound_channel_status_snapshot(&self) -> Vec<(u32, bool, bool, bool)> {
+        let mut pointers: Vec<u32> = self.sound_manager.channels.iter().map(|c| c.guest_ptr).collect();
+        pointers.extend(self.sound_manager.pending_callbacks.iter().map(|c| c.chan_ptr));
+        pointers.extend(self.sound_manager.pending_sound_callbacks.iter().map(|c| match c {
+            sound::PendingSoundCallback::Command { chan_ptr, .. }
+            | sound::PendingSoundCallback::FileCompletion { chan_ptr, .. } => *chan_ptr,
+        }));
+        pointers.sort_unstable();
+        pointers.dedup();
+        pointers.into_iter().map(|ptr| (
+            ptr,
+            self.sound_manager.find_channel(ptr).is_some_and(|c| c.guest_visible()),
+            self.sound_channel_has_pending_work(ptr),
+            self.sound_manager.file_playback_paused(ptr).unwrap_or(false),
+        )).collect()
+    }
+
     /// Each channel's guest pointer and whether it is busy, which decides
     /// whether SndDoCommand queues a command or executes it.
     pub(crate) fn sound_channels_busy(&self) -> Vec<(u32, bool)> {

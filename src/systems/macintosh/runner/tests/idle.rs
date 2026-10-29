@@ -3579,8 +3579,8 @@ fn exact_idle_cycle_admits_real_dialog_and_bit_queries() {
 }
 
 #[test]
-fn patched_dialog_and_bit_queries_cancel_an_idle_probe() {
-    for opcode in [0xA858u16, 0xA97F] {
+fn patched_sound_dialog_and_bit_queries_cancel_an_idle_probe() {
+    for opcode in [0xA800u16, 0xA858, 0xA97F] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let code = 0x0002_0000u32;
         let handler = 0x0020_0000u32;
@@ -3733,4 +3733,93 @@ fn virtual_idle_rejects_a_pass_that_changes_quickdraw_mirrors() {
         runner.note_virtual_anchor_arrival(anchor);
         assert_eq!(runner.virtual_idle_cycle.is_some(), !mutate_mirror);
     }
+}
+
+#[test]
+fn sound_status_idle_snapshot_tracks_queued_work_and_callbacks() {
+    for selector in [0x0010_0008, 0x0510_0008] {
+        assert!(idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+    }
+    for selector in [0x0014_0008, 0x0510_0009, 0x0000_0008] {
+        assert!(!idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));
+    }
+    let runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+    let initial = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        sound.channels.push(crate::sound::SndChannel::new(0x1234, false));
+    });
+    let channel = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert_ne!(initial, channel);
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        assert!(sound.enqueue_command(0x1234, crate::sound::SndCommand { cmd: 1, param1: 0, param2: 0 }));
+    });
+    assert_ne!(channel, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    let queued = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        sound.pending_callbacks.push(PendingDoubleBackCallback {
+            callback_addr: 0, chan_ptr: 0x4321, header_ptr: 0, exhausted_buffer_index: 0,
+        });
+    });
+    assert_ne!(queued, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+}
+
+#[test]
+fn sound_status_poll_loop_parks_and_wakes_for_new_channel_work() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let channel = 0x0030_0000u32;
+    let status = 0x0030_1000u32;
+    // Poll the tick and the Sound Manager status repeatedly, as real guest
+    // code does. Both stack and status writes must settle to a fixed point.
+    let mut words = vec![
+        0x594F, 0xA975, 0x588F, // TickCount; discard result
+        0x554F, // reserve OSErr
+        0x2F3C, (channel >> 16) as u16, channel as u16,
+        0x3F3C, 24, // status length
+        0x4879, (status >> 16) as u16, status as u16,
+        0x203C, 0x0510, 0x0008, // SndChannelStatus selector
+        0xA800, 0x4A5F, // dispatch; discard OSErr
+        0x6000,
+    ];
+    let branch_offset = -((words.len() as i32 - 1) * 2 + 2);
+    words.push(branch_offset as i16 as u16);
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        sound.channels.push(crate::sound::SndChannel::new(channel, false));
+    });
+    let (_, running) = runner.run_steps_internal(
+        2_000, Some(100), 0, true, false, FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(runner.idle_cycle_sleep.is_some(), "the real status poll should park");
+    assert_eq!(runner.bus.read_byte(status + 12), 0);
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        assert!(sound.enqueue_command(channel, crate::sound::SndCommand { cmd: 1, param1: 0, param2: 0 }));
+    });
+    assert!(!runner.try_resume_proven_idle_cycle(Some(102)), "new sound work must wake the guest");
+    assert!(runner.idle_cycle_sleep.is_none());
+}
+
+#[test]
+fn sound_status_idle_snapshot_tracks_file_pause_while_channel_stays_busy() {
+    let runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+    let channel = 0x1234;
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        sound.play_file_buffer(channel, vec![0x90; 64], 22_050 << 16, None);
+    });
+    let playing = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert!(playing.sound_channels_busy.iter().any(|&(ptr, busy)| ptr == channel && busy));
+    runner.dispatcher.sound_manager.with_mut(|sound| {
+        assert_eq!(sound.toggle_file_paused(channel), Some(true));
+    });
+    let paused = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    assert_eq!(playing.sound_channels_busy, paused.sound_channels_busy);
+    assert_ne!(playing, paused, "the separately visible paused bit must revoke a proof");
 }

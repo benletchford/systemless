@@ -332,6 +332,8 @@ pub(crate) struct IdleCycleHostSnapshot {
     /// queues a command or executes it. Playback ends only in frame-boundary
     /// audio servicing, so a parked cycle must not resume across a change.
     pub(crate) sound_channels_busy: Vec<(u32, bool)>,
+    /// All host inputs to the admitted SndChannelStatus query.
+    pub(crate) sound_channel_status: Vec<(u32, bool, bool, bool)>,
     /// PBGetVInfo reads these host-side volume and working-directory records.
     pub(crate) volumes: Vec<crate::process_context::ProcessVfsVolumeRecord>,
     pub(crate) working_directories: std::collections::HashMap<i16, crate::process_context::ProcessWorkingDirectory>,
@@ -367,6 +369,7 @@ impl IdleCycleHostSnapshot {
             quickdraw_port_known: dispatcher.known_port(*dispatcher.current_port),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
             sound_channels_busy: dispatcher.sound_channels_busy(),
+            sound_channel_status: dispatcher.sound_channel_status_snapshot(),
             volumes: dispatcher.vfs_volumes.to_vec(),
             working_directories: (*dispatcher.working_directories).clone(),
             app_wd_refnum: *dispatcher.app_wd_refnum,

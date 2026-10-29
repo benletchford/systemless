@@ -1357,6 +1357,11 @@ fn idle_cycle_trap_is_journal_complete(
         // (`IdleCycleHostSnapshot` records channel activity for resumes). Any
         // accepted command changes channel state and cancels.
         (true, 0x0003) => sound_command_rejected,
+        // SndChannelStatus reads guest queue indices through the bus and
+        // host playback/queue/callback state from the idle host snapshot.
+        // Its status record and stack result are journaled. Other Sound
+        // Dispatch selectors may mutate the manager and remain excluded.
+        (true, 0x0000) => matches!(selector, 0x0010_0008 | 0x0510_0008),
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
         // These utilities read only guest memory or stack operands and write
@@ -6093,7 +6098,7 @@ impl FixtureRunner {
     /// traverses the menu adapter, which can retire a pending manager call.
     fn idle_query_has_unsafe_dispatch(&self, opcode: u16) -> bool {
         let trap = canonical_trap_number(opcode);
-        (matches!(trap, (true, 0x0058 | 0x017F))
+        (matches!(trap, (true, 0x0000 | 0x0058 | 0x017F))
             && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             || (trap == (true, 0x017F) && !self.dispatcher.guest_calls.is_empty())
     }
