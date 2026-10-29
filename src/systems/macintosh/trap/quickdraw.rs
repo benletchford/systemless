@@ -520,7 +520,42 @@ struct ScrollRows {
 }
 
 impl super::TrapDispatcher {
+    /// Install a basic QuickDraw bit pattern in a color port without changing
+    /// the caller-owned color PixPat that was previously installed there.
+    fn install_port_bit_pixpat(&mut self, bus: &mut MacMemoryBus, offset: u32, pattern: [u8; 8]) {
+        let port = *self.current_port;
+        if port == 0 || !self.port_allows_draw_state_memory_sync(bus, port)
+            || (bus.read_word(port + 6) & 0xC000) != 0xC000
+        {
+            return;
+        }
+        let old = bus.read_long(port + offset);
+        let handle = if self.owned_bit_pixpats.contains(&old)
+            && bus.get_alloc_size(old) == Some(4)
+            && bus.get_alloc_size(bus.read_long(old)).is_some_and(|size| size >= 28)
+        {
+            old
+        } else {
+            let record = bus.alloc(28);
+            let handle = bus.alloc(4);
+            if record == 0 || handle == 0 {
+                if record != 0 { bus.free(record); }
+                if handle != 0 { bus.free(handle); }
+                return;
+            }
+            for i in 0..28 { bus.write_byte(record + i, 0); }
+            bus.write_long(handle, record);
+            self.owned_bit_pixpats.insert(handle);
+            handle
+        };
+        let record = bus.read_long(handle);
+        bus.write_word(record, 0);
+        bus.write_bytes(record + 20, &pattern);
+        bus.write_long(port + offset, handle);
+    }
+
     fn dispose_color_compound_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) {
+        self.owned_bit_pixpats.remove(&handle);
         if bus.get_alloc_size(handle) != Some(4) {
             return;
         }
@@ -1445,6 +1480,7 @@ impl super::TrapDispatcher {
                         for pixpat_offset in [32u32, 58u32, 62u32] {
                             let pixpat_handle = bus.read_long(port_ptr + pixpat_offset);
                             if pixpat_handle != 0 {
+                                self.owned_bit_pixpats.remove(&pixpat_handle);
                                 let pixpat_ptr = bus.read_long(pixpat_handle);
                                 if pixpat_ptr != 0 {
                                     // Free patData (+6) and patXData (+10)
@@ -1702,6 +1738,7 @@ impl super::TrapDispatcher {
                     self.pn_pat[i] = bus.read_byte(pat_ptr + i as u32);
                 }
                 self.sync_current_port_draw_state(bus);
+                self.install_port_bit_pixpat(bus, 58, self.pn_pat);
                 Ok(())
             }
 
@@ -1715,6 +1752,7 @@ impl super::TrapDispatcher {
                 self.pn_mode = 8;
                 self.pn_pat = [0xFF; 8];
                 self.sync_current_port_draw_state(bus);
+                self.install_port_bit_pixpat(bus, 58, self.pn_pat);
                 Ok(())
             }
 
@@ -1769,6 +1807,7 @@ impl super::TrapDispatcher {
                     self.bk_pat[i] = bus.read_byte(pat_ptr + i as u32);
                 }
                 self.sync_current_port_draw_state(bus);
+                self.install_port_bit_pixpat(bus, 32, self.bk_pat);
                 Ok(())
             }
 
@@ -10486,6 +10525,8 @@ impl super::TrapDispatcher {
                     for i in 0..8 {
                         self.pn_pat[i] = bus.read_byte(state_ptr + 10 + i as u32);
                     }
+                    self.sync_current_port_draw_state(bus);
+                    self.install_port_bit_pixpat(bus, 58, self.pn_pat);
                 }
                 Ok(())
             }
@@ -12155,6 +12196,10 @@ impl super::TrapDispatcher {
                     let global_ptr = bus.read_long(a5);
                     let port_ptr = bus.read_long(global_ptr);
                     if port_ptr != 0 {
+                        let old = bus.read_long(port_ptr + 58);
+                        if old != ppat_handle && self.owned_bit_pixpats.contains(&old) {
+                            self.dispose_color_compound_handle(bus, old);
+                        }
                         bus.write_long(port_ptr + 58, ppat_handle);
                     }
                 }
@@ -12206,6 +12251,10 @@ impl super::TrapDispatcher {
                     let global_ptr = bus.read_long(a5);
                     let port_ptr = bus.read_long(global_ptr);
                     if port_ptr != 0 {
+                        let old = bus.read_long(port_ptr + 32);
+                        if old != ppat_handle && self.owned_bit_pixpats.contains(&old) {
+                            self.dispose_color_compound_handle(bus, old);
+                        }
                         bus.write_long(port_ptr + 32, ppat_handle);
                     }
                 }

@@ -10548,6 +10548,145 @@
     }
 
     #[test]
+    fn penpat_replaces_installed_color_pattern_for_paintrect() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0xffff, 0, 0]);
+        let pixpat = make_raw_color_pixpat_handle(&mut bus);
+        let original_pixpat = bus.read_long(pixpat);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus).unwrap().unwrap();
+
+        let pattern = bus.alloc(8);
+        for i in 0..8 { bus.write_byte(pattern + i, 0xff); }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pattern);
+        d.dispatch_quickdraw(true, 0x09D, &mut cpu, &mut bus).unwrap().unwrap();
+        let port = *d.current_port;
+        let installed = bus.read_long(port + 58);
+        assert_ne!(installed, pixpat, "PenPat must not overwrite the supplied PixPat");
+        let installed_record = bus.read_long(installed);
+        assert_eq!(bus.read_word(installed_record), 0);
+        for i in 0..8 { assert_eq!(bus.read_byte(installed_record + 20 + i), 0xff); }
+        assert_eq!(bus.read_word(original_pixpat), 1);
+
+        let rgb = bus.alloc(6);
+        bus.write_word(rgb, 0xffff);
+        bus.write_word(rgb + 2, 0);
+        bus.write_word(rgb + 4, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rgb);
+        d.dispatch_quickdraw(true, 0x214, &mut cpu, &mut bus).unwrap().unwrap();
+        let red_pixel = bus.read_long(port + 80) as u8;
+        assert_ne!(red_pixel, 0);
+
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 2, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        d.dispatch_quickdraw(true, 0x0A2, &mut cpu, &mut bus).unwrap().unwrap();
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, x, y), red_pixel);
+            }
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pattern);
+        d.dispatch_quickdraw(true, 0x09D, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.read_long(port + 58), installed, "repeated PenPat reuses its owned handle");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.read_long(port + 58), pixpat);
+        assert_eq!(bus.get_alloc_size(installed), None, "replaced owned pattern is released");
+        assert_eq!(bus.read_word(original_pixpat), 1);
+    }
+
+    #[test]
+    fn backpat_replaces_installed_color_pattern_for_eraserect() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let pixpat = make_raw_color_pixpat_handle(&mut bus);
+        let original_pixpat = bus.read_long(pixpat);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20B, &mut cpu, &mut bus).unwrap().unwrap();
+        let pattern = bus.alloc(8);
+        for i in 0..8 { bus.write_byte(pattern + i, 0); }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pattern);
+        d.dispatch_quickdraw(true, 0x07C, &mut cpu, &mut bus).unwrap().unwrap();
+        let port = *d.current_port;
+        let installed = bus.read_long(port + 32);
+        assert_ne!(installed, pixpat);
+        let record = bus.read_long(installed);
+        assert_eq!(bus.read_word(record), 0);
+        for i in 0..8 { assert_eq!(bus.read_byte(record + 20 + i), 0); }
+        assert_eq!(bus.read_word(original_pixpat), 1);
+        let rgb = bus.alloc(6);
+        bus.write_word(rgb, 0xffff);
+        bus.write_word(rgb + 2, 0);
+        bus.write_word(rgb + 4, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rgb);
+        d.dispatch_quickdraw(true, 0x215, &mut cpu, &mut bus).unwrap().unwrap();
+        let background_pixel = bus.read_long(port + 84) as u8;
+        assert_ne!(background_pixel, 0);
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 2, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rect);
+        d.dispatch_quickdraw(true, 0x0A3, &mut cpu, &mut bus).unwrap().unwrap();
+        for y in 0..2 {
+            for x in 0..4 {
+                assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, x, y), background_pixel);
+            }
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20B, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.get_alloc_size(installed), None);
+        assert_eq!(bus.read_word(original_pixpat), 1);
+    }
+
+    #[test]
+    fn pennormal_and_setpenstate_replace_installed_color_pattern() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let pixpat = make_raw_color_pixpat_handle(&mut bus);
+        let original_pixpat = bus.read_long(pixpat);
+        let port = *d.current_port;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus).unwrap().unwrap();
+        d.dispatch_quickdraw(true, 0x09E, &mut cpu, &mut bus).unwrap().unwrap();
+        let normal = bus.read_long(port + 58);
+        assert_ne!(normal, pixpat);
+        assert_eq!(bus.read_word(bus.read_long(normal)), 0);
+        assert_eq!(bus.read_word(original_pixpat), 1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, pixpat);
+        d.dispatch_quickdraw(true, 0x20A, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(bus.get_alloc_size(normal), None);
+        let state = bus.alloc(18);
+        bus.fill_zeros(state, 18);
+        for i in 0..8 { bus.write_byte(state + 10 + i, 0xaa); }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, state);
+        d.dispatch_quickdraw(true, 0x099, &mut cpu, &mut bus).unwrap().unwrap();
+        let restored = bus.read_long(port + 58);
+        assert_ne!(restored, pixpat);
+        let record = bus.read_long(restored);
+        assert_eq!(bus.read_word(record), 0);
+        for i in 0..8 { assert_eq!(bus.read_byte(record + 20 + i), 0xaa); }
+        assert_eq!(bus.read_word(original_pixpat), 1);
+    }
+
+    #[test]
     fn fillcrect_full_bounds_raw_pixpat_repaints_offset_backing_store() {
         let (mut d, mut cpu, mut bus) = setup();
         let row_bytes = 64u32;
