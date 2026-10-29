@@ -326,6 +326,20 @@ fn styled_text_edit_style_handle_and_replace_style() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetStyleHandle);
     assert_eq!(loaded.cpu.gpr[3], style_handle);
     assert_ne!(style_handle, 0);
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "TESetStyleHandle"),
+        PpcImportDispatcherTarget::TESetStyleHandle
+    );
+    let replacement = SCRATCH + 0x90;
+    loaded.cpu.gpr[3] = replacement;
+    loaded.cpu.gpr[4] = te;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyleHandle);
+    loaded.cpu.gpr[3] = te;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetStyleHandle);
+    assert_eq!(loaded.cpu.gpr[3], replacement);
+    loaded.cpu.gpr[3] = style_handle;
+    loaded.cpu.gpr[4] = te;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyleHandle);
 
     let text = SCRATCH + 0x20;
     let style = SCRATCH + 0x40;
@@ -389,6 +403,17 @@ fn styled_text_edit_style_handle_and_replace_style() {
     plain.cpu.gpr[3] = rects;
     plain.cpu.gpr[4] = rects + 8;
     run_test_import(&mut plain, PpcImportDispatcherTarget::TENew);
+    let plain_te = plain.cpu.gpr[3];
+    let plain_ptr = plain.memory.read_u32_be(plain_te).unwrap();
+    let font_and_face = plain.memory.read_u32_be(plain_ptr + PPC_TE_TX_FONT_OFFSET);
+    plain.cpu.gpr[3] = replacement;
+    plain.cpu.gpr[4] = plain_te;
+    run_test_import(&mut plain, PpcImportDispatcherTarget::TESetStyleHandle);
+    assert_eq!(
+        plain.memory.read_u32_be(plain_ptr + PPC_TE_TX_FONT_OFFSET),
+        font_and_face
+    );
+    plain.cpu.gpr[3] = plain_te;
     run_test_import(&mut plain, PpcImportDispatcherTarget::TEGetStyleHandle);
     assert_eq!(plain.cpu.gpr[3], 0);
 }

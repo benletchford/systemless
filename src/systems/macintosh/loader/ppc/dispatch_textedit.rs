@@ -781,6 +781,14 @@ pub(super) fn dispatch_textedit_import(
                 .count();
             Some(PpcImportAction::Return(1 + changes as u32))
         }
+        PpcImportDispatcherTarget::TESetStyleHandle => {
+            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[4]) {
+                if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff) {
+                    let _ = memory.write_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET, cpu.gpr[3]);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TEGetStyleHandle => {
             // Inside Macintosh: Text (TEGetStyleHandle): a styled record
             // (txSize -1) keeps its TEStyleHandle in txFont/txFace; a
