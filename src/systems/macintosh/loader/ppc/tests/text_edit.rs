@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn outline_preference_round_trips() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"GetOutlinePreferred")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetOutlinePreferred);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetOutlinePreferred);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetOutlinePreferred);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetOutlinePreferred);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetOutlinePreferred);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn preserve_glyph_preference_round_trips() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetPreserveGlyph")).unwrap();
     assert!(!loaded.toolbox_startup.preserve_glyph);

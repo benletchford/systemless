@@ -2434,6 +2434,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FontToScript
         | PpcImportDispatcherTarget::SetPreserveGlyph
         | PpcImportDispatcherTarget::GetPreserveGlyph
+        | PpcImportDispatcherTarget::SetOutlinePreferred
+        | PpcImportDispatcherTarget::GetOutlinePreferred
         | PpcImportDispatcherTarget::IsMetric
         | PpcImportDispatcherTarget::VisibleLength => {
             unreachable!("Font Manager imports return through dispatch_font_import")
