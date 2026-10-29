@@ -13525,10 +13525,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp + 4);
                 let aux_ptr = bus.read_long(sp);
-                let aux_handle = self
-                    .control_aux_state(ctrl_handle)
-                    .map(|state| state.handle)
-                    .unwrap_or(0);
+                let aux_handle = self.control_aux_handle_from_list(bus, ctrl_handle);
                 if aux_ptr != 0 {
                     bus.write_long(aux_ptr, aux_handle);
                 }
