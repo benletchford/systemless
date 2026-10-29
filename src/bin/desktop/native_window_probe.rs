@@ -49,6 +49,8 @@ struct Probe {
     phase: usize,
     helper: Option<Window>,
     focused: bool,
+    /// Wayland compositors own focus, fullscreen placement and the pointer.
+    wayland: bool,
     lost_focus: bool,
     returned_focus: bool,
     resized: bool,
@@ -58,6 +60,17 @@ struct Probe {
     #[cfg(target_os = "macos")]
     cursor_input_sent: bool,
     sequence: u64,
+    workspace_focus_stage: u8,
+    workspace_focus_frame: u64,
+    hidden_release_stage: u8,
+    hidden_release_frame: u64,
+    splitter_stage: u8,
+    splitter_frame: u64,
+    splitter_width: f32,
+    splitter_mouse: (i16, i16),
+    splitter_point: Option<(f64, f64)>,
+    cursor_event_frame: u64,
+    splitter_move_sent: bool,
     checks: Vec<&'static str>,
     complete: bool,
     fault: String,
@@ -69,7 +82,7 @@ struct Probe {
     gpu_resources: ResourceLog,
 }
 
-pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
+pub(super) fn run(event_loop: EventLoop<DesktopEvent>, app: App, report: PathBuf) {
     let now = Instant::now();
     let mut probe = Probe {
         app,
@@ -80,6 +93,8 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         phase: 0,
         helper: None,
         focused: false,
+        wayland: std::env::var_os("WAYLAND_DISPLAY").is_some()
+            && std::env::var_os("DISPLAY").is_none(),
         lost_focus: false,
         returned_focus: false,
         resized: false,
@@ -89,6 +104,17 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         #[cfg(target_os = "macos")]
         cursor_input_sent: false,
         sequence: 0,
+        workspace_focus_stage: 0,
+        workspace_focus_frame: 0,
+        hidden_release_stage: 0,
+        hidden_release_frame: 0,
+        splitter_stage: 0,
+        splitter_frame: 0,
+        splitter_width: 0.,
+        splitter_mouse: (0, 0),
+        splitter_point: None,
+        cursor_event_frame: 0,
+        splitter_move_sent: false,
         checks: Vec::new(),
         complete: false,
         fault: std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default(),
@@ -187,7 +213,8 @@ impl Probe {
             } else {
                 "owned snapshot -> actual native cursor event -> guest input round trip; guest origin covered by driver tests"
             },
-            "renderer": if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
+            "renderer": if self.app.workspace { "workspace" } else if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
+            "input_scope": if self.app.workspace { "native cursor events; scripted focus, splitter and captured-release gestures through winit input adapter" } else { "native cursor events" },
             "presentation_backend": self.presentation_backend(),
             "guest_generation": self.app.frame.generation,
             "software_layer": self.software_layer(),
@@ -200,8 +227,11 @@ impl Probe {
             "fallback": self.app.wgpu_recovery.fallback,
             "guest_sequence": self.app.frame.sequence,
             "gpu_resources": self.gpu_resources.samples(),
+            "workspace_splitter_qualified": self.splitter_stage == 5,
+            "workspace_hidden_release_qualified": self.hidden_release_stage == 3,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
+                "native_window_id": native_window_id(w),
                 "scale_factor": w.scale_factor(),
                 "monitor": w.current_monitor().map(|m| serde_json::json!({
                     "name": m.name(), "refresh_millihertz": m.refresh_rate_millihertz(),
@@ -216,6 +246,26 @@ impl Probe {
         });
         std::fs::write(&self.report, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
+    /// Warp the native pointer. Wayland clients cannot warp, so the probe
+    /// delivers the equivalent motion through the winit input adapter.
+    fn move_pointer(&mut self, event_loop: &ActiveEventLoop, window: &Window, point: (f64, f64)) {
+        if self.wayland {
+            self.app.window_event(
+                event_loop,
+                window.id(),
+                WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                },
+            );
+            self.moved = Some(point);
+        } else {
+            window
+                .set_cursor_position(winit::dpi::PhysicalPosition::new(point.0, point.1))
+                .unwrap();
+        }
+    }
+
     fn advance(&mut self, check: &'static str) {
         if !self.checks.contains(&check) {
             self.checks.push(check);
@@ -224,6 +274,178 @@ impl Probe {
         self.phase += 1;
         self.phase_started = Instant::now();
         self.resized = false;
+        self.write_report();
+    }
+    fn workspace_hidden_release(&mut self, event_loop: &ActiveEventLoop, window: &Window) -> bool {
+        if !self.app.workspace || self.hidden_release_stage == 3 {
+            return true;
+        }
+        let expected = self.expected_guest.unwrap();
+        match self.hidden_release_stage {
+            0 => {
+                self.app.window_event(
+                    event_loop,
+                    window.id(),
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                    },
+                );
+                assert_eq!(self.app.last_guest_pointer, Some(expected));
+                let ui = self.app.wgpu.as_mut().unwrap().workspace.as_mut().unwrap();
+                self.hidden_release_frame = ui.context.cumulative_frame_nr();
+                ui.native_probe_hide_guest();
+                window.request_redraw();
+                self.hidden_release_stage = 1;
+            }
+            1 => {
+                let ui = self.app.wgpu.as_ref().unwrap().workspace.as_ref().unwrap();
+                if ui.context.cumulative_frame_nr() <= self.hidden_release_frame
+                    || ui.guest_rect.is_some()
+                {
+                    return false;
+                }
+                assert_eq!(self.app.host_mouse_to_mac(0., 0.), expected);
+                self.app.window_event(
+                    event_loop,
+                    window.id(),
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                    },
+                );
+                self.sequence = self.app.frame.sequence;
+                self.hidden_release_stage = 2;
+            }
+            2 if self.app.frame.sequence > self.sequence + 2 => {
+                assert_eq!(self.app.frame.mouse_position, expected);
+                self.checks
+                    .push("hidden guest pane releases captured drag without pointer jump");
+                self.hidden_release_stage = 3;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+    fn workspace_splitter(&mut self, event_loop: &ActiveEventLoop, window: &Window) -> bool {
+        if !self.app.workspace || self.splitter_stage == 5 {
+            return true;
+        }
+        let ui = self
+            .app
+            .wgpu
+            .as_ref()
+            .and_then(|gpu| gpu.workspace.as_ref())
+            .unwrap();
+        let frame = ui.context.cumulative_frame_nr();
+        let Some(guest) = ui.guest_rect else {
+            return false;
+        };
+        let scale = window.scale_factor();
+        match self.splitter_stage {
+            0 => {
+                let point = ui
+                    .native_probe_splitter()
+                    .expect("default workspace has a splitter");
+                let point = (point.x as f64 * scale, point.y as f64 * scale);
+                self.splitter_point = Some(point);
+                self.splitter_width = guest.width();
+                self.splitter_mouse = self.app.frame.mouse_position;
+                self.moved = None;
+                self.move_pointer(event_loop, window, point);
+                self.splitter_stage = 1;
+            }
+            1 | 3 => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.moved = macos_cursor_position(window);
+                }
+                let point = self.splitter_point.unwrap();
+                if !self
+                    .moved
+                    .is_some_and(|p| (p.0 - point.0).abs() < 2. && (p.1 - point.1).abs() < 2.)
+                {
+                    return false;
+                }
+                #[cfg(target_os = "macos")]
+                if self.splitter_stage == 1 {
+                    self.app.window_event(
+                        event_loop,
+                        window.id(),
+                        WindowEvent::CursorMoved {
+                            device_id: winit::event::DeviceId::dummy(),
+                            position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                        },
+                    );
+                }
+                if self.splitter_stage == 3 && !self.splitter_move_sent {
+                    self.splitter_move_sent = true;
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.app.window_event(
+                            event_loop,
+                            window.id(),
+                            WindowEvent::CursorMoved {
+                                device_id: winit::event::DeviceId::dummy(),
+                                position: winit::dpi::PhysicalPosition::new(point.0, point.1),
+                            },
+                        );
+                        self.cursor_event_frame = frame;
+                        return false;
+                    }
+                }
+                if self.splitter_stage == 3 && frame <= self.cursor_event_frame {
+                    return false;
+                }
+                self.app.window_event(
+                    event_loop,
+                    window.id(),
+                    WindowEvent::MouseInput {
+                        device_id: winit::event::DeviceId::dummy(),
+                        state: if self.splitter_stage == 1 {
+                            ElementState::Pressed
+                        } else {
+                            ElementState::Released
+                        },
+                        button: MouseButton::Left,
+                    },
+                );
+                self.splitter_frame = frame;
+                self.splitter_stage += 1;
+                if self.splitter_stage == 4 {
+                    self.phase_started = Instant::now();
+                }
+            }
+            2 if frame > self.splitter_frame => {
+                let point = self.splitter_point.unwrap();
+                let point = (point.0 - 60. * scale, point.1);
+                self.splitter_point = Some(point);
+                self.moved = None;
+                self.move_pointer(event_loop, window, point);
+                self.splitter_frame = frame;
+                self.splitter_move_sent = false;
+                self.splitter_stage = 3;
+            }
+            4 if frame > self.splitter_frame => {
+                assert!(
+                    guest.width() < self.splitter_width - 30.,
+                    "splitter drag must resize the guest pane"
+                );
+                assert_eq!(
+                    self.app.frame.mouse_position, self.splitter_mouse,
+                    "a UI splitter drag must not leak guest pointer input"
+                );
+                self.checks
+                    .push("workspace splitter drag resizes pane without guest input");
+                self.splitter_stage = 5;
+                return true;
+            }
+            _ => {}
+        }
+        false
     }
     fn step(&mut self, event_loop: &ActiveEventLoop) {
         if self.started.elapsed() > self.soak + Duration::from_secs(90) {
@@ -235,11 +457,14 @@ impl Probe {
             return;
         };
         #[cfg(target_os = "macos")]
-        if self.phase == 9 {
+        if self.phase == 9
+            || (self.app.workspace && self.phase == 8 && self.workspace_focus_stage == 1)
+        {
             // CGWarpMouseCursorPosition intentionally generates no event:
             // https://developer.apple.com/documentation/coregraphics/cgwarpmousecursorposition(_:)
             self.moved = macos_cursor_position(&window);
-            if !self.cursor_input_sent
+            if self.phase == 9
+                && !self.cursor_input_sent
                 && self
                     .moved
                     .zip(self.expected_cursor)
@@ -363,11 +588,25 @@ impl Probe {
                 window.focus_window();
                 self.advance("guest frames reach real window");
             }
-            1 if self.focused && settled => {
+            1 if (self.focused || self.wayland) && settled => {
                 let _ = window.request_inner_size(target_size);
-                self.advance("initial native focus");
+                self.advance(if self.wayland {
+                    "Wayland compositor owns keyboard focus; not requested"
+                } else {
+                    "initial native focus"
+                });
             }
-            2 if self.resized && window.inner_size() == target_size && settled => {
+            // Wayland applies a requested size client-side, without a Resized event.
+            2 if (self.resized || self.wayland)
+                && window.inner_size() == target_size
+                && settled =>
+            {
+                if self.wayland {
+                    // Fullscreen placement is compositor policy on Wayland.
+                    self.advance("native resize observed");
+                    self.phase = 5;
+                    return;
+                }
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 self.advance("native resize observed");
             }
@@ -392,6 +631,39 @@ impl Probe {
                 self.advance("fullscreen exit returns to normal window bounds");
             }
             5 if window.inner_size() == target_size && settled => {
+                if !self.workspace_splitter(event_loop, &window) {
+                    return;
+                }
+                if self.wayland {
+                    // Clients cannot move focus or warp the pointer on
+                    // Wayland; finish with the captured-release check from a
+                    // pointer position delivered through the input adapter.
+                    if self.expected_guest.is_none() {
+                        let Some(rect) = self
+                            .app
+                            .wgpu
+                            .as_ref()
+                            .and_then(|gpu| gpu.workspace.as_ref())
+                            .and_then(|ui| ui.guest_rect)
+                        else {
+                            return;
+                        };
+                        let point = egui_probe_point(rect, window.scale_factor());
+                        self.move_pointer(event_loop, &window, point);
+                        self.expected_guest = Some(self.app.host_mouse_to_mac(point.0, point.1));
+                        return;
+                    }
+                    if !self.workspace_hidden_release(event_loop, &window) {
+                        return;
+                    }
+                    self.advance("workspace splitter and hidden-pane release on Wayland");
+                    self.phase = 10;
+                    self.cycles += 1;
+                    self.sample_gpu_resources();
+                    self.app
+                        .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
+                    return;
+                }
                 let helper = event_loop
                     .create_window(
                         Window::default_attributes()
@@ -415,10 +687,98 @@ impl Probe {
                 self.advance("native focus return observed");
             }
             8 if self.app.frame.sequence > self.sequence + 2 && settled => {
-                let size = window.inner_size();
-                let target = self
-                    .app
-                    .physical_to_mac(f64::from(size.width) * 0.4, f64::from(size.height) * 0.4);
+                let target = if self.app.workspace {
+                    let ui = self
+                        .app
+                        .wgpu
+                        .as_ref()
+                        .and_then(|gpu| gpu.workspace.as_ref())
+                        .unwrap();
+                    let Some(rect) = ui.guest_rect else {
+                        return;
+                    };
+                    let point = rect.center();
+                    let scale = window.scale_factor();
+                    let physical = (point.x as f64 * scale, point.y as f64 * scale);
+                    let frame = ui.context.cumulative_frame_nr();
+                    match self.workspace_focus_stage {
+                        0 => {
+                            self.moved = None;
+                            self.expected_cursor = Some(physical);
+                            window
+                                .set_cursor_position(winit::dpi::PhysicalPosition::new(
+                                    physical.0, physical.1,
+                                ))
+                                .unwrap();
+                            self.workspace_focus_stage = 1;
+                            return;
+                        }
+                        1 => {
+                            if !self.moved.is_some_and(|p| {
+                                (p.0 - physical.0).abs() < 2. && (p.1 - physical.1).abs() < 2.
+                            }) {
+                                return;
+                            }
+                            #[cfg(target_os = "macos")]
+                            self.app.window_event(
+                                event_loop,
+                                window.id(),
+                                WindowEvent::CursorMoved {
+                                    device_id: winit::event::DeviceId::dummy(),
+                                    position: winit::dpi::PhysicalPosition::new(
+                                        physical.0, physical.1,
+                                    ),
+                                },
+                            );
+                            self.app.window_event(
+                                event_loop,
+                                window.id(),
+                                WindowEvent::MouseInput {
+                                    device_id: winit::event::DeviceId::dummy(),
+                                    state: ElementState::Pressed,
+                                    button: MouseButton::Left,
+                                },
+                            );
+                            self.workspace_focus_frame = frame;
+                            self.workspace_focus_stage = 2;
+                            return;
+                        }
+                        2 if frame > self.workspace_focus_frame => {
+                            self.app.window_event(
+                                event_loop,
+                                window.id(),
+                                WindowEvent::MouseInput {
+                                    device_id: winit::event::DeviceId::dummy(),
+                                    state: ElementState::Released,
+                                    button: MouseButton::Left,
+                                },
+                            );
+                            self.workspace_focus_frame = frame;
+                            self.workspace_focus_stage = 3;
+                            return;
+                        }
+                        3 if frame > self.workspace_focus_frame => {}
+                        _ => return,
+                    }
+                    // Pick a different point inside the actual guest pane.
+                    let point = egui_probe_point(rect, scale);
+                    let target = self.app.host_mouse_to_mac(point.0, point.1);
+                    let ui = self
+                        .app
+                        .wgpu
+                        .as_ref()
+                        .and_then(|gpu| gpu.workspace.as_ref())
+                        .unwrap();
+                    let Some(mapped) = ui.guest_to_physical(target.0, target.1, scale) else {
+                        return;
+                    };
+                    assert_eq!(ui.map_pointer(mapped.0, mapped.1, scale), Some(target), "workspace cursor transforms must round trip through the presented guest pane");
+                    target
+                } else {
+                    let size = window.inner_size();
+                    self.app
+                        .physical_to_mac(f64::from(size.width) * 0.4, f64::from(size.height) * 0.4)
+                };
                 self.app.guest_state.warp = Some(runtime_protocol::CursorWarp {
                     serial: u64::MAX,
                     position: target,
@@ -441,6 +801,9 @@ impl Probe {
                 && Some(self.app.frame.mouse_position) == self.expected_guest
                 && settled =>
             {
+                if !self.workspace_hidden_release(event_loop, &window) {
+                    return;
+                }
                 self.advance("native cursor position and guest input round trip verified");
                 self.cycles += 1;
                 self.sample_gpu_resources();
@@ -463,11 +826,15 @@ impl Probe {
         }
     }
 }
-impl ApplicationHandler for Probe {
+impl ApplicationHandler<DesktopEvent> for Probe {
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        self.app.exiting(event_loop);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.app.resumed(event_loop);
     }
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: ()) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: DesktopEvent) {
         self.app.user_event(event_loop, event);
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -490,7 +857,13 @@ impl ApplicationHandler for Probe {
                 self.resized = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.moved = Some((position.x, position.y))
+                self.moved = Some((position.x, position.y));
+                self.cursor_event_frame = self
+                    .app
+                    .wgpu
+                    .as_ref()
+                    .and_then(|gpu| gpu.workspace.as_ref())
+                    .map_or(0, |ui| ui.context.cumulative_frame_nr());
             }
             _ => {}
         }
@@ -530,6 +903,30 @@ fn macos_cursor_position(window: &Window) -> Option<(f64, f64)> {
         };
         let scale = window.scale_factor();
         Some(((local.x - bounds.origin.x) * scale, y * scale))
+    }
+}
+
+fn egui_probe_point(rect: systemless_ui::egui::Rect, scale: f64) -> (f64, f64) {
+    (
+        ((rect.left() + rect.width() * 0.35) as f64 * scale).round(),
+        ((rect.top() + rect.height() * 0.45) as f64 * scale).round(),
+    )
+}
+
+fn native_window_id(window: &Window) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        return match window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(handle) => Some(handle.window),
+            RawWindowHandle::Xcb(handle) => Some(u64::from(handle.window.get())),
+            _ => None,
+        };
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        None
     }
 }
 

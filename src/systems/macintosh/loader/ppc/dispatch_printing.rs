@@ -21,6 +21,66 @@ pub enum PpcPrintingCompatibilityOperation {
     PrJobInit,
 }
 
+/// Color Picker Package GetColor, presented by the host color picker.
+/// FUNCTION GetColor(where: Point; prompt: Str255; inColor: RGBColor;
+/// VAR outColor: RGBColor): BOOLEAN; Inside Macintosh Volume V, V-174.
+pub(crate) fn ppc_dispatch_get_color(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+) -> PpcImportAction {
+    use crate::systems::macintosh::host_ui::{SystemDialogAnswer, SystemDialogKind};
+    if startup.host_ui.system_dialog_active() {
+        return match startup.host_ui.take_system_answer() {
+            Some(SystemDialogAnswer::Color(rgb)) => {
+                let out = cpu.gpr[6];
+                if out != 0 {
+                    for (index, component) in rgb.into_iter().enumerate() {
+                        let _ = memory.write_u16_be(out + index as u32 * 2, component);
+                    }
+                }
+                PpcImportAction::Return(1)
+            }
+            Some(_) => PpcImportAction::Return(0),
+            None => PpcImportAction::Yield(u64::MAX),
+        };
+    }
+    let input = cpu.gpr[5];
+    let color = [0u32, 2, 4].map(|offset| {
+        if input == 0 {
+            0
+        } else {
+            memory.read_u16_be(input + offset).unwrap_or(0)
+        }
+    });
+    if !startup.host_ui.enabled {
+        let out = cpu.gpr[6];
+        if out != 0 {
+            for (index, component) in color.into_iter().enumerate() {
+                let _ = memory.write_u16_be(out + index as u32 * 2, component);
+            }
+        }
+        return PpcImportAction::Return(0);
+    }
+    let prompt = if cpu.gpr[4] == 0 {
+        String::new()
+    } else {
+        let length = memory.read_u8(cpu.gpr[4]).unwrap_or(0);
+        let bytes: Vec<u8> = (1..=u32::from(length))
+            .filter_map(|offset| memory.read_u8(cpu.gpr[4] + offset))
+            .collect();
+        crate::trap::types::decode_mac_roman(&bytes)
+    };
+    if startup
+        .host_ui
+        .begin_system_dialog(SystemDialogKind::Color { prompt, color })
+    {
+        PpcImportAction::Yield(u64::MAX)
+    } else {
+        PpcImportAction::Return(0)
+    }
+}
+
 pub(crate) fn ppc_dispatch_printing_compatibility(
     operation: PpcPrintingCompatibilityOperation,
     cpu: &PpcCpu,
@@ -57,6 +117,24 @@ pub(crate) fn ppc_dispatch_printing_compatibility(
         PpcPrintingCompatibilityOperation::PrJobDialog
         | PpcPrintingCompatibilityOperation::PrDlgMain
         | PpcPrintingCompatibilityOperation::PrStlDialog => {
+            use crate::systems::macintosh::host_ui::{SystemDialogAnswer, SystemDialogKind};
+            // With a host UI the import stays parked on the egui dialog.
+            if startup.host_ui.system_dialog_active() {
+                return match startup.host_ui.take_system_answer() {
+                    Some(answer) => {
+                        PpcImportAction::Return(u32::from(answer == SystemDialogAnswer::Confirm))
+                    }
+                    None => PpcImportAction::Yield(u64::MAX),
+                };
+            }
+            let kind = if operation == PpcPrintingCompatibilityOperation::PrJobDialog {
+                SystemDialogKind::Print
+            } else {
+                SystemDialogKind::PageSetup
+            };
+            if startup.host_ui.begin_system_dialog(kind) {
+                return PpcImportAction::Yield(u64::MAX);
+            }
             let confirmed = printing_manager::evaluate_pr_dialog(PrintingArchitecture::PowerPc);
             PpcImportAction::Return(u32::from(confirmed))
         }

@@ -2128,6 +2128,20 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
     let call = ppc_popup_menu_call(cpu);
     let current_menu_list = ppc_current_menu_list(memory);
 
+    // A host-presented popup parks the call until its choice arrives;
+    // nothing is drawn into the guest framebuffer.
+    if startup.host_ui.popup_active() && startup.execution.menu().is_none() {
+        return match startup.host_ui.take_popup_result() {
+            Some(result) => {
+                startup
+                    .execution
+                    .with_menu_context_mut(|context| context.clear_native_popup());
+                PpcImportAction::Return(result)
+            }
+            None => PpcImportAction::Yield(u64::MAX),
+        };
+    }
+
     if let Some(state) = startup.execution.menu().as_ref() {
         if startup.execution.menu().context().caller_isa() == Some(GuestIsa::M68k) {
             // A classic MenuSelect owns this process continuation. A nested
@@ -2279,6 +2293,18 @@ pub(crate) fn ppc_dispatch_pop_up_menu_select(
 
     if !input.mouse_button || !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
         return PpcImportAction::Return(0);
+    }
+    if startup.host_ui.enabled {
+        let request = call.popup_request().unwrap();
+        let menu_id = memory
+            .read_u32_be(menu_handle)
+            .filter(|ptr| *ptr != 0)
+            .and_then(|menu| memory.read_u16_be(menu))
+            .unwrap_or(0) as i16;
+        startup
+            .host_ui
+            .begin_popup(menu_id, request.requested_item, request.anchor);
+        return PpcImportAction::Yield(u64::MAX);
     }
     let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
         return PpcImportAction::Return(0);

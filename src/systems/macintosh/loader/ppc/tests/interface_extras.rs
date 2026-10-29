@@ -53,10 +53,7 @@ fn interface_imports_resolve_to_native_targets() {
             "IsCmdChar",
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::IsCmdChar),
         ),
-        (
-            "GetColor",
-            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetColor),
-        ),
+        ("GetColor", PpcImportDispatcherTarget::GetColor),
         (
             "FindServiceWindow",
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::FindServiceWindow),
@@ -141,10 +138,7 @@ fn color_picker_service_window_and_balloon_calls_report_absent_ui() {
         .unwrap();
     loaded.cpu.gpr[5] = input;
     loaded.cpu.gpr[6] = output;
-    run_test_import(
-        &mut loaded,
-        PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetColor),
-    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetColor);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(
         ppc_memory_read_bytes(&mut loaded.memory, output, 6),

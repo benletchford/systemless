@@ -67,6 +67,7 @@
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
+#define rFindDialog 131
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
@@ -798,6 +799,13 @@ static Boolean gMusic = true;
 static short gVolume = 75;
 static short gRenderer = iRendBevel;
 static Boolean gModalDialogCompleted = false;
+static DialogPtr gFindDialog = nil;
+
+#define kFindButton 1
+#define kFindDone 2
+#define kFindField 4
+#define kFindMatchCase 5
+#define kFindStatus 6
 
 MenuHandle StateMenu(void)
 {
@@ -4124,6 +4132,55 @@ static void DoModalPrefsDialog(void)
     DrawMainWindow();
 }
 
+/* The Dialogs page's F key opens a modeless Find palette. Its items arrive
+ * through DialogSelect; the go-away box hides it without disposing it.
+ * Macintosh Toolbox Essentials (1992), pp. 6-37--6-42 and 6-139--6-141. */
+static void OpenFindPalette(void)
+{
+    if (gFindDialog == nil) {
+        gFindDialog = GetNewDialog(rFindDialog, nil, (WindowPtr)-1);
+        if (gFindDialog == nil) {
+            return;
+        }
+    }
+    ShowWindow(gFindDialog);
+    SelectWindow(gFindDialog);
+}
+
+static void DoFindItem(short item)
+{
+    short itemType;
+    Handle itemHandle;
+    Rect itemRect;
+    Str255 text;
+    Str255 status;
+    short length;
+
+    if (item == kFindButton) {
+        GetDialogItem(gFindDialog, kFindField, &itemType, &itemHandle, &itemRect);
+        GetDialogItemText(itemHandle, text);
+        BlockMove("\pFound ", status, 7);
+        length = text[0];
+        if (length > 248) {
+            length = 248;
+        }
+        BlockMove(&text[1], &status[7], length);
+        status[0] = (unsigned char)(6 + length);
+        GetDialogItem(gFindDialog, kFindStatus, &itemType, &itemHandle, &itemRect);
+        SetDialogItemText(itemHandle, status);
+    } else if (item == kFindField) {
+        /* DialogSelect reports each edit to the field. */
+        GetDialogItem(gFindDialog, kFindStatus, &itemType, &itemHandle, &itemRect);
+        SetDialogItemText(itemHandle, "\pEditing");
+    } else if (item == kFindMatchCase) {
+        GetDialogItem(gFindDialog, kFindMatchCase, &itemType, &itemHandle, &itemRect);
+        SetControlValue((ControlHandle)itemHandle,
+                        GetControlValue((ControlHandle)itemHandle) == 0 ? 1 : 0);
+    } else if (item == kFindDone) {
+        HideWindow(gFindDialog);
+    }
+}
+
 static void DoAboutAlert(void)
 {
     Alert(rAboutAlert, nil);
@@ -4841,11 +4898,31 @@ static void DoEvent(EventRecord *event)
     RecordShowcaseEvent(event,
                         gPage == pageEventsCursors && event->what == mouseDown);
 
+    if (gFindDialog != nil && event->what != mouseDown &&
+        !((event->what == keyDown || event->what == autoKey) &&
+          (event->modifiers & cmdKey) != 0) &&
+        IsDialogEvent(event)) {
+        DialogPtr dialog;
+        short item;
+        if (DialogSelect(event, &dialog, &item) && dialog == gFindDialog) {
+            DoFindItem(item);
+        }
+        return;
+    }
+
     switch (event->what) {
         case mouseDown:
             part = FindWindow(event->where, &window);
             if (part == inMenuBar) {
                 DoMenuChoice(MenuSelect(event->where));
+            } else if (part == inContent && window == (WindowPtr)gFindDialog) {
+                DialogPtr dialog;
+                short item;
+                if (window != FrontWindow()) {
+                    SelectWindow(window);
+                } else if (DialogSelect(event, &dialog, &item) && dialog == gFindDialog) {
+                    DoFindItem(item);
+                }
             } else if (part == inContent) {
                 if (window != FrontWindow()) {
                     SelectWindow(window);
@@ -4908,6 +4985,8 @@ static void DoEvent(EventRecord *event)
                     DrawMainWindow();
                     CheckItem(StateMenu(), iWindowState,
                               gStackWindow != nil);
+                } else if (window == (WindowPtr)gFindDialog) {
+                    HideWindow(window);
                 } else {
                     gQuit = true;
                 }
@@ -4934,6 +5013,8 @@ static void DoEvent(EventRecord *event)
                 DrawMainWindow();
             } else if (gPage == pageEventsCursors) {
                 DrawMainWindow();
+            } else if (gPage == pageDialogs && (key == 'f' || key == 'F')) {
+                OpenFindPalette();
             }
             break;
 

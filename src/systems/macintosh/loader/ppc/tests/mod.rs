@@ -223,6 +223,7 @@ mod alias_relative;
 mod file_manager;
 mod file_manager_extras;
 mod fsref;
+mod host_ui;
 mod opengl_memory;
 mod event_manager;
 mod global_mouse;

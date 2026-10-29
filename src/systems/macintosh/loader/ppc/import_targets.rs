@@ -173,6 +173,7 @@ pub enum PpcImportDispatcherTarget {
     SetCCursor,
     DisposeCCursor,
     SysBeep,
+    GetColor,
     GetForeColor,
     GetBackColor,
     GetGray,
@@ -433,7 +434,6 @@ pub enum PpcImportDispatcherTarget {
     FlashMenuBar,
     HMGetHelpMenuHandle,
     HMGetBalloons,
-    HMShowBalloon,
     SetMCEntries,
     LGetCellDataLocation,
     LAddColumn,
@@ -449,6 +449,8 @@ pub enum PpcImportDispatcherTarget {
     OutlineMetrics,
     HMIsBalloon,
     HMSetBalloons,
+    HMShowBalloon,
+    HMRemoveBalloon,
     HiliteMenu,
     DrawGrowIcon,
     MenuNoop,
@@ -3271,6 +3273,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SetCCursor") => PpcImportDispatcherTarget::SetCCursor,
         ("InterfaceLib", "DisposeCCursor") => PpcImportDispatcherTarget::DisposeCCursor,
         ("InterfaceLib", "SysBeep") => PpcImportDispatcherTarget::SysBeep,
+        ("InterfaceLib" | "ColorPickerLib", "GetColor") => PpcImportDispatcherTarget::GetColor,
         ("InterfaceLib", "GetForeColor") => PpcImportDispatcherTarget::GetForeColor,
         ("InterfaceLib", "GetBackColor") => PpcImportDispatcherTarget::GetBackColor,
         ("InterfaceLib", "GetGray") => PpcImportDispatcherTarget::GetGray,
@@ -3544,6 +3547,12 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMSetBalloons" | "hmsetballoons") => {
             PpcImportDispatcherTarget::HMSetBalloons
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMShowBalloon") => {
+            PpcImportDispatcherTarget::HMShowBalloon
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMRemoveBalloon") => {
+            PpcImportDispatcherTarget::HMRemoveBalloon
         }
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HiliteMenu" | "hilitemenu") => {
             PpcImportDispatcherTarget::HiliteMenu
@@ -3962,7 +3971,6 @@ pub(crate) fn dispatcher_target_for_import(
         }
         // HMRemoveBalloon succeeds with no balloon shown; GZSaveHnd is nil
         // outside a grow-zone procedure.
-        ("InterfaceLib" | "CarbonLib", "HMRemoveBalloon") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "GZSaveHnd") => PpcImportDispatcherTarget::ReturnNoErr,
         ("InterfaceLib", "GetRegionBounds") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetRegionBounds)
@@ -4084,13 +4092,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IsCmdChar") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::IsCmdChar)
         }
-        ("InterfaceLib", "GetColor") => {
-            PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::GetColor)
-        }
         ("InterfaceLib", "FindServiceWindow") => {
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::FindServiceWindow)
         }
-        ("InterfaceLib", "HMShowBalloon") => PpcImportDispatcherTarget::HMShowBalloon,
         ("InterfaceLib", "SetMCEntries") => PpcImportDispatcherTarget::SetMCEntries,
         ("InterfaceLib", "LGetCellDataLocation") => PpcImportDispatcherTarget::LGetCellDataLocation,
         ("InterfaceLib", "LAddColumn") => PpcImportDispatcherTarget::LAddColumn,

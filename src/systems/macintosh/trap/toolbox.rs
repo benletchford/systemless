@@ -2225,6 +2225,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFileGetTrackingState,
     ) {
+        if self.host_ui.enabled {
+            return;
+        }
         let items = Self::standard_file_get_dialog_items(tracking);
         self.draw_dialog(
             bus,
@@ -2490,6 +2493,8 @@ impl super::TrapDispatcher {
             bounds,
             saved_pixels,
         };
+        self.cancel_host_menu_selection();
+        self.host_ui.begin();
         self.draw_standard_file_get_dialog(bus, &tracking);
         self.standard_file_get_tracking = Some(tracking);
     }
@@ -2502,26 +2507,59 @@ impl super::TrapDispatcher {
     ) {
         let mut action = None;
         let mut consumed_event = false;
-        while let Some(event) = self.event_queue.pop_front() {
+        use crate::systems::macintosh::host_ui::FileDialogAction as HostAction;
+        if let Some(reply) = self.host_ui.take() {
             consumed_event = true;
-            match event.what {
-                1 => {
-                    action = Self::standard_file_get_mouse_action(
-                        &mut tracking,
-                        event.where_v,
-                        event.where_h,
-                    );
-                    break;
+            action = match reply {
+                HostAction::Open(index) if index < tracking.entries.len() => {
+                    tracking.selected = index;
+                    Some(if tracking.entries[index].is_directory {
+                        StandardFileGetAction::Navigate
+                    } else {
+                        StandardFileGetAction::Open
+                    })
                 }
-                3 | 5 => {
-                    action = Self::standard_file_get_key_action(
-                        &mut tracking,
-                        event.message,
-                        event.modifiers,
+                HostAction::Desktop => Some(StandardFileGetAction::Desktop),
+                HostAction::Cancel => Some(StandardFileGetAction::Cancel),
+                HostAction::Parent => {
+                    let parent = self
+                        .directory_entry_for_id(tracking.current_dir_id)
+                        .map(|d| d.parent_dir_id)
+                        .filter(|id| *id > 1)
+                        .unwrap_or(2);
+                    tracking.current_dir_id = parent;
+                    tracking.entries = self.standard_file_get_candidates_in_directory(
+                        parent,
+                        tracking.file_types.as_deref(),
                     );
-                    break;
+                    tracking.selected = 0;
+                    None
                 }
-                _ => {}
+                _ => None,
+            };
+        }
+        if !self.host_ui.enabled {
+            while let Some(event) = self.event_queue.pop_front() {
+                consumed_event = true;
+                match event.what {
+                    1 => {
+                        action = Self::standard_file_get_mouse_action(
+                            &mut tracking,
+                            event.where_v,
+                            event.where_h,
+                        );
+                        break;
+                    }
+                    3 | 5 => {
+                        action = Self::standard_file_get_key_action(
+                            &mut tracking,
+                            event.message,
+                            event.modifiers,
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -2575,7 +2613,10 @@ impl super::TrapDispatcher {
         tracking: StandardFileGetTrackingState,
         accepted: bool,
     ) {
-        self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        self.host_ui.finish();
+        if !self.host_ui.enabled {
+            self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        }
         if accepted {
             if let Some(selection) = tracking.entries.get(tracking.selected) {
                 if tracking.modern_reply {
@@ -2787,6 +2828,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         tracking: &StandardFilePutTrackingState,
     ) {
+        if self.host_ui.enabled {
+            return;
+        }
         let (_, _, location_label, writable) =
             self.standard_file_put_directory_location(tracking.current_dir_id);
         let items = Self::standard_file_put_dialog_items(tracking, &location_label, writable);
@@ -3101,6 +3145,8 @@ impl super::TrapDispatcher {
             bounds,
             saved_pixels,
         };
+        self.cancel_host_menu_selection();
+        self.host_ui.begin();
         self.draw_standard_file_put_dialog(bus, &tracking);
         self.standard_file_put_tracking = Some(tracking);
     }
@@ -3113,26 +3159,52 @@ impl super::TrapDispatcher {
     ) {
         let mut action = None;
         let mut consumed_event = false;
-        while let Some(event) = self.event_queue.pop_front() {
+        use crate::systems::macintosh::host_ui::FileDialogAction as HostAction;
+        if let Some(reply) = self.host_ui.take() {
             consumed_event = true;
-            match event.what {
-                1 => {
-                    action = self.standard_file_put_mouse_action(
-                        &mut tracking,
-                        event.where_v,
-                        event.where_h,
-                    );
-                    break;
+            action = match reply {
+                HostAction::Open(index)
+                    if tracking
+                        .entries
+                        .get(index)
+                        .is_some_and(|entry| entry.is_directory) =>
+                {
+                    tracking.selected = Some(index);
+                    Some(StandardFilePutAction::Navigate)
                 }
-                3 | 5 => {
-                    action = Self::standard_file_put_key_action(
-                        &mut tracking,
-                        event.message,
-                        event.modifiers,
-                    );
-                    break;
+                HostAction::Save(mut name) => {
+                    Self::standard_file_clamp_name(&mut name);
+                    tracking.name = name;
+                    Some(StandardFilePutAction::Save)
                 }
-                _ => {}
+                HostAction::Parent => Some(StandardFilePutAction::Parent),
+                HostAction::Desktop => Some(StandardFilePutAction::Desktop),
+                HostAction::Cancel => Some(StandardFilePutAction::Cancel),
+                _ => None,
+            };
+        }
+        if !self.host_ui.enabled {
+            while let Some(event) = self.event_queue.pop_front() {
+                consumed_event = true;
+                match event.what {
+                    1 => {
+                        action = self.standard_file_put_mouse_action(
+                            &mut tracking,
+                            event.where_v,
+                            event.where_h,
+                        );
+                        break;
+                    }
+                    3 | 5 => {
+                        action = Self::standard_file_put_key_action(
+                            &mut tracking,
+                            event.message,
+                            event.modifiers,
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -3202,7 +3274,10 @@ impl super::TrapDispatcher {
         tracking: StandardFilePutTrackingState,
         accepted: bool,
     ) {
-        self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        self.host_ui.finish();
+        if !self.host_ui.enabled {
+            self.restore_dialog_pixels(bus, tracking.bounds, &tracking.saved_pixels);
+        }
         let (vref, dir_id, _, writable) =
             self.standard_file_put_directory_location(tracking.current_dir_id);
         let wd_ref = self.persist_standard_file_directory(bus, vref, dir_id);
@@ -12992,6 +13067,19 @@ impl super::TrapDispatcher {
                 let selector = bus.read_word(sp);
                 let operation = pack2_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
+                if selector == crate::disk_init_manager::DI_BAD_MOUNT {
+                    // The bad-disk alert is presented by the host; the call
+                    // parks until it is dismissed and keeps its usual result.
+                    if self.host_ui.system_dialog_active() {
+                        if self.host_ui.take_system_answer().is_none() {
+                            return Some(Ok(()));
+                        }
+                    } else if self.host_ui.begin_system_dialog(
+                        crate::systems::macintosh::host_ui::SystemDialogKind::BadDisk,
+                    ) {
+                        return Some(Ok(()));
+                    }
+                }
                 if let Some(evaluation) = crate::disk_init_manager::evaluate_pack2(selector) {
                     if let Some(result) = evaluation.result_word {
                         bus.write_word(sp + evaluation.pop_bytes_68k, result as u16);
@@ -14012,7 +14100,51 @@ impl super::TrapDispatcher {
                     //        [where(4)] [sel(2)] — pop 18, leave 2
                     // Inside Macintosh Volume V, V-174
                     9 => {
-                        // Return FALSE (user cancelled)
+                        use crate::systems::macintosh::host_ui::{
+                            SystemDialogAnswer, SystemDialogKind,
+                        };
+                        // With a host UI the call stays parked (a tracking
+                        // refire) until the egui color picker answers.
+                        if self.host_ui.system_dialog_active() {
+                            let Some(answer) = self.host_ui.take_system_answer() else {
+                                return Some(Ok(()));
+                            };
+                            let chosen = match answer {
+                                SystemDialogAnswer::Color(rgb) => {
+                                    let out = bus.read_long(sp + 2);
+                                    if out != 0 {
+                                        for (index, component) in rgb.into_iter().enumerate() {
+                                            bus.write_word(out + index as u32 * 2, component);
+                                        }
+                                    }
+                                    true
+                                }
+                                _ => false,
+                            };
+                            bus.write_word(sp + 18, if chosen { 0x0100 } else { 0 });
+                            cpu.write_reg(Register::D0, u32::from(chosen));
+                            cpu.write_reg(Register::A7, sp + 18);
+                            return Some(Ok(()));
+                        }
+                        let input = bus.read_long(sp + 6);
+                        let color = if input != 0 {
+                            [0, 2, 4].map(|offset| bus.read_word(input + offset))
+                        } else {
+                            [0; 3]
+                        };
+                        let prompt_ptr = bus.read_long(sp + 10);
+                        let prompt = if prompt_ptr != 0 {
+                            decode_mac_roman(&bus.read_pstring(prompt_ptr))
+                        } else {
+                            String::new()
+                        };
+                        if self
+                            .host_ui
+                            .begin_system_dialog(SystemDialogKind::Color { prompt, color })
+                        {
+                            return Some(Ok(()));
+                        }
+                        // Without a host UI, report that the user cancelled.
                         bus.write_word(sp + 18, 0);
                         cpu.write_reg(Register::D0, 0);
                         cpu.write_reg(Register::A7, sp + 18);
@@ -15697,6 +15829,30 @@ impl super::TrapDispatcher {
             (true, 0x0FD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_long(sp);
+                // PrStlDialog/PrJobDialog park on the host page-setup and print
+                // dialogs; their answer then follows the ordinary glue result.
+                let routine = (selector >> 24) as u8;
+                let dialog = match routine {
+                    crate::printing_manager::PR_ROUTINE_STL_DIALOG => {
+                        Some(crate::systems::macintosh::host_ui::SystemDialogKind::PageSetup)
+                    }
+                    crate::printing_manager::PR_ROUTINE_JOB_DIALOG => {
+                        Some(crate::systems::macintosh::host_ui::SystemDialogKind::Print)
+                    }
+                    _ => None,
+                };
+                let mut cancelled = false;
+                if let Some(kind) = dialog {
+                    if self.host_ui.system_dialog_active() {
+                        match self.host_ui.take_system_answer() {
+                            None => return Some(Ok(())),
+                            Some(answer) => cancelled = answer
+                                != crate::systems::macintosh::host_ui::SystemDialogAnswer::Confirm,
+                        }
+                    } else if self.host_ui.begin_system_dialog(kind) {
+                        return Some(Ok(()));
+                    }
+                }
                 let operation = pr_glue_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
 
@@ -15725,7 +15881,7 @@ impl super::TrapDispatcher {
                 match eval.stack_result {
                     crate::printing_manager::PrGlueStackResult::None => {}
                     crate::printing_manager::PrGlueStackResult::Word(val) => {
-                        bus.write_word(sp + eval.total_pop, val);
+                        bus.write_word(sp + eval.total_pop, if cancelled { 0 } else { val });
                     }
                     crate::printing_manager::PrGlueStackResult::Long(val) => {
                         bus.write_long(sp + eval.total_pop, val);
@@ -15735,7 +15891,7 @@ impl super::TrapDispatcher {
                 if let crate::printing_manager::PrGlueRegisterResult::Set(reg_val) =
                     eval.register_result
                 {
-                    cpu.write_reg(Register::D0, reg_val);
+                    cpu.write_reg(Register::D0, if cancelled { 0 } else { reg_val });
                 }
 
                 cpu.write_reg(Register::A7, sp + eval.total_pop);
@@ -16332,6 +16488,27 @@ impl super::TrapDispatcher {
 
                 if operation.is_some() {
                     let sp = cpu.read_reg(Register::A7);
+                    // With a host UI, explain the empty network in egui while
+                    // the call stays parked; the result is still userCanceledErr.
+                    if self.host_ui.system_dialog_active() {
+                        if self.host_ui.take_system_answer().is_none() {
+                            return Some(Ok(()));
+                        }
+                    } else {
+                        let prompt_ptr = bus.read_long(sp + 22);
+                        let prompt = if prompt_ptr != 0 {
+                            decode_mac_roman(&bus.read_pstring(prompt_ptr))
+                        } else {
+                            String::new()
+                        };
+                        if self.host_ui.begin_system_dialog(
+                            crate::systems::macintosh::host_ui::SystemDialogKind::ProgramLinking {
+                                prompt,
+                            },
+                        ) {
+                            return Some(Ok(()));
+                        }
+                    }
                     let result_sp = sp + 26;
                     cpu.write_reg(Register::A7, result_sp);
                     bus.write_word(result_sp, (-128i16) as u16);
@@ -16489,30 +16666,35 @@ impl super::TrapDispatcher {
                     // No balloon ever up in HLE → noErr per the IM
                     // result table ("No error or the help balloon
                     // was removed").
-                    0x0002 => finish(bus, cpu, 0, 0),
+                    0x0002 => {
+                        self.host_ui.remove_balloon();
+                        finish(bus, cpu, 0, 0)
+                    }
 
                     // FUNCTION HMGetBalloons: Boolean;
-                    // IM:MMTb 3-98. No parameters.
-                    // Help disabled in HLE → FALSE (0).
-                    0x0003 => finish(bus, cpu, 0, 0),
+                    // IM:MMTb 3-98. No parameters. The host UI offers the
+                    // Help menu setting; otherwise help stays disabled.
+                    0x0003 => finish(bus, cpu, 0, i16::from(self.host_ui.balloons_enabled)),
 
                     // FUNCTION HMIsBalloon: Boolean;
                     // IM:MMTb 3-99. No parameters.
                     // No balloon up in HLE → FALSE (0).
-                    0x0007 => finish(
-                        bus,
-                        cpu,
-                        0,
-                        u16::from(crate::menu_manager::evaluate_hm_is_balloon()) as i16,
-                    ),
+                    0x0007 => finish(bus, cpu, 0, i16::from(self.host_ui.balloon().is_some())),
 
                     // FUNCTION HMSetBalloons(flag: Boolean): OSErr;
                     // IM:MMTb 3-107. Pop = 2 (flag).
                     // Accept and ignore — no help to enable/disable.
                     0x0104 => {
-                        let _params = crate::menu_manager::evaluate_hm_set_balloons_parameters(
-                            bus.read_word(sp) as u32,
+                        // A Pascal BOOLEAN occupies the high byte of its word.
+                        let params = crate::menu_manager::evaluate_hm_set_balloons_parameters(
+                            u32::from(bus.read_word(sp) != 0),
                         );
+                        if self.host_ui.enabled {
+                            self.host_ui.balloons_enabled = params.enabled();
+                            if !params.enabled() {
+                                self.host_ui.remove_balloon();
+                            }
+                        }
                         finish(bus, cpu, 2, 0);
                     }
 
@@ -16657,7 +16839,71 @@ impl super::TrapDispatcher {
                     //                        method: Integer): OSErr;
                     // IM:MMTb 3-100. Pop = 22. Help disabled →
                     // hmHelpDisabled.
-                    0x0B01 => finish(bus, cpu, 22, HM_HELP_DISABLED),
+                    0x0B01 => {
+                        // Stack: method, variant, theProc (words), tipProc,
+                        // alternateRect, tip (Point), aHelpMsg (pointer).
+                        let message = bus.read_long(sp + 18);
+                        let tip = (bus.read_word(sp + 14) as i16, bus.read_word(sp + 16) as i16);
+                        let bytes = if message != 0 {
+                            bus.read_bytes(message, 260)
+                        } else {
+                            Vec::new()
+                        };
+                        let wanted =
+                            crate::systems::macintosh::host_ui::balloon_message_resource(&bytes);
+                        let loaded = wanted.and_then(|(kind, id)| {
+                            let (_, ptr) = self.find_or_load_resource_any(bus, kind, id)?;
+                            let size = bus.get_alloc_size(ptr)? as usize;
+                            Some((kind, id, bus.read_bytes(ptr, size)))
+                        });
+                        // TERec: teLength at $3C, hText at $3E. Inside Macintosh: Text, 2-63.
+                        let te_text =
+                            crate::systems::macintosh::host_ui::balloon_message_te_handle(&bytes)
+                                .filter(|handle| *handle != 0)
+                                .map(|handle| bus.read_long(handle))
+                                .filter(|te| *te != 0)
+                                .map(|te| {
+                                    let length = bus.read_word(te + 0x3C) as usize;
+                                    let text = bus.read_long(bus.read_long(te + 0x3E));
+                                    if text == 0 {
+                                        Vec::new()
+                                    } else {
+                                        bus.read_bytes(text, length)
+                                    }
+                                });
+                        let picture =
+                            crate::systems::macintosh::host_ui::balloon_message_pict_handle(&bytes)
+                                .filter(|handle| *handle != 0)
+                                .map(|handle| bus.read_long(handle))
+                                .filter(|pointer| *pointer != 0)
+                                .and_then(|pointer| {
+                                    let size = bus.get_alloc_size(pointer)? as usize;
+                                    Some(bus.read_bytes(pointer, size))
+                                });
+                        let lookup = |kind: [u8; 4], id: i16| {
+                            if kind == crate::systems::macintosh::host_ui::BALLOON_TE_TEXT {
+                                return te_text.clone();
+                            }
+                            if kind == crate::systems::macintosh::host_ui::BALLOON_PICT_HANDLE {
+                                return picture.clone();
+                            }
+                            loaded
+                                .as_ref()
+                                .filter(|(k, i, _)| *k == kind && *i == id)
+                                .map(|(_, _, data)| data.clone())
+                        };
+                        let text = crate::systems::macintosh::host_ui::balloon_message_text(
+                            &bytes, lookup,
+                        );
+                        let artwork = crate::systems::macintosh::host_ui::balloon_message_picture(
+                            &bytes, lookup,
+                        );
+                        let shown = (text.is_some() || artwork.is_some())
+                            && self
+                                .host_ui
+                                .show_balloon(text.unwrap_or_default(), artwork, tip);
+                        finish(bus, cpu, 22, if shown { 0 } else { HM_HELP_DISABLED });
+                    }
 
                     // FUNCTION HMShowMenuBalloon(itemNum,
                     //                            itemMenuID: Integer;
@@ -18161,3 +18407,75 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+impl super::TrapDispatcher {
+    pub(crate) fn host_file_dialog(
+        &self,
+    ) -> Option<crate::systems::macintosh::host_ui::FileDialogSnapshot> {
+        use crate::systems::macintosh::host_ui::*;
+        let (id, revision) = self.host_ui.identity()?;
+        let (kind, prompt, name, directory_id, entries) =
+            if let Some(t) = &self.standard_file_get_tracking {
+                (
+                    FileDialogKind::Open,
+                    "Open a file".to_owned(),
+                    String::new(),
+                    t.current_dir_id,
+                    &t.entries,
+                )
+            } else if let Some(t) = &self.standard_file_put_tracking {
+                (
+                    FileDialogKind::Save,
+                    t.prompt.clone(),
+                    t.name.clone(),
+                    t.current_dir_id,
+                    &t.entries,
+                )
+            } else {
+                return None;
+            };
+        let (_, _, directory, writable) = self.standard_file_put_directory_location(directory_id);
+        Some(FileDialogSnapshot {
+            id,
+            revision,
+            kind,
+            prompt,
+            directory,
+            entries: entries
+                .iter()
+                .map(|e| FileDialogEntry {
+                    name: e.display_name.clone(),
+                    directory: e.is_directory,
+                })
+                .collect(),
+            name,
+            writable,
+            busy: false,
+        })
+    }
+    pub(crate) fn reply_host_file_dialog(
+        &mut self,
+        reply: crate::systems::macintosh::host_ui::FileDialogReply,
+    ) -> bool {
+        use crate::systems::macintosh::host_ui::*;
+        let Some(snapshot) = self.host_file_dialog() else {
+            return false;
+        };
+        let valid = match &reply.action {
+            FileDialogAction::Open(index) => snapshot
+                .entries
+                .get(*index)
+                .is_some_and(|entry| snapshot.kind == FileDialogKind::Open || entry.directory),
+            FileDialogAction::Save(name) => {
+                snapshot.kind == FileDialogKind::Save
+                    && snapshot.writable
+                    && !name.trim().is_empty()
+                    && name.len() <= 4096
+                    && !name.contains([':', '/'])
+                    && !name.chars().any(char::is_control)
+            }
+            _ => true,
+        };
+        valid && self.host_ui.reply(reply)
+    }
+}

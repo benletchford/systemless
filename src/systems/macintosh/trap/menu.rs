@@ -364,7 +364,7 @@ fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
 /// Applications and menu definition procedures can inspect and change this
 /// record directly, so rendering or writing a cached copy back without first
 /// observing it loses guest-visible item text and attributes.
-fn refresh_menu_from_memory(bus: &MacMemoryBus, menu: &mut Menu) {
+pub(super) fn refresh_menu_from_memory(bus: &MacMemoryBus, menu: &mut Menu) {
     if menu.handle == 0 {
         return;
     }
@@ -737,6 +737,44 @@ impl super::TrapDispatcher {
             })
     }
 
+    /// Drop a host popup whose parked guest call no longer exists, so a lost
+    /// tracking state can never leave guest input blocked.
+    pub(crate) fn expire_orphaned_host_popup(&mut self) {
+        let parked = self.menu_tracking.is_some()
+            || self
+                .control_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.popup_tracking)
+            || self
+                .dialog_tracking
+                .as_ref()
+                .is_some_and(|tracking| tracking.active_popup.is_some());
+        if self.host_ui.popup_active() && !parked {
+            self.host_ui.clear_popup();
+        }
+    }
+
+    /// Accept a host popup choice validated against the live menu list.
+    pub(crate) fn reply_host_popup_menu(
+        &mut self,
+        bus: &MacMemoryBus,
+        reply: crate::systems::macintosh::host_ui::PopupMenuReply,
+    ) -> bool {
+        let Some(root) = self.host_ui.popup_snapshot().map(|popup| popup.menu) else {
+            return false;
+        };
+        let menus = self.guest_menu_snapshot(bus);
+        self.host_ui.reply_popup(reply, |menu, item| {
+            crate::systems::macintosh::host_ui::popup_choice_result(&menus, root, menu, item)
+        })
+    }
+
+    pub(crate) fn cancel_host_menu_selection(&mut self) {
+        self.pending_native_menu_selection.take();
+        self.pending_native_menu_event = None;
+        self.pending_native_menu_event_tick = None;
+    }
+
     /// Validate and stage a host-native selection, returning a point inside
     /// the first visible title.  The frontend injects that point as a normal
     /// mouse click so the application follows its ordinary event loop.
@@ -746,6 +784,10 @@ impl super::TrapDispatcher {
         menu_id: i16,
         item_number: i16,
     ) -> Option<(i16, i16)> {
+        let modal = self.modal_status(bus);
+        if modal.dialog.is_some() || modal.file {
+            return None;
+        }
         self.guest_menu_snapshot(bus)
             .selectable_result(menu_id, item_number)?;
         let region = self
@@ -2703,6 +2745,14 @@ impl super::TrapDispatcher {
                     self.finish_menu_no_hit(bus, cpu, sp, 10);
                     return Some(Ok(()));
                 }
+                // A host-presented popup parks the call until its choice
+                // arrives; nothing is drawn into the guest framebuffer.
+                if self.host_ui.popup_active() && self.menu_tracking.is_some() {
+                    if let Some(result) = self.host_ui.take_popup_result() {
+                        self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                    }
+                    return Some(Ok(()));
+                }
                 if self.menu_tracking.is_some() {
                     if self.active_menu_definition().is_some() {
                         let completed = self.complete_pending_menu_definition(cpu, bus);
@@ -2927,6 +2977,20 @@ impl super::TrapDispatcher {
                         // pp. 3-46 and 3-137 to 3-138: the standard MDEF
                         // resolves item icon number + 256, with `cicn`
                         // taking precedence over the monochrome families.
+                        if self.host_ui.enabled {
+                            self.menu_tracking.set(Some(tracked_menu_state(
+                                MenuTrackingKind::PopUp,
+                                menu_handle,
+                                (0, 0, 0, 0),
+                                Default::default(),
+                            )));
+                            self.host_ui.begin_popup(
+                                menu_id,
+                                request.requested_item,
+                                request.anchor,
+                            );
+                            return Some(Ok(()));
+                        }
                         self.preload_menu_item_icon_resources(bus, menu_idx);
                         let Some((dd_rect, highlighted_item, content_top)) =
                             self.popup_menu_dropdown_rect(bus, menu_idx, request)

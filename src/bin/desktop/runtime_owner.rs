@@ -12,6 +12,7 @@ use std::time::Instant;
 #[derive(Clone)]
 pub(super) struct RuntimeConfig {
     pub gpu: bool,
+    pub workspace: bool,
     #[cfg(target_os = "macos")]
     pub native_preflight: bool,
     pub game_path: PathBuf,
@@ -76,6 +77,7 @@ impl RuntimeOwner {
                     config.ui_theme,
                 );
                 driver.gpu = config.gpu;
+                driver.workspace = config.workspace;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         #[cfg(target_os = "macos")]
@@ -297,6 +299,7 @@ mod tests {
     fn config() -> RuntimeConfig {
         RuntimeConfig {
             gpu: false,
+            workspace: false,
             #[cfg(target_os = "macos")]
             native_preflight: false,
             game_path: "owner-test".into(),
@@ -324,6 +327,86 @@ mod tests {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap();
         }
+    }
+
+    #[test]
+    #[ignore = "runs the source-built Macintosh application with real-time scheduling"]
+    fn workspace_showcase_owner_checkbox_round_trip() {
+        use systemless::systems::macintosh::host_ui::DialogReply;
+        let (wake, wakes) = mpsc::channel();
+        let mut options = config();
+        options.workspace = true;
+        let mut owner = RuntimeOwner::spawn_with(
+            options,
+            move || {
+                let _ = wake.send(());
+            },
+            |driver| {
+                let mut runner = crate::game::new_runner_with_configuration(true, 8);
+                runner.set_prefer_powerpc_executables(false);
+                runner.set_host_ui_enabled(true);
+                runner.set_app_start_time(3_000_000_000);
+                let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit");
+                let app = crate::game::load_game_from_path(&mut runner, &archive).unwrap();
+                crate::game::init_game(&mut runner, &app);
+                crate::configure_realtime_execution_rate(&mut runner);
+                for _ in 0..60 {
+                    super::super::headless_time::frame(&mut runner, 0);
+                }
+                assert!(runner.select_guest_menu_item(132, 6));
+                for _ in 0..120 {
+                    super::super::headless_time::frame(&mut runner, 0);
+                    if runner.host_dialog().is_some() {
+                        break;
+                    }
+                }
+                driver.runner = Some(runner);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut sent = false;
+        let mut observed = false;
+        while Instant::now() < deadline {
+            let update = owner.mailbox.poll();
+            assert!(
+                !matches!(update.status, RuntimeStatus::Stopped { error: Some(_), .. }),
+                "{:?}",
+                update.status
+            );
+            if let Some(state) = update.state {
+                if let Some(dialog) = state.dialog {
+                    let checkbox = dialog.items.iter().find(|item| item.number == 4).unwrap();
+                    if !sent {
+                        assert_eq!(checkbox.value, 0);
+                        owner
+                            .mailbox
+                            .send(GuiCommand::Dialog(DialogReply {
+                                id: dialog.id,
+                                revision: dialog.revision,
+                                item: 4,
+                            }))
+                            .unwrap();
+                        sent = true;
+                    } else if checkbox.value == 1 {
+                        observed = true;
+                        break;
+                    }
+                }
+            }
+            let _ = wakes.recv_timeout(Duration::from_millis(100));
+        }
+        owner.mailbox.request_shutdown();
+        assert!(matches!(
+            wait_stopped(&mut owner, &wakes),
+            RuntimeStatus::Stopped { error: None, .. }
+        ));
+        assert!(
+            observed,
+            "runtime owner must deliver a complete checkbox click"
+        );
     }
 
     struct ThreadCheckedAudio {

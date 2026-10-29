@@ -11638,3 +11638,98 @@ fn hilitemenu_already_clear_preserves_pixels_and_registers() {
     disp.open_menu_dropdown(&mut bus, 0);
     assert!(!disp.hilite_menu_clear_is_noop(&bus, 0));
 }
+
+#[test]
+fn host_popup_menu_select_parks_without_drawing_and_returns_the_host_choice() {
+    use crate::systems::macintosh::host_ui::PopupMenuReply;
+    for choice in [Some((402, 3)), None] {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.host_ui.enabled = true;
+        disp.menu_bar_hidden = false;
+        disp.input_state.set_mouse_button_for_test(true);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 402, 0x302000, "Pop");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x302040,
+            "First;(Second;Third",
+        );
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
+        let screen = bus.read_long(0x0824);
+        let before = bus.read_bytes(screen, 64 * 1024);
+
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // popUpItem
+        bus.write_word(sp + 2, 100); // left
+        bus.write_word(sp + 4, 50); // top
+        bus.write_long(sp + 6, menu);
+        bus.write_long(sp + 10, 0xDEAD_BEEF);
+        disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let popup = disp
+            .host_ui
+            .popup_snapshot()
+            .expect("host popup is published");
+        assert_eq!((popup.menu, popup.item, popup.anchor), (402, 1, (50, 100)));
+        assert!(disp.menu_tracking.is_some());
+        // The release does not end a host-presented menu; it waits for a reply.
+        disp.input_state.set_mouse_button_for_test(false);
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+        disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(sp + 10), 0xDEAD_BEEF);
+        // Disabled items, foreign menus and stale identities are rejected.
+        for (id, choice) in [
+            (popup.id, Some((402, 2))),
+            (popup.id, Some((1, 1))),
+            (popup.id + 1, None),
+        ] {
+            assert!(!disp.reply_host_popup_menu(&bus, PopupMenuReply { id, choice }));
+        }
+        assert!(disp.reply_host_popup_menu(
+            &bus,
+            PopupMenuReply {
+                id: popup.id,
+                choice
+            }
+        ));
+        assert!(
+            disp.host_ui.popup_snapshot().is_none(),
+            "one reply per popup"
+        );
+        assert!(!disp.reply_host_popup_menu(
+            &bus,
+            PopupMenuReply {
+                id: popup.id,
+                choice
+            }
+        ));
+        disp.step_menu_fixture(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(
+            bus.read_long(sp + 10),
+            choice.map_or(0, |(menu, item)| ((menu as u32) << 16) | item as u32)
+        );
+        assert!(disp.menu_tracking.is_none());
+        assert!(!disp.host_ui.popup_active());
+        assert_eq!(bus.read_bytes(screen, 64 * 1024), before);
+    }
+}
+
+#[test]
+fn orphaned_host_popup_expires_instead_of_blocking_input() {
+    let (mut disp, _cpu, _bus) = setup_with_port();
+    disp.host_ui.enabled = true;
+    disp.host_ui.begin_popup(402, 1, (0, 0));
+    assert!(disp.host_ui.popup_active());
+    disp.expire_orphaned_host_popup();
+    assert!(!disp.host_ui.popup_active(), "no parked guest call owns it");
+}

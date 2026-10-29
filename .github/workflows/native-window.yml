@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - 'src/bin/**'
+      - 'crates/systemless-ui/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/native-window.yml'
       - '.github/scripts/verify-native-window.py'
       - '.github/scripts/wait-for-window-manager.py'
       - '.github/scripts/test-native-window-cases.py'
+      - '.github/scripts/verify-screen-reader.py'
   workflow_dispatch:
     inputs:
       soak-seconds:
@@ -52,7 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-apps x11-utils imagemagick libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Validate lifecycle case selection
@@ -91,5 +93,97 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: native-window-${{ matrix.os }}
+          path: native-window-results/
+          if-no-files-found: warn
+
+  # The egui workspace on the remaining native window systems.
+  workspace:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+          - name: wayland
+            os: ubuntu-latest
+    name: workspace (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Wayland compositor
+        if: matrix.name == 'wayland'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config weston libwayland-dev libxkbcommon-dev libvulkan1 mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build optimized native probe
+        run: cargo build --locked --profile ci-test --bin systemless --features test-support
+      - name: Run Windows workspace checks
+        if: matrix.name == 'windows'
+        shell: bash
+        # CreateProcess appends .exe to the extensionless probe path.
+        run: python .github/scripts/verify-native-window.py --workspace-only
+      - name: Run Wayland workspace checks
+        if: matrix.name == 'wayland'
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d)
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wayland-ci --width=1600 --height=1200 &
+          for attempt in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wayland-ci" ] && break; sleep 0.2; done
+          env -u DISPLAY WAYLAND_DISPLAY=wayland-ci python3 .github/scripts/verify-native-window.py --workspace-only
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-workspace-${{ matrix.name }}
+          path: native-window-results/
+          if-no-files-found: warn
+
+  # What screen readers receive: AT-SPI (Orca) on Linux, UI Automation
+  # (NVDA, Narrator) on Windows, driven against the live workspace.
+  screen-reader:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+          - name: windows
+            os: windows-latest
+    name: screen reader (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install virtual desktop and accessibility bus
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers at-spi2-core python3-gi gir1.2-atspi-2.0 dbus-x11 libglib2.0-bin
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build optimized native probe
+        run: cargo build --locked --profile ci-test --bin systemless --features test-support
+      - name: Run AT-SPI check
+        if: matrix.name == 'linux'
+        run: |
+          dbus-run-session -- sh -c '
+            /usr/libexec/at-spi-bus-launcher --launch-immediately &
+            for attempt in $(seq 50); do gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.a11y.Bus.GetAddress >/dev/null 2>&1 && break; sleep 0.2; done
+            for property in IsEnabled ScreenReaderEnabled; do
+              gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status "$property" "<true>"
+            done
+            xvfb-run -a -s "-screen 0 1600x1200x24" sh -c "openbox & python3 .github/scripts/wait-for-window-manager.py && /usr/bin/python3 .github/scripts/verify-screen-reader.py"
+          '
+      - name: Run UI Automation check
+        if: matrix.name == 'windows'
+        run: python .github/scripts/verify-screen-reader.py
+      - name: Preserve accessibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screen-reader-${{ matrix.name }}
           path: native-window-results/
           if-no-files-found: warn

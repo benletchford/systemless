@@ -21001,6 +21001,473 @@ fn secs2date_and_date2secs_roundtrip() {
 }
 
 #[test]
+fn host_file_dialog_opens_virtual_file_preserving_guest_reply() {
+    let _env = clear_standard_file_env();
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let sp = TEST_SP;
+    let reply_ptr = 0x320B00u32;
+    let type_list_ptr = 0x320C00u32;
+    let app_dir = disp.ensure_vfs_directory("EV Override 1.0.1");
+    let pilots_dir = disp.ensure_vfs_directory("EV Override 1.0.1/Pilots");
+    disp.default_dir_id
+        .with_mut(|default_dir_id| *default_dir_id = app_dir);
+    disp.yield_for_ui = true;
+    disp.host_ui.enabled = true;
+    disp.vfs_rsrc
+        .insert("EV Override 1.0.1/Pilots/Last Pilot".to_string(), vec![1]);
+    disp.set_vfs_entry_metadata("EV Override 1.0.1/Pilots/Last Pilot", *b"PIL ", *b"EVO!", 0);
+    disp.vfs_rsrc.insert(
+        "EV Override 1.0.1/Pilots/Rick Hardslab".to_string(),
+        vec![2, 3, 4],
+    );
+    disp.set_vfs_entry_metadata(
+        "EV Override 1.0.1/Pilots/Rick Hardslab",
+        *b"PIL ",
+        *b"EVO!",
+        0x4000,
+    );
+    bus.write_long(type_list_ptr, u32::from_be_bytes(*b"PIL "));
+    bus.write_word(sp, 0x0006); // StandardGetFile selector
+    bus.write_long(sp + 2, reply_ptr); // VAR reply
+    bus.write_long(sp + 6, type_list_ptr); // typeList
+    bus.write_word(sp + 10, 1); // numTypes
+    bus.write_long(sp + 12, 0); // fileFilter
+
+    let before = bus.save_pixel_bytes(screen_base, 800 * 600);
+    let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+    assert!(start.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.is_standard_file_get_tracking());
+
+    use crate::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+    assert_eq!(bus.save_pixel_bytes(screen_base, 800 * 600), before);
+    let initial = disp.host_file_dialog().expect("host open dialog");
+    let folder = initial
+        .entries
+        .iter()
+        .position(|e| e.name == "Pilots" && e.directory)
+        .unwrap();
+    let navigate = FileDialogReply {
+        id: initial.id,
+        revision: initial.revision,
+        action: FileDialogAction::Open(folder),
+    };
+    assert!(disp.reply_host_file_dialog(navigate.clone()));
+    assert!(!disp.reply_host_file_dialog(navigate.clone()));
+    assert!(disp
+        .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert!(!disp.reply_host_file_dialog(navigate));
+    let current = disp.host_file_dialog().unwrap();
+    assert!(current.revision > initial.revision);
+    let file = current
+        .entries
+        .iter()
+        .position(|e| e.name == "Rick Hardslab" && !e.directory)
+        .unwrap();
+    assert!(disp.reply_host_file_dialog(FileDialogReply {
+        id: current.id,
+        revision: current.revision,
+        action: FileDialogAction::Open(file)
+    }));
+    assert!(disp
+        .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert!(disp.host_file_dialog().is_none());
+    assert_eq!(bus.save_pixel_bytes(screen_base, 800 * 600), before);
+
+    assert!(!disp.is_standard_file_get_tracking());
+    assert_eq!(bus.read_byte(reply_ptr), 1);
+    assert_eq!(bus.read_long(reply_ptr + 2), u32::from_be_bytes(*b"PIL "));
+    assert_eq!(
+        bus.read_word(reply_ptr + 6),
+        crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num_u16()
+    );
+    assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+    assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick Hardslab".to_vec());
+    assert_eq!(bus.read_word(reply_ptr + 78), 0x4000);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn host_file_dialog_save_validates_name_and_preserves_guest_drawing() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let sp = TEST_SP;
+    let reply_ptr = 0x3201C0u32;
+    let prompt_ptr = 0x320300u32;
+    let default_name_ptr = 0x320340u32;
+    let pilots_dir = disp.ensure_vfs_directory("Pilots");
+    disp.default_dir_id
+        .with_mut(|default_dir_id| *default_dir_id = pilots_dir);
+    disp.app_wd_refnum.with_mut(|app_ref_num| {
+        *app_ref_num = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+    });
+    disp.yield_for_ui = true;
+    disp.host_ui.enabled = true;
+
+    bus.write_pstring(prompt_ptr, b"Create New Player\xC9");
+    bus.write_pstring(default_name_ptr, b"Untitled");
+    bus.write_word(sp, 0x0005); // StandardPutFile selector
+    bus.write_long(sp + 2, reply_ptr); // VAR reply
+    bus.write_long(sp + 6, default_name_ptr); // defaultName
+    bus.write_long(sp + 10, prompt_ptr); // prompt
+
+    let start = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+    assert!(start.is_some());
+    assert!(start.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.is_standard_file_put_tracking());
+    assert_eq!(
+        disp.standard_file_put_tracking.as_ref().unwrap().prompt,
+        "Create New Player…"
+    );
+
+    use crate::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+    let snapshot = disp.host_file_dialog().unwrap();
+    for name in ["", " ", "Disk:File", "Line\nBreak"] {
+        assert!(!disp.reply_host_file_dialog(FileDialogReply {
+            id: snapshot.id,
+            revision: snapshot.revision,
+            action: FileDialogAction::Save(name.into())
+        }));
+    }
+    assert!(disp.reply_host_file_dialog(FileDialogReply {
+        id: snapshot.id,
+        revision: snapshot.revision,
+        action: FileDialogAction::Save("Rick".into())
+    }));
+    // The host modal never painted the framebuffer, so completing it must
+    // not restore old pixels over guest drawing performed during the call.
+    let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+    let pixel = screen_base + (bounds.0 as u32 + 12) * 800 + bounds.1 as u32 + 12;
+    bus.write_byte(pixel, 123);
+    let accept = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+    assert!(accept.unwrap().is_ok());
+    assert!(!disp.is_standard_file_put_tracking());
+    assert_eq!(bus.read_byte(pixel), 123);
+    assert!(disp.host_file_dialog().is_none());
+
+    assert_eq!(bus.read_byte(reply_ptr), 1);
+    assert_eq!(bus.read_byte(reply_ptr + 1), 0);
+    assert_eq!(bus.read_long(reply_ptr + 8), pilots_dir);
+    assert_eq!(bus.read_pstring(reply_ptr + 12), b"Rick".to_vec());
+    assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn host_file_dialog_cancel_completes_guest_call_without_accepting_a_file() {
+    use crate::systems::macintosh::host_ui::{FileDialogAction, FileDialogReply};
+    let _env = clear_standard_file_env();
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    disp.yield_for_ui = true;
+    disp.host_ui.enabled = true;
+    let reply_ptr = 0x320B00;
+    bus.write_byte(reply_ptr, 1);
+    bus.write_word(TEST_SP, 6);
+    bus.write_long(TEST_SP + 2, reply_ptr);
+    bus.write_long(TEST_SP + 6, 0);
+    bus.write_word(TEST_SP + 10, (-1i16) as u16);
+    bus.write_long(TEST_SP + 12, 0);
+    assert!(disp
+        .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    let snapshot = disp.host_file_dialog().unwrap();
+    let reply = FileDialogReply {
+        id: snapshot.id,
+        revision: snapshot.revision,
+        action: FileDialogAction::Cancel,
+    };
+    assert!(disp.reply_host_file_dialog(reply.clone()));
+    assert!(disp
+        .dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_byte(reply_ptr), 0);
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 16);
+    assert!(!disp.is_standard_file_get_tracking());
+    assert!(!disp.reply_host_file_dialog(reply));
+}
+
+#[test]
+fn host_print_dialogs_park_until_the_host_answers() {
+    use crate::systems::macintosh::host_ui::{
+        SystemDialogAnswer, SystemDialogKind, SystemDialogReply,
+    };
+    for (selector, kind) in [
+        (0x2A04_0484, SystemDialogKind::PageSetup),
+        (0x3204_0488, SystemDialogKind::Print),
+    ] {
+        for (answer, expected) in [
+            (SystemDialogAnswer::Confirm, 1),
+            (SystemDialogAnswer::Cancel, 0),
+        ] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.host_ui.enabled = true;
+            let sp = TEST_SP;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, selector);
+            bus.write_long(sp + 4, 0x1234_5678);
+            bus.write_word(sp + 8, 0xBEEF);
+            disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let dialog = disp.host_ui.system_dialog().unwrap();
+            assert_eq!(dialog.kind, kind);
+            assert_eq!(cpu.read_reg(Register::A7), sp, "the call stays parked");
+            assert!(disp.is_tracking_refire(0xA8FD));
+            disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert!(!disp.host_ui.reply_system_dialog(SystemDialogReply {
+                id: dialog.id,
+                answer: SystemDialogAnswer::Color([0; 3]),
+            }));
+            assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+                id: dialog.id,
+                answer
+            }));
+            disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+            assert_eq!(bus.read_word(sp + 8), expected);
+            assert!(!disp.is_tracking_refire(0xA8FD));
+        }
+    }
+}
+
+#[test]
+fn host_get_color_parks_and_writes_the_chosen_color() {
+    use crate::systems::macintosh::host_ui::{
+        SystemDialogAnswer, SystemDialogKind, SystemDialogReply,
+    };
+    for answer in [
+        SystemDialogAnswer::Color([0x1111, 0x2222, 0x3333]),
+        SystemDialogAnswer::Cancel,
+    ] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.host_ui.enabled = true;
+        let (input, output, prompt) = (0x30_0000u32, 0x30_0010u32, 0x30_0020u32);
+        for (index, value) in [0xffffu16, 0x8000, 0].into_iter().enumerate() {
+            bus.write_word(input + index as u32 * 2, value);
+            bus.write_word(output + index as u32 * 2, 0xAAAA);
+        }
+        bus.write_pstring(prompt, b"Pick a hue");
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 9);
+        bus.write_long(sp + 2, output);
+        bus.write_long(sp + 6, input);
+        bus.write_long(sp + 10, prompt);
+        bus.write_long(sp + 14, 0);
+        bus.write_word(sp + 18, 0xBEEF);
+        disp.dispatch_toolbox(true, 0x02E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let dialog = disp.host_ui.system_dialog().unwrap();
+        assert_eq!(
+            dialog.kind,
+            SystemDialogKind::Color {
+                prompt: "Pick a hue".into(),
+                color: [0xffff, 0x8000, 0],
+            }
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.is_tracking_refire(0xA82E));
+        assert!(!disp.host_ui.reply_system_dialog(SystemDialogReply {
+            id: dialog.id,
+            answer: SystemDialogAnswer::Confirm,
+        }));
+        assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+            id: dialog.id,
+            answer
+        }));
+        disp.dispatch_toolbox(true, 0x02E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+        let written: Vec<_> = (0..3).map(|i| bus.read_word(output + i * 2)).collect();
+        match answer {
+            SystemDialogAnswer::Color(rgb) => {
+                assert_eq!(bus.read_word(sp + 18), 0x0100);
+                assert_eq!(written, rgb.to_vec());
+            }
+            _ => {
+                assert_eq!(bus.read_word(sp + 18), 0);
+                assert_eq!(written, vec![0xAAAA; 3]);
+            }
+        }
+    }
+}
+
+#[test]
+fn host_program_linking_and_bad_disk_dialogs_park_and_keep_their_results() {
+    use crate::systems::macintosh::host_ui::{
+        SystemDialogAnswer, SystemDialogKind, SystemDialogReply,
+    };
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.current_trap_word = 0xA82B;
+    let sp = TEST_SP;
+    let prompt = bus.alloc(32);
+    bus.write_pstring(prompt, b"Link to:");
+    bus.write_long(sp + 22, prompt);
+    bus.write_word(sp + 26, 0x55AA);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0D00);
+    disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let dialog = disp.host_ui.system_dialog().unwrap();
+    assert_eq!(
+        dialog.kind,
+        SystemDialogKind::ProgramLinking {
+            prompt: "Link to:".into()
+        }
+    );
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.is_tracking_refire(0xA82B));
+    assert!(!disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Confirm,
+    }));
+    assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Cancel,
+    }));
+    cpu.write_reg(Register::D0, 0x0D00);
+    disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 26);
+    assert_eq!(bus.read_word(sp + 26) as i16, -128);
+
+    // DIBadMount(where, evtMessage): selector 0, 8 argument bytes, INTEGER result.
+    disp.current_trap_word = 0xA9E9;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 10, 0xBEEF);
+    disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let dialog = disp.host_ui.system_dialog().unwrap();
+    assert_eq!(dialog.kind, SystemDialogKind::BadDisk);
+    assert_eq!(cpu.read_reg(Register::A7), sp);
+    assert!(disp.host_ui.reply_system_dialog(SystemDialogReply {
+        id: dialog.id,
+        answer: SystemDialogAnswer::Confirm,
+    }));
+    disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+    assert_eq!(bus.read_word(sp + 10), 0);
+}
+
+#[test]
+fn host_balloon_help_presents_string_and_resource_balloons() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.current_trap_word = 0xA830;
+    let sp = TEST_SP;
+    let mut call = |disp: &mut TrapDispatcher,
+                    bus: &mut MacMemoryBus,
+                    selector: u32,
+                    args: &[(u32, u32, bool)]| {
+        for (offset, value, long) in args {
+            if *long {
+                bus.write_long(sp + offset, *value);
+            } else {
+                bus.write_word(sp + offset, *value as u16);
+            }
+        }
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, selector);
+        disp.dispatch_toolbox(true, 0x030, &mut cpu, bus)
+            .unwrap()
+            .unwrap();
+        bus.read_word(cpu.read_reg(Register::A7)) as i16
+    };
+    // Help starts disabled; showing a balloon then reports hmHelpDisabled.
+    assert_eq!(call(&mut disp, &mut bus, 0x0003, &[]), 0);
+    let message = bus.alloc(260);
+    bus.write_word(message, 1);
+    bus.write_pstring(message + 2, b"Saves the document");
+    let show = [(18, message, true), (14, 40, false), (16, 120, false)];
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
+    // The Help menu (or the application) turns balloons on.
+    assert_eq!(call(&mut disp, &mut bus, 0x0104, &[(0, 0x0100, false)]), 0);
+    assert_eq!(call(&mut disp, &mut bus, 0x0003, &[]), 1);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    let balloon = disp.host_ui.balloon().unwrap();
+    assert_eq!(
+        (balloon.text.as_str(), balloon.tip),
+        ("Saves the document", (40, 120))
+    );
+    assert_eq!(call(&mut disp, &mut bus, 0x0007, &[]), 1);
+    // STR# messages index the list; unknown kinds are not presented.
+    let list = [0u8, 2, 3, b'O', b'n', b'e', 3, b'T', b'w', b'o'];
+    disp.install_test_resource(&mut bus, *b"STR#", 200, &list);
+    bus.write_word(message, 3);
+    bus.write_word(message + 2, 200);
+    bus.write_word(message + 4, 2);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "Two");
+    // TEXT and PICT resources also present balloons.
+    disp.install_test_resource(&mut bus, *b"TEXT", 201, b"Line one\rLine two");
+    bus.write_word(message, 6);
+    bus.write_word(message + 2, 201);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "Line one\nLine two");
+    let picture = crate::systems::macintosh::host_ui::picture_artwork_tests::picture();
+    disp.install_test_resource(&mut bus, *b"PICT", 202, &picture);
+    bus.write_word(message, 2);
+    bus.write_word(message + 2, 202);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    let balloon = disp.host_ui.balloon().unwrap();
+    assert!(balloon.text.is_empty() && balloon.artwork.as_ref().is_some_and(|a| a.is_valid()));
+    // khmmTEHandle balloons read the record's text.
+    let (te_handle, te) = (bus.alloc(4), bus.alloc(0x80));
+    let (text_handle, text) = (bus.alloc(4), bus.alloc(32));
+    bus.write_long(te_handle, te);
+    bus.write_long(text_handle, text);
+    bus.write_bytes(text, b"From TextEdit");
+    bus.write_word(te + 0x3C, 13);
+    bus.write_long(te + 0x3E, text_handle);
+    bus.write_word(message, 4);
+    bus.write_long(message + 2, te_handle);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert_eq!(disp.host_ui.balloon().unwrap().text, "From TextEdit");
+    // khmmPictHandle balloons render the handle's picture.
+    let (picture_handle, picture_ptr) = (bus.alloc(4), bus.alloc(picture.len() as u32));
+    bus.write_bytes(picture_ptr, &picture);
+    bus.write_long(picture_handle, picture_ptr);
+    bus.write_word(message, 5);
+    bus.write_long(message + 2, picture_handle);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), 0);
+    assert!(disp.host_ui.balloon().unwrap().artwork.is_some());
+    // Unknown message kinds are not presented.
+    bus.write_word(message, 9);
+    assert_eq!(call(&mut disp, &mut bus, 0x0B01, &show), -850);
+    assert_eq!(call(&mut disp, &mut bus, 0x0002, &[]), 0);
+    assert!(disp.host_ui.balloon().is_none());
+    assert_eq!(call(&mut disp, &mut bus, 0x0007, &[]), 0);
+}
+
+
+#[test]
 fn apple_event_attribute_backing_survives_classic_descriptor_value_copies() {
     let (mut disp, mut cpu, mut bus) = setup();
     let descriptor = TEST_SP - 0x200;
@@ -21048,3 +21515,5 @@ fn apple_event_attribute_backing_survives_classic_descriptor_value_copies() {
     assert_eq!(bus.read_long(actual_size), 2);
     assert_eq!(bus.read_word(output), 17);
 }
+
+

@@ -713,68 +713,140 @@
         // OK-only notices. Keep the Alert function frame pending until a
         // button is selected, then write the selected item number into the
         // function result slot at SP+6.
-        let (mut disp, mut cpu, mut bus) = setup();
-        let alert_id = 3300;
-        let ditl_id = 3301;
-        let alrt = build_test_alrt((100, 100, 210, 400), ditl_id, 0x5555);
-        let ditl = build_test_ditl_items(&[
-            (4, (70, 230, 90, 290), b"Choice 1"),
-            (4, (70, 130, 90, 210), b"Choice 2"),
-            (4, (70, 20, 90, 100), b"Cancel"),
-            (
-                8,
-                (16, 20, 56, 280),
-                b"Select one of these options before continuing.",
-            ),
-        ]);
-        disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
-        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+        for host in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.host_ui.enabled = host;
+            if host {
+                disp.set_screen_mode_for_test(0x300000, 800, 800, 600, 8);
+            }
+            disp.param_text.set_slot(0, b"guest document".to_vec());
+            let alert_id = 3300;
+            let ditl_id = 3301;
+            let alrt = build_test_alrt((100, 100, 210, 400), ditl_id, 0x5555);
+            let ditl = build_test_ditl_items(&[
+                (4, (70, 230, 90, 290), b"Choice 1"),
+                (4, (70, 130, 90, 210), b"Choice 2"),
+                (4, (70, 20, 90, 100), b"Cancel"),
+                (8, (16, 20, 56, 280), b"Select an option for ^0.\rContinue?"),
+            ]);
+            disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+            disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
 
-        bus.write_long(TEST_SP, 0); // filterProc
-        bus.write_word(TEST_SP + 4, alert_id as u16);
-        bus.write_word(TEST_SP + 6, 0xCAFE);
-        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
-
-        assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_eq!(bus.read_word(TEST_SP + 6), 0);
-        assert!(disp.dialog_tracking.is_some());
-        assert!(disp.is_tracking_refire(0xA985));
-
-        disp.push_mouse_down(180, 250);
-        for _ in 0..4 {
+            bus.write_long(TEST_SP, 0); // filterProc
+            bus.write_word(TEST_SP + 4, alert_id as u16);
+            bus.write_word(TEST_SP + 6, 0xCAFE);
             let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+
             assert!(result.unwrap().is_ok());
-            if disp
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            assert_eq!(bus.read_word(TEST_SP + 6), 0);
+            assert!(disp.dialog_tracking.is_some());
+            assert!(disp.is_tracking_refire(0xA985));
+
+            let mut reply = disp.host_dialog(&mut bus).map(|dialog| {
+                assert!(dialog
+                    .items
+                    .iter()
+                    .any(|i| i.text == "Select an option for guest document.\nContinue?"));
+                crate::systems::macintosh::host_ui::DialogReply {
+                    id: dialog.id,
+                    revision: dialog.revision,
+                    item: 2,
+                }
+            });
+            if host {
+                let old = reply.clone().unwrap();
+                let pointer = disp.dialog_tracking.as_ref().unwrap().dialog_ptr;
+                // A user item is embedded as the guest's own pixels.
+                disp.dialog_items.get_mut(&pointer).unwrap()[0].item_type = 0;
+                let embedded = disp.host_dialog(&mut bus).unwrap();
+                assert!(embedded.revision > old.revision);
+                assert!(embedded.items[0].kind == 0 && embedded.items[0].guest_rect.is_some());
+                disp.dialog_items.get_mut(&pointer).unwrap()[0].item_type = 4;
+                let fresh = disp.host_dialog(&mut bus).unwrap();
+                assert!(fresh.revision > old.revision);
+                assert!(disp.host_dialog_item_position(&mut bus, &old).is_none());
+                reply = Some(crate::systems::macintosh::host_ui::DialogReply {
+                    revision: fresh.revision,
+                    ..old
+                });
+            }
+            let (v, h) = if let Some(reply) = &reply {
+                assert!(disp
+                    .host_dialog_item_position(
+                        &mut bus,
+                        &crate::systems::macintosh::host_ui::DialogReply {
+                            item: 0,
+                            ..reply.clone()
+                        }
+                    )
+                    .is_none());
+                disp.host_dialog_item_position(&mut bus, reply)
+                    .expect("enabled host button maps to guest coordinates")
+            } else {
+                (180, 250)
+            };
+            assert_eq!(reply.is_some(), host);
+            let marker = 0x300000 + v as u32 * 800 + h as u32;
+            if host {
+                assert_eq!(
+                    bus.read_byte(marker),
+                    0,
+                    "host presentation removes the classic button pixels"
+                );
+                bus.write_byte(marker, 123);
+            }
+
+            disp.push_mouse_down(v, h);
+            for _ in 0..4 {
+                let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+                if disp
+                    .dialog_tracking
+                    .as_ref()
+                    .and_then(|tracking| tracking.active_button.as_ref())
+                    .is_some()
+                {
+                    break;
+                }
+            }
+            assert!(disp
                 .dialog_tracking
                 .as_ref()
                 .and_then(|tracking| tracking.active_button.as_ref())
-                .is_some()
-            {
-                break;
-            }
-        }
-        assert!(disp
-            .dialog_tracking
-            .as_ref()
-            .and_then(|tracking| tracking.active_button.as_ref())
-            .is_some_and(|button| button.item_no == 2));
+                .is_some_and(|button| button.item_no == 2));
 
-        disp.push_mouse_up(180, 250);
-        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        for _ in 0..64 {
-            if disp.dialog_tracking.is_none() {
-                break;
+            if let Some(reply) = &reply {
+                assert!(disp.host_dialog(&mut bus).unwrap().busy);
+                assert!(disp.host_dialog_item_position(&mut bus, reply).is_none());
             }
+            if host {
+                assert_eq!(
+                    bus.read_byte(marker),
+                    123,
+                    "guest button tracking must not repaint beneath the host modal"
+                );
+            }
+            disp.push_mouse_up(v, h);
             let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
-        }
 
-        assert!(disp.dialog_tracking.is_none());
-        assert_eq!(bus.read_word(TEST_SP + 6), 2);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+            for _ in 0..64 {
+                if disp.dialog_tracking.is_none() {
+                    break;
+                }
+                let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+            }
+
+            assert!(disp.dialog_tracking.is_none());
+            assert_eq!(bus.read_word(TEST_SP + 6), 2);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+            assert!(disp.host_dialog(&mut bus).is_none());
+            if let Some(reply) = &reply {
+                assert!(disp.host_dialog_item_position(&mut bus, reply).is_none());
+            }
+        }
     }
 
     #[test]
@@ -9051,8 +9123,7 @@
         let te_ptr = bus.read_long(text_h);
         let screen_base = bus.read_long(0x181000 + 2);
         let row_bytes = u32::from(bus.read_word(0x181000 + 6));
-        // This fixture's GrafPort is a 512-wide monochrome bitmap. Keep
-        // screen drawing and pixel assertions on that same row stride.
+        // Match this fixture's 512-wide monochrome GrafPort.
         disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
 
         for i in 0..(row_bytes * 80) {
@@ -22405,6 +22476,2239 @@
         assert!(result.is_none());
     }
 
+#[test]
+fn host_preference_choices_report_live_values_and_guest_hits() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for (kind, resource) in [
+        (4, false),
+        (5, false),
+        (6, false),
+        (4, true),
+        (5, true),
+        (6, true),
+    ] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.host_ui.enabled = true;
+        disp.set_screen_mode_for_test(0x300000, 800, 800, 600, 8);
+        let mut dlog = build_test_dlog((100, 100, 220, 400), 4001, 0);
+        dlog[10] = 1;
+        let payload: &[u8] = if resource {
+            &[0, 200]
+        } else {
+            b"Sound Effects"
+        };
+        let ditl = build_test_ditl_items(&[
+            (4, (80, 200, 100, 280), b"OK"),
+            (if resource { 7 } else { kind }, (20, 20, 40, 180), payload),
+        ]);
+        if resource {
+            let mut cntl = vec![0; 23];
+            cntl[10] = 1;
+            cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+            cntl[16..18].copy_from_slice(&i16::from(kind - 4).to_be_bytes());
+            cntl[22] = 13;
+            cntl.extend_from_slice(b"Sound Effects");
+            disp.install_test_resource(&mut bus, *b"CNTL", 200, &cntl);
+        }
+        disp.install_test_resource(&mut bus, *b"DLOG", 4000, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 4001, &ditl);
+        bus.write_long(TEST_SP, u32::MAX);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 4000);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let dialog = bus.read_long(TEST_SP + 10);
+        assert_ne!(dialog, 0);
+        let result = bus.alloc(2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, result);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let initial = disp.host_dialog(&mut bus).unwrap();
+        assert_eq!((initial.items[1].kind, initial.items[1].value), (kind, 0));
+        assert_eq!(initial.items[1].text, "Sound Effects");
+        let handle = disp.dialog_control_handle_for_item(dialog, 2).unwrap();
+        let marker = 0x300000 + 130 * 800 + 200;
+        bus.write_byte(marker, 123);
+        let control_sp = TEST_SP - 32;
+        cpu.write_reg(Register::A7, control_sp);
+        bus.write_word(control_sp, 1);
+        bus.write_long(control_sp + 2, handle);
+        disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_byte(marker),
+            123,
+            "SetCtlValue must not repaint a host-owned control"
+        );
+        let pointer = bus.read_long(handle);
+        bus.write_word(pointer + 18, 0);
+        assert_eq!(
+            disp.host_dialog(&mut bus).unwrap().items[1].value,
+            0,
+            "direct ControlRecord stores are authoritative"
+        );
+        bus.write_word(pointer + 18, 1);
+        disp.control_manager.with_mut(|records| {
+            records
+                .iter_mut()
+                .find(|r| r.pointer == pointer)
+                .unwrap()
+                .active = false
+        });
+        assert!(!disp.host_dialog(&mut bus).unwrap().items[1].enabled);
+        disp.control_manager.with_mut(|records| {
+            records
+                .iter_mut()
+                .find(|r| r.pointer == pointer)
+                .unwrap()
+                .active = true
+        });
+        if resource {
+            disp.control_manager.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|r| r.pointer == pointer)
+                    .unwrap()
+                    .proc_id = 8
+            });
+            let view = disp.host_dialog(&mut bus).unwrap();
+            assert!(
+                view.items
+                    .iter()
+                    .any(|item| item.kind == 0 && item.guest_rect.is_some()),
+                "unsupported CDEFs are embedded as guest pixels"
+            );
+            disp.control_manager.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|r| r.pointer == pointer)
+                    .unwrap()
+                    .proc_id = i16::from(kind - 4)
+            });
+        }
+        for (offset, value) in [(8, 50i16), (10, 30), (12, 70), (14, 190)] {
+            bus.write_word(pointer + offset, value as u16);
+        }
+        let current = disp.host_dialog(&mut bus).unwrap();
+        assert_eq!(current.items[1].rect, (50, 30, 70, 190));
+        assert_eq!(current.items[1].value, 1);
+        assert!(current.revision > initial.revision);
+        let (v, h) = disp
+            .host_dialog_item_position(
+                &mut bus,
+                &DialogReply {
+                    id: current.id,
+                    revision: current.revision,
+                    item: 2,
+                },
+            )
+            .unwrap();
+        disp.push_mouse_down(v, h);
+        cpu.write_reg(Register::A7, TEST_SP);
+        for pass in 0..64 {
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+            if pass == 8
+                || disp
+                    .dialog_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.active_button.is_some())
+            {
+                disp.push_mouse_up(v, h);
+            }
+        }
+        assert_eq!(bus.read_word(result), 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        let retained = disp
+            .host_dialog(&mut bus)
+            .expect("item handler retains the host view");
+        assert!(retained.busy);
+        assert_eq!(retained.id, current.id);
+        assert!(retained.revision > current.revision);
+        let retained_reply = DialogReply {
+            id: retained.id,
+            revision: retained.revision,
+            item: 2,
+        };
+        assert!(disp
+            .host_dialog_item_position(&mut bus, &retained_reply)
+            .is_none());
+        bus.write_byte(marker, 123);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, handle);
+        disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let updated = disp.host_dialog(&mut bus).unwrap();
+        assert!(updated.busy);
+        assert_eq!(
+            updated.items[1].value, 0,
+            "handler updates are projected from live controls"
+        );
+        assert_eq!(
+            bus.read_byte(marker),
+            123,
+            "handler controls remain owned by egui"
+        );
+        if resource {
+            disp.control_manager.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|record| record.pointer == pointer)
+                    .unwrap()
+                    .proc_id = 8
+            });
+            assert!(disp.host_dialog(&mut bus).is_none());
+            assert!(!disp.host_ui.dialog_presented(dialog));
+            disp.control_manager.with_mut(|records| {
+                records
+                    .iter_mut()
+                    .find(|record| record.pointer == pointer)
+                    .unwrap()
+                    .proc_id = i16::from(kind - 4)
+            });
+            assert!(
+                disp.host_dialog(&mut bus).is_none(),
+                "guest presentation resumes only at the next supported modal call"
+            );
+        }
+        disp.push_mouse_up(v, h);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, result);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ready = disp.host_dialog(&mut bus).unwrap();
+        assert!(!ready.busy);
+        assert_eq!(ready.id, current.id);
+        assert!(ready.revision > updated.revision);
+        assert!(disp
+            .host_dialog_item_position(&mut bus, &retained_reply)
+            .is_none());
+        assert!(disp
+            .host_dialog_item_position(
+                &mut bus,
+                &DialogReply {
+                    revision: ready.revision,
+                    ..retained_reply
+                }
+            )
+            .is_some());
+    }
+}
+
+#[test]
+fn host_dialog_text_updates_guest_handles_selection_and_rejects_stale_edits() {
+    use crate::systems::macintosh::host_ui::DialogTextReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.set_screen_mode_for_test(0x300000, 800, 800, 600, 8);
+    let mut dlog = build_test_dlog((100, 100, 240, 400), 4011, 0);
+    dlog[10] = 1;
+    let ditl = build_test_ditl_items(&[
+        (4, (100, 200, 120, 280), b"OK"),
+        (16, (20, 20, 40, 180), b"First"),
+        (16, (50, 20, 70, 180), b"Second"),
+    ]);
+    disp.install_test_resource(&mut bus, *b"DLOG", 4010, &dlog);
+    disp.install_test_resource(&mut bus, *b"DITL", 4011, &ditl);
+    bus.write_long(TEST_SP, u32::MAX);
+    bus.write_long(TEST_SP + 4, 0);
+    bus.write_word(TEST_SP + 8, 4010);
+    disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let dialog = bus.read_long(TEST_SP + 10);
+    cpu.write_reg(Register::A7, TEST_SP);
+    let result = bus.alloc(2);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let source = disp
+        .host_dialog(&mut bus)
+        .expect("edit fields project to egui");
+    let reply = DialogTextReply {
+        id: source.id,
+        revision: source.revision,
+        serial: 1,
+        item: 3,
+        expected: "Second".into(),
+        text: "café".into(),
+        selection: (4, 1),
+    };
+    let stack = cpu.read_reg(Register::A7);
+    assert!(disp.reply_host_dialog_text(&mut bus, &reply));
+    assert_eq!(cpu.read_reg(Register::A7), stack);
+    let current = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(current.edit_item, 3);
+    assert_eq!(current.items[2].text, "café");
+    assert_eq!(current.items[2].selection, Some((1, 4)));
+    assert!(!disp.reply_host_dialog_text(&mut bus, &reply));
+    let te_handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+    let te = TrapDispatcher::te_record_ptr(&mut bus, te_handle);
+    assert_eq!(bus.read_word(te + TrapDispatcher::TE_LENGTH_OFFSET), 4);
+    let handle = TrapDispatcher::dialog_item_handle(&mut bus, dialog, 3);
+    assert_eq!(
+        TrapDispatcher::text_item_string_from_handle_if_present(&mut bus, handle).as_deref(),
+        Some("café")
+    );
+    let marker = 0x300000 + 151 * 800 + 121;
+    bus.write_byte(marker, 123);
+    disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+    disp.redraw_dialog_text_item(&mut bus, dialog, 3);
+    assert_eq!(bus.read_byte(marker), 123);
+    let invalid = DialogTextReply {
+        revision: current.revision,
+        expected: "stale".into(),
+        ..reply.clone()
+    };
+    assert!(!disp.reply_host_dialog_text(&mut bus, &invalid));
+    let empty = DialogTextReply {
+        revision: current.revision,
+        expected: "café".into(),
+        text: String::new(),
+        selection: (99, 99),
+        ..reply
+    };
+    assert!(disp.reply_host_dialog_text(&mut bus, &empty));
+    assert_eq!(
+        disp.host_dialog(&mut bus).unwrap().items[2].selection,
+        Some((0, 0))
+    );
+    let current = disp.host_dialog(&mut bus).unwrap();
+    let long = DialogTextReply {
+        revision: current.revision,
+        expected: String::new(),
+        text: "line\n".repeat(100),
+        selection: (500, 500),
+        ..empty
+    };
+    assert!(disp.reply_host_dialog_text(&mut bus, &long));
+    let current = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(current.items[2].text, long.text);
+    assert_eq!(current.items[2].selection, Some((500, 500)));
+    let oversized = DialogTextReply {
+        revision: current.revision,
+        expected: long.text.clone(),
+        text: "x".repeat(i16::MAX as usize + 1),
+        ..long
+    };
+    assert!(!disp.reply_host_dialog_text(&mut bus, &oversized));
+    disp.push_key_down(0x24, b'\r');
+    for _ in 0..64 {
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if disp.dialog_tracking.is_none() {
+            break;
+        }
+    }
+    assert!(disp.dialog_tracking.is_none());
+    let retained = disp
+        .host_dialog(&mut bus)
+        .expect("completed dialog retains its editors");
+    assert!(retained.busy);
+    assert_eq!(retained.items[2].text, current.items[2].text);
+    assert!(!disp.reply_host_dialog_text(
+        &mut bus,
+        &DialogTextReply {
+            revision: retained.revision,
+            text: "blocked".into(),
+            ..oversized
+        }
+    ));
+    assert_eq!(
+        disp.host_dialog(&mut bus).unwrap().items[2].text,
+        current.items[2].text
+    );
+}
+
+#[test]
+fn host_icon_dialog_reads_owned_artwork_and_preserves_item_hit() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for color in [false, true] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.host_ui.enabled = true;
+        disp.set_screen_mode_for_test(0x300000, 800, 800, 600, 8);
+        let mut dlog = build_test_dlog((100, 100, 220, 400), 4021, 0);
+        dlog[10] = 1;
+        let ditl = build_test_ditl_items(&[
+            (4, (80, 200, 100, 280), b"OK"),
+            (32, (10, 10, 42, 42), &[2, 1]),
+        ]);
+        let mut mono = vec![0; 128];
+        mono[0] = 0x80;
+        disp.install_test_resource(&mut bus, *b"DLOG", 4020, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 4021, &ditl);
+        disp.install_test_resource(&mut bus, *b"ICON", 513, &mono);
+        if color {
+            disp.install_test_resource(
+                &mut bus,
+                *b"cicn",
+                513,
+                &crate::systems::macintosh::host_ui::artwork_tests::color_icon(),
+            );
+        }
+        bus.write_long(TEST_SP, u32::MAX);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 4020);
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let dialog = bus.read_long(TEST_SP + 10);
+        let result = bus.alloc(2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, result);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let initial = disp.host_dialog(&mut bus).unwrap();
+        let image = initial.items[1].artwork.as_ref().unwrap();
+        assert_eq!(image.monochrome, !color);
+        assert_eq!(image.rgba[3], 255);
+        let old = DialogReply {
+            id: initial.id,
+            revision: initial.revision,
+            item: 2,
+        };
+        if color {
+            assert_eq!(&image.rgba[..4], &[255, 0, 0, 255]);
+            let (_, pointer) = disp
+                .find_or_load_resource_any(&mut bus, *b"cicn", 513)
+                .unwrap();
+            bus.write_word(pointer + 102, 0);
+            bus.write_word(pointer + 104, u16::MAX);
+        } else {
+            let handle = TrapDispatcher::dialog_item_handle(&mut bus, dialog, 2);
+            bus.write_byte(bus.read_long(handle), 0x40);
+        }
+        let current = disp.host_dialog(&mut bus).unwrap();
+        assert!(current.revision > initial.revision);
+        assert!(disp.host_dialog_item_position(&mut bus, &old).is_none());
+        assert_eq!(
+            image.rgba[3], 255,
+            "old snapshots own their original pixel data"
+        );
+        let (v, h) = disp
+            .host_dialog_item_position(
+                &mut bus,
+                &DialogReply {
+                    revision: current.revision,
+                    ..old
+                },
+            )
+            .unwrap();
+        disp.push_mouse_down(v, h);
+        for _ in 0..8 {
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+        }
+        assert_eq!(bus.read_word(result), 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+}
+
+#[test]
+fn host_dialog_hide_show_refreshes_background_and_close_reuse_retires_identity() {
+    use crate::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let storage = bus.alloc(crate::dialog_manager::DIALOG_RECORD_SIZE);
+    let ditl = build_test_ditl_items(&[
+        (4, (80, 160, 100, 220), b"OK"),
+        (16, (20, 20, 40, 180), b"Original"),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        storage,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    assert_eq!(dialog, storage);
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let initial = disp.host_dialog(&mut bus).unwrap();
+    assert!(disp.reply_host_dialog_text(
+        &mut bus,
+        &DialogTextReply {
+            id: initial.id,
+            revision: initial.revision,
+            serial: 1,
+            item: 2,
+            expected: "Original".into(),
+            text: "Edited".into(),
+            selection: (6, 6),
+        }
+    ));
+    for (show_hide, finish_modal) in [(false, false), (true, false), (false, true), (true, false)] {
+        if finish_modal {
+            disp.push_key_down(0x24, b'\r');
+            cpu.write_reg(Register::A7, TEST_SP);
+            for _ in 0..64 {
+                disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                if disp.dialog_tracking.is_none() {
+                    break;
+                }
+            }
+            assert!(disp.dialog_tracking.is_none());
+        }
+        let before = disp.host_dialog(&mut bus).unwrap();
+        let old_reply = DialogReply {
+            id: before.id,
+            revision: before.revision,
+            item: 1,
+        };
+        let marker = screen + 120 * 640 + 125;
+        bus.write_byte(marker, 123);
+        cpu.write_reg(Register::A7, TEST_SP);
+        if show_hide {
+            bus.write_byte(TEST_SP, 0);
+            bus.write_long(TEST_SP + 2, dialog);
+            disp.dispatch_window(true, 0x108, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        } else {
+            bus.write_long(TEST_SP, dialog);
+            disp.dispatch_window(true, 0x116, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(
+            bus.read_byte(marker),
+            123,
+            "hiding host chrome must not replay an old guest background"
+        );
+        assert!(disp.host_dialog(&mut bus).is_none());
+        assert!(disp.host_ui.live_dialog_ids().contains(&before.id));
+        assert!(disp
+            .host_dialog_item_position(&mut bus, &old_reply)
+            .is_none());
+        bus.write_byte(marker, 124);
+        cpu.write_reg(Register::A7, TEST_SP);
+        if show_hide {
+            bus.write_byte(TEST_SP, 1);
+            bus.write_long(TEST_SP + 2, dialog);
+            disp.dispatch_window(true, 0x108, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        } else {
+            bus.write_long(TEST_SP, dialog);
+            disp.dispatch_window(true, 0x115, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(
+            bus.read_byte(marker),
+            124,
+            "ShowWindow removes temporary guest chrome using the new background"
+        );
+        let shown = disp.host_dialog(&mut bus).unwrap();
+        assert_eq!(shown.id, initial.id);
+        assert_eq!(shown.busy, before.busy);
+        assert!(shown.revision > before.revision);
+        assert_eq!(shown.items[1].text, "Edited");
+        assert_eq!(shown.items[1].selection, Some((6, 6)));
+        assert_eq!(bus.read_byte(marker), 124);
+        assert!(disp
+            .host_dialog_item_position(&mut bus, &old_reply)
+            .is_none());
+    }
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialog);
+    disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.host_dialog(&mut bus).is_none());
+    assert!(!disp.host_ui.live_dialog_ids().contains(&initial.id));
+    assert_eq!(
+        bus.get_alloc_size(storage),
+        Some(crate::dialog_manager::DIALOG_RECORD_SIZE)
+    );
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, reused) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        storage,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    assert_eq!(reused, dialog);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let replacement = disp.host_dialog(&mut bus).unwrap();
+    assert_ne!(replacement.id, initial.id);
+    assert_eq!(replacement.items[1].text, "Original");
+    assert!(disp
+        .host_dialog_item_position(
+            &mut bus,
+            &DialogReply {
+                id: initial.id,
+                revision: replacement.revision,
+                item: 1,
+            }
+        )
+        .is_none());
+    let marker = screen + 120 * 640 + 125;
+    bus.write_byte(marker, 125);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialog);
+    disp.dispatch_window(true, 0x12D, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.host_dialog(&mut bus).is_none());
+    assert!(!disp.host_ui.live_dialog_ids().contains(&replacement.id));
+    assert!(!disp.dialog_modal_entered.contains(&dialog));
+    assert_eq!(
+        bus.read_byte(marker),
+        125,
+        "Window Manager removal also respects host ownership"
+    );
+}
+
+#[test]
+fn host_dialog_window_manager_updates_metadata_without_repainting_owned_frames() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let ditl = build_test_ditl_items(&[(4, (80, 160, 100, 220), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, parent) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let initial = disp.host_dialog(&mut bus).unwrap();
+    let original = bus.read_bytes(screen, 640 * 480);
+    let title = bus.alloc(64);
+    bus.write_pstring(title, b"Updated preferences");
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, title);
+    bus.write_long(TEST_SP + 4, parent);
+    disp.dispatch_window(true, 0x11A, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let renamed = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(renamed.title, "Updated preferences");
+    assert!(renamed.revision > initial.revision);
+    assert!(
+        bus.read_bytes(screen, original.len()) == original,
+        "host-owned window paint changed the framebuffer"
+    );
+    for hilited in [false, true] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_byte(TEST_SP, u8::from(hilited));
+        bus.write_long(TEST_SP + 2, parent);
+        disp.dispatch_window(true, 0x11C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_byte(parent + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET) != 0,
+            hilited
+        );
+        assert!(
+            bus.read_bytes(screen, original.len()) == original,
+            "host-owned window paint changed the framebuffer"
+        );
+    }
+    let update = bus.read_long(parent + crate::window_manager::WINDOW_UPDATE_RGN_OFFSET);
+    let update_data = bus.read_long(update);
+    assert_ne!(update_data, 0);
+    bus.write_word(update_data, 10);
+    bus.fill_bytes(update_data + 2, 8, 0);
+    assert!(!disp.window_has_pending_update(&bus, parent));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, 0);
+    bus.write_long(TEST_SP + 4, parent);
+    disp.dispatch_window(true, 0x10C, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(
+        bus.read_bytes(screen, original.len()) == original,
+        "host-owned window paint changed the framebuffer"
+    );
+    assert!(disp.window_has_pending_update(&bus, parent));
+    disp.push_key_down(0x24, b'\r');
+    cpu.write_reg(Register::A7, TEST_SP);
+    for _ in 0..64 {
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if disp.dialog_tracking.is_none() {
+            break;
+        }
+    }
+    assert!(disp.host_dialog(&mut bus).unwrap().busy);
+    let saved_bounds = disp
+        .window_saved_under_pixels
+        .get(&parent)
+        .map(|(t, l, w, h, _)| (*t, *l, *w, *h));
+    assert_eq!(
+        bus.read_bytes(screen, original.len())
+            .iter()
+            .zip(&original)
+            .position(|(a, b)| a != b),
+        None,
+        "parent completion changed pixels; backing={saved_bounds:?}"
+    );
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, child) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let child_view = disp.host_dialog(&mut bus).unwrap();
+    assert_ne!(child_view.id, initial.id);
+    let saved_bounds = disp
+        .window_saved_under_pixels
+        .get(&child)
+        .map(|(t, l, w, h, _)| (*t, *l, *w, *h));
+    assert_eq!(
+        bus.read_bytes(screen, original.len())
+            .iter()
+            .zip(&original)
+            .position(|(a, b)| a != b),
+        None,
+        "child presentation changed the guest framebuffer; backing={saved_bounds:?}"
+    );
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, child);
+    disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        bus.read_bytes(screen, original.len())
+            .iter()
+            .zip(&original)
+            .position(|(a, b)| a != b),
+        None,
+        "child disposal must not repaint the host-owned parent"
+    );
+    let resumed = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(resumed.id, initial.id);
+    assert_eq!(resumed.title, "Updated preferences");
+    assert!(resumed.busy);
+    assert!(disp
+        .host_dialog_item_position(
+            &mut bus,
+            &DialogReply {
+                id: initial.id,
+                revision: initial.revision,
+                item: 1
+            }
+        )
+        .is_none());
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, parent);
+    disp.dispatch_window(true, 0x114, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.host_dialog(&mut bus).is_none());
+    assert!(!disp.host_ui.live_dialog_ids().contains(&initial.id));
+    assert!(
+        bus.read_bytes(screen, original.len()) == original,
+        "host-owned window paint changed the framebuffer"
+    );
+}
+
+#[test]
+fn host_dialog_window_geometry_preserves_background_and_updates_hit_coordinates() {
+    for proc_id in [1, 5] {
+        check_host_dialog_window_geometry_preserves_background_and_updates_hit_coordinates(proc_id);
+    }
+}
+
+fn check_host_dialog_window_geometry_preserves_background_and_updates_hit_coordinates(
+    proc_id: i16,
+) {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0);
+    for offset in 0..640 * 480 {
+        bus.write_byte(screen + offset, (offset.wrapping_mul(17) / 641) as u8);
+    }
+    let original_background = bus.read_bytes(screen, 640 * 480);
+    let ditl = build_test_ditl_items(&[(4, (80, 160, 100, 220), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        proc_id,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let initial = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(initial.movable, proc_id == 5);
+    assert_eq!(
+        bus.read_bytes(screen, 640 * 480),
+        original_background,
+        "projection must remove the complete classic dialog frame, including movable title bars"
+    );
+    let reply = DialogReply {
+        id: initial.id,
+        revision: initial.revision,
+        item: 1,
+    };
+    let before_hit = disp.host_dialog_item_position(&mut bus, &reply).unwrap();
+    let original = bus.read_bytes(screen, 640 * 480);
+    disp.move_window_to_global(&mut bus, &mut cpu, dialog, 130, 110, true);
+    let moved = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(moved.id, initial.id);
+    assert_eq!(moved.size, initial.size);
+    assert!(moved.revision > initial.revision);
+    assert!(disp.host_dialog_item_position(&mut bus, &reply).is_none());
+    let after_hit = disp
+        .host_dialog_item_position(
+            &mut bus,
+            &DialogReply {
+                id: moved.id,
+                revision: moved.revision,
+                item: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(after_hit, (before_hit.0 + 30, before_hit.1 + 40));
+    assert!(disp.window_has_pending_update(&bus, dialog));
+    assert!(
+        bus.read_bytes(screen, original.len()) == original,
+        "moving an egui-owned dialog copied or erased guest pixels"
+    );
+    for (width, height) in [(280, 160), (230, 110)] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_byte(TEST_SP, 1);
+        bus.write_word(TEST_SP + 2, height);
+        bus.write_word(TEST_SP + 4, width);
+        bus.write_long(TEST_SP + 6, dialog);
+        disp.dispatch_window(true, 0x11D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let resized = disp.host_dialog(&mut bus).unwrap();
+        assert_eq!(resized.id, initial.id);
+        assert_eq!(resized.size, (width, height));
+        assert!(resized.revision > moved.revision);
+        assert!(
+            bus.read_bytes(screen, original.len()) == original,
+            "resizing an egui-owned dialog copied or erased guest pixels"
+        );
+    }
+}
+
+#[test]
+fn dialog_select_preserves_long_host_text_and_textedit_length_limit() {
+    use crate::mac_roman::encode_mac_roman_lossy;
+    use crate::systems::macintosh::host_ui::DialogTextReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0);
+    let ditl = build_test_ditl_items(&[
+        (4, (80, 160, 100, 220), b"OK"),
+        (16, (20, 20, 60, 220), b"Initial"),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let source = disp.host_dialog(&mut bus).unwrap();
+    let long = "café\n".repeat(100);
+    assert!(disp.reply_host_dialog_text(
+        &mut bus,
+        &DialogTextReply {
+            id: source.id,
+            revision: source.revision,
+            serial: 1,
+            item: 2,
+            expected: "Initial".into(),
+            text: long.clone(),
+            selection: (300, 300),
+        }
+    ));
+    let handle = TrapDispatcher::dialog_item_handle(&mut bus, dialog, 2);
+    let te_handle = bus.read_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+    let event = bus.alloc(16);
+    let output = bus.alloc(4);
+    let hit = bus.alloc(2);
+    let screen = disp.screen_mode.0;
+    let original = bus.read_bytes(screen, 640 * 480);
+    let mut expected = encode_mac_roman_lossy(&long.replace('\n', "\r"));
+    for (what, key, index, caret) in [
+        (3, b'X', 300, 301),
+        (5, 8, 300, 300),
+        (5, 8, 299, 299),
+        (3, b'Q', 299, 300),
+    ] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(event, what);
+        bus.write_long(event + 2, u32::from(key));
+        bus.write_long(TEST_SP, hit);
+        bus.write_long(TEST_SP + 4, output);
+        bus.write_long(TEST_SP + 8, event);
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if key != 8 {
+            expected.insert(index, key);
+        } else {
+            expected.remove(index);
+        }
+        assert_eq!(bus.read_byte(TEST_SP + 12), 1);
+        assert_eq!(bus.read_long(output), dialog);
+        assert_eq!(bus.read_word(hit), 2);
+        let te = TrapDispatcher::te_record_ptr(&bus, te_handle);
+        assert_eq!(
+            bus.read_word(te + TrapDispatcher::TE_SEL_START_OFFSET),
+            caret
+        );
+        assert_eq!(text_handle_bytes(&bus, handle), expected);
+        assert_eq!(TrapDispatcher::te_text_bytes(&bus, te_handle), expected);
+        assert_eq!(
+            bus.read_word(te + TrapDispatcher::TE_LENGTH_OFFSET) as usize,
+            expected.len()
+        );
+        assert!(bus.read_bytes(screen, original.len()) == original);
+    }
+    let current = disp.host_dialog(&mut bus).unwrap();
+    let maximum = "x".repeat(i16::MAX as usize);
+    assert!(disp.reply_host_dialog_text(
+        &mut bus,
+        &DialogTextReply {
+            id: current.id,
+            revision: current.revision,
+            serial: 2,
+            item: 2,
+            expected: current.items[1].text.clone(),
+            text: maximum.clone(),
+            selection: (32767, 32767),
+        }
+    ));
+    for (key, length) in [(b'Y', 32767), (8, 32766), (b'Z', 32767)] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(event, 3);
+        bus.write_long(event + 2, u32::from(key));
+        bus.write_long(TEST_SP, hit);
+        bus.write_long(TEST_SP + 4, output);
+        bus.write_long(TEST_SP + 8, event);
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let te = TrapDispatcher::te_record_ptr(&bus, te_handle);
+        assert_eq!(text_handle_bytes(&bus, handle).len(), length);
+        assert_eq!(TrapDispatcher::te_text_bytes(&bus, te_handle).len(), length);
+        assert_eq!(
+            bus.read_word(te + TrapDispatcher::TE_SEL_START_OFFSET) as usize,
+            length
+        );
+        assert_eq!(
+            bus.read_word(te + TrapDispatcher::TE_LENGTH_OFFSET) as usize,
+            length
+        );
+    }
+    let final_text = text_handle_bytes(&bus, handle);
+    assert!(final_text[..32766].iter().all(|byte| *byte == b'x'));
+    assert_eq!(final_text[32766], b'Z');
+}
+
+#[test]
+fn host_dialog_missing_standard_alert_icons_keep_host_presentation() {
+    for icon in [0_i16, 1, 2, 300] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.host_ui.enabled = true;
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let ditl = build_test_ditl_items(&[
+            (4, (80, 160, 100, 220), b"OK"),
+            (32 | 0x80, (20, 20, 52, 52), &icon.to_be_bytes()),
+        ]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        let (_, dialog) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 200, 330),
+            true,
+            1,
+            u32::MAX,
+            items,
+        );
+        let result = bus.alloc(2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, result);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let view = disp.host_dialog(&mut bus);
+        if icon == 300 {
+            // Missing artwork: the guest's drawing is embedded instead.
+            let view = view.unwrap();
+            assert!(view
+                .items
+                .iter()
+                .any(|item| item.kind == 0 && item.guest_rect.is_some()));
+            continue;
+        }
+        let view = view.unwrap();
+        assert!(view.items[1].artwork.as_ref().unwrap().is_valid());
+        assert_eq!(view.items[1].artwork.as_ref().unwrap().width, 128);
+        assert!(!view.items[1].enabled);
+        assert!(disp.host_ui.dialog_presented(dialog));
+        disp.push_key_down(0x24, b'\r');
+        cpu.write_reg(Register::A7, TEST_SP);
+        for _ in 0..64 {
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+        }
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(result), 1);
+    }
+}
+
+#[test]
+fn host_picture_dialog_preserves_guest_framebuffer_and_picture_item_hit() {
+    use crate::systems::macintosh::host_ui::{picture_artwork_tests::picture, DialogReply};
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    disp.install_test_resource(&mut bus, *b"PICT", 513, &picture());
+    let ditl = build_test_ditl_items(&[
+        (4, (80, 160, 100, 220), b"OK"),
+        (64, (20, 20, 52, 52), &[2, 1]),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let view = disp.host_dialog(&mut bus).unwrap();
+    let image = view.items[1].artwork.as_ref().unwrap();
+    assert_eq!(&image.rgba[..4], &[255, 0, 0, 255]);
+    assert_eq!(view.items[1].kind, 64);
+    assert!(bus
+        .read_bytes(screen, 640 * 480)
+        .iter()
+        .all(|pixel| *pixel == 0x77));
+    let old = DialogReply {
+        id: view.id,
+        revision: view.revision,
+        item: 2,
+    };
+    let handle = TrapDispatcher::dialog_item_handle(&bus, dialog, 2);
+    let data = bus.read_long(handle);
+    bus.write_byte(data + picture().len() as u32 - 1, 0);
+    let embedded = disp.host_dialog(&mut bus).unwrap();
+    assert!(embedded.items[1].kind == 0 && embedded.items[1].guest_rect.is_some());
+    bus.write_byte(data + picture().len() as u32 - 1, 255);
+    let view = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(view.id, old.id);
+    assert!(view.revision > old.revision);
+    assert!(disp.host_dialog_item_position(&mut bus, &old).is_none());
+    let (v, h) = disp
+        .host_dialog_item_position(
+            &mut bus,
+            &DialogReply {
+                id: view.id,
+                revision: view.revision,
+                item: 2,
+            },
+        )
+        .unwrap();
+    disp.push_mouse_down(v, h);
+    for _ in 0..64 {
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if disp.dialog_tracking.is_none() {
+            break;
+        }
+        disp.push_mouse_up(v, h);
+    }
+    assert!(disp.dialog_tracking.is_none());
+    assert_eq!(bus.read_word(result), 2);
+    assert!(disp.host_ui.dialog_presented(dialog));
+}
+
+#[test]
+fn host_popup_dialog_validates_choices_updates_control_and_returns_item_hit() {
+    use crate::systems::macintosh::host_ui::{
+        popup_tests::resources, DialogControlReply, DialogReply,
+    };
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let (control, menu) = resources();
+    disp.install_test_resource(&mut bus, *b"CNTL", 513, &control);
+    disp.install_test_resource(&mut bus, *b"MENU", 300, &menu);
+    let ditl = build_test_ditl_items(&[
+        (4, (80, 160, 100, 220), b"OK"),
+        (7, (20, 20, 40, 140), &[2, 1]),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let view = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(view.items[1].kind, 7);
+    assert_eq!(view.items[1].value, 1);
+    assert_eq!(view.items[1].choices.len(), 4);
+    let menu_data = bus.read_long(
+        disp.menus
+            .iter()
+            .find(|menu| menu.id == 300)
+            .unwrap()
+            .handle,
+    );
+    bus.write_long(menu_data + 6, 0x1234);
+    let embedded = disp.host_dialog(&mut bus).unwrap();
+    assert!(embedded.items[1].kind == 0 && embedded.items[1].guest_rect.is_some());
+    bus.write_long(menu_data + 6, 0);
+    bus.write_bytes(
+        menu_data + 16 + u32::from(bus.read_byte(menu_data + 14)),
+        b"New",
+    );
+    let updated = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(updated.id, view.id);
+    assert!(updated.revision > view.revision);
+    assert_eq!(updated.items[1].choices[0].text, "New");
+    let view = updated;
+    let mut reply = DialogControlReply {
+        dialog: DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 2,
+        },
+        expected: 1,
+        value: 4,
+    };
+    for invalid in [0, 2, 3, 5] {
+        reply.value = invalid;
+        assert!(disp.reply_host_dialog_control(&mut bus, &reply).is_none());
+    }
+    reply.value = 4;
+    let (v, h) = disp.reply_host_dialog_control(&mut bus, &reply).unwrap();
+    assert!(disp.reply_host_dialog_control(&mut bus, &reply).is_none());
+    let control = bus.read_long(TrapDispatcher::dialog_item_handle(&bus, dialog, 2));
+    assert_eq!(bus.read_word(control + 18), 4);
+    disp.push_mouse_down(v, h);
+    disp.push_mouse_up(v, h);
+    for _ in 0..64 {
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if disp.dialog_tracking.is_none() {
+            break;
+        }
+    }
+    assert!(disp.dialog_tracking.is_none());
+    assert_eq!(bus.read_word(result), 2);
+    assert_eq!(bus.read_word(control + 18), 4);
+    assert!(bus
+        .read_bytes(screen, 640 * 480)
+        .iter()
+        .all(|pixel| *pixel == 0x77));
+    assert!(disp.host_dialog(&mut bus).unwrap().busy);
+    assert!(disp.reply_host_dialog_control(&mut bus, &reply).is_none());
+}
+
+#[test]
+fn host_range_dialog_commits_exact_value_and_hands_thumb_tracking_to_guest() {
+    use crate::systems::macintosh::host_ui::{
+        range_tests::resource, DialogControlReply, DialogRange, DialogReply,
+    };
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    disp.install_test_resource(&mut bus, *b"CNTL", 513, &resource());
+    let ditl = build_test_ditl_items(&[
+        (4, (80, 160, 100, 220), b"OK"),
+        (7, (20, 20, 36, 180), &[2, 1]),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let view = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(view.items[1].kind, 17);
+    assert_eq!(
+        view.items[1].range,
+        Some(DialogRange {
+            min: -100,
+            max: 100
+        })
+    );
+    let mut reply = DialogControlReply {
+        dialog: DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 2,
+        },
+        expected: 0,
+        value: 101,
+    };
+    assert!(disp.reply_host_dialog_control(&mut bus, &reply).is_none());
+    reply.value = 75;
+    let (v, h) = disp.reply_host_dialog_control(&mut bus, &reply).unwrap();
+    assert!(disp.reply_host_dialog_control(&mut bus, &reply).is_none());
+    disp.push_mouse_down(v, h);
+    disp.push_mouse_up(v, h);
+    for _ in 0..64 {
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        if disp.dialog_tracking.is_none() {
+            break;
+        }
+    }
+    assert!(disp.dialog_tracking.is_none());
+    assert_eq!(bus.read_word(result), 2);
+    let handle = TrapDispatcher::dialog_item_handle(&bus, dialog, 2);
+    let control = bus.read_long(handle);
+    let v = ((bus.read_word(control + 8) as i16 as i32 + bus.read_word(control + 12) as i16 as i32)
+        / 2) as i16;
+    let h = ((bus.read_word(control + 10) as i16 as i32
+        + bus.read_word(control + 14) as i16 as i32)
+        / 2) as i16;
+    for (action, expected_part) in [(0x1234, 129), (0, 22)] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, 0x20000);
+        bus.write_long(TEST_SP, action);
+        bus.write_word(TEST_SP + 4, v as u16);
+        bus.write_word(TEST_SP + 6, h as u16);
+        bus.write_long(TEST_SP + 8, handle);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 12), expected_part);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(cpu.read_reg(Register::PC), 0x20000);
+        assert_eq!(bus.read_word(control + 18), 75);
+    }
+    assert!(bus
+        .read_bytes(screen, 640 * 480)
+        .iter()
+        .all(|pixel| *pixel == 0x77));
+}
+
+#[test]
+fn host_dialog_accepts_owned_standard_filter_but_rejects_patched_code() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let output = bus.alloc(4);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, output);
+    cpu.write_reg(Register::D0, 0x0203);
+    disp.dispatch_dialog(true, 0x268, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let filter = bus.read_long(output);
+    assert_ne!(filter, 0);
+    let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 180, 290),
+        true,
+        1,
+        u32::MAX,
+        items,
+    );
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, filter);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let view = disp
+        .host_dialog(&mut bus)
+        .expect("the built-in standard filter keeps host presentation");
+    assert_eq!(
+        disp.dialog_tracking.as_ref().unwrap().filter_proc,
+        filter,
+        "projection must not erase the guest callback"
+    );
+    let reply = DialogReply {
+        id: view.id,
+        revision: view.revision,
+        item: 1,
+    };
+    assert!(disp.host_dialog_item_position(&mut bus, &reply).is_some());
+    assert!(!view.guest_filter, "the owned standard filter is not the application's");
+    // A patched filter is the application's own: it stays in ModalDialog's
+    // loop and the projection says so.
+    bus.write_word(filter + 6, 0x7001);
+    let filtered = disp.host_dialog(&mut bus).unwrap();
+    assert!(filtered.guest_filter);
+    assert!(disp.host_ui.dialog_presented(dialog));
+    bus.write_word(filter + 6, 0x7000);
+    let resumed = disp.host_dialog(&mut bus).unwrap();
+    assert_eq!(resumed.id, view.id);
+    assert!(resumed.revision > view.revision);
+    assert!(disp.host_dialog_item_position(&mut bus, &reply).is_none());
+    assert!(bus
+        .read_bytes(screen, 640 * 480)
+        .iter()
+        .all(|pixel| *pixel == 0x77));
+    disp.dialog_tracking.as_mut().unwrap().filter_proc = filter + 6;
+    assert!(
+        disp.host_dialog(&mut bus).unwrap().guest_filter,
+        "other callback entry points are application filters"
+    );
+}
+
+#[test]
+fn host_dialog_modality_follows_blocking_call_then_window_kind() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    for proc_id in [4, 5] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.host_ui.enabled = true;
+        install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+        let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        let (_, dialog) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            (80, 90, 180, 290),
+            true,
+            proc_id,
+            u32::MAX,
+            items,
+        );
+        assert!(disp.host_dialog(&mut bus).is_none());
+        assert!(disp.modal_status(&bus).dialog.is_none());
+        let result = bus.alloc(2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, result);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let view = disp
+            .host_dialog(&mut bus)
+            .expect("ModalDialog owns either window style");
+        assert!(view.movable);
+        assert!(!view.busy);
+        assert_eq!(disp.modal_status(&bus).dialog, Some(dialog));
+        let reply = DialogReply {
+            id: view.id,
+            revision: view.revision,
+            item: 1,
+        };
+        let (v, h) = disp.host_dialog_item_position(&mut bus, &reply).unwrap();
+        disp.push_mouse_down(v, h);
+        for _ in 0..64 {
+            cpu.write_reg(Register::A7, TEST_SP);
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+            disp.push_mouse_up(v, h);
+        }
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(result), 1);
+        let retained = disp.host_dialog(&mut bus);
+        if proc_id == 5 {
+            assert!(retained.unwrap().busy);
+            assert_eq!(
+                disp.modal_status(&bus).dialog,
+                Some(dialog),
+                "movable modal retains menu/input ownership between calls"
+            );
+        } else {
+            assert!(retained.is_none());
+            assert!(!disp.host_ui.dialog_presented(dialog));
+            assert!(
+                disp.modal_status(&bus).dialog.is_none(),
+                "document-style event handling returns to the application"
+            );
+        }
+        assert!(disp.host_dialog_item_position(&mut bus, &reply).is_none());
+    }
+}
+
+#[test]
+fn host_modeless_inventory_keeps_multiple_windows_independent_without_modality() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    for bounds in [(80, 90, 200, 330), (120, 140, 240, 380)] {
+        let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        let (_, dialog) = call_new_dialog_for_test(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            0,
+            bounds,
+            true,
+            4,
+            u32::MAX,
+            items,
+        );
+        dialogs.push(dialog);
+    }
+    assert!(disp.host_modeless_dialogs(&mut bus, true).is_empty());
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(views.len(), 2);
+    assert_eq!(
+        views[0].1.id,
+        disp.host_ui.dialog_identity(dialogs[1]).unwrap()
+    );
+    assert_eq!(
+        views[1].1.id,
+        disp.host_ui.dialog_identity(dialogs[0]).unwrap()
+    );
+    assert!(views.iter().all(|(_, view)| view.movable && !view.busy));
+    assert!(disp.modal_status(&bus).dialog.is_none());
+    assert!(
+        bus.read_bytes(screen, 640 * 480)
+            .iter()
+            .all(|pixel| *pixel == 0x77),
+        "front-to-back restoration must remove both guest dialog frames"
+    );
+    for _ in 0..5 {
+        assert!(disp.host_dialog(&mut bus).is_none());
+        assert_eq!(disp.host_modeless_dialogs(&mut bus, false), views);
+    }
+    let blocked = disp.host_modeless_dialogs(&mut bus, true);
+    assert!(blocked
+        .iter()
+        .zip(&views)
+        .all(|((_, new), (_, old))| new.busy && new.revision > old.revision));
+    let resumed = disp.host_modeless_dialogs(&mut bus, false);
+    assert!(resumed
+        .iter()
+        .zip(&blocked)
+        .all(|((_, new), (_, old))| !new.busy && new.revision > old.revision));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[1]);
+    disp.dispatch_window(true, 0x116, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let hidden = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0].1, resumed[1].1);
+    assert!(disp.host_ui.live_dialog_ids().contains(&resumed[0].1.id));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[1]);
+    disp.dispatch_window(true, 0x115, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let shown = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(shown.len(), 2);
+    let restored = shown
+        .iter()
+        .find(|(_, view)| view.id == resumed[0].1.id)
+        .unwrap();
+    assert!(restored.1.revision > resumed[0].1.revision);
+    let expected: Vec<_> = disp
+        .window_list
+        .windows()
+        .into_iter()
+        .filter_map(|pointer| disp.host_ui.dialog_identity(pointer))
+        .collect();
+    assert_eq!(
+        shown.iter().map(|(_, view)| view.id).collect::<Vec<_>>(),
+        expected
+    );
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[1]);
+    disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 1);
+    assert!(!disp.host_ui.live_dialog_ids().contains(&restored.1.id));
+}
+
+#[test]
+fn host_dialog_after_guest_move_does_not_capture_itself_as_background() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, dialog) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    disp.move_window_to_global(&mut bus, &mut cpu, dialog, 350, 250, true);
+    let result = bus.alloc(2);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, result);
+    bus.write_long(TEST_SP + 4, 0);
+    disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.host_dialog(&mut bus).is_some());
+    assert_eq!(bus.read_byte(screen + 300 * 640 + 400), 0x77);
+}
+
+#[test]
+fn host_modeless_activation_uses_window_manager_and_rejects_stale_or_hidden_views() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    for bounds in [(80, 90, 200, 330), (120, 140, 240, 380)] {
+        let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    let target = &views[1].1;
+    let before = bus.read_bytes(screen, 640 * 480);
+    disp.event_queue.clear();
+    assert!(!disp.activate_host_modeless_dialog(&mut bus, target.id, target.revision + 1));
+    assert_eq!(disp.front_window, dialogs[1]);
+    // A foreign adapter can update shared WindowRecords/stacking while this
+    // adapter's cached active pointer still names the previously selected one.
+    bus.write_byte(dialogs[0] + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET, 0);
+    bus.write_byte(dialogs[1] + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET, 0xff);
+    disp.front_window = dialogs[0];
+    assert!(disp.activate_host_modeless_dialog(&mut bus, target.id, target.revision));
+    assert_eq!(disp.front_window, dialogs[0]);
+    assert_eq!(disp.window_list.windows()[0], dialogs[0]);
+    let events: Vec<_> = disp
+        .event_queue
+        .iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(events, vec![(dialogs[1], 0), (dialogs[0], 1)]);
+    assert_eq!(bus.read_bytes(screen, 640 * 480), before);
+    assert!(disp.modal_status(&bus).dialog.is_none());
+    disp.event_queue.clear();
+    assert!(disp.activate_host_modeless_dialog(&mut bus, target.id, target.revision));
+    assert!(!disp.event_queue.iter().any(|event| event.what == 8));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[0]);
+    disp.dispatch_window(true, 0x116, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(!disp.activate_host_modeless_dialog(&mut bus, target.id, target.revision));
+}
+
+#[test]
+fn host_modeless_items_text_and_close_arrive_through_dialog_select_and_track_go_away() {
+    use crate::systems::macintosh::host_ui::{DialogReply, DialogTextReply};
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    for bounds in [(80, 90, 200, 330), (120, 140, 240, 380)] {
+        let ditl = build_test_ditl_items(&[
+            (4, (60, 100, 80, 170), b"OK"),
+            (16, (20, 20, 36, 200), b"draft"),
+        ]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    let target = views[1].1.clone();
+    assert!(target.closable);
+    let before = bus.read_bytes(screen, 640 * 480);
+    let event_ptr = 0x300000u32;
+    let dialog_out_ptr = 0x300100u32;
+    let item_hit_ptr = 0x300104u32;
+    let mut dialog_select =
+        |disp: &mut TrapDispatcher, bus: &mut MacMemoryBus, point: (i16, i16)| {
+            bus.write_word(event_ptr, 1);
+            bus.write_long(event_ptr + 2, 0);
+            bus.write_long(event_ptr + 6, 0);
+            bus.write_word(event_ptr + 10, point.0 as u16);
+            bus.write_word(event_ptr + 12, point.1 as u16);
+            bus.write_word(event_ptr + 14, 0);
+            bus.write_long(dialog_out_ptr, 0);
+            bus.write_word(item_hit_ptr, 0);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, item_hit_ptr);
+            bus.write_long(TEST_SP + 4, dialog_out_ptr);
+            bus.write_long(TEST_SP + 8, event_ptr);
+            disp.dispatch_dialog(true, 0x180, &mut cpu, bus)
+                .unwrap()
+                .unwrap();
+            (
+                bus.read_byte(TEST_SP + 12),
+                bus.read_long(dialog_out_ptr),
+                bus.read_word(item_hit_ptr),
+            )
+        };
+
+    // Stale or blocked intents are rejected before any activation.
+    let stale = DialogReply {
+        id: target.id,
+        revision: target.revision + 1,
+        item: 1,
+    };
+    assert!(disp.reply_host_modeless_dialog(&mut bus, &stale).is_none());
+    assert_eq!(disp.front_window, dialogs[1]);
+
+    // An item on the obscured dialog selects it first, then reaches DialogSelect.
+    let edit_handle = bus.read_long(dialogs[0] + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+    let point = disp
+        .reply_host_modeless_dialog(
+            &mut bus,
+            &DialogReply {
+                id: target.id,
+                revision: target.revision,
+                item: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(disp.front_window, dialogs[0]);
+    assert_eq!(disp.window_list.windows()[0], dialogs[0]);
+    assert!(disp.host_modeless_dialog_at(&bus, point.0, point.1));
+    assert!(!disp.host_modeless_dialog_at(&bus, 400, 600));
+    assert_eq!(
+        dialog_select(&mut disp, &mut bus, point),
+        (1, dialogs[0], 1)
+    );
+    // A staged click is consumed once; repeating the point is an ordinary click.
+    assert_eq!(
+        dialog_select(&mut disp, &mut bus, point),
+        (1, dialogs[0], 1)
+    );
+    assert_eq!(
+        bus.read_long(dialogs[0] + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET),
+        edit_handle
+    );
+
+    // Text updates TextEdit in place without delivering a click.
+    let view = disp
+        .host_modeless_dialogs(&mut bus, false)
+        .into_iter()
+        .find(|(_, v)| v.id == target.id)
+        .unwrap()
+        .1;
+    let text = DialogTextReply {
+        id: view.id,
+        revision: view.revision,
+        serial: 1,
+        expected: "draft".into(),
+        item: 2,
+        text: "host value".into(),
+        selection: (4, 4),
+    };
+    assert!(disp
+        .reply_host_modeless_dialog_text(
+            &mut bus,
+            &DialogTextReply {
+                expected: "other".into(),
+                ..text.clone()
+            }
+        )
+        .is_none());
+    let edited = disp
+        .reply_host_modeless_dialog_text(&mut bus, &text)
+        .unwrap()
+        .expect("the edit is reported like a keystroke");
+    let before_selection = disp
+        .host_modeless_dialogs(&mut bus, false)
+        .into_iter()
+        .find(|(_, v)| v.id == target.id)
+        .unwrap()
+        .1
+        .items
+        .into_iter()
+        .find(|i| i.number == 2)
+        .unwrap()
+        .selection;
+    assert_eq!(
+        dialog_select(&mut disp, &mut bus, edited),
+        (1, dialogs[0], 2)
+    );
+    assert_eq!(
+        before_selection,
+        Some((4, 4)),
+        "no caret move from the staged click"
+    );
+    let view = disp
+        .host_modeless_dialogs(&mut bus, false)
+        .into_iter()
+        .find(|(_, v)| v.id == target.id)
+        .unwrap()
+        .1;
+    let edit = view.items.iter().find(|i| i.number == 2).unwrap();
+    assert_eq!(edit.text, "host value");
+    assert_eq!(edit.selection, Some((4, 4)));
+    assert!(view.revision > target.revision);
+
+    // Close delivers a go-away click that TrackGoAway accepts after release.
+    let close = disp
+        .host_modeless_close_position(&mut bus, view.id, view.revision)
+        .unwrap();
+    assert!(disp.host_modeless_dialog_at(&bus, close.0, close.1));
+    disp.event_queue.clear();
+    disp.push_mouse_down(close.0, close.1);
+    disp.push_mouse_up(close.0, close.1);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_word(TEST_SP, close.0 as u16);
+    bus.write_word(TEST_SP + 2, close.1 as u16);
+    bus.write_long(TEST_SP + 4, dialogs[0]);
+    bus.write_word(TEST_SP + 8, 0);
+    disp.dispatch_window(true, 0x11E, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(TEST_SP + 8), 0x0100);
+    assert!(!disp.event_queue.iter().any(|event| event.what == 2));
+    assert_eq!(bus.read_bytes(screen, 640 * 480), before);
+
+    // Views published while a modal owns events are busy and cannot be replayed.
+    let view = disp.host_modeless_dialogs(&mut bus, true);
+    assert!(view.iter().all(|(_, v)| v.busy));
+    let busy = &view[0].1;
+    assert!(disp
+        .reply_host_modeless_dialog(
+            &mut bus,
+            &DialogReply {
+                id: busy.id,
+                revision: busy.revision,
+                item: 1
+            }
+        )
+        .is_none());
+}
+
+#[test]
+fn guest_drawn_modeless_dialogs_are_reported_for_host_framing() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    // A user item keeps guest drawing; a standard button is projected.
+    for (bounds, kind) in [((80, 90, 200, 330), 0u8), ((120, 140, 240, 380), 4u8)] {
+        let ditl = build_test_ditl_items(&[(kind, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    let projected = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(projected.len(), 1);
+    let surfaces = disp.guest_modeless_surfaces(&bus);
+    assert_eq!(surfaces.len(), 1, "only the guest-drawn dialog is framed");
+    let (_, (id, _, bounds)) = &surfaces[0];
+    assert_eq!(Some(*id), disp.host_ui.dialog_identity(dialogs[0]));
+    assert_eq!(*bounds, (80, 90, 200, 330));
+    // Hiding the window removes its frame.
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, dialogs[0]);
+    disp.dispatch_window(true, 0x116, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.guest_modeless_surfaces(&bus).is_empty());
+}
+
+#[test]
+fn host_modeless_click_completes_an_application_track_control() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let ditl = build_test_ditl_items(&[
+        (4, (60, 100, 80, 170), b"OK"),
+        (5, (20, 20, 36, 200), b"Wrap"),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let dialog = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    )
+    .1;
+    for (item, part) in [(1i16, 10u16), (2, 11)] {
+        let view = disp.host_modeless_dialogs(&mut bus, false)[0].1.clone();
+        let point = disp
+            .reply_host_modeless_dialog(
+                &mut bus,
+                &DialogReply {
+                    id: view.id,
+                    revision: view.revision,
+                    item,
+                },
+            )
+            .unwrap();
+        let handle = disp.dialog_control_handle_for_item(dialog, item).unwrap();
+        // The application converts the event point to local coordinates.
+        let local = (point.0 - 80, point.1 - 90);
+        let track = |disp: &mut TrapDispatcher, cpu: &mut MockCpu, bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, local.0 as u16);
+            bus.write_word(TEST_SP + 6, local.1 as u16);
+            bus.write_long(TEST_SP + 8, handle);
+            bus.write_word(TEST_SP + 12, 0xBEEF);
+            disp.dispatch_control(true, 0x168, cpu, bus)
+                .unwrap()
+                .unwrap();
+            (cpu.read_reg(Register::A7), bus.read_word(TEST_SP + 12))
+        };
+        assert_eq!(track(&mut disp, &mut cpu, &mut bus), (TEST_SP + 12, part));
+        assert!(
+            disp.control_tracking.is_none(),
+            "no live tracking with the button up"
+        );
+        // The staged click is consumed; DialogSelect no longer sees it.
+        assert!(disp.host_ui.take_host_click(dialog, point, false).is_none());
+    }
+}
+
+#[test]
+fn projected_modeless_dialogs_survive_guest_move_resize_and_arbitrary_stacking() {
+    use crate::systems::macintosh::host_ui::DialogReply;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    let screen = install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let mut dialogs = Vec::new();
+    for bounds in [
+        (60, 60, 180, 300),
+        (100, 120, 220, 360),
+        (140, 180, 260, 420),
+    ] {
+        let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+        let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+        dialogs.push(
+            call_new_dialog_for_test(
+                &mut disp,
+                &mut cpu,
+                &mut bus,
+                0,
+                bounds,
+                true,
+                4,
+                u32::MAX,
+                items,
+            )
+            .1,
+        );
+    }
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 3);
+    let background = bus.read_bytes(screen, 640 * 480);
+    let mut window_trap = |disp: &mut TrapDispatcher,
+                           bus: &mut MacMemoryBus,
+                           trap: u16,
+                           args: &[u16],
+                           window: u32| {
+        cpu.write_reg(Register::A7, TEST_SP);
+        for (index, word) in args.iter().enumerate() {
+            bus.write_word(TEST_SP + index as u32 * 2, *word);
+        }
+        bus.write_long(TEST_SP + args.len() as u32 * 2, window);
+        disp.dispatch_window(true, trap, &mut cpu, bus)
+            .unwrap()
+            .unwrap();
+        // Projection runs as the desktop publishes each frame.
+        disp.host_modeless_dialogs(bus, false)
+    };
+    // Every stacking order, hide/show and selection keeps the guest
+    // framebuffer free of host-owned dialog pixels.
+    for order in [[0usize, 1, 2], [2, 0, 1], [1, 2, 0], [0, 2, 1]] {
+        for index in order {
+            window_trap(&mut disp, &mut bus, 0x11F, &[], dialogs[index]); // SelectWindow
+            assert_eq!(bus.read_bytes(screen, 640 * 480), background, "{order:?}");
+        }
+        let views = disp.host_modeless_dialogs(&mut bus, false);
+        assert_eq!(
+            views
+                .iter()
+                .map(|(_, v)| disp.host_ui.dialog_pointer(v.id).unwrap())
+                .collect::<Vec<_>>(),
+            order.iter().rev().map(|i| dialogs[*i]).collect::<Vec<_>>(),
+            "inventory follows guest front-to-back order"
+        );
+    }
+    window_trap(&mut disp, &mut bus, 0x116, &[], dialogs[1]); // HideWindow
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 2);
+    window_trap(&mut disp, &mut bus, 0x115, &[], dialogs[1]); // ShowWindow
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 3);
+    assert_eq!(bus.read_bytes(screen, 640 * 480), background);
+
+    // MoveWindow and SizeWindow keep the identity; clicks target the new geometry.
+    let id = disp.host_ui.dialog_identity(dialogs[0]).unwrap();
+    window_trap(&mut disp, &mut bus, 0x11B, &[0xff00, 200, 30], dialogs[0]); // MoveWindow(h=30, v=200, front)
+    window_trap(&mut disp, &mut bus, 0x11D, &[0xff00, 150, 260], dialogs[0]); // SizeWindow(w=260, h=150)
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    let view = views
+        .iter()
+        .map(|(_, v)| v)
+        .find(|v| v.id == id)
+        .unwrap()
+        .clone();
+    assert_eq!(view.size, (260, 150));
+    let point = disp
+        .reply_host_modeless_dialog(
+            &mut bus,
+            &DialogReply {
+                id,
+                revision: view.revision,
+                item: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(point, (200 + 70, 30 + 135));
+    assert_eq!(bus.read_bytes(screen, 640 * 480), background);
+}
+
+#[test]
+fn dialogs_with_help_items_project_and_carry_hdlg_balloons() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    // hdlg 300: header (item index 0, two records), missing record, item 1.
+    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
+    hdlg.extend([0, 4, 1, 0]);
+    let mut first = vec![0u8; 12];
+    first.extend(b"\x0fApplies changes");
+    first.push(0);
+    hdlg.extend(((first.len() + 4) as i16).to_be_bytes());
+    hdlg.extend(1i16.to_be_bytes());
+    hdlg.extend(first);
+    disp.install_test_resource(&mut bus, *b"hdlg", 300, &hdlg);
+    let ditl = build_test_ditl_items(&[
+        (4, (60, 100, 80, 170), b"OK"),
+        (1, (0, 0, 0, 0), &[0, 1, 1, 44]),
+    ]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(
+        views.len(),
+        1,
+        "a help item no longer forces guest rendering"
+    );
+    assert!(
+        views[0].1.help.is_empty(),
+        "help is published only with Balloon Help on"
+    );
+    disp.host_ui.balloons_enabled = true;
+    disp.host_ui
+        .invalidate_dialog_snapshot(disp.host_ui.dialog_pointer(views[0].1.id).unwrap());
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(views[0].1.help, vec![(1, "Applies changes".to_string())]);
+    assert!(views[0]
+        .1
+        .items
+        .iter()
+        .all(|item| item.kind != 1 || item.rect == (0, 0, 0, 0)));
+}
+
+#[test]
+fn hwin_assigns_dialog_and_window_balloons_to_projected_and_guest_drawn_windows() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.host_ui.enabled = true;
+    disp.host_ui.balloons_enabled = true;
+    install_new_dialog_test_screen(&mut disp, &mut bus, 0x77);
+    let component = |id: i16, kind: &[u8; 4], length: i16, title: &[u8]| {
+        let mut bytes = id.to_be_bytes().to_vec();
+        bytes.extend(kind);
+        bytes.extend(length.to_be_bytes());
+        bytes.push(title.len() as u8);
+        bytes.extend(title);
+        if bytes.len() % 2 == 1 {
+            bytes.push(0);
+        }
+        bytes
+    };
+    // hwin: window kind -9 uses hrct 310; titles starting "Life" use hdlg 301.
+    let mut hwin = vec![0, 2, 0, 0, 0, 0, 0, 2];
+    hwin.extend(component(310, b"hrct", -9, b""));
+    hwin.extend(component(301, b"hdlg", 4, b"Life"));
+    disp.install_test_resource(&mut bus, *b"hwin", 200, &hwin);
+    let mut hdlg = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 1, 0];
+    let mut first = vec![0u8; 12];
+    first.extend(b"\x08Confirms");
+    hdlg.extend(((first.len() + 4) as i16).to_be_bytes());
+    hdlg.extend(1i16.to_be_bytes());
+    hdlg.extend(first);
+    disp.install_test_resource(&mut bus, *b"hdlg", 301, &hdlg);
+    let mut hrct = vec![0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let mut rect = vec![0, 5, 0, 5, 0, 0, 0, 0, 0, 20, 0, 100];
+    rect.extend(b"\x07Toolbar");
+    hrct.extend(((rect.len() + 4) as i16).to_be_bytes());
+    hrct.extend(1i16.to_be_bytes());
+    hrct.extend(rect);
+    disp.install_test_resource(&mut bus, *b"hrct", 310, &hrct);
+
+    // A projected dialog without a help item takes its hdlg from the hwin.
+    let ditl = build_test_ditl_items(&[(4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (80, 90, 200, 330),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    let views = disp.host_modeless_dialogs(&mut bus, false);
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].1.help, vec![(1, "Confirms".to_string())]);
+    assert!(
+        disp.guest_window_help(&mut bus).is_empty(),
+        "projected dialogs are egui windows, not guest pane regions"
+    );
+
+    // A guest-drawn dialog (a user item) gets hot regions at its items.
+    let ditl = build_test_ditl_items(&[(0, (10, 10, 40, 60), b""), (4, (60, 100, 80, 170), b"OK")]);
+    let (items, _) = install_ditl_handle_for_test(&mut bus, &ditl);
+    let (_, guest) = call_new_dialog_for_test(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        0,
+        (220, 300, 340, 540),
+        true,
+        4,
+        u32::MAX,
+        items,
+    );
+    assert_eq!(disp.host_modeless_dialogs(&mut bus, false).len(), 1);
+    let help = disp.guest_window_help(&mut bus);
+    assert_eq!(help.len(), 1);
+    assert_eq!(help[0].bounds, (220, 300, 340, 540));
+    assert_eq!(
+        help[0].occlusion_bounds,
+        disp.window_structure_rect(&bus, guest).unwrap()
+    );
+    assert!(help[0].occlusion_bounds.0 < help[0].bounds.0);
+    assert_eq!(
+        help[0].rects,
+        vec![((230, 310, 260, 360), "Confirms".to_string())]
+    );
+    let windows = help.clone();
+    assert_eq!(
+        crate::systems::macintosh::host_ui::window_help_at(&windows, (240, 320)),
+        Some("Confirms")
+    );
+    assert_eq!(
+        crate::systems::macintosh::host_ui::window_help_at(&windows, (300, 320)),
+        None
+    );
+
+    // Window kind matching selects the hrct, local to the window.
+    bus.write_word(guest + 108, (-9i16) as u16);
+    let help = disp.guest_window_help(&mut bus);
+    assert_eq!(
+        help[0].rects,
+        vec![((220, 300, 240, 400), "Toolbar".to_string())]
+    );
+}
+
+
     #[test]
     fn dialog_application_cdef_drawing_preserves_underlying_content() {
         for retained in [false, true] {
@@ -22461,6 +24765,10 @@
             }
         }
     }
+
+
+
+
 
     #[test]
     fn disabled_dialog_edit_field_has_live_textedit_layout() {
@@ -22550,6 +24858,10 @@
         assert_eq!(bus.read_bytes(bus.read_long(first), message.len()), message);
     }
 
+
+
+
+
     #[test]
     fn dialog_redraw_preserves_setctitle_for_standard_controls() {
         fn render(item_type: u8, initial: &[u8], replacement: Option<&[u8]>) -> Vec<u8> {
@@ -22602,3 +24914,7 @@
             );
         }
     }
+
+
+
+
