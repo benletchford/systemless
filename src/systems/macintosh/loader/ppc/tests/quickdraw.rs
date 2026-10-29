@@ -7351,3 +7351,33 @@ fn picture_renderer_preserves_pixels_outside_clip_for_indexed_direct_and_quilt()
         }
     }
 }
+
+#[test]
+fn pt2rect_handles_reversed_signed_coordinates_and_preserves_return_register() {
+    let target = PpcImportDispatcherTarget::Pt2Rect;
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Pt2Rect"),
+        target
+    );
+    assert_eq!(dispatcher_target_for_import("CarbonLib", "Pt2Rect"), target);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Pt2Rect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    for (first, second, expected) in [
+        ((-20i16, 30i16), (40i16, -50i16), (-20, -50, 40, 30)),
+        (
+            (i16::MAX, i16::MIN),
+            (i16::MIN, i16::MAX),
+            (i16::MIN, i16::MIN, i16::MAX, i16::MAX),
+        ),
+        ((4, 5), (4, 5), (4, 5, 4, 5)),
+    ] {
+        loaded.cpu.gpr[3] = (u32::from(first.0 as u16) << 16) | u32::from(first.1 as u16);
+        loaded.cpu.gpr[4] = (u32::from(second.0 as u16) << 16) | u32::from(second.1 as u16);
+        loaded.cpu.gpr[5] = rect;
+        let preserved = loaded.cpu.gpr[3];
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], preserved);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some(expected));
+    }
+}

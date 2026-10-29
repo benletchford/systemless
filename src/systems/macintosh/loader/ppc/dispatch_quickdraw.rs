@@ -580,6 +580,23 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::Pt2Rect => {
+            let v1 = (cpu.gpr[3] >> 16) as u16 as i16;
+            let h1 = cpu.gpr[3] as u16 as i16;
+            let v2 = (cpu.gpr[4] >> 16) as u16 as i16;
+            let h2 = cpu.gpr[4] as u16 as i16;
+            if cpu.gpr[5] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[5], 8) {
+                let _ = ppc_write_rect(
+                    memory,
+                    cpu.gpr[5],
+                    v1.min(v2),
+                    h1.min(h2),
+                    v1.max(v2),
+                    h1.max(h2),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::SectRect => {
             // Imaging With QuickDraw (1994), 3-55: SectRect writes the
             // non-empty intersection, otherwise the canonical empty Rect.
