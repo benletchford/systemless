@@ -58,17 +58,22 @@ artifacts:
     - https://macos.retro-os.live/jdownloads/MacOS%20Files/Color%20Apps/Maelstrom_1.4.3_Installer.bin
     - https://www.macintoshrepository.org/4478-maelstrom
     - https://sources.debian.org/src/maelstrom/1.4.3-L2.0.6-13/Doc/Ambrosia.FAQ
+    - https://github.com/benletchford/systemless/issues/5271
     license: Ambrosia Software shareware
     rights_holder: Ambrosia Software, Inc.
     permission: >-
-      Ambrosia's shareware FAQ encourages users to copy its products and give them to
-      friends, subject to paying after the 30-day evaluation period.
+      The bundled Maelstrom License permits non-profit distribution without prior
+      notice when the software is complete and unmodified. Distribution for profit
+      requires written permission. The unregistered game is licensed for 30 days
+      from receipt, after which registration is required.
     notes: >-
       Untouched Maelstrom 1.4.3 MacBinary installer independently retrieved on
       2026-09-15. The 1,156,480-byte file has SHA-256
       194be3d54a5969336c99260829e808f5a2af1a19ce720bacc80bbc0bad507fa0. Its
       SHA-1, 1413d439dd4a25ecaa8f968f67c920aeab3d7e98, matches the separately
-      catalogued copy at Macintosh Repository.
+      catalogued copy at Macintosh Repository. The included Maelstrom License.text
+      data fork is 2,477 bytes with SHA-256
+      2bf40b030496bec57dedf6dcb61900ad9a04c3720bcc7ee2757f5dab0573b764.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -110,4 +115,4 @@ The details give it its own character. Rocks tumble rather than merely slide, th
 
 ## Shareware
 
-Ambrosia released the complete game as shareware with a 30-day evaluation period. Its contemporary FAQ actively encouraged people to copy the software for friends, while asking players who kept it to register.
+Ambrosia released the complete game as shareware with a 30-day evaluation period. The bundled licence permits non-profit distribution of the complete, unmodified software; distribution for profit requires written permission. Players who keep it beyond the evaluation period must register.
