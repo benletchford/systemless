@@ -4720,6 +4720,150 @@ fn quicktime_callback_type_returns_signed_short_flags_and_preserves_time_base() 
 }
 
 #[test]
+fn movie_active_segment_bounds_playback_and_time_record_seeking() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"SetMovieActiveSegment",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 6000;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 600;
+    let op = |operation| PpcImportDispatcherTarget::QuickTimeCompatibility(operation);
+    let record = PPC_STACK_TOP - 64;
+    for (symbol, operation) in [
+        (
+            "SetMovieActiveSegment",
+            PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment,
+        ),
+        (
+            "GetMovieActiveSegment",
+            PpcQuickTimeCompatibilityOperation::GetMovieActiveSegment,
+        ),
+        (
+            "SetMovieTime",
+            PpcQuickTimeCompatibilityOperation::SetMovieTime,
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("QuickTimeLib", symbol),
+            op(operation)
+        );
+    }
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1200;
+    loaded.cpu.gpr[5] = 1800;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment),
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = record;
+    loaded.cpu.gpr[5] = record + 4;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::GetMovieActiveSegment),
+    );
+    assert_eq!(loaded.memory.read_u32_be(record), Some(1200));
+    assert_eq!(loaded.memory.read_u32_be(record + 4), Some(1800));
+
+    loaded.memory.write_u64_be(record, 4).unwrap();
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, 0).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = record;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieTime),
+    );
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        2400
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QtGoToBeginningOfMovie,
+    );
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        1200
+    );
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtGoToEndOfMovie);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        3000
+    );
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_playback_rate = -0x10000;
+    let mut sound = PpcSoundState::default();
+    loaded.quicktime.movie_clock_subtick = None;
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 0);
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 600_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        1200
+    );
+    assert!(!loaded.quicktime.movie_started);
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_playback_rate = 0x10000;
+    loaded.quicktime.movie_clock_subtick = None;
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 0);
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 600_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        3000
+    );
+    assert!(!loaded.quicktime.movie_started);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 1200;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieTimeScale),
+    );
+    assert_eq!(loaded.quicktime.movie_active_segment, Some((2400, 3600)));
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = 100;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment),
+    );
+    assert_eq!(loaded.quicktime.movie_error, -2014);
+    assert_eq!(loaded.quicktime.movie_active_segment, Some((2400, 3600)));
+    loaded.memory.write_u32_be(record + 8, 0).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = record;
+    let before = dispatch_quicktime::quicktime_callback_time(&loaded.quicktime);
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieTime),
+    );
+    assert_eq!(loaded.quicktime.movie_error, PPC_PARAM_ERR);
+    assert_eq!(dispatch_quicktime::quicktime_callback_time(&loaded.quicktime), before);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = u32::MAX;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment),
+    );
+    assert_eq!(loaded.quicktime.movie_active_segment, None);
+    loaded.memory.write_u32_be(record + 4, 0x12345678).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = record;
+    loaded.cpu.gpr[5] = record + 4;
+    run_test_import(
+        &mut loaded,
+        op(PpcQuickTimeCompatibilityOperation::GetMovieActiveSegment),
+    );
+    assert_eq!(loaded.memory.read_u32_be(record), Some(u32::MAX));
+    assert_eq!(loaded.memory.read_u32_be(record + 4), Some(0x12345678));
+}
+
+#[test]
 fn movie_time_follows_set_movie_time_value() {
     let pef = synthetic_pef_with_import(b"SetMovieTimeValue");
     let mut loaded = load_pef_application(&pef).unwrap();

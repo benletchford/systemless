@@ -895,6 +895,15 @@ pub(super) fn dispatch_movie_toolbox(
             } else if scale <= 0 {
                 PPC_PARAM_ERR
             } else {
+                if let Some((start, duration)) = quicktime.movie_active_segment {
+                    let old_scale = u64::from(quicktime.movie_time_scale.max(1));
+                    let new_scale = u64::from(scale as u32);
+                    quicktime.movie_active_segment = Some((
+                        (u64::from(start) * new_scale / old_scale).min(u64::from(u32::MAX)) as u32,
+                        (u64::from(duration) * new_scale / old_scale).min(u64::from(u32::MAX))
+                            as u32,
+                    ));
+                }
                 quicktime.movie_time_scale = scale as u32;
                 PPC_NO_ERR
             };

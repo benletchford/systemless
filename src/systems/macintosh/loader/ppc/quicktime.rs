@@ -54,7 +54,10 @@ const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
     GetMovieTime,
+    SetMovieTime,
     SetMovieTimeValue,
+    GetMovieActiveSegment,
+    SetMovieActiveSegment,
     NewCallBack,
     DisposeCallBack,
     CancelCallBack,
@@ -316,6 +319,7 @@ pub struct PpcQuickTimeState {
     pub movie_started: bool,
     pub movie_active: bool,
     pub movie_time_scale: u32,
+    pub movie_active_segment: Option<(u32, u32)>,
     pub movie_preferred_rate: i32,
     pub movie_playback_rate: i32,
     pub movie_preferred_volume: i16,
@@ -397,6 +401,7 @@ impl Default for PpcQuickTimeState {
             movie_started: false,
             movie_active: false,
             movie_time_scale: 600,
+            movie_active_segment: None,
             movie_preferred_rate: 0x0001_0000,
             movie_playback_rate: 0x0001_0000,
             movie_preferred_volume: 0x0100,
@@ -555,6 +560,74 @@ pub(super) fn dispatch_quicktime_compatibility(
             }
             let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
             PpcImportAction::Return(time.min(u64::from(u32::MAX)) as u32)
+        }
+        PpcQuickTimeCompatibilityOperation::SetMovieTime => {
+            let error = if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                -2010
+            } else {
+                let record = cpu.gpr[4];
+                let time = memory.read_u64_be(record);
+                let scale = record.checked_add(8).and_then(|p| memory.read_u32_be(p));
+                let base = record.checked_add(12).and_then(|p| memory.read_u32_be(p));
+                if let (Some(time), Some(scale), Some(base)) = (time, scale, base) {
+                    if record != 0 && scale as i32 > 0 && (base == 0 || base == PPC_QT_TIME_BASE) {
+                        let time = (i128::from(time as i64).max(0)
+                            * i128::from(quicktime.movie_time_scale)
+                            / i128::from(scale))
+                        .min(i128::from(u64::MAX)) as u64;
+                        ppc_qt_seek_movie(quicktime, sound, time);
+                        PPC_NO_ERR
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                } else {
+                    PPC_PARAM_ERR
+                }
+            };
+            let _ = ppc_qt_record_error(quicktime, error);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::GetMovieActiveSegment => {
+            if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                if cpu.gpr[4] != 0 {
+                    let start = quicktime
+                        .movie_active_segment
+                        .map_or(u32::MAX, |segment| segment.0);
+                    let _ = memory.write_u32_be(cpu.gpr[4], start);
+                }
+                if let Some((_, duration)) = quicktime.movie_active_segment {
+                    if cpu.gpr[5] != 0 {
+                        let _ = memory.write_u32_be(cpu.gpr[5], duration);
+                    }
+                }
+                let _ = ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            } else {
+                let _ = ppc_qt_record_error(quicktime, -2010);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::SetMovieActiveSegment => {
+            let start = cpu.gpr[4] as i32;
+            let duration = cpu.gpr[5] as i32;
+            let error = if !compatibility_valid_movie(quicktime, cpu.gpr[3]) {
+                -2010
+            } else if start == -1 {
+                quicktime.movie_active_segment = None;
+                PPC_NO_ERR
+            } else if start < 0 || u64::from(start as u32) > ppc_qt_movie_duration_value(quicktime)
+            {
+                -2015
+            } else if duration < 0
+                || u64::from(start as u32) + u64::from(duration as u32)
+                    > ppc_qt_movie_duration_value(quicktime)
+            {
+                -2014
+            } else {
+                quicktime.movie_active_segment = Some((start as u32, duration as u32));
+                PPC_NO_ERR
+            };
+            let _ = ppc_qt_record_error(quicktime, error);
+            PpcImportAction::ReturnPreserve
         }
         PpcQuickTimeCompatibilityOperation::SetMovieTimeValue => {
             // Inside Macintosh: QuickTime (1993), p. 2-172: move the movie to
@@ -1177,6 +1250,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             // newMovieActive is bit 0 of the creation flags (pp. 2-109–2-110).
             quicktime.movie_active = cpu.gpr[6] & 1 != 0;
             quicktime.movie_task_count = 0;
+            quicktime.movie_active_segment = None;
             quicktime.movie_task_fraction = 0;
             quicktime.movie_clock_remainder = 0;
             quicktime.movie_disposed = false;
@@ -3882,6 +3956,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
     // newMovieActive is bit 0 of newMovieFlags (pp. 2-88–2-89).
     quicktime.movie_active = cpu.gpr[7] & 1 != 0;
     quicktime.movie_task_count = 0;
+    quicktime.movie_active_segment = None;
     quicktime.movie_task_fraction = 0;
     quicktime.movie_clock_remainder = 0;
     quicktime.movie_disposed = false;
@@ -4186,13 +4261,12 @@ pub(crate) fn ppc_qt_go_to_beginning_of_movie(
         return PPC_PARAM_ERR;
     }
     quicktime.movie_beginning_count = quicktime.movie_beginning_count.saturating_add(1);
-    quicktime.movie_at_beginning = true;
     quicktime.movie_started = false;
-    quicktime.movie_task_count = 0;
-    quicktime.movie_task_fraction = 0;
-    quicktime.movie_clock_remainder = 0;
-    ppc_qt_reset_movie_video_decode_cache(quicktime);
-    ppc_qt_stop_movie_audio(sound);
+    let start = quicktime
+        .movie_active_segment
+        .map_or(0, |segment| u64::from(segment.0));
+    ppc_qt_seek_movie(quicktime, sound, start);
+    quicktime.movie_at_beginning = true;
     PPC_NO_ERR
 }
 
@@ -4204,13 +4278,13 @@ pub(crate) fn ppc_qt_go_to_end_of_movie(
     if cpu.gpr[3] != PPC_QT_MOVIE || quicktime.movie_disposed {
         return PPC_PARAM_ERR;
     }
-    quicktime.movie_at_beginning = false;
     quicktime.movie_started = false;
-    quicktime.movie_task_count = quicktime.movie_tasks_until_done.max(1);
-    quicktime.movie_task_fraction = 0;
-    quicktime.movie_clock_remainder = 0;
-    ppc_qt_reset_movie_video_decode_cache(quicktime);
-    ppc_qt_stop_movie_audio(sound);
+    let end = quicktime.movie_active_segment.map_or_else(
+        || ppc_qt_movie_duration_value(quicktime),
+        |segment| u64::from(segment.0) + u64::from(segment.1),
+    );
+    ppc_qt_seek_movie(quicktime, sound, end);
+    quicktime.movie_at_beginning = false;
     PPC_NO_ERR
 }
 
@@ -4286,6 +4360,14 @@ pub(crate) fn ppc_qt_set_movie_rate(
     if rate == 0 {
         return ppc_qt_stop_movie(cpu, quicktime, sound);
     }
+    if let Some((start, length)) = quicktime.movie_active_segment {
+        let time = super::dispatch_quicktime::quicktime_callback_time(quicktime).max(0) as u64;
+        let start = u64::from(start);
+        let stop = start + u64::from(length);
+        if time < start || time > stop {
+            ppc_qt_seek_movie(quicktime, sound, time.clamp(start, stop));
+        }
+    }
     quicktime.movie_started = true;
     quicktime.movie_at_beginning = false;
     if !quicktime.movie_active {
@@ -4360,18 +4442,25 @@ pub(crate) fn ppc_qt_service_clock(
     let delta = numerator / denominator;
     quicktime.movie_clock_remainder = numerator % denominator;
     let limit = tasks << 16;
+    let (start, stop) = quicktime
+        .movie_active_segment
+        .map_or((0, limit), |(start, length)| {
+            let stop = i128::from(u64::from(start) + u64::from(length)) * limit / duration;
+            let start = i128::from(start) * limit / duration;
+            (start.clamp(0, limit), stop.clamp(0, limit))
+        });
     let position = ((i128::from(quicktime.movie_task_count) << 16)
         + i128::from(quicktime.movie_task_fraction))
     .saturating_add(delta)
-    .clamp(0, limit);
+    .clamp(start, stop);
     quicktime.movie_task_count = (position >> 16) as u32;
     quicktime.movie_task_fraction = position as u16;
-    quicktime.movie_at_beginning = position == 0;
+    quicktime.movie_at_beginning = position == start;
     let after = super::dispatch_quicktime::quicktime_callback_time(quicktime);
     quicktime
         .callbacks
         .mark_time_due(PPC_QT_TIME_BASE, before, after, quicktime.movie_time_scale);
-    if (rate > 0 && position == limit) || (rate < 0 && position == 0) {
+    if (rate > 0 && position == stop) || (rate < 0 && position == start) {
         quicktime.movie_started = false;
         quicktime.movie_clock_remainder = 0;
         ppc_qt_stop_movie_audio(sound);
@@ -4385,8 +4474,8 @@ pub(crate) fn ppc_qt_service_clock(
         quicktime.callbacks.mark_event(
             PPC_QT_TIME_BASE,
             callbacks::Event::Extremes {
-                start: position == 0,
-                stop: position == limit,
+                start: position == start,
+                stop: position == stop,
             },
         );
     }
