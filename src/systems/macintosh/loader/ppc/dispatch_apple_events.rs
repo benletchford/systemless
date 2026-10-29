@@ -936,6 +936,21 @@ pub(super) fn dispatch_apple_event_import(
     }
 }
 
+fn ppc_coerce_ae_integer(source_type: u32, bytes: &[u8], destination_type: u32) -> Option<Vec<u8>> {
+    let value = match source_type.to_be_bytes() {
+        [b's', b'h', b'o', b'r'] => i64::from(i16::from_be_bytes(bytes.try_into().ok()?)),
+        [b'l', b'o', b'n', b'g'] => i64::from(i32::from_be_bytes(bytes.try_into().ok()?)),
+        [b'c', b'o', b'm', b'p'] => i64::from_be_bytes(bytes.try_into().ok()?),
+        _ => return None,
+    };
+    match destination_type.to_be_bytes() {
+        [b's', b'h', b'o', b'r'] => Some(i16::try_from(value).ok()?.to_be_bytes().to_vec()),
+        [b'l', b'o', b'n', b'g'] => Some(i32::try_from(value).ok()?.to_be_bytes().to_vec()),
+        [b'c', b'o', b'm', b'p'] => Some(value.to_be_bytes().to_vec()),
+        _ => None,
+    }
+}
+
 fn ppc_write_ae_desc(
     memory: &mut PpcSectionMem,
     result: u32,
@@ -1688,8 +1703,8 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
             // AEDuplicateDesc(const AEDesc *, AEDesc *result) and
             // AECoerceDesc(const AEDesc *, DescType, AEDesc *result).
             // Inside Macintosh: Interapplication Communication (1993), 5-28
-            // and 5-35. Only identity coercions are installed, so coercing to
-            // another type fails with errAECoercionFail.
+            // and 5-35. The built-in integer coercions preserve numeric value
+            // when it fits the requested signed descriptor type.
             let source = cpu.gpr[3];
             let (to_type, result_ptr) =
                 if operation == PpcAppleEventCompatibilityOperation::CoerceDesc {
@@ -1716,8 +1731,26 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                             to_type != PPC_TYPE_WILDCARD && to_type != value.desc_type
                         }) =>
                     {
-                        let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
-                        PPC_ERR_AE_COERCION_FAIL
+                        let destination_type = to_type.unwrap();
+                        if let Some(bytes) =
+                            ppc_coerce_ae_integer(value.desc_type, &value.data, destination_type)
+                        {
+                            ppc_create_process_owned_ae_desc(
+                                process_memory_manager,
+                                memory,
+                                heap_cursor,
+                                heap_limit,
+                                last_mem_error,
+                                handles,
+                                Some(&apple_events.descriptors),
+                                result_ptr,
+                                destination_type,
+                                &bytes,
+                            )
+                        } else {
+                            let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+                            PPC_ERR_AE_COERCION_FAIL
+                        }
                     }
                     Some(value) => {
                         let result = ppc_create_process_owned_ae_desc(
@@ -1753,30 +1786,38 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
         PpcAppleEventCompatibilityOperation::CoercePtr => {
             // AECoercePtr(DescType, const void *, Size, DescType toType,
             // AEDesc *result). Inside Macintosh: Interapplication
-            // Communication (AECoercePtr). Only identity coercions are
-            // installed, as for AECoerceDesc.
+            // Communication (AECoercePtr). Use the same integer conversion
+            // rules as AECoerceDesc.
             let (type_code, data, size) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
             let (to_type, result_ptr) = (cpu.gpr[6], cpu.gpr[7]);
             let bytes =
                 ppc_memory_read_bytes(memory, data, size).or_else(|| (size == 0).then(Vec::new));
             if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
                 PPC_PARAM_ERR
-            } else if to_type != PPC_TYPE_WILDCARD && to_type != type_code {
-                let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
-                PPC_ERR_AE_COERCION_FAIL
             } else if let Some(bytes) = bytes {
-                ppc_create_process_owned_ae_desc(
-                    process_memory_manager,
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    last_mem_error,
-                    handles,
-                    Some(&apple_events.descriptors),
-                    result_ptr,
-                    type_code,
-                    &bytes,
-                )
+                let converted = if to_type == PPC_TYPE_WILDCARD || to_type == type_code {
+                    Some((type_code, bytes))
+                } else {
+                    ppc_coerce_ae_integer(type_code, &bytes, to_type)
+                        .map(|converted| (to_type, converted))
+                };
+                if let Some((result_type, bytes)) = converted {
+                    ppc_create_process_owned_ae_desc(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        Some(&apple_events.descriptors),
+                        result_ptr,
+                        result_type,
+                        &bytes,
+                    )
+                } else {
+                    let _ = ppc_write_ae_desc(memory, result_ptr, 0, 0);
+                    PPC_ERR_AE_COERCION_FAIL
+                }
             } else {
                 PPC_PARAM_ERR
             }
