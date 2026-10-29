@@ -1583,6 +1583,76 @@ pub fn draw_picture(
     (true, returned_clut)
 }
 
+// QuickTime matrices use the row-vector layout [a b u; c d v; tx ty w].
+// QuickTime 4 assumes u=v=0 and w=1; the remaining entries are 16.16.
+#[derive(Clone, Copy)]
+struct PictAffine {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    tx: f64,
+    ty: f64,
+}
+
+impl PictAffine {
+    fn sample_points(
+        self,
+        crop: (i32, i32, i32, i32),
+        frame: (i16, i16),
+        dest: (i16, i16),
+        scale: (f64, f64),
+        screen: (i32, i32),
+    ) -> impl Iterator<Item = (i32, i32, i32, i32, i32, i32)> {
+        let (top, left, bottom, right) = crop;
+        let (frame_top, frame_left) = frame;
+        let (dst_top, dst_left) = dest;
+        let (sx, sy) = scale;
+        let (a, b, c, d) = (self.a * sx, self.b * sy, self.c * sx, self.d * sy);
+        let tx = (self.tx - f64::from(frame_left)) * sx + f64::from(dst_left);
+        let ty = (self.ty - f64::from(frame_top)) * sy + f64::from(dst_top);
+        let determinant = a * d - b * c;
+        let corners = [(left, top), (right, top), (left, bottom), (right, bottom)];
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for (x, y) in corners {
+            let x = f64::from(x);
+            let y = f64::from(y);
+            let px = a * x + c * y + tx;
+            let py = b * x + d * y + ty;
+            min_x = min_x.min(px);
+            max_x = max_x.max(px);
+            min_y = min_y.min(py);
+            max_y = max_y.max(py);
+        }
+        let x0 = (min_x.floor() as i32).clamp(0, screen.0);
+        let x1 = (max_x.ceil() as i32).clamp(0, screen.0);
+        let y0 = (min_y.floor() as i32).clamp(0, screen.1);
+        let y1 = (max_y.ceil() as i32).clamp(0, screen.1);
+        (y0..y1).flat_map(move |y| {
+            (x0..x1).filter_map(move |x| {
+                if !determinant.is_finite() || determinant == 0.0 {
+                    return None;
+                }
+                let px = f64::from(x) + 0.5 - tx;
+                let py = f64::from(y) + 0.5 - ty;
+                let source_x = ((d * px - c * py) / determinant).floor() as i32;
+                let source_y = ((a * py - b * px) / determinant).floor() as i32;
+                let picture_x = ((f64::from(x) + 0.5 - f64::from(dst_left)) / sx
+                    + f64::from(frame_left))
+                .floor() as i32;
+                let picture_y = ((f64::from(y) + 0.5 - f64::from(dst_top)) / sy
+                    + f64::from(frame_top))
+                .floor() as i32;
+                (source_x >= left && source_x < right && source_y >= top && source_y < bottom)
+                    .then_some((source_x, source_y, x, y, picture_x, picture_y))
+            })
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_compressed_quicktime(
     bus: &mut MacMemoryBus,
@@ -1607,10 +1677,15 @@ fn parse_compressed_quicktime(
 
     let _version = bus.read_word(cursor);
     cursor += 2;
-    // The final row of a QuickTime MatrixRecord contains 16.16 translation.
-    // Apply it in picture coordinates before mapping the picture to its destination.
-    let matrix_dx = (bus.read_long(cursor + 24) as i32) >> 16;
-    let matrix_dy = (bus.read_long(cursor + 28) as i32) >> 16;
+    let fixed = |offset| (bus.read_long(cursor + offset) as i32) as f64 / 65536.0;
+    let matrix = PictAffine {
+        a: fixed(0),
+        b: fixed(4),
+        c: fixed(12),
+        d: fixed(16),
+        tx: fixed(24),
+        ty: fixed(28),
+    };
     cursor += 36; // MatrixRecord
     let matte_size = bus.read_long(cursor);
     cursor += 4;
@@ -1715,15 +1790,17 @@ fn parse_compressed_quicktime(
         let Some(pixels) = super::pict_image::decode(codec, &compressed, width, height) else {
             return (end, None);
         };
-        for source_y in crop_top..crop_bottom {
-            for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
-                    continue;
-                }
-                let x = ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32
-                    + i32::from(dst_left);
-                let y = ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32
-                    + i32::from(dst_top);
+        for (source_x, source_y, x, y, picture_x, picture_y) in matrix.sample_points(
+            (crop_top, crop_left, crop_bottom, crop_right),
+            (frame_top, frame_left),
+            (dst_top, dst_left),
+            (scale_x, scale_y),
+            (screen_w, screen_h),
+        ) {
+            if clip_region.is_some_and(|clip| !clip.contains(picture_y, picture_x)) {
+                continue;
+            }
+            if dst_clip_contains(dst_clip, x, y) {
                 let [r, g, b] = pixels.get_pixel(source_x as u32, source_y as u32).0;
                 let rgb = [u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257];
                 match pixel_size {
@@ -1743,15 +1820,17 @@ fn parse_compressed_quicktime(
         let Ok(pixels) = decoder.decode(&compressed) else {
             return (end, Some(source_clut));
         };
-        for source_y in crop_top..crop_bottom {
-            for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
-                    continue;
-                }
-                let x =
-                    ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
-                let y =
-                    ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+        for (source_x, source_y, x, y, picture_x, picture_y) in matrix.sample_points(
+            (crop_top, crop_left, crop_bottom, crop_right),
+            (frame_top, frame_left),
+            (dst_top, dst_left),
+            (scale_x, scale_y),
+            (screen_w, screen_h),
+        ) {
+            if clip_region.is_some_and(|clip| !clip.contains(picture_y, picture_x)) {
+                continue;
+            }
+            if dst_clip_contains(dst_clip, x, y) {
                 let pixel = pixels[source_y as usize * width + source_x as usize];
                 if pixel_size == 16 {
                     write_rgb555_pixel_clipped(
@@ -1823,15 +1902,17 @@ fn parse_compressed_quicktime(
         };
 
         let color_map = build_src_to_dst_table(&source_clut, device_clut);
-        for source_y in crop_top..crop_bottom {
-            for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
-                    continue;
-                }
-                let x =
-                    ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
-                let y =
-                    ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+        for (source_x, source_y, x, y, picture_x, picture_y) in matrix.sample_points(
+            (crop_top, crop_left, crop_bottom, crop_right),
+            (frame_top, frame_left),
+            (dst_top, dst_left),
+            (scale_x, scale_y),
+            (screen_w, screen_h),
+        ) {
+            if clip_region.is_some_and(|clip| !clip.contains(picture_y, picture_x)) {
+                continue;
+            }
+            if dst_clip_contains(dst_clip, x, y) {
                 let source_index = pixels[source_y as usize * width + source_x as usize];
                 let rgb = source_clut[usize::from(source_index)];
                 if pixel_size == 16 {
