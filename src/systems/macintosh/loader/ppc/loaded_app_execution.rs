@@ -460,6 +460,7 @@ impl PpcLoadedApp {
                         || guest_calls
                             .ready_menu_bar_build(GuestIsa::PowerPc)
                             .is_some()
+                        || ppc_resume_m68k_coercion(cpu, guest_calls.depth(), &apple_events)
                         || guest_calls.complete_powerpc_resuming_operation(
                             cpu,
                             process_memory_manager,
@@ -567,6 +568,55 @@ impl PpcLoadedApp {
                         let heap_limit = process_memory_manager
                             .native_allocation_limit(native_heap.heap_limit);
                         let handles = &mut process_memory_manager.native_handle_records().to_vec();
+                        ppc_complete_coercion_descriptor(
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            handles,
+                        );
+                        ppc_complete_coercion_handle(
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                        );
+                        if let Some(action) = ppc_continue_coercion(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            heap_limit,
+                            &mut last_mem_error,
+                            handles,
+                            &mut toolbox_startup,
+                        ) {
+                            ppc_complete_getter_coercion(
+                                cpu,
+                                guest_calls.depth(),
+                                &mut apple_events,
+                                &mut *process_memory_manager,
+                                memory,
+                                &mut heap_cursor,
+                                &mut last_mem_error,
+                                handles,
+                            );
+                            process_memory_manager.set_native_mem_error(last_mem_error);
+                            return guest_calls.externalize_powerpc_action(cpu, action);
+                        }
+                        ppc_complete_getter_coercion(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            handles,
+                        );
                         if let Some(action) = ppc_continue_ae_resolve_cleanup(
                             cpu,
                             guest_calls.depth(),
