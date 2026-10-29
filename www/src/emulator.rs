@@ -34,8 +34,8 @@ const MAX_STEPS_PER_PAINT: usize = 2_000_000;
 // Keep presentation-grace probes short so their existing drawing checks run
 // frequently after the ordinary CPU phase.
 const M68K_PRESENTATION_CPU_BATCH_INSTRUCTIONS: usize = 64;
-// Ordinary execution yields at classic traps except default TickCount reads.
-// A larger instruction cap amortizes clock polling and portable CPU traces,
+// Ordinary execution yields at classic traps except small default queries.
+// A larger instruction cap amortizes query polling and portable CPU traces,
 // while the host still rechecks its time budget between other Toolbox calls.
 const M68K_TRAP_BOUNDED_CPU_BATCH_INSTRUCTIONS: usize = 8192;
 /// Allow a short trap-free 68k drawing burst before the canvas samples RAM,

@@ -648,6 +648,9 @@ impl super::TrapDispatcher {
             let idx = first_idx;
             let event = self.event_queue.get(idx).expect("event queue index");
             if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
+                // A consumed event can highlight or close a retained dialog even
+                // though GetNextEvent returns a null event to the guest.
+                self.event_poll_requires_yield = true;
                 self.event_queue.remove(idx);
                 self.acknowledge_window_activation_event(bus, &event);
                 if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {

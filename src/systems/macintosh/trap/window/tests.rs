@@ -9428,3 +9428,42 @@ fn calcvisbehind_cannot_erase_fully_occluded_front_content() {
         &bus, back_vis, 32, 32
     ));
 }
+
+#[test]
+fn null_event_poll_that_redraws_window_picture_is_not_batchable() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.menu_bar_hidden = true;
+    let window = bus.alloc(256);
+    let screen_base = disp.screen_mode.0;
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        screen_base,
+        0,
+        0,
+        8,
+        8,
+        "",
+        2,
+        true,
+        false,
+        false,
+        0,
+    );
+    let picture = make_v1_paintrect_picture(&mut bus, (0, 0, 8, 8));
+    bus.write_long(
+        window + super::super::TrapDispatcher::WINDOW_PIC_OFFSET,
+        picture,
+    );
+    let event = bus.alloc(16);
+    let sp = TEST_SP - 8;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, event);
+    bus.write_word(sp + 4, 1 << 6);
+    let result = disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(bus.read_word(sp + 6), 0);
+    assert_eq!(bus.read_byte(screen_base), 0xff);
+    assert!(!disp.last_null_event_poll);
+}

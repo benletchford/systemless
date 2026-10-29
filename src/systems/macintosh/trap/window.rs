@@ -2439,6 +2439,7 @@ impl super::TrapDispatcher {
             let old_port = *self.current_port;
             let old_gdevice = *self.current_gdevice;
             let old_sp = cpu.read_reg(Register::A7);
+            self.event_poll_requires_yield = true;
             self.set_current_port_state(bus, cpu, window, None);
             self.begin_update_window(bus, window);
 
