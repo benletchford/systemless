@@ -964,6 +964,7 @@ pub(crate) fn dispatch_supported_import(
             screen_bits,
             current_menu_list,
             host_menu_bar_hidden: toolbox_startup.host_menu_bar_hidden,
+            tick_count: *tick_count,
         },
     ) {
         return Some(action);
