@@ -16,6 +16,18 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 41e8021975ec50054b2ccee10b7f0e16ff792dcb
+    architecture: ppc
+    environment: >-
+      Headless native replay of the unchanged shareware archive with an 8-bit
+      display and 128 MiB application partition reached character selection and
+      the loading screen. The loading screen's colors were coherent compared
+      with the severely corrupted palette on the earlier baseline. Gameplay
+      beyond loading was not checked in this replay.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/pull/5355
   - date: "2026-09-26"
     tester: Catalogue maintainer
     systemless_version: 7044bb14434783d580fca6b8ab75678d102ed14b
