@@ -511,11 +511,32 @@ pub(super) fn dispatch_drawsprocket_import(
                 ppc_dsp_context_swap_buffers(cpu, memory, draw_sprocket, gworlds),
             )))
         }
-        PpcImportDispatcherTarget::DSpContextSetClutEntries => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_set_clut_entries(cpu, memory, screen_clut)),
-        )),
+        PpcImportDispatcherTarget::DSpContextSetClutEntries => {
+            let mut context_clut =
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                    *screen_clut
+                } else {
+                    draw_sprocket.context_clut.unwrap_or(*screen_clut)
+                };
+            let result = ppc_dsp_context_set_clut_entries(cpu, memory, &mut context_clut);
+            if result == PPC_NO_ERR {
+                draw_sprocket.context_clut = Some(context_clut);
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                    *screen_clut = context_clut;
+                }
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::DSpContextGetClutEntries => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_get_clut_entries(cpu, memory, screen_clut)),
+            ppc_i16_result(ppc_dsp_context_get_clut_entries(
+                cpu,
+                memory,
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                    screen_clut
+                } else {
+                    draw_sprocket.context_clut.as_ref().unwrap_or(screen_clut)
+                },
+            )),
         )),
         PpcImportDispatcherTarget::DSpContextGetDisplayID => {
             let display_id_out_ptr = cpu.gpr[4];

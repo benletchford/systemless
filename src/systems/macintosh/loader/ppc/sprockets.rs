@@ -105,6 +105,7 @@ pub struct PpcDrawSprocketState {
     pub(crate) desktop_snapshot: Option<PpcDspDesktopSnapshot>,
     pub(crate) paused_screen_pixels: Option<(u32, Vec<u8>)>,
     pub(crate) paused_front_windows: Vec<u32>,
+    pub(crate) context_clut: Option<[[u16; 3]; 256]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +153,7 @@ impl Default for PpcDrawSprocketState {
             desktop_snapshot: None,
             paused_screen_pixels: None,
             paused_front_windows: Vec::new(),
+            context_clut: None,
         }
     }
 }
@@ -1615,6 +1617,7 @@ pub(crate) fn ppc_dsp_context_reserve(
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
     draw_sprocket.paused_screen_pixels = None;
     draw_sprocket.paused_front_windows.clear();
+    draw_sprocket.context_clut = None;
     PPC_NO_ERR
 }
 
@@ -1850,6 +1853,7 @@ pub(crate) fn ppc_dsp_context_release(
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
     draw_sprocket.paused_screen_pixels = None;
     draw_sprocket.paused_front_windows.clear();
+    draw_sprocket.context_clut = None;
     PPC_NO_ERR
 }
 
@@ -1880,6 +1884,9 @@ pub(crate) fn ppc_dsp_context_set_state(
                     return PPC_PARAM_ERR;
                 };
                 draw_sprocket.desktop_snapshot = Some(snapshot);
+                if let Some(context_clut) = &draw_sprocket.context_clut {
+                    *screen_clut = *context_clut;
+                }
                 if ppc_configure_dsp_framebuffers(
                     memory,
                     gworlds,
@@ -1905,8 +1912,13 @@ pub(crate) fn ppc_dsp_context_set_state(
             draw_sprocket.context_state = state;
         }
         PpcDspContextPlayState::Inactive => {
+            let context_clut = (draw_sprocket.context_state != PpcDspContextPlayState::Inactive)
+                .then_some(*screen_clut);
             if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
                 return PPC_PARAM_ERR;
+            }
+            if let Some(context_clut) = context_clut {
+                draw_sprocket.context_clut = Some(context_clut);
             }
             draw_sprocket.started = true;
             draw_sprocket.active_context = None;
