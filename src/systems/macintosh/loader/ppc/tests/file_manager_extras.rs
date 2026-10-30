@@ -399,6 +399,267 @@ fn create_res_file_and_fsdelete_use_the_default_directory() {
 }
 
 #[test]
+fn desktop_icon_add_get_and_size_mismatch() {
+    let mut loaded = loaded_with(b"PBDTAddIconSync");
+    let pb = SCRATCH;
+    let input = SCRATCH + 0x100;
+    let output = SCRATCH + 0x200;
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
+    loaded.memory.write_u32_be(pb + 32, input).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 4).unwrap();
+    loaded.memory.write_u8(pb + 45, 1).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 52, u32::from_be_bytes(*b"TEST"))
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 56, u32::from_be_bytes(*b"TEXT"))
+        .unwrap();
+    loaded.memory.write_bytes(input, &[1, 2, 3, 4]).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+
+    loaded.memory.write_u32_be(pb + 36, 3).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -5030);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some((-5030i16) as u16));
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTGetIconSync");
+    loaded.memory.write_u32_be(pb + 32, output).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 2).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(4));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, output, 2),
+        Some(vec![1, 2])
+    );
+    loaded.memory.write_u16_be(pb + 24, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_RF_NUM_ERR);
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTGetIconInfoSync");
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
+    loaded.memory.write_u16_be(pb + 26, 1).unwrap();
+    loaded.memory.write_u32_be(pb + 56, 0).unwrap();
+    loaded.memory.write_u8(pb + 45, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(pb + 40), Some(4));
+    assert_eq!(loaded.memory.read_u8(pb + 45), Some(1));
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 56),
+        Some(u32::from_be_bytes(*b"TEXT"))
+    );
+    loaded.memory.write_u16_be(pb + 26, 2).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -5012);
+    loaded.vfs_volumes.push(PpcVfsVolumeRecord {
+        ref_num: -2,
+        name: "Second".to_string(),
+        root_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: 0,
+        allocation_block_size: 4096,
+        clump_size: 4096,
+        free_blocks: 0,
+        bitmap_start: 0,
+        allocation_pointer: 0,
+        allocation_start: 0,
+        next_catalog_id: PPC_FIRST_DYNAMIC_DIR_ID + 1,
+        created_date: 0,
+        modified_date: 0,
+    });
+    loaded.memory.write_u16_be(pb + 24, 0x7f01).unwrap();
+    loaded.memory.write_u16_be(pb + 26, 1).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -5012);
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTAddIconSync");
+    loaded.memory.write_u32_be(pb + 32, input).unwrap();
+    loaded.memory.write_u32_be(pb + 36, 4).unwrap();
+    loaded.memory.write_bytes(input, &[5, 6, 7, 8]).unwrap();
+    loaded
+        .vfs_volumes
+        .with_mut(|volumes| volumes[0].attributes = 0x0080);
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -44);
+    loaded
+        .vfs_volumes
+        .with_mut(|volumes| volumes[0].attributes = 0x8000);
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -46);
+    loaded
+        .vfs_volumes
+        .with_mut(|volumes| volumes[0].attributes = 0);
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTGetIconSync");
+    loaded.memory.write_u32_be(pb + 32, output).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, output, 4),
+        Some(vec![5, 6, 7, 8])
+    );
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, output, 4),
+        Some(vec![1, 2, 3, 4])
+    );
+}
+
+#[test]
+fn desktop_application_registration_and_lookup() {
+    let mut loaded = loaded_with(b"PBDTAddAPPLSync");
+    let pb = SCRATCH;
+    let name = SCRATCH + 0x100;
+    for path in ["Older", "Newer"] {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.to_owned(),
+            data: Vec::new().into(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"APPL"),
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_ROOT_DIR_ID)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 52, u32::from_be_bytes(*b"TEST"))
+        .unwrap();
+    for filename in [b"Older".as_slice(), b"Newer".as_slice()] {
+        write_ppc_pstring(&mut loaded.memory, name, filename);
+        loaded.cpu.gpr[3] = pb;
+        assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    }
+    write_ppc_pstring(&mut loaded.memory, name, b"Missing");
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_FNF_ERR);
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTGetAPPLSync");
+    loaded.memory.write_u16_be(pb + 26, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Newer".as_slice())
+    );
+    assert_eq!(loaded.memory.read_u32_be(pb + 100), Some(PPC_ROOT_DIR_ID));
+    let newer_date = loaded.memory.read_u32_be(pb + 28).unwrap();
+    loaded.memory.write_u16_be(pb + 26, 1).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Older".as_slice())
+    );
+    assert!(loaded.memory.read_u32_be(pb + 28).unwrap() < newer_date);
+    loaded.memory.write_u16_be(pb + 26, 2).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Newer".as_slice())
+    );
+    loaded.memory.write_u16_be(pb + 26, 3).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -5012);
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some((-5012i16) as u16));
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Unregistered".to_owned(),
+        data: Vec::new().into(),
+        creator: u32::from_be_bytes(*b"TEST"),
+        file_type: u32::from_be_bytes(*b"APPL"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Unregistered".as_slice())
+    );
+    loaded.vfs_directories.push(PpcVfsDirectory {
+        dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+        parent_dir_id: 1,
+        path: "Second".to_owned(),
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.vfs_volumes.push(PpcVfsVolumeRecord {
+        ref_num: -2,
+        name: "Second".to_owned(),
+        root_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: 0,
+        allocation_block_size: 4096,
+        clump_size: 4096,
+        free_blocks: 0,
+        bitmap_start: 0,
+        allocation_pointer: 0,
+        allocation_start: 0,
+        next_catalog_id: PPC_FIRST_DYNAMIC_DIR_ID + 1,
+        created_date: 0,
+        modified_date: 0,
+    });
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Second/Other".to_owned(),
+        data: Vec::new().into(),
+        creator: u32::from_be_bytes(*b"TEST"),
+        file_type: u32::from_be_bytes(*b"APPL"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.memory.write_u16_be(pb + 26, 4).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), -5012);
+    loaded.memory.write_u16_be(pb + 24, 0x7f01).unwrap();
+    loaded.memory.write_u16_be(pb + 26, 1).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Other".as_slice())
+    );
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
+    loaded.memory.write_u32_be(pb + 28, 0).unwrap();
+    write_ppc_pstring(&mut loaded.memory, name, b"Older");
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTAddAPPLSync");
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    loaded.imports[0].dispatcher_target =
+        dispatcher_target_for_import("InterfaceLib", "PBDTGetAPPLSync");
+    loaded.memory.write_u16_be(pb + 26, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name).as_deref(),
+        Some(b"Older".as_slice())
+    );
+    assert!(loaded.memory.read_u32_be(pb + 28).unwrap() < newer_date);
+    loaded.memory.write_u16_be(pb + 24, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_RF_NUM_ERR);
+}
+
+#[test]
 fn desktop_database_open_inform_and_set_comment() {
     let mut loaded = loaded_with(b"PBDTOpenInform");
     let pb = SCRATCH;
@@ -407,6 +668,9 @@ fn desktop_database_open_inform_and_set_comment() {
     assert_eq!(run(&mut loaded), PPC_NO_ERR);
     let desktop_ref = loaded.memory.read_u16_be(pb + 24).unwrap();
     assert_eq!(loaded.memory.read_u32_be(pb + 28), Some(0));
+    loaded.cpu.gpr[3] = pb;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u32_be(pb + 28), Some(1));
 
     loaded.imports[0].dispatcher_target =
         dispatcher_target_for_import("InterfaceLib", "PBDTSetCommentSync");

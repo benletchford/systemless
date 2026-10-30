@@ -1054,6 +1054,8 @@ pub struct ProcessFileSystemState {
     pub(crate) next_working_directory_ref_num: SharedProcessValue<i16>,
     pub(crate) application_working_directory_ref_num: SharedProcessValue<i16>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
+    pub(crate) desktop_databases:
+        HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) next_vfs_volume_ref_num: SharedProcessValue<i16>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
@@ -1083,6 +1085,7 @@ impl Default for ProcessFileSystemState {
             next_working_directory_ref_num: SharedProcessValue::from_value(32),
             application_working_directory_ref_num: SharedProcessValue::from_value(-1),
             stdio_streams: HashMap::new(),
+            desktop_databases: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
             next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
             vfs_directories: SharedProcessValue::default(),
@@ -1168,6 +1171,176 @@ impl ProcessFileSystemState {
             self.pending_completions
                 .extend(source.pending_completions.take());
         }
+        // Reconcile catalogue directory IDs before moving any references to
+        // those directories into the target filesystem.
+        if !Rc::ptr_eq(&self.vfs_directories.0, &source.vfs_directories.0) {
+            let mut used: HashSet<u32> = self
+                .vfs_directories
+                .iter()
+                .map(|entry| entry.dir_id)
+                .collect();
+            used.extend(source.vfs_directories.iter().map(|entry| entry.dir_id));
+            used.extend(
+                self.classic_vfs_metadata
+                    .values()
+                    .map(|entry| entry.file_id),
+            );
+            used.extend(
+                source
+                    .classic_vfs_metadata
+                    .values()
+                    .map(|entry| entry.file_id),
+            );
+            let mut next = used.iter().copied().max().unwrap_or(2).saturating_add(1);
+            let mut remapped = HashMap::new();
+            for directory in source.vfs_directories.iter() {
+                let new_id = if let Some(existing) = self
+                    .vfs_directories
+                    .iter()
+                    .find(|entry| entry.path.eq_ignore_ascii_case(&directory.path))
+                {
+                    existing.dir_id
+                } else if self
+                    .vfs_directories
+                    .iter()
+                    .any(|entry| entry.dir_id == directory.dir_id)
+                    || self
+                        .classic_vfs_metadata
+                        .values()
+                        .any(|entry| entry.file_id == directory.dir_id)
+                {
+                    while used.contains(&next) {
+                        next = next.checked_add(1).expect("no free directory ID");
+                    }
+                    let fresh = next;
+                    used.insert(fresh);
+                    next = next.checked_add(1).expect("no free directory ID");
+                    fresh
+                } else {
+                    directory.dir_id
+                };
+                if new_id != directory.dir_id {
+                    remapped.insert(directory.dir_id, new_id);
+                }
+            }
+            if !remapped.is_empty() {
+                source.vfs_directories.with_mut(|directories| {
+                    for directory in directories {
+                        directory.dir_id = remapped
+                            .get(&directory.dir_id)
+                            .copied()
+                            .unwrap_or(directory.dir_id);
+                        directory.parent_dir_id = remapped
+                            .get(&directory.parent_dir_id)
+                            .copied()
+                            .unwrap_or(directory.parent_dir_id);
+                    }
+                });
+                if !Rc::ptr_eq(&self.vfs_volumes.0, &source.vfs_volumes.0) {
+                    source.vfs_volumes.with_mut(|volumes| {
+                        for volume in volumes {
+                            volume.root_dir_id = remapped
+                                .get(&volume.root_dir_id)
+                                .copied()
+                                .unwrap_or(volume.root_dir_id);
+                        }
+                    });
+                }
+                if !Rc::ptr_eq(&self.working_directories.0, &source.working_directories.0) {
+                    source.working_directories.with_mut(|directories| {
+                        for directory in directories.values_mut() {
+                            directory.dir_id = remapped
+                                .get(&directory.dir_id)
+                                .copied()
+                                .unwrap_or(directory.dir_id);
+                        }
+                    });
+                }
+                if !Rc::ptr_eq(&self.default_dir_id.0, &source.default_dir_id.0) {
+                    source.default_dir_id.with_mut(|default_id| {
+                        *default_id = remapped.get(default_id).copied().unwrap_or(*default_id);
+                    });
+                }
+                if !Rc::ptr_eq(&self.classic_vfs_metadata.0, &source.classic_vfs_metadata.0) {
+                    source.classic_vfs_metadata.with_mut(|metadata| {
+                        for entry in metadata.values_mut() {
+                            entry.parent_dir_id = remapped
+                                .get(&entry.parent_dir_id)
+                                .copied()
+                                .unwrap_or(entry.parent_dir_id);
+                        }
+                    });
+                }
+                for database in source.desktop_databases.values_mut() {
+                    database.remap_parent_directories(&remapped);
+                }
+                source
+                    .next_vfs_dir_id
+                    .with_mut(|current| *current = (*current).max(next));
+            }
+        }
+        // References are allocated independently by adapters. Give a distinct
+        // source volume a fresh reference before its working directories and
+        // desktop records are merged into the target catalogue.
+        if !Rc::ptr_eq(&self.vfs_volumes.0, &source.vfs_volumes.0) {
+            let mut used: HashSet<i16> = self
+                .vfs_volumes
+                .iter()
+                .map(|volume| volume.ref_num)
+                .collect();
+            used.extend(source.vfs_volumes.iter().map(|volume| volume.ref_num));
+            used.insert(-1);
+            let mut remapped = HashMap::new();
+            source.vfs_volumes.with_mut(|volumes| {
+                for volume in volumes.iter_mut() {
+                    if let Some(existing) = self
+                        .vfs_volumes
+                        .iter()
+                        .find(|existing| existing.name.eq_ignore_ascii_case(&volume.name))
+                    {
+                        if volume.ref_num != existing.ref_num {
+                            remapped.insert(volume.ref_num, existing.ref_num);
+                            volume.ref_num = existing.ref_num;
+                        }
+                    } else if self
+                        .vfs_volumes
+                        .iter()
+                        .any(|existing| existing.ref_num == volume.ref_num)
+                    {
+                        let fresh = (-32768i16..=-2)
+                            .rev()
+                            .find(|candidate| !used.contains(candidate))
+                            .expect("no free volume reference number");
+                        used.insert(fresh);
+                        remapped.insert(volume.ref_num, fresh);
+                        volume.ref_num = fresh;
+                        source.next_vfs_volume_ref_num.with_mut(|next| {
+                            *next = (*next).min(fresh.saturating_sub(1));
+                        });
+                    }
+                }
+            });
+            if !remapped.is_empty() {
+                if !Rc::ptr_eq(&self.working_directories.0, &source.working_directories.0) {
+                    source.working_directories.with_mut(|directories| {
+                        for directory in directories.values_mut() {
+                            if let Some(&new_ref) = remapped.get(&directory.volume_ref_num) {
+                                directory.volume_ref_num = new_ref;
+                            }
+                        }
+                    });
+                }
+                let databases = std::mem::take(&mut source.desktop_databases);
+                for (old_ref, database) in databases {
+                    let new_ref = remapped.get(&old_ref).copied().unwrap_or(old_ref);
+                    source
+                        .desktop_databases
+                        .entry(new_ref)
+                        .or_default()
+                        .merge_missing(database);
+                }
+            }
+        }
         if !Rc::ptr_eq(&self.working_directories.0, &source.working_directories.0) {
             assert!(
                 self.working_directories.is_empty()
@@ -1181,8 +1354,8 @@ impl ProcessFileSystemState {
                     .with_mut(|target| *target = working_directories);
             }
         }
-        let next_working_directory_ref_num = (*self.next_working_directory_ref_num)
-            .max(*source.next_working_directory_ref_num);
+        let next_working_directory_ref_num =
+            (*self.next_working_directory_ref_num).max(*source.next_working_directory_ref_num);
         self.next_working_directory_ref_num
             .with_mut(|current| *current = next_working_directory_ref_num);
         if *self.application_working_directory_ref_num == -1 {
@@ -1193,6 +1366,41 @@ impl ProcessFileSystemState {
         }
         for (stream, record) in std::mem::take(&mut source.stdio_streams) {
             self.stdio_streams.entry(stream).or_insert(record);
+        }
+        // Volume references belong to their source catalogue. Do not attach
+        // another volume's records to an unrelated matching reference.
+        for (volume, database) in std::mem::take(&mut source.desktop_databases) {
+            let target_volume = if volume == -1 {
+                Some(volume)
+            } else if let Some(source_volume) = source
+                .vfs_volumes
+                .iter()
+                .find(|candidate| candidate.ref_num == volume)
+            {
+                if let Some(existing) = self
+                    .vfs_volumes
+                    .iter()
+                    .find(|candidate| candidate.name.eq_ignore_ascii_case(&source_volume.name))
+                {
+                    (existing.root_dir_id == source_volume.root_dir_id).then_some(existing.ref_num)
+                } else if self
+                    .vfs_volumes
+                    .iter()
+                    .any(|candidate| candidate.ref_num == volume)
+                {
+                    None
+                } else {
+                    Some(volume)
+                }
+            } else {
+                None
+            };
+            if let Some(target_volume) = target_volume {
+                self.desktop_databases
+                    .entry(target_volume)
+                    .or_default()
+                    .merge_missing(database);
+            }
         }
 
         let target_catalogue_was_pristine =
@@ -1247,8 +1455,50 @@ impl ProcessFileSystemState {
         self.next_file_ref_num = self.next_file_ref_num.max(source.next_file_ref_num);
 
         if !Rc::ptr_eq(&self.classic_vfs_metadata.0, &source.classic_vfs_metadata.0) {
-            self.classic_vfs_metadata
-                .merge_missing(source.classic_vfs_metadata.take());
+            let mut incoming = source.classic_vfs_metadata.take();
+            let mut used: HashSet<u32> = self
+                .classic_vfs_metadata
+                .values()
+                .map(|entry| entry.file_id)
+                .collect();
+            used.extend(incoming.values().map(|entry| entry.file_id));
+            used.extend(self.vfs_directories.iter().map(|entry| entry.dir_id));
+            let mut next = used.iter().copied().max().unwrap_or(31).saturating_add(1);
+            for (path, entry) in &mut incoming {
+                let same_path = self
+                    .classic_vfs_metadata
+                    .keys()
+                    .any(|existing| existing.eq_ignore_ascii_case(path));
+                let collision =
+                    self.classic_vfs_metadata
+                        .iter()
+                        .any(|(existing_path, existing)| {
+                            existing.file_id == entry.file_id
+                                && !existing_path.eq_ignore_ascii_case(path)
+                        });
+                let directory_collision = self
+                    .vfs_directories
+                    .iter()
+                    .any(|directory| directory.dir_id == entry.file_id);
+                if !same_path && (collision || directory_collision) {
+                    while used.contains(&next) {
+                        next = next.checked_add(1).expect("no free catalog file ID");
+                    }
+                    entry.file_id = next;
+                    used.insert(next);
+                    next = next.checked_add(1).expect("no free catalog file ID");
+                }
+            }
+            incoming.retain(|path, _| {
+                !self
+                    .classic_vfs_metadata
+                    .keys()
+                    .any(|existing| existing.eq_ignore_ascii_case(path))
+            });
+            self.classic_vfs_metadata.merge_missing(incoming);
+            source
+                .classic_next_vfs_file_id
+                .with_mut(|current| *current = (*current).max(next));
         }
         if !Rc::ptr_eq(&self.classic_locked_files.0, &source.classic_locked_files.0) {
             self.classic_locked_files
@@ -1268,6 +1518,7 @@ impl ProcessFileSystemState {
 
     fn detached_vfs_snapshot(&self) -> Self {
         let mut snapshot = Self::default();
+        snapshot.desktop_databases = self.desktop_databases.clone();
         snapshot.vfs_volumes = self.vfs_volumes.clone();
         snapshot.next_vfs_volume_ref_num = self.next_vfs_volume_ref_num.clone();
         snapshot.vfs_directories = self.vfs_directories.clone();
@@ -13518,6 +13769,234 @@ mod tests {
         assert_eq!(detached.vfs_volumes[0].file_count, 1);
         assert_eq!(detached.next_vfs_dir_id, 16);
         assert_eq!(detached.default_dir_id, 2);
+    }
+
+    #[test]
+    fn desktop_records_follow_matching_volumes_during_filesystem_merge() {
+        use crate::systems::macintosh::desktop_manager::{
+            DesktopApplication, DesktopDatabase, DesktopIcon,
+        };
+
+        let volume = |name: &str, ref_num, root_dir_id| ProcessVfsVolumeRecord {
+            ref_num,
+            name: name.to_owned(),
+            root_dir_id,
+            attributes: 0,
+            file_count: 0,
+            allocation_block_count: 0,
+            allocation_block_size: 4096,
+            clump_size: 4096,
+            free_blocks: 0,
+            bitmap_start: 0,
+            allocation_pointer: 0,
+            allocation_start: 0,
+            next_catalog_id: 10,
+            created_date: 0,
+            modified_date: 0,
+        };
+        let icon = |creator| DesktopIcon {
+            creator,
+            file_type: 1,
+            icon_type: 1,
+            data: vec![creator as u8],
+        };
+        let directory = |path: &str, dir_id| ProcessVfsDirectory {
+            dir_id,
+            parent_dir_id: 1,
+            path: path.to_owned(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        };
+        let mut target = ProcessFileSystemState::default();
+        target.vfs_directories.push(directory("First", 10));
+        target.vfs_directories.push(directory("Shared", 11));
+        target.vfs_volumes.push(volume("First", -2, 10));
+        target.vfs_volumes.push(volume("Shared", -3, 11));
+        target.classic_vfs_metadata.insert(
+            "First/App".to_owned(),
+            ProcessVfsMetadata {
+                file_id: 99,
+                parent_dir_id: 10,
+                file_type: 0,
+                creator: 1,
+                finder_flags: 0,
+                created_date: 1,
+                modified_date: 1,
+            },
+        );
+        let mut source = ProcessFileSystemState::default();
+        source.vfs_directories.push(directory("Other", 10));
+        source.vfs_directories.push(directory("Other/Sub", 99));
+        source.vfs_directories.push(directory("Shared", 21));
+        source.vfs_volumes.push(volume("Other", -2, 10));
+        source.vfs_volumes.push(volume("Shared", -4, 21));
+        source.classic_vfs_metadata.insert(
+            "Other/App".to_owned(),
+            ProcessVfsMetadata {
+                file_id: 99,
+                parent_dir_id: 10,
+                file_type: 0,
+                creator: 1,
+                finder_flags: 0,
+                created_date: 1,
+                modified_date: 1,
+            },
+        );
+        source.classic_vfs_metadata.insert(
+            "Other/DirectoryCollision".to_owned(),
+            ProcessVfsMetadata {
+                file_id: 11,
+                parent_dir_id: 10,
+                file_type: 0,
+                creator: 1,
+                finder_flags: 0,
+                created_date: 1,
+                modified_date: 1,
+            },
+        );
+        source.working_directories.with_mut(|directories| {
+            directories.insert(
+                -100,
+                ProcessWorkingDirectory {
+                    ref_num: -100,
+                    volume_ref_num: -2,
+                    dir_id: 10,
+                    proc_id: 0,
+                },
+            );
+            directories.insert(
+                -101,
+                ProcessWorkingDirectory {
+                    ref_num: -101,
+                    volume_ref_num: -4,
+                    dir_id: 21,
+                    proc_id: 0,
+                },
+            );
+        });
+        let mut other = DesktopDatabase::default();
+        other.add_icon(icon(1)).unwrap();
+        other.add_application(DesktopApplication {
+            creator: 1,
+            name: "App".to_owned(),
+            parent_dir_id: 10,
+            creation_date: 1,
+        });
+        source.desktop_databases.insert(-2, other);
+        let mut shared = DesktopDatabase::default();
+        shared.add_icon(icon(2)).unwrap();
+        source.desktop_databases.insert(-4, shared);
+        target.merge_from(&mut source);
+        let other_ref = target
+            .vfs_volumes
+            .iter()
+            .find(|volume| volume.name == "Other")
+            .expect("both distinct volumes must survive the merge")
+            .ref_num;
+        assert_ne!(other_ref, -2);
+        let other_dir = target
+            .vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == other_ref)
+            .unwrap()
+            .root_dir_id;
+        assert_ne!(other_dir, 10);
+        assert_eq!(
+            target
+                .vfs_directories
+                .iter()
+                .find(|directory| directory.path == "Other")
+                .unwrap()
+                .dir_id,
+            other_dir
+        );
+        assert_eq!(target.working_directories[&-100].dir_id, other_dir);
+        assert_eq!(target.working_directories[&-101].dir_id, 11);
+        assert_eq!(
+            target.classic_vfs_metadata["Other/App"].parent_dir_id,
+            other_dir
+        );
+        let other_file_id = target.classic_vfs_metadata["Other/App"].file_id;
+        assert_ne!(
+            other_file_id,
+            target.classic_vfs_metadata["First/App"].file_id
+        );
+        assert_ne!(
+            target.classic_vfs_metadata["Other/DirectoryCollision"].file_id,
+            11
+        );
+        assert_ne!(
+            target
+                .vfs_directories
+                .iter()
+                .find(|entry| entry.path == "Other/Sub")
+                .unwrap()
+                .dir_id,
+            99
+        );
+        assert!(*target.classic_next_vfs_file_id > other_file_id);
+        assert_eq!(
+            target.desktop_databases[&other_ref]
+                .application(1, 0)
+                .unwrap()
+                .parent_dir_id,
+            other_dir
+        );
+        assert_eq!(target.working_directories[&-100].volume_ref_num, other_ref);
+        assert_eq!(target.working_directories[&-101].volume_ref_num, -3);
+        assert!(*target.next_vfs_volume_ref_num < other_ref);
+        assert!(target.desktop_databases[&other_ref].icon(1, 1, 1).is_some());
+        assert!(target.desktop_databases[&-3].icon(2, 1, 1).is_some());
+        let snapshot = target.detached_vfs_snapshot();
+        assert!(snapshot.desktop_databases[&other_ref]
+            .icon(1, 1, 1)
+            .is_some());
+        assert!(snapshot.desktop_databases[&-3].icon(2, 1, 1).is_some());
+
+        target.default_dir_id.with_mut(|id| *id = 10);
+        let original_volume = target.vfs_volumes[0].clone();
+        let original_directory = target.working_directories[&-100];
+        let original_metadata = target.classic_vfs_metadata["First/App"];
+        let mut alias = ProcessFileSystemState::default();
+        alias.vfs_directories.push(directory("Incoming", 10));
+        alias.vfs_volumes = target.vfs_volumes.shared_handle();
+        alias.working_directories = target.working_directories.shared_handle();
+        alias.default_dir_id = target.default_dir_id.shared_handle();
+        alias.classic_vfs_metadata = target.classic_vfs_metadata.shared_handle();
+        target.merge_from(&mut alias);
+        assert_eq!(target.vfs_volumes[0], original_volume);
+        assert_eq!(target.working_directories[&-100], original_directory);
+        assert_eq!(*target.default_dir_id, 10);
+        assert_eq!(
+            target.classic_vfs_metadata["First/App"].parent_dir_id,
+            original_metadata.parent_dir_id
+        );
+        assert_ne!(
+            target
+                .vfs_directories
+                .iter()
+                .find(|entry| entry.path == "Incoming")
+                .unwrap()
+                .dir_id,
+            10
+        );
+
+        let mut volume_alias = ProcessFileSystemState::default();
+        volume_alias.vfs_volumes.push(volume("Fourth", -2, 90));
+        volume_alias.working_directories = target.working_directories.shared_handle();
+        target.merge_from(&mut volume_alias);
+        assert_eq!(target.working_directories[&-100], original_directory);
+        assert_ne!(
+            target
+                .vfs_volumes
+                .iter()
+                .find(|entry| entry.name == "Fourth")
+                .unwrap()
+                .ref_num,
+            -2
+        );
     }
 
     #[test]

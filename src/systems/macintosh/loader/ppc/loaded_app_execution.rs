@@ -1850,9 +1850,18 @@ impl PpcLoadedApp {
                     // may outlive this dispatch call or be retained in its
                     // returned action.
                     let action = process_file_system.with_mut(|file_system| {
+                        if matches!(
+                            binding.dispatcher_target,
+                            PpcImportDispatcherTarget::PBDTAddAPPLSync
+                                | PpcImportDispatcherTarget::PBDTGetAPPL
+                        ) {
+                            file_system.publish_native_vfs_catalogue();
+                        }
                         let launched_app_path = file_system.launched_app_path.clone();
                         let ProcessFileSystemState {
                             files,
+                            desktop_databases,
+                            classic_vfs_metadata,
                             writable_refnums,
                             stdio_streams,
                             vfs_files,
@@ -1966,6 +1975,8 @@ impl PpcLoadedApp {
                                             vbl_tasks: &vbl_tasks,
                                             callback_scheduling: &callback_scheduling,
                                             files,
+                                            desktop_databases,
+                                            desktop_file_metadata: classic_vfs_metadata,
                                             writable_refnums,
                                             vfs_files,
                                             stdio_streams,
