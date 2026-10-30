@@ -36,18 +36,29 @@ compatibility:
     architecture: 68k
     environment: >-
       Ordinary Chrome preview v0.96.0, actual 68K worker/WebGL, 800-by-600/8-bit
-      display, 25 MHz, maximum two ticks per paint and crossOriginIsolated true.
-      Return dismisses the unchanged shareware notice and an ordinary mouse click
-      starts New Game. Space fills the power meter while held and releasing it
-      jumps. A longer charge lands on a raised moving platform in successive
-      captures; another jump scrolls the tower upward. Only localhost archive
-      delivery uses the integrity-checked unchanged original byte fixture; the
-      managed download independently matches the original hash and size. No guest
-      state or archive bytes are patched. Title-dialog remnants reproduce outside
-      the playfield. Floor-counter advancement, public replay, saved scores,
-      long runs and audio remain unverified.
+      display, 25 MHz, maximum two ticks per paint and crossOriginIsolated true. Return
+      dismisses the unchanged shareware notice and an ordinary mouse click starts New
+      Game. Space fills the power meter while held and releasing it jumps. A longer charge
+      lands on a raised moving platform in successive captures; another jump scrolls
+      the tower upward. Only localhost archive delivery uses the integrity-checked
+      unchanged original byte fixture; the managed download independently matches the
+      original hash and size. No guest state or archive bytes are patched. Title-dialog
+      remnants reproduce outside the playfield. Floor-counter advancement, public replay,
+      saved scores, long runs and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4480
+  - date: "2026-10-30"
+    tester: Catalogue maintainer
+    systemless_version: 3dfdd1f357edad5e66e8628e5ed223b98bdb39e5
+    architecture: 68k
+    environment: >-
+      Release-profile local browser preview of the original English archive supplied
+      by exact-hash URL substitution. The shareware notice and New Game lead to a clean
+      sidebar; Space input is accepted. Two uncontended 20-second gameplay samples
+      measured 59.305 and 58.905 guest ticks per second. This is local preview evidence,
+      not verification of the repaired runtime on the public route.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5275
 runtime:
   executable_path: NS-TOWER 2.5/NS-TOWER
   screen_depth: 8
@@ -85,8 +96,8 @@ artifacts:
   format: png
   source:
     type: sha256
-    sha256: 56e8d844c8ee40bdf489307cde4be9ec2b89aeef1f707246e7f2c3543994fd64
-    size_bytes: 86440
+    sha256: 99c877db2efdf9885cd9530fafa351ad33b31af3f2fda02ecb6eb1c56f6ce058
+    size_bytes: 86330
   provenance:
     redistribution: permitted
     original: true
@@ -95,14 +106,14 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/4480
     permission: Systemless gameplay capture requested by the maintainer.
     notes: >-
-      Lossless crop of inspected original gameplay after jumping to a raised
-      platform, including the HUD and tower without host UI, window title or Classic menu bar.
-      Title-dialog remnants remain; no redraw or guest patch.
+      Content-only browser capture of the original gameplay on the repaired runtime,
+      including the HUD and tower without host UI, window title or Classic menu bar.
+      Captured with the unchanged original archive; no guest patch.
 references:
 - https://www.nagi-p.com/v1/eng/nstower.html
 ---
 
-![NS-TOWER character above a raised platform](https://assets.systemless.org/catalogue/media/sha256/56/56e8d844c8ee40bdf489307cde4be9ec2b89aeef1f707246e7f2c3543994fd64.png)
+![NS-TOWER gameplay and sidebar](https://assets.systemless.org/catalogue/media/sha256/99/99c877db2efdf9885cd9530fafa351ad33b31af3f2fda02ecb6eb1c56f6ce058.png)
 
 Dismiss the original shareware notice and choose New Game. Hold Space or the
 mouse button to charge a jump, then release it. Longer charges jump higher,
@@ -115,6 +126,7 @@ The original US$10 registration reminder is retained. This version is 68K-only.
 
 Bounded native testing verifies charging, jumping and reaching a raised
 platform. Ordinary browser testing also verifies charging, jumping, landing
-on a raised moving platform and upward scrolling. Some title-dialog pixels
-remain outside the tower. Public replay, long runs, saved scores and audio
-remain unverified.
+on a raised moving platform and upward scrolling. A later local preview with
+the dialog redraw fix shows a clean sidebar; the repaired runtime has not yet
+been verified on the public route. Long runs, saved scores and audio remain
+unverified.
