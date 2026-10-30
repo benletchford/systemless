@@ -5,6 +5,35 @@
     use std::collections::VecDeque;
 
     #[test]
+    fn classic_catalog_allocation_skips_existing_file_and_directory_ids() {
+        let mut dispatcher = TrapDispatcher::new();
+        dispatcher.next_vfs_dir_id.with_mut(|id| *id = 32);
+        dispatcher.ensure_vfs_file_metadata("File");
+        let file_id = dispatcher.vfs_metadata.get("File").unwrap().file_id;
+        assert_eq!(file_id, 32);
+        let directory_id = dispatcher.ensure_vfs_directory("Directory");
+        assert_ne!(directory_id, file_id);
+        dispatcher
+            .next_vfs_file_id
+            .with_mut(|id| *id = directory_id);
+        dispatcher.ensure_vfs_file_metadata("Second");
+        let second_id = dispatcher.vfs_metadata.get("Second").unwrap().file_id;
+        assert_ne!(second_id, directory_id);
+        assert_ne!(second_id, file_id);
+        dispatcher.next_vfs_dir_id.with_mut(|id| *id = u32::MAX);
+        let wrapped_dir = dispatcher.ensure_vfs_directory("Wrapped");
+        assert!(wrapped_dir >= 16 && wrapped_dir < u32::MAX);
+        assert_ne!(wrapped_dir, file_id);
+        assert_ne!(wrapped_dir, directory_id);
+        assert_ne!(wrapped_dir, second_id);
+        dispatcher.next_vfs_file_id.with_mut(|id| *id = u32::MAX);
+        dispatcher.ensure_vfs_file_metadata("WrappedFile");
+        let wrapped_file = dispatcher.vfs_metadata.get("WrappedFile").unwrap().file_id;
+        assert!(wrapped_file >= 16 && wrapped_file < u32::MAX);
+        assert_ne!(wrapped_file, wrapped_dir);
+    }
+
+    #[test]
     fn appearance_dispatch_route_allows_quickdraw_adapter() {
         assert!(default_trap_route(0xAA74).allows(TrapAdapterId::QuickDraw));
     }

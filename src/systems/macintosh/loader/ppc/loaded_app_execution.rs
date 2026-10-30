@@ -1850,6 +1850,23 @@ impl PpcLoadedApp {
                     // may outlive this dispatch call or be retained in its
                     // returned action.
                     let action = process_file_system.with_mut(|file_system| {
+                        if matches!(
+                            binding.dispatcher_target,
+                            PpcImportDispatcherTarget::DirCreate
+                                | PpcImportDispatcherTarget::FSpDirCreate
+                                | PpcImportDispatcherTarget::FsRef(
+                                    PpcFsRefOperation::CreateDirectoryUnicode
+                                )
+                        ) {
+                            file_system.publish_native_vfs_catalogue();
+                            file_system.next_vfs_dir_id.with_mut(|next| {
+                                *next = crate::process_context::next_available_catalog_id(
+                                    *next,
+                                    file_system.vfs_directories.iter().map(|directory| directory.dir_id)
+                                        .chain(file_system.classic_vfs_metadata.values().map(|metadata| metadata.file_id)),
+                                ).unwrap_or(u32::MAX);
+                            });
+                        }
                         let launched_app_path = file_system.launched_app_path.clone();
                         let ProcessFileSystemState {
                             files,
