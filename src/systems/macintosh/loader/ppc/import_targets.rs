@@ -1742,6 +1742,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("DragLib" | "InterfaceLib", "SetDragImage") => PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
         ("DragLib" | "InterfaceLib", "TrackDrag") => PpcImportDispatcherTarget::Drag(PpcDragOperation::Track),
         ("DragLib" | "InterfaceLib", "WaitMouseMoved") => PpcImportDispatcherTarget::Drag(PpcDragOperation::WaitMouseMoved),
+        ("DragLib" | "InterfaceLib", "ZoomRects") => {
+            PpcImportDispatcherTarget::Drag(PpcDragOperation::ZoomRects)
+        }
         ("DragLib" | "InterfaceLib", "GetDropLocation") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetDropLocation),
         ("DragLib" | "InterfaceLib", "ShowDragHilite") => PpcImportDispatcherTarget::Drag(PpcDragOperation::ShowHilite),
         ("DragLib" | "InterfaceLib", "HideDragHilite") => PpcImportDispatcherTarget::Drag(PpcDragOperation::HideHilite),
