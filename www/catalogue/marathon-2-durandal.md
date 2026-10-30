@@ -51,6 +51,23 @@ artifacts:
       SHA-256 3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a. The
       previously hosted package differs in resource forks and Finder metadata; its exact
       provenance has not been established.
+- id: screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/marathon-2-durandal/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/5302
+    permission: >-
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request.
+    notes: >-
+      Captured from the original Trilogy Release archive during verified native
+      68K movement, cropped to the game content surface.
 references:
 - https://trilogyrelease.bungie.org/
 - https://github.com/benletchford/systemless/issues/5302
@@ -58,8 +75,10 @@ references:
 
 ## Source and version
 
-This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/3f/3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.sit). Native gameplay and browser approval for this exact archive are pending.
+This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/3f/3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.sit). Bounded native 68K testing reached the first level and verified forward movement; browser approval remains pending.
 
 ## Across Lh'owon
+
+![Marathon 2 gameplay in the first level](incoming/marathon-2-durandal/gameplay.png)
 
 Seventeen years after Tau Ceti, Durandal wakes you over the S'pht homeworld of Lh'owon and sends you hunting through its ruins. The wider spaces, water, weather and dual-wielded weapons make the action livelier, while terminals piece together a history of enslavement that gives every ruined complex a purpose.
