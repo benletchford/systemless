@@ -3847,3 +3847,321 @@ fn sound_status_idle_snapshot_tracks_file_pause_while_channel_stays_busy() {
     assert_eq!(playing.sound_channels_busy, paused.sound_channels_busy);
     assert_ne!(playing, paused, "the separately visible paused bit must revoke a proof");
 }
+
+#[test]
+fn virtual_idle_held_key_repeat_matches_unoptimized_across_due_and_release() {
+    fn arm(enabled: bool) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.virtual_idle_enabled = enabled;
+        let code = 0x0002_0000u32;
+        let channel = 0x0030_0000u32;
+        let status = 0x0030_1000u32;
+        let mut words = vec![
+            0x594F,
+            0xA975,
+            0x588F, // TickCount; discard result
+            0x554F,
+            0x2F3C,
+            (channel >> 16) as u16,
+            channel as u16,
+            0x3F3C,
+            24,
+            0x4879,
+            (status >> 16) as u16,
+            status as u16,
+            0x203C,
+            0x0510,
+            0x0008,
+            0xA800,
+            0x4A5F,
+            0x6000,
+        ];
+        let branch_offset = -((words.len() as i32 - 1) * 2 + 2);
+        words.push(branch_offset as i16 as u16);
+        for (i, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(code + i as u32 * 2, word);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(20_000);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.dispatcher.sound_manager.with_mut(|sound| {
+            sound
+                .channels
+                .push(crate::sound::SndChannel::new(channel, false));
+        });
+        runner.push_key_down(0x7b, 0x1c);
+        runner
+            .dispatcher
+            .input_state
+            .arm_key_repeat(0x7b, 0x1c, 101);
+        runner
+    }
+    let mut plain = arm(false);
+    let mut cursor = arm(true);
+    let mut saw_auto_key = false;
+    for round in 0..18 {
+        if round == 9 {
+            plain.push_key_up(0x7b, 0x1c);
+            cursor.push_key_up(0x7b, 0x1c);
+        }
+        if round == 12 {
+            plain.push_key_down(0x7c, 0x1d);
+            cursor.push_key_down(0x7c, 0x1d);
+        }
+        assert_eq!(plain.run_steps(3_331, None), cursor.run_steps(3_331, None));
+        assert_eq!(plain.guest_tick(), cursor.guest_tick());
+        assert_eq!(plain.tick_budget, cursor.tick_budget);
+        assert_eq!(plain.total_instructions, cursor.total_instructions);
+        let mut plain_cpu = CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core);
+        let mut cursor_cpu = CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core);
+        // An armed write probe selects a different CPU execution path and can
+        // change rollback scratch even when virtual idle is disabled. The
+        // adjacent probe and exception tests exercise that distinction.
+        plain_cpu.dar_save = [0; 16];
+        cursor_cpu.dar_save = [0; 16];
+        plain_cpu.sr_save = 0;
+        cursor_cpu.sr_save = 0;
+        assert_eq!(plain_cpu, cursor_cpu, "round {round}");
+        assert_eq!(
+            plain.bus.ram_slice(0, plain.bus.ram_size()),
+            cursor.bus.ram_slice(0, cursor.bus.ram_size())
+        );
+        assert_eq!(
+            plain.dispatcher.input_state.key_repeat(),
+            cursor.dispatcher.input_state.key_repeat()
+        );
+        assert_eq!(
+            plain.dispatcher.key_map_bytes(),
+            cursor.dispatcher.key_map_bytes()
+        );
+        let events = |runner: &FixtureRunner| {
+            runner
+                .dispatcher
+                .event_queue
+                .iter()
+                .map(|e| (e.what, e.message, e.when, e.where_v, e.where_h, e.modifiers))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&plain), events(&cursor));
+        saw_auto_key |= events(&plain).iter().any(|event| event.0 == 5);
+    }
+    assert!(saw_auto_key, "the due auto-key must actually be posted");
+    assert!(
+        cursor.virtual_idle_entries > 0,
+        "held key should not prevent a future-repeat proof"
+    );
+}
+
+#[test]
+fn held_repeat_stale_rollback_is_overwritten_before_operand_address_error() {
+    fn runner(stale: u32) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.m68k.cpu.core.set_cpu_type(m68k::CpuType::M68000);
+        runner.bus.write_long(3 * 4, 0x0003_0000);
+        runner.bus.write_word(0x0003_0000, 0x4e71); // exception handler NOP
+        runner.bus.write_word(0x0002_0000, 0x3018); // MOVE.W (A0)+,D0
+        runner.m68k.cpu.write_reg(Register::PC, 0x0002_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A0, 0x0021_0001); // odd word read faults
+        runner.m68k.cpu.write_reg(Register::D0, 0x1234_5678);
+        runner.m68k.cpu.core.dar_save = [stale; 16];
+        runner.m68k.cpu.core.sr_save = stale as u16;
+        runner
+    }
+    let mut a = runner(0xaaaa_aaaa);
+    let mut b = runner(0x5555_5555);
+    let _ = a.m68k.cpu.run_batch(&mut a.bus, 1, &[0]);
+    let _ = b.m68k.cpu.run_batch(&mut b.bus, 1, &[0]);
+    assert_eq!(a.m68k.cpu.read_reg(Register::PC), 0x0003_0000);
+    assert_eq!(a.m68k.cpu.read_reg(Register::A0), 0x0021_0001);
+    assert_eq!(a.m68k.cpu.read_reg(Register::D0), 0x1234_5678);
+    assert_eq!(
+        CpuArchitecturalSnapshot::capture(&a.m68k.cpu.core),
+        CpuArchitecturalSnapshot::capture(&b.m68k.cpu.core)
+    );
+    assert_eq!(
+        a.bus.ram_slice(0, a.bus.ram_size()),
+        b.bus.ram_slice(0, b.bus.ram_size())
+    );
+}
+
+#[test]
+fn held_repeat_stale_rollback_does_not_change_fetch_exception() {
+    fn runner(stale: u32, cpu_type: m68k::CpuType) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.m68k.cpu.core.set_cpu_type(cpu_type);
+        runner.bus.write_long(3 * 4, 0x0003_0000);
+        runner.bus.write_word(0x0003_0000, 0x4e71);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0002_0001);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::A0, 0x0021_0001);
+        runner.m68k.cpu.write_reg(Register::D0, 0x1234_5678);
+        runner.m68k.cpu.core.dar_save = [stale; 16];
+        runner.m68k.cpu.core.sr_save = stale as u16;
+        runner
+    }
+    for cpu in [m68k::CpuType::M68000, m68k::CpuType::M68020] {
+        let mut a = runner(0xaaaa_aaaa, cpu);
+        let mut b = runner(0x5555_5555, cpu);
+        let _ = a.m68k.cpu.run_batch(&mut a.bus, 1, &[0]);
+        let _ = b.m68k.cpu.run_batch(&mut b.bus, 1, &[0]);
+        assert_eq!(a.m68k.cpu.read_reg(Register::PC), 0x0003_0002, "{cpu:?}");
+        assert_eq!(a.m68k.cpu.read_reg(Register::D0), 0x1234_5678);
+        let mut a_state = CpuArchitecturalSnapshot::capture(&a.m68k.cpu.core);
+        let mut b_state = CpuArchitecturalSnapshot::capture(&b.m68k.cpu.core);
+        // Faults before operand execution do not need to rewrite scratch;
+        // compare the architectural result and the complete exception frame.
+        a_state.dar_save = [0; 16];
+        b_state.dar_save = [0; 16];
+        a_state.sr_save = 0;
+        b_state.sr_save = 0;
+        assert_eq!(a_state, b_state, "{cpu:?}");
+        assert_eq!(
+            a.bus.ram_slice(0, a.bus.ram_size()),
+            b.bus.ram_slice(0, b.bus.ram_size())
+        );
+    }
+}
+
+#[test]
+fn held_repeat_stale_rollback_does_not_change_interrupt_entry() {
+    fn runner(stale: u32, cpu_type: m68k::CpuType) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.m68k.cpu.core.set_cpu_type(cpu_type);
+        runner.bus.write_long(25 * 4, 0x0003_0000); // level-1 autovector
+        runner.bus.write_word(0x0002_0000, 0x4e71);
+        runner.bus.write_word(0x0003_0000, 0x4e71);
+        runner.m68k.cpu.core.set_sr(0x2000);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0002_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::D0, 0x1234_5678);
+        runner.m68k.cpu.core.dar_save = [stale; 16];
+        runner.m68k.cpu.core.sr_save = stale as u16;
+        runner.m68k.cpu.core.set_irq(1);
+        runner
+    }
+    for cpu in [m68k::CpuType::M68000, m68k::CpuType::M68020] {
+        let mut a = runner(0xaaaa_aaaa, cpu);
+        let mut b = runner(0x5555_5555, cpu);
+        let _ = a.m68k.cpu.run_batch(&mut a.bus, 1, &[0]);
+        let _ = b.m68k.cpu.run_batch(&mut b.bus, 1, &[0]);
+        assert!(
+            matches!(a.m68k.cpu.read_reg(Register::PC), 0x0003_0000 | 0x0003_0002),
+            "interrupt handler must run: {cpu:?}"
+        );
+        assert_ne!(a.m68k.cpu.read_reg(Register::A7), 0x0010_0000);
+        assert_eq!(a.m68k.cpu.read_reg(Register::D0), 0x1234_5678);
+        let mut a_state = CpuArchitecturalSnapshot::capture(&a.m68k.cpu.core);
+        let mut b_state = CpuArchitecturalSnapshot::capture(&b.m68k.cpu.core);
+        a_state.dar_save = [0; 16];
+        b_state.dar_save = [0; 16];
+        a_state.sr_save = 0;
+        b_state.sr_save = 0;
+        assert_eq!(a_state, b_state, "{cpu:?}");
+        assert_eq!(
+            a.bus.ram_slice(0, a.bus.ram_size()),
+            b.bus.ram_slice(0, b.bus.ram_size())
+        );
+    }
+}
+
+#[test]
+fn held_repeat_stale_rollback_does_not_change_trace_exception() {
+    fn runner(stale: u32, cpu_type: m68k::CpuType, sr: u16, instruction: u16) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.m68k.cpu.core.set_cpu_type(cpu_type);
+        runner.bus.write_long(9 * 4, 0x0003_0000); // trace exception vector
+        runner.bus.write_word(0x0002_0000, instruction);
+        runner.bus.write_word(0x0002_0002, 0x4e71);
+        runner.bus.write_word(0x0003_0000, 0x4e71);
+        runner.m68k.cpu.core.set_sr(sr);
+        runner.m68k.cpu.write_reg(Register::PC, 0x0002_0000);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.m68k.cpu.write_reg(Register::D0, 0x1234_5678);
+        runner.m68k.cpu.core.dar_save = [stale; 16];
+        runner.m68k.cpu.core.sr_save = stale as u16;
+        runner
+    }
+    for (cpu, sr, instruction) in [
+        (m68k::CpuType::M68000, 0xa000, 0x4e71), // T1, NOP
+        (m68k::CpuType::M68020, 0xa000, 0x4e71), // T1, NOP
+        (m68k::CpuType::M68020, 0x6000, 0x6002), // T0, BRA.S
+    ] {
+        let mut a = runner(0xaaaa_aaaa, cpu, sr, instruction);
+        let mut b = runner(0x5555_5555, cpu, sr, instruction);
+        let _ = a.m68k.cpu.run_batch(&mut a.bus, 1, &[0]);
+        let _ = b.m68k.cpu.run_batch(&mut b.bus, 1, &[0]);
+        assert_eq!(
+            a.m68k.cpu.read_reg(Register::PC),
+            0x0003_0000,
+            "{cpu:?} SR={sr:04x}"
+        );
+        assert_ne!(a.m68k.cpu.read_reg(Register::A7), 0x0010_0000);
+        let mut a_state = CpuArchitecturalSnapshot::capture(&a.m68k.cpu.core);
+        let mut b_state = CpuArchitecturalSnapshot::capture(&b.m68k.cpu.core);
+        a_state.dar_save = [0; 16];
+        b_state.dar_save = [0; 16];
+        a_state.sr_save = 0;
+        b_state.sr_save = 0;
+        assert_eq!(a_state, b_state, "{cpu:?} SR={sr:04x}");
+        assert_eq!(
+            a.bus.ram_slice(0, a.bus.ram_size()),
+            b.bus.ram_slice(0, b.bus.ram_size())
+        );
+    }
+}
+
+#[test]
+fn held_repeat_isolate_write_probe_and_cpu_rollback_scratch() {
+    fn runner(probed: bool) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.virtual_idle_enabled = false;
+        let code = 0x0002_0000u32;
+        // MOVEQ #1,D0; MOVE.L D0,-(A7); MOVE.L (A7)+,D1; BRA.S loop.
+        for (i, word) in [0x7001, 0x2f00, 0x221f, 0x60f8].into_iter().enumerate() {
+            runner.bus.write_word(code + i as u32 * 2, word);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        assert!(
+            runner.bus.fast_mem_window().is_some(),
+            "unprobed fixture must expose direct RAM"
+        );
+        if probed {
+            runner.bus.begin_write_probe();
+            assert!(
+                runner.bus.fast_mem_window().is_none(),
+                "probe must withdraw direct RAM"
+            );
+        }
+        runner
+    }
+    let mut plain = runner(false);
+    let mut probed = runner(true);
+    let mut first_scratch_difference = None;
+    for round in 0..20 {
+        let a = plain.m68k.cpu.run_batch(&mut plain.bus, 3_331, &[0]);
+        let b = probed.m68k.cpu.run_batch(&mut probed.bus, 3_331, &[0]);
+        assert_eq!(a.instructions, b.instructions, "round {round}");
+        let mut a = CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core);
+        let mut b = CpuArchitecturalSnapshot::capture(&probed.m68k.cpu.core);
+        if (a.dar_save != b.dar_save || a.sr_save != b.sr_save)
+            && first_scratch_difference.is_none()
+        {
+            first_scratch_difference = Some(round);
+        }
+        a.dar_save = [0; 16];
+        b.dar_save = [0; 16];
+        a.sr_save = 0;
+        b.sr_save = 0;
+        assert_eq!(a, b, "architectural state at round {round}");
+        assert_eq!(
+            plain.bus.ram_slice(0, plain.bus.ram_size()),
+            probed.bus.ram_slice(0, probed.bus.ram_size())
+        );
+    }
+    println!("first rollback scratch difference with write probe: {first_scratch_difference:?}");
+}

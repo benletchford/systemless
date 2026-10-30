@@ -309,6 +309,8 @@ pub(crate) struct IdleCycleHostSnapshot {
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
     pub(crate) key_map: [u8; 16],
+    /// Repeat identity and deadline must invalidate retained input proofs.
+    pub(crate) key_repeat: Option<crate::process_context::ProcessKeyRepeatState>,
     pub(crate) caps_lock_physically_pressed: bool,
     /// Host mirror of the guest window chain, read by the admitted Window
     /// Manager queries. Every mutation of it is also written into the guest
@@ -358,6 +360,7 @@ impl IdleCycleHostSnapshot {
             mouse_pos: dispatcher.input_state.mouse_position(),
             mouse_button: dispatcher.input_state.mouse_button_pressed(),
             key_map: dispatcher.key_map_bytes(),
+            key_repeat: dispatcher.input_state.key_repeat(),
             caps_lock_physically_pressed: dispatcher
                 .input_state
                 .caps_lock_physically_pressed(),
