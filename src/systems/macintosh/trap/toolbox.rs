@@ -5717,7 +5717,7 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
 
-                self.service_invalid_menu_bar(bus);
+                self.event_poll_requires_yield = self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
@@ -5756,6 +5756,15 @@ impl super::TrapDispatcher {
                             self.debug_mouse_moved_event_count.saturating_add(1);
                     }
                 }
+
+                // A null poll with no sleep or retained SystemTask return is
+                // bounded host work only if the menu-bar service did not draw.
+                // Keep real events, mouse-region events and sleeping waits as
+                // browser slice boundaries.
+                self.last_null_event_poll = !has_event
+                    && sleep == 0
+                    && !self.event_poll_requires_yield
+                    && self.system_task_wne_returns.is_empty();
 
                 if !has_event && sleep != 0 {
                     // WaitNextEvent returns a null event only after the caller's

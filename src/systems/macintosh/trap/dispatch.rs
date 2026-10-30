@@ -1975,7 +1975,7 @@ pub struct TrapDispatcher {
     /// Full trap word currently being dispatched. Some OS traps share the
     /// low 8-bit trap number and require bit 8 to distinguish variants.
     pub(crate) current_trap_word: u16,
-    /// Whether the last GetNextEvent returned no event and did no host-visible work.
+    /// Whether the last event poll returned immediately with no event or host-visible work.
     pub(crate) last_null_event_poll: bool,
     /// Whether the last default SoundDispatch was the bounded channel-status query.
     pub(crate) last_bounded_sound_status: bool,
@@ -7670,9 +7670,9 @@ impl TrapDispatcher {
         // still end the batch through the default-table check below.
         (matches!(
             trap,
-            0xa853 | 0xa855 | 0xa858 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4 | 0xaa31 | 0xaa32
+            0xa853 | 0xa855 | 0xa858 | 0xa8a7 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4 | 0xaa31 | 0xaa32
         )
-            || (trap == 0xa970 && self.last_null_event_poll)
+            || (matches!(trap, 0xa860 | 0xa970) && self.last_null_event_poll)
             || (trap == 0xa800 && self.last_bounded_sound_status))
             && (self.trap_table_cell_is_default(bus, trap)
                 // Some profiles have a permanent come-from head. Resolve its
