@@ -9,7 +9,7 @@ year: 1993
 architectures: [68k]
 default_architecture: 68k
 category: Arcade
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -40,6 +40,23 @@ artifacts:
     notes: >-
       Unchanged 383,018-byte demo archive, SHA-256
       bf30b8d9de82f543f2f68ca0dcdb45d3dc915eccaa97c856473bcb499d62f030.
+- id: screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/valkyrie/screenshot.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://classicmacdemos.com/valkyrie
+    permission: >-
+      Captured from the freely shareable demo; the game artwork remains the
+      property of its rights holder.
+    notes: >-
+      Systemless capture of the demo flight from the original archive, cropped
+      to the game content. The title graphic remains visible over the cockpit.
 references:
 - https://classicmacdemos.com/valkyrie
 ---
@@ -51,3 +68,5 @@ minutes of unrestricted helicopter control. This is the complete original 68k
 demo archive. Systemless launches the demo, completes its replay sequence,
 switches into PLAY mode, and responds to flight and weapon controls during a
 deterministic run of the original archive.
+
+![Valkyrie demo flight](incoming/valkyrie/screenshot.png)
