@@ -12,6 +12,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: boots
   verified:

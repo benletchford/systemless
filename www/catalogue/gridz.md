@@ -13,6 +13,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Strategy
+launch_enabled: true
 compatibility:
   status: boots
   verified:
