@@ -12,7 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: boots
   verified:
