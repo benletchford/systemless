@@ -850,6 +850,8 @@ impl super::TrapDispatcher {
                     // current playback and pending commands. A caller may
                     // supply a shorter record, so do not write past it.
                     0x10 => {
+                        self.last_bounded_sound_status =
+                            matches!(selector, 0x0010_0008 | 0x0510_0008);
                         let the_status = bus.read_long(sp);
                         let the_length = (bus.read_word(sp + 4) as i16).max(0) as u32;
                         let chan_ptr = bus.read_long(sp + 6);

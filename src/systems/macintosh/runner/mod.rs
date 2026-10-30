@@ -10793,7 +10793,8 @@ impl FixtureRunner {
     }
 
     /// Run a bounded browser CPU batch while retaining small default HLE queries.
-    /// BitAnd, PtInRect, GetMouse, TickCount and IsDialogEvent cannot draw or
+    /// BitAnd, PtInRect, GetMouse, TickCount, IsDialogEvent and channel-status
+    /// queries cannot draw or
     /// call guest code; SystemTask qualifies only while its periodic work is empty. Every
     /// call still executes. A null GetNextEvent also qualifies if it did not
     /// redraw or consume an event. Real events, drawing and patches

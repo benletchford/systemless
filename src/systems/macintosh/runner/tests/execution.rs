@@ -1299,6 +1299,61 @@ fn gui_host_work_batches_default_queries_and_preserves_results() {
 }
 
 #[test]
+fn gui_host_work_batches_only_default_sound_channel_status() {
+    for selector in [0x0010_0008, 0x0510_0008, 0x0314_0008] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let sp = 0x007f_ff00;
+        let status = 0x0021_0000;
+        runner.bus.write_word(entry, 0xa800); // SoundDispatch
+        runner.bus.write_word(entry + 2, 0x7207); // MOVEQ #7,D1
+        runner.bus.write_word(entry + 4, 0x3417); // MOVE.W (A7),D2
+        runner.bus.write_word(entry + 6, 0xa974); // Button: host boundary
+        runner.bus.write_long(sp, status);
+        runner.bus.write_word(sp + 4, 24);
+        runner.bus.write_long(sp + 6, 0); // unknown channel is idle
+        runner.bus.write_word(sp + 10, 0xbeef);
+        runner.bus.write_byte(status + 12, 0xff);
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.m68k.cpu.write_reg(Register::D0, selector);
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running);
+        if selector == 0x0314_0008 {
+            assert_eq!(steps, 1, "manager-status is not admitted");
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+        } else {
+            assert_eq!(steps, 4, "selector {selector:08x}");
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+            assert_eq!(runner.bus.read_byte(status + 12), 0);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D2) & 0xffff, 0);
+        }
+    }
+}
+
+#[test]
+fn gui_host_work_yields_for_patched_sound_dispatch() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let entry = 0x0020_0000;
+    let handler = 0x0021_0000;
+    runner.bus.write_word(entry, 0xa800);
+    runner.bus.write_word(handler, 0x7207);
+    runner.bus.write_word(handler + 2, 0x4e75);
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xa800, handler)
+        .unwrap();
+    runner.m68k.cpu.write_reg(Register::PC, entry);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007f_ff00);
+    runner.m68k.cpu.write_reg(Register::D0, 0x0510_0008);
+    let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+    assert!(running);
+    assert_eq!(steps, 1);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), handler);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+}
+
+#[test]
 fn gui_host_work_yields_for_each_patched_query() {
     for trap in [0xa858, 0xa8ad, 0xa970, 0xa972, 0xa97f, 0xa9b4] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

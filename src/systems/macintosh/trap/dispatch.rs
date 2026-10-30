@@ -1977,6 +1977,8 @@ pub struct TrapDispatcher {
     pub(crate) current_trap_word: u16,
     /// Whether the last GetNextEvent returned no event and did no host-visible work.
     pub(crate) last_null_event_poll: bool,
+    /// Whether the last default SoundDispatch was the bounded channel-status query.
+    pub(crate) last_bounded_sound_status: bool,
     /// Whether the current event scan performed host-visible work.
     pub(crate) event_poll_requires_yield: bool,
     /// Generated canonical operation row and the actual first-match adapter
@@ -4031,6 +4033,7 @@ impl TrapDispatcher {
             flushed_update_events: VecDeque::new(),
             current_trap_word: 0,
             last_null_event_poll: false,
+            last_bounded_sound_status: false,
             event_poll_requires_yield: false,
             current_trap_operation: 0,
             current_trap_adapter: TrapAdapterId::Nonterminal,
@@ -7663,7 +7666,8 @@ impl TrapDispatcher {
     pub(crate) fn last_trap_is_bounded_query(&self, bus: &MacMemoryBus) -> bool {
         let trap = self.current_trap_word & !0x0400;
         (matches!(trap, 0xa858 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4)
-            || (trap == 0xa970 && self.last_null_event_poll))
+            || (trap == 0xa970 && self.last_null_event_poll)
+            || (trap == 0xa800 && self.last_bounded_sound_status))
             && (self.trap_table_cell_is_default(bus, trap)
                 // Some profiles have a permanent come-from head. Resolve its
                 // successor so a patched handler still ends the batch.
@@ -8335,6 +8339,7 @@ impl TrapDispatcher {
         self.trap_count += 1;
         self.current_trap_word = trap;
         self.last_null_event_poll = false;
+        self.last_bounded_sound_status = false;
         self.current_selector_operation = None;
         let pc = cpu.read_reg(Register::PC);
         // Append (trap-instruction PC, trap word) to the file named by
