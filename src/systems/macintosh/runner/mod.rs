@@ -6116,6 +6116,7 @@ impl FixtureRunner {
                 self.dispatcher.pending_wait_sleep_ticks == 0
                     && self.dispatcher.pending_wait_next_event_return.is_none()
                     && self.dispatcher.system_task_wne_returns.is_empty()
+                    && !self.dispatcher.event_poll_requires_yield
             }
             _ => false,
         };

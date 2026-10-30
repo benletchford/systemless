@@ -1299,6 +1299,90 @@ fn gui_host_work_batches_default_queries_and_preserves_results() {
 }
 
 #[test]
+fn gui_host_work_batches_default_set_rect_but_yields_for_patch() {
+    for patched in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let sp = 0x007f_ff00;
+        let rect = 0x0021_0000;
+        runner.bus.write_word(entry, 0xa8a7); // SetRect
+        runner.bus.write_word(entry + 2, 0x7207); // MOVEQ #7,D1
+        runner.bus.write_word(entry + 4, 0xa974); // Button: boundary
+        runner.bus.write_word(sp, 40); // bottom
+        runner.bus.write_word(sp + 2, 30); // right
+        runner.bus.write_word(sp + 4, 20); // top
+        runner.bus.write_word(sp + 6, 10); // left
+        runner.bus.write_long(sp + 8, rect);
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        if patched {
+            let handler = 0x0022_0000;
+            runner.bus.write_word(handler, 0x4e75);
+            runner.dispatcher.install_trap_address(&mut runner.bus, 0xa8a7, handler).unwrap();
+        }
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running);
+        if patched {
+            assert_eq!(steps, 1);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::PC), 0x0022_0000);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+        } else {
+            assert_eq!(steps, 3);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+            assert_eq!(runner.bus.read_long(rect), 0x0014_000a);
+            assert_eq!(runner.bus.read_long(rect + 4), 0x0028_001e);
+        }
+    }
+}
+
+#[test]
+fn gui_host_work_batches_only_null_non_sleeping_wait_next_event() {
+    for (sleep, event, redraw, continuation) in [
+        (0, false, false, false),
+        (1, false, false, false),
+        (0, true, false, false),
+        (0, false, true, false),
+        (0, false, false, true),
+    ] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let entry = 0x0020_0000;
+        let sp = 0x007f_ff00;
+        let event_record = 0x0021_0000;
+        runner.bus.write_word(entry, 0xa860); // WaitNextEvent
+        runner.bus.write_word(entry + 2, 0x7207); // MOVEQ #7,D1
+        runner.bus.write_word(entry + 4, 0xa974); // Button: boundary
+        runner.bus.write_long(sp, 0); // mouse region
+        runner.bus.write_long(sp + 4, sleep);
+        runner.bus.write_long(sp + 8, event_record);
+        runner.bus.write_word(sp + 12, 0xffff);
+        runner.m68k.cpu.write_reg(Register::PC, entry);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        if redraw {
+            runner.dispatcher.event_queue.invalidate_menu_bar();
+        }
+        if continuation {
+            runner.dispatcher.system_task_wne_returns.push(0x0023_0000);
+        }
+        if event {
+            runner.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent {
+                what: 1, message: 0, when: 0, where_v: 10, where_h: 20, modifiers: 0,
+            });
+        }
+        let (steps, running) = runner.run_gui_cpu_slice_until_host_work(8192, u32::MAX);
+        assert!(running);
+        if sleep == 0 && !event && !redraw && !continuation {
+            assert_eq!(steps, 3);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 7);
+            assert_eq!(runner.bus.read_word(sp + 14), 0);
+        } else {
+            assert_eq!(steps, 1, "sleep={sleep}, event={event}, redraw={redraw}, continuation={continuation}");
+            assert_eq!(runner.m68k.cpu.read_reg(Register::D1), 0);
+        }
+    }
+}
+
+#[test]
 fn gui_host_work_batches_only_default_sound_channel_status() {
     for selector in [0x0010_0008, 0x0510_0008, 0x0314_0008] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -1355,7 +1439,7 @@ fn gui_host_work_yields_for_patched_sound_dispatch() {
 
 #[test]
 fn gui_host_work_yields_for_each_patched_query() {
-    for trap in [0xa858, 0xa8ad, 0xa970, 0xa972, 0xa97f, 0xa9b4] {
+    for trap in [0xa858, 0xa860, 0xa8a7, 0xa8ad, 0xa970, 0xa972, 0xa97f, 0xa9b4] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let entry = 0x0020_0000;
         let handler = 0x0021_0000;

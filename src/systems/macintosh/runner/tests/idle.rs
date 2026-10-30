@@ -3151,8 +3151,8 @@ fn zero_sleep_wait_next_event_proves_a_cycle_and_wakes_for_input() {
 }
 
 #[test]
-fn wait_next_event_sleep_and_delivered_events_reject_an_idle_probe() {
-    for (sleep, deliver_event) in [(60, false), (0, true)] {
+fn wait_next_event_sleep_events_and_redraw_reject_an_idle_probe() {
+    for (sleep, deliver_event, redraw) in [(60, false, false), (0, true, false), (0, false, true)] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000;
         let sp = 0x0010_0000;
@@ -3164,6 +3164,9 @@ fn wait_next_event_sleep_and_delivered_events_reject_an_idle_probe() {
         assert!(runner.idle_cycle_probe.is_some());
         if deliver_event {
             runner.push_mouse_down(20, 30);
+        }
+        if redraw {
+            runner.dispatcher.event_queue.invalidate_menu_bar();
         }
         runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
         runner.bus.write_long(sp, 0);
@@ -3180,7 +3183,7 @@ fn wait_next_event_sleep_and_delivered_events_reject_an_idle_probe() {
             false
         ));
         assert!(runner.idle_cycle_probe.is_none());
-        if !deliver_event {
+        if sleep != 0 {
             assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, sleep);
             assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
         }
