@@ -652,6 +652,16 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
         loaded.memory.read_u16_be(PPC_MAIN_CTABLE + 8 + 2),
         Some(0x1234)
     );
+    // A movable ColorTable handle may point elsewhere by deactivation time.
+    let table_handle = ppc_gdevice_ctable_handle(&mut loaded.memory, PPC_MAIN_GDEVICE).unwrap();
+    let moved_table = PPC_DATA_BASE + 0x5000;
+    let current_table =
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE).unwrap();
+    loaded.memory.add_region(moved_table, current_table);
+    loaded
+        .memory
+        .write_u32_be(table_handle, moved_table)
+        .unwrap();
 
     loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
     loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
@@ -668,7 +678,7 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
     );
     assert_eq!(screen_geometry(&mut loaded), before);
     assert_eq!(
-        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE).unwrap(),
+        ppc_memory_read_bytes(&mut loaded.memory, moved_table, PPC_MAIN_CTABLE_SIZE).unwrap(),
         original_ctable
     );
 }
