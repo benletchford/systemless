@@ -889,6 +889,107 @@ fn draw_sprocket_context_serialization_rejects_bad_inputs_without_overwriting_st
 }
 
 #[test]
+fn draw_sprocket_paused_palette_updates_the_context_display() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetCLUTEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let entry = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(entry, vec![0; 8]);
+    loaded.memory.write_u16_be(entry + 2, 0x1234).unwrap();
+    let desktop = loaded.screen_clut[10];
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    loaded.draw_sprocket.context_attributes.display_depth = 8;
+    loaded.draw_sprocket.context_attributes.back_buffer_depth = 8;
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 10, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextSetClutEntries,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.screen_clut[10], [0x1234, 0, 0]);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.screen_clut[10], desktop);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.screen_clut[10], [0x1234, 0, 0]);
+}
+
+#[test]
+fn draw_sprocket_inactive_clut_does_not_change_desktop() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetCLUTEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let entry = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(entry, vec![0; 8]);
+    loaded.memory.write_u16_be(entry + 2, 0x1234).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds,
+        ),
+        PPC_NO_ERR
+    );
+    let desktop = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 10, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextSetClutEntries,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.screen_clut[10], desktop[10]);
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 10, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextGetClutEntries,
+    );
+    assert_eq!(loaded.memory.read_u16_be(entry + 2), Some(0x1234));
+    loaded.draw_sprocket.context_attributes.display_depth = 8;
+    loaded.draw_sprocket.context_attributes.back_buffer_depth = 8;
+    let mut clut = desktop;
+    for state in [
+        PPC_DSP_CONTEXT_STATE_ACTIVE,
+        PPC_DSP_CONTEXT_STATE_PAUSED,
+        PPC_DSP_CONTEXT_STATE_ACTIVE,
+        PPC_DSP_CONTEXT_STATE_INACTIVE,
+    ] {
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+        assert_eq!(
+            ppc_dsp_context_set_state(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.gworlds,
+                &mut clut,
+                None,
+                &mut loaded.draw_sprocket,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            clut[10],
+            if state != PPC_DSP_CONTEXT_STATE_INACTIVE {
+                [0x1234, 0, 0]
+            } else {
+                desktop[10]
+            }
+        );
+    }
+}
+
+#[test]
 fn draw_sprocket_get_clut_entries_reads_colors_set_for_a_range() {
     assert_eq!(
         dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GetCLUTEntries"),
