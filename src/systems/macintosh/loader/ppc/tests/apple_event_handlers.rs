@@ -382,6 +382,9 @@ fn classic_apple_event_handler_bundle_is_process_owned_cross_isa_and_disposed() 
         Some((GuestIsa::PowerPc, 0x1234_5678))
     );
 
+    classic_bus.write_word(0x0032_0000, PPC_HIGH_LEVEL_EVENT);
+    classic_bus.write_long(0x0032_0002, event_class);
+    classic_bus.write_long(0x0032_000a, event_id);
     classic_cpu.write_reg(Register::A7, sp);
     classic_cpu.write_reg(Register::PC, 0x00f0_1234);
     classic_cpu.write_reg(Register::D0, 0x021B);

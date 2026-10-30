@@ -16117,6 +16117,95 @@ fn pack8_aeprocessappleevent_dispatches_empty_delivered_open_application() {
     assert_ne!(bus.read_long(event_desc + 4), 0);
 }
 
+fn write_test_oapp_event_record(bus: &mut MacMemoryBus, record: u32) {
+    bus.write_word(record, 23);
+    bus.write_long(record + 2, u32::from_be_bytes(*b"aevt"));
+    bus.write_long(record + 10, u32::from_be_bytes(*b"oapp"));
+}
+
+#[test]
+fn pack8_aeprocessappleevent_rejects_non_high_level_and_unhandled_records() {
+    for what in [0u16, 23] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let record = 0x0032_0000;
+        if what == 0 {
+            cpu.write_reg(Register::D0, 0x091f);
+            bus.write_word(sp, 0);
+            bus.write_long(sp + 2, 0);
+            bus.write_long(sp + 6, 0x0040_8000);
+            bus.write_long(sp + 10, AE_TYPE_WILDCARD);
+            bus.write_long(sp + 14, AE_TYPE_WILDCARD);
+            bus.write_word(sp + 18, 0);
+            assert!(disp
+                .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+        }
+        write_test_oapp_event_record(&mut bus, record);
+        bus.write_word(record, what);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, 0x00f0_1234);
+        cpu.write_reg(Register::D0, 0x021b);
+        bus.write_long(sp, record);
+        bus.write_word(sp + 4, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::PC), 0x00f0_1234);
+        assert_eq!(cpu.read_reg(Register::D0), -1708i32 as u32);
+        assert_eq!(bus.read_word(sp + 4), (-1708i16) as u16);
+        assert!(disp.ae_call_state.is_none());
+    }
+}
+
+#[test]
+fn pack8_aeprocessappleevent_uses_event_record_class_and_id() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let record = 0x0032_0000;
+    let event_class = u32::from_be_bytes(*b"TEST");
+    let event_id = u32::from_be_bytes(*b"doit");
+    for (class, id, handler) in [
+        (
+            u32::from_be_bytes(*b"aevt"),
+            u32::from_be_bytes(*b"oapp"),
+            0x0040_8000,
+        ),
+        (event_class, event_id, 0x0040_9000),
+    ] {
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x091f);
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, 0);
+        bus.write_long(sp + 6, handler);
+        bus.write_long(sp + 10, id);
+        bus.write_long(sp + 14, class);
+        bus.write_word(sp + 18, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+    }
+    bus.write_word(record, 23);
+    bus.write_long(record + 2, event_class);
+    bus.write_word(record + 10, (event_id >> 16) as u16);
+    bus.write_word(record + 12, event_id as u16);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x021b);
+    bus.write_long(sp, record);
+    bus.write_word(sp + 4, 0);
+    assert!(disp
+        .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::PC), 0x0040_9000);
+    let desc = bus.read_long(sp);
+    let event = disp.read_ae_descriptor_value(&bus, desc).unwrap();
+    assert_eq!(event.data, b"TESTdoit");
+}
+
 #[test]
 fn pack8_aeprocessappleevent_dispatches_matching_event_to_installed_handler() {
     let (mut disp, mut cpu, mut bus) = setup();
@@ -16144,6 +16233,7 @@ fn pack8_aeprocessappleevent_dispatches_matching_event_to_installed_handler() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, return_pc);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, event_record_ptr);
     bus.write_long(sp, event_record_ptr);
     bus.write_word(sp + 4, 0xBEEF); // OSErr result slot
 
@@ -16210,6 +16300,7 @@ fn pack8_aeprocessappleevent_dispatches_double_wildcard_handler() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, return_pc);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, 0x0032_0000);
     bus.write_long(sp, 0x0032_0000);
     bus.write_word(sp + 4, 0xBEEF);
     let process = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
@@ -17365,6 +17456,7 @@ fn pack8_aeprocessappleevent_returns_handler_result_code_to_caller() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, return_pc);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, 0x0032_1000);
     bus.write_long(sp, 0x0032_1000); // EventRecord ptr
     bus.write_word(sp + 4, 0xBEEF); // OSErr slot
     let process = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
@@ -17440,6 +17532,7 @@ fn pack8_aeprocessappleevent_callback_allocation_failure_is_atomic() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, 0x00f0_5678);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, 0x0032_1000);
     bus.write_long(sp, 0x0032_1000);
     bus.write_word(sp + 4, 0);
     assert!(disp
@@ -17483,6 +17576,7 @@ fn pack8_aeprocessappleevent_dispatches_matching_event_on_repeated_calls() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, first_return_pc);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, 0x0032_1000);
     bus.write_long(sp, 0x0032_1000);
     bus.write_word(sp + 4, 0xBEEF);
     let process1 = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
@@ -17512,6 +17606,7 @@ fn pack8_aeprocessappleevent_dispatches_matching_event_on_repeated_calls() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::PC, second_return_pc);
     cpu.write_reg(Register::D0, 0x021B);
+    write_test_oapp_event_record(&mut bus, 0x0032_2000);
     bus.write_long(sp, 0x0032_2000);
     bus.write_word(sp + 4, 0xBEEF);
     let process2 = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
