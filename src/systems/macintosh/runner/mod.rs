@@ -7057,11 +7057,24 @@ impl FixtureRunner {
             }
 
             if self.virtual_idle_cycle.is_some() {
-                count += self.advance_virtual_idle_cycle(max_steps - count, sound_work_only);
+                let may_skip = trap_boundary == TrapBoundary::None
+                    || (trap_boundary == TrapBoundary::ExceptBoundedQueries
+                        && self
+                            .virtual_idle_cycle
+                            .as_ref()
+                            .is_some_and(|cycle| cycle.pass.browser_bounded));
+                if may_skip {
+                    count += self.advance_virtual_idle_cycle(max_steps - count, sound_work_only);
+                } else {
+                    self.materialize_virtual_idle_cycle();
+                }
                 if self.virtual_idle_cycle.is_some() {
                     // The rest of the slice was skipped.
                     break;
                 }
+                // Materialization replays already-counted traps solely to
+                // reconstruct state. They are not new host work in this slice.
+                previous_trap_count = self.dispatcher.trap_count;
                 if count >= max_steps {
                     break;
                 }
@@ -7934,6 +7947,11 @@ impl FixtureRunner {
                             }
                             if null_event || is_poll_anchor_trap(opcode) {
                                 self.note_virtual_anchor_arrival(pc);
+                            } else if canonical_trap_number(opcode) == (true, 0x0232)
+                                && !self.is_ui_tracking_active()
+                                && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                            {
+                                self.note_virtual_device_anchor_arrival(pc);
                             }
                         }
                         Err(Error::Halted) => {

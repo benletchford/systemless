@@ -94,6 +94,11 @@ pub(crate) fn virtual_idle_trap_is_journal_complete(
                 | (true, 0x0074)
                 | (true, 0x0231)
                 | (true, 0x0232)
+                // ShieldCursor and ShowCursor can change the host cursor
+                // level. The pass-start host snapshot includes the entire
+                // cursor state, and a pass must restore it before recording.
+                | (true, 0x0053)
+                | (true, 0x0055)
                 // CopyMask: stores destination pixels through the bus only.
                 | (true, 0x0017)
         ))
@@ -129,6 +134,8 @@ pub(crate) struct RecordedPass {
     pub(crate) start_values: Vec<(u32, u32)>,
     /// The pass reads or consumes the host event queue.
     pub(crate) reads_event_queue: bool,
+    /// Every trap in the pass may run within a browser CPU slice.
+    pub(crate) browser_bounded: bool,
 }
 
 impl RecordedPass {
@@ -190,6 +197,7 @@ pub(crate) struct PassRecorder {
     pub(crate) extra_units: Vec<(u64, i64)>,
     /// Event Manager polls and mouse-button queries read the host queue.
     pub(crate) reads_event_queue: bool,
+    pub(crate) browser_bounded: bool,
     /// Return PCs of trap-patch calls into native traps that were in flight
     /// when the pass began. A pass that starts or retires one is not a
     /// repeatable cycle; a call merely pending throughout it (a patch
@@ -272,6 +280,7 @@ impl FixtureRunner {
             executed: 0,
             extra_units: Vec::new(),
             reads_event_queue: false,
+            browser_bounded: true,
             native_returns: self.native_trap_return_pcs(),
         });
     }
@@ -308,6 +317,7 @@ impl FixtureRunner {
         };
         let offset = self.total_instructions - recorder.start_instructions;
         recorder.reads_event_queue |= virtual_idle_trap_reads_event_queue(opcode);
+        recorder.browser_bounded &= self.dispatcher.last_trap_is_bounded_query(&self.bus);
         let plain = offset <= VIRTUAL_IDLE_MAX_PASS_STEPS
             && self.native_trap_call_count() == recorder.native_returns.len()
             && self.virtual_pass_trap_is_plain(opcode, null_event, input_selector);
@@ -330,6 +340,11 @@ impl FixtureRunner {
             && self.bus.read_word(self.m68k.cpu.core.a(7)) as i16 == SOUND_QUEUE_FULL;
         !self.idle_prover_owns_journal()
             && self.active_interrupt_callback.is_none()
+            && !(matches!(
+                canonical_trap_number(opcode),
+                (true, 0x0053 | 0x0055 | 0x0231 | 0x0232)
+            )
+                && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             && !self.idle_query_has_unsafe_dispatch(opcode)
             && virtual_idle_trap_is_journal_complete(
                 opcode,
@@ -345,6 +360,14 @@ impl FixtureRunner {
     /// Closes a recording that returned to its starting state, or starts
     /// one here when the parking prover holds no journal.
     pub(crate) fn note_virtual_anchor_arrival(&mut self, trap_pc: u32) {
+        self.note_virtual_anchor_arrival_inner(trap_pc, false);
+    }
+
+    pub(crate) fn note_virtual_device_anchor_arrival(&mut self, trap_pc: u32) {
+        self.note_virtual_anchor_arrival_inner(trap_pc, true);
+    }
+
+    fn note_virtual_anchor_arrival_inner(&mut self, trap_pc: u32, device_anchor: bool) {
         if self.pass_recorder.is_some() && self.idle_prover_owns_journal() {
             // The parking prover began a probe and took the journal.
             self.pass_recorder = None;
@@ -381,12 +404,12 @@ impl FixtureRunner {
             self.close_pass_recording(tick);
             return;
         }
-        // Only where the parking prover has given up on the site for this
-        // tick: until then it may still probe there, and an observation
-        // it interrupts is wasted work under a slow-path journal.
+        // Poll sites wait until the parking prover has given up for this
+        // tick, so the two observers do not compete for the journal. Device
+        // anchors are virtual-only and can begin without a parking probe.
         if self.idle_prover_owns_journal()
             || self.idle_counter.is_some()
-            || !self.idle_cycle_site_is_busy(trap_pc, tick)
+            || (!device_anchor && !self.idle_cycle_site_is_busy(trap_pc, tick))
         {
             return;
         }
@@ -453,6 +476,7 @@ impl FixtureRunner {
                 extra_units: recorder.extra_units,
                 start_values,
                 reads_event_queue: recorder.reads_event_queue,
+                browser_bounded: recorder.browser_bounded,
             },
             offset: 0,
             host: IdleCycleHostSnapshot::capture(&self.dispatcher),
@@ -809,6 +833,7 @@ mod tests {
             extra_units: vec![(3, 5), (10, 2)],
             start_values: Vec::new(),
             reads_event_queue: false,
+            browser_bounded: true,
         }
     }
 

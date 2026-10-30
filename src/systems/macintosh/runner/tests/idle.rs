@@ -3736,6 +3736,155 @@ fn virtual_idle_rejects_a_pass_that_changes_quickdraw_mirrors() {
 }
 
 #[test]
+fn virtual_device_loop_preserves_cursor_and_guest_state_across_slices() {
+    fn arm(enabled: bool) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.virtual_idle_enabled = enabled;
+        let code = 0x0002_0000u32;
+        let rect = 0x0030_0000u32;
+        let mut words = vec![
+            0x42A7, 0xAA32, 0x205F, 0x2F08, 0xAA31, // GetGDevice; SetGDevice
+            0x4879, (rect >> 16) as u16, rect as u16, // rect pointer
+            0x42A7, 0xA855, 0xA853, // zero offset; ShieldCursor; ShowCursor
+            0x6000,
+        ];
+        words.push((-((words.len() as i16 - 1) * 2 + 2)) as u16);
+        for (i, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(code + i as u32 * 2, word);
+        }
+        for (i, value) in [0, 0, 100, 100].into_iter().enumerate() {
+            runner.bus.write_word(rect + i as u32 * 2, value);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(20_000);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.dispatcher.input_state.set_mouse_position_for_test((20, 20));
+        runner
+    }
+    for browser_slices in [false, true] {
+        let mut plain = arm(false);
+        let mut cursor = arm(true);
+        let rounds = if browser_slices { 100 } else { 16 };
+        for round in 0..rounds {
+            if round == 6 {
+                for runner in [&mut plain, &mut cursor] {
+                    runner.dispatcher.input_state.set_mouse_position_for_test((200, 200));
+                }
+            }
+            let run = |runner: &mut FixtureRunner| {
+                if browser_slices {
+                    runner.run_gui_cpu_slice_until_host_work(3_331, runner.guest_tick() + 1)
+                } else {
+                    runner.run_steps(3_331, None)
+                }
+            };
+            assert_eq!(run(&mut plain), run(&mut cursor));
+            assert_eq!(plain.guest_tick(), cursor.guest_tick(),
+                       "round={round} browser={browser_slices} plain_budget={} cursor_budget={} plain_steps={} cursor_steps={} entries={}",
+                       plain.tick_budget, cursor.tick_budget, plain.total_instructions,
+                       cursor.total_instructions, cursor.virtual_idle_entries);
+            assert_eq!(plain.tick_budget, cursor.tick_budget);
+            assert_eq!(plain.total_instructions, cursor.total_instructions);
+            assert_eq!(CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core),
+                       CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core));
+            assert_eq!(plain.dispatcher.cursor_state.snapshot(), cursor.dispatcher.cursor_state.snapshot());
+            assert_eq!(plain.bus.ram_slice(0, plain.bus.ram_size()),
+                       cursor.bus.ram_slice(0, cursor.bus.ram_size()));
+        }
+        assert!(cursor.virtual_idle_entries > 0, "the repeated device loop should be recorded (browser={browser_slices})");
+    }
+}
+
+#[test]
+fn virtual_device_recording_rejects_unbalanced_cursor_changes() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let anchor = 0x0002_0000;
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.note_virtual_device_anchor_arrival(anchor);
+    assert!(runner.pass_recorder.is_some());
+    runner.total_instructions += 1;
+    runner.tick_budget -= 1;
+    runner.pass_recorder.as_mut().unwrap().executed = 1;
+    runner.dispatcher.cursor_state.hide();
+    runner.note_virtual_device_anchor_arrival(anchor);
+    assert!(runner.virtual_idle_cycle.is_none(), "a changed cursor cannot be elided");
+}
+
+#[test]
+fn patched_device_and_cursor_traps_cancel_virtual_recordings() {
+    for opcode in [0xA853u16, 0xA855, 0xAA31, 0xAA32] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.dispatcher.install_trap_address(&mut runner.bus, opcode, 0x0020_0000).unwrap();
+        runner.note_virtual_device_anchor_arrival(0x0002_0000);
+        assert!(runner.pass_recorder.is_some());
+        runner.record_pass_trap(opcode, true, 0, 0);
+        assert!(runner.pass_recorder.is_none(), "patched {opcode:04X} must cancel");
+    }
+}
+
+#[test]
+fn virtual_pass_with_unbounded_trap_respects_browser_slice_boundaries() {
+    fn arm(enabled: bool) -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.virtual_idle_enabled = enabled;
+        let code = 0x0002_0000u32;
+        let port_out = 0x0030_0000u32;
+        let mut words = vec![
+            0x42A7, 0xAA32, 0x588F, // GetGDevice; discard result
+            0x4879, (port_out >> 16) as u16, port_out as u16, 0xA874, // GetPort
+            0x6000,
+        ];
+        words.push((-((words.len() as i16 - 1) * 2 + 2)) as u16);
+        for (i, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(code + i as u32 * 2, word);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.set_instructions_per_tick(20_000);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner
+    }
+    for stop_at_any_trap in [false, true] {
+        let mut plain = arm(false);
+        let mut cursor = arm(true);
+        for _ in 0..12 {
+            let cap = plain.guest_tick() + 1;
+            assert_eq!(plain.run_gui_cpu_slice(3_331, cap), cursor.run_gui_cpu_slice(3_331, cap));
+            assert_eq!(plain.guest_tick(), cursor.guest_tick());
+            assert_eq!(plain.tick_budget, cursor.tick_budget);
+            assert_eq!(CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core),
+                       CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core));
+        }
+        assert!(cursor.virtual_idle_entries > 0, "the unbounded pass must first be recorded");
+        for _ in 0..80 {
+            let cap = plain.guest_tick() + 1;
+            let run = |runner: &mut FixtureRunner| {
+                if stop_at_any_trap {
+                    runner.run_gui_cpu_slice_until_trap(3_331, cap)
+                } else {
+                    runner.run_gui_cpu_slice_until_host_work(3_331, cap)
+                }
+            };
+            assert_eq!(run(&mut plain), run(&mut cursor));
+            assert_eq!(plain.guest_tick(), cursor.guest_tick());
+            assert_eq!(plain.tick_budget, cursor.tick_budget);
+            assert_eq!(CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core),
+                       CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core));
+            assert_eq!(plain.bus.ram_slice(0, plain.bus.ram_size()),
+                       cursor.bus.ram_slice(0, cursor.bus.ram_size()));
+        }
+    }
+}
+
+#[test]
 fn sound_status_idle_snapshot_tracks_queued_work_and_callbacks() {
     for selector in [0x0010_0008, 0x0510_0008] {
         assert!(!idle_cycle_trap_is_journal_complete(0xA800, true, true, true, selector, false));

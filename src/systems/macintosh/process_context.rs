@@ -2875,6 +2875,10 @@ impl ProcessCursorState {
 }
 
 impl SharedProcessCursorState {
+    pub(crate) fn snapshot(&self) -> ProcessCursorState {
+        self.with_ref(Clone::clone)
+    }
+
     fn with_ref<R>(&self, operation: impl FnOnce(&ProcessCursorState) -> R) -> R {
         self.0.with_ref(operation)
     }

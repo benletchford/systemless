@@ -308,6 +308,7 @@ pub(crate) struct IdleCycleHostSnapshot {
     pub(crate) task: crate::execution_kernel::ExecutionTaskId,
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
+    pub(crate) cursor: crate::process_context::ProcessCursorState,
     pub(crate) key_map: [u8; 16],
     /// Repeat identity and deadline must invalidate retained input proofs.
     pub(crate) key_repeat: Option<crate::process_context::ProcessKeyRepeatState>,
@@ -359,6 +360,7 @@ impl IdleCycleHostSnapshot {
             task: dispatcher.guest_calls.current_task(),
             mouse_pos: dispatcher.input_state.mouse_position(),
             mouse_button: dispatcher.input_state.mouse_button_pressed(),
+            cursor: dispatcher.cursor_state.snapshot(),
             key_map: dispatcher.key_map_bytes(),
             key_repeat: dispatcher.input_state.key_repeat(),
             caps_lock_physically_pressed: dispatcher
