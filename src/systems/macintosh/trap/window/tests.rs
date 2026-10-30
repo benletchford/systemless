@@ -2951,6 +2951,75 @@ fn pending_activation_slots_replace_superseded_window_transitions() {
 }
 
 #[test]
+fn removing_window_discards_its_pending_activation_but_preserves_other_window() {
+    // A hidden window can be disposed before its pending deactivation is
+    // delivered. The application's refCon may then be freed or reused.
+    for trap in [0x12d, 0x114] {
+        for removed_was_activating in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let removed = 0x200040u32;
+            let retained = 0x200140u32;
+            disp.window_list.replace(vec![retained, removed]);
+            disp.front_window = retained;
+            bus.write_byte(retained + 110, 0xff);
+            bus.write_byte(removed + 110, 0);
+            disp.queue_window_activation_event(&mut bus, removed, removed_was_activating);
+            disp.queue_window_activation_event(&mut bus, retained, !removed_was_activating);
+
+            let sp = TEST_SP - 4;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, removed);
+            dispatch(&mut disp, trap, &mut cpu, &mut bus).unwrap().unwrap();
+
+            let events: Vec<_> = disp
+                .event_queue
+                .iter()
+                .filter(|event| event.what == 8)
+                .collect();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].message, retained);
+            assert_eq!(events[0].modifiers & 1, u16::from(!removed_was_activating));
+            let removed_global = if removed_was_activating {
+                super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE
+            } else {
+                super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE
+            };
+            let retained_global = if removed_was_activating {
+                super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE
+            } else {
+                super::super::TrapDispatcher::LOWMEM_CUR_ACTIVATE
+            };
+            assert_eq!(bus.read_long(removed_global), 0);
+            assert_eq!(bus.read_long(retained_global), retained);
+
+            // Observe delivery through the Toolbox Event Manager as the
+            // application does, then verify there is no stale second event.
+            disp.set_sent_open_app_event_for_test(true);
+            let event_ptr = bus.alloc(16);
+            let event_sp = TEST_SP - 8;
+            for expected in [Some(retained), None] {
+                cpu.write_reg(Register::A7, event_sp);
+                bus.write_long(event_sp, event_ptr);
+                bus.write_word(event_sp + 4, 1 << 8); // activateMask
+                bus.write_word(event_sp + 6, 0);
+                disp.dispatch_toolbox(true, 0x170, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    bus.read_word(event_sp + 6),
+                    if expected.is_some() { 0x0100 } else { 0 }
+                );
+                if let Some(window) = expected {
+                    assert_eq!(bus.read_word(event_ptr), 8);
+                    assert_eq!(bus.read_long(event_ptr + 2), window);
+                }
+            }
+            assert_eq!(bus.read_long(retained_global), 0);
+        }
+    }
+}
+
+#[test]
 fn invisible_frontmost_window_creation_preserves_active_window() {
     // The native Window Manager leaves pending activation unchanged when
     // NewWindow/NewCWindow creates an invisible window at the front.
