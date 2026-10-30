@@ -18,6 +18,18 @@ compatibility:
   verified:
   - date: "2026-10-31"
     tester: Catalogue maintainer
+    systemless_version: 731b2cf96039a9b65f6ceeaf0e639009f5195c58
+    architecture: ppc
+    environment: >-
+      Headless native replay with an 8-bit display and 128 MiB application
+      partition reached the starting camp after character creation. A ground
+      click moved the Barbarian and scrolled the camp; a separate replay stayed
+      in the camp through 10,300 frontend ticks. This used the combined draft
+      changes.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5352
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
     systemless_version: 41e8021975ec50054b2ccee10b7f0e16ff792dcb
     architecture: ppc
     environment: >-

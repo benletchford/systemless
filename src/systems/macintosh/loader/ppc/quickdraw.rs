@@ -4636,10 +4636,6 @@ pub(crate) fn ppc_copy_bits(
             let src_ctable = src_ctable.unwrap_or(0);
             let src_clut = src_clut.as_ref().unwrap();
             let dst_clut = dst_clut.as_ref().unwrap();
-            let source_uses_device_indices = memory
-                .read_u32_be(src_ctable)
-                .and_then(|table| memory.read_u16_be(table + 4))
-                .is_some_and(|flags| flags & 0x8000 != 0);
             let linked_palette_map = ppc_copy_bits_palette_index_map(
                 memory,
                 src_ctable,
@@ -4655,11 +4651,9 @@ pub(crate) fn ppc_copy_bits(
                     src_clut_resolution_known && dst_clut_resolution_known;
                 None
             } else {
-                // Inside Macintosh Volume V (1986), p. V-135: the high
-                // ctFlags bit distinguishes a GDevice table from a PixMap
-                // image table. Its pixels are already device indexes, so an
-                // indexed CopyBits preserves them.
-                if source_uses_device_indices || src_clut == dst_clut {
+                // A device-form table uses entry positions as source pixel
+                // values; its colors can still differ from the destination.
+                if src_clut == dst_clut {
                     indexed_palette_identity_known =
                         src_clut_resolution_known && dst_clut_resolution_known;
                     None
@@ -4671,14 +4665,9 @@ pub(crate) fn ppc_copy_bits(
                 }
             }
         } else if src_bits.depth == dst_bits.depth && matches!(src_bits.depth, 1 | 2 | 4) {
-            let src_ctable = src_ctable.unwrap_or(0);
             let src_clut = src_clut.as_ref().unwrap();
             let dst_clut = dst_clut.as_ref().unwrap();
-            let source_uses_device_indices = memory
-                .read_u32_be(src_ctable)
-                .and_then(|table| memory.read_u16_be(table + 4))
-                .is_some_and(|flags| flags & 0x8000 != 0);
-            (!same_indexed_ctable_identity && !source_uses_device_indices && src_clut != dst_clut)
+            (!same_indexed_ctable_identity && src_clut != dst_clut)
                 .then(|| {
                     let entry_count = ppc_indexed_depth_entry_count(src_bits.depth).unwrap_or(1);
                     std::array::from_fn::<u8, 256, _>(|index| {
