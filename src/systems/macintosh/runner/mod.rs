@@ -3047,6 +3047,35 @@ impl FixtureRunner {
         self.pending_guest_cursor_warp.take()
     }
 
+    /// The frontend has adopted a guest cursor warp as its new input origin.
+    /// Rebase relative motion without producing a physical input event.
+    pub fn acknowledge_guest_cursor_warp(&mut self, position: (i16, i16)) {
+        let previous = self.dispatcher.adb.rebase_mouse_position(position);
+        self.dispatcher.input_state.set_mouse_position(position);
+        for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+            if let Some(app) = self.native.adapter_mut(role) {
+                app.rebase_physical_mouse_position(position);
+                if app.input_sprocket.device_mouse_rebased_warp.take() == Some(position) {
+                    continue;
+                }
+                if let Some(anchor) = app.input_sprocket.device_mouse_v.as_mut() {
+                    app.input_sprocket.device_mouse_v_carry = app
+                        .input_sprocket
+                        .device_mouse_v_carry
+                        .wrapping_add(i32::from(*anchor) - i32::from(previous.0));
+                    *anchor = position.0;
+                }
+                if let Some(anchor) = app.input_sprocket.device_mouse_h.as_mut() {
+                    app.input_sprocket.device_mouse_h_carry = app
+                        .input_sprocket
+                        .device_mouse_h_carry
+                        .wrapping_add(i32::from(previous.1) - i32::from(*anchor));
+                    *anchor = position.1;
+                }
+            }
+        }
+    }
+
     /// Return an immutable snapshot of the guest's current Menu Manager list.
     /// Native and web frontends can use this without exposing mutable Toolbox
     /// internals.
@@ -11361,6 +11390,13 @@ impl FixtureRunner {
             // Apple Technical Note DV520, "How the Macintosh mouse/cursor
             // mechanism works"; Inside Macintosh Volume V (1986), V-365.
             let position = ((mouse >> 16) as i16, mouse as i16);
+            for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+                if let Some(app) = self.native.adapter_mut(role) {
+                    if app.input_sprocket.device_mouse_rebased_warp != Some(position) {
+                        app.input_sprocket.device_mouse_rebased_warp = None;
+                    }
+                }
+            }
             self.dispatcher.input_state.set_mouse_position(position);
             self.pending_guest_cursor_warp = Some(position);
         }
