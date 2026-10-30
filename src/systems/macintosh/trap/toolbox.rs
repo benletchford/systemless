@@ -8876,6 +8876,7 @@ impl super::TrapDispatcher {
                     let oapp_class = AE_TYPE_APPLE_EVENT;
                     let oapp_id = u32::from_be_bytes(*b"oapp");
                     let event_record = bus.read_long(sp);
+                    let event_class = bus.read_long(event_record + 2);
                     let event_id = ((bus.read_word(event_record + 10) as u32) << 16)
                         | bus.read_word(event_record + 12) as u32;
                     if bus.read_word(event_record) == Self::K_HIGH_LEVEL_EVENT
@@ -8902,7 +8903,14 @@ impl super::TrapDispatcher {
                             bus.read_word(event_record + 14)
                         );
                     }
-                    if let Some(handler) = self.apple_event_handler_for(oapp_class, oapp_id) {
+                    if bus.read_word(event_record) != Self::K_HIGH_LEVEL_EVENT {
+                        let new_sp = sp + param_bytes;
+                        bus.write_word(new_sp, (-1708i16) as u16);
+                        cpu.write_reg(Register::A7, new_sp);
+                        cpu.write_reg(Register::D0, -1708i32 as u32);
+                        return Some(Ok(()));
+                    }
+                    if let Some(handler) = self.apple_event_handler_for(event_class, event_id) {
                         let handler_ptr = handler.procedure.original_pointer;
                         let refcon = handler.refcon;
                         // Lazily allocate the trampoline on first use.
@@ -8940,7 +8948,7 @@ impl super::TrapDispatcher {
                             return return_allocation_failure(cpu, bus);
                         }
                         self.write_synthetic_apple_event_descriptor(
-                            bus, event_desc, oapp_class, oapp_id,
+                            bus, event_desc, event_class, event_id,
                         );
                         if bus.read_long(event_desc + 4) == 0 {
                             self.dispose_owned_ae_callback_descriptor(bus, event_desc);
@@ -8982,11 +8990,13 @@ impl super::TrapDispatcher {
                             owned_descriptors: Some((event_desc, reply_desc)),
                             resolve_state: None,
                         });
-                        self.fired_oapp_handler = true;
+                        if event_class == oapp_class && event_id == oapp_id {
+                            self.fired_oapp_handler = true;
+                        }
 
                         eprintln!(
-                            "[AE] ProcessAppleEvent → invoking 'oapp' handler ${:08X} via trampoline ${:08X}",
-                            handler_ptr, trampoline,
+                            "[AE] ProcessAppleEvent → invoking '{}'/'{}' handler ${:08X} via trampoline ${:08X}",
+                            format_fourcc(event_class), format_fourcc(event_id), handler_ptr, trampoline,
                         );
 
                         match handler.procedure.isa {
@@ -9022,6 +9032,11 @@ impl super::TrapDispatcher {
                         }
                         return Some(Ok(()));
                     }
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, (-1708i16) as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, -1708i32 as u32);
+                    return Some(Ok(()));
                 }
 
                 // Routine 23 (`AESend`) sends a constructed AppleEvent.
