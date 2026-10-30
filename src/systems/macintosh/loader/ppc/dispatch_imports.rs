@@ -962,6 +962,8 @@ pub(crate) fn dispatch_supported_import(
             input,
             screen_clut,
             screen_bits,
+            current_menu_list,
+            host_menu_bar_hidden: toolbox_startup.host_menu_bar_hidden,
         },
     ) {
         return Some(action);

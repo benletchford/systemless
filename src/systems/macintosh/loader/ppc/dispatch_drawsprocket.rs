@@ -23,6 +23,8 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
     /// QDGlobals.screenBits, when InitGraf has run.
     pub(super) screen_bits: Option<u32>,
+    pub(super) current_menu_list: u32,
+    pub(super) host_menu_bar_hidden: bool,
 }
 
 pub(super) fn dispatch_drawsprocket_import(
@@ -48,6 +50,8 @@ pub(super) fn dispatch_drawsprocket_import(
         input,
         screen_clut,
         screen_bits,
+        current_menu_list,
+        host_menu_bar_hidden,
     } = context;
 
     match binding.dispatcher_target {
@@ -184,6 +188,7 @@ pub(super) fn dispatch_drawsprocket_import(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DSpContextSetState => {
+            let previous_state = draw_sprocket.context_state;
             let result = ppc_dsp_context_set_state(
                 cpu,
                 memory,
@@ -254,6 +259,43 @@ pub(super) fn dispatch_drawsprocket_import(
                         current_gdevice,
                         draw_sprocket,
                     );
+                }
+                if previous_state == PpcDspContextPlayState::Paused
+                    && draw_sprocket.context_state != PpcDspContextPlayState::Paused
+                {
+                    if let Some((address, bytes)) = draw_sprocket.paused_menu_pixels.take() {
+                        if draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                            let _ = memory.write_bytes(address, &bytes);
+                        }
+                    }
+                }
+                if previous_state != PpcDspContextPlayState::Paused
+                    && draw_sprocket.context_state == PpcDspContextPlayState::Paused
+                    && !host_menu_bar_hidden
+                {
+                    if let Some(front) =
+                        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                    {
+                        let height =
+                            u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20))
+                                .min(front.height);
+                        if let Some(bytes) = front
+                            .row_bytes
+                            .checked_mul(height)
+                            .and_then(|size| ppc_memory_read_bytes(memory, front.base_addr, size))
+                        {
+                            let colors = ppc_menu_color_table_bytes(memory, handles);
+                            if ppc_draw_menu_bar_with_colors(
+                                memory,
+                                gworlds,
+                                current_menu_list,
+                                screen_clut,
+                                MenuColorTable::new(&colors),
+                            ) {
+                                draw_sprocket.paused_menu_pixels = Some((front.base_addr, bytes));
+                            }
+                        }
+                    }
                 }
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))

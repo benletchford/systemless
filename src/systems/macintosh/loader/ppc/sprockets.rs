@@ -103,6 +103,7 @@ pub struct PpcDrawSprocketState {
     pub vbl_proc: Option<u32>,
     pub vbl_refcon: Option<u32>,
     pub(crate) desktop_snapshot: Option<PpcDspDesktopSnapshot>,
+    pub(crate) paused_menu_pixels: Option<(u32, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +149,7 @@ impl Default for PpcDrawSprocketState {
             vbl_proc: None,
             vbl_refcon: None,
             desktop_snapshot: None,
+            paused_menu_pixels: None,
         }
     }
 }
@@ -1609,6 +1611,7 @@ pub(crate) fn ppc_dsp_context_reserve(
     draw_sprocket.reserved_context = Some(context);
     draw_sprocket.active_context = None;
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
+    draw_sprocket.paused_menu_pixels = None;
     PPC_NO_ERR
 }
 
@@ -1842,6 +1845,7 @@ pub(crate) fn ppc_dsp_context_release(
     draw_sprocket.reserved_context = None;
     draw_sprocket.active_context = None;
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
+    draw_sprocket.paused_menu_pixels = None;
     PPC_NO_ERR
 }
 

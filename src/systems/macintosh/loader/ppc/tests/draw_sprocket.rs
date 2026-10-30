@@ -194,6 +194,11 @@ fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
     let blanking_window = loaded.draw_sprocket.blanking_window.unwrap();
     let bounds = ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap();
     assert_eq!(bounds, (0, 0, 480, 640));
+    let front = loaded.presented_front_buffer().unwrap();
+    let menu_bytes =
+        front.row_bytes * u32::from(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap());
+    let active_pixels =
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap();
     loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
     assert_eq!(loaded.cpu.gpr[3], 0);
@@ -203,6 +208,10 @@ fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
     );
     assert_eq!(loaded.draw_sprocket.active_context, None);
     assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    assert_ne!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap(),
+        active_pixels
+    );
     assert_eq!(
         ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
         bounds
@@ -216,6 +225,10 @@ fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap(),
+        active_pixels
+    );
     loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
     assert_eq!(loaded.cpu.gpr[3], 0);
