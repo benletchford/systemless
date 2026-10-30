@@ -9,7 +9,7 @@ year: 1995
 architectures: [ppc]
 default_architecture: ppc
 category: FPS
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: unknown
 artifacts:
@@ -35,6 +35,23 @@ artifacts:
     notes: >-
       Unchanged 4,735,288-byte Macintosh shareware archive, SHA-256
       f45c338df4bc4ceda38e6541f14b8dc93b543fd07d90a2c5d5118d2001c12ad2.
+- id: screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/descent/screenshot.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://classicmacdemos.com/descent
+    permission: >-
+      Captured from the noncommercial shareware release; the game artwork
+      remains the property of its rights holders.
+    notes: >-
+      Systemless capture of the opening level from the original shareware
+      archive, cropped to the game content.
 references:
 - https://classicmacdemos.com/descent
 ---
@@ -47,3 +64,5 @@ what used to be the ceiling.
 
 This is the original PowerPC shareware package, not a repack or modern port.
 Systemless compatibility has not yet been verified.
+
+![Descent opening level](incoming/descent/screenshot.png)
