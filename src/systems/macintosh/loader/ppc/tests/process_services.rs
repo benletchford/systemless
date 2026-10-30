@@ -35,6 +35,87 @@ fn ppc_script_manager_caches_kchr_for_keytranslate() {
 }
 
 #[test]
+fn attached_classic_and_ppc_catalog_allocators_avoid_each_others_ids() {
+    let (mut classic, _, _) = setup_with_port();
+    let pef = synthetic_pef_with_import(b"DirCreate");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+
+    classic.ensure_vfs_file_metadata("ClassicFile");
+    let classic_file_id = classic.vfs_metadata.get("ClassicFile").unwrap().file_id;
+    native
+        .next_vfs_dir_id
+        .with_mut(|next| *next = classic_file_id);
+    let name = PPC_DATA_BASE + 0x1000;
+    let output = name + 0x100;
+    native.memory.add_region(name, vec![0; 0x200]);
+    write_ppc_pstring(&mut native.memory, name, b"NativeFolder");
+    native.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    native.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+    native.cpu.gpr[5] = name;
+    native.cpu.gpr[6] = output;
+    run_test_import(&mut native, PpcImportDispatcherTarget::DirCreate);
+    assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let native_dir_id = native.memory.read_u32_be(output).unwrap();
+    assert_ne!(native_dir_id, classic_file_id);
+    assert_eq!(
+        classic
+            .vfs_directories
+            .iter()
+            .find(|directory| directory.path == "NativeFolder")
+            .unwrap()
+            .dir_id,
+        native_dir_id
+    );
+
+    classic
+        .next_vfs_file_id
+        .with_mut(|next| *next = native_dir_id);
+    classic.ensure_vfs_file_metadata("SecondClassicFile");
+    let second_file_id = classic
+        .vfs_metadata
+        .get("SecondClassicFile")
+        .unwrap()
+        .file_id;
+    assert_ne!(second_file_id, native_dir_id);
+    assert_ne!(second_file_id, classic_file_id);
+    assert_eq!(
+        native.process_file_system.classic_vfs_metadata["SecondClassicFile"].file_id,
+        second_file_id
+    );
+
+    write_ppc_fsspec(
+        &mut native.memory,
+        name,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"NativeFile",
+    );
+    native.cpu.gpr[3] = name;
+    native.cpu.gpr[4] = u32::from_be_bytes(*b"TEST");
+    native.cpu.gpr[5] = u32::from_be_bytes(*b"TEXT");
+    run_test_import(&mut native, PpcImportDispatcherTarget::FSpCreate);
+    assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let native_file_id = classic.vfs_metadata.get("NativeFile").unwrap().file_id;
+    classic
+        .next_vfs_dir_id
+        .with_mut(|next| *next = native_file_id);
+    let classic_dir_id = classic.ensure_vfs_directory("ClassicFolder");
+    assert_ne!(classic_dir_id, native_file_id);
+    assert_eq!(
+        native
+            .vfs_directories
+            .iter()
+            .find(|directory| directory.path == "ClassicFolder")
+            .unwrap()
+            .dir_id,
+        classic_dir_id
+    );
+}
+
+#[test]
 fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation() {
     let (mut classic, _, _) = setup_with_port();
     let pef = synthetic_pef_with_import(b"InvalMenuBar");

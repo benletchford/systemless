@@ -4989,9 +4989,16 @@ impl TrapDispatcher {
 
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
-        let dir_id = *self.next_vfs_dir_id;
+        let dir_id = crate::process_context::next_available_catalog_id(
+            *self.next_vfs_dir_id,
+            self.vfs_directories
+                .iter()
+                .map(|directory| directory.dir_id)
+                .chain(self.vfs_metadata.values().map(|metadata| metadata.file_id)),
+        )
+        .expect("no free catalog directory ID");
         self.next_vfs_dir_id
-            .with_mut(|next_dir_id| *next_dir_id = next_dir_id.saturating_add(1));
+            .with_mut(|next_dir_id| *next_dir_id = dir_id.saturating_add(1));
 
         self.vfs_directories.push(VfsDirectory {
             dir_id,
@@ -5020,7 +5027,14 @@ impl TrapDispatcher {
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
         let timestamp = self.allocate_vfs_timestamp();
-        let file_id = *self.next_vfs_file_id;
+        let file_id = crate::process_context::next_available_catalog_id(
+            *self.next_vfs_file_id,
+            self.vfs_directories
+                .iter()
+                .map(|directory| directory.dir_id)
+                .chain(self.vfs_metadata.values().map(|metadata| metadata.file_id)),
+        )
+        .expect("no free catalog file ID");
         self.vfs_metadata.insert(
             normalized.clone(),
             VfsMetadata {
@@ -5034,7 +5048,7 @@ impl TrapDispatcher {
             },
         );
         self.next_vfs_file_id
-            .with_mut(|next_file_id| *next_file_id = next_file_id.saturating_add(1));
+            .with_mut(|next_file_id| *next_file_id = file_id.saturating_add(1));
         self.process_file_system.with_mut(|file_system| {
             file_system.publish_classic_vfs_metadata(&normalized);
         });

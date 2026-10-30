@@ -1331,6 +1331,7 @@ impl ProcessFileSystemState {
         });
         let records = files.chain(resource_files).collect::<Vec<_>>();
         let deleted_paths = self.deleted_vfs_file_paths.clone();
+        let mut occupied_ids = None;
 
         for (path, file_type, creator, finder_flags, dirty) in records {
             if path.is_empty() {
@@ -1344,6 +1345,8 @@ impl ProcessFileSystemState {
                             metadata,
                             next_file_id,
                             next_timestamp,
+                            &directories,
+                            &mut occupied_ids,
                             &path,
                             parent_dir_id,
                             file_type,
@@ -1495,11 +1498,54 @@ fn process_vfs_parent_dir_id(directories: &[ProcessVfsDirectory], path: &str) ->
         .unwrap_or(2)
 }
 
+/// Find an unused synthetic catalog ID, allowing reuse after counter wrap.
+/// Keep the first 16 IDs reserved and leave u32::MAX as an exhaustion marker.
+pub(crate) fn next_available_catalog_id(
+    start: u32,
+    occupied: impl IntoIterator<Item = u32>,
+) -> Option<u32> {
+    let occupied = occupied.into_iter().collect::<HashSet<_>>();
+    next_available_catalog_id_in_range(start, 16, u32::MAX - 1, &occupied)
+}
+
+fn next_available_catalog_id_in_range(
+    start: u32,
+    first_valid: u32,
+    last_valid: u32,
+    occupied: &HashSet<u32>,
+) -> Option<u32> {
+    if first_valid > last_valid {
+        return None;
+    }
+    let first = if (first_valid..=last_valid).contains(&start) {
+        start
+    } else {
+        first_valid
+    };
+    let mut candidate = first;
+    for _ in 0..=occupied.len() {
+        if !occupied.contains(&candidate) {
+            return Some(candidate);
+        }
+        candidate = if candidate == last_valid {
+            first_valid
+        } else {
+            candidate + 1
+        };
+        if candidate == first {
+            return None;
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn publish_native_vfs_metadata(
     metadata: &mut HashMap<String, ProcessVfsMetadata>,
     next_file_id: &mut u32,
     next_timestamp: &mut u32,
+    directories: &[ProcessVfsDirectory],
+    occupied_ids: &mut Option<HashSet<u32>>,
     path: &str,
     parent_dir_id: u32,
     file_type: u32,
@@ -1508,6 +1554,19 @@ fn publish_native_vfs_metadata(
     touch: bool,
 ) {
     let timestamp = *next_timestamp;
+    if !metadata.contains_key(path) {
+        let occupied = occupied_ids.get_or_insert_with(|| {
+            directories
+                .iter()
+                .map(|directory| directory.dir_id)
+                .chain(metadata.values().map(|entry| entry.file_id))
+                .collect()
+        });
+        *next_file_id =
+            next_available_catalog_id_in_range(*next_file_id, 16, u32::MAX - 1, occupied)
+                .expect("no free catalog file ID");
+        occupied.insert(*next_file_id);
+    }
     let entry = metadata.entry(path.to_string()).or_insert_with(|| {
         let file_id = *next_file_id;
         *next_file_id = next_file_id.saturating_add(1);
@@ -13791,6 +13850,85 @@ mod tests {
             native.vfs_resource_files.fork("Shared").unwrap(),
             b"classic-resource"
         );
+    }
+
+    #[test]
+    fn catalog_id_search_wraps_and_detects_a_full_range() {
+        let occupied = HashSet::from([16, 17, 19]);
+        assert_eq!(
+            next_available_catalog_id_in_range(19, 16, 19, &occupied),
+            Some(18)
+        );
+        assert_eq!(
+            next_available_catalog_id_in_range(18, 16, 19, &occupied),
+            Some(18)
+        );
+        assert_eq!(
+            next_available_catalog_id_in_range(20, 16, 19, &occupied),
+            Some(18)
+        );
+        let full = HashSet::from([16, 17, 18, 19]);
+        assert_eq!(next_available_catalog_id_in_range(18, 16, 19, &full), None);
+        assert_eq!(next_available_catalog_id_in_range(0, 20, 19, &full), None);
+    }
+
+    #[test]
+    fn native_catalogue_file_ids_skip_existing_directories_and_files() {
+        let mut state = ProcessFileSystemState::default();
+        state.vfs_directories.push(ProcessVfsDirectory {
+            dir_id: 32,
+            parent_dir_id: 2,
+            path: "Folder".to_owned(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.classic_vfs_metadata.insert(
+            "Existing".to_owned(),
+            ProcessVfsMetadata {
+                file_id: 33,
+                parent_dir_id: 2,
+                file_type: 0,
+                creator: 0,
+                finder_flags: 0,
+                created_date: 1,
+                modified_date: 1,
+            },
+        );
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "New".to_owned(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "Second".to_owned(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.publish_native_vfs_catalogue();
+        assert_eq!(state.classic_vfs_metadata["New"].file_id, 34);
+        assert_eq!(state.classic_vfs_metadata["Second"].file_id, 35);
+        assert_eq!(*state.classic_next_vfs_file_id, 36);
+        state
+            .classic_next_vfs_file_id
+            .with_mut(|next| *next = u32::MAX);
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "Wrapped".to_owned(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.publish_native_vfs_catalogue();
+        assert_eq!(state.classic_vfs_metadata["Wrapped"].file_id, 16);
     }
 
     #[test]
