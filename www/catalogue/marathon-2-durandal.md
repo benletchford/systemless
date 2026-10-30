@@ -76,7 +76,7 @@ references:
 
 ## Source and version
 
-This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/3f/3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.sit). Bounded native 68K testing reached the first level and verified forward movement; browser approval remains pending.
+This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/3f/3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.sit). Bounded native 68K and PowerPC tests reached the first level and verified forward movement; browser approval remains pending.
 
 ## Across Lh'owon
 
