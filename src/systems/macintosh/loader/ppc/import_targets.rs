@@ -792,6 +792,9 @@ pub enum PpcImportDispatcherTarget {
     OpenDeskAcc,
     CloseDeskAcc,
     AEInstallEventHandler,
+    AEInstallCoercionHandler,
+    AEGetCoercionHandler,
+    AERemoveCoercionHandler,
     AERemoveEventHandler,
     AEInstallSpecialHandler,
     AEProcessAppleEvent,
@@ -2857,6 +2860,13 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "AEInstallEventHandler") => {
             PpcImportDispatcherTarget::AEInstallEventHandler
+        }
+        ("InterfaceLib", "AEInstallCoercionHandler") => {
+            PpcImportDispatcherTarget::AEInstallCoercionHandler
+        }
+        ("InterfaceLib", "AEGetCoercionHandler") => PpcImportDispatcherTarget::AEGetCoercionHandler,
+        ("InterfaceLib", "AERemoveCoercionHandler") => {
+            PpcImportDispatcherTarget::AERemoveCoercionHandler
         }
         ("InterfaceLib", "AERemoveEventHandler") => PpcImportDispatcherTarget::AERemoveEventHandler,
         ("DrawSprocketLib", "DSpStartup") => PpcImportDispatcherTarget::DSpStartup,
