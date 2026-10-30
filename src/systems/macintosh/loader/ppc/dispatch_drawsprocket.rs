@@ -16,6 +16,7 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) window_list: &'a SharedProcessWindowList,
     pub(super) event_queue: &'a mut EventQueue,
     pub(super) gworld_allocations: &'a mut HashMap<u32, PpcGWorldAllocationRecord>,
+    pub(super) next_ct_seed: &'a mut u32,
     pub(super) current_gworld: &'a mut u32,
     pub(super) current_gdevice: &'a mut u32,
     pub(super) draw_sprocket: &'a mut PpcDrawSprocketState,
@@ -45,6 +46,7 @@ pub(super) fn dispatch_drawsprocket_import(
         window_list,
         event_queue,
         gworld_allocations,
+        next_ct_seed,
         current_gworld,
         current_gdevice,
         draw_sprocket,
@@ -217,7 +219,10 @@ pub(super) fn dispatch_drawsprocket_import(
             } else {
                 Vec::new()
             };
-            let result = ppc_dsp_context_set_state(
+            let install_clut = previous_state == PpcDspContextPlayState::Inactive
+                && matches!(cpu.gpr[4], PPC_DSP_CONTEXT_STATE_ACTIVE | PPC_DSP_CONTEXT_STATE_PAUSED)
+                && draw_sprocket.context_clut.is_some();
+            let mut result = ppc_dsp_context_set_state(
                 cpu,
                 memory,
                 gworlds,
@@ -225,6 +230,16 @@ pub(super) fn dispatch_drawsprocket_import(
                 screen_bits,
                 draw_sprocket,
             );
+            if result == PPC_NO_ERR && install_clut {
+                result = ppc_dsp_sync_device_clut(memory, screen_clut, 0, 256, next_ct_seed);
+                if result != PPC_NO_ERR {
+                    let mut inactive_cpu = cpu.clone();
+                    inactive_cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+                    let _ = ppc_dsp_context_set_state(
+                        &inactive_cpu, memory, gworlds, screen_clut, screen_bits, draw_sprocket,
+                    );
+                }
+            }
             if result == PPC_NO_ERR {
                 if previous_state == PpcDspContextPlayState::Inactive
                     && draw_sprocket.context_state != PpcDspContextPlayState::Inactive
@@ -512,13 +527,16 @@ pub(super) fn dispatch_drawsprocket_import(
             )))
         }
         PpcImportDispatcherTarget::DSpContextSetClutEntries => {
-            let mut context_clut =
-                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
-                    *screen_clut
-                } else {
-                    draw_sprocket.context_clut.unwrap_or(*screen_clut)
-                };
-            let result = ppc_dsp_context_set_clut_entries(cpu, memory, &mut context_clut);
+            let mut context_clut = if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                *screen_clut
+            } else {
+                draw_sprocket.context_clut.unwrap_or(*screen_clut)
+            };
+            let result = if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                ppc_dsp_set_device_clut_entries(cpu, memory, &mut context_clut, next_ct_seed)
+            } else {
+                ppc_dsp_context_set_clut_entries(cpu, memory, &mut context_clut)
+            };
             if result == PPC_NO_ERR {
                 draw_sprocket.context_clut = Some(context_clut);
                 if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {

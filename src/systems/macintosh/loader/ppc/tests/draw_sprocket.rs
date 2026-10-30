@@ -592,6 +592,8 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
     };
     let before = screen_geometry(&mut loaded);
     assert_eq!(before.0, desktop);
+    let original_ctable =
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE).unwrap();
 
     loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
     loaded.cpu.gpr[4] = 0;
@@ -606,6 +608,8 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
     );
     // Reserving alone leaves the desktop geometry in place.
     assert_eq!(screen_geometry(&mut loaded), before);
+    loaded.draw_sprocket.context_attributes.display_depth = 8;
+    loaded.draw_sprocket.context_attributes.back_buffer_depth = 8;
 
     let mut clut = loaded.screen_clut.with_ref(|clut| *clut);
     loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
@@ -635,7 +639,21 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
         loaded.memory.read_u16_be(screen_bits + 4),
         Some(front.row_bytes as u16)
     );
+    let entry = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(entry, vec![0; 8]);
+    loaded.memory.write_u16_be(entry + 2, 0x1234).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 0, 1]);
+    let mut seed = 1024;
+    assert_eq!(
+        ppc_dsp_set_device_clut_entries(&loaded.cpu, &mut loaded.memory, &mut clut, &mut seed),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(PPC_MAIN_CTABLE + 8 + 2),
+        Some(0x1234)
+    );
 
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
     loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
     assert_eq!(
         ppc_dsp_context_set_state(
@@ -649,6 +667,10 @@ fn draw_sprocket_activation_installs_context_screen_geometry() {
         PPC_NO_ERR
     );
     assert_eq!(screen_geometry(&mut loaded), before);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE).unwrap(),
+        original_ctable
+    );
 }
 
 #[test]
@@ -987,6 +1009,62 @@ fn draw_sprocket_inactive_clut_does_not_change_desktop() {
             }
         );
     }
+}
+
+
+#[test]
+fn draw_sprocket_set_clut_keeps_screen_device_table_coherent() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetCLUTEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.draw_sprocket.context_state = PpcDspContextPlayState::Active;
+    let entry = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(entry, vec![0; 32]);
+    for (offset, value) in [0x1111, 0x2222, 0x3333].into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u16_be(entry + 2 + offset as u32 * 2, value)
+            .unwrap();
+    }
+    let table = ppc_gdevice_ctable_handle(&mut loaded.memory, *loaded.current_gdevice).unwrap();
+    let table_ptr = loaded.memory.read_u32_be(table).unwrap();
+    let adjacent = loaded.memory.read_u16_be(table_ptr + 8 + 9 * 8 + 2);
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 10, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextSetClutEntries,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.screen_clut[10], [0x1111, 0x2222, 0x3333]);
+    for (offset, value) in [0x1111, 0x2222, 0x3333].into_iter().enumerate() {
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(table_ptr + 8 + 10 * 8 + 2 + offset as u32 * 2),
+            Some(value)
+        );
+    }
+    assert_eq!(
+        loaded.memory.read_u16_be(table_ptr + 8 + 9 * 8 + 2),
+        adjacent
+    );
+    // A video driver SetEntries call can reapply the entire device table.
+    loaded.memory.write_u32_be(entry + 8, entry + 16).unwrap();
+    loaded.memory.write_u32_be(entry + 16, table_ptr + 8).unwrap();
+    loaded.memory.write_u16_be(entry + 20, 0).unwrap();
+    loaded.memory.write_u16_be(entry + 22, 255).unwrap();
+    loaded.cpu.gpr[3..6].copy_from_slice(&[0, 3, entry + 8]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Control);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.screen_clut[10], [0x1111, 0x2222, 0x3333]);
+    let before = loaded.screen_clut.with_ref(|clut| *clut);
+    loaded.memory.write_u32_be(table, 0).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[PPC_DSP_CONTEXT, entry, 11, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DSpContextSetClutEntries,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.screen_clut.with_ref(|clut| *clut), before);
 }
 
 #[test]

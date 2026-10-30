@@ -956,6 +956,7 @@ pub(crate) fn dispatch_supported_import(
             window_list,
             event_queue,
             gworld_allocations: &mut toolbox_startup.gworld_allocations,
+            next_ct_seed: &mut toolbox_startup.next_ct_seed,
             current_gworld,
             current_gdevice,
             draw_sprocket,
