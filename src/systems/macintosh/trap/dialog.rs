@@ -5561,6 +5561,16 @@ impl super::TrapDispatcher {
         drawing_port: u32,
         screen_rect: (i16, i16, i16, i16),
     ) {
+        self.refresh_dialog_saved_pixels_after_screen_draw_clipped(bus, drawing_port, screen_rect, None);
+    }
+
+    pub(crate) fn refresh_dialog_saved_pixels_after_screen_draw_clipped(
+        &mut self,
+        bus: &MacMemoryBus,
+        drawing_port: u32,
+        screen_rect: (i16, i16, i16, i16),
+        clip: Option<&super::pict::DstClip>,
+    ) {
         if screen_rect.0 >= screen_rect.2 || screen_rect.1 >= screen_rect.3 {
             return;
         }
@@ -5592,12 +5602,51 @@ impl super::TrapDispatcher {
             {
                 continue;
             }
-            self.refresh_single_dialog_saved_pixels_after_screen_draw(
-                bus,
-                dialog_ptr,
-                bounds,
-                screen_rect,
-            );
+            if let Some(clip) = clip {
+                // Only pixels within the same destination clip as the draw
+                // can have changed. Copying the whole bounding rectangle can
+                // save the still-visible dialog as its own background.
+                let Some(rect) = Self::rect_intersection(
+                    Self::dialog_saved_pixel_rect(bounds), screen_rect,
+                ) else { continue };
+                let (_, _, screen_w, screen_h, _) = self.get_screen_params();
+                let Some(rect) = Self::rect_intersection(rect, (0, 0, screen_h, screen_w))
+                else { continue };
+                let (top, left, bottom, right) = clip.rect();
+                let clamp = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+                let Some(rect) = Self::rect_intersection(
+                    rect, (clamp(top), clamp(left), clamp(bottom), clamp(right)),
+                ) else { continue };
+                let track_damage = self.visible_windows_behind(bus, dialog_ptr).contains(&drawing_port);
+                let mut damage = None;
+                for y in rect.0..rect.2 {
+                    let mut x = rect.1;
+                    while x < rect.3 {
+                        let hidden_left = x;
+                        while x < rect.3 && !clip.contains(i32::from(x), i32::from(y)) { x += 1; }
+                        if track_damage && hidden_left < x {
+                            damage = Self::rect_union(damage, Some((y, hidden_left, y + 1, x)));
+                        }
+                        let left = x;
+                        while x < rect.3 && clip.contains(i32::from(x), i32::from(y)) { x += 1; }
+                        if left < x {
+                            self.refresh_single_dialog_saved_pixels_after_screen_draw(
+                                bus, dialog_ptr, bounds, (y, left, y + 1, x),
+                            );
+                        }
+                    }
+                }
+                if let Some(damage) = damage {
+                    let prior = self.dialog_clipped_background_damage.get(&dialog_ptr).copied();
+                    if let Some(union) = Self::rect_union(prior, Some(damage)) {
+                        self.dialog_clipped_background_damage.insert(dialog_ptr, union);
+                    }
+                }
+            } else {
+                self.refresh_single_dialog_saved_pixels_after_screen_draw(
+                    bus, dialog_ptr, bounds, screen_rect,
+                );
+            }
         }
     }
 
@@ -9858,6 +9907,7 @@ impl super::TrapDispatcher {
             self.dialog_saved_pixels.remove(&dialog_ptr);
         }
 
+        let clipped_background_damage = self.dialog_clipped_background_damage.remove(&dialog_ptr);
         self.dialog_visible_snapshots.remove(&dialog_ptr);
         self.dialog_modal_entered.remove(&dialog_ptr);
         self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr);
@@ -9906,9 +9956,14 @@ impl super::TrapDispatcher {
         }
 
         self.untrack_window(bus, dialog_ptr);
-        let repaint_exposure = restored_saved_under_rect
+        let mut repaint_exposure = restored_saved_under_rect
             .map(|restored| Self::rect_difference_parts(exposed_rect, restored))
             .unwrap_or_else(|| vec![exposed_rect]);
+        if let Some(damage) = clipped_background_damage
+            .and_then(|damage| Self::rect_intersection(damage, exposed_rect))
+        {
+            repaint_exposure.push(damage);
+        }
         if was_visible {
             // CloseWindow's PaintBehind is paired with CalcVisBehind. Rebuild
             // the visible regions now that the dialog is absent, then dirty

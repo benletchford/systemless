@@ -2295,6 +2295,8 @@ pub struct TrapDispatcher {
     /// Saved background pixels for dialogs that returned a non-dismissing item
     /// (e.g., checkbox click). Keyed by dialog_ptr. Reused when ModalDialog re-enters.
     pub(crate) dialog_saved_pixels: FastHashMap<u32, SavedPixels>,
+    /// Areas that a behind-window picture could not draw until this dialog is exposed.
+    pub(crate) dialog_clipped_background_damage: FastHashMap<u32, (i16, i16, i16, i16)>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
@@ -4142,6 +4144,7 @@ impl TrapDispatcher {
             dialog_cancel_items: HashMap::default(),
             dialog_filter_result_addr: 0,
             dialog_saved_pixels: HashMap::default(),
+            dialog_clipped_background_damage: HashMap::default(),
             dialog_visible_snapshots: HashMap::default(),
             dialog_modal_entered: std::collections::HashSet::default(),
             dialog_cdef_draw_pending_snapshot: HashSet::default(),

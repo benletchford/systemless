@@ -9374,7 +9374,7 @@ impl super::TrapDispatcher {
                     }
 
                     if ok && port_base == self.screen_mode.0 {
-                        self.refresh_dialog_saved_pixels_after_screen_draw(
+                        self.refresh_dialog_saved_pixels_after_screen_draw_clipped(
                             bus,
                             *self.current_port,
                             (
@@ -9383,6 +9383,7 @@ impl super::TrapDispatcher {
                                 use_bottom.saturating_sub(port_bounds_top),
                                 use_right.saturating_sub(port_bounds_left),
                             ),
+                            dst_clip.as_ref(),
                         );
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
