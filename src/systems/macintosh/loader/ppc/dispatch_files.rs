@@ -1011,9 +1011,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
     }
 }
 
-/// More Macintosh Toolbox (1993), p. 9-28: afpItemNotFound, no application
-/// with the requested creator is in the desktop database.
-const PPC_AFP_ITEM_NOT_FOUND: i16 = -5018;
+/// MacErrors.h: missing comment or APPL entry in the desktop database.
+const PPC_AFP_ITEM_NOT_FOUND: i16 = -5012;
 
 /// PBDTGetAPPL: find the ioIndex-th application whose creator matches
 /// ioFileCreator (+52), returning its name through ioNamePtr (+18) and its
