@@ -263,37 +263,71 @@ pub(super) fn dispatch_drawsprocket_import(
                 if previous_state == PpcDspContextPlayState::Paused
                     && draw_sprocket.context_state != PpcDspContextPlayState::Paused
                 {
-                    if let Some((address, bytes)) = draw_sprocket.paused_menu_pixels.take() {
+                    if let Some((address, bytes)) = draw_sprocket.paused_screen_pixels.take() {
                         if draw_sprocket.context_state == PpcDspContextPlayState::Active {
                             let _ = memory.write_bytes(address, &bytes);
                         }
                     }
+                    if draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                        if let Some(blanking) = draw_sprocket.blanking_window {
+                            draw_sprocket.paused_front_windows = window_list.with_ref(|windows| {
+                                windows
+                                    .iter()
+                                    .take_while(|&&window| window != blanking)
+                                    .copied()
+                                    .collect()
+                            });
+                            window_list.bring_to_front(blanking);
+                            super::dispatch_window::ppc_sync_process_window_list(
+                                memory,
+                                window_list,
+                            );
+                        }
+                    } else {
+                        draw_sprocket.paused_front_windows.clear();
+                    }
                 }
                 if previous_state != PpcDspContextPlayState::Paused
                     && draw_sprocket.context_state == PpcDspContextPlayState::Paused
-                    && !host_menu_bar_hidden
                 {
+                    if let Some(blanking) = draw_sprocket.blanking_window {
+                        let saved = std::mem::take(&mut draw_sprocket.paused_front_windows);
+                        window_list.with_mut(|windows| {
+                            for window in saved {
+                                if let (Some(index), Some(_)) = (
+                                    windows.iter().position(|&value| value == window),
+                                    windows.iter().position(|&value| value == blanking),
+                                ) {
+                                    windows.remove(index);
+                                    if let Some(position) =
+                                        windows.iter().position(|&value| value == blanking)
+                                    {
+                                        windows.insert(position, window);
+                                    }
+                                }
+                            }
+                        });
+                        super::dispatch_window::ppc_sync_process_window_list(memory, window_list);
+                    }
                     if let Some(front) =
                         ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
                     {
-                        let height =
-                            u32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20))
-                                .min(front.height);
                         if let Some(bytes) = front
                             .row_bytes
-                            .checked_mul(height)
+                            .checked_mul(front.height)
                             .and_then(|size| ppc_memory_read_bytes(memory, front.base_addr, size))
                         {
+                            draw_sprocket.paused_screen_pixels = Some((front.base_addr, bytes));
+                        }
+                        if !host_menu_bar_hidden {
                             let colors = ppc_menu_color_table_bytes(memory, handles);
-                            if ppc_draw_menu_bar_with_colors(
+                            let _ = ppc_draw_menu_bar_with_colors(
                                 memory,
                                 gworlds,
                                 current_menu_list,
                                 screen_clut,
                                 MenuColorTable::new(&colors),
-                            ) {
-                                draw_sprocket.paused_menu_pixels = Some((front.base_addr, bytes));
-                            }
+                            );
                         }
                     }
                 }

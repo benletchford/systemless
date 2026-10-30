@@ -175,6 +175,72 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
 }
 
 #[test]
+fn draw_sprocket_resume_covers_paused_dialog_and_reveals_it_on_pause() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    let blanking = loaded.draw_sprocket.blanking_window.unwrap();
+    let front = loaded.presented_front_buffer().unwrap();
+    let pixel = front.base_addr + front.row_bytes * 50 + 100;
+    let before = loaded.memory.read_u16_be(pixel).unwrap();
+    loaded.memory.write_u16_be(pixel, before ^ 0xffff).unwrap();
+    let dialog = PPC_DATA_BASE + 0x4100;
+    loaded.memory.add_region(dialog, vec![0; 256]);
+    loaded
+        .memory
+        .write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded.window_list.insert(0, dialog);
+    let second_dialog = dialog + 0x200;
+    loaded.memory.add_region(second_dialog, vec![0; 256]);
+    loaded
+        .memory
+        .write_u8(second_dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(second_dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded.window_list.insert(0, second_dialog);
+    assert_eq!(loaded.window_list.first(), Some(second_dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.window_list.first(), Some(blanking));
+    assert_eq!(loaded.memory.read_u16_be(pixel), Some(before));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.window_list.first(), Some(second_dialog));
+    assert_eq!(loaded.window_list.get(1), Some(dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert!(loaded.window_list.remove_window(second_dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.window_list.first(), Some(dialog));
+    assert!(!loaded.window_list.contains_window(second_dialog));
+}
+
+#[test]
 fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
     let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
     let mut loaded = load_pef_application(&pef).unwrap();
