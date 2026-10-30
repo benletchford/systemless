@@ -1607,6 +1607,10 @@ fn parse_compressed_quicktime(
 
     let _version = bus.read_word(cursor);
     cursor += 2;
+    // The final row of a QuickTime MatrixRecord contains 16.16 translation.
+    // Apply it in picture coordinates before mapping the picture to its destination.
+    let matrix_dx = (bus.read_long(cursor + 24) as i32) >> 16;
+    let matrix_dy = (bus.read_long(cursor + 28) as i32) >> 16;
     cursor += 36; // MatrixRecord
     let matte_size = bus.read_long(cursor);
     cursor += 4;
@@ -1713,12 +1717,12 @@ fn parse_compressed_quicktime(
         };
         for source_y in crop_top..crop_bottom {
             for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
                     continue;
                 }
-                let x = ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32
+                let x = ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32
                     + i32::from(dst_left);
-                let y = ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32
+                let y = ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32
                     + i32::from(dst_top);
                 let [r, g, b] = pixels.get_pixel(source_x as u32, source_y as u32).0;
                 let rgb = [u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257];
@@ -1741,13 +1745,13 @@ fn parse_compressed_quicktime(
         };
         for source_y in crop_top..crop_bottom {
             for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
                     continue;
                 }
                 let x =
-                    ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
+                    ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
                 let y =
-                    ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+                    ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
                 let pixel = pixels[source_y as usize * width + source_x as usize];
                 if pixel_size == 16 {
                     write_rgb555_pixel_clipped(
@@ -1821,13 +1825,13 @@ fn parse_compressed_quicktime(
         let color_map = build_src_to_dst_table(&source_clut, device_clut);
         for source_y in crop_top..crop_bottom {
             for source_x in crop_left..crop_right {
-                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y + matrix_dy, source_x + matrix_dx)) {
                     continue;
                 }
                 let x =
-                    ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
+                    ((source_x + matrix_dx - i32::from(frame_left)) as f64 * scale_x) as i32 + i32::from(dst_left);
                 let y =
-                    ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
+                    ((source_y + matrix_dy - i32::from(frame_top)) as f64 * scale_y) as i32 + i32::from(dst_top);
                 let source_index = pixels[source_y as usize * width + source_x as usize];
                 let rgb = source_clut[usize::from(source_index)];
                 if pixel_size == 16 {
@@ -1890,10 +1894,36 @@ fn parse_compressed_quicktime(
         end.saturating_add(6)
             .saturating_add(u32::from(bus.read_word(end + 4)))
     } else {
-        end
+        // Some QuickTime versions emit the standard 69-by-44 monochrome
+        // warning as PackBitsRect instead of the PnSize-delimited form.
+        skip_quicktime_packbits_warning(bus, end, 0xaa7e_c993_dc0c_a746).unwrap_or(end)
     };
 
     (final_pos, if is_still_image { None } else { Some(source_clut) })
+}
+
+// Recognize the standard warning by its geometry and packed-pixel fingerprint.
+// Do not skip arbitrary monochrome drawing following a compressed image.
+fn skip_quicktime_packbits_warning(bus: &MacMemoryBus, pos: u32, fingerprint: u64) -> Option<u32> {
+    if bus.read_word(pos) != 0x0098 || bus.read_word(pos + 2) != 10
+        || bus.read_long(pos + 4) != 0 || bus.read_long(pos + 8) != 0x002c_0045
+        || bus.read_long(pos + 12) != 0 || bus.read_long(pos + 16) != 0x002c_0045
+        || bus.read_word(pos + 28) != 0
+    {
+        return None;
+    }
+    let mut cursor = pos.checked_add(30)?;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for _ in 0..44 {
+        let row_len = u32::from(bus.read_byte(cursor));
+        if row_len > 20 { return None; }
+        for offset in 0..=row_len {
+            hash ^= u64::from(bus.read_byte(cursor.checked_add(offset)?));
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+        cursor = cursor.checked_add(1 + row_len)?;
+    }
+    (hash == fingerprint).then(|| align_pict_pos(cursor))
 }
 
 pub(crate) fn peek_initial_packbits_clut(

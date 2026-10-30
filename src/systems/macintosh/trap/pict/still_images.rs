@@ -201,3 +201,79 @@ fn quicktime_png_obeys_source_crop_and_destination_clip() {
         assert_eq!(bus.read_long(0x2004), 0x0000FF00);
     }
 }
+
+#[test]
+fn quicktime_matrix_translation_positions_pixels_in_picture_space() {
+    for depth in [8, 16, 32] {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let (pos, _) = png_record(&mut bus, false);
+        // MatrixRecord's translation is a signed 16.16 point, in picture coordinates.
+        bus.write_long(pos + 4 + 2 + 24, 1 << 16);
+        bus.write_long(pos + 4 + 2 + 28, 1 << 16);
+        let base = 0x2000;
+        let rb = 4 * u32::from(depth) / 8;
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        parse_compressed_quicktime(
+            &mut bus, pos, 0, 0, 0, 0, 1.0, 1.0,
+            (base, rb, 4, 3, depth), &clut, None, None,
+        );
+        let red = base + rb + u32::from(depth) / 8;
+        let green = red + u32::from(depth) / 8;
+        match depth {
+            8 => {
+                assert_eq!(bus.read_byte(red), closest_clut_index(65535, 0, 0, &clut));
+                assert_eq!(bus.read_byte(green), closest_clut_index(0, 65535, 0, &clut));
+            }
+            16 => {
+                assert_eq!(bus.read_word(red), 0x7c00);
+                assert_eq!(bus.read_word(green), 0x03e0);
+            }
+            32 => {
+                assert_eq!(bus.read_long(red), 0x00ff0000);
+                assert_eq!(bus.read_long(green), 0x0000ff00);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(bus.read_long(base), 0);
+    }
+}
+
+#[test]
+fn quicktime_translation_precedes_picture_clip_and_destination_mapping() {
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    let (pos, _) = png_record(&mut bus, false);
+    bus.write_long(pos + 4 + 2 + 24, (-1i32 << 16) as u32);
+    bus.write_long(pos + 4 + 2 + 28, 1 << 16);
+    // The translated red pixel is at (-1, 1), and the green pixel at (0, 1).
+    let picture_clip = PictureRegion { top: 1, left: 0, bottom: 2, right: 1, rows: vec![] };
+    parse_compressed_quicktime(
+        &mut bus, pos, 0, 1, 0, 0, 1.0, 1.0,
+        (0x2000, 16, 4, 3, 32), &[[0; 3]; 256], Some(&picture_clip), None,
+    );
+    assert_eq!(bus.read_long(0x2000 + 16), 0);
+    assert_eq!(bus.read_long(0x2000 + 16 + 4), 0x0000ff00);
+}
+
+#[test]
+fn quicktime_warning_fingerprint_does_not_skip_other_bitmaps() {
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    let pos = 0x3000;
+    bus.write_word(pos, 0x0098);
+    bus.write_word(pos + 2, 10);
+    bus.write_long(pos + 8, 0x002c_0045);
+    bus.write_long(pos + 16, 0x002c_0045);
+    let mut fingerprint = 0xcbf2_9ce4_8422_2325u64;
+    for row in 0..44 {
+        let start = pos + 30 + row * 2;
+        bus.write_byte(start, 1);
+        bus.write_byte(start + 1, row as u8);
+        for byte in [1, row as u8] {
+            fingerprint ^= u64::from(byte);
+            fingerprint = fingerprint.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    assert_eq!(skip_quicktime_packbits_warning(&bus, pos, fingerprint), Some(pos + 118));
+    assert_eq!(skip_quicktime_packbits_warning(&bus, pos, fingerprint ^ 1), None);
+    bus.write_word(pos + 8, 43);
+    assert_eq!(skip_quicktime_packbits_warning(&bus, pos, fingerprint), None);
+}
