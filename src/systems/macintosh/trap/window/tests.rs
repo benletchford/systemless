@@ -5570,6 +5570,7 @@ fn checkupdate_returns_true_and_writes_eventrecord_for_pending_update() {
 
     let update_window = 0x00A0_4000;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: update_window,
         when: 0,
@@ -5664,6 +5665,7 @@ fn checkupdate_redraws_window_picture_and_continues_to_next_update() {
 
     let ordinary_window = 0x00A0_4000;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: ordinary_window,
         when: 0,
@@ -5792,6 +5794,7 @@ fn checkupdate_nil_output_pointer_consumes_pending_update() {
     let (mut disp, mut cpu, mut bus) = setup();
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: 0x00A0_4000,
         when: 0,

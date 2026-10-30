@@ -2051,10 +2051,21 @@ pub(crate) struct ProcessAppleEventDescriptors {
     pub(crate) events: HashMap<u32, ProcessSyntheticAppleEvent>,
     pub(crate) descriptors: HashMap<u32, ProcessAeDescriptor>,
     pub(crate) backing: HashMap<u32, ProcessAeDescriptor>,
+    /// Active native dispatches visible to 68k Pack8 callbacks.
+    pub(crate) native_dispatches: Vec<(u32, u32, bool)>,
+    pub(crate) native_descriptor_origins: HashMap<u32, u32>,
+    pub(crate) pending_reply_handles: HashMap<u32, u32>,
+    pub(crate) selected_current_event: Option<[u8; 8]>,
 }
 impl ProcessAppleEventDescriptors {
     pub(crate) fn is_pristine(&self) -> bool {
-        self.events.is_empty() && self.descriptors.is_empty() && self.backing.is_empty()
+        self.events.is_empty()
+            && self.descriptors.is_empty()
+            && self.backing.is_empty()
+            && self.native_dispatches.is_empty()
+            && self.native_descriptor_origins.is_empty()
+            && self.pending_reply_handles.is_empty()
+            && self.selected_current_event.is_none()
     }
 }
 
@@ -5322,8 +5333,8 @@ impl SharedProcessAppleEventLaunchState {
         });
     }
 
-    pub(crate) fn is_open_application_event_delivered(&self) -> bool {
-        self.with_ref(|state| state.open_application_event_delivered)
+    pub(crate) fn has_outstanding_open_application_event(&self) -> bool {
+        self.with_ref(|state| state.outstanding_open_application_event)
     }
 
     pub(crate) fn accept_open_application_event(&self) -> bool {
@@ -5695,8 +5706,26 @@ impl SharedProcessAppleEventHandlers {
         event_id: u32,
         wildcard: u32,
     ) -> Option<ProcessAppleEventHandler> {
+        self.handler_for_filtered(event_class, event_id, wildcard, false, false)
+    }
+
+    pub(crate) fn handler_for_filtered(
+        &self,
+        event_class: u32,
+        event_id: u32,
+        wildcard: u32,
+        ignore_application: bool,
+        ignore_system: bool,
+    ) -> Option<ProcessAppleEventHandler> {
         let handlers = self.0.borrow();
         for is_system_handler in [false, true] {
+            if if is_system_handler {
+                ignore_system
+            } else {
+                ignore_application
+            } {
+                continue;
+            }
             for key in [
                 (is_system_handler, event_class, event_id),
                 (is_system_handler, event_class, wildcard),
@@ -11625,6 +11654,7 @@ mod tests {
         let context = ProcessContext::default();
         assert!(context.event_queue().is_empty());
         context.shared_event_queue().push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1234,
             when: 0,
@@ -11661,6 +11691,7 @@ mod tests {
         assert!(context.menu_tracking().is_none());
 
         context.shared_event_queue().push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x5678,
             when: 0,
@@ -14112,6 +14143,7 @@ mod tests {
         let context = ProcessContext::default();
         let mut classic = SharedProcessEventQueue::default();
         classic.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1111,
             when: 0,
@@ -14126,6 +14158,7 @@ mod tests {
         let detached = native.clone();
 
         native.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2222,
             when: 0,
@@ -14294,6 +14327,7 @@ mod tests {
         assert!(!queue.menu_bar_is_invalid());
 
         let ev1 = QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1000,
             when: 10,
@@ -14302,6 +14336,7 @@ mod tests {
             modifiers: 0,
         };
         let ev2 = QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2000,
             when: 20,
@@ -14310,6 +14345,7 @@ mod tests {
             modifiers: 0x0100,
         };
         let ev3 = QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x3000,
             when: 30,

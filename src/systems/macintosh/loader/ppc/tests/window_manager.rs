@@ -1583,6 +1583,7 @@ fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         loaded.event_queue.push_back(PpcQueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0,
             when: 0,
@@ -1772,6 +1773,7 @@ fn hle_import_runner_drag_window_retains_outline_and_moves_on_valid_release() {
             (111, 129, 232, 332),
         );
         loaded.event_queue.push_back(PpcQueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0,
             when: 0,
@@ -1946,6 +1948,7 @@ fn hle_import_runner_grow_window_retains_clamps_and_uses_release_size() {
             "{depth}bpp held size did not clamp to maximums",
         );
         loaded.event_queue.push_back(PpcQueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0,
             when: 0,
@@ -2175,10 +2178,42 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     ppc_quickdraw_write_pixel(&mut loaded.memory, front, (160, 160), PPC_RGB_BLACK);
     let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160));
     loaded.set_event_queue([
-        PpcQueuedEvent { what: 6, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
-        PpcQueuedEvent { what: 8, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
-        PpcQueuedEvent { what: 8, message: visible, when: 0, where_v: 0, where_h: 0, modifiers: 1 },
-        PpcQueuedEvent { what: 3, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
+        PpcQueuedEvent {
+            delivery_id: None,
+            what: 6,
+            message: hidden,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+        PpcQueuedEvent {
+            delivery_id: None,
+            what: 8,
+            message: hidden,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+        PpcQueuedEvent {
+            delivery_id: None,
+            what: 8,
+            message: visible,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 1,
+        },
+        PpcQueuedEvent {
+            delivery_id: None,
+            what: 3,
+            message: hidden,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
     ]);
 
     loaded.memory.write_u32_be(0x0A64, visible).unwrap();
@@ -4086,6 +4121,7 @@ fn create_new_plain_window_preserves_bounds_and_suppresses_updates() {
     assert_eq!(ppc_window_structure_bounds(2, (50, 50, 250, 350)), (49, 49, 251, 351));
     let mut queue = VecDeque::new();
     queue.push_back(PpcQueuedEvent {
+        delivery_id: None,
         what: 6,
         message: window,
         when: 0,
@@ -9978,6 +10014,7 @@ fn window_removal_discards_pending_updates_without_consuming_unrelated_events() 
             u32::MAX,
         );
         let event = |what, message| PpcQueuedEvent {
+            delivery_id: None,
             what,
             message,
             when: 17,

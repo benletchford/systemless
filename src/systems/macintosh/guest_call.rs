@@ -2468,6 +2468,20 @@ impl SharedGuestCallStack {
         Ok(true)
     }
 
+    /// Switch cooperative tasks while retaining an incomplete native import.
+    pub(crate) fn yield_native_pending_import(&self, cpu: &mut PpcCpu) -> Result<bool, i16> {
+        let mut tasks = self.0.borrow_mut();
+        let outgoing = cpu.capture_execution_context();
+        let Some(yielded) = tasks.yield_task(0, TaskResumeContext::Native(outgoing.clone()))?
+        else {
+            return Ok(false);
+        };
+        cpu.install_execution_context(outgoing);
+        tasks.native_cpu_task = Some(yielded.current);
+        tasks.install_native_successor(yielded.next, yielded.successor, cpu);
+        Ok(true)
+    }
+
     pub(crate) fn yield_classic_thread(
         &self,
         outgoing: CooperativeThread,
@@ -5382,6 +5396,40 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn yield_pending_native_import_preserves_its_trap_and_arguments() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x1234;
+        cpu.lr = 0x5678;
+        cpu.gpr[3] = 99;
+        let mut context = PpcExecutionContext::fresh();
+        context.architectural_mut().pc = 0x7000;
+        context.architectural_mut().lr = 0x9000;
+        let worker = calls
+            .create_native_thread(
+                NativeThreadContext { context },
+                ThreadStorage {
+                    result_destination: 0,
+                    stack_base: 0,
+                    stack_limit: 0,
+                    managed_pointer: true,
+                },
+                false,
+                |_| true,
+            )
+            .unwrap();
+        assert!(calls.yield_native_pending_import(&mut cpu).unwrap());
+        assert_eq!(calls.current_task(), worker);
+        assert_eq!(cpu.pc, 0x7000);
+        assert!(calls
+            .yield_native_thread(&mut cpu, ExecutionTaskId::APPLICATION.thread_id())
+            .unwrap());
+        assert_eq!(cpu.pc, 0x1234);
+        assert_eq!(cpu.lr, 0x5678);
+        assert_eq!(cpu.gpr[3], 99);
     }
 
     #[test]

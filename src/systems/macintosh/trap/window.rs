@@ -3009,6 +3009,7 @@ impl super::TrapDispatcher {
         );
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 8,
             message: window_ptr,
             when: tick,
@@ -3323,6 +3324,7 @@ impl super::TrapDispatcher {
         }
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 6,
             message: window_ptr,
             when: tick,
@@ -3447,6 +3449,7 @@ impl super::TrapDispatcher {
                     && self.window_update_rect(bus, window_ptr).is_some()
             })
             .map(|window_ptr| QueuedEvent {
+                delivery_id: None,
                 what: 6,
                 message: window_ptr,
                 when: self.current_tick(),
@@ -5772,6 +5775,7 @@ impl super::TrapDispatcher {
                             .position(|event| event.what == 6 && event.message == window)
                             .and_then(|idx| self.event_queue.remove(idx))
                             .or(Some(QueuedEvent {
+                                delivery_id: None,
                                 what: 6,
                                 message: window,
                                 when: self.current_tick(),

@@ -1401,7 +1401,10 @@ impl super::TrapDispatcher {
             || !desc.items.is_empty()
             || matches!(
                 desc.desc_type,
-                AE_TYPE_AE_RECORD | AE_TYPE_AE_LIST | AE_TYPE_OBJECT_SPECIFIER
+                AE_TYPE_AE_RECORD
+                    | AE_TYPE_AE_LIST
+                    | AE_TYPE_OBJECT_SPECIFIER
+                    | AE_TYPE_APPLE_EVENT
             )
     }
 
@@ -1620,6 +1623,8 @@ impl super::TrapDispatcher {
         self.ae_descriptor_state.with_mut(|state| {
             state.events.remove(&desc_ptr);
             state.descriptors.remove(&desc_ptr);
+            state.native_descriptor_origins.remove(&data_handle);
+            state.pending_reply_handles.remove(&data_handle);
         });
         // AEDesc records are copied by value; sibling records may still share
         // this data handle, so keep structured backing until the process exits.
@@ -7406,6 +7411,107 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                // MacErrors.h: pending direct-send replies report
+                // errAEReplyNotArrived until their handler resumes.
+                if matches!(
+                    selector,
+                    0x0407 | 0x100a | 0x0a0b | 0x082a | 0x0812 | 0x0e11 | 0x0829
+                ) {
+                    let desc = bus.read_long(sp + param_bytes - 4);
+                    let handle = if desc != 0 {
+                        bus.read_long(desc.wrapping_add(4))
+                    } else {
+                        0
+                    };
+                    if self
+                        .ae_descriptor_state
+                        .pending_reply_handles
+                        .contains_key(&handle)
+                    {
+                        let new_sp = sp + param_bytes;
+                        bus.write_word(new_sp, (-1718i16) as u16);
+                        cpu.write_reg(Register::A7, new_sp);
+                        cpu.write_reg(Register::D0, (-1718i32) as u32);
+                        return Some(Ok(()));
+                    }
+                }
+
+                // AEGetTheCurrentEvent (0x021A) and AESetTheCurrentEvent
+                // (0x022C) share selection with PowerPC event dispatch.
+                if (routine == 0x1a || routine == 0x2c) && param_bytes == 4 {
+                    let descriptor = bus.read_long(sp);
+                    let result = if descriptor == 0 {
+                        -50i16 // paramErr (MacErrors.h)
+                    } else if routine == 0x2c {
+                        let mut bytes = [0u8; 8];
+                        for (offset, byte) in bytes.iter_mut().enumerate() {
+                            *byte = bus.read_byte(descriptor.wrapping_add(offset as u32));
+                        }
+                        self.ae_descriptor_state
+                            .with_mut(|state| state.selected_current_event = Some(bytes));
+                        0
+                    } else {
+                        let classic_event = self
+                            .ae_call_state
+                            .as_ref()
+                            .and_then(|state| state.owned_descriptors)
+                            .map(|(event, _)| event);
+                        if let Some(event) = classic_event {
+                            bus.write_long(descriptor, bus.read_long(event));
+                            bus.write_long(descriptor + 4, bus.read_long(event + 4));
+                        } else if let Some((handle, _, _)) =
+                            self.ae_descriptor_state.native_dispatches.last()
+                        {
+                            bus.write_long(descriptor, AE_TYPE_APPLE_EVENT);
+                            bus.write_long(descriptor + 4, *handle);
+                        } else if let Some(bytes) = self.ae_descriptor_state.selected_current_event
+                        {
+                            for (offset, byte) in bytes.into_iter().enumerate() {
+                                bus.write_byte(descriptor + offset as u32, byte);
+                            }
+                        } else {
+                            write_null_aedesc(bus, descriptor);
+                        }
+                        0
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, result as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
+
+                // AESuspendTheCurrentEvent (0x022B): a 68k callback may be
+                // handling an event dispatched by the native adapter. Publish
+                // the request in process-shared descriptor state so the native
+                // continuation retains the matching event after the callback.
+                if routine == 0x2b && param_bytes == 4 {
+                    let event = bus.read_long(sp);
+                    let handle = if event != 0 {
+                        bus.read_long(event.wrapping_add(4))
+                    } else {
+                        0
+                    };
+                    let result = self.ae_descriptor_state.with_mut(|state| {
+                        let handle = state
+                            .native_descriptor_origins
+                            .get(&handle)
+                            .copied()
+                            .unwrap_or(handle);
+                        if let Some((current, _, suspended)) = state.native_dispatches.last_mut() {
+                            if handle != 0 && *current == handle {
+                                *suspended = true;
+                            }
+                        }
+                        0i16
+                    });
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, result as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                    return Some(Ok(()));
+                }
+
                 // Routine 65 (`AEManagerInfo`) reports AppleEvent Manager
                 // metadata. The common startup probe asks for keyAEVersion;
                 // recording is never active in Systemless, so the recorder
@@ -8279,15 +8385,67 @@ impl super::TrapDispatcher {
                 if routine == 5 && param_bytes == 8 {
                     let result_desc = bus.read_long(sp);
                     let source_desc = bus.read_long(sp + 4);
-                    if let Some(desc) = self.read_ae_descriptor_value(bus, source_desc) {
-                        self.write_ae_descriptor_value(bus, result_desc, desc);
+                    let source_handle = if source_desc != 0 {
+                        bus.read_long(source_desc + 4)
                     } else {
-                        write_null_aedesc(bus, result_desc);
+                        0
+                    };
+                    let origin = self.ae_descriptor_state.with_ref(|state| {
+                        let origin = state
+                            .native_descriptor_origins
+                            .get(&source_handle)
+                            .copied()
+                            .unwrap_or(source_handle);
+                        state
+                            .native_dispatches
+                            .last()
+                            .filter(|(event, reply, _)| {
+                                origin != 0 && (*event == origin || *reply == origin)
+                            })
+                            .map(|_| origin)
+                    });
+                    let pending_origin = self
+                        .ae_descriptor_state
+                        .pending_reply_handles
+                        .get(&source_handle)
+                        .copied();
+                    let can_track = (origin.is_none()
+                        || self
+                            .ae_descriptor_state
+                            .with_mut(|state| state.native_descriptor_origins.try_reserve(1))
+                            .is_ok())
+                        && (pending_origin.is_none()
+                            || self
+                                .ae_descriptor_state
+                                .with_mut(|state| state.pending_reply_handles.try_reserve(1))
+                                .is_ok());
+                    if can_track {
+                        if let Some(desc) = self.read_ae_descriptor_value(bus, source_desc) {
+                            self.write_ae_descriptor_value(bus, result_desc, desc);
+                            let destination = if result_desc != 0 {
+                                bus.read_long(result_desc + 4)
+                            } else {
+                                0
+                            };
+                            if let Some(origin) = origin.filter(|_| destination != 0) {
+                                self.ae_descriptor_state.with_mut(|state| {
+                                    state.native_descriptor_origins.insert(destination, origin);
+                                });
+                            }
+                            if let Some(origin) = pending_origin.filter(|_| destination != 0) {
+                                self.ae_descriptor_state.with_mut(|state| {
+                                    state.pending_reply_handles.insert(destination, origin);
+                                });
+                            }
+                        } else {
+                            write_null_aedesc(bus, result_desc);
+                        }
                     }
                     let new_sp = sp + param_bytes;
-                    bus.write_word(new_sp, 0);
+                    let result = if can_track { 0i16 } else { -108i16 }; // memFullErr
+                    bus.write_word(new_sp, result as u16);
                     cpu.write_reg(Register::A7, new_sp);
-                    cpu.write_reg(Register::D0, 0);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
                     return Some(Ok(()));
                 }
                 if routine == 3 && param_bytes == 12 {
@@ -8879,16 +9037,12 @@ impl super::TrapDispatcher {
                     let event_class = bus.read_long(event_record + 2);
                     let event_id = ((bus.read_word(event_record + 10) as u32) << 16)
                         | bus.read_word(event_record + 12) as u32;
-                    if bus.read_word(event_record) == Self::K_HIGH_LEVEL_EVENT
+                    let is_launch_event = bus.read_word(event_record) == Self::K_HIGH_LEVEL_EVENT
                         && bus.read_long(event_record + 2) == oapp_class
                         && event_id == oapp_id
                         && self
                             .apple_event_launch_state
-                            .is_open_application_event_delivered()
-                    {
-                        self.apple_event_launch_state
-                            .accept_open_application_event();
-                    }
+                            .has_outstanding_open_application_event();
                     if trace_ae_enabled() {
                         let what = bus.read_word(event_record);
                         let message = bus.read_long(event_record + 2);
@@ -8953,6 +9107,44 @@ impl super::TrapDispatcher {
                         if bus.read_long(event_desc + 4) == 0 {
                             self.dispose_owned_ae_callback_descriptor(bus, event_desc);
                             return return_allocation_failure(cpu, bus);
+                        }
+                        if is_launch_event {
+                            let handle = bus.read_long(event_desc + 4);
+                            let stored = self.ae_descriptor_state.with_mut(|state| {
+                                let mut first = Vec::new();
+                                let mut second = Vec::new();
+                                if first.try_reserve_exact(4).is_err()
+                                    || second.try_reserve_exact(4).is_err()
+                                {
+                                    return false;
+                                }
+                                let Some(desc) = state.descriptors.get_mut(&event_desc) else {
+                                    return false;
+                                };
+                                if desc.attributes.try_reserve(1).is_err() {
+                                    return false;
+                                }
+                                let Some(backing) = state.backing.get_mut(&handle) else {
+                                    return false;
+                                };
+                                if backing.attributes.try_reserve(1).is_err() {
+                                    return false;
+                                }
+                                first.extend_from_slice(b"MACS");
+                                second.extend_from_slice(b"MACS");
+                                let key = u32::from_be_bytes(*b"addr");
+                                let kind = u32::from_be_bytes(*b"sign");
+                                desc.attributes
+                                    .insert(key, Self::ae_descriptor(kind, first));
+                                backing
+                                    .attributes
+                                    .insert(key, Self::ae_descriptor(kind, second));
+                                true
+                            });
+                            if !stored {
+                                self.dispose_owned_ae_callback_descriptor(bus, event_desc);
+                                return return_allocation_failure(cpu, bus);
+                            }
                         }
                         let reply_desc = self.new_process_classic_ptr(bus, 8);
                         if reply_desc == 0 {
@@ -9030,7 +9222,13 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
+                        if is_launch_event {
+                            self.apple_event_launch_state.accept_open_application_event();
+                        }
                         return Some(Ok(()));
+                    }
+                    if is_launch_event {
+                        self.apple_event_launch_state.accept_open_application_event();
                     }
                     let new_sp = sp + param_bytes;
                     bus.write_word(new_sp, (-1708i16) as u16);
