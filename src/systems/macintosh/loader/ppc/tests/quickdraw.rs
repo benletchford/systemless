@@ -6420,6 +6420,107 @@ fn hle_plot_cicon_handle_preserves_mask_and_applies_options() {
 }
 
 #[test]
+fn ppc_plot_icon_suite_draws_selected_members_and_preserves_handles() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "PlotIconSuite"),
+        PpcImportDispatcherTarget::PlotIconSuite
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PlotIconSuite")).unwrap();
+    let ref_num = *loaded.process_file_system.current_resource_file;
+    let mut mono = vec![0; 64];
+    mono[32] = 0xc0; // Two opaque pixels in the small icon's mask.
+    for (kind, data) in [(*b"ics#", mono), (*b"ics8", vec![255; 256])] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num,
+                path: "Icon suite fixture".to_string(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: vec![],
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = 128;
+    loaded.cpu.gpr[5] = 0x0000_0500;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetIconSuite);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let suite = loaded.memory.read_u32_be(scratch).unwrap();
+    let members = ppc_icon_suite_member_handles(&mut loaded.memory, suite).unwrap();
+    assert_eq!(members.len(), 2);
+
+    let rect = scratch + 8;
+    ppc_write_rect(&mut loaded.memory, rect, 1, 2, 17, 18).unwrap();
+    let port = *loaded.current_gworld;
+    let clip = loaded
+        .memory
+        .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, clip, 1, 2, 2, 3).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, port).unwrap();
+    for x in 2..4 {
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 1), 17);
+    }
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = suite;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconSuite);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let black = pict::closest_clut_index(0, 0, 0, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(u16::from(black))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 1)),
+        Some(17)
+    );
+    assert!(test_handle_records!(loaded)
+        .iter()
+        .any(|r| r.handle == suite));
+    assert!(members
+        .iter()
+        .all(|h| test_handle_records!(loaded).iter().any(|r| r.handle == *h)));
+
+    // Center the two-pixel mask and apply selected + disabled transforms.
+    ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 0, 32, 32).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (9, 8), 17);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 5;
+    loaded.cpu.gpr[5] = 0x4001;
+    loaded.cpu.gpr[6] = suite;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconSuite);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let transformed = ppc_quickdraw_surface_color_pixel(
+        &mut loaded.memory,
+        surface,
+        PpcRgbColor { red: 0x3fff, green: 0x3fff, blue: 0x3fff },
+    );
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (9, 8)), transformed);
+
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 2; // Unsupported transform in the shared suite path.
+    loaded.cpu.gpr[6] = suite;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconSuite);
+    assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconSuite);
+    assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
+}
+
+#[test]
 fn hle_plot_icon_id_uses_current_resource_mask_and_returns_errors() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PlotIconID")).unwrap();
     loaded.set_current_resource_refnum(5);
