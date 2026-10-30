@@ -494,7 +494,11 @@ impl FixtureRunner {
             && self.dispatcher.pending_launch_app.is_none()
             && self.deferred_tracking_refire_pc.is_none()
             && !self.dispatcher.has_ready_menu_tracking()
-            && !self.dispatcher.input_state.has_key_repeat()
+            // A future repeat cannot fire within this tick; due repeats must
+            // materialize before the event manager can post them.
+            && self.dispatcher.input_state.key_repeat().is_none_or(|repeat| {
+                self.guest_tick().wrapping_sub(repeat.next_tick()) >= 0x8000_0000
+            })
             && !self.dispatcher.system_task_has_periodic_work(&self.bus)
             && self
                 .next_m68k_timer_subtick()
@@ -731,6 +735,69 @@ mod tests {
         }
         for trap in [0xA800u16, 0xA972, 0xA975, 0xA976] {
             assert!(!virtual_idle_trap_reads_event_queue(trap), "{trap:04x}");
+        }
+    }
+
+    #[test]
+    fn virtual_idle_requires_repeat_not_due_and_invalidates_repeat_changes() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .set_tick_count_for_test(&mut runner.bus, u32::MAX - 4);
+        let tick = runner.guest_tick();
+        runner
+            .dispatcher
+            .input_state
+            .arm_key_repeat(0x7b, 0x1c, tick.wrapping_add(10));
+        runner.virtual_idle_cycle = Some(VirtualIdleCycle {
+            tick,
+            pass: RecordedPass {
+                steps: 1,
+                ..RecordedPass::default()
+            },
+            offset: 0,
+            host: IdleCycleHostSnapshot::capture(&runner.dispatcher),
+            start: PassStart {
+                trap_pc: 0,
+                cpu: CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core),
+                prover: runner.idle_prover_state(),
+                native_returns: runner.native_trap_return_pcs(),
+            },
+        });
+        assert!(
+            runner.virtual_idle_cycle_is_quiet(false),
+            "future repeat across wrap"
+        );
+        runner.tick_budget = 100;
+        let before = runner.total_instructions;
+        assert_eq!(runner.advance_virtual_idle_cycle(3, false), 3);
+        assert_eq!(runner.total_instructions, before + 3);
+        runner
+            .dispatcher
+            .input_state
+            .arm_key_repeat(0x7c, 0x1d, tick.wrapping_add(10));
+        assert!(
+            !runner.virtual_idle_cycle_is_quiet(false),
+            "re-arming invalidates host snapshot"
+        );
+        runner.virtual_idle_cycle.as_mut().unwrap().host =
+            IdleCycleHostSnapshot::capture(&runner.dispatcher);
+        runner.dispatcher.input_state.clear_key_repeat();
+        assert!(
+            !runner.virtual_idle_cycle_is_quiet(false),
+            "release invalidates host snapshot"
+        );
+        for due in [tick, tick.wrapping_sub(1)] {
+            runner
+                .dispatcher
+                .input_state
+                .arm_key_repeat(0x7b, 0x1c, due);
+            runner.virtual_idle_cycle.as_mut().unwrap().host =
+                IdleCycleHostSnapshot::capture(&runner.dispatcher);
+            assert!(
+                !runner.virtual_idle_cycle_is_quiet(false),
+                "due or past repeat must materialize"
+            );
         }
     }
 
