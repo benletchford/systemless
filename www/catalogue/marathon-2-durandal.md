@@ -14,81 +14,72 @@ category: FPS
 aliases:
 - /marathon2
 - /marathon-2
-launch_enabled: true
+compatibility:
+  status: unknown
 controls:
   arrows_as_numpad: true
   mobile:
-    enabled: true
     buttons:
-    - label: "A"
-      key: "Space"
-    - label: "B"
-      key: "Tab"
-    - label: "C"
-      key: "Enter"
-compatibility:
-  status: playable
-  verified:
-  - date: 2026-09-13
-    tester: Catalogue maintainer
-    systemless_version: 0.40.0
-    architecture: 68k
-    environment: Local website preview in the Codex in-app browser
-    status: playable
-    evidence: >-
-      https://github.com/benletchford/systemless.org/blob/master/entries/marathon-2-durandal.md
+    - key: Space
+      label: A
+    - key: Tab
+      label: B
+    - key: Enter
+      label: C
+    enabled: true
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
     type: sha256
-    sha256: 807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f
-    size_bytes: 27112329
+    sha256: 3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a
+    size_bytes: 27112342
   provenance:
-    original: true
     redistribution: permitted
+    original: true
     sources:
-    - https://macintoshgarden.org/games/marathon-2-durandal
+    - https://trilogyrelease.bungie.org/
     - https://trilogyrelease.bungie.org/faq.html
+    - https://github.com/benletchford/systemless/issues/5302
     rights_holder: Bungie
     permission: >-
       Bungie authorizes free distribution of the original Marathon trilogy; copyright
       is retained and commercial sale is not permitted.
-    notes: "The Trilogy Release FAQ documents the original games’ free-distribution permission. Retrieved 2026-09-13: 27112329 bytes; SHA-256 807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f."
-- id: gameplay-screenshot
+    notes: >-
+      Original archive linked from the Trilogy Release page, 27,112,342 bytes,
+      SHA-256 3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a. The
+      previously hosted package differs in resource forks and Finder metadata; its exact
+      provenance has not been established.
+- id: screenshot
   role: screenshot
   format: png
   source:
     type: sha256
-    sha256: a857c5d8ca11a36ab60b2ccb98599dfe84ac7fe767aea6450446193c5a4f9118
-    size_bytes: 269938
+    sha256: 12a594c113e98aef28a58e3b050ab6a58713422cd18e1492e25ac17f559f11ee
+    size_bytes: 143662
   provenance:
-    content_only: true
     redistribution: permitted
+    content_only: true
     sources:
-    - https://github.com/benletchford/systemless.org/tree/master/entries
+    - https://github.com/benletchford/systemless/issues/5302
     permission: >-
-      Original screenshot captured for this catalogue at the maintainer’s request.
-      Underlying game artwork remains the property of its respective rights holders.
+      Original gameplay screenshot captured for this catalogue at the maintainer's
+      request.
     notes: >-
-      Fresh unedited gameplay capture from the independently downloaded archive on
-      2026-09-13, using Systemless commit e0341ec293c038e5d0faa4d6e26cf05075b7144b after
-      the Window Manager fix in https://github.com/benletchford/systemless/pull/1703.
-      The gameplay scene and clean borders were visually reviewed; this is not a full
-      compatibility assessment.
+      Captured from the original Trilogy Release archive during verified native 68K
+      movement, cropped to the game content surface.
 references:
-- https://macintoshgarden.org/games/marathon-2-durandal
+- https://trilogyrelease.bungie.org/
+- https://github.com/benletchford/systemless/issues/5302
 ---
 
 ## Source and version
 
-This entry uses Bungie's freely distributable [original Marathon 2 archive](https://assets.systemless.org/catalogue/objects/sha256/80/807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f.sit), kept unchanged.
-
-## Gameplay
-
-![Marathon 2: Durandal gameplay](https://assets.systemless.org/catalogue/media/sha256/a8/a857c5d8ca11a36ab60b2ccb98599dfe84ac7fe767aea6450446193c5a4f9118.png)
+This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/3f/3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.sit). Bounded native 68K and PowerPC tests reached the first level and verified forward movement; browser approval remains pending.
 
 ## Across Lh'owon
+
+![Marathon 2 gameplay in the first level](https://assets.systemless.org/catalogue/media/sha256/12/12a594c113e98aef28a58e3b050ab6a58713422cd18e1492e25ac17f559f11ee.png)
 
 Seventeen years after Tau Ceti, Durandal wakes you over the S'pht homeworld of Lh'owon and sends you hunting through its ruins. The wider spaces, water, weather and dual-wielded weapons make the action livelier, while terminals piece together a history of enslavement that gives every ruined complex a purpose.
