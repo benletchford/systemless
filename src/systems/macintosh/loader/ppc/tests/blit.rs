@@ -2374,6 +2374,18 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
         // 14, proving that the main device's startup inverse table is not
         // applied to every GDevice. The neighboring low nibble is preserved.
         assert_eq!(loaded.memory.read_u8(dst_pixels), Some(0xea));
+
+        // A device-form source table can use a different index for the same
+        // color; the flag only makes its entry positions the pixel values.
+        loaded.memory.write_u16_be(src_ctable + 4, 0x8000).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 10, 0x4000).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 12, 0x4000).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 14, 0x4000).unwrap();
+        loaded.memory.write_u8(src_pixels, 0).unwrap();
+        loaded.memory.write_u8(dst_pixels, 0x0a).unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[src_pixmap, dst_pixmap, rect, rect, 0]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+        assert_eq!(loaded.memory.read_u8(dst_pixels), Some(0xea));
     }
 
     #[test]
@@ -3896,7 +3908,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
     }
 
     #[test]
-    fn hle_import_runner_copybits_preserves_device_table_indices() {
+    fn hle_import_runner_copybits_maps_different_device_form_source_table() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();
         let scratch = PPC_HEAP_BASE + 0x13300;
@@ -3940,9 +3952,17 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        // A device ColorTable's RGB may change independently during palette
-        // animation. The source pixel is already a device index.
-        assert_eq!(loaded.memory.read_u8(dst_pixels), Some(1));
+        // The high flag selects the table position as the source pixel value;
+        // it does not make this table equivalent to the current device table.
+        assert_eq!(
+            loaded.memory.read_u8(dst_pixels),
+            Some(pict::closest_clut_index(
+                0xffff,
+                0,
+                0,
+                &loaded.color_manager_clut
+            ))
+        );
     }
 
     #[test]
