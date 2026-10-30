@@ -211,6 +211,63 @@ fn ppc_overlapping_cursor_warps_preserve_physical_motion() {
 }
 
 #[test]
+fn ppc_delayed_warp_ack_preserves_interleaved_physical_motion() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"CrsrDevMove")).unwrap();
+    let device = PPC_DATA_BASE + 0x1000;
+    native.memory.add_region(device, vec![0; 160]);
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    runner.set_mouse_position(100, 200);
+    let app = runner.native.application_mut().unwrap();
+    app.input_sprocket.device_mouse_h = Some(190);
+    app.cpu.gpr[3] = device;
+    app.cpu.gpr[4] = (-20i32) as u32;
+    app.cpu.gpr[5] = 5;
+    runner.run_steps(64, None);
+    assert_eq!(runner.take_guest_cursor_warp(), Some((105, 180)));
+    let previous = runner.bus.read_long(addr::MOUSE_LOC2);
+    let app = runner.native.application_mut().unwrap();
+    app.cpu.pc = app.entry_pc;
+    app.cpu.lr = PPC_HALT_PC;
+    app.cpu.gpr[3] = device;
+    app.cpu.gpr[4] = 10;
+    app.cpu.gpr[5] = 0;
+    runner.process_context.with_memory_and_cfm(|memory, cfm| {
+        app.run_with_process_services(64, false, false, memory, cfm)
+    });
+    runner.sync_guest_mouse_position(previous);
+    assert_eq!(runner.take_guest_cursor_warp(), Some((105, 190)));
+    runner.set_mouse_position(100, 205);
+    runner.acknowledge_guest_cursor_warp((105, 180));
+    runner.set_mouse_position(105, 185);
+    runner.acknowledge_guest_cursor_warp((105, 190));
+    let app = runner.native.application_mut().unwrap();
+    app.imports[0].library_name = "InputSprocketLib".into();
+    app.imports[0].dispatcher_target = PpcImportDispatcherTarget::ISpElementGetSimpleState;
+    app.cpu.pc = app.entry_pc;
+    app.cpu.lr = PPC_HALT_PC;
+    app.cpu.gpr[3] = crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT;
+    app.cpu.gpr[4] = device + 140;
+    let probe = runner.process_context.with_memory_and_cfm(|memory, cfm| {
+        app.run_with_process_services(64, false, false, memory, cfm)
+    });
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(app.cpu.gpr[3], 0);
+    assert_eq!(app.memory.read_u32_be(device + 140), Some(20 << 16));
+    runner.set_mouse_position(105, 195);
+    let app = runner.native.application_mut().unwrap();
+    app.cpu.pc = app.entry_pc;
+    app.cpu.lr = PPC_HALT_PC;
+    app.cpu.gpr[3] = crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT;
+    app.cpu.gpr[4] = device + 140;
+    runner.process_context.with_memory_and_cfm(|memory, cfm| {
+        app.run_with_process_services(64, false, false, memory, cfm)
+    });
+    assert_eq!(app.memory.read_u32_be(device + 140), Some(5 << 16));
+}
+
+#[test]
 fn ppc_cursor_device_then_low_memory_warp_preserves_motion() {
     use crate::loader::ppc::tests::synthetic_pef_with_import;
     let mut native = load_pef_application(&synthetic_pef_with_import(b"CrsrDevMove")).unwrap();
