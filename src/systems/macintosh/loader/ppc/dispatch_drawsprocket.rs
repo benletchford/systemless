@@ -23,6 +23,9 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
     /// QDGlobals.screenBits, when InitGraf has run.
     pub(super) screen_bits: Option<u32>,
+    pub(super) current_menu_list: u32,
+    pub(super) host_menu_bar_hidden: bool,
+    pub(super) tick_count: u32,
 }
 
 pub(super) fn dispatch_drawsprocket_import(
@@ -48,6 +51,9 @@ pub(super) fn dispatch_drawsprocket_import(
         input,
         screen_clut,
         screen_bits,
+        current_menu_list,
+        host_menu_bar_hidden,
+        tick_count,
     } = context;
 
     match binding.dispatcher_target {
@@ -88,6 +94,9 @@ pub(super) fn dispatch_drawsprocket_import(
                 current_gworld,
                 current_gdevice,
                 draw_sprocket,
+                host_menu_bar_hidden,
+                tick_count,
+                input,
             );
             *draw_sprocket = PpcDrawSprocketState::default();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
@@ -179,11 +188,35 @@ pub(super) fn dispatch_drawsprocket_import(
                     current_gworld,
                     current_gdevice,
                     draw_sprocket,
+                    host_menu_bar_hidden,
+                    tick_count,
+                    input,
                 );
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::DSpContextSetState => {
+            let previous_state = draw_sprocket.context_state;
+            let initial_floating_windows = if previous_state == PpcDspContextPlayState::Inactive
+                && matches!(
+                    cpu.gpr[4],
+                    PPC_DSP_CONTEXT_STATE_ACTIVE | PPC_DSP_CONTEXT_STATE_PAUSED
+                ) {
+                window_list
+                    .windows()
+                    .into_iter()
+                    .filter(|&window| {
+                        ppc_window_is_visible(memory, window)
+                            && window_list.window_class(window).unwrap_or_else(|| {
+                                crate::window_manager::window_class_for_legacy_proc(
+                                    super::dispatch_window::ppc_window_proc_id(memory, window),
+                                )
+                            }) == 5
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let result = ppc_dsp_context_set_state(
                 cpu,
                 memory,
@@ -193,7 +226,13 @@ pub(super) fn dispatch_drawsprocket_import(
                 draw_sprocket,
             );
             if result == PPC_NO_ERR {
-                if draw_sprocket.active_context.is_some() && draw_sprocket.blanking_window.is_none()
+                if previous_state == PpcDspContextPlayState::Inactive
+                    && draw_sprocket.context_state != PpcDspContextPlayState::Inactive
+                {
+                    draw_sprocket.paused_front_windows = initial_floating_windows;
+                }
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive
+                    && draw_sprocket.blanking_window.is_none()
                 {
                     let (width, height) = (
                         ppc_u32_to_i16_saturating(draw_sprocket.context_attributes.width),
@@ -237,7 +276,17 @@ pub(super) fn dispatch_drawsprocket_import(
                         return Some(PpcImportAction::Return(ppc_i16_result(allocation_error)));
                     }
                     draw_sprocket.blanking_window = Some(window);
-                } else if draw_sprocket.active_context.is_none() {
+                    super::dispatch_window::ppc_recalculate_window_vis_regions(
+                        process_memory_manager,
+                        memory,
+                        window_list,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                    );
+                } else if draw_sprocket.context_state == PpcDspContextPlayState::Inactive {
+                    draw_sprocket.paused_front_windows.clear();
                     ppc_dsp_dispose_blanking_window(
                         process_memory_manager,
                         memory,
@@ -252,7 +301,133 @@ pub(super) fn dispatch_drawsprocket_import(
                         current_gworld,
                         current_gdevice,
                         draw_sprocket,
+                        host_menu_bar_hidden,
+                        tick_count,
+                        input,
                     );
+                }
+                if previous_state == PpcDspContextPlayState::Paused
+                    && draw_sprocket.context_state != PpcDspContextPlayState::Paused
+                {
+                    if let Some((address, bytes)) = draw_sprocket.paused_screen_pixels.take() {
+                        if draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                            let _ = memory.write_bytes(address, &bytes);
+                        }
+                    }
+                    if draw_sprocket.context_state == PpcDspContextPlayState::Active {
+                        if let Some(blanking) = draw_sprocket.blanking_window {
+                            draw_sprocket.paused_front_windows = window_list.with_ref(|windows| {
+                                windows
+                                    .iter()
+                                    .take_while(|&&window| window != blanking)
+                                    .copied()
+                                    .collect()
+                            });
+                            window_list.bring_to_front(blanking);
+                            super::dispatch_window::ppc_sync_process_window_list(
+                                memory,
+                                window_list,
+                            );
+                            super::dispatch_window::ppc_recalculate_window_vis_regions(
+                                process_memory_manager,
+                                memory,
+                                window_list,
+                                heap_cursor,
+                                heap_limit,
+                                last_mem_error,
+                                handles,
+                            );
+                        }
+                    } else {
+                        draw_sprocket.paused_front_windows.clear();
+                    }
+                }
+                if previous_state != PpcDspContextPlayState::Paused
+                    && draw_sprocket.context_state == PpcDspContextPlayState::Paused
+                {
+                    let mut restored_windows = Vec::new();
+                    if let Some(blanking) = draw_sprocket.blanking_window {
+                        let saved = std::mem::take(&mut draw_sprocket.paused_front_windows);
+                        window_list.with_mut(|windows| {
+                            for &window in &saved {
+                                if let (Some(index), Some(_)) = (
+                                    windows.iter().position(|&value| value == window),
+                                    windows.iter().position(|&value| value == blanking),
+                                ) {
+                                    windows.remove(index);
+                                    if let Some(position) =
+                                        windows.iter().position(|&value| value == blanking)
+                                    {
+                                        windows.insert(position, window);
+                                    }
+                                }
+                            }
+                        });
+                        super::dispatch_window::ppc_sync_process_window_list(memory, window_list);
+                        super::dispatch_window::ppc_recalculate_window_vis_regions(
+                            process_memory_manager,
+                            memory,
+                            window_list,
+                            heap_cursor,
+                            heap_limit,
+                            last_mem_error,
+                            handles,
+                        );
+                        restored_windows = saved;
+                    }
+                    if let Some(front) =
+                        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                    {
+                        if let Some(bytes) = front
+                            .row_bytes
+                            .checked_mul(front.height)
+                            .and_then(|size| ppc_memory_read_bytes(memory, front.base_addr, size))
+                        {
+                            draw_sprocket.paused_screen_pixels = Some((front.base_addr, bytes));
+                        }
+                        if !host_menu_bar_hidden {
+                            let colors = ppc_menu_color_table_bytes(memory, handles);
+                            let _ = ppc_draw_menu_bar_with_colors(
+                                memory,
+                                gworlds,
+                                current_menu_list,
+                                screen_clut,
+                                MenuColorTable::new(&colors),
+                            );
+                        }
+                    }
+                    for window in restored_windows {
+                        if !window_list.contains_window(window)
+                            || !ppc_window_is_visible(memory, window)
+                        {
+                            continue;
+                        }
+                        let Some(vis_rgn) =
+                            memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+                        else {
+                            continue;
+                        };
+                        if !ppc_read_rgn_bbox(memory, vis_rgn)
+                            .is_some_and(|r| r.0 < r.2 && r.1 < r.3)
+                        {
+                            continue;
+                        }
+                        super::dispatch_window::ppc_redraw_visible_window_frame(
+                            memory,
+                            gworlds,
+                            window_list,
+                            window,
+                            host_menu_bar_hidden,
+                        );
+                        if let Some(rect) =
+                            ppc_read_rect(memory, window + PPC_CWINDOW_PORT_RECT_OFFSET)
+                        {
+                            super::dispatch_window::ppc_invalidate_window_local_rect(
+                                memory, window, rect,
+                            );
+                            ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+                        }
+                    }
                 }
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -457,6 +632,9 @@ fn ppc_dsp_dispose_blanking_window(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     draw_sprocket: &mut PpcDrawSprocketState,
+    host_menu_bar_hidden: bool,
+    tick_count: u32,
+    input: PpcInputSnapshot,
 ) {
     let Some(window) = draw_sprocket.blanking_window.take() else {
         return;
@@ -479,4 +657,35 @@ fn ppc_dsp_dispose_blanking_window(
         current_gdevice,
         window,
     );
+    super::dispatch_window::ppc_sync_process_window_list(memory, window_list);
+    super::dispatch_window::ppc_recalculate_window_vis_regions(
+        process_memory_manager,
+        memory,
+        window_list,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+    );
+    // The desktop snapshot predates windows opened or changed while the
+    // context was active. Restore their frames and ask the application to
+    // redraw visible contents after the blanking window is removed.
+    for window in window_list.windows().into_iter().rev() {
+        if !ppc_window_is_visible(memory, window) {
+            continue;
+        }
+        let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
+            continue;
+        };
+        if !ppc_read_rgn_bbox(memory, vis_rgn).is_some_and(|r| r.0 < r.2 && r.1 < r.3) {
+            continue;
+        }
+        super::dispatch_window::ppc_redraw_visible_window_frame(
+            memory, gworlds, window_list, window, host_menu_bar_hidden,
+        );
+        if let Some(rect) = ppc_read_rect(memory, window + PPC_CWINDOW_PORT_RECT_OFFSET) {
+            super::dispatch_window::ppc_invalidate_window_local_rect(memory, window, rect);
+            ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+        }
+    }
 }

@@ -175,6 +175,392 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
 }
 
 #[test]
+fn draw_sprocket_inactive_restores_desktop_window_visibility() {
+    for exit in [
+        PpcImportDispatcherTarget::DSpContextSetState,
+        PpcImportDispatcherTarget::DSpContextRelease,
+        PpcImportDispatcherTarget::DSpShutdown,
+    ] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(scratch, vec![0; 256]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 140, 250),
+            0,
+            true,
+            u32::MAX,
+        );
+        let vis = loaded
+            .memory
+            .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+            .unwrap();
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 100, 200))
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+        assert_eq!(
+            ppc_dsp_context_reserve(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.draw_sprocket,
+                &mut loaded.gworlds
+            ),
+            PPC_NO_ERR
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 0, 0))
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+        run_test_import(&mut loaded, exit);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 100, 200))
+        );
+    }
+}
+
+#[test]
+fn draw_sprocket_inactive_invalidates_dialog_created_during_pause() {
+    for exit in [
+        PpcImportDispatcherTarget::DSpContextSetState,
+        PpcImportDispatcherTarget::DSpContextRelease,
+        PpcImportDispatcherTarget::DSpShutdown,
+    ] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(scratch, vec![0; 256]);
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+        assert_eq!(
+            ppc_dsp_context_reserve(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.draw_sprocket,
+                &mut loaded.gworlds
+            ),
+            PPC_NO_ERR
+        );
+        for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+            loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        let dialog = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 140, 250),
+            0,
+            true,
+            u32::MAX,
+        );
+        let update = loaded
+            .memory
+            .read_u32_be(dialog + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_set_empty_rgn(&mut loaded.memory, update).unwrap();
+        loaded.set_event_queue([]);
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+        run_test_import(&mut loaded, exit);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, update),
+            Some((0, 0, 100, 200))
+        );
+        assert!(loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == dialog));
+    }
+}
+
+#[test]
+fn draw_sprocket_first_pause_reveals_preexisting_floating_window() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(scratch, vec![0; 256]);
+    let normal = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (60, 70, 160, 270),
+        0,
+        true,
+        u32::MAX,
+    );
+    let hidden = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (80, 90, 180, 290),
+        1985,
+        false,
+        u32::MAX,
+    );
+    let floating = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (40, 50, 140, 250),
+        1985,
+        true,
+        u32::MAX,
+    );
+    assert_eq!(loaded.window_list.window_class(floating), Some(5));
+    let vis = loaded
+        .memory
+        .read_u32_be(floating + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        if state == PPC_DSP_CONTEXT_STATE_ACTIVE {
+            assert_eq!(
+                ppc_read_rgn_bbox(&mut loaded.memory, vis),
+                Some((0, 0, 0, 0))
+            );
+        }
+    }
+    assert_eq!(loaded.window_list.first(), Some(floating));
+    let blanking = loaded.draw_sprocket.blanking_window.unwrap();
+    let order = loaded.window_list.windows();
+    let blanking_position = order.iter().position(|&window| window == blanking).unwrap();
+    assert!(order.iter().position(|&window| window == normal).unwrap() > blanking_position);
+    assert!(order.iter().position(|&window| window == hidden).unwrap() > blanking_position);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis),
+        Some((0, 0, 100, 200))
+    );
+}
+
+#[test]
+fn draw_sprocket_pause_recalculates_dialog_visibility() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(scratch, vec![0; 256]);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    let dialog = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (40, 50, 140, 250),
+        0,
+        true,
+        u32::MAX,
+    );
+    let vis = loaded
+        .memory
+        .read_u32_be(dialog + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    let update = loaded
+        .memory
+        .read_u32_be(dialog + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    ppc_set_empty_rgn(&mut loaded.memory, update).unwrap();
+    loaded.set_event_queue([]);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis),
+        Some((0, 0, 100, 200))
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis),
+        Some((0, 0, 0, 0))
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis),
+        Some((0, 0, 100, 200))
+    );
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update),
+        Some((0, 0, 100, 200))
+    );
+    assert!(loaded
+        .event_queue
+        .iter()
+        .any(|event| event.what == 6 && event.message == dialog));
+}
+
+#[test]
+fn draw_sprocket_resume_covers_paused_dialog_and_reveals_it_on_pause() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    let blanking = loaded.draw_sprocket.blanking_window.unwrap();
+    let front = loaded.presented_front_buffer().unwrap();
+    let pixel = front.base_addr + front.row_bytes * 50 + 100;
+    let before = loaded.memory.read_u16_be(pixel).unwrap();
+    loaded.memory.write_u16_be(pixel, before ^ 0xffff).unwrap();
+    let dialog = PPC_DATA_BASE + 0x4100;
+    loaded.memory.add_region(dialog, vec![0; 256]);
+    loaded
+        .memory
+        .write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded.window_list.insert(0, dialog);
+    let second_dialog = dialog + 0x200;
+    loaded.memory.add_region(second_dialog, vec![0; 256]);
+    loaded
+        .memory
+        .write_u8(second_dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(second_dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded.window_list.insert(0, second_dialog);
+    assert_eq!(loaded.window_list.first(), Some(second_dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.window_list.first(), Some(blanking));
+    assert_eq!(loaded.memory.read_u16_be(pixel), Some(before));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.window_list.first(), Some(second_dialog));
+    assert_eq!(loaded.window_list.get(1), Some(dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert!(loaded.window_list.remove_window(second_dialog));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.window_list.first(), Some(dialog));
+    assert!(!loaded.window_list.contains_window(second_dialog));
+}
+
+#[test]
+fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let blanking_window = loaded.draw_sprocket.blanking_window.unwrap();
+    let bounds = ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap();
+    assert_eq!(bounds, (0, 0, 480, 640));
+    let front = loaded.presented_front_buffer().unwrap();
+    let menu_bytes =
+        front.row_bytes * u32::from(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap());
+    let active_pixels =
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.draw_sprocket.context_state,
+        PpcDspContextPlayState::Paused
+    );
+    assert_eq!(loaded.draw_sprocket.active_context, None);
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    assert_ne!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap(),
+        active_pixels
+    );
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    let window_out = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(window_out, vec![0; 4]);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[(5 << 16) | 5, window_out]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bytes).unwrap(),
+        active_pixels
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+    assert_ne!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(loaded.draw_sprocket.blanking_window.is_some());
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+}
+
+#[test]
 fn draw_sprocket_activation_installs_context_screen_geometry() {
     let pef = synthetic_pef_with_import(b"SetPort");
     let mut loaded = load_pef_application(&pef).unwrap();
