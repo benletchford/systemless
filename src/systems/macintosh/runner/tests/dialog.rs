@@ -47,7 +47,15 @@ fn mouse_move_updates_held_dialog_button_before_release() {
     let mut tracking = dialog_tracking_for_test(0, 0);
     tracking.bounds = (20, 20, 120, 220);
     tracking.active_button = Some(DialogButtonTrackingState {
-        mouse_down: QueuedEvent { what: 1, message: 0, when: 0, where_v: 50, where_h: 60, modifiers: 0 },
+        mouse_down: QueuedEvent {
+            delivery_id: None,
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: 50,
+            where_h: 60,
+            modifiers: 0,
+        },
         item_no: 1, rect: (20, 20, 40, 100), title: "OK".into(), is_default: false, highlighted: true,
     });
     runner.dispatcher.dialog_tracking = Some(tracking);
@@ -260,6 +268,7 @@ fn dialog_filter_paces_synthetic_update_without_starving_queued_input() {
         .process_context
         .shared_event_queue()
         .push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,

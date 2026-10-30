@@ -17,6 +17,9 @@ pub(super) struct PpcAppleEventDispatchAllocation {
     pub(super) event_handle: u32,
     pub(super) reply_handle: u32,
     pub(super) send_reply: Option<u32>,
+    pub(super) return_handler_result: bool,
+    pub(super) reply_route: PpcSelfReplyRoute,
+    pub(super) classic_return_pc: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +130,14 @@ pub struct PpcAppleEventState {
     pub(super) handlers: SharedProcessAppleEventHandlers,
     pub(super) descriptors: SharedProcessAppleEventDescriptors,
     pub(super) pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
+    pub(super) queued_self_events:
+        VecDeque<(PpcQueuedEvent, ProcessAeDescriptor, PpcSelfReplyRoute)>,
+    pub(super) current_self_event: Option<(PpcQueuedEvent, ProcessAeDescriptor, PpcSelfReplyRoute)>,
+    pub(super) next_self_event_id: u64,
+    pub(super) completed_self_replies: VecDeque<PpcPendingSelfReply>,
+    pub(super) completed_wait_replies: VecDeque<(u64, PpcPendingSelfReply)>,
+    #[cfg(test)]
+    pub(super) fail_self_queue_reservation: u8,
     pub(super) next_return_id: i16,
     pub(super) pending_resolutions: Vec<PpcAeResolvePending>,
     pub(super) pending_resolve_cleanups: Vec<PpcAeResolveCleanupPending>,
@@ -137,7 +148,101 @@ pub struct PpcAppleEventState {
     pub(super) special_handlers: HashMap<(bool, u32), u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PpcPendingSelfReply {
+    Completed(ProcessAeDescriptor, i16),
+    Error(ProcessAeDescriptor, i16),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PpcSelfReplyRoute {
+    None,
+    Queued,
+    #[allow(dead_code)]
+    Waiting(u64),
+}
+
 impl PpcAppleEventState {
+    #[allow(dead_code)]
+    pub(super) fn take_wait_reply(&mut self, id: u64) -> Option<PpcPendingSelfReply> {
+        let index = self
+            .completed_wait_replies
+            .iter()
+            .position(|(reply_id, _)| *reply_id == id)?;
+        self.completed_wait_replies
+            .remove(index)
+            .map(|(_, reply)| reply)
+    }
+
+    fn deliver_self_reply(
+        replies: &mut VecDeque<PpcPendingSelfReply>,
+        wait_replies: &mut VecDeque<(u64, PpcPendingSelfReply)>,
+        route: PpcSelfReplyRoute,
+        reply: PpcPendingSelfReply,
+    ) {
+        match route {
+            PpcSelfReplyRoute::None => {}
+            PpcSelfReplyRoute::Queued => replies.push_back(reply),
+            // A future synchronous send must reserve this slot before
+            // publishing its request, as queued sends already do.
+            PpcSelfReplyRoute::Waiting(id) => wait_replies.push_back((id, reply)),
+        }
+    }
+
+    pub(super) fn expire_current_self_event(&mut self) {
+        if let Some((_, event, route)) = self.current_self_event.take() {
+            Self::deliver_self_reply(
+                &mut self.completed_self_replies,
+                &mut self.completed_wait_replies,
+                route,
+                PpcPendingSelfReply::Error(event, PPC_ERR_AE_EVENT_NOT_HANDLED),
+            );
+        }
+    }
+
+    pub(super) fn prune_queued_self_events(&mut self, queue: &VecDeque<PpcQueuedEvent>) {
+        if self.queued_self_events.is_empty() {
+            return;
+        }
+        let mut missing = HashSet::new();
+        let indexed = self.queued_self_events.len() > 1
+            && missing.try_reserve(self.queued_self_events.len()).is_ok();
+        if indexed {
+            missing.extend(
+                self.queued_self_events
+                    .iter()
+                    .map(|(event, _, _)| event.delivery_id),
+            );
+            for queued in queue {
+                missing.remove(&queued.delivery_id);
+            }
+        }
+        let replies = &mut self.completed_self_replies;
+        let wait_replies = &mut self.completed_wait_replies;
+        self.queued_self_events
+            .retain_mut(|(event, descriptor, wants_reply)| {
+                let exists = if indexed {
+                    !missing.contains(&event.delivery_id)
+                } else {
+                    queue
+                        .iter()
+                        .any(|queued| queued.delivery_id == event.delivery_id)
+                };
+                if !exists && *wants_reply != PpcSelfReplyRoute::None {
+                    Self::deliver_self_reply(
+                        replies,
+                        wait_replies,
+                        *wants_reply,
+                        PpcPendingSelfReply::Error(
+                            std::mem::take(descriptor),
+                            PPC_ERR_AE_EVENT_NOT_HANDLED,
+                        ),
+                    );
+                }
+                exists
+            });
+    }
+
     pub(super) fn object_accessor_exact(
         &self,
         desired_class: u32,
@@ -488,6 +593,10 @@ pub(super) struct PpcAppleEventDispatchContext<'a> {
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) apple_events: &'a mut PpcAppleEventState,
     pub(super) toolbox_startup: &'a mut PpcToolboxStartupState,
+    pub(super) event_queue: &'a mut crate::event_queue::EventQueue,
+    pub(super) tick_count: u32,
+    pub(super) event_modifiers: u16,
+    pub(super) application_signature: u32,
 }
 
 pub(super) fn dispatch_apple_event_import(
@@ -504,6 +613,10 @@ pub(super) fn dispatch_apple_event_import(
         handles,
         apple_events,
         toolbox_startup,
+        event_queue,
+        tick_count,
+        event_modifiers,
+        application_signature,
     } = context;
 
     match binding.dispatcher_target {
@@ -845,7 +958,7 @@ pub(super) fn dispatch_apple_event_import(
         }
         PpcImportDispatcherTarget::AEProcessAppleEvent => {
             let guest_call_depth = toolbox_startup.execution.calls().depth();
-            Some(ppc_process_apple_event(
+            let action = ppc_process_apple_event(
                 cpu,
                 process_memory_manager,
                 memory,
@@ -856,7 +969,14 @@ pub(super) fn dispatch_apple_event_import(
                 apple_events,
                 toolbox_startup,
                 guest_call_depth,
-            ))
+            );
+            ppc_queue_completed_apple_event_replies(
+                apple_events,
+                event_queue,
+                tick_count,
+                event_modifiers,
+            );
+            Some(action)
         }
         PpcImportDispatcherTarget::AESetInteractionAllowed => {
             // Inside Macintosh: Interapplication Communication (1993),
@@ -918,6 +1038,10 @@ pub(super) fn dispatch_apple_event_import(
             handles,
             apple_events,
             toolbox_startup,
+            event_queue,
+            tick_count,
+            event_modifiers,
+            application_signature,
         )),
         PpcImportDispatcherTarget::AppleEventCompatibility(operation) => {
             Some(ppc_dispatch_apple_event_compatibility(
@@ -1000,6 +1124,61 @@ pub(super) fn ppc_ae_descriptor(
                 ..Default::default()
             })
         })
+}
+
+fn ppc_try_clone_ae_descriptor(value: &ProcessAeDescriptor) -> Result<ProcessAeDescriptor, ()> {
+    let mut data = Vec::new();
+    let mut attributes = HashMap::new();
+    let mut fields = HashMap::new();
+    let mut items = Vec::new();
+    data.try_reserve_exact(value.data.len()).map_err(|_| ())?;
+    attributes
+        .try_reserve(value.attributes.len())
+        .map_err(|_| ())?;
+    fields.try_reserve(value.fields.len()).map_err(|_| ())?;
+    items.try_reserve_exact(value.items.len()).map_err(|_| ())?;
+    data.extend_from_slice(&value.data);
+    for (&key, item) in &value.attributes {
+        attributes.insert(key, ppc_try_clone_ae_descriptor(item)?);
+    }
+    for (&key, item) in &value.fields {
+        fields.insert(key, ppc_try_clone_ae_descriptor(item)?);
+    }
+    for (key, item) in &value.items {
+        items.push((*key, ppc_try_clone_ae_descriptor(item)?));
+    }
+    Ok(ProcessAeDescriptor {
+        attributes,
+        desc_type: value.desc_type,
+        data,
+        fields,
+        items,
+    })
+}
+
+fn ppc_try_ae_descriptor(
+    memory: &mut PpcSectionMem,
+    state: &SharedProcessAppleEventDescriptors,
+    address: u32,
+) -> Result<Option<ProcessAeDescriptor>, ()> {
+    let Some(desc_type) = memory.read_u32_be(address).filter(|value| *value != 0) else {
+        return Ok(None);
+    };
+    let handle = memory.read_u32_be(address + 4).unwrap_or(0);
+    if let Some(descriptor) = state.backing.get(&handle) {
+        let mut descriptor = ppc_try_clone_ae_descriptor(descriptor)?;
+        descriptor.desc_type = desc_type;
+        return Ok(Some(descriptor));
+    }
+    if let Some(descriptor) = state.descriptors.get(&address) {
+        return ppc_try_clone_ae_descriptor(descriptor).map(Some);
+    }
+    Ok(
+        (state.events.contains_key(&address) || handle == 0).then_some(ProcessAeDescriptor {
+            desc_type,
+            ..Default::default()
+        }),
+    )
 }
 
 pub(super) fn ppc_store_ae_descriptor_semantics(
@@ -2159,6 +2338,7 @@ pub(super) fn ppc_enqueue_open_application_event_if_needed(
         return;
     }
     event_queue.push_front(PpcQueuedEvent {
+        delivery_id: None,
         what: PPC_HIGH_LEVEL_EVENT,
         message: PPC_CORE_EVENT_CLASS,
         when,
@@ -2233,8 +2413,35 @@ pub(super) fn ppc_process_apple_event(
     let Some((PPC_HIGH_LEVEL_EVENT, event_class, event_id)) = event.flatten() else {
         return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED));
     };
-    let mut data = event_class.to_be_bytes().to_vec();
-    data.extend_from_slice(&event_id.to_be_bytes());
+    let when = memory.read_u32_be(event_record + 6).unwrap_or(u32::MAX);
+    let modifiers = memory.read_u16_be(event_record + 14).unwrap_or(u16::MAX);
+    let current_matches = apple_events
+        .current_self_event
+        .as_ref()
+        .is_some_and(|(record, _, _)| {
+            record.message == event_class
+                && record.when == when
+                && record.where_v as u16 == (event_id >> 16) as u16
+                && record.where_h as u16 == event_id as u16
+                && record.modifiers == modifiers
+        });
+    let (event_descriptor, send_reply, reply_route) = if current_matches {
+        let (_, descriptor, route) = apple_events.current_self_event.take().unwrap();
+        let wants_reply = route != PpcSelfReplyRoute::None;
+        (descriptor, Some(u32::from(wants_reply)), route)
+    } else {
+        let mut data = event_class.to_be_bytes().to_vec();
+        data.extend_from_slice(&event_id.to_be_bytes());
+        (
+            ProcessAeDescriptor {
+                desc_type: PPC_CORE_EVENT_CLASS,
+                data,
+                ..Default::default()
+            },
+            None,
+            PpcSelfReplyRoute::None,
+        )
+    };
     ppc_dispatch_owned_apple_event(
         cpu,
         process_memory_manager,
@@ -2246,12 +2453,10 @@ pub(super) fn ppc_process_apple_event(
         apple_events,
         toolbox_startup,
         resume_guest_call_depth,
-        ProcessAeDescriptor {
-            desc_type: PPC_CORE_EVENT_CLASS,
-            data,
-            ..Default::default()
-        },
-        None,
+        event_descriptor,
+        send_reply,
+        true,
+        reply_route,
     )
 }
 
@@ -2269,6 +2474,8 @@ fn ppc_dispatch_owned_apple_event(
     resume_guest_call_depth: usize,
     event_descriptor: ProcessAeDescriptor,
     send_reply: Option<u32>,
+    return_handler_result: bool,
+    reply_route: PpcSelfReplyRoute,
 ) -> PpcImportAction {
     let event_class = u32::from_be_bytes(event_descriptor.data[..4].try_into().unwrap());
     let event_id = u32::from_be_bytes(event_descriptor.data[4..8].try_into().unwrap());
@@ -2276,6 +2483,14 @@ fn ppc_dispatch_owned_apple_event(
         .handlers
         .handler_for(event_class, event_id, PPC_TYPE_WILDCARD)
     else {
+        if reply_route != PpcSelfReplyRoute::None {
+            PpcAppleEventState::deliver_self_reply(
+                &mut apple_events.completed_self_replies,
+                &mut apple_events.completed_wait_replies,
+                reply_route,
+                PpcPendingSelfReply::Error(event_descriptor, PPC_ERR_AE_EVENT_NOT_HANDLED),
+            );
+        }
         return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED));
     };
 
@@ -2344,6 +2559,14 @@ fn ppc_dispatch_owned_apple_event(
             heap_cursor,
             last_mem_error,
         );
+        if reply_route != PpcSelfReplyRoute::None {
+            PpcAppleEventState::deliver_self_reply(
+                &mut apple_events.completed_self_replies,
+                &mut apple_events.completed_wait_replies,
+                reply_route,
+                PpcPendingSelfReply::Error(event_descriptor, PPC_MEM_FULL_ERR),
+            );
+        }
         return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
     }
     ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
@@ -2393,6 +2616,9 @@ fn ppc_dispatch_owned_apple_event(
             event_handle,
             reply_handle,
             send_reply,
+            return_handler_result,
+            reply_route,
+            classic_return_pc: (handler.procedure.isa == GuestIsa::M68k).then_some(cpu.lr),
         });
     match handler.procedure.isa {
         GuestIsa::PowerPc => GuestCallEffect::call_guest(
@@ -2432,7 +2658,7 @@ fn ppc_dispatch_owned_apple_event(
                 proc_info,
                 None,
                 vec![descriptors, descriptors + 8, handler.refcon],
-                cpu.lr,
+                PPC_GUEST_CALL_RETURN_PC,
                 PpcNativeReturnGpr3::Preserve,
             );
             if let Some(action) = action {
@@ -2467,6 +2693,14 @@ fn ppc_dispatch_owned_apple_event(
                 handles.retain(|record| {
                     record.handle != event_handle && record.handle != reply_handle
                 });
+                if reply_route != PpcSelfReplyRoute::None {
+                    PpcAppleEventState::deliver_self_reply(
+                        &mut apple_events.completed_self_replies,
+                        &mut apple_events.completed_wait_replies,
+                        reply_route,
+                        PpcPendingSelfReply::Error(event_descriptor, PPC_MEM_FULL_ERR),
+                    );
+                }
                 PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR))
             }
         }
@@ -2493,7 +2727,26 @@ pub(super) fn ppc_complete_apple_event_dispatch(
         return;
     };
     apple_events.pending_dispatches.pop();
-    if let Some(output) = dispatch.send_reply {
+    if dispatch.return_handler_result {
+        cpu.gpr[3] = ppc_i16_result(cpu.gpr[3] as u16 as i16);
+    }
+    if dispatch.reply_route != PpcSelfReplyRoute::None {
+        if let Some(reply) =
+            ppc_ae_descriptor(memory, &apple_events.descriptors, dispatch.descriptors + 8)
+        {
+            let error = cpu.gpr[3] as u16 as i16;
+            PpcAppleEventState::deliver_self_reply(
+                &mut apple_events.completed_self_replies,
+                &mut apple_events.completed_wait_replies,
+                dispatch.reply_route,
+                PpcPendingSelfReply::Completed(reply, error),
+            );
+        }
+    }
+    if let Some(output) = dispatch
+        .send_reply
+        .filter(|_| !dispatch.return_handler_result)
+    {
         cpu.gpr[3] = ppc_i16_result(send::complete_reply(
             cpu.gpr[3] as u16 as i16,
             output,
@@ -2523,6 +2776,164 @@ pub(super) fn ppc_complete_apple_event_dispatch(
     }
     let _ = process_memory_manager.dispose_native_ptr(dispatch.descriptors);
     ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+}
+
+pub(super) fn ppc_queue_completed_apple_event_replies(
+    apple_events: &mut PpcAppleEventState,
+    event_queue: &mut crate::event_queue::EventQueue,
+    when: u32,
+    modifiers: u16,
+) {
+    while !apple_events.completed_self_replies.is_empty() {
+        let Some(delivery_id) = apple_events.next_self_event_id.checked_add(1) else {
+            return;
+        };
+        if apple_events.queued_self_events.try_reserve(1).is_err()
+            || send::self_queue_reservation_fails(apple_events, 4)
+            || event_queue.try_reserve(1).is_err()
+            || send::self_queue_reservation_fails(apple_events, 5)
+        {
+            return;
+        }
+        let pending = apple_events.completed_self_replies.front_mut().unwrap();
+        let attributes = match pending {
+            PpcPendingSelfReply::Completed(reply, _) | PpcPendingSelfReply::Error(reply, _) => {
+                &mut reply.attributes
+            }
+        };
+        if attributes.try_reserve(1).is_err() || send::self_queue_reservation_fails(apple_events, 6)
+        {
+            return;
+        }
+        let mut source_data = Vec::new();
+        if source_data.try_reserve_exact(2).is_err()
+            || send::self_queue_reservation_fails(apple_events, 7)
+        {
+            return;
+        }
+        source_data.extend_from_slice(&2i16.to_be_bytes());
+        let mut prepared_handler_error = None;
+        if let PpcPendingSelfReply::Completed(reply, error) =
+            apple_events.completed_self_replies.front_mut().unwrap()
+        {
+            let keyword = u32::from_be_bytes(*b"errn");
+            if *error != PPC_NO_ERR && !reply.fields.contains_key(&keyword) {
+                let mut field_data = Vec::new();
+                let mut item_data = Vec::new();
+                if reply.fields.try_reserve(1).is_err()
+                    || reply.items.try_reserve(1).is_err()
+                    || field_data.try_reserve_exact(4).is_err()
+                    || item_data.try_reserve_exact(4).is_err()
+                {
+                    return;
+                }
+                field_data.extend_from_slice(&i32::from(*error).to_be_bytes());
+                item_data.extend_from_slice(&i32::from(*error).to_be_bytes());
+                prepared_handler_error = Some((field_data, item_data));
+            }
+        }
+        if prepared_handler_error.is_some() && send::self_queue_reservation_fails(apple_events, 11)
+        {
+            return;
+        }
+        let mut prepared_error = None;
+        if let PpcPendingSelfReply::Error(_, error_code) =
+            apple_events.completed_self_replies.front().unwrap()
+        {
+            let mut data = Vec::new();
+            let mut error_data = Vec::new();
+            let mut item_data = Vec::new();
+            let mut fields = HashMap::new();
+            let mut items = Vec::new();
+            if data.try_reserve_exact(8).is_err()
+                || error_data.try_reserve_exact(4).is_err()
+                || item_data.try_reserve_exact(4).is_err()
+                || fields.try_reserve(1).is_err()
+                || items.try_reserve(1).is_err()
+                || send::self_queue_reservation_fails(apple_events, 8)
+            {
+                return;
+            }
+            data.extend_from_slice(b"aevtansr");
+            error_data.extend_from_slice(&i32::from(*error_code).to_be_bytes());
+            item_data.extend_from_slice(&i32::from(*error_code).to_be_bytes());
+            let keyword = u32::from_be_bytes(*b"errn");
+            fields.insert(
+                keyword,
+                ProcessAeDescriptor {
+                    desc_type: u32::from_be_bytes(*b"long"),
+                    data: error_data,
+                    ..Default::default()
+                },
+            );
+            items.push((
+                keyword,
+                ProcessAeDescriptor {
+                    desc_type: u32::from_be_bytes(*b"long"),
+                    data: item_data,
+                    ..Default::default()
+                },
+            ));
+            prepared_error = Some(ProcessAeDescriptor {
+                desc_type: PPC_CORE_EVENT_CLASS,
+                data,
+                fields,
+                items,
+                ..Default::default()
+            });
+        }
+        let mut reply = match apple_events.completed_self_replies.pop_front().unwrap() {
+            PpcPendingSelfReply::Completed(mut reply, _) => {
+                if let Some((field_data, item_data)) = prepared_handler_error {
+                    let keyword = u32::from_be_bytes(*b"errn");
+                    reply.fields.insert(
+                        keyword,
+                        ProcessAeDescriptor {
+                            desc_type: u32::from_be_bytes(*b"long"),
+                            data: field_data,
+                            ..Default::default()
+                        },
+                    );
+                    reply.items.push((
+                        keyword,
+                        ProcessAeDescriptor {
+                            desc_type: u32::from_be_bytes(*b"long"),
+                            data: item_data,
+                            ..Default::default()
+                        },
+                    ));
+                }
+                reply
+            }
+            PpcPendingSelfReply::Error(event, _) => {
+                let mut reply = prepared_error.unwrap();
+                reply.attributes = event.attributes;
+                reply
+            }
+        };
+        reply.attributes.insert(
+            u32::from_be_bytes(*b"esrc"),
+            ProcessAeDescriptor {
+                desc_type: u32::from_be_bytes(*b"shor"),
+                data: source_data,
+                ..Default::default()
+            },
+        );
+        let record = PpcQueuedEvent {
+            delivery_id: Some(delivery_id),
+            what: PPC_HIGH_LEVEL_EVENT,
+            message: PPC_CORE_EVENT_CLASS,
+            when,
+            where_v: i16::from_be_bytes(*b"an"),
+            where_h: i16::from_be_bytes(*b"sr"),
+            modifiers,
+        };
+        apple_events.next_self_event_id = delivery_id;
+        apple_events
+            .queued_self_events
+            .push_back((record, reply, PpcSelfReplyRoute::None));
+        event_queue.push_back(record);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

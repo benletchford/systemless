@@ -2313,6 +2313,7 @@ fn standard_file_refires_yield_before_unrelated_modeless_callbacks() {
             .process_context
             .shared_event_queue()
             .push_back(QueuedEvent {
+                delivery_id: None,
                 what: 3,
                 message: 0x0000_351B, // Escape
                 when: 0,
@@ -2637,6 +2638,7 @@ fn gui_modaldialog_update_filter_fires_at_tick_cap() {
         .process_context
         .shared_event_queue()
         .push_back(QueuedEvent {
+            delivery_id: None,
             what: 6,
             message: 0,
             when: 0,
@@ -2677,6 +2679,7 @@ fn gui_modaldialog_mouse_down_goes_to_filter_before_default_handling() {
         .process_context
         .shared_event_queue()
         .push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -2749,6 +2752,7 @@ fn modaldialog_filter_real_events_bypass_null_event_pacing() {
         .process_context
         .shared_event_queue()
         .push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -3794,6 +3798,7 @@ fn sound_status_poll_cursor_preserves_slices_and_observes_new_work() {
         runner.set_instructions_per_tick(20_000);
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent {
+                delivery_id: None,
             what: 1, message: 0, when: 0, where_v: 10, where_h: 20, modifiers: 0,
         });
         runner.dispatcher.sound_manager.with_mut(|sound| {

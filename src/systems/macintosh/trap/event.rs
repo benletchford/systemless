@@ -264,6 +264,7 @@ impl super::TrapDispatcher {
         }
 
         Some(super::dispatch::QueuedEvent {
+            delivery_id: None,
             what: Self::OS_EVENT,
             message: Self::MOUSE_MOVED_MESSAGE,
             when: self.current_tick(),
@@ -293,6 +294,7 @@ impl super::TrapDispatcher {
 
     fn make_posted_event(&self, what: u16, message: u32) -> super::dispatch::QueuedEvent {
         super::dispatch::QueuedEvent {
+            delivery_id: None,
             what,
             message,
             when: self.current_tick(),
@@ -402,6 +404,7 @@ impl super::TrapDispatcher {
 
         let tick = self.current_tick();
         self.event_queue.push_front(super::dispatch::QueuedEvent {
+            delivery_id: None,
             what: Self::K_HIGH_LEVEL_EVENT,
             message: Self::K_CORE_EVENT_CLASS,
             when: tick,
@@ -442,6 +445,7 @@ impl super::TrapDispatcher {
         let message = repeat.message();
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(super::dispatch::QueuedEvent {
+            delivery_id: None,
             what: Self::AUTO_KEY_EVENT,
             message,
             when: tick,

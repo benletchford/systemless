@@ -47,6 +47,7 @@ fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation(
     assert!(!context.event_queue().menu_bar_is_invalid());
 
     classic.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0x1111,
         when: 0,
@@ -55,6 +56,7 @@ fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation(
         modifiers: 0,
     });
     native.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 2,
         message: 0x2222,
         when: 0,
@@ -685,6 +687,7 @@ fn attached_ppc_event_queue_remains_shared_through_panic() {
     let mut native = load_pef_application(&pef).unwrap();
     let mut context = ProcessContext::default();
     context.shared_event_queue().push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0x1111,
         when: 0,
@@ -696,6 +699,7 @@ fn attached_ppc_event_queue_remains_shared_through_panic() {
 
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         native.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2222,
             when: 0,
