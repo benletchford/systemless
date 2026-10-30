@@ -41,6 +41,114 @@ fn rect(data: &[u8]) -> [i16; 4] {
     std::array::from_fn(|index| i16::from_be_bytes([data[index * 2], data[index * 2 + 1]]))
 }
 
+struct IndexedPictureBits {
+    pixmap_header: [u8; 46],
+    color_table: Vec<u8>,
+    pixels: Vec<u8>,
+    source: [i16; 4],
+    destination: [i16; 4],
+    mode: u16,
+}
+
+/// Decode an indexed 8-bit PackBitsRect without color matching: the bitmap
+/// bottleneck must receive the source pixels and their original ColorTable.
+fn indexed_picture_bits(command: &PictureCommand) -> Option<IndexedPictureBits> {
+    if command.opcode != 0x98 {
+        return None;
+    }
+    let data = &command.data;
+    let word = |offset: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            data.get(offset..offset + 2)?.try_into().ok()?,
+        ))
+    };
+    let header: [u8; 46] = data.get(..46)?.try_into().ok()?;
+    let row_word = word(0)?;
+    let row_bytes = usize::from(row_word & 0x3fff);
+    let bounds = rect(data.get(2..10)?);
+    let height = i32::from(bounds[2]) - i32::from(bounds[0]);
+    let width = i32::from(bounds[3]) - i32::from(bounds[1]);
+    if row_word & 0xc000 != 0x8000
+        || word(12)? != 0
+        || word(26)? != 0
+        || word(28)? != 8
+        || word(30)? != 1
+        || word(32)? != 8
+        || height <= 0
+        || width <= 0
+        || row_bytes < width as usize
+    {
+        return None;
+    }
+    let total = row_bytes.checked_mul(height as usize)?;
+    if total > 32 * 1024 * 1024 {
+        return None;
+    }
+    let entries = usize::from(word(52)?) + 1;
+    if entries > 256 {
+        return None;
+    }
+    let table_end = 54usize.checked_add(entries.checked_mul(8)?)?;
+    let color_table = data.get(46..table_end)?.to_vec();
+    let source = rect(data.get(table_end..table_end + 8)?);
+    let destination = rect(data.get(table_end + 8..table_end + 16)?);
+    let mode = word(table_end + 16)?;
+    let mut pos = table_end + 18;
+    let mut pixels = Vec::with_capacity(total);
+    for _ in 0..height {
+        if row_bytes < 8 {
+            pixels.extend_from_slice(data.get(pos..pos.checked_add(row_bytes)?)?);
+            pos += row_bytes;
+            continue;
+        }
+        let count = if row_bytes > 250 {
+            let value = usize::from(word(pos)?);
+            pos += 2;
+            value
+        } else {
+            let value = usize::from(*data.get(pos)?);
+            pos += 1;
+            value
+        };
+        let end = pos.checked_add(count)?;
+        let packed = data.get(pos..end)?;
+        let mut at = 0;
+        let row_start = pixels.len();
+        while at < packed.len() {
+            let token = packed[at];
+            at += 1;
+            match token {
+                0..=127 => {
+                    let len = usize::from(token) + 1;
+                    pixels.extend_from_slice(packed.get(at..at.checked_add(len)?)?);
+                    at += len;
+                }
+                129..=255 => {
+                    let value = *packed.get(at)?;
+                    at += 1;
+                    pixels.extend(std::iter::repeat_n(value, 257 - usize::from(token)));
+                }
+                128 => {}
+            }
+            if pixels.len() - row_start > row_bytes {
+                return None;
+            }
+        }
+        if pixels.len() - row_start != row_bytes {
+            return None;
+        }
+        pos = end;
+    }
+    Some(IndexedPictureBits {
+        pixmap_header: header,
+        color_table,
+        pixels,
+        source,
+        destination,
+        mode,
+    })
+}
+
 fn resident_picture(bus: &MacMemoryBus, pointer: u32) -> Option<Vec<u8>> {
     // Resident pictures can be copied in chunks; unlike getPicProc, reading
     // extra mapped bytes has no guest callback side effects. Geometric growth
@@ -113,6 +221,7 @@ impl TrapDispatcher {
             (12, 0xa8af),
             (16, 0xa8b6),
             (20, 0xa8bd),
+            (32, 0xa8eb),
             (36, 0xa8f1),
         ]
         .into_iter()
@@ -139,8 +248,14 @@ impl TrapDispatcher {
         // Do not partially execute a stream before discovering an operation
         // whose state/ABI has not been implemented by this interpreter.
         if commands.iter().any(
-            |command| !matches!(command.opcode, 0x00 | 0x01 | 0x03..=0x05 | 0x07..=0x08 | 0x0b..=0x0d | 0x11 | 0x1a..=0x1b | 0x1d..=0x1e | 0x20..=0x23 | 0x28..=0x2c | 0x2e | 0x0c00 | 0x30..=0x34 | 0x38..=0x3c | 0x40..=0x44 | 0x48..=0x4c | 0x50..=0x54 | 0x58..=0x5c | 0x60..=0x64 | 0x68..=0x6c | 0xa0 | 0xa1 | 0xff),
+            |command| !matches!(command.opcode, 0x00 | 0x01 | 0x03..=0x05 | 0x07..=0x08 | 0x0b..=0x0d | 0x11 | 0x1a..=0x1b | 0x1d..=0x1e | 0x20..=0x23 | 0x28..=0x2c | 0x2e | 0x0c00 | 0x30..=0x34 | 0x38..=0x3c | 0x40..=0x44 | 0x48..=0x4c | 0x50..=0x54 | 0x58..=0x5c | 0x60..=0x64 | 0x68..=0x6c | 0x98 | 0xa0 | 0xa1 | 0xff),
         ) {
+            return false;
+        }
+        if commands
+            .iter()
+            .any(|command| command.opcode == 0x98 && indexed_picture_bits(command).is_none())
+        {
             return false;
         }
         if commands.iter().any(|command| {
@@ -700,6 +815,69 @@ impl TrapDispatcher {
                     arguments.extend_from_slice(&[(command.opcode & 7) as u8, 0]);
                     (slot, trap, arguments)
                 }
+                0x98 => {
+                    let Some(bitmap) = indexed_picture_bits(&command) else {
+                        frame.commands.clear();
+                        continue;
+                    };
+                    let sizes = [
+                        bitmap.pixels.len() as u32,
+                        50,
+                        bitmap.color_table.len() as u32,
+                        4,
+                        16,
+                    ];
+                    let mut allocations = Vec::with_capacity(sizes.len());
+                    for size in sizes {
+                        let ptr = bus.alloc(size);
+                        if ptr == 0 {
+                            break;
+                        }
+                        allocations.push(ptr);
+                    }
+                    if allocations.len() != sizes.len() {
+                        for allocation in allocations {
+                            bus.free(allocation);
+                        }
+                        frame.commands.clear();
+                        continue;
+                    }
+                    let (pixels, pixmap, ctab, ctab_handle, rects) = (
+                        allocations[0],
+                        allocations[1],
+                        allocations[2],
+                        allocations[3],
+                        allocations[4],
+                    );
+                    bus.write_bytes(pixels, &bitmap.pixels);
+                    bus.write_long(pixmap, pixels);
+                    bus.write_bytes(pixmap + 4, &bitmap.pixmap_header);
+                    bus.write_bytes(ctab, &bitmap.color_table);
+                    bus.write_long(ctab_handle, ctab);
+                    bus.write_long(pixmap + 42, ctab_handle);
+                    for index in 0..4 {
+                        bus.write_word(rects + index as u32 * 2, bitmap.source[index] as u16);
+                        let axis = index % 2;
+                        let from = i64::from(frame.source[axis]);
+                        let extent = i64::from(frame.source[axis + 2]) - from;
+                        let target = i64::from(frame.destination[axis]);
+                        let target_extent = i64::from(frame.destination[axis + 2]) - target;
+                        let value = target
+                            + (i64::from(bitmap.destination[index]) - from) * target_extent
+                                / extent;
+                        bus.write_word(
+                            rects + 8 + index as u32 * 2,
+                            value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16 as u16,
+                        );
+                    }
+                    frame.temporary.extend(allocations);
+                    let mut arguments = 0u32.to_be_bytes().to_vec(); // no mask
+                    arguments.extend_from_slice(&bitmap.mode.to_be_bytes());
+                    arguments.extend_from_slice(&(rects + 8).to_be_bytes());
+                    arguments.extend_from_slice(&rects.to_be_bytes());
+                    arguments.extend_from_slice(&pixmap.to_be_bytes());
+                    (32, 0xa8eb, arguments)
+                }
                 0xa0 | 0xa1 => {
                     let size = if command.opcode == 0xa1 {
                         u16::from_be_bytes([command.data[2], command.data[3]])
@@ -870,6 +1048,131 @@ mod tests {
         assert_eq!(bus.get_alloc_size(gate), None);
         assert_eq!(bus.get_alloc_size(buffer), None);
         assert_eq!(bus.read_bytes(picture, bytes.len()), bytes);
+    }
+
+    #[test]
+    fn indexed_picture_bits_callback_receives_source_indices_and_table() {
+        let (mut dispatcher, mock, mut bus) = setup_with_port();
+        let mut cpu = M68kCpu::new();
+        cpu.write_reg(Register::A5, mock.read_reg(Register::A5));
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, 0x340002);
+        let handle = 0x350100;
+        let picture = 0x350200;
+        let destination = 0x350600;
+        let procs = 0x350700;
+        let callback = 0x360000;
+        let mut bytes = vec![0, 0, 0, 0, 0, 0, 0, 2, 0, 4, 0x11, 1, 0x98];
+        let mut pm = [0u8; 46];
+        pm[0..2].copy_from_slice(&0x8004u16.to_be_bytes());
+        pm[6..8].copy_from_slice(&2u16.to_be_bytes());
+        pm[8..10].copy_from_slice(&4u16.to_be_bytes());
+        pm[28..30].copy_from_slice(&8u16.to_be_bytes());
+        pm[30..32].copy_from_slice(&1u16.to_be_bytes());
+        pm[32..34].copy_from_slice(&8u16.to_be_bytes());
+        bytes.extend_from_slice(&pm);
+        let table = [
+            0, 0, 0, 77, 0x80, 0, 0, 3, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 1, 0x11, 0x11,
+            0x22, 0x22, 0x33, 0x33, 0, 2, 0x44, 0x44, 0x55, 0x55, 0x66, 0x66, 0, 3, 0x77, 0x77,
+            0x88, 0x88, 0x99, 0x99,
+        ];
+        bytes.extend_from_slice(&table);
+        let source_rect = [0, 0, 0, 0, 0, 2, 0, 4];
+        bytes.extend_from_slice(&source_rect);
+        bytes.extend_from_slice(&source_rect);
+        bytes.extend_from_slice(&[0, 0]); // srcCopy
+        let pixels = [1, 2, 3, 0, 3, 2, 1, 0];
+        bytes.extend_from_slice(&pixels); // rowBytes < 8: unpacked
+        bytes.push(0xff);
+        bus.write_bytes(picture, &bytes);
+        bus.write_long(handle, picture);
+        bus.write_bytes(destination, &[0, 0, 0, 0, 0, 4, 0, 8]);
+        bus.write_long(0x181000 + 104, procs);
+        bus.write_long(procs + 32, callback);
+        // Copy the callback's ColorTable with the same classic Memory
+        // Manager operation used by applications that retain picture colors.
+        let callback_words = [
+            0x206f, 18, // movea.l 18(sp),a0: source PixMap
+            0x2068, 42,     // movea.l 42(a0),a0: ColorTable handle
+            0xa9e1, // HandToHand
+            0x23c8, 0x0035, 0x0800, // move.l a0,$350800
+            0x225f, 0x4fef, 18, 0x4ed1, // Pascal return
+        ];
+        for (index, word) in callback_words.into_iter().enumerate() {
+            bus.write_word(callback + index as u32 * 2, word);
+        }
+        bus.write_long(TEST_SP, destination);
+        bus.write_long(TEST_SP + 4, handle);
+        dispatcher
+            .dispatch_quickdraw(true, 0xf6, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), callback);
+        let sp = cpu.read_reg(Register::A7);
+        assert_eq!(bus.read_long(sp + 4), 0); // mask
+        assert_eq!(bus.read_word(sp + 8), 0); // srcCopy
+        let dst = bus.read_long(sp + 10);
+        let src = bus.read_long(sp + 14);
+        let pixmap = bus.read_long(sp + 18);
+        let pixel_ptr = bus.read_long(pixmap);
+        let table_handle = bus.read_long(pixmap + 42);
+        let table_ptr = bus.read_long(table_handle);
+        assert_eq!(bus.read_bytes(src, 8), source_rect);
+        assert_eq!(bus.read_bytes(dst, 8), [0, 0, 0, 0, 0, 4, 0, 8]);
+        assert_eq!(bus.read_bytes(pixel_ptr, pixels.len()), pixels);
+        assert_eq!(bus.read_bytes(table_ptr, table.len()), table);
+        for _ in 0..100 {
+            if cpu.read_reg(Register::PC) == 0x340002 {
+                break;
+            }
+            match cpu.step(&mut bus) {
+                StepResult::Ok => {}
+                StepResult::Aline(opcode) => {
+                    dispatcher.dispatch(opcode, &mut cpu, &mut bus).unwrap()
+                }
+                _ => panic!("unexpected callback result"),
+            }
+        }
+        assert_eq!(cpu.read_reg(Register::PC), 0x340002);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(dispatcher.guest_calls.depth(), 0);
+        assert!(dispatcher.picture_callback_stack.is_empty());
+        let copied_handle = bus.read_long(0x350800);
+        assert_ne!(copied_handle, 0);
+        assert_ne!(copied_handle, table_handle);
+        let copied_table = bus.read_long(copied_handle);
+        assert_eq!(bus.read_bytes(copied_table, table.len()), table);
+        for allocation in [pixmap, pixel_ptr, table_handle, table_ptr, src] {
+            assert_eq!(bus.get_alloc_size(allocation), None);
+        }
+    }
+
+    #[test]
+    fn indexed_picture_bits_decodes_word_counted_rows_and_rejects_truncation() {
+        let mut pm = [0u8; 46];
+        pm[0..2].copy_from_slice(&0x8100u16.to_be_bytes());
+        pm[6..8].copy_from_slice(&1u16.to_be_bytes());
+        pm[8..10].copy_from_slice(&256u16.to_be_bytes());
+        pm[28..30].copy_from_slice(&8u16.to_be_bytes());
+        pm[30..32].copy_from_slice(&1u16.to_be_bytes());
+        pm[32..34].copy_from_slice(&8u16.to_be_bytes());
+        let mut data = pm.to_vec();
+        data.extend_from_slice(&[0, 0, 0, 1, 0x80, 0, 0, 0]); // one CTable entry
+        data.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        let bounds = [0, 0, 0, 0, 0, 1, 1, 0];
+        data.extend_from_slice(&bounds);
+        data.extend_from_slice(&bounds);
+        data.extend_from_slice(&[0, 0, 0, 4, 0x81, 42, 0x81, 43]);
+        let command = PictureCommand {
+            opcode: 0x98,
+            data: data.clone(),
+        };
+        let decoded = indexed_picture_bits(&command).unwrap();
+        assert_eq!(decoded.pixels.len(), 256);
+        assert!(decoded.pixels[..128].iter().all(|pixel| *pixel == 42));
+        assert!(decoded.pixels[128..].iter().all(|pixel| *pixel == 43));
+        data.pop();
+        assert!(indexed_picture_bits(&PictureCommand { opcode: 0x98, data }).is_none());
     }
 }
 
