@@ -10,6 +10,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Art
+launch_enabled: true
 compatibility:
   status: boots
   verified:
@@ -82,5 +83,4 @@ non-commercial use only.
 
 ![MacPaint drawing and copied selection](https://assets.systemless.org/catalogue/media/sha256/c7/c7b39d03b3f306e4c243c8c49f0bbfccfcbb3025af007afc4b8c5a0aec3c2cfd.png)
 
-MacPaint requires 24-bit addressing and a compact monochrome display. Browser
-launch has not been qualified.
+MacPaint requires 24-bit addressing and a compact monochrome display.
