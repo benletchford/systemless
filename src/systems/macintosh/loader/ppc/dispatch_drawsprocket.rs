@@ -94,6 +94,9 @@ pub(super) fn dispatch_drawsprocket_import(
                 current_gworld,
                 current_gdevice,
                 draw_sprocket,
+                host_menu_bar_hidden,
+                tick_count,
+                input,
             );
             *draw_sprocket = PpcDrawSprocketState::default();
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
@@ -185,6 +188,9 @@ pub(super) fn dispatch_drawsprocket_import(
                     current_gworld,
                     current_gdevice,
                     draw_sprocket,
+                    host_menu_bar_hidden,
+                    tick_count,
+                    input,
                 );
             }
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -295,6 +301,9 @@ pub(super) fn dispatch_drawsprocket_import(
                         current_gworld,
                         current_gdevice,
                         draw_sprocket,
+                        host_menu_bar_hidden,
+                        tick_count,
+                        input,
                     );
                 }
                 if previous_state == PpcDspContextPlayState::Paused
@@ -623,6 +632,9 @@ fn ppc_dsp_dispose_blanking_window(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     draw_sprocket: &mut PpcDrawSprocketState,
+    host_menu_bar_hidden: bool,
+    tick_count: u32,
+    input: PpcInputSnapshot,
 ) {
     let Some(window) = draw_sprocket.blanking_window.take() else {
         return;
@@ -655,4 +667,25 @@ fn ppc_dsp_dispose_blanking_window(
         last_mem_error,
         handles,
     );
+    // The desktop snapshot predates windows opened or changed while the
+    // context was active. Restore their frames and ask the application to
+    // redraw visible contents after the blanking window is removed.
+    for window in window_list.windows().into_iter().rev() {
+        if !ppc_window_is_visible(memory, window) {
+            continue;
+        }
+        let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
+            continue;
+        };
+        if !ppc_read_rgn_bbox(memory, vis_rgn).is_some_and(|r| r.0 < r.2 && r.1 < r.3) {
+            continue;
+        }
+        super::dispatch_window::ppc_redraw_visible_window_frame(
+            memory, gworlds, window_list, window, host_menu_bar_hidden,
+        );
+        if let Some(rect) = ppc_read_rect(memory, window + PPC_CWINDOW_PORT_RECT_OFFSET) {
+            super::dispatch_window::ppc_invalidate_window_local_rect(memory, window, rect);
+            ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+        }
+    }
 }

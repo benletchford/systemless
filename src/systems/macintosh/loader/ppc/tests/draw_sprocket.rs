@@ -229,6 +229,60 @@ fn draw_sprocket_inactive_restores_desktop_window_visibility() {
 }
 
 #[test]
+fn draw_sprocket_inactive_invalidates_dialog_created_during_pause() {
+    for exit in [
+        PpcImportDispatcherTarget::DSpContextSetState,
+        PpcImportDispatcherTarget::DSpContextRelease,
+        PpcImportDispatcherTarget::DSpShutdown,
+    ] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(scratch, vec![0; 256]);
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+        assert_eq!(
+            ppc_dsp_context_reserve(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.draw_sprocket,
+                &mut loaded.gworlds
+            ),
+            PPC_NO_ERR
+        );
+        for state in [PPC_DSP_CONTEXT_STATE_ACTIVE, PPC_DSP_CONTEXT_STATE_PAUSED] {
+            loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, state]);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        let dialog = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 140, 250),
+            0,
+            true,
+            u32::MAX,
+        );
+        let update = loaded
+            .memory
+            .read_u32_be(dialog + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_set_empty_rgn(&mut loaded.memory, update).unwrap();
+        loaded.set_event_queue([]);
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+        run_test_import(&mut loaded, exit);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, update),
+            Some((0, 0, 100, 200))
+        );
+        assert!(loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == dialog));
+    }
+}
+
+#[test]
 fn draw_sprocket_first_pause_reveals_preexisting_floating_window() {
     let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
     let mut loaded = load_pef_application(&pef).unwrap();
