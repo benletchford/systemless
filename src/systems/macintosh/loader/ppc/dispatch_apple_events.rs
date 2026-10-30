@@ -4303,6 +4303,9 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
             // FUNCTION AEPutDesc(theAEDescList: AEDescList; index: LongInt;
             //   theAEDesc: AEDesc): OSErr;
             // Inside Macintosh: Interapplication Communication (1993), 5-30.
+            if memory.read_u32_be(cpu.gpr[3]) == Some(PPC_TYPE_NULL) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_WRONG_DATA_TYPE));
+            }
             let value = if operation == PpcAppleEventCompatibilityOperation::PutDesc {
                 match ppc_ae_descriptor_live(
                     memory,

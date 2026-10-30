@@ -4412,6 +4412,32 @@ fn guest_null_descriptor_does_not_reuse_stale_record_contents() {
 }
 
 #[test]
+fn guest_null_event_rejects_list_insertion() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let event = scratch + 8;
+    let source = scratch + 0x180;
+    loaded.memory.write_u32_be(event, PPC_TYPE_NULL).unwrap();
+    loaded.memory.write_u32_be(event + 4, 0).unwrap();
+    loaded.memory.write_u32_be(source, PPC_TYPE_NULL).unwrap();
+    loaded.memory.write_u32_be(source + 4, 0).unwrap();
+    for operation in [
+        PpcAppleEventCompatibilityOperation::PutDesc,
+        PpcAppleEventCompatibilityOperation::PutPtr,
+    ] {
+        if operation == PpcAppleEventCompatibilityOperation::PutDesc {
+            loaded.cpu.gpr[3..6].copy_from_slice(&[event, 1, source]);
+        } else {
+            loaded.cpu.gpr[3..8].copy_from_slice(&[event, 1, PPC_TYPE_NULL, 0, 0]);
+        }
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(operation),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1703), "{operation:?}");
+    }
+}
+
+#[test]
 fn apple_event_descriptor_creation_invalid_data_returns_null_descriptor() {
     let (mut loaded, scratch) = self_addressed_send_fixture();
     let output = scratch + 0x180;
