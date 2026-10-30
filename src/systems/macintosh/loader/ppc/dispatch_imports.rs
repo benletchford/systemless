@@ -1360,6 +1360,36 @@ pub(crate) fn dispatch_supported_import(
             handles,
             apple_events,
             toolbox_startup,
+            event_queue,
+            tick_count: *tick_count,
+            event_modifiers: if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::Send
+                )
+            ) {
+                ppc_current_event_modifiers(input)
+            } else {
+                0
+            },
+            input,
+            application_signature: if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::Send
+                )
+            ) {
+                crate::process_manager::resolve_process_application_metadata(
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    None,
+                    launched_app_path,
+                )
+                .creator
+            } else {
+                0
+            },
         },
     ) {
         return Some(action);
@@ -2377,6 +2407,9 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
+        | PpcImportDispatcherTarget::AEInstallCoercionHandler
+        | PpcImportDispatcherTarget::AEGetCoercionHandler
+        | PpcImportDispatcherTarget::AERemoveCoercionHandler
         | PpcImportDispatcherTarget::AERemoveEventHandler
         | PpcImportDispatcherTarget::AEInstallSpecialHandler
         | PpcImportDispatcherTarget::AEProcessAppleEvent => {
