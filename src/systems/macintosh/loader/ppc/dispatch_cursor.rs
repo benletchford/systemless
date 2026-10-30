@@ -180,6 +180,25 @@ pub(super) fn dispatch_cursor_import(
             let result = ppc_plot_cicon_with_options(&params, cpu.gpr[4] as u16, cpu.gpr[5] as u16, memory, gworlds, current_gworld, screen_clut);
             Some(PpcImportAction::Return(ppc_i16_result(result.err().unwrap_or(0))))
         }
+        PpcImportDispatcherTarget::PlotIconSuite => {
+            let result = ppc_plot_icon_suite(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16,
+                cpu.gpr[5] as u16,
+                cpu.gpr[6],
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                gworlds,
+                current_gworld,
+                screen_clut,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().unwrap_or(0),
+            )))
+        }
         PpcImportDispatcherTarget::PlotIconID => {
             let result = ppc_plot_icon_id(
                 cpu.gpr[3],
@@ -891,6 +910,7 @@ fn ppc_get_cursor(
 
 // Icons.h: PlotIconID draws an icon family from the current resource chain.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn ppc_plot_icon_id(
     rect: u32,
     alignment: u16,
@@ -958,63 +978,207 @@ fn ppc_plot_icon_id(
         if pixels.len() < pixel_len {
             return Err(PPC_PARAM_ERR);
         }
-        let (palette, count) =
-            crate::trap::TrapDispatcher::standard_mac_indexed_clut(depth).ok_or(PPC_PARAM_ERR)?;
-        let table_offset = 90 + plane;
-        let pixels_offset = table_offset + 8 + count * 8;
-        let mut bytes = vec![0u8; pixels_offset + pixel_len];
-        // Private live CIcon record plus inline master pointers, mask, CLUT and pixels.
-        bytes[4..6]
-            .copy_from_slice(&((width * usize::from(depth) / 8) as u16 | 0x8000).to_be_bytes());
-        bytes[10..12].copy_from_slice(&(height as u16).to_be_bytes());
-        bytes[12..14].copy_from_slice(&(width as u16).to_be_bytes());
-        bytes[32..34].copy_from_slice(&depth.to_be_bytes());
-        bytes[54..56].copy_from_slice(&((width / 8) as u16).to_be_bytes());
-        bytes[60..62].copy_from_slice(&(height as u16).to_be_bytes());
-        bytes[62..64].copy_from_slice(&(width as u16).to_be_bytes());
-        bytes[90..table_offset].copy_from_slice(&bitmap[plane..plane * 2]);
-        bytes[table_offset + 6..table_offset + 8]
-            .copy_from_slice(&((count - 1) as u16).to_be_bytes());
-        for (index, color) in palette.iter().take(count).enumerate() {
-            let offset = table_offset + 8 + index * 8;
-            bytes[offset..offset + 2].copy_from_slice(&(index as u16).to_be_bytes());
-            for (channel, value) in color.iter().enumerate() {
-                bytes[offset + 2 + channel * 2..offset + 4 + channel * 2]
-                    .copy_from_slice(&value.to_be_bytes());
-            }
-        }
-        bytes[pixels_offset..].copy_from_slice(&pixels[..pixel_len]);
-        let base = allocator.new_native_ptr(memory, bytes.len() as u32, true);
-        ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
-        if base == 0 {
-            return Err(PPC_MEM_FULL_ERR);
-        }
-        for (offset, pointer) in [
-            (0, base + pixels_offset as u32),
-            (42, base + 86),
-            (50, base + 90),
-            (82, base),
-            (86, base + table_offset as u32),
-        ] {
-            bytes[offset..offset + 4].copy_from_slice(&pointer.to_be_bytes());
-        }
-        let result = if memory.write_bytes(base, &bytes).is_some() {
-            let params = crate::cursor_manager::evaluate_plot_cicon_parameters(rect, base + 82);
-            ppc_plot_cicon_with_options(
-                &params,
-                alignment,
-                transform,
-                memory,
-                gworlds,
-                port,
-                screen_clut,
-            )
-        } else {
-            Err(PPC_MEM_FULL_ERR)
-        };
-        let _ = allocator.dispose_native_ptr(base);
-        ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
-        return result;
+        return ppc_plot_icon_family(
+            rect,
+            alignment,
+            transform,
+            width,
+            height,
+            depth,
+            bitmap,
+            pixels,
+            memory,
+            allocator,
+            heap_cursor,
+            last_mem_error,
+            gworlds,
+            port,
+            screen_clut,
+        );
     }
     Err(PPC_RES_NOT_FOUND_ERR)
+}
+
+/// Select an existing suite member and plot it without changing its handles.
+/// See More Macintosh Toolbox, Icon Utilities, PlotIconSuite (QD18).
+#[allow(clippy::too_many_arguments)]
+fn ppc_plot_icon_suite(
+    rect: u32,
+    alignment: u16,
+    transform: u16,
+    suite: u32,
+    memory: &mut PpcSectionMem,
+    allocator: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &[PpcHandleRecord],
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    screen_clut: &[[u16; 3]; 256],
+) -> Result<bool, i16> {
+    // Keep the same supported transform contract as the classic suite path.
+    if alignment & !0x000f != 0 || transform & !0x4001 != 0 {
+        return Err(PPC_PARAM_ERR);
+    }
+    let bytes = ppc_handle_bytes(memory, handles, suite).ok_or(PPC_PARAM_ERR)?;
+    if bytes.len() < 10 || &bytes[..4] != b"ISUT" || bytes[4..8] != [0; 4] {
+        return Err(PPC_PARAM_ERR);
+    }
+    let count = usize::from(u16::from_be_bytes([bytes[8], bytes[9]]));
+    if count > 9 || bytes.len() < 10 + count * 8 {
+        return Err(PPC_PARAM_ERR);
+    }
+    let (top, left, bottom, right) = ppc_read_rect(memory, rect).ok_or(PPC_PARAM_ERR)?;
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, port).ok_or(PPC_PARAM_ERR)?;
+    if bottom <= top || right <= left {
+        return Ok(false);
+    }
+    let width = i32::from(right) - i32::from(left);
+    let height = i32::from(bottom) - i32::from(top);
+    let order = if width > 16 || height > 16 {
+        [0, 1, 2]
+    } else if height > 12 {
+        [1, 0, 2]
+    } else {
+        [2, 1, 0]
+    };
+    let entries: Vec<(u32, u32)> = bytes[10..10 + count * 8]
+        .chunks_exact(8)
+        .map(|e| {
+            (
+                u32::from_be_bytes(e[..4].try_into().unwrap()),
+                u32::from_be_bytes(e[4..].try_into().unwrap()),
+            )
+        })
+        .collect();
+    for family in order {
+        let (w, h, mono, four, eight) = match family {
+            0 => (32usize, 32usize, *b"ICN#", *b"icl4", *b"icl8"),
+            1 => (16, 16, *b"ics#", *b"ics4", *b"ics8"),
+            _ => (16, 12, *b"icm#", *b"icm4", *b"icm8"),
+        };
+        let plane = w * h / 8;
+        let find = |kind: [u8; 4]| {
+            entries
+                .iter()
+                .find(|(t, _)| *t == u32::from_be_bytes(kind))
+                .map(|(_, h)| *h)
+        };
+        let Some(bitmap) = find(mono)
+            .and_then(|h| ppc_handle_bytes(memory, handles, h))
+            .filter(|b| b.len() >= plane * 2)
+        else {
+            continue;
+        };
+        let mut depth = 1u16;
+        let mut pixels = bitmap[..plane].to_vec();
+        for (candidate, kind) in [(8u16, eight), (4, four)] {
+            if u32::from(candidate) > surface.front_buffer.depth {
+                continue;
+            }
+            if let Some(data) = find(kind)
+                .and_then(|h| ppc_handle_bytes(memory, handles, h))
+                .filter(|b| b.len() >= plane * usize::from(candidate))
+            {
+                depth = candidate;
+                pixels = data;
+                break;
+            }
+        }
+        return ppc_plot_icon_family(
+            rect,
+            alignment,
+            transform,
+            w,
+            h,
+            depth,
+            &bitmap,
+            &pixels,
+            memory,
+            allocator,
+            heap_cursor,
+            last_mem_error,
+            gworlds,
+            port,
+            screen_clut,
+        );
+    }
+    Err(-1000)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_plot_icon_family(
+    rect: u32,
+    alignment: u16,
+    transform: u16,
+    width: usize,
+    height: usize,
+    depth: u16,
+    bitmap: &[u8],
+    pixels: &[u8],
+    memory: &mut PpcSectionMem,
+    allocator: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    screen_clut: &[[u16; 3]; 256],
+) -> Result<bool, i16> {
+    let plane = width * height / 8;
+    let pixel_len = plane * usize::from(depth);
+    let (palette, count) =
+        crate::trap::TrapDispatcher::standard_mac_indexed_clut(depth).ok_or(PPC_PARAM_ERR)?;
+    let table_offset = 90 + plane;
+    let pixels_offset = table_offset + 8 + count * 8;
+    let mut bytes = vec![0u8; pixels_offset + pixel_len];
+    // Private live CIcon record plus inline master pointers, mask, CLUT and pixels.
+    bytes[4..6].copy_from_slice(&((width * usize::from(depth) / 8) as u16 | 0x8000).to_be_bytes());
+    bytes[10..12].copy_from_slice(&(height as u16).to_be_bytes());
+    bytes[12..14].copy_from_slice(&(width as u16).to_be_bytes());
+    bytes[32..34].copy_from_slice(&depth.to_be_bytes());
+    bytes[54..56].copy_from_slice(&((width / 8) as u16).to_be_bytes());
+    bytes[60..62].copy_from_slice(&(height as u16).to_be_bytes());
+    bytes[62..64].copy_from_slice(&(width as u16).to_be_bytes());
+    bytes[90..table_offset].copy_from_slice(&bitmap[plane..plane * 2]);
+    bytes[table_offset + 6..table_offset + 8].copy_from_slice(&((count - 1) as u16).to_be_bytes());
+    for (index, color) in palette.iter().take(count).enumerate() {
+        let offset = table_offset + 8 + index * 8;
+        bytes[offset..offset + 2].copy_from_slice(&(index as u16).to_be_bytes());
+        for (channel, value) in color.iter().enumerate() {
+            bytes[offset + 2 + channel * 2..offset + 4 + channel * 2]
+                .copy_from_slice(&value.to_be_bytes());
+        }
+    }
+    bytes[pixels_offset..].copy_from_slice(&pixels[..pixel_len]);
+    let base = allocator.new_native_ptr(memory, bytes.len() as u32, true);
+    ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
+    if base == 0 {
+        return Err(PPC_MEM_FULL_ERR);
+    }
+    for (offset, pointer) in [
+        (0, base + pixels_offset as u32),
+        (42, base + 86),
+        (50, base + 90),
+        (82, base),
+        (86, base + table_offset as u32),
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&pointer.to_be_bytes());
+    }
+    let result = if memory.write_bytes(base, &bytes).is_some() {
+        let params = crate::cursor_manager::evaluate_plot_cicon_parameters(rect, base + 82);
+        ppc_plot_cicon_with_options(
+            &params,
+            alignment,
+            transform,
+            memory,
+            gworlds,
+            port,
+            screen_clut,
+        )
+    } else {
+        Err(PPC_MEM_FULL_ERR)
+    };
+    let _ = allocator.dispose_native_ptr(base);
+    ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
+    result
 }
