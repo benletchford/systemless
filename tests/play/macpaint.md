@@ -19,7 +19,8 @@ Alert-button checks the
 highlight while held and after dragging outside; save-dialog checks that the
 menu title is no longer highlighted. Save-cancel-held checks that Standard File's Cancel
 stays highlighted while held, unhighlights when dragged out, and does nothing
-when released outside. Inspect `report.json` for assertion
+when released outside. Save-name checks that a click in the Save dialog's
+name field places the insertion point, typing inserts there, and a drag selects. Inspect `report.json` for assertion
 results and exhausted frames.
 
 On 29 October 2026, a local Chromium 156 preview using the pinned ZIP and a

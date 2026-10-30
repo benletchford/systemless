@@ -13102,6 +13102,157 @@ fn standard_put_held_button_highlight_respects_packed_depths() {
     }
 }
 
+// A click in the Save dialog's name field puts the
+// insertion point at the nearest character boundary (typing then inserts
+// there, the name kept), and a drag selects from the press to the pointer
+// until the button comes up (TEClick, IM I-384).
+#[test]
+fn standard_put_click_places_the_insertion_point_and_drag_selects() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    let name_ptr = 0x320E00u32;
+    bus.write_pstring(name_ptr, b"Dullsville");
+    bus.write_word(TEST_SP, 0x0005); // StandardPutFile selector
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    bus.write_long(TEST_SP + 6, name_ptr);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let (top, left, _, _) = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+    // The name's glyphs start a pixel inside its rect.
+    let origin = left + super::STANDARD_FILE_NAME_RECT.1 + 1;
+    let x_at = |text: &str| origin + TrapDispatcher::fb_measure_string(text, 0, 12);
+    let v = top + super::STANDARD_FILE_NAME_RECT.0 + 6;
+    let event = |what: u16, h: i16| QueuedEvent {
+        what,
+        message: 0,
+        when: 0,
+        where_v: v,
+        where_h: h,
+        modifiers: 0,
+    };
+    let selection = |disp: &TrapDispatcher| {
+        let tracking = disp.standard_file_put_tracking.as_ref().unwrap();
+        (tracking.sel_start, tracking.sel_end)
+    };
+
+    // A click between "Dulls" and "ville": the insertion point there, the name kept.
+    disp.input_state
+        .set_mouse_position_for_test((v, x_at("Dulls") + 1));
+    disp.event_queue.push_back(event(1, x_at("Dulls") + 1));
+    disp.event_queue.push_back(event(2, x_at("Dulls") + 1));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection(&disp), (5, 5));
+    assert!(disp
+        .standard_file_put_tracking
+        .as_ref()
+        .unwrap()
+        .name_anchor
+        .is_none());
+    disp.event_queue.push_back(QueuedEvent {
+        what: 3,
+        message: u32::from(b'X'),
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    });
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        disp.standard_file_put_tracking.as_ref().unwrap().name,
+        "DullsXville"
+    );
+
+    // Pressed after "Du" and dragged to after "DullsX": those four characters selected while held, and after.
+    disp.input_state
+        .set_mouse_position_for_test((v, x_at("Du")));
+    disp.event_queue.push_back(event(1, x_at("Du")));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection(&disp), (2, 2));
+    disp.input_state
+        .set_mouse_position_for_test((v, x_at("DullsX")));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection(&disp), (2, 6));
+    disp.event_queue.push_back(event(2, x_at("DullsX")));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(selection(&disp), (2, 6));
+    assert!(disp
+        .standard_file_put_tracking
+        .as_ref()
+        .unwrap()
+        .name_anchor
+        .is_none());
+    assert!(
+        disp.event_queue.iter().all(|event| event.what != 2),
+        "the drag's mouse-up is taken"
+    );
+    assert!(disp.is_standard_file_put_tracking());
+}
+
+// The insertion point of a name wider than the field isn't drawn past the
+// field's right edge, outside the dialog.
+#[test]
+fn standard_put_insertion_point_stays_inside_the_name_field() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005); // StandardPutFile selector
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let mut tracking = disp.standard_file_put_tracking.take().unwrap();
+    let (top, left, _, right) = tracking.bounds;
+    let field_left = left + super::STANDARD_FILE_NAME_RECT.1;
+    // A name whose end lies right of the dialog, still on screen.
+    let name = (1..64)
+        .map(|n| "W".repeat(n))
+        .find(|name| field_left + TrapDispatcher::fb_measure_string(name, 0, 12) > right + 4)
+        .expect("a name reaching past the dialog");
+    let end = field_left + TrapDispatcher::fb_measure_string(&name, 0, 12);
+    assert!(end < 510, "the end of the name is on screen");
+    let ink = |bus: &MacMemoryBus, x: i16, y: i16| {
+        bus.read_byte(base + y as u32 * 64 + x as u32 / 8) & (0x80 >> (x % 8)) != 0
+    };
+    let v = top + super::STANDARD_FILE_NAME_RECT.0 + 6;
+    let row = |bus: &MacMemoryBus| (right + 2..512).map(|x| ink(bus, x, v)).collect::<Vec<_>>();
+    // The insertion point at the start, then at the end: the same pixels right
+    // of the dialog (the name's own glyphs aside, no line there).
+    let len = name.len() as i16;
+    tracking.name = name;
+    tracking.sel_start = 0;
+    tracking.sel_end = 0;
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    let at_start = row(&bus);
+    tracking.sel_start = len;
+    tracking.sel_end = len;
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    assert_eq!(
+        row(&bus),
+        at_start,
+        "no insertion point drawn right of the dialog"
+    );
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();
