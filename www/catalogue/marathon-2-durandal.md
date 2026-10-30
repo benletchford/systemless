@@ -11,10 +11,10 @@ architectures:
 - ppc
 default_architecture: 68k
 category: FPS
+launch_enabled: false
 aliases:
 - /marathon2
 - /marathon-2
-launch_enabled: true
 controls:
   arrows_as_numpad: true
   mobile:
@@ -27,67 +27,40 @@ controls:
     - label: "C"
       key: "Enter"
 compatibility:
-  status: playable
-  verified:
-  - date: 2026-09-13
-    tester: Catalogue maintainer
-    systemless_version: 0.40.0
-    architecture: 68k
-    environment: Local website preview in the Codex in-app browser
-    status: playable
-    evidence: >-
-      https://github.com/benletchford/systemless.org/blob/master/entries/marathon-2-durandal.md
+  status: unknown
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: sha256
-    sha256: 807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f
-    size_bytes: 27112329
+    type: url
+    url: https://files3.bungie.org/trilogy/marathon_2.sit
+    expected_sha256: 3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a
+    expected_size: 27112342
   provenance:
     original: true
     redistribution: permitted
     sources:
-    - https://macintoshgarden.org/games/marathon-2-durandal
+    - https://trilogyrelease.bungie.org/
     - https://trilogyrelease.bungie.org/faq.html
+    - https://github.com/benletchford/systemless/issues/5302
     rights_holder: Bungie
     permission: >-
       Bungie authorizes free distribution of the original Marathon trilogy; copyright
       is retained and commercial sale is not permitted.
-    notes: "The Trilogy Release FAQ documents the original games’ free-distribution permission. Retrieved 2026-09-13: 27112329 bytes; SHA-256 807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f."
-- id: gameplay-screenshot
-  role: screenshot
-  format: png
-  source:
-    type: sha256
-    sha256: a857c5d8ca11a36ab60b2ccb98599dfe84ac7fe767aea6450446193c5a4f9118
-    size_bytes: 269938
-  provenance:
-    content_only: true
-    redistribution: permitted
-    sources:
-    - https://github.com/benletchford/systemless.org/tree/master/entries
-    permission: >-
-      Original screenshot captured for this catalogue at the maintainer’s request.
-      Underlying game artwork remains the property of its respective rights holders.
     notes: >-
-      Fresh unedited gameplay capture from the independently downloaded archive on
-      2026-09-13, using Systemless commit e0341ec293c038e5d0faa4d6e26cf05075b7144b after
-      the Window Manager fix in https://github.com/benletchford/systemless/pull/1703.
-      The gameplay scene and clean borders were visually reviewed; this is not a full
-      compatibility assessment.
+      Original archive linked from the Trilogy Release page, 27,112,342 bytes,
+      SHA-256 3f497f18a225632c4c4166f9d2faddefce3ddd36b932ca13425eb92266c4c62a.
+      The previously hosted package differs in resource forks and Finder metadata;
+      its exact provenance has not been established.
 references:
-- https://macintoshgarden.org/games/marathon-2-durandal
+- https://trilogyrelease.bungie.org/
+- https://github.com/benletchford/systemless/issues/5302
 ---
 
 ## Source and version
 
-This entry uses Bungie's freely distributable [original Marathon 2 archive](https://assets.systemless.org/catalogue/objects/sha256/80/807edb4aa439cdaeb6454687f94554f2632751c5011fe267dacf15692953c93f.sit), kept unchanged.
-
-## Gameplay
-
-![Marathon 2: Durandal gameplay](https://assets.systemless.org/catalogue/media/sha256/a8/a857c5d8ca11a36ab60b2ccb98599dfe84ac7fe767aea6450446193c5a4f9118.png)
+This entry tracks the original [Trilogy Release archive](https://files3.bungie.org/trilogy/marathon_2.sit). Native gameplay and browser approval for this exact archive are pending.
 
 ## Across Lh'owon
 
