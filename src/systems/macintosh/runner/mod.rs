@@ -6093,7 +6093,7 @@ impl FixtureRunner {
     /// traverses the menu adapter, which can retire a pending manager call.
     fn idle_query_has_unsafe_dispatch(&self, opcode: u16) -> bool {
         let trap = canonical_trap_number(opcode);
-        (matches!(trap, (true, 0x0058 | 0x017F))
+        (matches!(trap, (true, 0x0000 | 0x0058 | 0x017F))
             && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             || (trap == (true, 0x017F) && !self.dispatcher.guest_calls.is_empty())
     }
@@ -7774,7 +7774,12 @@ impl FixtureRunner {
                             {
                                 tick_cap_reached = true;
                             }
-                            self.record_pass_trap(opcode, null_event, extra_tick_cost);
+                            self.record_pass_trap(
+                                opcode,
+                                null_event,
+                                input_selector,
+                                extra_tick_cost,
+                            );
                             // The m68k CPU already advanced PC past the A-line
                             // instruction during fetch (read_imm_16 does pc += 2).
                             //

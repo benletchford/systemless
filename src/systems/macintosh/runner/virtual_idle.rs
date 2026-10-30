@@ -70,6 +70,13 @@ pub(crate) fn virtual_idle_trap_is_journal_complete(
         // drawing out; only the exact parking prover admits its no-op path.
         false,
     ) || (!ui_tracking
+        && canonical_trap_number(opcode) == (true, 0x0000)
+        // SndChannelStatus writes only journaled guest memory. Its host
+        // playback, queue, callback and pause dependencies are captured by
+        // IdleCycleHostSnapshot. The virtual cursor preserves slice timing;
+        // the parking prover must not admit this poll.
+        && matches!(selector, 0x0010_0008 | 0x0510_0008))
+        || (!ui_tracking
         && matches!(
             canonical_trap_number(opcode),
             // AddPt, SubPt, SetPt, EqualPt; EqualRect .. Pt2Rect, EmptyRect
@@ -92,6 +99,14 @@ pub(crate) fn virtual_idle_trap_is_journal_complete(
         ))
 }
 
+/// These admitted traps read or consume the host event queue. In particular,
+/// StillDown and Button inspect queued mouse-up/down events even though they
+/// are input polls rather than Event Manager calls.
+fn virtual_idle_trap_reads_event_queue(opcode: u16) -> bool {
+    event_manager_yield_trap(opcode)
+        || matches!(canonical_trap_number(opcode), (true, 0x0173 | 0x0174))
+}
+
 /// The parking prover's state, which a recorded pass must leave unchanged.
 #[derive(Clone, PartialEq)]
 pub(crate) struct IdleProverState {
@@ -112,6 +127,8 @@ pub(crate) struct RecordedPass {
     pub(crate) extra_units: Vec<(u64, i64)>,
     /// Every word the pass writes, with its value at the pass start.
     pub(crate) start_values: Vec<(u32, u32)>,
+    /// The pass reads or consumes the host event queue.
+    pub(crate) reads_event_queue: bool,
 }
 
 impl RecordedPass {
@@ -171,6 +188,8 @@ pub(crate) struct PassRecorder {
     pub(crate) executed: u64,
     /// `(offset, units)` for each trap that charged extra units.
     pub(crate) extra_units: Vec<(u64, i64)>,
+    /// Event Manager polls and mouse-button queries read the host queue.
+    pub(crate) reads_event_queue: bool,
     /// Return PCs of trap-patch calls into native traps that were in flight
     /// when the pass began. A pass that starts or retires one is not a
     /// repeatable cycle; a call merely pending throughout it (a patch
@@ -252,6 +271,7 @@ impl FixtureRunner {
             start_budget: self.tick_budget,
             executed: 0,
             extra_units: Vec::new(),
+            reads_event_queue: false,
             native_returns: self.native_trap_return_pcs(),
         });
     }
@@ -276,14 +296,21 @@ impl FixtureRunner {
     /// Check a trap dispatched during an observed pass: an unadmitted trap
     /// or outcome, a callback, a guest patch, or the parking prover taking
     /// the journal ends the observation.
-    pub(crate) fn record_pass_trap(&mut self, opcode: u16, null_event: bool, extra_units: i32) {
+    pub(crate) fn record_pass_trap(
+        &mut self,
+        opcode: u16,
+        null_event: bool,
+        input_selector: u32,
+        extra_units: i32,
+    ) {
         let Some(mut recorder) = self.pass_recorder.take() else {
             return;
         };
         let offset = self.total_instructions - recorder.start_instructions;
+        recorder.reads_event_queue |= virtual_idle_trap_reads_event_queue(opcode);
         let plain = offset <= VIRTUAL_IDLE_MAX_PASS_STEPS
             && self.native_trap_call_count() == recorder.native_returns.len()
-            && self.virtual_pass_trap_is_plain(opcode, null_event);
+            && self.virtual_pass_trap_is_plain(opcode, null_event, input_selector);
         if extra_units > 0 {
             recorder.extra_units.push((offset, i64::from(extra_units)));
         }
@@ -293,7 +320,12 @@ impl FixtureRunner {
         }
     }
 
-    fn virtual_pass_trap_is_plain(&self, opcode: u16, null_event: bool) -> bool {
+    fn virtual_pass_trap_is_plain(
+        &self,
+        opcode: u16,
+        null_event: bool,
+        input_selector: u32,
+    ) -> bool {
         let sound_command_rejected = canonical_trap_number(opcode) == (true, 0x0003)
             && self.bus.read_word(self.m68k.cpu.core.a(7)) as i16 == SOUND_QUEUE_FULL;
         !self.idle_prover_owns_journal()
@@ -304,7 +336,7 @@ impl FixtureRunner {
                 null_event,
                 !self.dispatcher.system_task_has_periodic_work(&self.bus),
                 sound_command_rejected,
-                self.m68k.cpu.read_reg(Register::D0),
+                input_selector,
                 self.is_ui_tracking_active(),
             )
     }
@@ -420,6 +452,7 @@ impl FixtureRunner {
                 steps,
                 extra_units: recorder.extra_units,
                 start_values,
+                reads_event_queue: recorder.reads_event_queue,
             },
             offset: 0,
             host: IdleCycleHostSnapshot::capture(&self.dispatcher),
@@ -439,7 +472,8 @@ impl FixtureRunner {
         let Some(cycle) = self.virtual_idle_cycle.as_ref() else {
             return false;
         };
-        let (tick, host) = (cycle.tick, cycle.host.clone());
+        let (tick, host, reads_event_queue) =
+            (cycle.tick, cycle.host.clone(), cycle.pass.reads_event_queue);
         !sound_work_only
             && !self.halted
             && self.guest_tick() == tick
@@ -466,10 +500,8 @@ impl FixtureRunner {
                 .next_m68k_timer_subtick()
                 .is_none_or(|due| due > self.current_timer_subtick())
             && host == IdleCycleHostSnapshot::capture(&self.dispatcher)
-            && self
-                .dispatcher
-                .peek_toolbox_event(&self.bus, u16::MAX)
-                .is_none()
+            && (!reads_event_queue
+                || self.dispatcher.peek_toolbox_event(&self.bus, u16::MAX).is_none())
     }
 
     /// Units that can be charged before the next M68k Time Manager task
@@ -668,7 +700,39 @@ impl FixtureRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::RecordedPass;
+    use super::*;
+    use crate::event_queue::QueuedEvent;
+
+    #[test]
+    fn pending_event_blocks_only_recordings_that_read_the_queue() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 1, message: 0, when: 0, where_v: 10, where_h: 20, modifiers: 0,
+        });
+        assert!(runner.dispatcher.peek_toolbox_event(&runner.bus, u16::MAX).is_some());
+        runner.virtual_idle_cycle = Some(VirtualIdleCycle {
+            tick: runner.guest_tick(),
+            pass: RecordedPass { steps: 1, ..RecordedPass::default() },
+            offset: 0,
+            host: IdleCycleHostSnapshot::capture(&runner.dispatcher),
+            start: PassStart {
+                trap_pc: 0,
+                cpu: CpuArchitecturalSnapshot::capture(&runner.m68k.cpu.core),
+                prover: runner.idle_prover_state(),
+                native_returns: runner.native_trap_return_pcs(),
+            },
+        });
+        assert!(runner.virtual_idle_cycle_is_quiet(false), "a cycle that never reads events can proceed");
+        runner.virtual_idle_cycle.as_mut().unwrap().pass.reads_event_queue = true;
+        assert!(!runner.virtual_idle_cycle_is_quiet(false), "an event-reading cycle must materialize");
+        for trap in [0xA860u16, 0xA970, 0xA971, 0xA973, 0xA974] {
+            assert!(virtual_idle_trap_reads_event_queue(trap), "{trap:04x}");
+        }
+        for trap in [0xA800u16, 0xA972, 0xA975, 0xA976] {
+            assert!(!virtual_idle_trap_reads_event_queue(trap), "{trap:04x}");
+        }
+    }
 
     /// Ten steps; the trap at step 3 adds five units, the one ending the
     /// pass (step 10) adds two: 17 units a pass.
@@ -677,6 +741,7 @@ mod tests {
             steps: 10,
             extra_units: vec![(3, 5), (10, 2)],
             start_values: Vec::new(),
+            reads_event_queue: false,
         }
     }
 
