@@ -1633,6 +1633,7 @@ mod tests {
             gpu_frame: None,
             owned_frame: None,
             direct_frame: false,
+            snapshot_generation: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1675,6 +1676,7 @@ mod tests {
             gpu_frame: None,
             owned_frame: None,
             direct_frame: false,
+            snapshot_generation: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -1724,6 +1726,7 @@ mod tests {
             gpu_frame: None,
             owned_frame: None,
             direct_frame: false,
+            snapshot_generation: None,
             running: true,
             requests: super::WorkerFrameRequests::default(),
         };
@@ -2044,6 +2047,8 @@ fn start_render_loop(
             }
             let paint_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
             frame.paint(pixel_w, pixel_h, rgba);
+            let generation = frame.snapshot_generation();
+            frame.complete_snapshot(generation);
             if timing_enabled {
                 timings.paint_ms = perf_now_ms() - paint_start_ms;
             }
@@ -2088,10 +2093,10 @@ fn start_render_loop(
         if let Some(error) = save_error {
             set_status(status, error);
         }
-        if frame_result.running {
+        if frame_result.running || frame.monitors_recovery() {
             schedule_runtime_raf(&cb_cell_self, &request_for_callback);
         } else {
-            // Emulator halted — break the capture chain so we don't leak.
+            // No recovery monitor is needed; release the capture chain.
             *cb_cell_self.borrow_mut() = None;
         }
     }) as Box<dyn FnMut()>));
@@ -2110,6 +2115,7 @@ struct WorkerFrameState {
     gpu_frame: Option<JsValue>,
     owned_frame: Option<JsValue>,
     direct_frame: bool,
+    snapshot_generation: Option<u32>,
     running: bool,
     requests: WorkerFrameRequests<Object>,
 }
@@ -2167,6 +2173,7 @@ fn replace_worker_visual_frame(state: &mut WorkerFrameState, frame: WorkerVisual
     // newest result, including when debug mode changes the rendering backend.
     state.owned_frame = None;
     state.direct_frame = false;
+    state.snapshot_generation = None;
     match frame {
         WorkerVisualFrame::Direct => {
             state.frame = None;
@@ -2634,6 +2641,7 @@ async fn boot_catalogue_worker(
         gpu_frame: None,
         owned_frame: None,
         direct_frame: false,
+        snapshot_generation: None,
         running: true,
         requests: WorkerFrameRequests::default(),
     }));
@@ -2810,6 +2818,8 @@ async fn boot_catalogue_worker(
         .iter()
         .any(|key| Reflect::get(&data, &JsValue::from_str(key)).is_ok_and(|v| !v.is_undefined()))
         {
+            state.snapshot_generation =
+                js_number_property(&data, "snapshotGeneration").map(|generation| generation as u32);
             state.cursor_css = Reflect::get(&data, &JsValue::from_str("cursorCss"))
                 .ok()
                 .and_then(|v| v.as_string())
@@ -2942,9 +2952,13 @@ fn start_worker_render_loop(
         }
         let _ = canvas.set_attribute("data-render-backend", renderer.backend_name());
         let mut painted = false;
-        let visual_frame = {
+        let (visual_frame, snapshot_generation) = {
             let mut state = runtime.state.borrow_mut();
-            take_worker_visual_frame(&mut state)
+            let frame = take_worker_visual_frame(&mut state);
+            let generation = frame
+                .as_ref()
+                .and_then(|_| state.snapshot_generation.take());
+            (frame, generation)
         };
         if visual_frame
             .as_ref()
@@ -3022,6 +3036,9 @@ fn start_worker_render_loop(
             None => {}
         }
         if painted || renderer.submitted() {
+            if painted {
+                renderer.complete_snapshot(snapshot_generation);
+            }
             if let Some(callback) = first_paint.borrow_mut().take() {
                 callback();
             }
@@ -3030,10 +3047,11 @@ fn start_worker_render_loop(
         let indexed_render = renderer.supports_packet("indexed8");
         let compact_render = renderer.supports_packet("compact");
         let force_snapshot = renderer.needs_snapshot();
+        let snapshot_generation = renderer.snapshot_generation();
         let presentation_pending = renderer.pending();
         // A stopped guest can still lose its offscreen context. Keep polling
         // presenter status without asking the owner to execute guest work.
-        let monitor_presenter = renderer.asynchronous();
+        let monitor_recovery = renderer.monitors_recovery();
         drop(renderer);
         let mut state = runtime.state.borrow_mut();
         if let Some(error) = state.save_error.take() {
@@ -3044,6 +3062,13 @@ fn start_worker_render_loop(
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
             set_js_property(&message, "forceRender", &JsValue::from_bool(force_snapshot));
+            if let Some(generation) = snapshot_generation {
+                set_js_property(
+                    &message,
+                    "snapshotGeneration",
+                    &JsValue::from_f64(generation as f64),
+                );
+            }
             set_js_property(
                 &message,
                 "indexedRender",
@@ -3083,7 +3108,7 @@ fn start_worker_render_loop(
         }
         let running = state.running;
         drop(state);
-        if running || presentation_pending || force_snapshot || monitor_presenter {
+        if running || presentation_pending || force_snapshot || monitor_recovery {
             schedule_runtime_raf(&callback_self, &request_for_callback);
         } else {
             *callback_self.borrow_mut() = None;
