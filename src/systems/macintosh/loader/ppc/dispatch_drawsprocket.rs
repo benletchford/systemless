@@ -220,7 +220,10 @@ pub(super) fn dispatch_drawsprocket_import(
                 Vec::new()
             };
             let install_clut = previous_state == PpcDspContextPlayState::Inactive
-                && matches!(cpu.gpr[4], PPC_DSP_CONTEXT_STATE_ACTIVE | PPC_DSP_CONTEXT_STATE_PAUSED)
+                && matches!(
+                    cpu.gpr[4],
+                    PPC_DSP_CONTEXT_STATE_ACTIVE | PPC_DSP_CONTEXT_STATE_PAUSED
+                )
                 && draw_sprocket.context_clut.is_some();
             let mut result = ppc_dsp_context_set_state(
                 cpu,
@@ -532,11 +535,12 @@ pub(super) fn dispatch_drawsprocket_import(
             )))
         }
         PpcImportDispatcherTarget::DSpContextSetClutEntries => {
-            let mut context_clut = if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
-                *screen_clut
-            } else {
-                draw_sprocket.context_clut.unwrap_or(*screen_clut)
-            };
+            let mut context_clut =
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
+                    *screen_clut
+                } else {
+                    draw_sprocket.context_clut.unwrap_or(*screen_clut)
+                };
             let result = if draw_sprocket.context_state != PpcDspContextPlayState::Inactive {
                 ppc_dsp_set_device_clut_entries(cpu, memory, &mut context_clut, next_ct_seed)
             } else {
