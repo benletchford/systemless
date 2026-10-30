@@ -11,6 +11,7 @@ architectures:
 - ppc
 default_architecture: 68k
 category: FPS
+launch_enabled: true
 aliases:
 - /marathon2
 - /marathon-2
