@@ -619,7 +619,7 @@ impl super::TrapDispatcher {
         Self::region_handle_rect(bus, handle)
     }
 
-    fn rect_union(
+    pub(super) fn rect_union(
         a: Option<(i16, i16, i16, i16)>,
         b: Option<(i16, i16, i16, i16)>,
     ) -> Option<(i16, i16, i16, i16)> {

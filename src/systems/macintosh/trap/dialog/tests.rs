@@ -11370,6 +11370,29 @@
     }
 
     #[test]
+    fn close_dialog_saved_background_invalidates_only_recorded_damage() {
+        for damaged in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.set_screen_mode_for_test(0x300000, 640, 640, 480, 8);
+            let dialog_ptr = bus.alloc(170);
+            let predecessor = bus.alloc(170);
+            seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog_ptr, predecessor, 1);
+            disp.dialog_saved_pixels.insert(dialog_ptr, vec![0x33; 116 * 236].into());
+            if damaged {
+                disp.dialog_clipped_background_damage.insert(dialog_ptr, (30, 40, 35, 50));
+            }
+            let update_rgn = bus.read_long(predecessor + 122);
+            bus.write_long(TEST_SP, dialog_ptr);
+            disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(
+                TrapDispatcher::region_contains_point(&bus, update_rgn, 32, 45), damaged,
+                "only recorded damage should invalidate the restored interior",
+            );
+            assert!(!disp.dialog_clipped_background_damage.contains_key(&dialog_ptr));
+        }
+    }
+
+    #[test]
     fn close_dialog_pops_4_bytes() {
         // Inside Macintosh Volume I, I-413: CloseDialog takes one
         // DialogPtr argument.
@@ -12994,6 +13017,43 @@
 
         assert_eq!(bus.read_byte(screen_base + 120 * row_bytes + 130), 0x44);
         assert_eq!(bus.read_byte(screen_base + 100 * row_bytes + 100), 0x11);
+    }
+
+    #[test]
+    fn clipped_screen_draw_refreshes_only_visible_saved_background_pixels() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 640u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+        let bounds = (100i16, 100i16, 150i16, 200i16);
+        let dialog_ptr = bus.alloc(170);
+        let background_port = bus.alloc(170);
+        bus.write_byte(background_port + 110, 0xff);
+        disp.window_list.replace(vec![dialog_ptr, background_port]);
+        disp.dialog_saved_pixels.insert(dialog_ptr, vec![0x11; 66 * 116].into());
+        disp.dialog_visible_snapshots.insert(dialog_ptr, PersistentDialogSnapshot {
+            bounds, pixels: vec![0xee; 66 * 116].into(),
+        });
+        for y in 120u32..123 {
+            for x in 120u32..150 {
+                bus.write_byte(screen_base + y * row_bytes + x, 0x44);
+            }
+        }
+        // Two visible spans with a hole for the overlying dialog.
+        let region = super::super::pict::DstClipRegion::complex(
+            120, 120, 123, 150, vec![vec![120, 130, 139, 150]; 3],
+        );
+        let clip = super::super::pict::DstClip::new((120, 120, 123, 150), vec![region]);
+        disp.refresh_dialog_saved_pixels_after_screen_draw_clipped(
+            &bus, background_port, (120, 120, 123, 150), Some(&clip),
+        );
+        let saved = disp.dialog_saved_pixels.get(&dialog_ptr).unwrap();
+        let offset = |x: usize, y: usize| (y - 92) * 116 + x - 92;
+        assert_eq!(saved[offset(125, 121)], 0x44);
+        assert_eq!(saved[offset(135, 121)], 0x11);
+        assert_eq!(saved[offset(145, 121)], 0x44);
+        assert_eq!(saved[offset(125, 124)], 0x11);
+        assert_eq!(disp.dialog_clipped_background_damage.get(&dialog_ptr), Some(&(120, 130, 123, 139)));
     }
 
     #[test]
