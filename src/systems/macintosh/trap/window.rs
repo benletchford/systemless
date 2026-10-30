@@ -3150,6 +3150,19 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
+        // A removed WindowRecord can be disposed or reused before the next
+        // GetNextEvent. Pending activation events must no longer name it.
+        // Inside Macintosh Volume I, p. I-279: disposing the active window
+        // does not generate a deactivation event for the destroyed window.
+        if window_ptr != 0 {
+            self.event_queue
+                .retain(|event| event.what != 8 || event.message != window_ptr);
+            for global in [Self::LOWMEM_CUR_ACTIVATE, Self::LOWMEM_CUR_DEACTIVATE] {
+                if bus.read_long(global) == window_ptr {
+                    bus.write_long(global, 0);
+                }
+            }
+        }
         self.drag_manager.with_mut(|manager| manager.remove_window(window_ptr));
         self.window_list.remove_window(window_ptr);
         self.sync_window_list_links(bus);
