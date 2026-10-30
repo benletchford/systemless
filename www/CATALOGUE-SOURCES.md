@@ -2588,6 +2588,13 @@ Immutable native SHA-256 `32beaaf1d9d46625cb9b29e3357181108b102fd5e99ce941bc7f38
 Immutable native SHA-256 `f5752399df1e1183b717ea8820eb7e3bb55d2f4b663ab17465a8d19bdd88db10`, exact unchanged original archive and `Candy Crisis/Candy Crisis` selector, PPC, ordinary Not Yet continuation: **1,206 frontend/guest ticks**, zero exhausted frames and zero assertions. Both actual captures inspected: startup logo now visible; main menu has the original logo, mode labels, controls and candy, without the QuickTime decompressor warning. Remaining text/window defects and dark mode labels need further validation. PNG currently uses RGB source-copy, not alpha compositing; general QuickTime matrix/transfer-mode fidelity is not established. This proves bounded artwork progression, not gameplay, audio, browser performance, hosting clearance or catalogue qualification. No entry/live-count increment or release.
 
 
+### Candy Crisis Solitaire artwork comparison (30 October 2026)
+
+[Rendering issue #5314](https://github.com/benletchford/systemless/issues/5314) and unmerged [draft #5317](https://github.com/benletchford/systemless/pull/5317): the same original archive (SHA-256 `fe3295893e58dc4ee7e6339ba36083b507d8334dff7d51b2370e61320d51c9b9`), `Candy Crisis/Candy Crisis` selector, PPC slice, 8-bit display and scripted inputs were replayed on master `d8139042` and candidate `0a7a59ec`. Both reached frontend/guest tick 1,836 with zero exhausted frames and zero scripted assertions. Inspected master capture shows a white dotted field across the Solitaire backdrop and board; the candidate capture shows a blue textured background and a clean board. At (100,200), the master capture is RGB (255,255,255), the candidate RGB (53,94,150). Master native binary SHA-256 `c88dd319b1afb9c159cad530459445aacd88bb3133c8d25acddbaed59a7029c6`; candidate native binary SHA-256 `748b80dc62ae077d014526f2032c5714234fdb5c8d17e53be396666f334ca6ff`.
+
+This is a comparison between Systemless builds, not an independent Macintosh reference, a released fix, or gameplay qualification. The candidate recognizes one encoded warning bitmap and handles integer matrix translation; general fallback forms and matrix transforms remain unverified. Preserve the previous source and library-correspondence findings and the held catalogue status.
+
+
 ## Susan v0.100.0 release recheck
 
 On 26 October 2026, the public [Susan route](https://systemless.org/susan/) returned HTTP 200 and referenced `systemless-org-8877f54c18887c88.js`. Its actual managed archive URL returned **472,838 bytes**, SHA-256 `cc62394e6c6cc8bbedf8c90bd998e7bcd6fcb73c57926dbedec59cb9fffda659`, matching the approved original. This is a route/body check, not browser execution evidence.
