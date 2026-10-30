@@ -76,7 +76,7 @@ references:
 
 ## Source and version
 
-This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/eb/eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10.sit). Its compatibility and browser launch are pending validation.
+This entry tracks the original [Trilogy Release archive](https://assets.systemless.org/catalogue/objects/sha256/eb/eb6e3d4b791481367ed605062bf4a39d52c24bd23ba9824602b29c63f7c6bf10.sit). Bounded native tests reached the first level and verified forward movement on both 68K and PowerPC; browser launch remains pending validation.
 
 ## Aboard the Marathon
 
