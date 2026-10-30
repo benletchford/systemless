@@ -175,6 +175,70 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
 }
 
 #[test]
+fn draw_sprocket_pause_keeps_context_geometry_and_blanking_window() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+    assert_eq!(
+        ppc_dsp_context_reserve(
+            &loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.draw_sprocket,
+            &mut loaded.gworlds
+        ),
+        PPC_NO_ERR
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let blanking_window = loaded.draw_sprocket.blanking_window.unwrap();
+    let bounds = ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap();
+    assert_eq!(bounds, (0, 0, 480, 640));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        loaded.draw_sprocket.context_state,
+        PpcDspContextPlayState::Paused
+    );
+    assert_eq!(loaded.draw_sprocket.active_context, None);
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    let window_out = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(window_out, vec![0; 4]);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[(5 << 16) | 5, window_out]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(blanking_window));
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+    assert_ne!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_PAUSED]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(loaded.draw_sprocket.blanking_window.is_some());
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, PPC_MAIN_GDEVICE_RECORD + 34).unwrap(),
+        bounds
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+}
+
+#[test]
 fn draw_sprocket_activation_installs_context_screen_geometry() {
     let pef = synthetic_pef_with_import(b"SetPort");
     let mut loaded = load_pef_application(&pef).unwrap();

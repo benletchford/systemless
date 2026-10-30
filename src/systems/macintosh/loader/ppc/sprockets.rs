@@ -1864,7 +1864,7 @@ pub(crate) fn ppc_dsp_context_set_state(
         return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
     }
     match state {
-        PpcDspContextPlayState::Active => {
+        PpcDspContextPlayState::Active | PpcDspContextPlayState::Paused => {
             if draw_sprocket.desktop_snapshot.is_none() {
                 let Some(snapshot) =
                     ppc_dsp_capture_desktop(memory, gworlds, screen_clut, screen_bits)
@@ -1892,10 +1892,11 @@ pub(crate) fn ppc_dsp_context_set_state(
                 }
             }
             draw_sprocket.started = true;
-            draw_sprocket.active_context = Some(context);
+            draw_sprocket.active_context =
+                (state == PpcDspContextPlayState::Active).then_some(context);
             draw_sprocket.context_state = state;
         }
-        PpcDspContextPlayState::Paused | PpcDspContextPlayState::Inactive => {
+        PpcDspContextPlayState::Inactive => {
             if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
                 return PPC_PARAM_ERR;
             }

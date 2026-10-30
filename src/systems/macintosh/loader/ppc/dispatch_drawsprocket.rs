@@ -193,7 +193,8 @@ pub(super) fn dispatch_drawsprocket_import(
                 draw_sprocket,
             );
             if result == PPC_NO_ERR {
-                if draw_sprocket.active_context.is_some() && draw_sprocket.blanking_window.is_none()
+                if draw_sprocket.context_state != PpcDspContextPlayState::Inactive
+                    && draw_sprocket.blanking_window.is_none()
                 {
                     let (width, height) = (
                         ppc_u32_to_i16_saturating(draw_sprocket.context_attributes.width),
@@ -237,7 +238,7 @@ pub(super) fn dispatch_drawsprocket_import(
                         return Some(PpcImportAction::Return(ppc_i16_result(allocation_error)));
                     }
                     draw_sprocket.blanking_window = Some(window);
-                } else if draw_sprocket.active_context.is_none() {
+                } else if draw_sprocket.context_state == PpcDspContextPlayState::Inactive {
                     ppc_dsp_dispose_blanking_window(
                         process_memory_manager,
                         memory,
