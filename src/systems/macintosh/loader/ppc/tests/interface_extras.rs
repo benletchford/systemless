@@ -61,7 +61,6 @@ fn interface_imports_resolve_to_native_targets() {
             "FindServiceWindow",
             PpcImportDispatcherTarget::ToolboxCompat(PpcToolboxCompatOperation::FindServiceWindow),
         ),
-        ("SetControlColor", PpcImportDispatcherTarget::ReturnNoErr),
         ("AddSearch", PpcImportDispatcherTarget::ReturnNoErr),
         ("DelSearch", PpcImportDispatcherTarget::ReturnNoErr),
     ] {

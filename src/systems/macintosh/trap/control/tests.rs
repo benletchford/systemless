@@ -6,6 +6,997 @@ use crate::trap::TrapDispatcher;
 use crate::ui_theme::UiThemeId;
 
 #[test]
+fn inactive_monochrome_control_dims_its_offscreen_port() {
+    for gpu in [false, true] {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        if gpu {
+            bus.quickdraw_gpu_renderer = crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                crate::quickdraw::gpu::ReferenceRenderer {
+                    calls: calls.clone(),
+                    failure: 0,
+                },
+            ));
+        }
+        let screen = bus.read_long(0x0824);
+        bus.write_bytes(screen, &vec![0xaa; 64 * 342]);
+        let offscreen = bus.alloc(64 * 342);
+        bus.write_bytes(offscreen, &vec![0xff; 64 * 342]);
+        let port = 0x181000;
+        bus.write_long(port + 2, offscreen);
+        disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+        if gpu {
+            disp.fg_color = (0xffff, 0xffff, 0xffff);
+            let before = calls.get();
+            let pixel = crate::trap::types::Rect {
+                top: 24,
+                left: 16,
+                bottom: 25,
+                right: 17,
+            };
+            disp.draw_control_glyph(&mut cpu, &mut bus, &pixel, |_, _| 255);
+            assert!(calls.get() > before, "white glyph must use GPU route");
+            assert_eq!(bus.read_byte(offscreen + 24 * 64 + 2), 0x7f);
+            disp.fg_color = (0, 0, 0);
+            bus.write_bytes(offscreen, &vec![0xff; 64 * 342]);
+        }
+        disp.bk_pat = [0xff; 8];
+        let control = bus.alloc(296);
+        disp.initialize_control_record(
+            &mut bus,
+            control,
+            port,
+            (20, 10, 44, 118),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        bus.write_byte(control + 17, 255);
+        disp.draw_control(&mut cpu, &mut bus, control);
+        let row = bus.read_byte(offscreen + 24 * 64 + 2);
+        assert_eq!(row, 0x55, "inactive body has alternating white pixels");
+        assert_eq!(bus.read_bytes(screen, 64 * 342), vec![0xaa; 64 * 342]);
+        if gpu {
+            assert!(calls.get() > 0, "fixture must exercise the GPU route");
+        }
+    }
+}
+
+#[test]
+fn global_control_color_allocation_failure_leaves_list_unchanged() {
+    for remaining in [24, 28] {
+        let (mut probe_disp, _, mut probe_bus) = setup();
+        probe_disp.ensure_main_gdevice(&mut probe_bus);
+        let probe_limit = probe_bus.classic_heap_limit();
+        probe_bus.reserve_heap_until(probe_limit - remaining);
+        let probe_record = probe_bus.alloc(22);
+        assert_eq!(probe_record != 0, remaining == 28);
+        if probe_record != 0 {
+            assert_eq!(probe_bus.alloc(4), 0, "handle allocation must fail");
+        }
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.ensure_main_gdevice(&mut bus);
+        let limit = bus.classic_heap_limit();
+        bus.reserve_heap_until(limit - remaining);
+        let candidate = bus.shared_classic_heap_allocator().heap_bump_ptr();
+        let sp = 0x300100;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0x12345678);
+        bus.write_long(sp + 4, 0);
+        disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(0x0cd4), 0, "remaining {remaining}");
+        assert_eq!(bus.get_alloc_size(candidate), None, "remaining {remaining}");
+    }
+}
+
+#[test]
+fn global_control_color_rejects_cyclic_auxiliary_list_without_partial_updates() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let first = bus.alloc(4);
+    let second = bus.alloc(4);
+    let first_record = bus.alloc(296);
+    let second_record = bus.alloc(296);
+    bus.write_long(first, first_record);
+    bus.write_long(second, second_record);
+    let first_aux = disp.ensure_control_aux_record(&mut bus, first);
+    let second_aux = disp.ensure_control_aux_record(&mut bus, second);
+    let first_ptr = bus.read_long(first_aux);
+    let second_ptr = bus.read_long(second_aux);
+    let first_table = bus.read_long(first_ptr + 8);
+    let second_table = bus.read_long(second_ptr + 8);
+    bus.write_long(first_ptr, second_aux);
+    let standard = bus.alloc(4);
+    let sp = 0x300100;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, standard);
+    bus.write_long(sp + 4, 0);
+    disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_long(first_ptr + 8), first_table);
+    assert_eq!(bus.read_long(second_ptr + 8), second_table);
+    assert_eq!(bus.read_long(first_ptr), second_aux);
+    assert_eq!(bus.read_long(second_ptr), first_aux);
+    bus.write_long(first_ptr, 0xffff_fffc);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, standard);
+    bus.write_long(sp + 4, 0);
+    disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_long(first_ptr + 8), first_table);
+    assert_eq!(bus.read_long(second_ptr + 8), second_table);
+    assert_eq!(bus.read_long(first_ptr), 0xffff_fffc);
+}
+
+#[test]
+fn global_control_color_updates_standard_but_preserves_custom_records() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let first = bus.alloc(4);
+    let second = bus.alloc(4);
+    let first_record = bus.alloc(296);
+    let second_record = bus.alloc(296);
+    bus.write_long(first, first_record);
+    bus.write_long(second, second_record);
+    let first_aux = disp.ensure_control_aux_record(&mut bus, first);
+    let second_aux = disp.ensure_control_aux_record(&mut bus, second);
+    let first_aux_ptr = bus.read_long(first_aux);
+    let second_aux_ptr = bus.read_long(second_aux);
+    let default = bus.read_long(first_aux_ptr + 8);
+    let custom = bus.alloc(4);
+    bus.write_long(second_aux_ptr + 8, custom);
+    let standard = bus.alloc(4);
+    let sp = 0x300100;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, standard);
+    bus.write_long(sp + 4, 0);
+    disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_long(first_aux_ptr + 8), standard);
+    assert_eq!(bus.read_long(second_aux_ptr + 8), custom);
+    let third = bus.alloc(4);
+    let third_record = bus.alloc(296);
+    bus.write_long(third, third_record);
+    let third_aux = disp.ensure_control_aux_record(&mut bus, third);
+    let third_aux_ptr = bus.read_long(third_aux);
+    assert_eq!(bus.read_long(third_aux_ptr + 8), standard);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_long(sp + 4, 0);
+    disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_long(first_aux_ptr + 8), default);
+    assert_eq!(bus.read_long(third_aux_ptr + 8), default);
+    assert_eq!(bus.read_long(second_aux_ptr + 8), custom);
+    disp.release_control_aux_record(&mut bus, third);
+    disp.release_control_aux_record(&mut bus, second);
+    disp.release_control_aux_record(&mut bus, first);
+    assert_eq!(
+        disp.standard_control_color_table_from_list(&bus),
+        Some(default)
+    );
+    let fourth = bus.alloc(4);
+    let fourth_record = bus.alloc(296);
+    bus.write_long(fourth, fourth_record);
+    let fourth_aux = disp.ensure_control_aux_record(&mut bus, fourth);
+    assert_eq!(bus.read_long(bus.read_long(fourth_aux) + 8), default);
+}
+
+#[test]
+fn classic_control_color_draws_direct_color_body_and_frame() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    disp.set_ui_theme_id(UiThemeId::ClassicSystem7);
+    let screen = bus.alloc(128 * 128 * 2);
+    bus.write_bytes(screen, &vec![0; 128 * 128 * 2]);
+    let port = 0x181000;
+    bus.write_long(port + 2, screen);
+    bus.write_word(port + 6, 256);
+    bus.write_word(port + 12, 128);
+    bus.write_word(port + 14, 128);
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let pointer = bus.alloc(296);
+    let control = bus.alloc(4);
+    bus.write_long(control, pointer);
+    disp.initialize_control_record(
+        &mut bus,
+        pointer,
+        port,
+        (20, 10, 44, 118),
+        b"",
+        true,
+        0,
+        0,
+        1,
+        0,
+        0,
+    );
+    disp.control_manager.register(control, pointer, 0, 0);
+    let aux = disp.ensure_control_aux_record(&mut bus, control);
+    disp.set_screen_mode_for_test(screen, 256, 128, 128, 16);
+    let pixmap = bus.alloc(50);
+    let pixmap_handle = bus.alloc(4);
+    bus.write_long(pixmap_handle, pixmap);
+    bus.write_long(pixmap, screen);
+    bus.write_word(pixmap + 4, 0x8100);
+    bus.write_word(pixmap + 10, 128);
+    bus.write_word(pixmap + 12, 128);
+    bus.write_word(pixmap + 32, 16);
+    bus.write_long(port + 2, pixmap_handle);
+    bus.write_word(port + 6, 0xc000);
+    let table = bus.alloc(32);
+    let table_handle = bus.alloc(4);
+    bus.write_long(table_handle, table);
+    bus.write_word(table + 6, 2);
+    for (offset, value) in [
+        (8, 0),
+        (10, 0xffff),
+        (12, 0xffff),
+        (14, 0xffff),
+        (16, 1),
+        (18, 0xffff),
+        (20, 0),
+        (22, 0),
+        (24, 2),
+        (26, 0),
+        (28, 0xffff),
+        (30, 0),
+    ] {
+        bus.write_word(table + offset, value);
+    }
+    bus.write_long(bus.read_long(aux) + 8, table_handle);
+    for proc_id in [0, 1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128 * 2]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let bounds = match proc_id {
+            1 => crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator,
+            2 => crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator,
+            _ => (20, 10, 44, 118),
+        };
+        let y = (bounds.0 + bounds.2) as u32 / 2;
+        let x = (bounds.1 + bounds.3) as u32 / 2;
+        assert_eq!(
+            bus.read_word(screen + y * 256 + x * 2),
+            0x7c00,
+            "body {proc_id}"
+        );
+        assert_eq!(
+            bus.read_word(screen + y * 256 + bounds.1 as u32 * 2),
+            0x7fff,
+            "frame {proc_id}"
+        );
+    }
+    disp.control_manager.set_proc_id(pointer, 0);
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Top\rBottom");
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    for (top, bottom) in [(20, 32), (32, 44)] {
+        let green = (top..bottom)
+            .flat_map(|y| (10..118).map(move |x| (y, x)))
+            .filter(|(y, x)| bus.read_word(screen + y * 256 + x * 2) == 0x03e0)
+            .count();
+        assert!(green > 0, "multiline title band {top}");
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    disp.control_manager.set_proc_id(pointer, 1);
+    bus.write_word(pointer + 18, 1);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let bounds = crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator;
+    let y = (bounds.0 + bounds.2) as u32 / 2;
+    let x = (bounds.1 + bounds.3) as u32 / 2;
+    assert_eq!(
+        bus.read_word(screen + y * 256 + x * 2),
+        0x7fff,
+        "selected mark"
+    );
+}
+
+#[test]
+fn classic_control_color_draws_32bit_body_frame_and_selected_mark() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    disp.set_ui_theme_id(UiThemeId::ClassicSystem7);
+    let screen = bus.alloc(128 * 128 * 4);
+    bus.write_bytes(screen, &vec![0; 128 * 128 * 4]);
+    let port = 0x181000;
+    bus.write_long(port + 2, screen);
+    bus.write_word(port + 6, 512);
+    bus.write_word(port + 12, 128);
+    bus.write_word(port + 14, 128);
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let pointer = bus.alloc(296);
+    let control = bus.alloc(4);
+    bus.write_long(control, pointer);
+    disp.initialize_control_record(
+        &mut bus,
+        pointer,
+        port,
+        (20, 10, 44, 118),
+        b"",
+        true,
+        0,
+        0,
+        1,
+        0,
+        0,
+    );
+    disp.control_manager.register(control, pointer, 0, 0);
+    let aux = disp.ensure_control_aux_record(&mut bus, control);
+    disp.set_screen_mode_for_test(screen, 512, 128, 128, 32);
+    let pixmap = bus.alloc(50);
+    let pixmap_handle = bus.alloc(4);
+    bus.write_long(pixmap_handle, pixmap);
+    bus.write_long(pixmap, screen);
+    bus.write_word(pixmap + 4, 0x8200);
+    bus.write_word(pixmap + 10, 128);
+    bus.write_word(pixmap + 12, 128);
+    bus.write_word(pixmap + 32, 32);
+    bus.write_long(port + 2, pixmap_handle);
+    bus.write_word(port + 6, 0xc000);
+    let table = bus.alloc(32);
+    let table_handle = bus.alloc(4);
+    bus.write_long(table_handle, table);
+    bus.write_word(table + 6, 2);
+    for (offset, value) in [
+        (8, 0),
+        (10, 0xffff),
+        (12, 0xffff),
+        (14, 0xffff),
+        (16, 1),
+        (18, 0xffff),
+        (20, 0),
+        (22, 0),
+        (24, 2),
+        (26, 0),
+        (28, 0xffff),
+        (30, 0),
+    ] {
+        bus.write_word(table + offset, value);
+    }
+    bus.write_long(bus.read_long(aux) + 8, table_handle);
+    for proc_id in [0, 1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128 * 4]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let bounds = match proc_id {
+            1 => crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator,
+            2 => crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator,
+            _ => (20, 10, 44, 118),
+        };
+        let y = (bounds.0 + bounds.2) as u32 / 2;
+        let x = (bounds.1 + bounds.3) as u32 / 2;
+        assert_eq!(
+            bus.read_long(screen + y * 512 + x * 4),
+            0x00ff0000,
+            "body {proc_id}"
+        );
+        assert_eq!(
+            bus.read_long(screen + y * 512 + bounds.1 as u32 * 4),
+            0x00ffffff,
+            "frame {proc_id}"
+        );
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Play");
+    disp.control_manager.set_proc_id(pointer, 0);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let green = (20..44)
+        .flat_map(|y| (10..118).map(move |x| (y, x)))
+        .filter(|(y, x)| bus.read_long(screen + y * 512 + x * 4) == 0x0000ff00)
+        .count();
+    assert!(
+        green > 5,
+        "custom direct-color title must draw green pixels"
+    );
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    disp.control_manager.set_proc_id(pointer, 1);
+    bus.write_word(pointer + 18, 1);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let bounds = crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator;
+    let y = (bounds.0 + bounds.2) as u32 / 2;
+    let x = (bounds.1 + bounds.3) as u32 / 2;
+    assert_eq!(
+        bus.read_long(screen + y * 512 + x * 4),
+        0x00ffffff,
+        "selected mark"
+    );
+    let clip = bus.read_long(bus.read_long(port + 28));
+    bus.write_word(clip + 8, x as u16);
+    let address = screen + y * 512 + x * 4;
+    bus.write_long(address, 0x00123456);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_long(address),
+        0x00123456,
+        "mark respects clip region"
+    );
+    bus.write_word(clip + 8, 128);
+    let offscreen = bus.alloc(128 * 128 * 4);
+    bus.write_bytes(offscreen, &vec![0; 128 * 128 * 4]);
+    bus.write_bytes(screen, &vec![0; 128 * 128 * 4]);
+    bus.write_long(pixmap, offscreen);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_long(offscreen + y * 512 + x * 4),
+        0x00ffffff,
+        "offscreen selected mark"
+    );
+    assert_eq!(
+        bus.read_long(screen + y * 512 + x * 4),
+        0,
+        "screen remains untouched"
+    );
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Play");
+    disp.control_manager.set_proc_id(pointer, 0);
+    disp.set_screen_mode_for_test(screen, 128, 128, 128, 8);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let green = (20..44)
+        .flat_map(|y| (10..118).map(move |x| (y, x)))
+        .filter(|(y, x)| bus.read_long(offscreen + y * 512 + x * 4) == 0x0000ff00)
+        .count();
+    assert!(green > 5, "offscreen title must use custom color");
+    assert_eq!(
+        bus.read_bytes(screen, 128 * 128 * 4),
+        vec![0; 128 * 128 * 4]
+    );
+    bus.write_byte(pointer + 17, 1);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_long(offscreen + 25 * 512 + 20 * 4),
+        0x0000ff00,
+        "pressed offscreen body"
+    );
+    let red = (20..44)
+        .flat_map(|y| (35..95).map(move |x| (y, x)))
+        .filter(|(y, x)| bus.read_long(offscreen + y * 512 + x * 4) == 0x00ff0000)
+        .count();
+    assert!(red > 5, "pressed offscreen title");
+    assert_eq!(
+        bus.read_bytes(screen, 128 * 128 * 4),
+        vec![0; 128 * 128 * 4]
+    );
+    bus.write_byte(pointer + 17, 255);
+    bus.write_bytes(screen, &vec![0x5a; 128 * 128 * 4]);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_bytes(screen, 128 * 128 * 4),
+        vec![0x5a; 128 * 128 * 4],
+        "inactive offscreen redraw must not change screen"
+    );
+    assert_eq!(
+        bus.read_long(offscreen + 24 * 512 + 20 * 4),
+        0x00ffffff,
+        "inactive checkerboard uses offscreen port"
+    );
+    bus.write_bytes(screen, &vec![0; 128 * 128 * 4]);
+    bus.write_byte(pointer + 17, 0);
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Top\rBottom");
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(offscreen, &vec![0; 128 * 128 * 4]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        for (top, bottom) in [(20, 32), (32, 44)] {
+            let green = (top..bottom)
+                .flat_map(|y| (30..118).map(move |x| (y, x)))
+                .filter(|(y, x)| bus.read_long(offscreen + y * 512 + x * 4) == 0x0000ff00)
+                .count();
+            assert!(green > 0, "offscreen label line {top}, control {proc_id}");
+        }
+        assert_eq!(
+            bus.read_bytes(screen, 128 * 128 * 4),
+            vec![0; 128 * 128 * 4]
+        );
+    }
+    bus.write_byte(pointer + 17, 255);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(offscreen, &vec![0; 128 * 128 * 4]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        for (top, bottom) in [(20, 32), (32, 44)] {
+            let dimmed = (top..bottom)
+                .flat_map(|y| (30..118).map(move |x| (y, x)))
+                .filter(|(y, x)| bus.read_long(offscreen + y * 512 + x * 4) == 0x007f7f00)
+                .count();
+            assert!(
+                dimmed > 0,
+                "inactive offscreen label line {top}, control {proc_id}"
+            );
+        }
+        assert_eq!(
+            bus.read_bytes(screen, 128 * 128 * 4),
+            vec![0; 128 * 128 * 4]
+        );
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    bus.write_word(pointer + 18, 0);
+    bus.write_byte(pointer + 17, 1);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(offscreen, &vec![0; 128 * 128 * 4]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let bounds = match proc_id {
+            1 => crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator,
+            _ => crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator,
+        };
+        let y = (bounds.0 + bounds.2) as u32 / 2;
+        let x = (bounds.1 + bounds.3) as u32 / 2;
+        assert_eq!(
+            bus.read_long(offscreen + y * 512 + x * 4),
+            0x0000ffff,
+            "pressed offscreen indicator {proc_id}"
+        );
+        assert_eq!(
+            bus.read_bytes(screen, 128 * 128 * 4),
+            vec![0; 128 * 128 * 4]
+        );
+    }
+    bus.write_byte(pointer + 17, 0);
+    bus.write_word(pointer + 18, 1);
+    disp.control_manager.set_proc_id(pointer, 1);
+    bus.write_bytes(offscreen, &vec![0; 128 * 128 * 4]);
+    disp.set_screen_mode_for_test(screen, 512, 128, 128, 32);
+    bus.write_word(pixmap + 6, 10);
+    bus.write_word(pixmap + 8, 5);
+    bus.write_word(pixmap + 10, 138);
+    bus.write_word(pixmap + 12, 133);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_long(offscreen + (y - 10) * 512 + (x - 5) * 4),
+        0x00ffffff,
+        "offscreen mark with nonzero origin"
+    );
+    assert_eq!(
+        bus.read_long(screen + y * 512 + x * 4),
+        0,
+        "screen remains untouched with nonzero origin"
+    );
+    let shifted_address = offscreen + (y - 10) * 512 + (x - 5) * 4;
+    let visible = bus.read_long(bus.read_long(port + 24));
+    bus.write_word(visible + 8, x as u16);
+    bus.write_long(shifted_address, 0x00123456);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_long(shifted_address),
+        0x00123456,
+        "shifted visible region clips mark"
+    );
+    bus.write_word(visible + 8, 128);
+    bus.write_word(pixmap + 6, 0);
+    bus.write_word(pixmap + 8, 0);
+    bus.write_word(pixmap + 10, 128);
+    bus.write_word(pixmap + 12, 128);
+    let indexed = bus.alloc(128 * 128);
+    bus.write_bytes(indexed, &vec![0; 128 * 128]);
+    bus.write_long(pixmap, indexed);
+    bus.write_word(pixmap + 4, 0x8080);
+    bus.write_word(pixmap + 32, 8);
+    let clut = bus.alloc(8 + 256 * 8);
+    let clut_handle = bus.alloc(4);
+    bus.write_long(clut_handle, clut);
+    bus.write_word(clut + 6, 255);
+    for index in 0..256 {
+        let entry = clut + 8 + index * 8;
+        bus.write_word(entry, index as u16);
+        for component in [2, 4, 6] {
+            bus.write_word(entry + component, 0x8080);
+        }
+    }
+    bus.write_word(clut + 8 + 42 * 8 + 2, 0);
+    bus.write_word(clut + 8 + 42 * 8 + 4, 0xffff);
+    bus.write_word(clut + 8 + 42 * 8 + 6, 0);
+    for (index, rgb) in [
+        (0, [0xffff, 0xffff, 0xffff]),
+        (17, [0xffff, 0, 0]),
+        (255, [0, 0, 0]),
+    ] {
+        for (component, value) in rgb.into_iter().enumerate() {
+            bus.write_word(clut + 8 + index * 8 + 2 + component as u32 * 2, value);
+        }
+    }
+    bus.write_long(pixmap + 42, clut_handle);
+    let main_device = disp.main_gdevice_handle;
+    let main_gd = bus.read_long(main_device);
+    let main_pm = bus.read_long(bus.read_long(main_gd + 22));
+    let main_ctab = bus.read_long(bus.read_long(main_pm + 42));
+    bus.write_word(main_ctab + 16, 1);
+    bus.write_word(main_ctab + 18, 0);
+    bus.write_word(main_ctab + 20, 0);
+    bus.write_word(main_ctab + 22, 0);
+    disp.current_gdevice
+        .with_mut(|device| *device = main_device);
+    disp.resolved_port_color_fields.insert(port, 3);
+    bus.write_long(port + 80, 255);
+    bus.write_bytes(screen, &vec![0; 128 * 128 * 4]);
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Play");
+    disp.control_manager.set_proc_id(pointer, 0);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert!(
+        count_pixel_index(&bus, indexed, 128, 20, 10, 44, 118, 42) > 5,
+        "indexed offscreen text uses port palette"
+    );
+    assert_eq!(
+        bus.read_byte(indexed + 25 * 128 + 20),
+        17,
+        "indexed offscreen body uses port palette"
+    );
+    assert_eq!(
+        bus.read_byte(indexed + 32 * 128 + 10),
+        0,
+        "indexed offscreen frame uses port palette"
+    );
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    bus.write_word(pointer + 18, 0);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(indexed, &vec![99; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let indicator = if proc_id == 1 {
+            crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator
+        } else {
+            crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator
+        };
+        let y = (indicator.0 + indicator.2) as u32 / 2;
+        let x = (indicator.1 + indicator.3) as u32 / 2;
+        assert_eq!(
+            bus.read_byte(indexed + y * 128 + x),
+            17,
+            "offscreen indicator body {proc_id}"
+        );
+        assert_eq!(
+            bus.read_byte(indexed + y * 128 + indicator.1 as u32),
+            0,
+            "offscreen indicator frame {proc_id}"
+        );
+    }
+    assert_eq!(disp.resolved_port_color_fields.get(&port), Some(&3));
+    assert_eq!(*disp.current_gdevice, main_device);
+    assert_eq!(disp.main_gdevice_handle, main_device);
+    assert_eq!(
+        bus.read_bytes(screen, 128 * 128 * 4),
+        vec![0; 128 * 128 * 4]
+    );
+    bus.write_word(pixmap + 6, 10);
+    bus.write_word(pixmap + 8, 5);
+    bus.write_word(pixmap + 10, 138);
+    bus.write_word(pixmap + 12, 133);
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Top\rBottom");
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(indexed, &vec![0; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        for (top, bottom) in [(10, 22), (22, 34)] {
+            assert!(
+                count_pixel_index(&bus, indexed, 128, top, 25, bottom, 113, 42) > 0,
+                "shifted indexed label line {top}, control {proc_id}"
+            );
+        }
+        assert_eq!(disp.resolved_port_color_fields.get(&port), Some(&3));
+        assert_eq!(
+            bus.read_bytes(screen, 128 * 128 * 4),
+            vec![0; 128 * 128 * 4]
+        );
+    }
+}
+
+#[test]
+fn control_part_color_rejects_unmapped_tables_and_cycles() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let port = 0x181000;
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let pointer = bus.alloc(296);
+    let control = bus.alloc(4);
+    bus.write_long(control, pointer);
+    let aux = disp.ensure_control_aux_record(&mut bus, control);
+    let record = bus.read_long(aux);
+    let table_handle = bus.alloc(4);
+    bus.write_long(record + 8, table_handle);
+    bus.write_long(table_handle, 0xffff_fffc);
+    assert_eq!(disp.control_part_color(&bus, pointer, 1), None);
+    let truncated = bus.alloc(8);
+    bus.write_word(truncated + 6, 0);
+    bus.write_long(table_handle, truncated);
+    assert_eq!(disp.control_part_color(&bus, pointer, 0), None);
+    bus.write_long(record + 4, 0);
+    bus.write_long(record, aux);
+    assert_eq!(disp.control_part_color(&bus, pointer, 1), None);
+}
+
+#[test]
+fn auxiliary_control_list_lookups_reject_invalid_guest_records() {
+    let (mut disp, _, mut bus) = setup();
+    let control = bus.alloc(4);
+    let handle = bus.alloc(4);
+    for record in [0xffff_fffc, 0x7fff_fff0] {
+        bus.write_long(handle, record);
+        bus.write_long(0x0cd4, handle);
+        assert_eq!(disp.control_aux_handle_from_list(&bus, control), 0);
+        assert_eq!(disp.standard_control_color_table_from_list(&bus), None);
+        assert_eq!(disp.control_part_color(&bus, 1, 0), None);
+        disp.set_standard_control_color(&mut bus, control);
+        assert_eq!(bus.read_long(0x0cd4), handle);
+        assert_eq!(bus.read_long(handle), record);
+    }
+    bus.write_long(0x0cd4, 0xffff_fffe);
+    assert_eq!(disp.control_aux_handle_from_list(&bus, control), 0);
+    assert_eq!(disp.standard_control_color_table_from_list(&bus), None);
+    assert_eq!(disp.control_part_color(&bus, 1, 0), None);
+    disp.set_standard_control_color(&mut bus, control);
+    assert_eq!(bus.read_long(0x0cd4), 0xffff_fffe);
+}
+
+#[test]
+fn classic_control_color_redraw_uses_custom_body() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    disp.set_ui_theme_id(UiThemeId::ClassicSystem7);
+    let screen = bus.alloc(128 * 128);
+    bus.write_bytes(screen, &vec![0; 128 * 128]);
+    disp.set_screen_mode_for_test(screen, 128, 128, 128, 8);
+    disp.device_clut.replace([[0x8080, 0x8080, 0x8080]; 256]);
+    disp.device_clut.set_entry(0, [0xffff; 3]);
+    disp.device_clut.set_entry(255, [0; 3]);
+    disp.device_clut.set_entry(42, [0xffff, 0, 0]);
+    disp.device_clut.set_entry(43, [0x7fff, 0, 0]);
+    let port = 0x181000;
+    bus.write_long(port + 2, screen);
+    bus.write_word(port + 6, 128);
+    bus.write_word(port + 12, 128);
+    bus.write_word(port + 14, 128);
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    let pointer = bus.alloc(296);
+    let control = bus.alloc(4);
+    bus.write_long(control, pointer);
+    disp.initialize_control_record(
+        &mut bus,
+        pointer,
+        port,
+        (20, 10, 44, 118),
+        b"Play",
+        true,
+        0,
+        0,
+        1,
+        0,
+        0,
+    );
+    disp.control_manager.register(control, pointer, 0, 0);
+    disp.ensure_control_aux_record(&mut bus, control);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(bus.read_byte(screen + 32 * 128 + 10), 255, "baseline frame");
+    assert_eq!(bus.read_byte(screen + 25 * 128 + 20), 0, "baseline body");
+    let table = bus.alloc(32);
+    let table_handle = bus.alloc(4);
+    bus.write_long(table_handle, table);
+    bus.write_word(table + 6, 2);
+    for (offset, value) in [
+        (8, 0),
+        (10, 0xffff),
+        (12, 0xffff),
+        (14, 0xffff),
+        (16, 1),
+        (18, 0),
+        (20, 0),
+        (22, 0),
+        (24, 2),
+        (26, 0xffff),
+        (28, 0),
+        (30, 0),
+    ] {
+        bus.write_word(table + offset, value);
+    }
+    let sp = 0x310000;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, table_handle);
+    bus.write_long(sp + 4, control);
+    disp.dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let aux = disp.control_aux_handle_from_list(&bus, control);
+    assert_eq!(bus.read_long(bus.read_long(aux) + 8), table_handle);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(bus.read_byte(screen + 25 * 128 + 20), 255, "custom body");
+    assert_eq!(bus.read_byte(screen + 32 * 128 + 10), 0, "custom frame");
+    assert!(
+        count_pixel_index(&bus, screen, 128, 20, 10, 44, 118, 42) > 12,
+        "custom title"
+    );
+    bus.write_byte(pointer + 17, 1);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(bus.read_byte(screen + 25 * 128 + 20), 42, "pressed body");
+    assert!(
+        count_pixel_index(&bus, screen, 128, 20, 30, 44, 100, 255) > 12,
+        "pressed title"
+    );
+    bus.write_byte(pointer + 17, 0);
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Top\rBottom");
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert!(
+        count_pixel_index(&bus, screen, 128, 20, 10, 32, 118, 42) > 0,
+        "first title line"
+    );
+    assert!(
+        count_pixel_index(&bus, screen, 128, 32, 10, 44, 118, 42) > 0,
+        "second title line"
+    );
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![42; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let bounds = if proc_id == 1 {
+            crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator
+        } else {
+            crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator
+        };
+        let mid_y = (bounds.0 + bounds.2) / 2;
+        let mid_x = (bounds.1 + bounds.3) / 2;
+        assert_eq!(
+            bus.read_byte(screen + mid_y as u32 * 128 + mid_x as u32),
+            255,
+            "indicator body {proc_id}"
+        );
+        assert_eq!(
+            bus.read_byte(screen + mid_y as u32 * 128 + bounds.1 as u32),
+            0,
+            "indicator frame {proc_id}"
+        );
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Choice");
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        assert!(
+            count_pixel_index(&bus, screen, 128, 20, 30, 44, 118, 42) > 5,
+            "label color {proc_id}"
+        );
+    }
+    bus.write_byte(pointer + 17, 255);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        assert!(
+            count_pixel_index(&bus, screen, 128, 20, 30, 44, 118, 43) > 5,
+            "inactive single-line label, control {proc_id}"
+        );
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"Top\rBottom");
+    bus.write_byte(pointer + 17, 255);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        for (top, bottom) in [(20, 32), (32, 44)] {
+            assert!(
+                count_pixel_index(&bus, screen, 128, top, 30, bottom, 118, 43) > 0,
+                "inactive custom label line {top}, control {proc_id}"
+            );
+        }
+    }
+    bus.write_byte(pointer + 17, 0);
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![0; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        assert!(
+            count_pixel_index(&bus, screen, 128, 20, 30, 32, 118, 42) > 0,
+            "first label line {proc_id}"
+        );
+        assert!(
+            count_pixel_index(&bus, screen, 128, 32, 30, 44, 118, 42) > 0,
+            "second label line {proc_id}"
+        );
+    }
+    TrapDispatcher::set_control_title_bytes(&mut bus, pointer, b"");
+    disp.control_manager.set_proc_id(pointer, 1);
+    bus.write_word(pointer + 18, 1);
+    bus.write_word(table + 10, 0xffff);
+    bus.write_word(table + 12, 0);
+    bus.write_word(table + 14, 0);
+    bus.write_bytes(screen, &vec![0; 128 * 128]);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let indicator = crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator;
+    let middle = (
+        (indicator.0 + indicator.2) / 2,
+        (indicator.1 + indicator.3) / 2,
+    );
+    assert_eq!(
+        bus.read_byte(screen + middle.0 as u32 * 128 + middle.1 as u32),
+        42,
+        "checkbox mark"
+    );
+    disp.control_manager.set_proc_id(pointer, 2);
+    bus.write_bytes(screen, &vec![0; 128 * 128]);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let indicator =
+        crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator;
+    let middle = (
+        (indicator.0 + indicator.2) / 2,
+        (indicator.1 + indicator.3) / 2,
+    );
+    assert_eq!(
+        bus.read_byte(screen + middle.0 as u32 * 128 + middle.1 as u32),
+        42,
+        "radio mark"
+    );
+    bus.write_word(pointer + 18, 0);
+    bus.write_word(table + 12, 0xffff);
+    bus.write_word(table + 14, 0xffff);
+    disp.control_manager.set_proc_id(pointer, 0);
+    let pixmap = bus.alloc(50);
+    let pixmap_handle = bus.alloc(4);
+    bus.write_long(pixmap_handle, pixmap);
+    bus.write_long(pixmap, screen);
+    bus.write_word(pixmap + 4, 0x8080);
+    bus.write_word(pixmap + 10, 128);
+    bus.write_word(pixmap + 12, 128);
+    bus.write_word(pixmap + 32, 8);
+    bus.write_long(port + 2, pixmap_handle);
+    bus.write_word(port + 6, 0xc000);
+    bus.write_long(port + 80, 255);
+    bus.write_long(port + 84, 0);
+    let pen_pattern = bus.alloc(4);
+    bus.write_long(port + 58, pen_pattern);
+    disp.makergbpat_colors.insert(pen_pattern, (0xffff, 0, 0));
+    disp.resolved_port_color_fields.insert(port, 3);
+    bus.write_bytes(screen, &vec![42; 128 * 128]);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_byte(screen + 25 * 128 + 20),
+        255,
+        "color port body"
+    );
+    assert_eq!(bus.read_byte(screen + 32 * 128 + 10), 0, "color port frame");
+    assert_eq!(disp.resolved_port_color_fields.get(&port), Some(&3));
+    assert_eq!(bus.read_long(port + 58), pen_pattern);
+    bus.write_word(table + 8, 99);
+    bus.write_long(port + 80, 42);
+    bus.write_bytes(screen, &vec![0; 128 * 128]);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    assert_eq!(
+        bus.read_byte(screen + 32 * 128 + 10),
+        42,
+        "unconfigured frame retains resolved port color"
+    );
+    assert_eq!(
+        bus.read_byte(screen + 25 * 128 + 20),
+        255,
+        "configured body still uses its color"
+    );
+    assert_eq!(disp.resolved_port_color_fields.get(&port), Some(&3));
+    bus.write_word(table + 8, 0);
+    bus.write_word(pointer + 18, 1);
+    let saved_fg = disp.fg_color;
+    for proc_id in [1, 2] {
+        disp.control_manager.set_proc_id(pointer, proc_id);
+        bus.write_bytes(screen, &vec![42; 128 * 128]);
+        disp.draw_control(&mut cpu, &mut bus, pointer);
+        let indicator = if proc_id == 1 {
+            crate::control_manager::standard_checkbox_layout((20, 10, 44, 118)).indicator
+        } else {
+            crate::control_manager::standard_radio_button_layout((20, 10, 44, 118)).indicator
+        };
+        let middle = (
+            (indicator.0 + indicator.2) / 2,
+            (indicator.1 + indicator.3) / 2,
+        );
+        assert_eq!(
+            bus.read_byte(screen + middle.0 as u32 * 128 + middle.1 as u32),
+            0,
+            "color port selected mark {proc_id}"
+        );
+        assert_eq!(disp.resolved_port_color_fields.get(&port), Some(&3));
+        assert_eq!(bus.read_long(port + 58), pen_pattern);
+        assert_eq!(disp.fg_color, saved_fg);
+    }
+}
+
+#[test]
 fn appearance_control_font_style_reads_record_and_pascal_result() {
     let (mut disp, mut cpu, mut bus) = setup();
     let (handle, pointer) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);

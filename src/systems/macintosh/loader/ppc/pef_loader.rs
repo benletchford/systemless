@@ -769,6 +769,29 @@ fn load_pef_application_with_optional_disk_fragment(
     memory.add_region(PPC_MAIN_DCE, vec![0u8; 52]);
     memory.add_region(PPC_MAIN_CTABLE_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_CTABLE, vec![0u8; PPC_MAIN_CTABLE_SIZE as usize]);
+    // Standard 'cctb' 0: black frame/text and white body/thumb.
+    let mut control_ctable = vec![0u8; 40];
+    control_ctable[6..8].copy_from_slice(&3u16.to_be_bytes());
+    for part in 0..4usize {
+        let entry = 8 + part * 8;
+        control_ctable[entry..entry + 2].copy_from_slice(&(part as u16).to_be_bytes());
+        if part == 1 || part == 3 {
+            control_ctable[entry + 2..entry + 8].fill(0xff);
+        }
+    }
+    memory.add_region(
+        PPC_DEFAULT_CONTROL_CTABLE_HANDLE,
+        PPC_DEFAULT_CONTROL_CTABLE.to_be_bytes().to_vec(),
+    );
+    memory.add_region(PPC_DEFAULT_CONTROL_CTABLE, control_ctable);
+    let mut default_aux = vec![0u8; 22];
+    default_aux[8..12].copy_from_slice(&PPC_DEFAULT_CONTROL_CTABLE_HANDLE.to_be_bytes());
+    memory.add_region(
+        PPC_DEFAULT_AUX_CONTROL_HANDLE,
+        PPC_DEFAULT_AUX_CONTROL.to_be_bytes().to_vec(),
+    );
+    memory.add_region(PPC_DEFAULT_AUX_CONTROL, default_aux);
+    let _ = memory.write_u32_be(0x0cd4, PPC_DEFAULT_AUX_CONTROL_HANDLE);
     memory.add_region(PPC_MAIN_VIS_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_VIS_RGN, vec![0u8; 10]);
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);

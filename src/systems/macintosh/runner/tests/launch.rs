@@ -595,6 +595,23 @@ fn ppc_launchapplication_switches_to_bundled_application_on_either_cpu() {
         runner.dispatcher.ensure_vfs_catalog();
         runner.dispatcher.set_launched_app_path("Main App");
         runner.init_app(&app);
+        let old_table = pb + 200;
+        let sp = 0x0010_0000;
+        let mut control_cpu = crate::trap::test_helpers::MockCpu::new();
+        crate::cpu::CpuOps::write_reg(&mut control_cpu, Register::A7, sp);
+        runner.bus.write_long(sp, old_table);
+        runner.bus.write_long(sp + 4, 0);
+        runner
+            .dispatcher
+            .dispatch_control(true, 0x243, &mut control_cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        let old_aux = runner.bus.read_long(0x0cd4);
+        assert_ne!(old_aux, 0);
+        assert_eq!(
+            runner.bus.read_long(runner.bus.read_long(old_aux) + 8),
+            old_table
+        );
         runner.set_instructions_per_tick(100_000);
         runner.tick_budget = 50_000;
         let (_, running) = runner.run_steps(8, None);
@@ -609,6 +626,16 @@ fn ppc_launchapplication_switches_to_bundled_application_on_either_cpu() {
             Some("Register Helper")
         );
         assert_eq!(runner.native.application().is_some(), powerpc);
+        let new_aux = runner.bus.read_long(0x0cd4);
+        if powerpc {
+            assert_ne!(new_aux, 0);
+            assert_eq!(
+                runner.bus.read_long(runner.bus.read_long(new_aux) + 8),
+                crate::loader::ppc::PPC_DEFAULT_CONTROL_CTABLE_HANDLE
+            );
+        } else {
+            assert_eq!(new_aux, 0);
+        }
         assert!(runner.dispatcher.vfs_rsrc.contains_key("Register Helper"));
     }
 }

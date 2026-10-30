@@ -4130,10 +4130,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "StdTxMeas") => PpcImportDispatcherTarget::StdTxMeas,
         ("InterfaceLib", "IsOutline") => PpcImportDispatcherTarget::IsOutline,
         ("InterfaceLib", "OutlineMetrics") => PpcImportDispatcherTarget::OutlineMetrics,
-        // The PowerPC Control Manager draws controls with the system colours
-        // and keeps no auxiliary control records, so a per-control colour
-        // table has nothing to change.
-        ("InterfaceLib", "SetControlColor") => PpcImportDispatcherTarget::ReturnNoErr,
+        ("InterfaceLib", "SetControlColor" | "SetCtlColor") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColor)
+        }
+        ("InterfaceLib", "GetAuxiliaryControlRecord" | "GetAuxCtl") => {
+            PpcImportDispatcherTarget::LegacyControl(
+                PpcLegacyControlOperation::GetAuxiliaryControlRecord,
+            )
+        }
         // Colour matching uses the device's inverse table and never calls
         // custom search procedures, which is the result every installed
         // procedure gets when it declines a colour.
