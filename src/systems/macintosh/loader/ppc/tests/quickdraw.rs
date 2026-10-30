@@ -7482,3 +7482,350 @@ fn pt2rect_handles_reversed_signed_coordinates_and_preserves_return_register() {
         assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some(expected));
     }
 }
+
+#[test]
+fn draw_picture_file_reads_pict_fork_and_paints_pixels() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"DrawPictureFile");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pict = test_v1_one_bit_packbits_pict();
+    let mut data = vec![0; 512];
+    // This unused file header resembles a valid picture bounding box, but
+    // has no valid PICT opcodes. The real picture starts at offset 512.
+    data[..10].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1, 0, 1]);
+    data.extend_from_slice(&pict);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Picture".into(),
+        data: data.into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"PICT"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: 42,
+        path: "Picture".into(),
+        position: 0,
+    });
+    let rect_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 5, 6, 6, 14).unwrap();
+    loaded.cpu.gpr[3] = 42;
+    loaded.cpu.gpr[4] = rect_ptr;
+    loaded.cpu.gpr[5] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 5)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (7, 5)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+    );
+}
+
+#[test]
+fn draw_picture_file_calls_guest_progress_and_honors_abort() {
+    for abort in [
+        None,
+        Some((0u32, -8967i16)),
+        Some((1, -8967)),
+        Some((0, -50)),
+        Some((1, 42)),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"QuickTimeLib",
+            b"DrawPictureFile",
+        ))
+        .unwrap();
+        let base = 0x1800_0000;
+        loaded.memory.add_region(base, vec![0; 0x1000]);
+        let descriptor = base + 0x1000;
+        let rtoc = base + 0x2000;
+        let mut code = vec![
+            0x80c2_0000, // lwz r6,0(r2)
+            0x38c6_0001, // addi r6,r6,1
+            0x90c2_0000, // stw r6,0(r2)
+            0x9062_0004, // stw r3,4(r2): last message
+            0x90a2_0008, // stw r5,8(r2): refcon
+        ];
+        if let Some((message, error)) = abort {
+            code.extend_from_slice(&[
+                0x2c03_0000 | message,
+                0x4082_000c,
+                0x3860_0000 | u32::from(error as u16),
+                0x4e80_0020,
+            ]);
+        }
+        code.extend_from_slice(&[0x3860_0000, 0x4e80_0020]);
+        super::mixed_mode::install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            descriptor + 64,
+            base + 0x3000,
+            rtoc,
+            0xfa0,
+            &code,
+        );
+        let mut data = vec![0; 512];
+        data.extend_from_slice(&test_v1_one_bit_packbits_pict());
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Picture".into(),
+            data: data.into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"PICT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: 42,
+            path: "Picture".into(),
+            position: 0,
+        });
+        ppc_write_rect(&mut loaded.memory, base + 0x100, 5, 6, 6, 14).unwrap();
+        loaded
+            .memory
+            .write_u32_be(base + 0x200, descriptor)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(base + 0x204, 0x12345678)
+            .unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let white = u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE));
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (6, 5), white);
+        loaded.cpu.gpr[3] = 42;
+        loaded.cpu.gpr[4] = base + 0x100;
+        loaded.cpu.gpr[5] = base + 0x200;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(1_000_000);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.cpu.gpr[3] as u16 as i16,
+            if abort.is_some() { -8967 } else { 0 }
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(rtoc),
+            Some(if abort.is_some_and(|(message, _)| message == 0) {
+                2
+            } else {
+                3
+            })
+        );
+        assert_eq!(loaded.memory.read_u32_be(rtoc + 4), Some(2));
+        assert_eq!(loaded.memory.read_u32_be(rtoc + 8), Some(0x12345678));
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 5)),
+            Some(if abort.is_some() {
+                white
+            } else {
+                u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK))
+            })
+        );
+        assert!(loaded.picture_callback_stack.is_empty());
+    }
+}
+
+#[test]
+fn draw_picture_file_calls_68k_progress_upp_and_honors_abort() {
+    for result in [0u16, (-50i16) as u16] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"QuickTimeLib",
+            b"DrawPictureFile",
+        ))
+        .unwrap();
+        let mut context = ProcessContext::default();
+        loaded.attach_unconverted_process_services(&mut context);
+        let _classic_bus =
+            attach_test_classic_heap(&mut loaded, &mut context, 8 * 1024 * 1024, 0x4000);
+        let base = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(base, vec![0; 0x400]);
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let callback = PPC_HEAP_BASE + 0x2000;
+        super::mixed_mode::install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            callback,
+            0x0000_0fa0,
+            0,
+            &[
+                0x52b9,
+                (base >> 16) as u16,
+                (base + 0x180) as u16,
+                0x33ef,
+                0x000c,
+                (base >> 16) as u16,
+                (base + 0x184) as u16,
+                0x23ef,
+                0x0004,
+                (base >> 16) as u16,
+                (base + 0x188) as u16,
+                0x3f7c,
+                result,
+                0x000e,
+                0x4e74,
+                0x000a,
+            ],
+        );
+        let mut data = vec![0; 512];
+        data.extend_from_slice(&test_v1_one_bit_packbits_pict());
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Picture".into(),
+            data: data.into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"PICT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_open_file(PpcFileRecord {
+            ref_num: 42,
+            path: "Picture".into(),
+            position: 0,
+        });
+        ppc_write_rect(&mut loaded.memory, base, 5, 6, 6, 14).unwrap();
+        loaded
+            .memory
+            .write_u32_be(base + 0x100, descriptor)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(base + 0x104, 0x12345678)
+            .unwrap();
+        loaded.cpu.gpr[3] = 42;
+        loaded.cpu.gpr[4] = base;
+        loaded.cpu.gpr[5] = base + 0x100;
+        let probe = loaded.run_with_hle_imports(1_000_000);
+        assert_eq!(probe.unsupported_import_index, None);
+        drain_test_m68k_guest_calls(&mut loaded);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(if result == 0 { 0 } else { -8967 })
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(base + 0x180),
+            Some(if result == 0 { 3 } else { 2 })
+        );
+        assert_eq!(loaded.memory.read_u16_be(base + 0x184), Some(2));
+        assert_eq!(loaded.memory.read_u32_be(base + 0x188), Some(0x12345678));
+        assert!(loaded.picture_callback_stack.is_empty());
+        assert!(loaded.guest_calls().is_empty());
+    }
+}
+
+#[test]
+fn draw_picture_file_rolls_back_failed_68k_progress_setup() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"DrawPictureFile",
+    ))
+    .unwrap();
+    let base = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(base, vec![0; 0x400]);
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    super::mixed_mode::install_test_m68k_callback(
+        &mut loaded,
+        descriptor,
+        callback,
+        0x0000_0fa0,
+        0,
+        &[0x3f7c, 0, 0x000e, 0x4e74, 0x000a],
+    );
+    let mut data = vec![0; 512];
+    data.extend_from_slice(&test_v1_one_bit_packbits_pict());
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Picture".into(),
+        data: data.into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"PICT"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: 42,
+        path: "Picture".into(),
+        position: 0,
+    });
+    ppc_write_rect(&mut loaded.memory, base, 5, 6, 6, 14).unwrap();
+    loaded
+        .memory
+        .write_u32_be(base + 0x100, descriptor)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(base + 0x104, 0x12345678)
+        .unwrap();
+    let cursor = loaded.heap_cursor();
+    let original_limit = loaded.heap_limit();
+    loaded.set_heap_limit(cursor + 64);
+    let before = loaded.toolbox_startup.mixed_mode_m68k.snapshot();
+    loaded.cpu.gpr[3] = 42;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = base + 0x100;
+    let probe = loaded.run_with_hle_imports(1_000_000);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.snapshot(), before);
+    assert_eq!(loaded.heap_cursor(), cursor);
+    assert!(loaded.picture_callback_stack.is_empty());
+    assert!(loaded.guest_calls().is_empty());
+
+    loaded.set_heap_limit(original_limit);
+    loaded
+        .memory
+        .write_u32_be(
+            descriptor
+                + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE
+                + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            0x7fff_0000,
+        )
+        .unwrap();
+    loaded.cpu.gpr[3] = 42;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = base + 0x100;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawPictureFile);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.toolbox_startup.mixed_mode_m68k.snapshot(), before);
+    assert_eq!(loaded.heap_cursor(), cursor);
+    assert!(loaded.picture_callback_stack.is_empty());
+    assert!(loaded.guest_calls().is_empty());
+}
+
+#[test]
+fn draw_picture_file_reports_missing_reference_and_truncated_picture() {
+    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"DrawPictureFile");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let base = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(base, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, base, 5, 6, 6, 14).unwrap();
+    loaded.cpu.gpr[3] = 42;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawPictureFile);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-51));
+    let mut data = vec![0; 512];
+    let mut pict = test_v1_one_bit_packbits_pict();
+    pict.pop();
+    data.extend_from_slice(&pict);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Picture".into(),
+        data: data.into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"PICT"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: 42,
+        path: "Picture".into(),
+        position: 0,
+    });
+    loaded.cpu.gpr[3] = 42;
+    loaded.cpu.gpr[4] = base;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawPictureFile);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_EOF_ERR));
+}
