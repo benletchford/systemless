@@ -5,6 +5,32 @@
 use super::*;
 use std::collections::{BTreeMap, VecDeque};
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PUBLICATION_FAILURE_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static TEST_MOUSE_SAMPLE_RESERVATION_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_publication_after_recipients_for_test(count: usize) {
+    TEST_PUBLICATION_FAILURE_AFTER.with(|failure| failure.set(Some(count)));
+}
+
+#[cfg(test)]
+fn publication_reservation_fails_for_test() -> bool {
+    TEST_PUBLICATION_FAILURE_AFTER.with(|failure| match failure.get() {
+        Some(0) => {
+            failure.set(None);
+            true
+        }
+        Some(remaining) => {
+            failure.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcInputSprocketDriverOperation {
     DeviceNew,
@@ -40,7 +66,52 @@ struct DriverEvent {
     when: u64,
     element: u32,
     ref_con: u32,
-    data: Vec<u8>,
+    data: DriverEventData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DriverEventData {
+    Inline([u8; 4]),
+    Bytes(Vec<u8>),
+}
+
+impl DriverEventData {
+    fn from_vec(data: Vec<u8>) -> Self {
+        match data.as_slice().try_into() {
+            Ok(bytes) => Self::Inline(bytes),
+            Err(_) => Self::Bytes(data),
+        }
+    }
+
+    fn try_from_slice(data: &[u8]) -> Option<Self> {
+        match data.try_into() {
+            Ok(bytes) => Some(Self::Inline(bytes)),
+            Err(_) => {
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(data.len()).ok()?;
+                bytes.extend_from_slice(data);
+                Some(Self::Bytes(bytes))
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for DriverEventData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline(bytes) => bytes,
+            Self::Bytes(bytes) => bytes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuiltinMouseEvent {
+    element: u32,
+    data: u32,
+    when: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,6 +120,113 @@ pub(super) struct PpcInputSprocketDriverState {
     elements: BTreeMap<u32, DriverElement>,
     callbacks: Vec<ActivationCall>,
     lists: BTreeMap<u32, VecDeque<DriverEvent>>,
+    mouse_subscribed: bool,
+    mouse_previous: Option<PpcInputSnapshot>,
+    mouse_pending: VecDeque<BuiltinMouseEvent>,
+    mouse_events: BTreeMap<u32, VecDeque<DriverEvent>>,
+}
+
+impl PpcInputSprocketDriverState {
+    pub(super) fn rebase_mouse_position(&mut self, position: (i16, i16)) {
+        if let Some(previous) = self.mouse_previous.as_mut() {
+            previous.mouse_v = position.0;
+            previous.mouse_h = position.1;
+        }
+    }
+
+    pub(super) fn note_mouse_sample(&mut self, input: PpcInputSnapshot, tick: u32, active: bool) {
+        let Some(previous) = self.mouse_previous else {
+            self.mouse_previous = Some(input);
+            return;
+        };
+        if !active {
+            self.mouse_previous = Some(PpcInputSnapshot {
+                mouse_button: previous.mouse_button,
+                ..input
+            });
+            return;
+        }
+        if !self.mouse_subscribed {
+            self.mouse_previous = Some(input);
+            return;
+        }
+        let when = crate::time_manager::evaluate_microseconds(tick);
+        let dx = i32::from(input.mouse_h) - i32::from(previous.mouse_h);
+        let dy = i32::from(previous.mouse_v) - i32::from(input.mouse_v);
+        let count = usize::from(dx != 0)
+            + usize::from(dy != 0)
+            + usize::from(input.mouse_button != previous.mouse_button);
+        #[cfg(test)]
+        let forced_failure =
+            TEST_MOUSE_SAMPLE_RESERVATION_FAILURE.with(|failure| failure.replace(false));
+        #[cfg(not(test))]
+        let forced_failure = false;
+        if count != 0 && (forced_failure || self.mouse_pending.try_reserve(count).is_err()) {
+            return;
+        }
+        self.mouse_previous = Some(input);
+        for (element, value) in [
+            (
+                PPC_ISP_MOUSE_X_ELEMENT,
+                (dx != 0).then_some(dx.wrapping_shl(16) as u32),
+            ),
+            (
+                PPC_ISP_MOUSE_Y_ELEMENT,
+                (dy != 0).then_some(dy.wrapping_shl(16) as u32),
+            ),
+            (
+                PPC_ISP_MOUSE_BUTTON_ELEMENT,
+                (input.mouse_button != previous.mouse_button)
+                    .then_some(u32::from(input.mouse_button)),
+            ),
+        ] {
+            if let Some(data) = value {
+                self.mouse_pending.push_back(BuiltinMouseEvent {
+                    element,
+                    data,
+                    when,
+                });
+            }
+        }
+    }
+}
+
+fn publish_mouse_events(
+    state: &mut PpcInputSprocketDriverState,
+    memory: &mut PpcSectionMem,
+    manager: &mut ProcessNativeMemoryManager,
+) -> bool {
+    while let Some(event) = state.mouse_pending.front().copied() {
+        let queue = state.mouse_events.entry(event.element).or_default();
+        if queue.try_reserve(1).is_err() {
+            return false;
+        }
+        // Physical samples originate outside the guest partition. Keeping their
+        // queued copies in host memory lets the guest drain or flush them even
+        // when its heap is full.
+        let data = event.data.to_be_bytes();
+        if !enqueue_list_events(
+            &mut state.lists,
+            memory,
+            manager,
+            event.element,
+            PPC_ISP_MOUSE_DEVICE,
+            event.when,
+            &data,
+            false,
+        ) {
+            return false;
+        }
+        queue.push_back(DriverEvent {
+            allocation: 0,
+            when: event.when,
+            element: event.element,
+            ref_con: 0,
+            data: DriverEventData::Inline(data),
+        });
+        state.mouse_pending.pop_front();
+    }
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +266,30 @@ pub(super) fn dispatch_driver_import(
     snapshot: PpcInputSnapshot,
     virtual_elements: &[PpcInputSprocketVirtualElementRecord],
 ) -> Option<PpcImportAction> {
+    if binding.dispatcher_target == PpcImportDispatcherTarget::ISpShutdown {
+        // Shutdown unloads InputSprocket's drivers; discard their pending
+        // physical events and stop sampling until the next library use.
+        state.mouse_subscribed = false;
+        state.mouse_previous = None;
+        state.mouse_pending.clear();
+        for events in state.mouse_events.values_mut() {
+            clear_queue(events, manager);
+        }
+        for element in [
+            PPC_ISP_MOUSE_X_ELEMENT,
+            PPC_ISP_MOUSE_Y_ELEMENT,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+        ] {
+            remove_list_events(&mut state.lists, element, manager);
+        }
+    } else if binding.library_name == "InputSprocketLib" && !state.mouse_subscribed {
+        state.mouse_subscribed = true;
+        state.mouse_previous = Some(snapshot);
+    }
+    if binding.library_name == "InputSprocketLib" && !publish_mouse_events(state, memory, manager) {
+        sync_heap(manager, memory, heap_cursor);
+        return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+    }
     if cpu.lr == cpu.pc
         && state
             .callbacks
@@ -130,8 +332,10 @@ pub(super) fn dispatch_driver_import(
             if state.lists.contains_key(&cpu.gpr[3]) =>
         {
             let reference = cpu.gpr[3];
-            let borrowed =
-                reference == PPC_ISP_GLOBAL_ELEMENT_LIST || state.devices.contains_key(&reference);
+            let borrowed = reference == PPC_ISP_GLOBAL_ELEMENT_LIST
+                || reference == PPC_ISP_MOUSE_DEVICE
+                || reference == PPC_ISP_KEYBOARD_DEVICE
+                || state.devices.contains_key(&reference);
             if !borrowed && ppc_isp_owned_element_list_count(memory, reference).is_none() {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
@@ -145,8 +349,10 @@ pub(super) fn dispatch_driver_import(
         }
         PpcImportDispatcherTarget::ISpElementListFlush if state.lists.contains_key(&cpu.gpr[3]) => {
             let reference = cpu.gpr[3];
-            let borrowed =
-                reference == PPC_ISP_GLOBAL_ELEMENT_LIST || state.devices.contains_key(&reference);
+            let borrowed = reference == PPC_ISP_GLOBAL_ELEMENT_LIST
+                || reference == PPC_ISP_MOUSE_DEVICE
+                || reference == PPC_ISP_KEYBOARD_DEVICE
+                || state.devices.contains_key(&reference);
             let result = if borrowed {
                 PPC_NO_ERR
             } else {
@@ -162,6 +368,52 @@ pub(super) fn dispatch_driver_import(
     }
     // Existing application APIs share the same driver-owned element state.
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::ISpGetGlobalElementList => {
+            let output = cpu.gpr[3];
+            if output == 0 || !ppc_memory_can_write_bytes(memory, output, 4) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let _ = memory.write_u32_be(output, PPC_ISP_GLOBAL_ELEMENT_LIST);
+            state.lists.entry(PPC_ISP_GLOBAL_ELEMENT_LIST).or_default();
+            return Some(PpcImportAction::Return(0));
+        }
+        PpcImportDispatcherTarget::ISpDeviceGetElementList
+            if matches!(cpu.gpr[3], PPC_ISP_MOUSE_DEVICE | PPC_ISP_KEYBOARD_DEVICE) =>
+        {
+            let result = ppc_isp_device_get_element_list(cpu, memory);
+            if result == PPC_NO_ERR {
+                state.lists.entry(cpu.gpr[3]).or_default();
+            }
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementFlush,
+        ) if matches!(
+            cpu.gpr[3],
+            PPC_ISP_MOUSE_X_ELEMENT | PPC_ISP_MOUSE_Y_ELEMENT | PPC_ISP_MOUSE_BUTTON_ELEMENT
+        ) =>
+        {
+            if let Some(events) = state.mouse_events.get_mut(&cpu.gpr[3]) {
+                clear_queue(events, manager);
+            }
+            sync_heap(manager, memory, heap_cursor);
+            return Some(PpcImportAction::Return(0));
+        }
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ) if matches!(
+            cpu.gpr[3],
+            PPC_ISP_MOUSE_X_ELEMENT | PPC_ISP_MOUSE_Y_ELEMENT | PPC_ISP_MOUSE_BUTTON_ELEMENT
+        ) =>
+        {
+            let events = state.mouse_events.entry(cpu.gpr[3]).or_default();
+            if ppc_isp_device_is_active(input, PPC_ISP_MOUSE_DEVICE) != Some(true) {
+                clear_queue(events, manager);
+            }
+            let result = read_event(cpu, memory, manager, events);
+            sync_heap(manager, memory, heap_cursor);
+            return Some(PpcImportAction::Return(ppc_i16_result(result)));
+        }
         PpcImportDispatcherTarget::InputSprocketCompatibility(
             PpcInputSprocketCompatibilityOperation::DeviceIsActive,
         ) if state.devices.contains_key(&cpu.gpr[3]) => {
@@ -484,6 +736,7 @@ pub(super) fn dispatch_driver_import(
                             element.device,
                             when,
                             &data,
+                            true,
                         ) {
                             manager.dispose_native_ptr(allocation);
                             PPC_MEM_FULL_ERR
@@ -494,7 +747,7 @@ pub(super) fn dispatch_driver_import(
                                 when,
                                 element: cpu.gpr[3],
                                 ref_con: 0,
-                                data,
+                                data: DriverEventData::from_vec(data),
                             });
                             PPC_NO_ERR
                         }
@@ -557,7 +810,7 @@ fn read_event(
         let _ = memory.write_u8(output + offset as u32, byte);
     }
     let _ = memory.write_u8(was_event, 1);
-    manager.dispose_native_ptr(event.allocation);
+    dispose_event_allocation(manager, event.allocation);
     if (size as usize) < 16 + event.data.len() {
         PPC_PARAM_ERR
     } else {
@@ -903,7 +1156,13 @@ fn clear_events(element: &mut DriverElement, manager: &mut ProcessNativeMemoryMa
 
 fn clear_queue(events: &mut VecDeque<DriverEvent>, manager: &mut ProcessNativeMemoryManager) {
     for event in events.drain(..) {
-        manager.dispose_native_ptr(event.allocation);
+        dispose_event_allocation(manager, event.allocation);
+    }
+}
+
+fn dispose_event_allocation(manager: &mut ProcessNativeMemoryManager, allocation: u32) {
+    if allocation != 0 {
+        manager.dispose_native_ptr(allocation);
     }
 }
 
@@ -915,7 +1174,7 @@ fn remove_list_events(
     for events in lists.values_mut() {
         events.retain(|event| {
             if event.element == element {
-                manager.dispose_native_ptr(event.allocation);
+                dispose_event_allocation(manager, event.allocation);
                 false
             } else {
                 true
@@ -956,8 +1215,8 @@ fn remove_list_memberships(
     }
 }
 
-// Reserve every recipient's guest memory before publishing any copy or state.
-// This prevents partial delivery when the application's partition is exhausted.
+// Reserve every recipient before publishing any copy or state. Driver-pushed
+// events also reserve guest memory, so exhaustion cannot cause partial delivery.
 fn enqueue_list_events(
     lists: &mut BTreeMap<u32, VecDeque<DriverEvent>>,
     memory: &mut PpcSectionMem,
@@ -966,8 +1225,9 @@ fn enqueue_list_events(
     device: u32,
     when: u64,
     data: &[u8],
+    guest_allocated: bool,
 ) -> bool {
-    let mut pending = Vec::new();
+    let mut pending: Vec<(u32, DriverEvent)> = Vec::new();
     for (reference, events) in lists.iter_mut() {
         let ref_con = if *reference == device || *reference == PPC_ISP_GLOBAL_ELEMENT_LIST {
             Some(0)
@@ -981,15 +1241,33 @@ fn enqueue_list_events(
             })
         };
         let Some(ref_con) = ref_con else { continue };
-        let allocation = if events.try_reserve(1).is_ok() {
-            manager.new_native_ptr(memory, data.len() as u32 + 16, false)
+        #[cfg(test)]
+        let forced_failure = publication_reservation_fails_for_test();
+        #[cfg(not(test))]
+        let forced_failure = false;
+        if forced_failure || events.try_reserve(1).is_err() || pending.try_reserve(1).is_err() {
+            for (_, event) in pending {
+                dispose_event_allocation(manager, event.allocation);
+            }
+            return false;
+        }
+        let Some(event_data) = DriverEventData::try_from_slice(data) else {
+            for (_, event) in pending {
+                dispose_event_allocation(manager, event.allocation);
+            }
+            return false;
+        };
+        let allocation = if guest_allocated {
+            u32::try_from(data.len())
+                .ok()
+                .and_then(|size| size.checked_add(16))
+                .map_or(0, |size| manager.new_native_ptr(memory, size, false))
         } else {
             0
         };
-        if allocation == 0 {
+        if guest_allocated && allocation == 0 {
             for (_, event) in pending {
-                let event: DriverEvent = event;
-                manager.dispose_native_ptr(event.allocation);
+                dispose_event_allocation(manager, event.allocation);
             }
             return false;
         }
@@ -1000,7 +1278,7 @@ fn enqueue_list_events(
                 when,
                 element,
                 ref_con,
-                data: data.to_vec(),
+                data: event_data,
             },
         ));
     }
@@ -1068,4 +1346,42 @@ pub(super) fn initialize_drivers(
     let action = next_activation(cpu, memory, manager, state);
     sync_heap(manager, memory, heap_cursor);
     action
+}
+
+#[cfg(test)]
+mod mouse_sample_tests {
+    use super::*;
+
+    #[test]
+    fn failed_mouse_sample_reservation_preserves_state_for_retry() {
+        let mut state = PpcInputSprocketDriverState::default();
+        state.mouse_subscribed = true;
+        let initial = PpcInputSnapshot::default();
+        state.note_mouse_sample(initial, 0, true);
+        let input = PpcInputSnapshot {
+            mouse_h: 5,
+            mouse_v: -3,
+            mouse_button: true,
+            ..initial
+        };
+        TEST_MOUSE_SAMPLE_RESERVATION_FAILURE.with(|failure| failure.set(true));
+        state.note_mouse_sample(input, 1, true);
+        assert_eq!(state.mouse_previous, Some(initial));
+        assert!(state.mouse_pending.is_empty());
+        state.note_mouse_sample(input, 2, true);
+        assert_eq!(state.mouse_previous, Some(input));
+        let events: Vec<_> = state
+            .mouse_pending
+            .iter()
+            .map(|event| (event.element, event.data))
+            .collect();
+        assert_eq!(
+            events,
+            vec![
+                (PPC_ISP_MOUSE_X_ELEMENT, 5 << 16),
+                (PPC_ISP_MOUSE_Y_ELEMENT, 3 << 16),
+                (PPC_ISP_MOUSE_BUTTON_ELEMENT, 1),
+            ]
+        );
+    }
 }
