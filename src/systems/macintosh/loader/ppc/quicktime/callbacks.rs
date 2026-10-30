@@ -41,6 +41,7 @@ pub(crate) struct DeliveryFrame {
     pub restore_rtoc: u32,
     pub result: u32,
     pub dispose_movie: bool,
+    pub dispose_time_base: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -111,7 +112,6 @@ impl Callbacks {
     }
 
     pub fn retire_time_base(&mut self, time_base: u32) {
-        self.queued.clear();
         for record in &mut self.records {
             if record.time_base == time_base {
                 record.time_base = 0;
@@ -119,6 +119,10 @@ impl Callbacks {
                 record.due = false;
             }
         }
+    }
+
+    pub fn clear_queued(&mut self) {
+        self.queued.clear();
     }
 
     // Inside Macintosh: QuickTime (1993), pp. 2-337–2-338:
@@ -152,6 +156,90 @@ impl Callbacks {
         }
     }
 
+    pub fn mark_loop_time_due(
+        &mut self,
+        time_base: u32,
+        before: i64,
+        after: i64,
+        start: i64,
+        stop: i64,
+        scale: u32,
+    ) {
+        let width = i128::from(stop) - i128::from(start);
+        if width <= 0 || before == after {
+            return;
+        }
+        let relative_before = i128::from(before) - i128::from(start);
+        let relative_after = i128::from(after) - i128::from(start);
+        let cycles = relative_after.div_euclid(width) - relative_before.div_euclid(width);
+        let first = (i128::from(start) + relative_before.rem_euclid(width)) as i64;
+        let last = (i128::from(start) + relative_after.rem_euclid(width)) as i64;
+        if cycles == 0 {
+            self.mark_time_due(time_base, first, last, scale);
+        } else if after > before {
+            self.mark_time_due(time_base, first, stop, scale);
+            if cycles > 1 {
+                self.mark_time_due(time_base, start, stop, scale);
+            }
+            self.mark_time_due(time_base, start, last, scale);
+        } else {
+            self.mark_time_due(time_base, first, start, scale);
+            if cycles < -1 {
+                self.mark_time_due(time_base, stop, start, scale);
+            }
+            self.mark_time_due(time_base, stop, last, scale);
+        }
+    }
+
+    pub fn mark_palindrome_time_due(
+        &mut self,
+        time_base: u32,
+        before: i64,
+        after: i64,
+        start: i64,
+        stop: i64,
+        scale: u32,
+    ) {
+        let width = i128::from(stop) - i128::from(start);
+        if width <= 0 || before == after {
+            return;
+        }
+        let target = i128::from(after) - i128::from(start);
+        let mut position = i128::from(before) - i128::from(start);
+        let forward = target > position;
+        let display = |position: i128| {
+            let phase = position.rem_euclid(width * 2);
+            (i128::from(start)
+                + if phase <= width {
+                    phase
+                } else {
+                    width * 2 - phase
+                }) as i64
+        };
+        // Three complete legs cover both directions and every trigger even
+        // when a single service interval spans arbitrarily many periods.
+        for _ in 0..4 {
+            if position == target {
+                break;
+            }
+            let quotient = position.div_euclid(width);
+            let boundary = if forward {
+                (quotient + 1) * width
+            } else if position.rem_euclid(width) == 0 {
+                (quotient - 1) * width
+            } else {
+                quotient * width
+            };
+            let next = if forward {
+                target.min(boundary)
+            } else {
+                target.max(boundary)
+            };
+            self.mark_time_due(time_base, display(position), display(next), scale);
+            position = next;
+        }
+    }
+
     pub fn mark_event(&mut self, time_base: u32, event: Event) {
         for record in &mut self.records {
             if record.time_base != time_base {
@@ -164,10 +252,14 @@ impl Callbacks {
             let matches = match (record.kind & 0x3fff, event) {
                 (2, Event::Rate { before, after }) if before != after => {
                     let trigger = registration.parameters[1];
-                    flags == 0
-                        || (flags & 4 != 0 && after < trigger)
-                        || (flags & 8 != 0 && after > trigger)
-                        || (flags & 16 != 0 && after == trigger)
+                    if flags == 0x1c {
+                        after != trigger
+                    } else {
+                        flags == 0
+                            || (flags & 4 != 0 && after < trigger)
+                            || (flags & 8 != 0 && after > trigger)
+                            || (flags & 16 != 0 && after == trigger)
+                    }
                 }
                 (3, Event::Jump) | (5, Event::Disposed) => true,
                 (4, Event::Extremes { start, stop }) => {
@@ -197,6 +289,14 @@ impl Callbacks {
         Some((record.address, record.registration.take()?))
     }
 
+    pub fn take_disposal_ready(&mut self, time_base: u32) -> Option<(u32, Registration)> {
+        let record = self.records.iter_mut().find(|record| {
+            record.time_base == time_base && record.kind & 0x3fff == 5 && record.due
+        })?;
+        record.due = false;
+        Some((record.address, record.registration.take()?))
+    }
+
     #[cfg(test)]
     fn take_time_due(
         &mut self,
@@ -220,6 +320,86 @@ mod tests {
             rtoc: 0x2000,
             refcon: 0xdeadbeef,
             parameters: [direction, 1, 3],
+        }
+    }
+
+    #[test]
+    fn rate_callback_comparisons_include_not_equal() {
+        for (flags, expected) in [
+            (0, [true, true, true]),
+            (4, [true, false, false]),
+            (8, [false, false, true]),
+            (16, [false, true, false]),
+            (20, [true, true, false]),
+            (24, [false, true, true]),
+            (28, [true, false, true]),
+        ] {
+            for (after, should_fire) in [-1, 0, 1].into_iter().zip(expected) {
+                let mut callbacks = Callbacks::default();
+                let mut trigger = registration(flags);
+                trigger.parameters[1] = 0;
+                assert!(callbacks.create(1, 2, 2));
+                assert!(callbacks.arm(1, trigger));
+                callbacks.mark_event(2, Event::Rate { before: 2, after });
+                assert_eq!(
+                    callbacks.take_ready().is_some(),
+                    should_fire,
+                    "flags={flags}, after={after}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn looping_time_base_crossings_follow_travel_direction() {
+        for (before, after, direction, expected) in [
+            (8, 12, 1, true),
+            (8, 12, 2, false),
+            (2, -2, 2, true),
+            (2, -2, 1, false),
+            (2, 22, 1, true),
+            (8, -12, 2, true),
+            (2, 3, 1, false),
+        ] {
+            let mut callbacks = Callbacks::default();
+            assert!(callbacks.create(1, 2, 1));
+            let mut trigger = registration(direction);
+            trigger.parameters = [direction, 1, 10];
+            assert!(callbacks.arm(1, trigger));
+            callbacks.mark_loop_time_due(2, before, after, 0, 10, 10);
+            assert_eq!(
+                callbacks.take_ready().is_some(),
+                expected,
+                "before={before}, after={after}, direction={direction}"
+            );
+        }
+    }
+
+    #[test]
+    fn palindrome_time_base_crossings_reverse_at_each_end() {
+        for (before, after, direction, expected) in [
+            (2, 18, 1, true),
+            (2, 18, 2, true),
+            (7, 13, 1, false),
+            (7, 13, 2, false),
+            (18, 2, 1, true),
+            (18, 2, 2, true),
+            (18, 14, 1, true),
+            (18, 14, 2, false),
+            (2, 102, 3, true),
+            (2, -98, 3, true),
+        ] {
+            let mut callbacks = Callbacks::default();
+            assert!(callbacks.create(1, 2, 1));
+            let mut trigger = registration(direction);
+            trigger.parameters = [direction, 5, 10];
+            assert!(callbacks.arm(1, trigger));
+            callbacks.mark_palindrome_time_due(2, before, after, 0, 10, 10);
+            assert_eq!(
+                callbacks.take_ready().is_some(),
+                expected,
+                "before={before}, after={after}, direction={direction}"
+            );
         }
     }
 
@@ -354,6 +534,18 @@ mod tests {
         callbacks.mark_time_due(0x4000, 0, 3, 6);
         assert_eq!(callbacks.take_ready().unwrap().0, 0x3004);
         assert!(callbacks.dispose(0x3000));
+    }
+
+    #[test]
+    fn retiring_one_time_base_preserves_unrelated_queued_callbacks() {
+        let mut callbacks = Callbacks::default();
+        assert!(callbacks.create(0x3000, 0x4000, 1));
+        assert!(callbacks.arm(0x3000, registration(1)));
+        callbacks.queue(0x5000, registration(2));
+        callbacks.retire_time_base(0x4000);
+        assert_eq!(callbacks.take_ready().unwrap().0, 0x5000);
+        assert_eq!(callbacks.take_ready(), None);
+        assert!(!callbacks.arm(0x3000, registration(1)));
     }
 
     #[test]

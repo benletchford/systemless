@@ -4524,6 +4524,365 @@ fn quicktime_callback_lifecycle_delivers_guest_arguments_and_honours_cancel_disp
     assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
 }
 
+#[test]
+fn disposing_standalone_time_base_preserves_queued_movie_callback() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let registration = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0x2000,
+        refcon: 0x3000,
+        parameters: [0; 3],
+    };
+    loaded.quicktime.callbacks.queue(PPC_QT_MOVIE, registration);
+    call_movie_toolbox(&mut loaded, "DisposeTimeBase", &[base]);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((PPC_QT_MOVIE, registration))
+    );
+    assert!(!loaded.quicktime.time_bases.records.contains_key(&base));
+}
+
+#[test]
+fn standalone_time_base_callbacks_fire_when_nonlooping_bounds_are_reached() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let bound = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(bound, 0).unwrap();
+    loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+    loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+    loaded.memory.write_u64_be(bound, 1).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, bound]);
+    let registration = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [2, 0, 0],
+    };
+    assert!(loaded.quicktime.callbacks.create(0x3000, base, 4));
+    assert!(loaded.quicktime.callbacks.arm(0x3000, registration));
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let now = loaded.callback_scheduling.current_subtick();
+    quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, registration))
+    );
+    assert!(loaded.quicktime.callbacks.arm(0x3000, registration));
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let now = loaded.callback_scheduling.current_subtick();
+    quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+    assert_eq!(loaded.quicktime.callbacks.take_ready(), None);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 1, 1]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0xffff0000]);
+    let reverse = quicktime::callbacks::Registration {
+        parameters: [1, 0, 0],
+        ..registration
+    };
+    assert!(loaded.quicktime.callbacks.arm(0x3000, reverse));
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let now = loaded.callback_scheduling.current_subtick();
+    quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, reverse))
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 3]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 0, 1]);
+    assert!(loaded.quicktime.callbacks.arm(0x3000, registration));
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let now = loaded.callback_scheduling.current_subtick();
+    quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, registration))
+    );
+    assert!(loaded.quicktime.callbacks.arm(0x3000, reverse));
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let now = loaded.callback_scheduling.current_subtick();
+    quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, reverse))
+    );
+}
+
+#[test]
+fn reentrant_time_base_disposal_does_not_free_pending_base() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    loaded
+        .quicktime
+        .callback_frames
+        .push(quicktime::callbacks::ContinuationFrame::Delivery(
+            quicktime::callbacks::DeliveryFrame {
+                import_pc: 0x1234,
+                final_pc: 0x5678,
+                restore_rtoc: 0,
+                result: base,
+                dispose_movie: false,
+                dispose_time_base: Some(base),
+            },
+        ));
+    call_movie_toolbox(&mut loaded, "DisposeTimeBase", &[base]);
+    assert!(loaded.quicktime.time_bases.records.contains_key(&base));
+    loaded.quicktime.callback_frames.pop();
+    call_movie_toolbox(&mut loaded, "DisposeTimeBase", &[base]);
+    assert!(!loaded.quicktime.time_bases.records.contains_key(&base));
+}
+
+#[test]
+fn disposal_callback_can_reenter_disposal_without_freeing_base_early() {
+    use PpcQuickTimeCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let op = |operation| PpcImportDispatcherTarget::QuickTimeCompatibility(operation);
+    let code = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let data = PPC_DATA_BASE + 0x1200;
+    let d = |op: u32, reg: u32, base: u32, imm: i16| {
+        (op << 26) | (reg << 21) | (base << 16) | u32::from(imm as u16)
+    };
+    loaded.memory.add_region(
+        code,
+        [
+            d(37, 1, 1, -64),
+            xfx_form(31, 0, 8, 339),
+            d(36, 0, 1, 68),
+            d(36, 31, 1, 60),
+            x_form(31, 4, 31, 4, 444, false),
+            d(32, 3, 31, 0),
+            d(32, 12, 31, 4),
+            xfx_form(31, 12, 9, 467),
+            xl_form(19, 20, 0, 528, true),
+            d(32, 5, 31, 0),
+            d(32, 5, 5, 0),
+            d(36, 5, 31, 8),
+            d(32, 31, 1, 60),
+            d(32, 0, 1, 68),
+            xfx_form(31, 0, 8, 467),
+            d(14, 1, 1, 64),
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.add_region(
+        vector,
+        [code, 0].into_iter().flat_map(u32::to_be_bytes).collect(),
+    );
+    loaded.memory.add_region(data, vec![0; 12]);
+    run_quicktime_callback_test_import(&mut loaded, op(Op::NewTimeBase));
+    let base = loaded.cpu.gpr[3];
+    loaded.memory.write_u32_be(base, 0x12345678).unwrap();
+    loaded.memory.write_u32_be(data, base).unwrap();
+    loaded
+        .memory
+        .write_u32_be(data + 4, loaded.imports[0].trap_pc)
+        .unwrap();
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 5;
+    run_quicktime_callback_test_import(&mut loaded, op(Op::NewCallBack));
+    loaded.cpu.gpr[4] = vector;
+    loaded.cpu.gpr[5] = data;
+    loaded.cpu.gpr[6..9].fill(0);
+    run_quicktime_callback_test_import(&mut loaded, op(Op::CallMeWhen));
+    loaded.cpu.gpr[3] = base;
+    run_quicktime_callback_test_import(&mut loaded, op(Op::DisposeTimeBase));
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(0x12345678));
+    assert!(!loaded.quicktime.time_bases.records.contains_key(&base));
+}
+
+#[test]
+fn standalone_time_base_disposal_delivers_callback_before_freeing_base() {
+    use PpcQuickTimeCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let op = |operation| PpcImportDispatcherTarget::QuickTimeCompatibility(operation);
+    let code = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let observed = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(
+        code,
+        [
+            0x90620000u32,
+            0x90820004,
+            0x80a20008,
+            0x80a50000,
+            0x90a20008,
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.add_region(
+        vector,
+        [code, observed, code, observed + 12]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(observed, vec![0; 24]);
+    run_quicktime_callback_test_import(&mut loaded, op(Op::NewTimeBase));
+    let base = loaded.cpu.gpr[3];
+    loaded.memory.write_u32_be(base, 0x12345678).unwrap();
+    loaded.memory.write_u32_be(observed + 8, base).unwrap();
+    loaded.memory.write_u32_be(observed + 20, base).unwrap();
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 5;
+    run_quicktime_callback_test_import(&mut loaded, op(Op::NewCallBack));
+    let callback = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = callback;
+    loaded.cpu.gpr[4] = vector;
+    loaded.cpu.gpr[5] = 0xdeadbeef;
+    loaded.cpu.gpr[6..9].fill(0);
+    run_quicktime_callback_test_import(&mut loaded, op(Op::CallMeWhen));
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 5;
+    run_quicktime_callback_test_import(&mut loaded, op(Op::NewCallBack));
+    let second_callback = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = second_callback;
+    loaded.cpu.gpr[4] = vector + 8;
+    loaded.cpu.gpr[5] = 0xfeedface;
+    loaded.cpu.gpr[6..9].fill(0);
+    run_quicktime_callback_test_import(&mut loaded, op(Op::CallMeWhen));
+    loaded.cpu.gpr[3] = base;
+    run_quicktime_callback_test_import(&mut loaded, op(Op::DisposeTimeBase));
+    assert_eq!(loaded.cpu.gpr[3], base);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0xdeadbeef));
+    assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(0x12345678));
+    assert_eq!(
+        loaded.memory.read_u32_be(observed + 12),
+        Some(second_callback)
+    );
+    assert_eq!(loaded.memory.read_u32_be(observed + 16), Some(0xfeedface));
+    assert_eq!(loaded.memory.read_u32_be(observed + 20), Some(0x12345678));
+    assert!(!loaded.quicktime.time_bases.records.contains_key(&base));
+}
+
+#[test]
+fn standalone_time_base_delivers_due_callback_and_preserves_query_result() {
+    use PpcQuickTimeCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let operation = |op| PpcImportDispatcherTarget::QuickTimeCompatibility(op);
+    let code = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let observed = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(
+        code,
+        [0x90620000u32, 0x90820004, 0x4e800020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(
+        vector,
+        [code, observed]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(observed, vec![0; 8]);
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::NewTimeBase));
+    let base = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 1;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::NewCallBack));
+    let callback = loaded.cpu.gpr[3];
+    assert_ne!(callback, 0);
+    loaded.cpu.gpr[3] = callback;
+    loaded.cpu.gpr[4] = vector;
+    loaded.cpu.gpr[5] = 0xdeadbeef;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 300;
+    loaded.cpu.gpr[8] = 600;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::CallMeWhen));
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 0x10000;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::SetTimeBaseRate));
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 600;
+    loaded.cpu.gpr[5] = 0;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::GetTimeBaseTime));
+    assert_eq!(loaded.cpu.gpr[3], 600);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0xdeadbeef));
+
+    let bound = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(bound, 0).unwrap();
+    loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+    loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+    loaded.memory.write_u64_be(bound, 1).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, bound]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 1]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 0, 1]);
+    loaded.cpu.gpr[3] = callback;
+    loaded.cpu.gpr[4] = vector;
+    loaded.cpu.gpr[5] = 0x12345678;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 300;
+    loaded.cpu.gpr[8] = 600;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::CallMeWhen));
+    loaded.memory.write_u32_be(observed, 0).unwrap();
+    advance_quicktime_test_clock(&mut loaded, 120_000_000);
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 600;
+    loaded.cpu.gpr[5] = 0;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::GetTimeBaseTime));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0x12345678));
+
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 3]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 0, 1]);
+    loaded.cpu.gpr[3] = callback;
+    loaded.cpu.gpr[4] = vector;
+    loaded.cpu.gpr[5] = 0x87654321;
+    loaded.cpu.gpr[6] = 2;
+    loaded.cpu.gpr[7] = 300;
+    loaded.cpu.gpr[8] = 600;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::CallMeWhen));
+    loaded.memory.write_u32_be(observed, 0).unwrap();
+    advance_quicktime_test_clock(&mut loaded, 120_000_000);
+    loaded.cpu.gpr[3] = base;
+    loaded.cpu.gpr[4] = 600;
+    loaded.cpu.gpr[5] = 0;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::GetTimeBaseTime));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0x87654321));
+}
+
 fn run_quicktime_callback_test_import(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget) {
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;
@@ -4717,6 +5076,286 @@ fn quicktime_callback_type_returns_signed_short_flags_and_preserves_time_base() 
             assert!(loaded.quicktime.callbacks.get(callback).is_none());
         }
     }
+}
+
+#[test]
+fn movie_time_base_loop_wraps_and_marks_callbacks_without_stopping() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"GetMovieTimeBase",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 6000;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 600;
+    let base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 1).unwrap();
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, record]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 1]);
+    let registration = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [1, 300, 600],
+    };
+    assert!(loaded.quicktime.callbacks.create(0x3000, base, 1));
+    assert!(loaded.quicktime.callbacks.arm(0x3000, registration));
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_playback_rate = 0x10000;
+    loaded.quicktime.movie_clock_subtick = None;
+    let mut sound = PpcSoundState::default();
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 0);
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 120_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        0
+    );
+    assert!(loaded.quicktime.movie_started);
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, registration))
+    );
+    loaded.quicktime.movie_playback_rate = -0x10000;
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 135_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        450
+    );
+    assert!(loaded.quicktime.movie_started);
+}
+
+#[test]
+fn movie_time_base_palindrome_reverses_at_each_extreme() {
+    let mut quicktime = PpcQuickTimeState::default();
+    quicktime.movie_file_duration = 6000;
+    quicktime.movie_creation_time_scale = 600;
+    quicktime.movie_time_scale = 600;
+    quicktime.movie_tasks_until_done = 600;
+    quicktime.movie_time_base_stop =
+        Some(i128::from(crate::time_manager::SUBTICKS_PER_TICK) * 60 * 65536);
+    quicktime.movie_time_base_flags = 3;
+    quicktime.movie_started = true;
+    quicktime.movie_active = true;
+    quicktime.movie_playback_rate = 0x10000;
+    let mut sound = PpcSoundState::default();
+    ppc_qt_service_clock(&mut quicktime, &mut sound, 0);
+    for (clock, expected) in [
+        (30_000_000, 300),
+        (60_000_000, 600),
+        (90_000_000, 300),
+        (120_000_000, 0),
+        (150_000_000, 300),
+    ] {
+        ppc_qt_service_clock(&mut quicktime, &mut sound, clock);
+        assert_eq!(
+            dispatch_quicktime::quicktime_callback_time(&quicktime),
+            expected
+        );
+        assert!(quicktime.movie_started);
+    }
+}
+
+#[test]
+fn movie_palindrome_effective_rate_tracks_turns_and_mastered_bases() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"GetMovieTimeBase",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 6000;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 600;
+    let movie_base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x8000]);
+    call_movie_toolbox(
+        &mut loaded,
+        "SetTimeBaseMasterTimeBase",
+        &[slave, movie_base, 0],
+    );
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 1).unwrap();
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[movie_base, record]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[movie_base, 3]);
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_playback_rate = 0x10000;
+    loaded.quicktime.movie_clock_subtick = None;
+    let mut sound = PpcSoundState::default();
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 0);
+    for (clock, expected) in [
+        (30_000_000, 0x10000i32),
+        (60_000_000, -0x10000),
+        (90_000_000, -0x10000),
+        (120_000_000, 0x10000),
+    ] {
+        ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, clock);
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[movie_base]) as i32,
+            expected
+        );
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[slave]) as i32,
+            expected / 2
+        );
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "GetTimeBaseRate", &[movie_base]),
+            0x10000
+        );
+    }
+    loaded.quicktime.movie_playback_rate = -0x10000;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[movie_base]) as i32,
+        0x10000
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieActiveSegment",
+        &[PPC_QT_MOVIE, 0, 1200],
+    );
+    assert_eq!(loaded.quicktime.movie_time_base_phase, None);
+}
+
+#[test]
+fn movie_time_base_bounds_limit_playback_with_active_segment() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"GetMovieTimeBase",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 6000;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 600;
+    let base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, 0).unwrap();
+    loaded.memory.write_u64_be(record, 2).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, record]);
+    loaded.memory.write_u64_be(record, 4).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, record]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStartTime", &[base, 600, 0]),
+        1200
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStopTime", &[base, 600, 0]),
+        2400
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieActiveSegment",
+        &[PPC_QT_MOVIE, 600, 3000],
+    );
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_playback_rate = 0x10000;
+    loaded.quicktime.movie_clock_subtick = None;
+    let mut sound = PpcSoundState::default();
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 0);
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 300_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        2400
+    );
+    assert!(!loaded.quicktime.movie_started);
+    assert_eq!(loaded.quicktime.movie_active_segment, Some((600, 3000)));
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_playback_rate = -0x10000;
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut sound, 600_000_000);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        1200
+    );
+    assert!(!loaded.quicktime.movie_started);
+}
+
+#[test]
+fn movie_time_base_zero_scale_uses_movie_time_scale() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"GetTimeBaseTime",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 10000;
+    loaded.quicktime.movie_creation_time_scale = 1000;
+    loaded.quicktime.movie_time_scale = 1000;
+    loaded.quicktime.movie_tasks_until_done = 1000;
+    call_movie_toolbox(&mut loaded, "SetMovieTimeValue", &[PPC_QT_MOVIE, 2500]);
+    let base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let record = PPC_STACK_TOP - 64;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 0, record]),
+        2500
+    );
+    assert_eq!(loaded.memory.read_u64_be(record), Some(2500));
+    assert_eq!(loaded.memory.read_u32_be(record + 8), Some(1000));
+    assert_eq!(loaded.memory.read_u32_be(record + 12), Some(base));
+    loaded.memory.write_u64_be(record, 1500).unwrap();
+    loaded.memory.write_u32_be(record + 8, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetMovieTime", &[PPC_QT_MOVIE, record]);
+    assert_eq!(loaded.quicktime.movie_error, PPC_NO_ERR);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        1500
+    );
+    loaded.memory.write_u64_be(record, 1200).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseTime", &[base, record]);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        1200
+    );
+}
+
+#[test]
+fn movie_time_record_converts_standalone_time_base_with_active_segment() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    loaded.quicktime.movie_file_duration = 6000;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 600;
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_playback_rate = 0x10000;
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x8000]);
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieActiveSegment",
+        &[PPC_QT_MOVIE, 1200, 1800],
+    );
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 2).unwrap();
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, base).unwrap();
+    call_movie_toolbox(&mut loaded, "SetMovieTime", &[PPC_QT_MOVIE, record]);
+    assert_eq!(loaded.quicktime.movie_error, PPC_NO_ERR);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        2400
+    );
+    assert_eq!(loaded.quicktime.movie_active_segment, Some((1200, 1800)));
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0]);
+    loaded.memory.write_u64_be(record, 3).unwrap();
+    call_movie_toolbox(&mut loaded, "SetMovieTime", &[PPC_QT_MOVIE, record]);
+    assert_eq!(loaded.quicktime.movie_error, PPC_PARAM_ERR);
+    assert_eq!(
+        dispatch_quicktime::quicktime_callback_time(&loaded.quicktime),
+        2400
+    );
 }
 
 #[test]
@@ -5239,6 +5878,247 @@ fn call_movie_toolbox(loaded: &mut PpcLoadedApp, symbol: &str, args: &[u32]) -> 
 }
 
 #[test]
+fn standalone_time_base_advances_from_guest_clock_and_preserves_scaled_times() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    assert_ne!(base, 0);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 1, 7]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 7, 0]),
+        1
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseRate", &[base]),
+        0
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 3, 2]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x8000]);
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let record = PPC_STACK_TOP - 64;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, record]),
+        1200
+    );
+    assert_eq!(loaded.memory.read_u64_be(record), Some(1200));
+    assert_eq!(loaded.memory.read_u32_be(record + 8), Some(600));
+    assert_eq!(loaded.memory.read_u32_be(record + 12), Some(base));
+    loaded.memory.write_u64_be(record, 300).unwrap();
+    loaded.memory.write_u32_be(record + 8, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseTime", &[base, record]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 0, 0]),
+        300
+    );
+    loaded.memory.write_u64_be(record, 600).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, record]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStartTime", &[base, 0, 0]),
+        600
+    );
+    call_movie_toolbox(&mut loaded, "DisposeTimeBase", &[base]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseRate", &[base]),
+        0
+    );
+}
+
+#[test]
+fn palindrome_time_base_rate_update_preserves_reverse_phase() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let bound = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(bound, 0).unwrap();
+    loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+    loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+    loaded.memory.write_u64_be(bound, 1).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, bound]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 3]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+    advance_quicktime_test_clock(&mut loaded, 90_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 4, 0]),
+        2
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[base]),
+        0xffff0000
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[base]),
+        0xffff0000
+    );
+    advance_quicktime_test_clock(&mut loaded, 15_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 4, 0]),
+        1
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0xffff0000]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[base]),
+        0x10000
+    );
+    advance_quicktime_test_clock(&mut loaded, 15_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 4, 0]),
+        2
+    );
+}
+
+#[test]
+fn zero_scale_master_offset_uses_source_time_base_scale() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[master, 0x10000]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x10000]);
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 300).unwrap();
+    loaded.memory.write_u32_be(record + 8, 0).unwrap();
+    loaded.memory.write_u32_be(record + 12, master).unwrap();
+    call_movie_toolbox(
+        &mut loaded,
+        "SetTimeBaseMasterTimeBase",
+        &[slave, master, record],
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseMasterTimeBase", &[slave]),
+        master
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[slave, 600, 0]),
+        300
+    );
+}
+
+#[test]
+fn standalone_time_bases_convert_through_a_shared_master() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[master, 0x10000]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x8000]);
+    advance_quicktime_test_clock(&mut loaded, 60_000_000);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 1).unwrap();
+    loaded.memory.write_u32_be(record + 8, 4).unwrap();
+    loaded.memory.write_u32_be(record + 12, master).unwrap();
+    call_movie_toolbox(
+        &mut loaded,
+        "SetTimeBaseMasterTimeBase",
+        &[slave, master, record],
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseMasterTimeBase", &[slave]),
+        master
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "SetTimeBaseMasterTimeBase",
+        &[master, slave, 0],
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseMasterTimeBase", &[master]),
+        0
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[slave]),
+        0x8000
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[slave, 600, 0]),
+        225
+    );
+    advance_quicktime_test_clock(&mut loaded, 120_000_000);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[slave, 600, 0]),
+        825
+    );
+    loaded.memory.write_u64_be(record, 825).unwrap();
+    loaded.memory.write_u32_be(record + 8, 600).unwrap();
+    loaded.memory.write_u32_be(record + 12, slave).unwrap();
+    loaded.quicktime.movie_error = -2010;
+    call_movie_toolbox(&mut loaded, "ConvertTime", &[record, master]);
+    assert_eq!(loaded.memory.read_u64_be(record), Some(1800));
+    assert_eq!(loaded.memory.read_u32_be(record + 12), Some(master));
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+    loaded.memory.write_u64_be(record, 825).unwrap();
+    loaded.memory.write_u32_be(record + 8, 0).unwrap();
+    loaded.memory.write_u32_be(record + 12, slave).unwrap();
+    call_movie_toolbox(&mut loaded, "ConvertTime", &[record, master]);
+    assert_eq!(loaded.memory.read_u64_be(record), Some(1800));
+    assert_eq!(loaded.memory.read_u32_be(record + 8), Some(600));
+    assert_eq!(loaded.memory.read_u32_be(record + 12), Some(master));
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+    call_movie_toolbox(&mut loaded, "ConvertTime", &[record, 0x7fff_ffff]);
+    assert_eq!(loaded.memory.read_u64_be(record), Some(1800));
+    assert_eq!(loaded.memory.read_u32_be(record + 12), Some(master));
+    assert_eq!(loaded.quicktime.movie_error, -2010);
+}
+
+#[test]
+fn standalone_time_base_bounds_and_loop_flags_affect_reported_time() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"NewTimeBase",
+    ))
+    .unwrap();
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 2).unwrap();
+    loaded.memory.write_u32_be(record + 8, 1).unwrap();
+    loaded.memory.write_u32_be(record + 12, base).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, record]);
+    loaded.memory.write_u64_be(record, 5).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, record]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStartTime", &[base, 1, record]),
+        2
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStopTime", &[base, 1, record]),
+        5
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 6, 1]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 1, 0]),
+        5
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 1]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseFlags", &[base]),
+        1
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 1, 0]),
+        3
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 3]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 1, 0]),
+        4
+    );
+}
+
+#[test]
 fn quicktime_toolbox_track_metadata_scales_and_rejects_bad_indices() {
     let mut loaded = movie_toolbox_fixture();
     assert_eq!(
@@ -5579,6 +6459,65 @@ fn quicktime_toolbox_movies_task_obeys_fractional_reverse_and_stopped_rates() {
     assert!(loaded.quicktime.movie_at_beginning);
     task(&mut loaded);
     assert_eq!(loaded.quicktime.movie_task_count, 0);
+}
+
+#[test]
+fn movie_palindrome_audio_follows_direction_and_bounds() {
+    let mut loaded = movie_toolbox_fixture();
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_creation_time_scale = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_file_duration = 600;
+    loaded.quicktime.movie_tasks_until_done = 120;
+    loaded.quicktime.movie_file_data = vec![0, 0, 0x40, 0, 0xC0, 0, 0x10, 0, 0x20, 0, 0x30, 0];
+    loaded.quicktime.movie_audio_track = Some(PpcQuickTimeAudioTrackRecord {
+        media_time_scale: 6,
+        media_duration: 6,
+        sample_count: 6,
+        first_sample_duration: 1,
+        first_sample_size: 2,
+        first_chunk_offset: 0,
+        first_sample_data_len: 2,
+        first_sample_checksum: 0,
+        first_sample_preview_len: 0,
+        first_sample_preview: [0; 16],
+        first_samples_per_chunk: 6,
+        sample_description_id: 1,
+        codec: u32::from_be_bytes(*b"twos"),
+        channel_count: 1,
+        sample_size_bits: 16,
+        sample_rate_fixed: 6 << 16,
+    });
+    let base = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+    let record = PPC_STACK_TOP - 64;
+    loaded.memory.write_u64_be(record, 300).unwrap();
+    loaded.memory.write_u32_be(record + 8, 600).unwrap();
+    loaded.memory.write_u32_be(record + 12, 0).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, record]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 3]);
+    call_movie_toolbox(&mut loaded, "SetMovieRate", &[PPC_QT_MOVIE, 0x10000]);
+    assert_eq!(
+        loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+        [0x80, 0xC0, 0x40]
+    );
+    loaded.quicktime.movie_clock_subtick = None;
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, 0);
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, 30_000_000);
+    assert_eq!(
+        loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+        [0x40, 0xC0, 0x80]
+    );
+    ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, 60_000_000);
+    assert_eq!(
+        loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+        [0x80, 0xC0, 0x40]
+    );
+    loaded.memory.write_u64_be(record, 600).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, record]);
+    assert_eq!(
+        loaded.sound.decoded_file_playbacks.last().unwrap().samples,
+        [0x80, 0xC0, 0x40, 0x90, 0xA0, 0xB0]
+    );
 }
 
 #[test]
@@ -6280,4 +7219,937 @@ fn quicktime_controller_seek_delivers_jump_without_spurious_drawing_callback() {
     );
     assert_eq!(loaded.memory.read_u32_be(data + 220), Some(callback));
     assert_eq!(loaded.memory.read_u32_be(data + 224), Some(0));
+}
+
+#[test]
+fn movie_master_palindrome_crossing_should_trigger_slave_callback() {
+    for (rate, elapsed) in [
+        (0x10000, 120_000_000),
+        (-0x10000, 120_000_000),
+        (0x10000, 600_000_000),
+    ] {
+        let mut loaded = movie_toolbox_fixture();
+        loaded.quicktime.movie_creation_time_scale = 600;
+        loaded.quicktime.movie_time_scale = 600;
+        loaded.quicktime.movie_file_duration = 600;
+        loaded.quicktime.movie_tasks_until_done = 120;
+        let master = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x10000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        let registration = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 300, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, slave, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, registration));
+        loaded.quicktime.movie_started = true;
+        loaded.quicktime.movie_active = true;
+        loaded.quicktime.movie_playback_rate = rate;
+        loaded.quicktime.movie_clock_subtick = None;
+        ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, 0);
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, 0);
+        ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, elapsed);
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, elapsed);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, registration))
+        );
+    }
+}
+
+#[test]
+fn movie_master_wrap_preserves_slave_time_and_jump_callbacks() {
+    for (rate, elapsed) in [
+        (0x10000i32, 120_000_000),
+        (-0x10000, 120_000_000),
+        (0x10000, 600_000_000),
+    ] {
+        let mut loaded = movie_toolbox_fixture();
+        loaded.quicktime.movie_creation_time_scale = 600;
+        loaded.quicktime.movie_time_scale = 600;
+        loaded.quicktime.movie_file_duration = 600;
+        loaded.quicktime.movie_tasks_until_done = 120;
+        let master = call_movie_toolbox(&mut loaded, "GetMovieTimeBase", &[PPC_QT_MOVIE]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x10000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 1]);
+        let forward = rate > 0;
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [if forward { 1 } else { 2 }, 300, 600],
+        };
+        let opposite = quicktime::callbacks::Registration {
+            parameters: [if forward { 2 } else { 1 }, 300, 600],
+            ..crossing
+        };
+        let jump = quicktime::callbacks::Registration {
+            parameters: [0, 0, 0],
+            ..crossing
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, slave, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        assert!(loaded.quicktime.callbacks.create(0x3010, slave, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3010, opposite));
+        assert!(loaded.quicktime.callbacks.create(0x3020, slave, 3));
+        assert!(loaded.quicktime.callbacks.arm(0x3020, jump));
+        assert!(loaded.quicktime.callbacks.create(0x3030, master, 3));
+        assert!(loaded.quicktime.callbacks.arm(0x3030, jump));
+        loaded.quicktime.movie_started = true;
+        loaded.quicktime.movie_active = true;
+        loaded.quicktime.movie_playback_rate = rate;
+        loaded.quicktime.movie_clock_subtick = None;
+        ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, 0);
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, 0);
+        ppc_qt_service_clock(&mut loaded.quicktime, &mut loaded.sound, elapsed);
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, elapsed);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing))
+        );
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3020, jump))
+        );
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3030, jump))
+        );
+        assert_eq!(loaded.quicktime.callbacks.take_ready(), None);
+    }
+}
+
+#[test]
+fn standalone_master_palindrome_crossing_triggers_nested_slave_callback() {
+    for nested_loops in [false, true] {
+        for split_service in [true, false] {
+            let mut loaded = movie_toolbox_fixture();
+            let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+            let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+            let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+            let bound = PPC_STACK_TOP - 64;
+            loaded.memory.write_u64_be(bound, 0).unwrap();
+            loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+            loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[master, bound]);
+            loaded.memory.write_u64_be(bound, 1).unwrap();
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+            call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+            for base in [master, slave, nested] {
+                call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+            }
+            call_movie_toolbox(
+                &mut loaded,
+                "SetTimeBaseMasterTimeBase",
+                &[slave, master, 0],
+            );
+            call_movie_toolbox(
+                &mut loaded,
+                "SetTimeBaseMasterTimeBase",
+                &[nested, slave, 0],
+            );
+            if nested_loops {
+                loaded.memory.write_u64_be(bound, 0).unwrap();
+                loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+                call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[nested, bound]);
+                loaded.memory.write_u64_be(bound, 1).unwrap();
+                call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[nested, bound]);
+                call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[nested, 1]);
+            }
+            let crossing = quicktime::callbacks::Registration {
+                procedure: 0x1000,
+                rtoc: 0,
+                refcon: 0,
+                parameters: [1, if nested_loops { 75 } else { 300 }, 600],
+            };
+            assert!(loaded.quicktime.callbacks.create(0x3010, master, 1));
+            assert!(loaded.quicktime.callbacks.arm(0x3010, crossing));
+            assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+            assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+            let backward = quicktime::callbacks::Registration {
+                parameters: [2, if nested_loops { 75 } else { 300 }, 600],
+                ..crossing
+            };
+            assert!(loaded.quicktime.callbacks.create(0x3020, nested, 1));
+            assert!(loaded.quicktime.callbacks.arm(0x3020, backward));
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+            if split_service {
+                advance_quicktime_test_clock(&mut loaded, 60_000_000);
+                let now = loaded.callback_scheduling.current_subtick();
+                quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+            }
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    60_000_000
+                } else {
+                    120_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+            assert_eq!(
+                loaded.quicktime.callbacks.take_ready(),
+                Some((0x3010, crossing))
+            );
+            assert_eq!(
+                loaded.quicktime.callbacks.take_ready(),
+                Some((0x3000, crossing)),
+                "split service: {split_service}"
+            );
+            assert_eq!(
+                loaded.quicktime.callbacks.take_ready(),
+                Some((0x3020, backward)),
+                "split service: {split_service}"
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_palindrome_master_propagates_intermediate_slave_wraps() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 1]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 75, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 24 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    5_000_000
+                } else {
+                    120_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+    }
+}
+
+#[test]
+fn standalone_palindrome_master_propagates_intermediate_slave_turns() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 3]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 75, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 24 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    5_000_000
+                } else {
+                    120_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+    }
+}
+
+#[test]
+fn standalone_palindrome_master_propagates_long_interval() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 1]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 75, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 24 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    5_000_000
+                } else {
+                    1_200_000_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        advance_quicktime_test_clock(&mut loaded, 10_000_000);
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+        for base in [master, slave, nested] {
+            assert_eq!(
+                call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, 0]),
+                100
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_time_base_service_handles_multiple_looping_roots() {
+    let mut loaded = movie_toolbox_fixture();
+    let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+    let base = quicktime::timebase::TimeBase {
+        value: 0,
+        source: 0,
+        remainder: 0,
+        rate: 0x10000,
+        start: Some(0),
+        stop: Some(width),
+        flags: 1,
+        master: None,
+    };
+    let registration = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [1, 300, 600],
+    };
+    for root in [0x4000_0000, 0x5000_0000] {
+        loaded.quicktime.time_bases.records.insert(root, base);
+        loaded.quicktime.time_bases.records.insert(
+            root + 1,
+            quicktime::timebase::TimeBase {
+                start: None,
+                stop: None,
+                flags: 0,
+                master: Some(root),
+                ..base
+            },
+        );
+        assert!(loaded.quicktime.callbacks.create(root + 2, root + 1, 1));
+        assert!(loaded.quicktime.callbacks.arm(root + 2, registration));
+    }
+    for id in 0x6000_0000..0x6000_1000 {
+        loaded.quicktime.time_bases.records.insert(
+            id,
+            quicktime::timebase::TimeBase {
+                start: None,
+                stop: None,
+                flags: 0,
+                ..base
+            },
+        );
+    }
+    quicktime::ppc_qt_service_time_bases(
+        &mut loaded.quicktime,
+        60 * crate::time_manager::SUBTICKS_PER_TICK as u64,
+    );
+    let mut ready = [
+        loaded.quicktime.callbacks.take_ready().unwrap().0,
+        loaded.quicktime.callbacks.take_ready().unwrap().0,
+    ];
+    ready.sort();
+    assert_eq!(ready, [0x4000_0002, 0x5000_0002]);
+    assert!(loaded.quicktime.callbacks.take_ready().is_none());
+    assert_eq!(
+        loaded.quicktime.time_bases.records[&0x6000_0fff].value,
+        width
+    );
+}
+
+#[test]
+fn standalone_loop_service_handles_deep_master_chain() {
+    let mut loaded = movie_toolbox_fixture();
+    let root = 0x4000_0000;
+    let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+    let base = quicktime::timebase::TimeBase {
+        value: 0,
+        source: 0,
+        remainder: 0,
+        rate: 0x10000,
+        start: Some(0),
+        stop: Some(width),
+        flags: 1,
+        master: None,
+    };
+    loaded.quicktime.time_bases.records.insert(root, base);
+    for index in 1..=10_000u32 {
+        loaded.quicktime.time_bases.records.insert(
+            root + index,
+            quicktime::timebase::TimeBase {
+                start: None,
+                stop: None,
+                flags: 0,
+                master: Some(root + index - 1),
+                ..base
+            },
+        );
+    }
+    let callback = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [1, 150, 600],
+    };
+    assert!(loaded.quicktime.callbacks.create(0x3000, root + 10_000, 1));
+    assert!(loaded.quicktime.callbacks.arm(0x3000, callback));
+    quicktime::ppc_qt_service_time_bases(
+        &mut loaded.quicktime,
+        30 * crate::time_manager::SUBTICKS_PER_TICK as u64,
+    );
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, callback))
+    );
+    assert_eq!(
+        loaded.quicktime.time_bases.records[&(root + 10_000)].value,
+        width / 2
+    );
+}
+
+#[test]
+fn standalone_loop_master_delivers_callbacks_for_wide_tree() {
+    let mut loaded = movie_toolbox_fixture();
+    let master = 0x4000_0000;
+    let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+    let base = quicktime::timebase::TimeBase {
+        value: 0,
+        source: 0,
+        remainder: 0,
+        rate: 0x10000,
+        start: Some(0),
+        stop: Some(width),
+        flags: 1,
+        master: None,
+    };
+    loaded.quicktime.time_bases.records.insert(master, base);
+    for child in 1..=4100u32 {
+        loaded.quicktime.time_bases.records.insert(
+            master + child,
+            quicktime::timebase::TimeBase {
+                start: None,
+                stop: None,
+                flags: 0,
+                master: Some(master),
+                ..base
+            },
+        );
+    }
+    let crossing = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [1, 300, 600],
+    };
+    assert!(loaded.quicktime.callbacks.create(0x3000, master + 1, 1));
+    assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+    quicktime::ppc_qt_service_time_bases(
+        &mut loaded.quicktime,
+        60 * crate::time_manager::SUBTICKS_PER_TICK as u64,
+    );
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, crossing))
+    );
+}
+
+#[test]
+fn standalone_loop_master_delivers_callbacks_through_wide_looping_branches() {
+    let mut loaded = movie_toolbox_fixture();
+    let master = 0x4000_0000;
+    let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+    let base = quicktime::timebase::TimeBase {
+        value: 0,
+        source: 0,
+        remainder: 0,
+        rate: 0x10000,
+        start: Some(0),
+        stop: Some(width),
+        flags: 1,
+        master: None,
+    };
+    loaded.quicktime.time_bases.records.insert(master, base);
+    for child in 1..=2100u32 {
+        let branch = master + child;
+        loaded.quicktime.time_bases.records.insert(
+            branch,
+            quicktime::timebase::TimeBase {
+                start: Some(0),
+                stop: Some(width / 2),
+                flags: 1,
+                master: Some(master),
+                ..base
+            },
+        );
+        loaded.quicktime.time_bases.records.insert(
+            master + 10_000 + child,
+            quicktime::timebase::TimeBase {
+                start: None,
+                stop: None,
+                flags: 0,
+                master: Some(branch),
+                ..base
+            },
+        );
+    }
+    let crossing = quicktime::callbacks::Registration {
+        procedure: 0x1000,
+        rtoc: 0,
+        refcon: 0,
+        parameters: [1, 150, 600],
+    };
+    assert!(loaded
+        .quicktime
+        .callbacks
+        .create(0x3000, master + 10_001, 1));
+    assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+    quicktime::ppc_qt_service_time_bases(
+        &mut loaded.quicktime,
+        60 * crate::time_manager::SUBTICKS_PER_TICK as u64,
+    );
+    assert_eq!(
+        loaded.quicktime.callbacks.take_ready(),
+        Some((0x3000, crossing))
+    );
+}
+
+#[test]
+fn standalone_palindrome_master_propagates_long_interval_fractional_rate() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 1]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x8000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 75, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 24 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    5_000_000
+                } else {
+                    1_200_000_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        advance_quicktime_test_clock(&mut loaded, 10_000_000);
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+        for (base, expected) in [(master, 100), (slave, 50), (nested, 50)] {
+            assert_eq!(
+                call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, 0]),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_palindrome_master_propagates_long_interval_reverse() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 3]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 1]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[slave, 0x8000]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[master, 0xffff0000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 75, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 24 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service {
+                    5_000_000
+                } else {
+                    1_200_000_000_000
+                },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        advance_quicktime_test_clock(&mut loaded, 10_000_000);
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+        for (base, expected) in [(master, 100), (slave, 50), (nested, 50)] {
+            assert_eq!(
+                call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, 0]),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn standalone_reverse_loop_master_propagates_slave_crossing() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 1]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 0]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[master, 0xffff0000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [2, 300, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 12 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service { 5_000_000 } else { 60_000_000 },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, crossing)),
+            "split service: {split_service}"
+        );
+    }
+}
+
+#[test]
+fn standalone_reverse_loop_master_propagates_initial_jump() {
+    for split_service in [true, false] {
+        let mut loaded = movie_toolbox_fixture();
+        let master = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let slave = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let nested = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 4).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        for base in [master, slave] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        }
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[slave, bound]);
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[master, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[master, 1]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[slave, 0]);
+        for base in [master, slave, nested] {
+            call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x10000]);
+        }
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[master, 0xffff0000]);
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[slave, master, 0],
+        );
+        call_movie_toolbox(
+            &mut loaded,
+            "SetTimeBaseMasterTimeBase",
+            &[nested, slave, 0],
+        );
+        let crossing = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 300, 600],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, nested, 1));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, crossing));
+        let jump = quicktime::callbacks::Registration {
+            parameters: [0, 0, 0],
+            ..crossing
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3020, master, 3));
+        assert!(loaded.quicktime.callbacks.arm(0x3020, jump));
+        assert!(loaded.quicktime.callbacks.create(0x3010, nested, 3));
+        assert!(loaded.quicktime.callbacks.arm(0x3010, jump));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        for _ in 0..if split_service { 6 } else { 1 } {
+            advance_quicktime_test_clock(
+                &mut loaded,
+                if split_service { 1_000_000 } else { 6_000_000 },
+            );
+            let now = loaded.callback_scheduling.current_subtick();
+            quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        }
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3020, jump)),
+            "split service: {split_service}"
+        );
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3010, jump))
+        );
+        assert_eq!(loaded.quicktime.callbacks.take_ready(), None);
+    }
+}
+
+#[test]
+fn standalone_loop_without_slave_signals_wrap_jump() {
+    for rate in [0x10000, 0xffff0000] {
+        let mut loaded = movie_toolbox_fixture();
+        let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+        let bound = PPC_STACK_TOP - 64;
+        loaded.memory.write_u64_be(bound, 0).unwrap();
+        loaded.memory.write_u32_be(bound + 8, 1).unwrap();
+        loaded.memory.write_u32_be(bound + 12, 0).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStartTime", &[base, bound]);
+        loaded.memory.write_u64_be(bound, 1).unwrap();
+        call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, bound]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 1]);
+        call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, rate]);
+        let jump = quicktime::callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [0, 0, 0],
+        };
+        assert!(loaded.quicktime.callbacks.create(0x3000, base, 3));
+        assert!(loaded.quicktime.callbacks.arm(0x3000, jump));
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        advance_quicktime_test_clock(&mut loaded, 60_000_000);
+        let now = loaded.callback_scheduling.current_subtick();
+        quicktime::ppc_qt_service_time_bases(&mut loaded.quicktime, now);
+        assert_eq!(
+            loaded.quicktime.callbacks.take_ready(),
+            Some((0x3000, jump))
+        );
+    }
 }

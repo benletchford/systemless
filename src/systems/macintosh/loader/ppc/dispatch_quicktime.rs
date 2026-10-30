@@ -55,9 +55,66 @@ pub(super) fn dispatch_quicktime_import(
         else {
             unreachable!("checked movie callback continuation");
         };
-        return Some(deliver_quicktime_callbacks(
-            cpu, memory, quicktime, sound, frame,
-        ));
+        let action = deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame);
+        if matches!(
+            action,
+            PpcImportAction::Return(_) | PpcImportAction::ReturnPreserve
+        ) {
+            if let Some(id) = frame.dispose_time_base {
+                quicktime::timebase::dispose_time_base(
+                    id,
+                    quicktime,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+            }
+        }
+        return Some(action);
+    }
+
+    if matches!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::DisposeTimeBase
+        )
+    ) {
+        let id = cpu.gpr[3];
+        if !quicktime.time_bases.records.contains_key(&id)
+            || quicktime.callback_frames.iter().any(|frame| {
+                matches!(frame, quicktime::callbacks::ContinuationFrame::Delivery(frame)
+                    if frame.dispose_time_base == Some(id))
+            })
+        {
+            return Some(PpcImportAction::ReturnPreserve);
+        }
+        quicktime
+            .callbacks
+            .mark_event(id, quicktime::callbacks::Event::Disposed);
+        let frame = quicktime::callbacks::DeliveryFrame {
+            import_pc: cpu.pc,
+            final_pc: cpu.lr,
+            restore_rtoc: cpu.gpr[2],
+            result: cpu.gpr[3],
+            dispose_movie: false,
+            dispose_time_base: Some(id),
+        };
+        let action = deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame);
+        if matches!(
+            action,
+            PpcImportAction::Return(_) | PpcImportAction::ReturnPreserve
+        ) {
+            quicktime::timebase::dispose_time_base(
+                id,
+                quicktime,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+        }
+        return Some(action);
     }
 
     match binding.dispatcher_target {
@@ -508,10 +565,34 @@ fn finish_quicktime_callbacks(
         restore_rtoc: cpu.gpr[2],
         result,
         dispose_movie,
+        dispose_time_base: None,
     };
     if error != PPC_NO_ERR {
         return PpcImportAction::Return(result);
     }
+    deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame)
+}
+
+pub(super) fn finish_timebase_callbacks(
+    action: PpcImportAction,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+) -> PpcImportAction {
+    let result = match action {
+        PpcImportAction::Return(value) => value,
+        PpcImportAction::ReturnPreserve => cpu.gpr[3],
+        _ => return action,
+    };
+    let frame = quicktime::callbacks::DeliveryFrame {
+        import_pc: cpu.pc,
+        final_pc: cpu.lr,
+        restore_rtoc: cpu.gpr[2],
+        result,
+        dispose_movie: false,
+        dispose_time_base: None,
+    };
     deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame)
 }
 
@@ -522,7 +603,11 @@ fn deliver_quicktime_callbacks(
     sound: &mut PpcSoundState,
     frame: quicktime::callbacks::DeliveryFrame,
 ) -> PpcImportAction {
-    while let Some((address, registration)) = quicktime.callbacks.take_ready() {
+    while let Some((address, registration)) = if let Some(id) = frame.dispose_time_base {
+        quicktime.callbacks.take_disposal_ready(id)
+    } else {
+        quicktime.callbacks.take_ready()
+    } {
         let Some(target) =
             ppc_resolve_callback_target(memory, registration.procedure, registration.rtoc, None)
         else {
@@ -553,6 +638,7 @@ fn deliver_quicktime_callbacks(
     cpu.lr = frame.final_pc;
     cpu.gpr[2] = frame.restore_rtoc;
     if frame.dispose_movie {
+        quicktime.callbacks.clear_queued();
         quicktime.callbacks.retire_time_base(PPC_QT_MOVIE + 0x10);
         let saved = cpu.gpr[3];
         cpu.gpr[3] = PPC_QT_MOVIE;
