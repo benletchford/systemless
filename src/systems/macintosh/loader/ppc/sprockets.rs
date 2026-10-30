@@ -113,6 +113,7 @@ pub(crate) struct PpcDspDesktopSnapshot {
     screen_bytes: Vec<u8>,
     gdevice_bytes: Vec<u8>,
     screen_clut: [[u16; 3]; 256],
+    device_ctable: (u32, Vec<u8>),
     records: Vec<PpcGWorldRecord>,
     pixmaps: Vec<(u32, Vec<u8>)>,
     /// Screen geometry the game reads (main portRect, visRgn, GrayRgn and
@@ -1743,6 +1744,19 @@ fn ppc_dsp_capture_desktop(
     let screen_bytes =
         ppc_memory_read_bytes(memory, PPC_MAIN_SCREEN_BASE, ppc_main_screen_buffer_size())?;
     let gdevice_bytes = ppc_memory_read_bytes(memory, PPC_MAIN_GDEVICE_RECORD, PPC_GDEVICE_SIZE)?;
+    let device = memory.read_u32_be(PPC_MAIN_GDEVICE).filter(|ptr| *ptr != 0)?;
+    let pixmap_handle = memory.read_u32_be(device.checked_add(22)?)?;
+    let pixmap = memory.read_u32_be(pixmap_handle).filter(|ptr| *ptr != 0)?;
+    let ctable_handle = memory.read_u32_be(pixmap.checked_add(42)?)?;
+    let ctable = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0)?;
+    let count = u32::from(memory.read_u16_be(ctable.checked_add(6)?)?) + 1;
+    if count > 256 {
+        return None;
+    }
+    let device_ctable = (
+        ctable_handle,
+        ppc_memory_read_bytes(memory, ctable, 8 + count * 8)?,
+    );
     let records: Vec<_> = gworlds
         .iter()
         .filter(|record| {
@@ -1775,6 +1789,7 @@ fn ppc_dsp_capture_desktop(
         screen_bytes,
         gdevice_bytes,
         screen_clut: *screen_clut,
+        device_ctable,
         records,
         pixmaps,
         screen_geometry,
@@ -1790,12 +1805,27 @@ pub(crate) fn ppc_dsp_restore_desktop(
     let Some(snapshot) = draw_sprocket.desktop_snapshot.as_ref() else {
         return true;
     };
+    let Some(ctable) = memory
+        .read_u32_be(snapshot.device_ctable.0)
+        .filter(|ptr| *ptr != 0)
+    else {
+        return false;
+    };
+    if !ppc_memory_can_write_bytes(memory, ctable, snapshot.device_ctable.1.len() as u32) {
+        return false;
+    }
     if memory
         .write_bytes(PPC_MAIN_SCREEN_BASE, &snapshot.screen_bytes)
         .is_none()
         || memory
             .write_bytes(PPC_MAIN_GDEVICE_RECORD, &snapshot.gdevice_bytes)
             .is_none()
+    {
+        return false;
+    }
+    if memory
+        .write_bytes(ctable, &snapshot.device_ctable.1)
+        .is_none()
     {
         return false;
     }
@@ -2093,6 +2123,86 @@ pub(crate) fn ppc_dsp_present_back_buffer(
     // the invalid parts of the context's back buffer (or the entire buffer
     // when no dirty rectangles are supplied) are drawn to the screen.
     true
+}
+
+pub(crate) fn ppc_dsp_set_device_clut_entries(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    screen_clut: &mut [[u16; 3]; 256],
+    next_ct_seed: &mut u32,
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let start = u32::from(cpu.gpr[5] as u16);
+    let count = u32::from(cpu.gpr[6] as u16);
+    let Some(end) = start.checked_add(count).filter(|end| *end <= 256) else {
+        return PPC_PARAM_ERR;
+    };
+    let mut updated = *screen_clut;
+    let result = ppc_dsp_context_set_clut_entries(cpu, memory, &mut updated);
+    if result != PPC_NO_ERR {
+        return result;
+    }
+    let result = ppc_dsp_sync_device_clut(memory, &updated, start, end, next_ct_seed);
+    if result == PPC_NO_ERR {
+        *screen_clut = updated;
+    }
+    result
+}
+
+pub(crate) fn ppc_dsp_sync_device_clut(
+    memory: &mut PpcSectionMem,
+    screen_clut: &[[u16; 3]; 256],
+    start: u32,
+    end: u32,
+    next_ct_seed: &mut u32,
+) -> i16 {
+    if start > end || end > 256 {
+        return PPC_PARAM_ERR;
+    }
+    let count = end - start;
+    if count == 0 {
+        return PPC_NO_ERR;
+    }
+    let resolution = ppc_gdevice_ctable_handle_with_provenance(memory, PPC_MAIN_GDEVICE);
+    if resolution.known && resolution.handle.is_none() {
+        return PPC_NO_ERR;
+    }
+    let Some(table) = resolution
+        .handle
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|ptr| *ptr != 0)
+    else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(table_count) = table
+        .checked_add(6)
+        .and_then(|ptr| memory.read_u16_be(ptr))
+        .map(|n| u32::from(n) + 1)
+    else {
+        return PPC_PARAM_ERR;
+    };
+    if end > table_count
+        || !ppc_memory_can_write_bytes(memory, table, 4)
+        || (count != 0
+            && !table
+                .checked_add(8 + start * 8)
+                .is_some_and(|ptr| ppc_memory_can_write_bytes(memory, ptr, count * 8)))
+    {
+        return PPC_PARAM_ERR;
+    }
+    for index in start..end {
+        let entry = table + 8 + index * 8;
+        let [red, green, blue] = screen_clut[index as usize];
+        let _ = memory.write_u16_be(entry + 2, red);
+        let _ = memory.write_u16_be(entry + 4, green);
+        let _ = memory.write_u16_be(entry + 6, blue);
+    }
+    let seed = (*next_ct_seed).max(1024);
+    *next_ct_seed = seed.wrapping_add(1).max(1024);
+    let _ = memory.write_u32_be(table, seed);
+    PPC_NO_ERR
 }
 
 pub(crate) fn ppc_dsp_context_set_clut_entries(
