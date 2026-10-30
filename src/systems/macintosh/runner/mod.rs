@@ -3037,14 +3037,65 @@ impl FixtureRunner {
             }
             self.dispatcher.update_standard_file_button_for_mouse(&mut self.bus);
         }
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_position_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
     }
 
+    fn note_ppc_physical_mouse_input(&mut self) {
+        let input = self.ppc_input_snapshot();
+        let tick = self.guest_tick();
+        for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+            if let Some(app) = self.native.adapter_mut(role) {
+                app.note_physical_mouse_input(input, tick);
+            }
+        }
+    }
+
     /// Drain the latest cursor position adopted from guest low memory.
     pub fn take_guest_cursor_warp(&mut self) -> Option<(i16, i16)> {
         self.pending_guest_cursor_warp.take()
+    }
+
+    /// The frontend has adopted a guest cursor warp as its new input origin.
+    /// Rebase relative motion without producing a physical input event.
+    pub fn acknowledge_guest_cursor_warp(&mut self, position: (i16, i16)) {
+        let previous = self.dispatcher.adb.rebase_mouse_position(position);
+        self.dispatcher.input_state.set_mouse_position(position);
+        for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+            if let Some(app) = self.native.adapter_mut(role) {
+                app.rebase_physical_mouse_position(position);
+                if app
+                    .input_sprocket
+                    .device_mouse_rebased_warp
+                    .take()
+                    .is_some_and(|(warp, _)| warp == position)
+                {
+                    if let Some(anchor) = app.input_sprocket.device_mouse_v.as_mut() {
+                        *anchor = position.0;
+                    }
+                    if let Some(anchor) = app.input_sprocket.device_mouse_h.as_mut() {
+                        *anchor = position.1;
+                    }
+                    continue;
+                }
+                if let Some(anchor) = app.input_sprocket.device_mouse_v.as_mut() {
+                    app.input_sprocket.device_mouse_v_carry = app
+                        .input_sprocket
+                        .device_mouse_v_carry
+                        .wrapping_add(i32::from(*anchor) - i32::from(previous.0));
+                    *anchor = position.0;
+                }
+                if let Some(anchor) = app.input_sprocket.device_mouse_h.as_mut() {
+                    app.input_sprocket.device_mouse_h_carry = app
+                        .input_sprocket
+                        .device_mouse_h_carry
+                        .wrapping_add(i32::from(previous.1) - i32::from(*anchor));
+                    *anchor = position.1;
+                }
+            }
+        }
     }
 
     /// Return an immutable snapshot of the guest's current Menu Manager list.
@@ -3211,6 +3262,7 @@ impl FixtureRunner {
         self.dispatcher.read_tick_count(&self.bus);
         self.dispatcher
             .with_process_state(|d| d.push_mouse_down(v, h));
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -3256,6 +3308,7 @@ impl FixtureRunner {
         self.dispatcher.read_tick_count(&self.bus);
         self.dispatcher
             .with_process_state(|d| d.push_mouse_up(v, h));
+        self.note_ppc_physical_mouse_input();
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -11379,6 +11432,21 @@ impl FixtureRunner {
             // Apple Technical Note DV520, "How the Macintosh mouse/cursor
             // mechanism works"; Inside Macintosh Volume V (1986), V-365.
             let position = ((mouse >> 16) as i16, mouse as i16);
+            for role in [NativeEngineRole::Application, NativeEngineRole::Companion] {
+                if let Some(app) = self.native.adapter_mut(role) {
+                    if let Some((warp, _)) = app.input_sprocket.device_mouse_rebased_warp.as_mut() {
+                        if *warp != position {
+                            *warp = position;
+                            if let Some(anchor) = app.input_sprocket.device_mouse_v.as_mut() {
+                                *anchor = position.0;
+                            }
+                            if let Some(anchor) = app.input_sprocket.device_mouse_h.as_mut() {
+                                *anchor = position.1;
+                            }
+                        }
+                    }
+                }
+            }
             self.dispatcher.input_state.set_mouse_position(position);
             self.pending_guest_cursor_warp = Some(position);
         }

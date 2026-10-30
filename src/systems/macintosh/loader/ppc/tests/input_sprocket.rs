@@ -2201,6 +2201,109 @@ fn inputsprocket_device_activity_queries_follow_class_activation() {
 }
 
 #[test]
+fn inputsprocket_retains_mouse_motion_before_first_event_read() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: 100,
+        mouse_h: 100,
+        ..PpcInputSnapshot::default()
+    });
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpStartup);
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: 100,
+        mouse_h: 120,
+        ..PpcInputSnapshot::default()
+    });
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 24;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u8(scratch + 24), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(20 << 16));
+}
+
+#[test]
+fn inputsprocket_shutdown_discards_pending_mouse_events_and_stops_sampling() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let input = |h| PpcInputSnapshot {
+        mouse_v: 100,
+        mouse_h: h,
+        ..Default::default()
+    };
+    loaded.set_input_snapshot(input(100));
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpStartup);
+    loaded.cpu.gpr[3] = scratch + 32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpGetGlobalElementList,
+    );
+    let list = loaded.memory.read_u32_be(scratch + 32).unwrap();
+    loaded.set_input_snapshot(input(110));
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 24;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u8(scratch + 24), Some(1));
+    loaded.set_input_snapshot(input(120));
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpShutdown);
+    loaded.set_input_snapshot(input(150));
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpStartup);
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 24;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u8(scratch + 24), Some(0));
+    let read = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = scratch + 24;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(
+                PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        (loaded.memory.read_u8(scratch + 24) == Some(1))
+            .then(|| loaded.memory.read_u32_be(scratch + 16).unwrap())
+    };
+    assert_eq!(read(&mut loaded), None);
+    loaded.set_input_snapshot(input(155));
+    assert_eq!(read(&mut loaded), Some(5 << 16));
+}
+
+#[test]
 fn inputsprocket_suspend_masks_raw_mouse_and_resume_drops_inactive_motion() {
     use PpcInputSprocketCompatibilityOperation as Op;
     let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
@@ -2530,6 +2633,38 @@ fn input_sprocket_driver_device_and_element_lifetimes() {
             assert_eq!(loaded.memory.read_u32_be(event_output + 12), Some(ref_con));
             assert_eq!(loaded.memory.read_u32_be(event_output + 16), Some(value));
         }
+    }
+    // Fail after staging one recipient: no queue or element state may observe
+    // the rejected event, and the following ordinary pushes must still work.
+    super::super::inputsprocket_drivers::fail_publication_after_recipients_for_test(1);
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = 99;
+    loaded.cpu.gpr[5] = scratch + 224;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketDriver(
+            PpcInputSprocketDriverOperation::ElementPushSimpleData,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = scratch + 232;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementGetSimpleState,
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 232), Some(9));
+    for reference in [list, device, PPC_ISP_GLOBAL_ELEMENT_LIST] {
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = 20;
+        loaded.cpu.gpr[5] = event_output;
+        loaded.cpu.gpr[6] = event_output + 24;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u8(event_output + 24), Some(0));
     }
     let old_limit = loaded.heap_limit();
     loaded.set_heap_limit(loaded.heap_cursor() + 257);
@@ -3200,4 +3335,348 @@ fn input_sprocket_driver_callbacks_can_activate_another_driver_reentrantly() {
             );
         }
     }
+}
+
+#[test]
+fn mouse_element_state_queries_do_not_consume_device_events() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let state_ptr = scratch;
+    let event_ptr = scratch + 8;
+    let was_event = scratch + 32;
+    let snapshot = |h, mouse_button| PpcInputSnapshot {
+        mouse_h: h,
+        mouse_v: 50,
+        mouse_button,
+        ..PpcInputSnapshot::default()
+    };
+    let read_state = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+        loaded.cpu.gpr[4] = state_ptr;
+        run_test_import(loaded, PpcImportDispatcherTarget::ISpElementGetSimpleState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        loaded.memory.read_u32_be(state_ptr).unwrap()
+    };
+    let read_event = |loaded: &mut PpcLoadedApp, element| {
+        loaded.cpu.gpr[3] = element;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = event_ptr;
+        loaded.cpu.gpr[6] = was_event;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        (loaded.memory.read_u8(was_event).unwrap() != 0)
+            .then(|| loaded.memory.read_u32_be(event_ptr + 16).unwrap())
+    };
+    loaded.set_input_snapshot(snapshot(100, false));
+    assert_eq!(read_state(&mut loaded), 0);
+    assert_eq!(read_event(&mut loaded, PPC_ISP_MOUSE_X_ELEMENT), None);
+    loaded.set_input_snapshot(snapshot(110, false));
+    assert_eq!(read_state(&mut loaded), 10 << 16);
+    assert_eq!(
+        read_event(&mut loaded, PPC_ISP_MOUSE_X_ELEMENT),
+        Some(10 << 16)
+    );
+    assert_eq!(read_event(&mut loaded, PPC_ISP_MOUSE_X_ELEMENT), None);
+    loaded.set_input_snapshot(snapshot(110, true));
+    loaded.set_input_snapshot(snapshot(110, false));
+    assert_eq!(
+        read_event(&mut loaded, PPC_ISP_MOUSE_BUTTON_ELEMENT),
+        Some(1)
+    );
+    assert_eq!(
+        read_event(&mut loaded, PPC_ISP_MOUSE_BUTTON_ELEMENT),
+        Some(0)
+    );
+    assert_eq!(read_event(&mut loaded, PPC_ISP_MOUSE_BUTTON_ELEMENT), None);
+}
+
+#[test]
+fn mouse_element_retains_button_transitions_before_polling() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let event = scratch;
+    let was_event = scratch + 24;
+    let read_event = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = PPC_ISP_MOUSE_BUTTON_ELEMENT;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = event;
+        loaded.cpu.gpr[6] = was_event;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        (loaded.memory.read_u8(was_event).unwrap() != 0)
+            .then(|| loaded.memory.read_u32_be(event + 16).unwrap())
+    };
+    let snapshot = |mouse_button| PpcInputSnapshot {
+        mouse_button,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(snapshot(false));
+    assert_eq!(read_event(&mut loaded), None);
+    loaded.set_input_snapshot(snapshot(true));
+    loaded.set_input_snapshot(snapshot(false));
+    assert_eq!(read_event(&mut loaded), Some(1));
+    assert_eq!(read_event(&mut loaded), Some(0));
+    assert_eq!(read_event(&mut loaded), None);
+}
+
+#[test]
+fn mouse_element_and_list_keep_independent_event_queues() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let snapshot = |h| PpcInputSnapshot {
+        mouse_h: h,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(snapshot(100));
+    let list = create_test_input_sprocket_list(&mut loaded, &[PPC_ISP_MOUSE_X_ELEMENT]);
+    loaded.set_input_snapshot(snapshot(110));
+    for (target, reference) in [
+        (
+            PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+            PPC_ISP_MOUSE_X_ELEMENT,
+        ),
+        (PpcImportDispatcherTarget::ISpElementListGetNextEvent, list),
+    ] {
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = scratch + 24;
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u8(scratch + 24), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(10 << 16));
+    }
+}
+
+#[test]
+fn mouse_publication_retries_after_staged_recipient_failure() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let snapshot = |h| PpcInputSnapshot {
+        mouse_h: h,
+        ..Default::default()
+    };
+    loaded.set_input_snapshot(snapshot(100));
+    let first = create_test_input_sprocket_list(&mut loaded, &[PPC_ISP_MOUSE_X_ELEMENT]);
+    let second = create_test_input_sprocket_list(&mut loaded, &[PPC_ISP_MOUSE_X_ELEMENT]);
+    loaded.set_input_snapshot(snapshot(110));
+    super::super::inputsprocket_drivers::fail_publication_after_recipients_for_test(1);
+    loaded.cpu.gpr[3] = PPC_ISP_MOUSE_X_ELEMENT;
+    loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 24;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    for (target, reference) in [
+        (
+            PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+            PPC_ISP_MOUSE_X_ELEMENT,
+        ),
+        (PpcImportDispatcherTarget::ISpElementListGetNextEvent, first),
+        (
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+            second,
+        ),
+    ] {
+        for expected in [Some(10 << 16), None] {
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+            loaded.cpu.gpr[5] = scratch;
+            loaded.cpu.gpr[6] = scratch + 24;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let event = (loaded.memory.read_u8(scratch + 24) == Some(1))
+                .then(|| loaded.memory.read_u32_be(scratch + 16).unwrap());
+            assert_eq!(event, expected);
+        }
+    }
+}
+
+#[test]
+fn mouse_list_flush_and_short_reads_preserve_other_queues() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    let call = |loaded: &mut PpcLoadedApp, target, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, target);
+        loaded.cpu.gpr[3]
+    };
+    let snapshot = |button| PpcInputSnapshot {
+        mouse_button: button,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(snapshot(false));
+    let list = create_test_input_sprocket_list(&mut loaded, &[]);
+    loaded
+        .memory
+        .write_u32_be(scratch, PPC_ISP_MOUSE_BUTTON_ELEMENT)
+        .unwrap();
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListAddElements,
+            &[list, 0x1234, 1, scratch]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpDeviceGetElementList,
+            &[PPC_ISP_MOUSE_DEVICE, scratch + 4]
+        ),
+        0
+    );
+    let device_list = loaded.memory.read_u32_be(scratch + 4).unwrap();
+    loaded.set_input_snapshot(snapshot(true));
+    loaded.set_input_snapshot(snapshot(false));
+    let event = scratch + 16;
+    let was_event = scratch + 40;
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListFlush,
+            &[list]
+        ),
+        0
+    );
+    let get_list = PpcImportDispatcherTarget::ISpElementListGetNextEvent;
+    assert_eq!(
+        call(&mut loaded, get_list.clone(), &[list, 20, event, was_event]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(0));
+    assert_eq!(
+        call(
+            &mut loaded,
+            get_list.clone(),
+            &[device_list, 16, event, was_event]
+        ),
+        ppc_i16_result(PPC_PARAM_ERR)
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(
+        call(
+            &mut loaded,
+            get_list.clone(),
+            &[device_list, 20, event, was_event]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(0));
+    let get_element =
+        PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent);
+    assert_eq!(
+        call(
+            &mut loaded,
+            get_element,
+            &[PPC_ISP_MOUSE_BUTTON_ELEMENT, 20, event, was_event]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(1));
+    loaded.set_input_snapshot(snapshot(true));
+    assert_eq!(
+        call(&mut loaded, get_list, &[list, 20, event, was_event]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 12), Some(0x1234));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(1));
+}
+
+#[test]
+fn builtin_mouse_events_and_flush_work_when_guest_heap_is_full() {
+    use PpcInputSprocketCompatibilityOperation as Op;
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpElement_GetNextEvent",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let call = |loaded: &mut PpcLoadedApp, target, args: &[u32]| {
+        loaded.cpu.gpr[3..3 + args.len()].copy_from_slice(args);
+        run_test_import(loaded, target);
+        loaded.cpu.gpr[3]
+    };
+    let snapshot = |button| PpcInputSnapshot {
+        mouse_button: button,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(snapshot(false));
+    let list = create_test_input_sprocket_list(&mut loaded, &[PPC_ISP_MOUSE_BUTTON_ELEMENT]);
+    loaded.set_heap_limit(loaded.heap_cursor());
+    loaded.set_input_snapshot(snapshot(true));
+    loaded.set_input_snapshot(snapshot(false));
+    let event = scratch;
+    let was_event = scratch + 24;
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+            &[list, 20, event, was_event]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(1));
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListFlush,
+            &[list]
+        ),
+        0
+    );
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcImportDispatcherTarget::InputSprocketCompatibility(Op::ElementGetNextEvent),
+            &[PPC_ISP_MOUSE_BUTTON_ELEMENT, 20, event, was_event]
+        ),
+        0
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(1));
 }
