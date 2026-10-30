@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.102.0](https://github.com/benletchford/systemless/compare/v0.101.0...v0.102.0) (2026-10-30)
+
+
+### Features
+
+* **catalogue:** enable Descent launch ([#5330](https://github.com/benletchford/systemless/issues/5330)) ([eb9c5e1](https://github.com/benletchford/systemless/commit/eb9c5e1321628c31c74d7b0da2fae6b6866dcccf))
+
+
+### Bug Fixes
+
+* preserve clipped background damage across dialog close ([cd6a66b](https://github.com/benletchford/systemless/commit/cd6a66bbad11f881ca06ec4e1c55735dbcd45943))
+
 ## [0.101.0](https://github.com/benletchford/systemless/compare/v0.100.0...v0.101.0) (2026-10-30)
 
 
