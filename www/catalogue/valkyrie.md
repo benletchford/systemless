@@ -2,20 +2,23 @@
 id: valkyrie
 kind: game
 title: Valkyrie
-summary: Take a helicopter up for a three-minute unrestricted flight in GameTek's compact simulator demo.
+summary: >-
+  Take a helicopter up for a three-minute unrestricted flight in GameTek's
+  compact simulator demo.
 developer: GameTek, Inc.
 publisher: GameTek, Inc.
 year: 1993
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Arcade
 launch_enabled: true
 compatibility:
   status: playable
   verified:
-  - date: 2026-09-20
+  - date: "2026-09-20"
     tester: Catalogue maintainer
-    systemless_version: 0.42.1
+    systemless_version: "0.42.1"
     architecture: 68k
     environment: Deterministic headless gameplay run from the original StuffIt archive
     status: playable
@@ -44,19 +47,20 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/valkyrie/screenshot.png
+    type: sha256
+    sha256: eeda2a59edd6cfc4fd3d7c1088b0af21ee95a9f7854fcfba695c795891fc1322
+    size_bytes: 11915
   provenance:
     redistribution: permitted
     content_only: true
     sources:
     - https://classicmacdemos.com/valkyrie
     permission: >-
-      Captured from the freely shareable demo; the game artwork remains the
-      property of its rights holder.
+      Captured from the freely shareable demo; the game artwork remains the property
+      of its rights holder.
     notes: >-
-      Systemless capture of the demo flight from the original archive, cropped
-      to the game content. The title graphic remains visible over the cockpit.
+      Systemless capture of the demo flight from the original archive, cropped to the
+      game content. The title graphic remains visible over the cockpit.
 references:
 - https://classicmacdemos.com/valkyrie
 ---
@@ -69,4 +73,4 @@ demo archive. Systemless launches the demo, completes its replay sequence,
 switches into PLAY mode, and responds to flight and weapon controls during a
 deterministic run of the original archive.
 
-![Valkyrie demo flight](incoming/valkyrie/screenshot.png)
+![Valkyrie demo flight](https://assets.systemless.org/catalogue/media/sha256/ee/eeda2a59edd6cfc4fd3d7c1088b0af21ee95a9f7854fcfba695c795891fc1322.png)
