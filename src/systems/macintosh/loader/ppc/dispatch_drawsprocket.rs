@@ -191,6 +191,26 @@ pub(super) fn dispatch_drawsprocket_import(
         }
         PpcImportDispatcherTarget::DSpContextSetState => {
             let previous_state = draw_sprocket.context_state;
+            let initial_floating_windows = if previous_state == PpcDspContextPlayState::Inactive
+                && matches!(
+                    cpu.gpr[4],
+                    PPC_DSP_CONTEXT_STATE_ACTIVE | PPC_DSP_CONTEXT_STATE_PAUSED
+                ) {
+                window_list
+                    .windows()
+                    .into_iter()
+                    .filter(|&window| {
+                        ppc_window_is_visible(memory, window)
+                            && window_list.window_class(window).unwrap_or_else(|| {
+                                crate::window_manager::window_class_for_legacy_proc(
+                                    super::dispatch_window::ppc_window_proc_id(memory, window),
+                                )
+                            }) == 5
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let result = ppc_dsp_context_set_state(
                 cpu,
                 memory,
@@ -200,6 +220,11 @@ pub(super) fn dispatch_drawsprocket_import(
                 draw_sprocket,
             );
             if result == PPC_NO_ERR {
+                if previous_state == PpcDspContextPlayState::Inactive
+                    && draw_sprocket.context_state != PpcDspContextPlayState::Inactive
+                {
+                    draw_sprocket.paused_front_windows = initial_floating_windows;
+                }
                 if draw_sprocket.context_state != PpcDspContextPlayState::Inactive
                     && draw_sprocket.blanking_window.is_none()
                 {
@@ -245,7 +270,17 @@ pub(super) fn dispatch_drawsprocket_import(
                         return Some(PpcImportAction::Return(ppc_i16_result(allocation_error)));
                     }
                     draw_sprocket.blanking_window = Some(window);
+                    super::dispatch_window::ppc_recalculate_window_vis_regions(
+                        process_memory_manager,
+                        memory,
+                        window_list,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                    );
                 } else if draw_sprocket.context_state == PpcDspContextPlayState::Inactive {
+                    draw_sprocket.paused_front_windows.clear();
                     ppc_dsp_dispose_blanking_window(
                         process_memory_manager,
                         memory,
