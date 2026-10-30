@@ -236,7 +236,12 @@ pub(super) fn dispatch_drawsprocket_import(
                     let mut inactive_cpu = cpu.clone();
                     inactive_cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
                     let _ = ppc_dsp_context_set_state(
-                        &inactive_cpu, memory, gworlds, screen_clut, screen_bits, draw_sprocket,
+                        &inactive_cpu,
+                        memory,
+                        gworlds,
+                        screen_clut,
+                        screen_bits,
+                        draw_sprocket,
                     );
                 }
             }
