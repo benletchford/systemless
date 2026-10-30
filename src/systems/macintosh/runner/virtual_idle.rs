@@ -768,6 +768,10 @@ mod tests {
             runner.virtual_idle_cycle_is_quiet(false),
             "future repeat across wrap"
         );
+        runner.tick_budget = 100;
+        let before = runner.total_instructions;
+        assert_eq!(runner.advance_virtual_idle_cycle(3, false), 3);
+        assert_eq!(runner.total_instructions, before + 3);
         runner
             .dispatcher
             .input_state
