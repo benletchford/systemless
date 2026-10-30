@@ -613,6 +613,17 @@ pub(super) fn dispatch_event_import(
         input,
         tick_count,
     } = context;
+    if matches!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::GetNextEvent(_) | PpcImportDispatcherTarget::EventAvail
+    ) {
+        ppc_queue_completed_apple_event_replies(
+            apple_events,
+            event_queue,
+            tick_count,
+            ppc_current_event_modifiers(input),
+        );
+    }
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::GetMainEventLoop => {
             // CarbonEvents.h: each application has one main EventLoopRef.
@@ -1309,8 +1320,52 @@ pub(super) fn dispatch_event_import(
                 );
             }
             ppc_suppress_window_updates(event_queue, &toolbox_startup.windows_without_updates);
-            let (what, message, when, where_v, where_h, modifiers, has_event) =
-                ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count);
+            if !os_only {
+                apple_events.expire_current_self_event();
+                apple_events.current_launch_event = None;
+            }
+            apple_events.prune_queued_self_events(event_queue);
+            ppc_queue_completed_apple_event_replies(
+                apple_events,
+                event_queue,
+                tick_count,
+                ppc_current_event_modifiers(input),
+            );
+            let ((what, message, when, where_v, where_h, modifiers, has_event), delivery_id) =
+                ppc_dequeue_event_with_identity(
+                    event_queue,
+                    event_mask,
+                    input,
+                    os_only,
+                    tick_count,
+                );
+            if !os_only {
+                // A retrieved high-level event owns its payload until the next poll.
+                if let Some(delivery_id) = delivery_id {
+                    if apple_events.is_launch_event_id(delivery_id) {
+                        apple_events
+                            .apple_event_launch_state
+                            .note_open_application_event_delivered();
+                        apple_events.current_launch_event = Some(PpcQueuedEvent {
+                            delivery_id: Some(delivery_id),
+                            what,
+                            message,
+                            when,
+                            where_v,
+                            where_h,
+                            modifiers,
+                        });
+                    }
+                    if let Some(index) = apple_events
+                        .queued_self_events
+                        .iter()
+                        .position(|(event, _, _)| event.delivery_id == Some(delivery_id))
+                    {
+                        apple_events.current_self_event =
+                            apple_events.queued_self_events.remove(index);
+                    }
+                }
+            }
             if has_event && what == 8 {
                 let pending = if (modifiers & 1) != 0 { 0x0A64 } else { 0x0A68 };
                 if memory.read_u32_be(pending) == Some(message) {
@@ -1421,6 +1476,7 @@ pub(super) fn dispatch_event_import(
             let result =
                 if crate::trap::TrapDispatcher::posted_event_is_enabled(system_event_mask, what) {
                     event_queue.push_back(PpcQueuedEvent {
+                        delivery_id: None,
                         what,
                         message: cpu.gpr[4],
                         when: tick_count,

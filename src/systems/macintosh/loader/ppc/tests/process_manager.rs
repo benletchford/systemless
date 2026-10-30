@@ -21,7 +21,7 @@ fn hle_import_runner_enumerates_the_single_process() {
     );
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr + 4),
-        Some(ProcessSerialNumber::CURRENT.low)
+        Some(ProcessSerialNumber::ACTUAL.low)
     );
 
     loaded.cpu.gpr[3] = psn_ptr;
@@ -35,7 +35,7 @@ fn hle_import_runner_enumerates_the_single_process() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr + 4),
-        Some(ProcessSerialNumber::CURRENT.low)
+        Some(ProcessSerialNumber::ACTUAL.low)
     );
 
     loaded
@@ -76,7 +76,7 @@ fn hle_import_runner_handles_get_current_process() {
     );
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr + 4),
-        Some(ProcessSerialNumber::CURRENT.low)
+        Some(ProcessSerialNumber::ACTUAL.low)
     );
 
     loaded.cpu.pc = loaded.entry_pc;
@@ -269,7 +269,7 @@ fn hle_import_runner_handles_get_process_information() {
     );
     assert_eq!(
         loaded.memory.read_u32_be(info_ptr + 12),
-        Some(ProcessSerialNumber::CURRENT.low)
+        Some(ProcessSerialNumber::ACTUAL.low)
     );
     assert_eq!(
         loaded.memory.read_u32_be(info_ptr + 16),
@@ -432,4 +432,27 @@ fn get_process_bundle_location_names_the_application_package() {
         ppc_read_pstring_bytes(&mut loaded.memory, location + 10).as_deref(),
         Some(&b"Game App"[..])
     );
+}
+
+#[test]
+fn get_current_process_returns_real_psn_equivalent_to_current_process_token() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"GetCurrentProcess")).unwrap();
+    let psn = PPC_DATA_BASE + 0x1000;
+    let token = psn + 8;
+    let result = psn + 16;
+    loaded.memory.add_region(psn, vec![0; 17]);
+    loaded.cpu.gpr[3] = psn;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetCurrentProcess);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let actual = (
+        loaded.memory.read_u32_be(psn).unwrap(),
+        loaded.memory.read_u32_be(psn + 4).unwrap(),
+    );
+    assert_ne!(actual, (0, 2), "the special token is not the real PSN");
+    loaded.memory.write_u32_be(token + 4, 2).unwrap();
+    loaded.cpu.gpr[3..6].copy_from_slice(&[psn, token, result]);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SameProcess);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u8(result), Some(1));
 }
