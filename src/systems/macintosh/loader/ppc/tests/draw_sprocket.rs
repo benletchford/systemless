@@ -175,6 +175,60 @@ fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
 }
 
 #[test]
+fn draw_sprocket_inactive_restores_desktop_window_visibility() {
+    for exit in [
+        PpcImportDispatcherTarget::DSpContextSetState,
+        PpcImportDispatcherTarget::DSpContextRelease,
+        PpcImportDispatcherTarget::DSpShutdown,
+    ] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(scratch, vec![0; 256]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 140, 250),
+            0,
+            true,
+            u32::MAX,
+        );
+        let vis = loaded
+            .memory
+            .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+            .unwrap();
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 100, 200))
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, 0]);
+        assert_eq!(
+            ppc_dsp_context_reserve(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.draw_sprocket,
+                &mut loaded.gworlds
+            ),
+            PPC_NO_ERR
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_ACTIVE]);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 0, 0))
+        );
+        loaded.cpu.gpr[3..5].copy_from_slice(&[PPC_DSP_CONTEXT, PPC_DSP_CONTEXT_STATE_INACTIVE]);
+        run_test_import(&mut loaded, exit);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_read_rgn_bbox(&mut loaded.memory, vis),
+            Some((0, 0, 100, 200))
+        );
+    }
+}
+
+#[test]
 fn draw_sprocket_first_pause_reveals_preexisting_floating_window() {
     let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
     let mut loaded = load_pef_application(&pef).unwrap();

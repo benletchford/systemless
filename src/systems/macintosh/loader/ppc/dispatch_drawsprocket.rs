@@ -645,4 +645,14 @@ fn ppc_dsp_dispose_blanking_window(
         current_gdevice,
         window,
     );
+    super::dispatch_window::ppc_sync_process_window_list(memory, window_list);
+    super::dispatch_window::ppc_recalculate_window_vis_regions(
+        process_memory_manager,
+        memory,
+        window_list,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+    );
 }
