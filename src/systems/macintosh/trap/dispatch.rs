@@ -7665,7 +7665,13 @@ impl TrapDispatcher {
 
     pub(crate) fn last_trap_is_bounded_query(&self, bus: &MacMemoryBus) -> bool {
         let trap = self.current_trap_word & !0x0400;
-        (matches!(trap, 0xa858 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4)
+        // These cursor and device operations are bounded HLE work; cursor
+        // state is presented at the outer frame boundary. Patched handlers
+        // still end the batch through the default-table check below.
+        (matches!(
+            trap,
+            0xa853 | 0xa855 | 0xa858 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4 | 0xaa31 | 0xaa32
+        )
             || (trap == 0xa970 && self.last_null_event_poll)
             || (trap == 0xa800 && self.last_bounded_sound_status))
             && (self.trap_table_cell_is_default(bus, trap)
