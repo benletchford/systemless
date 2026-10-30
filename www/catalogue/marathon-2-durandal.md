@@ -55,8 +55,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/marathon-2-durandal/gameplay.png
+    type: sha256
+    sha256: 12a594c113e98aef28a58e3b050ab6a58713422cd18e1492e25ac17f559f11ee
+    size_bytes: 143662
   provenance:
     redistribution: permitted
     content_only: true
@@ -66,8 +67,8 @@ artifacts:
       Original gameplay screenshot captured for this catalogue at the maintainer's
       request.
     notes: >-
-      Captured from the original Trilogy Release archive during verified native
-      68K movement, cropped to the game content surface.
+      Captured from the original Trilogy Release archive during verified native 68K
+      movement, cropped to the game content surface.
 references:
 - https://trilogyrelease.bungie.org/
 - https://github.com/benletchford/systemless/issues/5302
@@ -79,6 +80,6 @@ This entry tracks the original [Trilogy Release archive](https://assets.systemle
 
 ## Across Lh'owon
 
-![Marathon 2 gameplay in the first level](incoming/marathon-2-durandal/gameplay.png)
+![Marathon 2 gameplay in the first level](https://assets.systemless.org/catalogue/media/sha256/12/12a594c113e98aef28a58e3b050ab6a58713422cd18e1492e25ac17f559f11ee.png)
 
 Seventeen years after Tau Ceti, Durandal wakes you over the S'pht homeworld of Lh'owon and sends you hunting through its ruins. The wider spaces, water, weather and dual-wielded weapons make the action livelier, while terminals piece together a history of enslavement that gives every ruined complex a purpose.
