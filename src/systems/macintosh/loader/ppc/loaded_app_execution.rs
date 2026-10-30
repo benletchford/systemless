@@ -451,6 +451,35 @@ impl PpcLoadedApp {
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
+                    if let Some(return_pc) = apple_events
+                        .pending_dispatches
+                        .last()
+                        .filter(|dispatch| dispatch.resume_guest_call_depth == guest_calls.depth())
+                        .and_then(|dispatch| dispatch.mixed_resume_return_pc)
+                    {
+                        let mut heap_cursor = process_memory_manager
+                            .native_heap_state()
+                            .unwrap()
+                            .heap_cursor;
+                        let mut last_mem_error = process_memory_manager
+                            .native_heap_state()
+                            .unwrap()
+                            .last_mem_error;
+                        let handles = &mut process_memory_manager.native_handle_records().to_vec();
+                        ppc_complete_apple_event_dispatch(
+                            cpu,
+                            &mut apple_events,
+                            guest_calls.depth(),
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            handles,
+                        );
+                        process_memory_manager.set_native_mem_error(last_mem_error);
+                        cpu.pc = return_pc;
+                        return PpcImportAction::Continue;
+                    }
                     let mut resource_call = None;
                     if toolbox_startup
                         .execution
