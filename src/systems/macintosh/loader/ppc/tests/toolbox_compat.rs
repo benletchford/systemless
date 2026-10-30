@@ -133,7 +133,8 @@ fn pb_dt_get_appl_finds_an_application_by_creator() {
         .unwrap();
     loaded.cpu.gpr[3] = pb;
     loaded.run_with_hle_imports(64);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-5018));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-5012));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some((-5012i16) as u16));
 }
 
 #[test]
