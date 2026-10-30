@@ -5586,6 +5586,7 @@
         disp.input_state.set_mouse_position_for_test((150, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -5595,6 +5596,7 @@
             });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0,
                 when: 0,
@@ -5692,6 +5694,7 @@
             });
             disp.event_queue
                 .push_back(crate::trap::dispatch::QueuedEvent {
+                delivery_id: None,
                     what: 3,
                     message: (u32::from(key_code) << 8) | u32::from(char_code),
                     when: 0,
@@ -5839,6 +5842,7 @@
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 6,
                 message: dialog_ptr,
                 when: 0,
@@ -6945,6 +6949,7 @@
         parent.item_hit_ptr = outer_hit;
         parent.filter_proc = 0x10000;
         parent.last_filter_event = Some(crate::trap::dispatch::QueuedEvent {
+        delivery_id: None,
             what: 0,
             message: 0,
             when: 0,
@@ -6968,6 +6973,7 @@
         assert_eq!(disp.suspended_modal_dialogs.len(), 1);
         assert_eq!(bus.read_word(result), 0);
         child.last_filter_event = Some(crate::trap::dispatch::QueuedEvent {
+        delivery_id: None,
             what: 0,
             message: 0,
             when: 0,
@@ -10811,6 +10817,7 @@
             filter_proc: 0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 6,
                 message: dialog_ptr,
                 when: 0,
@@ -12617,6 +12624,7 @@
             default_item: 1,
             active_button: Some(DialogButtonTrackingState {
                 mouse_down: super::super::dispatch::QueuedEvent {
+                delivery_id: None,
                     what: 1,
                     message: 0,
                     when: 0,
@@ -15216,6 +15224,7 @@
         ) {
             disp.event_queue
                 .push_back(crate::trap::dispatch::QueuedEvent {
+                delivery_id: None,
                     what: 3,
                     message: (u32::from(key_code) << 8) | u32::from(char_code),
                     when: 0,
@@ -15255,6 +15264,7 @@
         for char_code in [b'a', b'B'] {
             disp.event_queue
                 .push_back(crate::trap::dispatch::QueuedEvent {
+                delivery_id: None,
                     what: 3,
                     message: u32::from(char_code),
                     when: 0,
@@ -15409,6 +15419,7 @@
         disp.input_state.set_mouse_position_for_test((115, 125));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -15453,6 +15464,7 @@
         disp.input_state.set_mouse_button_for_test(false);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0,
                 when: 0,
@@ -16283,6 +16295,7 @@
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 6,
                 message: dialog_ptr,
                 when: 0,
@@ -16407,6 +16420,7 @@
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -16416,6 +16430,7 @@
             });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0,
                 when: 0,
@@ -16485,6 +16500,7 @@
         disp.input_state.set_mouse_position_for_test((130, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -16553,6 +16569,7 @@
         disp.input_state.set_mouse_position_for_test((130, 260));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -16623,6 +16640,7 @@
         disp.input_state.set_mouse_position_for_test((130, 240));
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -16644,6 +16662,7 @@
         disp.input_state.set_mouse_button_for_test(false);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0,
                 when: 0,
@@ -16773,6 +16792,7 @@
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -16787,6 +16807,7 @@
         });
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0,
                 when: 0,
@@ -16874,6 +16895,7 @@
             draw_procs_done: true,
             filter_proc: 0x149F0,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -17130,6 +17152,7 @@
             filter_proc: 0x149F0,
             game_managed: true,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 3,
                 message: 0x0000_240D,
                 when: 0,
@@ -17208,6 +17231,7 @@
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
@@ -17277,6 +17301,7 @@
             filter_proc: 0x149F0,
             game_managed: false,
             last_filter_event: Some(crate::trap::dispatch::QueuedEvent {
+            delivery_id: None,
                 what: 3,
                 message: 0x0000_240D,
                 when: 0,

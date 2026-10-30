@@ -9,6 +9,8 @@ use std::ops::{Deref, DerefMut};
 /// uses global coordinates. Inside Macintosh Volume I, I-244 and I-259.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedEvent {
+    /// Internal queue identity; never written to the guest EventRecord.
+    pub(crate) delivery_id: Option<u64>,
     /// Event type (1=mouseDown, 2=mouseUp, 3=keyDown, etc.).
     pub what: u16,
     /// Event message (key code for key events, window ptr for activate, etc.).
@@ -153,6 +155,7 @@ mod tests {
     fn clone_is_a_detached_snapshot() {
         let mut live = EventQueue::default();
         live.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x1122_3344,
             when: 0,
@@ -186,6 +189,7 @@ mod tests {
     fn queue_ordering_and_mutations_are_preserved() {
         let mut queue = EventQueue::default();
         queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x100,
             when: 0,
@@ -194,6 +198,7 @@ mod tests {
             modifiers: 0,
         });
         queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x200,
             when: 0,
@@ -212,6 +217,7 @@ mod tests {
     fn merge_preserves_order_and_combines_invalidation() {
         let mut target = EventQueue::default();
         target.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x111,
             when: 0,
@@ -222,6 +228,7 @@ mod tests {
 
         let mut source = EventQueue::default();
         source.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x222,
             when: 0,
