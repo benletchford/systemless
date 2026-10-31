@@ -4085,7 +4085,7 @@ impl ExecutableCandidate {
             !is_registration_executable(&self.name),
             !executable_name_has_role(&self.name, "editor"),
             !self.is_demo,
-            !is_system_folder_path(&self.name),
+            !is_system_folder_path(&self.name) && !is_bonus_content_path(&self.name),
             self.name
                 .rsplit_once('/')
                 .and_then(|(parent, app)| parent.rsplit('/').next().map(|folder| (folder, app)))
@@ -4775,6 +4775,15 @@ fn fourcc_lossy(value: [u8; 4]) -> String {
 fn is_system_folder_path(path: &str) -> bool {
     path.split(['/', ':'])
         .any(|component| component.eq_ignore_ascii_case("System Folder"))
+}
+
+// Publisher CDs ship unrelated applications in folders such as "Other Goodies".
+fn is_bonus_content_path(path: &str) -> bool {
+    path.rsplit_once('/').is_some_and(|(parent, _)| {
+        parent
+            .split('/')
+            .any(|component| executable_name_has_role(component, "goodies"))
+    })
 }
 
 fn is_stuffit_archive(bytes: &[u8]) -> bool {
@@ -8222,6 +8231,30 @@ mod tests {
             .skipped_disk_image_errors
             .iter()
             .any(|err| err.contains("Compact Pro archive") && err.contains("Empty.cpt")));
+    }
+
+    #[test]
+    fn executable_selection_prefers_application_over_bonus_content() {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let names = ["Disc/Other Goodies/Tool", "Disc/Game"];
+        for order in [names, [names[1], names[0]]] {
+            let mut selected = None;
+            for name in order {
+                maybe_select_executable_with_preference(
+                    &mut selected,
+                    name,
+                    &[],
+                    &rsrc,
+                    true,
+                    0,
+                    *b"TEST",
+                    1,
+                    false,
+                    None,
+                );
+            }
+            assert_eq!(selected.unwrap().name, "Disc/Game");
+        }
     }
 
     #[test]
