@@ -10,8 +10,9 @@ year: 2000
 architectures:
 - 68k
 - ppc
-default_architecture: ppc
+default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -39,10 +40,29 @@ compatibility:
       replay matched both checkpoints.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5419
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 78ec4f28 browser build with launch flag and 10 MHz pacing
+    architecture: 68k
+    environment: >-
+      The PowerPC slice paced below the browser minimum (43.7 guest ticks per second
+      at 25 MHz; 43.5 to 46.7 host fps at 10 MHz). The 68K slice is the default and
+      runs with runtime pacing at 10 MHz. Three release-mode headless Chromium 156
+      (aarch64 Linux) worker/WebGL runs of a locally served trunk build used the
+      actual Systemless-hosted archive, whose bytes matched the pinned size and
+      SHA-256. Scripted ordinary input dismissed the shareware notice, started a
+      game with Command-N and pressed Up; live play was visible. Twenty-second
+      samples reached 60.00, 60.03 and 60.94 guest ticks per second (host 60.00,
+      61.06 and 60.94 fps), with no console errors. This approves bounded browser
+      launch; full levels and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5419
 runtime:
   executable_path: Frog Xing 1.6 ƒ/Frog Xing 1.6
   screen_depth: 8
   show_menu_bar: true
+  runtime_pacing:
+    cpu_mhz: 10
 artifacts:
 - id: archive
   role: archive
