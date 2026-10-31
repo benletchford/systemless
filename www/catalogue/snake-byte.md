@@ -2,9 +2,10 @@
 id: snake-byte
 kind: game
 title: Snake Byte 1.2
-summary: Guide a growing snake toward apples and away from walls and its tail.
-developer: Pierre-Luc Paour
-publisher: Pierre-Luc Paour
+summary: >-
+  Steer a growing snake around a grassy field, eating apples and dodging rocks,
+  in this freeware classic.
+developer: PLP
 year: 1995
 architectures:
 - 68k
@@ -14,87 +15,88 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
-  - date: "2026-10-02"
+  - date: "2026-10-31"
     tester: Catalogue maintainer
-    systemless_version: 0.70.1 + deterministic play runner
+    systemless_version: cc649233 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged author-submitted Info-Mac freeware archive opened in 68K
-      Systemless. After its About box and high scores, File > New Game reached a live board. In
-      matched replays, the snake continued upward without input while holding the
-      default left key, 4, turned it left.
+      The original Info-Mac archive ran natively in headless mode. After the welcome
+      dialog, File > New Game started level 1. The default relative-turn keys are
+      keypad 4 and 6. A single keypad 4 press turned the snake left; the matched
+      control without the key was identical until the input and then differed by
+      1,683 pixels (keypad 6: 1,674). Arrow and letter keys had no effect, so the
+      runtime maps arrows to the keypad. An exact replay matched both checkpoints,
+      with zero exhausted frames. Apples, rocks, audio and longer play remain
+      unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/3772
-  - date: "2026-10-02"
+    evidence: https://github.com/benletchford/systemless/issues/5423
+  - date: "2026-10-31"
     tester: Catalogue maintainer
-    systemless_version: 0.72.0 + release browser build
+    systemless_version: cc649233 browser build with launch flag
     architecture: 68k
     environment: >-
-      Chrome loaded the local release build and fetched the unchanged archive once.
-      After dismissing About and selecting File > New Game, the snake moved and the
-      lives counter changed on the live board. A real browser 4-key press turned the snake
-      left after play resumed. A five-second active sample measured about 60 host
-      frames and 60 guest ticks per second.
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of
+      a locally served trunk build used the exact pinned original archive. Scripted
+      ordinary input dismissed the welcome window, started a game with Command-N and
+      pressed Left. Each sample reached live play. Twenty-second samples reached
+      60.07, 60.00 and 59.98 guest ticks per second, with no console errors. This
+      approves bounded browser launch; the browser arrow-to-keypad turn was not
+      separately measured, and deployed replay, full levels and audio remain
+      unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/3772
+    evidence: https://github.com/benletchford/systemless/issues/5423
+runtime:
+  executable_path: Snake Byte
+  show_menu_bar: true
+controls:
+  arrows_as_numpad: true
 artifacts:
 - id: archive
   role: archive
   format: hqx
   source:
-    type: sha256
-    sha256: d567078dfd9d8a85ecab5495a9e4714e6b47192b4c41b683088caab787f93dcd
-    size_bytes: 649131
+    type: url
+    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/snake-byte-12.hqx
+    expected_sha256: d567078dfd9d8a85ecab5495a9e4714e6b47192b4c41b683088caab787f93dcd
+    expected_size: 649131
   provenance:
     redistribution: permitted
     original: true
     sources:
-    - >-
-      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/00arc-abstracts.txt
-    - >-
-      https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/snake-byte-12.hqx
-    rights_holder: Pierre-Luc Paour
+    - https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/snake-byte-12.hqx
+    - https://github.com/benletchford/systemless/issues/5423
+    license: Original freeware distribution notice
+    rights_holder: PLP
     permission: >-
-      The game's embedded FreeWare Notice permits free distribution when Snake Byte
-      is distributed freely and unmodified. The author-submitted Info-Mac archive is
-      preserved unchanged, including its embedded help and notice.
-    notes: >-
-      Original 649,131-byte BinHex/StuffIt archive, SHA-256
-      d567078dfd9d8a85ecab5495a9e4714e6b47192b4c41b683088caab787f93dcd.
-      The promoted public object was fetched and confirmed byte-for-byte identical
-      to the original download on 2026-10-02.
+      The application's FreeWare Notice permits distributing Snake Byte as long as
+      it is distributed free of charge and unmodified. Preserve the complete
+      unchanged archive.
+    notes: The archive contains only the 68K application; its documentation is built in.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: sha256
-    sha256: d757e9948ffa1b5bb342a3cc3cd16ffb6b908181683881355c6ad8511af71a61
-    size_bytes: 68218
+    type: incoming
+    path: catalogue/incoming/snake-byte/field.png
   provenance:
     redistribution: permitted
     original: true
     content_only: true
     sources:
-    - https://github.com/benletchford/systemless/issues/3772
-    permission: >-
-      Fresh Systemless gameplay capture from the unchanged freeware game. Underlying
-      artwork remains its owner's property.
-    notes: >-
-      Exact 626-by-438 game-content crop at (87,100) from an 800-by-600 Systemless
-      framebuffer after the default left-key turn; the live board, apple, snake, and
-      score panel remain visible. The promoted public PNG matched its 68,218-byte
-      SHA-256 source on 2026-10-02.
+    - https://github.com/benletchford/systemless/issues/5423
+    permission: Fresh gameplay capture from the permitted unchanged original package.
+    notes: Native 68K level 1 after the snake turns left, cropped to the game window contents.
 references:
-- >-
-  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/00arc-abstracts.txt
-- >-
-  https://ftp.zx.net.nz/pub/archive/ftp.funet.fi/pub/mac/info-mac/game/arc/snake-byte-12.hqx
+- https://github.com/benletchford/systemless/issues/5423
 ---
 
-## Eat apples, avoid your tail
+## Eat your apples
 
-![Snake Byte after a left turn](https://assets.systemless.org/catalogue/media/sha256/d7/d757e9948ffa1b5bb342a3cc3cd16ffb6b908181683881355c6ad8511af71a61.png)
+![Snake Byte level 1](incoming/snake-byte/field.png)
 
-Choose **New Game** from the **File** menu. The snake moves on its own; press
-**4** to turn left or **6** to turn right under the default two-key controls.
-Eat apples to grow and clear each level, and avoid walls and your own tail.
+Guide your snake to eat apples. Each one makes it longer and faster. Eat enough
+apples to open the way to the next level, and avoid walls, rocks and your own
+tail.
+
+Click **OK** on the welcome window, then choose **File > New Game**. The left and
+right arrow keys turn the snake relative to its heading. Click to pause.
