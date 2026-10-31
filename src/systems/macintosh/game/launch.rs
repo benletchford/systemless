@@ -1592,9 +1592,16 @@ fn parse_macbinary_payload(
         .checked_add(127)
         .map(|len| len & !127)
         .ok_or_else(|| "MacBinary data padding overflow".to_string())?;
-    let rsrc_start = 128usize
-        .checked_add(data_padded_len)
-        .ok_or_else(|| "MacBinary resource offset overflow".to_string())?;
+    // A data-only file has nothing after its data fork, so archives commonly omit
+    // the trailing padding to the next 128-byte boundary. Only require that
+    // padding when a resource fork follows it.
+    let rsrc_start = if rsrc_len == 0 {
+        data_end
+    } else {
+        128usize
+            .checked_add(data_padded_len)
+            .ok_or_else(|| "MacBinary resource offset overflow".to_string())?
+    };
     let rsrc_end = rsrc_start
         .checked_add(rsrc_len)
         .ok_or_else(|| "MacBinary resource offset overflow".to_string())?;
@@ -6002,6 +6009,19 @@ mod tests {
         );
         assert!(runner.dispatcher().vfs.get(".DS_Store").is_none());
         assert_eq!(runner.dispatcher().launched_app_path(), Some("Game App"));
+    }
+
+    #[test]
+    fn macbinary_data_only_file_accepts_omitted_trailing_padding() {
+        let data = b"StuffIt archive bytes";
+        let padded = make_macbinary_application("Archive.sit", data, &[]);
+        let unpadded = &padded[..128 + data.len()];
+
+        let file = parse_macbinary_payload(unpadded, "", 1)
+            .expect("data-only MacBinary without trailing padding should parse");
+        assert_eq!(file.data, data.to_vec());
+        assert!(file.rsrc.is_empty());
+        assert!(parse_macbinary_payload(&padded[..128 + data.len() - 1], "", 1).is_err());
     }
 
     #[test]
