@@ -32,12 +32,13 @@ compatibility:
     systemless_version: f84f71d2502b129d82baca5ba41f6e2fff0ea577
     architecture: ppc
     environment: >-
-      The same archive's PPC slice reached the level-one board at depth 8 with a
-      measured paddle response and a no-movement control. The inspected candidate
-      screenshot displays the score, paddle count, level and high score as 0, 5, 1 and 0,
-      matching the 68K board; the text-mode correction is pending in PR 5381. Full levels,
-      saving and browser gameplay remain unverified.
-    status: playable
+      The same archive's PPC slice reached the level-one board at depth 8. The
+      inspected candidate screenshot displays the score, paddle count, level and high
+      score as 0, 5, 1 and 0, matching the 68K board; the text-mode correction is
+      pending in PR 5381. A later mouse-dependent pixel assertion passed, but its
+      screenshot did not visibly establish paddle movement. PPC gameplay, full levels,
+      saving and browser behavior remain unverified.
+    status: boots
     evidence: https://github.com/benletchford/systemless/issues/4681
 runtime:
   executable_path: Powerball Shareware/Powerball.fat
@@ -99,5 +100,5 @@ Choose **Game → New** and move the paddle to keep the ball in play while clear
 bricks. This is the original shareware package; its manual describes a 30-day
 trial and registration terms.
 
-Native runs reached the first board on both included architectures. Browser
-qualification is pending, so launch remains disabled.
+Native runs reached the first board on both included architectures. PPC gameplay
+and browser qualification are pending, so launch remains disabled.
