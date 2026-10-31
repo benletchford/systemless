@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,22 @@ compatibility:
       at frontend tick 422 and guest tick 1022 with zero exhausted frames. Full games,
       settings, saves and audio remain unverified. Hosted browser qualification is
       pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5394
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 057ab64e7c85d406c2c8a339f6aaa809e9015afb with preview launch flag
+    architecture: 68k
+    environment: >-
+      Three release-mode Chromium 156 worker/WebGL previews at the production
+      origin used a locally substituted frontend and worker assets. The actual
+      managed archive response matched its pinned size and SHA-256. A legal
+      white move, flipped disc and Macintosh reply are visible and confirmed by
+      measured pixels. Twenty-second samples reached 60.045, 60.271 and 61.008
+      guest ticks per second without recorded console errors. The page and worker
+      were verified to load the same locally built Wasm. This approves bounded
+      browser launch; an unmodified deployed replay, complete games, saves,
+      independent hardware parity and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5394
 runtime:
