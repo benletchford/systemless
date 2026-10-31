@@ -11334,3 +11334,56 @@ fn pb_write_preserves_unwritten_tail_and_extends_only_past_eof() {
         assert_eq!(loaded.files[0].position, offset + count);
     }
 }
+
+#[test]
+fn ppc_pb_get_fcb_info_reports_file_manager_resource_fork_under_its_own_folder() {
+    let pb = 0x2000;
+    let name = 0x2100;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(pb, vec![0; 0x200]);
+    let directories = initial_ppc_vfs_directories();
+    let path = "System Folder/Preferences/Test File";
+    let files = vec![PpcFileRecord {
+        ref_num: 2,
+        path: format!("{PPC_OPEN_RESOURCE_FORK_PREFIX}{path}"),
+        position: 0,
+    }];
+    let resource_forks = vec![PpcVfsResourceFileRecord {
+        path: path.to_string(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 3,
+        raw_data: Some(b"fork".to_vec().into()),
+        map_attrs: 0,
+        dirty: false,
+    }];
+    memory.write_u32_be(pb + 18, name).unwrap();
+    memory.write_u16_be(pb + 24, 2).unwrap();
+    memory.write_u16_be(pb + 28, 0).unwrap();
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = pb;
+
+    assert_eq!(
+        ppc_pb_get_fcb_info(
+            &cpu,
+            &mut memory,
+            &files,
+            &[],
+            &directories,
+            &[],
+            &resource_forks,
+            &[],
+            Some(path),
+        ),
+        PPC_NO_ERR
+    );
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut memory, name),
+        Some(b"Test File".to_vec())
+    );
+    assert_eq!(memory.read_u16_be(pb + 24), Some(2));
+    assert_eq!(memory.read_u16_be(pb + 36), Some(0x0200));
+    assert_eq!(memory.read_u32_be(pb + 40), Some(4));
+    assert_eq!(memory.read_u32_be(pb + 58), Some(PPC_PREFERENCES_DIR_ID));
+}
