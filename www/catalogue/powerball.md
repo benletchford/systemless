@@ -42,6 +42,32 @@ compatibility:
       levels, saving and browser behavior remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4681
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: f84f71d2502b129d82baca5ba41f6e2fff0ea577
+    architecture: 68k
+    environment: >-
+      Chrome 156 release preview substituted the candidate frontend at the production
+      origin and fetched the promoted archive directly with its exact receipt. The
+      original title and Game menu led to the level-one board, score progression and
+      the high-score dialog. An active-board 20-second sample measured 60.147 guest
+      ticks and 60.947 worker replies per second. Browser paddle-input assertions,
+      complete gameplay and approval remain pending.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5383
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: f84f71d2502b129d82baca5ba41f6e2fff0ea577
+    architecture: ppc
+    environment: >-
+      The same hosted-archive browser preview reached the level-one board with visible
+      counters. A 20-second sample starting on the board and ending at the logo screen
+      measured 26.077 guest ticks and 52.203 worker replies per second. A subsequent
+      20-second sample on the logo screen measured 26.320 and 52.589 respectively,
+      below the launch gate. Pacing diagnosis, browser input assertions and approval
+      remain pending.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5383
 runtime:
   executable_path: Powerball Shareware/Powerball.fat
   screen_depth: 8
