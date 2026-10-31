@@ -1122,6 +1122,13 @@ pub(super) fn ppc_pb_get_fcb_info(
     let Some((ref_num, path, is_resource_fork, position)) = selected else {
         return ppc_complete_pb(memory, pb, PPC_FN_OPN_ERR);
     };
+    // Resource forks opened through the File Manager are tracked under an
+    // internal prefixed path. Report the underlying file so callers can derive
+    // its parent directory, as EV Nova does to find its "Nova Files" folder.
+    let (path, is_resource_fork) = match path.strip_prefix(PPC_OPEN_RESOURCE_FORK_PREFIX) {
+        Some(file_path) => (file_path.to_string(), true),
+        None => (path, is_resource_fork),
+    };
 
     let logical_eof = if is_resource_fork {
         ppc_resource_fork_len_for_path(vfs_resource_files, vfs_resources, &path)
