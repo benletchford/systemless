@@ -15375,6 +15375,35 @@ fn aliasdispatch_resolvealias_finds_minimal_full_path_target() {
 // AliasDispatch ($A823) / selector $000C ResolveAliasFile
 // IM:VI 1991 pp. 9-30..9-31: non-alias input returns noErr and wasAliased=FALSE.
 #[test]
+fn aliasdispatch_resolvealiasfile_populated_folder_reports_folder() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let was_aliased_ptr = 0x342000u32;
+    let target_is_folder_ptr = 0x342100u32;
+    let spec_ptr = 0x342200u32;
+    disp.vfs.insert("Powerball Data/Powerball.dta".to_string(), vec![1]);
+    bus.write_word(spec_ptr, (-1i16) as u16);
+    bus.write_long(spec_ptr + 2, 2);
+    bus.write_byte(spec_ptr + 6, 14);
+    bus.write_bytes(spec_ptr + 7, b"Powerball Data");
+    bus.write_byte(was_aliased_ptr, 0xFF);
+    bus.write_byte(target_is_folder_ptr, 0xFF);
+    cpu.write_reg(Register::D0, 0x000C);
+    bus.write_long(sp, was_aliased_ptr);
+    bus.write_long(sp + 4, target_is_folder_ptr);
+    bus.write_word(sp + 8, 1);
+    bus.write_long(sp + 10, spec_ptr);
+    bus.write_word(sp + 14, 0xBEEF);
+
+    disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus)
+        .expect("ResolveAliasFile handler")
+        .expect("ResolveAliasFile returns through its result slot");
+    assert_eq!(bus.read_word(sp + 14), 0);
+    assert_eq!(bus.read_byte(was_aliased_ptr), 0);
+    assert_eq!(bus.read_byte(target_is_folder_ptr), 1);
+}
+
+#[test]
 fn aliasdispatch_resolvealiasfile_non_alias_returns_false_flags_and_preserves_spec() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;

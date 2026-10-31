@@ -14515,6 +14515,16 @@ impl super::TrapDispatcher {
                         let mut found = false;
                         let mut target_is_folder = false;
                         for candidate_dir_id in self.hfs_lookup_directory_ids(vref, dir_id) {
+                            // Check an actual directory before the file lookup: that
+                            // lookup can fall back to a child of the named folder.
+                            if self
+                                .find_vfs_directory_in_directory(candidate_dir_id, &name)
+                                .is_some()
+                            {
+                                found = true;
+                                target_is_folder = true;
+                                break;
+                            }
                             if self
                                 .find_vfs_file_in_directory(candidate_dir_id, &name)
                                 .is_some()
@@ -14523,14 +14533,6 @@ impl super::TrapDispatcher {
                                     .is_some()
                             {
                                 found = true;
-                                break;
-                            }
-                            if self
-                                .find_vfs_directory_in_directory(candidate_dir_id, &name)
-                                .is_some()
-                            {
-                                found = true;
-                                target_is_folder = true;
                                 break;
                             }
                         }
