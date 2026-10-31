@@ -404,6 +404,20 @@ fn top_map_handle_accessors_share_the_low_memory_global() {
 }
 
 #[test]
+fn fractional_width_setters_share_the_low_memory_global() {
+    let mut loaded = loaded_with(b"SetFractEnable");
+    for (symbol, value) in [("SetFractEnable", 1), ("LMSetFractEnable", 0)] {
+        loaded.cpu.gpr[3] = value;
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "LMGetFractEnable"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], value, "{symbol}");
+    }
+}
+
+#[test]
 fn screen_resolution_accessors_report_the_seeded_72_dpi() {
     let mut loaded = loaded_with(b"LMGetScrHRes");
     for symbol in ["LMGetScrHRes", "LMGetScrVRes"] {
