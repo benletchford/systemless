@@ -430,15 +430,19 @@ pub(super) fn dispatch_window_import(
                     handles,
                 );
                 quickdraw_fore_indices.remove(&window);
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
+                // System 7.5.3 preserves the previous port for hidden or
+                // backmost windows, as in the shared 68K Window Manager.
+                if cpu.gpr[6] != 0 && cpu.gpr[8] != 0 {
+                    *current_gworld = window;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                    ppc_restore_port_colors(
+                        memory,
+                        *current_gworld,
+                        quickdraw_fore_color,
+                        quickdraw_back_color,
+                    );
+                }
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
                     memory,
@@ -489,15 +493,19 @@ pub(super) fn dispatch_window_import(
                     handles,
                 );
                 quickdraw_fore_indices.remove(&window);
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
+                // System 7.5.3 preserves the previous port for hidden or
+                // backmost windows, as in the shared 68K Window Manager.
+                if ppc_window_is_visible(memory, window) && cpu.gpr[5] != 0 {
+                    *current_gworld = window;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                    ppc_restore_port_colors(
+                        memory,
+                        *current_gworld,
+                        quickdraw_fore_color,
+                        quickdraw_back_color,
+                    );
+                }
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
                     memory,
@@ -3873,7 +3881,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                     last_mem_error,
                     handles,
                 );
-                *current_gworld = window;
+                if cpu.gpr[6] != 0 && cpu.gpr[8] != 0 {
+                    *current_gworld = window;
+                }
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
                     memory,
@@ -4114,7 +4124,9 @@ pub(super) fn ppc_dispatch_legacy_window(
                     last_mem_error,
                     handles,
                 );
-                *current_gworld = window;
+                if ppc_window_is_visible(memory, window) && params.behind() != 0 {
+                    *current_gworld = window;
+                }
                 let next_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_enqueue_window_activation_transition(
                     memory,
