@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.104.0](https://github.com/benletchford/systemless/compare/v0.103.0...v0.104.0) (2026-10-31)
+
+
+### Features
+
+* **catalogue:** add 500 Cards ([#5450](https://github.com/benletchford/systemless/issues/5450)) ([f64ac89](https://github.com/benletchford/systemless/commit/f64ac8960c8a789795faae73ee2037c88ece1c90))
+* **catalogue:** add Assassin intake ([#5426](https://github.com/benletchford/systemless/issues/5426)) ([05ea376](https://github.com/benletchford/systemless/commit/05ea3765aed2dc8fd66166cab5a5cf3cda698a42))
+* **catalogue:** add Candy Crisis intake ([#5429](https://github.com/benletchford/systemless/issues/5429)) ([78ec4f2](https://github.com/benletchford/systemless/commit/78ec4f280881547b874320fd23e65ece82fd209c))
+* **catalogue:** add Colossal Cave, Shade and Hunter, in Darkness ([#5442](https://github.com/benletchford/systemless/issues/5442)) ([0fd116b](https://github.com/benletchford/systemless/commit/0fd116b11944ea79d2eabae882ba3f63f1d772ca))
+* **catalogue:** add Dirt Bike intake ([#5415](https://github.com/benletchford/systemless/issues/5415)) ([52e7773](https://github.com/benletchford/systemless/commit/52e7773be233dc55a610dda9efb815c6eed093f0))
+* **catalogue:** add Expert Blackjack ([#5448](https://github.com/benletchford/systemless/issues/5448)) ([b6047d7](https://github.com/benletchford/systemless/commit/b6047d79869db456565963c0d8348cdac4911d2a))
+* **catalogue:** add four MaxZip interactive fiction games ([#5438](https://github.com/benletchford/systemless/issues/5438)) ([21bc3f3](https://github.com/benletchford/systemless/commit/21bc3f3d74b8ea6d605a13d34145ecbab42dce31))
+* **catalogue:** add Frog Xing intake ([#5420](https://github.com/benletchford/systemless/issues/5420)) ([9e16c2c](https://github.com/benletchford/systemless/commit/9e16c2cf0a30c632c2506fb783ba46cfc5ea4842))
+* **catalogue:** add Looney Lander ([#5428](https://github.com/benletchford/systemless/issues/5428)) ([4485334](https://github.com/benletchford/systemless/commit/44853346b4cf95e5d4e64607a21d2024256ef700))
+* **catalogue:** add MegaPong ([#5433](https://github.com/benletchford/systemless/issues/5433)) ([cc1a0a2](https://github.com/benletchford/systemless/commit/cc1a0a22a98098528c5b4ade30f21b139ae2f249))
+* **catalogue:** add Missions of the Reliant intake ([#5413](https://github.com/benletchford/systemless/issues/5413)) ([dfc0294](https://github.com/benletchford/systemless/commit/dfc0294bb28424fb6727431c682dba1825bd8b64))
+* **catalogue:** add Snake Byte ([#5424](https://github.com/benletchford/systemless/issues/5424)) ([52de779](https://github.com/benletchford/systemless/commit/52de779413a2007b822c0140c93c29831f7b60fe))
+* **catalogue:** add Spiked ([#5422](https://github.com/benletchford/systemless/issues/5422)) ([cc64923](https://github.com/benletchford/systemless/commit/cc649233316a68f7e0992b03f714af091e9080e7))
+* **catalogue:** add Tarantula ([#5446](https://github.com/benletchford/systemless/issues/5446)) ([67b0ef0](https://github.com/benletchford/systemless/commit/67b0ef08656b3d8e2dd7245504d6a7e00dd128aa))
+* **catalogue:** add Wumpus intake ([#5444](https://github.com/benletchford/systemless/issues/5444)) ([ce44cad](https://github.com/benletchford/systemless/commit/ce44cad5bab51f751bd02249cf888dd1f60628e5))
+* **catalogue:** approve Assassin and Frog Xing browser launch ([#5430](https://github.com/benletchford/systemless/issues/5430)) ([d24b735](https://github.com/benletchford/systemless/commit/d24b7354cd1a32a1ec8942a6370cc87a004d814c))
+* **catalogue:** approve Candy Crisis browser launch ([#5431](https://github.com/benletchford/systemless/issues/5431)) ([44af7d4](https://github.com/benletchford/systemless/commit/44af7d48e758f30ff838cbc1bfca4a16209e180f))
+* **catalogue:** approve Tomb Raider Gold and Dirt Bike browser launch ([#5418](https://github.com/benletchford/systemless/issues/5418)) ([4363640](https://github.com/benletchford/systemless/commit/43636404b3d1fb30766cd3d299cca5ec57a8abaf))
+* **catalogue:** restore hosted Tomb Raider Gold demo ([#5411](https://github.com/benletchford/systemless/issues/5411)) ([d6c940b](https://github.com/benletchford/systemless/commit/d6c940bcf12458aae07ebb156b66f191b943fb84))
+
+
+### Bug Fixes
+
+* keep kiosk stage margins black through palette fades ([#5417](https://github.com/benletchford/systemless/issues/5417)) ([c6f5f1e](https://github.com/benletchford/systemless/commit/c6f5f1e4850b03c6b18f328b96de8d22ebad3e72))
+* **ppc:** implement InvertRoundRect ([78cc275](https://github.com/benletchford/systemless/commit/78cc2755498fb011e62ddb62b899337b18471630))
+
 ## [0.103.0](https://github.com/benletchford/systemless/compare/v0.102.0...v0.103.0) (2026-10-31)
 
 
