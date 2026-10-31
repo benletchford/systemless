@@ -161,7 +161,7 @@ fn companion_engine_installs_native_worker_context_and_hands_back_to_classic() {
 #[test]
 fn companion_new_thread_import_installs_a_fresh_worker_on_the_live_engine() {
     const MADE: u32 = PPC_DATA_BASE + 0x5000;
-    const THREAD_RETURN: u32 = PPC_IMPORT_TRAP_BASE + (4096 + 1) * 4;
+    const THREAD_RETURN: u32 = PPC_IMPORT_TRAP_BASE + (PPC_IMPORT_CAPACITY + 1) * 4;
     let native = load_pef_application(&synthetic_pef_with_import(b"NewThread")).unwrap();
     let entry = native.entry_pc;
     let expected_rtoc = native.cpu.gpr[2];

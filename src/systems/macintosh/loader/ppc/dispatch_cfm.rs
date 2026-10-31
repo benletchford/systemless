@@ -109,6 +109,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             heap_limit,
             stack_base,
             cfm_connections,
+            cfm_library_fragments,
             next_cfm_connection_id,
             import_run_state,
             None,
@@ -123,6 +124,7 @@ pub(super) fn dispatch_cfm_import(context: PpcCfmDispatchContext<'_>) -> Option<
             heap_limit,
             stack_base,
             cfm_connections,
+            cfm_library_fragments,
             next_cfm_connection_id,
             import_run_state,
             vfs_files,
@@ -380,6 +382,7 @@ pub(super) fn ppc_get_disk_fragment(
     heap_limit: u32,
     stack_base: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &[PpcCfmLibraryFragment],
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
     vfs_files: &[PpcVfsFileRecord],
@@ -448,7 +451,6 @@ pub(super) fn ppc_get_disk_fragment(
     let Some(file_spec) = ppc_memory_read_bytes(memory, spec, 70) else {
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     };
-    let new_id = *next_cfm_connection_id;
     cpu.gpr[3..=9].copy_from_slice(&[address, size, name, flags, conn, main, err]);
     let action = ppc_get_mem_fragment(
         cpu,
@@ -459,12 +461,18 @@ pub(super) fn ppc_get_disk_fragment(
         heap_limit,
         stack_base,
         cfm_connections,
+        cfm_library_fragments,
         next_cfm_connection_id,
         import_run_state,
         Some(size),
         Some(path.rsplit('/').next().unwrap_or(&path)),
     );
-    if let Some(connection) = cfm_connections.iter_mut().find(|item| item.id == new_id) {
+    if let Some(connection) = cfm_connections.iter_mut().find(|item| {
+        matches!(
+            item.container,
+            Some(crate::cfm::CfmContainerLocation::Memory { address: base, .. }) if base == address
+        )
+    }) {
         connection.container = Some(crate::cfm::CfmContainerLocation::DataFork {
             address,
             file_spec,
@@ -484,6 +492,7 @@ pub(super) fn ppc_get_mem_fragment(
     heap_limit: u32,
     stack_base: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &[PpcCfmLibraryFragment],
     next_cfm_connection_id: &mut u32,
     import_run_state: &mut PpcImportRunState,
     disk_container_size: Option<u32>,
@@ -561,6 +570,24 @@ pub(super) fn ppc_get_mem_fragment(
         }
         Some(connection) => connection,
         None => {
+            // CFM connects a fragment's import libraries before binding it.
+            // Inside Macintosh: PowerPC System Software (1994), chapter 3.
+            let mut dependency_initializers = Vec::new();
+            if let Err(error) = ppc_connect_fragment_dependencies(
+                &fragment,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                stack_base,
+                cfm_connections,
+                cfm_library_fragments,
+                next_cfm_connection_id,
+                import_run_state,
+                &mut dependency_initializers,
+            ) {
+                return PpcImportAction::Return(ppc_i16_result(error));
+            }
             let id = *next_cfm_connection_id;
             if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
                 return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_LIB_CONN_ERR));
@@ -568,17 +595,23 @@ pub(super) fn ppc_get_mem_fragment(
             let Some(next_id) = next_cfm_connection_id.checked_add(1) else {
                 return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_LIB_CONN_ERR));
             };
+            let allocation_limit = ppc_current_allocation_limit(process_memory_manager, heap_limit);
             let prepared = match ppc_prepare_mem_fragment(
                 &fragment,
                 process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
+                allocation_limit,
                 import_run_state,
                 cfm_connections,
             ) {
                 Ok(prepared) => prepared,
-                Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
+                Err(error) => {
+                    if ppc_hle_trace_enabled() {
+                        eprintln!("[PPC-TRACE] GetMemFragment name={frag_name:?} -> {error}");
+                    }
+                    return PpcImportAction::Return(ppc_i16_result(error));
+                }
             };
             // GetDiskFragment's container copy and code came from disk; its
             // data sections stay in the partition.
@@ -616,7 +649,28 @@ pub(super) fn ppc_get_mem_fragment(
                 term_addr: prepared.term_addr,
                 exports: prepared.exports,
             };
-            if prepared.init_addr != 0 {
+            if !dependency_initializers.is_empty() {
+                if prepared.init_addr != 0 {
+                    dependency_initializers.push((
+                        prepared.init_addr,
+                        crate::cfm::CfmInitBlock::in_memory(
+                            CfmLoadId(id),
+                            mem_addr,
+                            length,
+                            &connection.library_name,
+                        ),
+                    ));
+                }
+                match ppc_chained_initializer(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    dependency_initializers,
+                ) {
+                    Ok(chain) => initialization = Some(chain),
+                    Err(error) => return PpcImportAction::Return(ppc_i16_result(error)),
+                }
+            } else if prepared.init_addr != 0 {
                 let init_block = match ppc_create_mem_fragment_init_block(
                     Some(process_memory_manager),
                     memory,
@@ -664,6 +718,204 @@ pub(super) fn ppc_get_mem_fragment(
         return action;
     }
     PpcImportAction::Return(ppc_complete_cfm_load(operation, 0, memory, cfm_connections))
+}
+
+/// Connects the unconnected bundled libraries a fragment imports, dependencies
+/// first, collecting their initializers to run before the fragment's own.
+#[allow(clippy::too_many_arguments)]
+fn ppc_connect_fragment_dependencies(
+    fragment: &[u8],
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    stack_base: u32,
+    cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &[PpcCfmLibraryFragment],
+    next_cfm_connection_id: &mut u32,
+    import_run_state: &mut PpcImportRunState,
+    initializers: &mut Vec<(u32, crate::cfm::CfmInitBlock)>,
+) -> Result<(), i16> {
+    let imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
+    for import in imports {
+        if cfm_connections
+            .iter()
+            .any(|connection| connection.library_name.eq_ignore_ascii_case(&import.library_name))
+        {
+            continue;
+        }
+        let Some(library) = cfm_library_fragments
+            .iter()
+            .find(|library| library.name.eq_ignore_ascii_case(&import.library_name))
+        else {
+            continue;
+        };
+        let id = *next_cfm_connection_id;
+        if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
+            return Err(PPC_FRAG_LIB_CONN_ERR);
+        }
+        let size = u32::try_from(library.bytes.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
+        let address = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
+        if address == 0 || memory.write_bytes(address, &library.bytes).is_none() {
+            return Err(PPC_FRAG_NO_MEM);
+        }
+        // Registering first terminates import cycles; exports follow once bound.
+        // Known limit: a library reached again through a cycle is bound before its
+        // exports are recorded, so imports from it resolve against an empty list.
+        *next_cfm_connection_id = id + 1;
+        cfm_connections.push(PpcCfmConnection {
+            references: 1,
+            container: Some(crate::cfm::CfmContainerLocation::Memory {
+                address,
+                length: size,
+            }),
+            sections: Vec::new(),
+            id,
+            library_name: library.name.clone(),
+            main_addr: 0,
+            init_addr: 0,
+            term_addr: 0,
+            exports: Vec::new(),
+        });
+        ppc_connect_fragment_dependencies(
+            &library.bytes,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            stack_base,
+            cfm_connections,
+            cfm_library_fragments,
+            next_cfm_connection_id,
+            import_run_state,
+            initializers,
+        )?;
+        let allocation_limit = ppc_current_allocation_limit(process_memory_manager, heap_limit);
+        let prepared = ppc_prepare_mem_fragment(
+            &library.bytes,
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            allocation_limit,
+            import_run_state,
+            cfm_connections,
+        )?;
+        ppc_exempt_fragment_from_partition(
+            process_memory_manager,
+            memory,
+            stack_base,
+            size.saturating_add(prepared.code_size),
+        );
+        if prepared.init_addr != 0 {
+            initializers.push((
+                prepared.init_addr,
+                crate::cfm::CfmInitBlock::in_memory(CfmLoadId(id), address, size, &library.name),
+            ));
+        }
+        if let Some(connection) = cfm_connections.iter_mut().find(|item| item.id == id) {
+            connection.sections = prepared.sections;
+            connection.main_addr = prepared.main_addr;
+            connection.init_addr = prepared.init_addr;
+            connection.term_addr = prepared.term_addr;
+            connection.exports = prepared.exports;
+        }
+    }
+    Ok(())
+}
+
+/// Exempting a dependency from the partition raises the allocation limit the
+/// caller captured before the load began.
+fn ppc_current_allocation_limit(manager: &ProcessNativeMemoryManager, fallback: u32) -> u32 {
+    manager
+        .native_heap_state()
+        .map_or(fallback, |heap| manager.native_allocation_limit(heap.heap_limit))
+}
+
+/// Builds a guest routine that calls each initializer in order, stopping at
+/// the first nonzero result. Returns the routine's transition vector and the
+/// one scratch block holding every InitBlock, released when the chain returns.
+fn ppc_chained_initializer(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    initializers: Vec<(u32, crate::cfm::CfmInitBlock)>,
+) -> Result<(u32, u32), i16> {
+    let mut calls = initializers
+        .iter()
+        .map(|(descriptor, _)| (*descriptor, 0))
+        .collect::<Vec<_>>();
+    let code_size = u32::try_from(ppc_chained_initializer_words(&calls).len() * 4)
+        .map_err(|_| PPC_FRAG_NO_MEM)?;
+    let address =
+        ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, code_size + 8, false);
+    if address == 0 {
+        return Err(PPC_FRAG_NO_MEM);
+    }
+    let padded_size = |block: &crate::cfm::CfmInitBlock| (block.size() + 3) & !3;
+    let scratch_size = initializers
+        .iter()
+        .map(|(_, block)| padded_size(block))
+        .sum();
+    let scratch =
+        ppc_new_init_block_scratch(process_memory_manager, memory, heap_cursor, scratch_size);
+    if scratch == 0 {
+        return Err(PPC_FRAG_NO_MEM);
+    }
+    let mut block_address = scratch;
+    for ((_, block), call) in initializers.into_iter().zip(&mut calls) {
+        let size = padded_size(&block);
+        if block.publish(memory, block_address).is_err() {
+            process_memory_manager.release_native_scratch(scratch);
+            return Err(PPC_FRAG_NO_ADDR_SPACE);
+        }
+        call.1 = block_address;
+        block_address += size;
+    }
+    let bytes = ppc_chained_initializer_words(&calls)
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .collect::<Vec<_>>();
+    let descriptor = address + code_size;
+    if memory.write_bytes(address, &bytes).is_none()
+        || memory.write_u32_be(descriptor, address).is_none()
+        || memory.write_u32_be(descriptor + 4, 0).is_none()
+    {
+        process_memory_manager.release_native_scratch(scratch);
+        return Err(PPC_FRAG_NO_MEM);
+    }
+    Ok((descriptor, scratch))
+}
+
+fn ppc_chained_initializer_words(initializers: &[(u32, u32)]) -> Vec<u32> {
+    const CALL_WORDS: usize = 10;
+    let mut words = vec![
+        0x7c08_02a6, // mflr r0
+        0x9001_0008, // stw r0, 8(r1)
+        0x9421_ffc0, // stwu r1, -64(r1)
+    ];
+    for (index, (descriptor, block)) in initializers.iter().enumerate() {
+        // From this call's bne to the epilogue.
+        let exit_offset = ((initializers.len() - index - 1) * CALL_WORDS + 1) as u32 * 4;
+        words.extend_from_slice(&[
+            0x3c60_0000 | (block >> 16),
+            0x6063_0000 | (block & 0xffff),
+            0x3d80_0000 | (descriptor >> 16),
+            0x618c_0000 | (descriptor & 0xffff),
+            0x800c_0000, // lwz r0, 0(r12)
+            0x804c_0004, // lwz r2, 4(r12)
+            0x7c09_03a6, // mtctr r0
+            0x4e80_0421, // bctrl
+            0x2c03_0000, // cmpwi r3, 0
+            0x4082_0000 | exit_offset, // bne epilogue
+        ]);
+    }
+    words.extend_from_slice(&[
+        0x8001_0048, // lwz r0, 72(r1)
+        0x3821_0040, // addi r1, r1, 64
+        0x7c08_03a6, // mtlr r0
+        0x4e80_0020, // blr
+    ]);
+    words
 }
 
 pub(super) fn ppc_complete_cfm_load(
@@ -735,6 +987,24 @@ pub(super) fn ppc_activate_cfm_initializer(
     PpcImportAction::Continue
 }
 
+fn ppc_new_init_block_scratch(
+    manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    size: u32,
+) -> u32 {
+    let ptr = manager.new_native_scratch(memory, size);
+    if let Some(heap) = manager.native_heap_state() {
+        *heap_cursor = heap.heap_cursor;
+        ppc_update_zone_free_bytes(
+            memory,
+            heap.heap_cursor,
+            manager.native_allocation_limit(heap.heap_limit),
+        );
+    }
+    ptr
+}
+
 pub(super) fn ppc_create_mem_fragment_init_block(
     mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
@@ -753,16 +1023,7 @@ pub(super) fn ppc_create_mem_fragment_init_block(
     );
     let size = block.size();
     let init_block = if let Some(manager) = process_memory_manager.as_deref_mut() {
-        let ptr = manager.new_native_scratch(memory, size);
-        if let Some(heap) = manager.native_heap_state() {
-            *heap_cursor = heap.heap_cursor;
-            ppc_update_zone_free_bytes(
-                memory,
-                heap.heap_cursor,
-                manager.native_allocation_limit(heap.heap_limit),
-            );
-        }
-        ptr
+        ppc_new_init_block_scratch(manager, memory, heap_cursor, size)
     } else {
         // Startup has not attached a process allocator yet; its loader-owned
         // storage remains part of the application image's lifetime.
@@ -1035,5 +1296,25 @@ pub(super) fn ppc_frag_get_connection_info(
         0
     } else {
         -50
+    }
+}
+
+#[cfg(test)]
+mod chained_initializer_tests {
+    use super::ppc_chained_initializer_words;
+
+    #[test]
+    fn each_failure_branch_lands_on_the_epilogue() {
+        let words = ppc_chained_initializer_words(&[(0x1000, 0x2000), (0x3000, 0x4000)]);
+        let epilogue = words.iter().position(|word| *word == 0x8001_0048).unwrap();
+        let branches = words
+            .iter()
+            .enumerate()
+            .filter(|(_, word)| **word & 0xffff_0000 == 0x4082_0000)
+            .collect::<Vec<_>>();
+        assert_eq!(branches.len(), 2);
+        for (index, word) in branches {
+            assert_eq!(index + (*word & 0xffff) as usize / 4, epilogue);
+        }
     }
 }

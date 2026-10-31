@@ -138,10 +138,10 @@ pub const PPC_FIRST_FILE_REF_NUM: i16 = 128;
 pub(crate) const PPC_CLOSED_RESOURCE_REF_NUM: i16 = i16::MIN;
 pub(crate) const PPC_PICT_INFO_SIZE: u32 = 104;
 pub(crate) const PPC_CFM_MAIN_STUB_COUNT: u32 = 256;
-pub const PPC_IMPORT_CAPACITY: u32 = 4096;
+pub const PPC_IMPORT_CAPACITY: u32 = 32_768;
 // The final mapped traps are reserved for guest-call and thread returns, the
 // Dialog Manager's guest-callable standard filter procedure, RAVE draw-context
-// methods and AGL renderer methods. They do not reduce the 4,096 application/CFM binding
+// methods and AGL renderer methods. They do not reduce the application/CFM binding
 // capacity.
 pub(crate) const PPC_QA_METHOD_IMPORT_BASE: u32 = PPC_IMPORT_CAPACITY + 3;
 pub(crate) const PPC_AGL_METHOD_IMPORT_BASE: u32 =
