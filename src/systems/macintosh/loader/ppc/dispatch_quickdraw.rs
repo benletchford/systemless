@@ -1259,6 +1259,51 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InvertRoundRect => {
+            // Inside Macintosh Volume I, I-178: InvertRoundRect complements the
+            // pixels inside the rounded rectangle, like InvertRect does for
+            // a plain rectangle. Pictures record it as invertRRect ($0043).
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let oval_width = cpu.gpr[4] as u16 as i16;
+                let oval_height = cpu.gpr[5] as u16 as i16;
+                let shape = Rect {
+                    top: rect.0,
+                    left: rect.1,
+                    bottom: rect.2,
+                    right: rect.3,
+                };
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0043,
+                        rect,
+                        oval_width,
+                        oval_height,
+                    );
+                } else if toolbox_startup.open_region_port == current_gworld {
+                    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+                        .into_iter()
+                        .map(|(left, right)| vec![left, right])
+                        .collect();
+                    ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+                } else {
+                    for (row, (left, right)) in
+                        TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+                            .into_iter()
+                            .enumerate()
+                    {
+                        let top = rect.0.saturating_add(row as i16);
+                        let _ = ppc_invert_rect_bounds(
+                            memory,
+                            gworlds,
+                            current_gworld,
+                            (top, left, top.saturating_add(1), right),
+                        );
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::EraseRoundRect => {
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let oval_width = cpu.gpr[4] as u16 as i16;

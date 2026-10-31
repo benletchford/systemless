@@ -1935,3 +1935,31 @@ fn std_rect_and_std_rgn_dispatch_each_graf_verb() {
     let direct = shape_pixels(PpcImportDispatcherTarget::PaintRgn, [region, 0, 0], [0; 8]);
     assert_eq!(bottleneck, direct);
 }
+
+#[test]
+fn invert_round_rect_complements_only_the_rounded_interior() {
+    let original = initial_pixels();
+    let square = shape_pixels(PpcImportDispatcherTarget::InvertRect, [RECT, 0, 0], [0; 8]);
+    let round = shape_pixels(
+        PpcImportDispatcherTarget::InvertRoundRect,
+        [RECT, 8, 8],
+        [0; 8],
+    );
+    let changed = |pixels: &[u8]| {
+        pixels
+            .iter()
+            .zip(&original)
+            .filter(|(now, before)| now != before)
+            .count()
+    };
+    assert!(changed(&round) > 0, "InvertRoundRect must draw");
+    assert!(
+        changed(&round) < changed(&square),
+        "rounded corners must stay untouched"
+    );
+    for (index, value) in round.iter().enumerate() {
+        if *value != original[index] {
+            assert_eq!(*value, square[index], "pixel {index} is not an inversion");
+        }
+    }
+}
