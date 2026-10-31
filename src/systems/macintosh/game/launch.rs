@@ -1072,7 +1072,7 @@ impl<'a> WebPackLoader<'a> {
             {
                 let pending = self.pending.take().expect("complete web-pack entry");
                 self.filter_suite
-                    .record(pending.file_type_code, pending.creator_code);
+                    .record(&pending.name, pending.file_type_code, pending.creator_code);
                 if maybe_select_executable_with_preference(
                     &mut self.executable_entry,
                     &pending.name,
@@ -1736,27 +1736,44 @@ struct PayloadFile {
 /// filter suite itself is a standalone application.
 #[derive(Default)]
 struct FilterSuiteContents {
-    filter_creators: std::collections::BTreeMap<[u8; 4], usize>,
-    application_creators: std::collections::BTreeSet<[u8; 4]>,
+    filters: Vec<(String, [u8; 4])>,
+    applications: Vec<(String, [u8; 4])>,
 }
 
 impl FilterSuiteContents {
-    fn record(&mut self, file_type: [u8; 4], creator: [u8; 4]) {
+    fn record(&mut self, name: &str, file_type: [u8; 4], creator: [u8; 4]) {
         if file_type == *b"8BFM" {
-            *self.filter_creators.entry(creator).or_default() += 1;
+            self.filters.push((name.to_string(), creator));
         } else if file_type == *b"APPL" {
-            self.application_creators.insert(creator);
+            self.applications.push((name.to_string(), creator));
         }
+    }
+
+    /// A filter in a subfolder of an application's folder is that host's plug-in.
+    fn has_host_folder(&self, filter: &str) -> bool {
+        self.applications.iter().any(|(application, _)| {
+            application.rsplit_once('/').is_some_and(|(folder, _)| {
+                filter
+                    .strip_prefix(folder)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|rest| rest.contains('/'))
+            })
+        })
     }
 
     fn reject_without_host(&self, runner: &FixtureRunner) -> Result<(), String> {
         if runner.preferred_executable_path().is_some() || executable_name_override().is_some() {
             return Ok(());
         }
-        let plugin_suite_without_host = self
-            .filter_creators
-            .iter()
-            .any(|(creator, count)| *count >= 2 && !self.application_creators.contains(creator));
+        let mut filter_creators = std::collections::BTreeMap::<[u8; 4], usize>::new();
+        for (filter, creator) in &self.filters {
+            if !self.has_host_folder(filter) {
+                *filter_creators.entry(*creator).or_default() += 1;
+            }
+        }
+        let plugin_suite_without_host = filter_creators.iter().any(|(creator, count)| {
+            *count >= 2 && !self.applications.iter().any(|(_, other)| other == creator)
+        });
         if plugin_suite_without_host {
             return Err("Archive contains Photoshop-compatible filters but no standalone application for the suite; open the filters with a compatible image editor".to_string());
         }
@@ -1770,7 +1787,7 @@ fn reject_filter_suite_without_host(
 ) -> Result<(), String> {
     let mut contents = FilterSuiteContents::default();
     for file in &payload.files {
-        contents.record(file.file_type, file.creator);
+        contents.record(&file.name, file.file_type, file.creator);
     }
     contents.reject_without_host(runner)
 }
@@ -5908,6 +5925,16 @@ mod tests {
         payload.files.last_mut().unwrap().creator = *b"FILT";
         assert!(reject_filter_suite_without_host(&payload, &runner).is_ok());
         payload.files.last_mut().unwrap().creator = *b"VIEW";
+        payload.files.last_mut().unwrap().name = "Suite/Viewer".into();
+        assert!(reject_filter_suite_without_host(&payload, &runner).is_err());
+        for file in payload.files.iter_mut().take(2) {
+            file.name = file.name.replace("Suite/", "Suite/Plug-ins/");
+        }
+        assert!(reject_filter_suite_without_host(&payload, &runner).is_ok());
+        for file in payload.files.iter_mut().take(2) {
+            file.name = file.name.replace("Suite/Plug-ins/", "Suite/");
+        }
+        payload.files.last_mut().unwrap().name = "Suite/Art Gallery/Viewer".into();
         runner.set_preferred_executable_path(Some("Suite/Art Gallery/Viewer"));
         assert!(reject_filter_suite_without_host(&payload, &runner).is_ok());
     }
