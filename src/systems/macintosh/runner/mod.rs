@@ -4068,6 +4068,7 @@ impl FixtureRunner {
         self.bus.write_word(addr::FS_FCB_LEN, HFS_FCB_SIZE);
         self.bus
             .write_word(addr::CUR_APREF_NUM, APPLICATION_RESOURCE_REFNUM);
+        self.dispatcher.sync_guest_curmap(&mut self.bus);
 
         self.dispatcher
             .open_files

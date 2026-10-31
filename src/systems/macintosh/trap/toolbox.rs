@@ -7148,7 +7148,7 @@ impl super::TrapDispatcher {
                     // IM:I I-116: invalid refnum leaves the current file
                     // unchanged and ResError returns resFNotFound.
                     bus.write_word(0x0A60, (-193i16) as u16);
-                    bus.write_word(0x0A5A, self.current_resource_refnum());
+                    self.sync_guest_curmap(bus);
                 }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())

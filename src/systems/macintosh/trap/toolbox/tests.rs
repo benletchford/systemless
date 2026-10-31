@@ -6098,8 +6098,17 @@ fn test_use_res_file_with_cur_apref_num_maps_to_internal_app_file_zero() {
 
     assert_eq!(cpu.read_reg(Register::A7), sp + 2);
     assert_eq!(disp.current_resource_refnum(), 0);
-    assert_eq!(bus.read_word(0x0A5A), 0);
+    assert_eq!(bus.read_word(0x0A5A), 2);
     assert_eq!(bus.read_word(0x0A60), 0);
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, (-2i16) as u16);
+    disp.dispatch_toolbox(true, 0x198, &mut cpu, &mut bus)
+        .expect("UseResFile handler")
+        .expect("invalid reference is reported through ResError");
+    assert_eq!(disp.current_resource_refnum(), 0);
+    assert_eq!(bus.read_word(0x0A5A), 2);
+    assert_eq!(bus.read_word(0x0A60), (-193i16) as u16);
 }
 
 #[test]

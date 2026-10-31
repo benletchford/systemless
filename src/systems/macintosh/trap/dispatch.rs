@@ -6538,6 +6538,21 @@ impl TrapDispatcher {
         })
     }
 
+    /// Translate the internal application-map key into its guest FCB reference.
+    pub(crate) fn guest_current_resource_refnum(&self, bus: &MacMemoryBus) -> u16 {
+        let refnum = self.current_resource_refnum();
+        if refnum == 0 {
+            bus.read_word(crate::memory::globals::addr::CUR_APREF_NUM)
+        } else {
+            refnum
+        }
+    }
+
+    pub(crate) fn sync_guest_curmap(&self, bus: &mut MacMemoryBus) {
+        let refnum = self.guest_current_resource_refnum(bus);
+        bus.write_word(0x0A5A, refnum);
+    }
+
     pub(crate) fn set_current_resource_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) {
         let selected = self.with_resource_manager_mut(|resource_manager| {
             let mut selected = 0;
@@ -6553,7 +6568,7 @@ impl TrapDispatcher {
         });
         self.process_file_system.resource_manager.current_resource_file
             .with_mut(|current_file| *current_file = selected as i16);
-        bus.write_word(0x0A5A, self.current_resource_refnum());
+        self.sync_guest_curmap(bus);
     }
 
     pub(crate) fn set_resource_file_name(&mut self, refnum: u16, name: impl Into<String>) {
@@ -6914,7 +6929,7 @@ impl TrapDispatcher {
 
         self.write_refnums.remove(&refnum);
         Self::clear_file_fcb(bus, refnum);
-        bus.write_word(0x0A5A, self.current_resource_refnum());
+        self.sync_guest_curmap(bus);
 
         if trace_resfile_enabled() {
             eprintln!(
@@ -8038,7 +8053,7 @@ impl TrapDispatcher {
                 current_file: 0,
             });
         });
-        bus.write_word(0x0A5A, 0);
+        self.sync_guest_curmap(bus);
         // Some classic runtimes locate relocation resources by walking the
         // Resource Manager's guest-visible map through TopMapHndl. Keep the
         // HLE indexes above, but also expose the serialized application map
