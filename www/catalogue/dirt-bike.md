@@ -29,7 +29,7 @@ compatibility:
       frames. The title artwork appears heavily dithered; complete races, the
       track editor, saves, audio and browser performance remain unverified.
     status: playable
-    evidence: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/dirt-bike-30.hqx
+    evidence: https://github.com/benletchford/systemless/issues/5414
 runtime:
   executable_path: Dirt Bike 3.0/Dirt Bike 3.0
   show_menu_bar: true
@@ -74,6 +74,7 @@ artifacts:
       Native 68K Standard Track race after the rider leaves the start line,
       shown with the game's own menu bar.
 references:
+- https://github.com/benletchford/systemless/issues/5414
 - https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/dirt-bike-30.hqx
 ---
 
