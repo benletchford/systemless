@@ -30,7 +30,7 @@ compatibility:
       exhausted frames. Browser performance, combat, saves, audio and longer play
       remain unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/pull/4181
+    evidence: https://github.com/benletchford/systemless/issues/5410
 runtime:
   executable_path: Tomb Raider Gold/Tomb Raider I Demo
 artifacts:
@@ -72,7 +72,7 @@ artifacts:
     original: true
     content_only: true
     sources:
-    - https://github.com/benletchford/systemless/pull/4181
+    - https://github.com/benletchford/systemless/issues/5410
     permission: >-
       Fresh content-only gameplay capture from the unchanged original demo
       archive. The underlying game artwork remains its owners' property.
@@ -80,6 +80,7 @@ artifacts:
       Native PowerPC frame after Lara runs from the opening corridor into the next
       chamber; excludes the desktop and emulator interface.
 references:
+- https://github.com/benletchford/systemless/issues/5410
 - https://classicmacdemos.com/tomb-raider-1-gold
 - https://www.application-systems.de/tombraider/tr1/
 ---
