@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,6 +29,22 @@ compatibility:
       checkpoints, with zero exhausted frames. The title artwork appears heavily
       dithered; complete races, the track editor, saves, audio and browser performance
       remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5414
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 52e7773b with local launch flag
+    architecture: 68k
+    environment: >-
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of
+      a locally served trunk build used the actual Systemless-hosted archive, whose
+      bytes matched the pinned size and SHA-256. Scripted ordinary input passed the
+      registration notice, reached the Standard Track, set full throttle and shifted
+      up with X; the bike rode forward and the race clock ran. Twenty-second samples
+      reached 63.06, 61.34 and 59.99 guest ticks per second (host 60.31 and 58.03
+      fps on the later samples), with no console errors or long tasks over 50 ms.
+      This approves bounded browser launch; deployed replay, complete races, the
+      track editor, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5414
 runtime:

@@ -12,6 +12,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,6 +29,22 @@ compatibility:
       window, 298,131 of 307,200 pixels differ. An exact replay matches all three
       checkpoints, with zero exhausted frames. Browser performance, combat, saves, audio
       and longer play remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5410
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 52e7773b with local launch flag
+    architecture: ppc
+    environment: >-
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of
+      a locally served trunk build used the actual Systemless-hosted archive, whose
+      bytes matched the pinned size and SHA-256. Scripted ordinary input passed the
+      first-run notice, chose Game and New Game, and held Up; Lara ran into the next
+      chamber and fought the wolves there. Twenty-second samples reached 60.20,
+      60.14 and 60.22 guest ticks per second (host 60.20, 60.14 and 59.21 fps), with
+      no console errors or long tasks over 50 ms. This approves bounded browser
+      launch; deployed replay, full level play, saves and audio fidelity remain
+      unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5410
 runtime:
