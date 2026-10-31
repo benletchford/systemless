@@ -21,12 +21,11 @@ compatibility:
     architecture: ppc
     environment: >-
       The original Info-Mac package opened its bundled MaxZip interpreter on the
-      PowerPC slice and printed the opening text. Typing look and pressing
-      Return produced a parser response. A matched control without typing was
-      identical until the input and then differed by 20429 pixels. An exact
-      replay matched both checkpoints, with zero exhausted frames. The MaxZip
-      status window renders as a solid black bar. Saves, longer play and browser
-      performance remain unverified.
+      PowerPC slice and printed the opening text. Typing look and pressing Return produced
+      a parser response. A matched control without typing was identical until the input
+      and then differed by 20429 pixels. An exact replay matched both checkpoints,
+      with zero exhausted frames. The MaxZip status window renders as a solid black bar.
+      Saves, longer play and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5439
   - date: "2026-10-31"
@@ -34,12 +33,11 @@ compatibility:
     systemless_version: 21bc3f3d browser build with launch flag
     architecture: ppc
     environment: >-
-      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs
-      of a locally served trunk build used the exact pinned original archive.
-      Scripted ordinary input typed LOOK and Return. Twenty-second samples
-      reached 60.00, 59.99 and 60.00 guest ticks per second, with no console
-      errors. This approves bounded browser launch; saves, longer play and the
-      blank status bar remain unverified.
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of a
+      locally served trunk build used the exact pinned original archive. Scripted
+      ordinary input typed LOOK and Return. Twenty-second samples reached 60.00, 59.99 and
+      60.00 guest ticks per second, with no console errors. This approves bounded
+      browser launch; saves, longer play and the blank status bar remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5439
 runtime:
@@ -50,10 +48,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/adv/shade.hqx
-    expected_sha256: c6d6d24b0dff40ed1ed84d3d52db25daf2c6ef0bf7953208bde2d3178dc4de9b
-    expected_size: 284671
+    type: sha256
+    sha256: c6d6d24b0dff40ed1ed84d3d52db25daf2c6ef0bf7953208bde2d3178dc4de9b
+    size_bytes: 284671
   provenance:
     redistribution: permitted
     original: true
@@ -63,10 +60,9 @@ artifacts:
     license: Original free distribution notice
     rights_holder: Andrew Plotkin
     permission: >-
-      SHADE is copyright 2000 by Andrew Plotkin. The author's Info-Mac
-      submission says it may be distributed for free, but not sold or included
-      in a for-profit collection without written permission. Preserve the
-      complete unchanged archive.
+      SHADE is copyright 2000 by Andrew Plotkin. The author's Info-Mac submission
+      says it may be distributed for free, but not sold or included in a for-profit
+      collection without written permission. Preserve the complete unchanged archive.
     notes: >-
       Stand-alone Macintosh application built with Andrew Plotkin's MaxZip Z-machine
       interpreter; the archive contains only the application.
@@ -74,8 +70,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/shade/story.png
+    type: sha256
+    sha256: ef10e99790ce6e426f7abaee45b8a7c6aeadc483fd4a6c23c3749d747ed9559d
+    size_bytes: 10296
   provenance:
     redistribution: permitted
     original: true
@@ -83,16 +80,18 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/5439
     permission: >-
-      Fresh gameplay capture from the permitted unchanged original package. The
-      story text remains its authors' property.
-    notes: Native PowerPC MaxZip story window after the first command, cropped to the window.
+      Fresh gameplay capture from the permitted unchanged original package. The story
+      text remains its authors' property.
+    notes: >-
+      Native PowerPC MaxZip story window after the first command, cropped to the
+      window.
 references:
 - https://github.com/benletchford/systemless/issues/5439
 ---
 
 ## Read, then type
 
-![Shade (Release 3) story window](incoming/shade/story.png)
+![Shade (Release 3) story window](https://assets.systemless.org/catalogue/media/sha256/ef/ef10e99790ce6e426f7abaee45b8a7c6aeadc483fd4a6c23c3749d747ed9559d.png)
 
 Wait out the pre-dawn hours in your gloomy apartment in Andrew Plotkin's unsettling one-room text adventure.
 
