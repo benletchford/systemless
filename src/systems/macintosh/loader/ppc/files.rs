@@ -4029,7 +4029,7 @@ pub(super) fn ppc_fsp_open_res_file(
                 path, _permission, existing.ref_num
             );
         }
-        return existing.ref_num;
+        return ppc_guest_resource_refnum(memory, existing.ref_num);
     }
     // Inside Macintosh: More Macintosh Toolbox, FSpOpenResFile: opening a
     // malformed resource map fails with mapReadErr. Raw File Manager writes
@@ -4139,6 +4139,8 @@ pub(super) fn ppc_open_res_file(
         })
         .unwrap_or(normalized_name)
     };
+    // Inside Macintosh Volume I, I-110: reopening an already open resource
+    // file returns its reference without changing the current resource file.
     ppc_open_resource_path(
         memory,
         vfs_files,
@@ -4149,7 +4151,7 @@ pub(super) fn ppc_open_res_file(
         current_resource_refnum,
         last_resource_error,
         path,
-        true,
+        false,
         "OpenResFile",
     )
 }
@@ -4385,7 +4387,7 @@ pub(super) fn ppc_open_resource_path(
                 trace_name, path, existing.ref_num
             );
         }
-        return existing.ref_num;
+        return ppc_guest_resource_refnum(memory, existing.ref_num);
     }
     ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, &path);
     ppc_materialize_quilt_resources_for_existing_path(
@@ -4435,7 +4437,7 @@ pub(super) fn ppc_close_res_file(
     current_resource_refnum: &mut i16,
     last_resource_error: &mut i16,
 ) {
-    let ref_num = cpu.gpr[3] as u16 as i16;
+    let ref_num = ppc_internal_resource_refnum(memory, cpu.gpr[3] as u16 as i16);
     let read_only = resource_files
         .iter()
         .any(|file| file.ref_num == ref_num && file.writable == Some(false));

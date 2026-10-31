@@ -4895,10 +4895,14 @@ impl TrapDispatcher {
         self.vfs_volume_by_name(root)
     }
 
+    pub(crate) fn resource_fork_backing_path(path: &str) -> Option<&str> {
+        path.strip_prefix("__rsrc__")
+            .or_else(|| path.strip_prefix(crate::loader::ppc::PPC_OPEN_RESOURCE_FORK_PREFIX))
+    }
+
     /// Return whether the path's mounted volume has its hardware-lock bit.
-    /// Resource-fork mirrors use a `__rsrc__` prefix.
     pub(crate) fn vfs_path_is_read_only(&self, path: &str) -> bool {
-        let path = path.strip_prefix("__rsrc__").unwrap_or(path);
+        let path = Self::resource_fork_backing_path(path).unwrap_or(path);
         self.vfs_volume_for_path(path)
             .is_some_and(|volume| volume.attributes & 0x0080 != 0)
     }

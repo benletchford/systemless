@@ -41,13 +41,35 @@ pub(crate) fn ppc_icon_suite_member_handles(
         .collect()
 }
 
+pub(crate) fn ppc_guest_resource_refnum(memory: &mut PpcSectionMem, refnum: i16) -> i16 {
+    if refnum == 0 {
+        memory
+            .read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM)
+            .unwrap_or(0) as i16
+    } else {
+        refnum
+    }
+}
+
+pub(crate) fn ppc_internal_resource_refnum(memory: &mut PpcSectionMem, refnum: i16) -> i16 {
+    let app_ref = memory
+        .read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM)
+        .unwrap_or(0) as i16;
+    if app_ref != 0 && refnum == app_ref {
+        0
+    } else {
+        refnum
+    }
+}
+
 pub(crate) fn ppc_set_current_resource_refnum(
     memory: &mut PpcSectionMem,
     current_resource_refnum: &mut i16,
     refnum: i16,
 ) {
     *current_resource_refnum = refnum;
-    let _ = memory.write_u16_be(PPC_CUR_RES_FILE_ADDR, refnum as u16);
+    let guest_refnum = ppc_guest_resource_refnum(memory, refnum);
+    let _ = memory.write_u16_be(PPC_CUR_RES_FILE_ADDR, guest_refnum as u16);
 }
 
 pub(crate) fn ppc_serialized_resource_fork(
@@ -729,11 +751,19 @@ pub(crate) fn ppc_update_res_file(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) {
-    let ref_num = cpu.gpr[3] as u16 as i16;
-    let file_exists = ref_num == 0
-        || ref_num == current_resource_refnum
-        || resource_files.iter().any(|file| file.ref_num == ref_num)
-        || vfs_resources.iter().any(|record| record.ref_num == ref_num);
+    let ref_num = ppc_internal_resource_refnum(memory, cpu.gpr[3] as u16 as i16);
+    let app_ref = memory
+        .read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM)
+        .unwrap_or(0);
+    let file_exists = if ref_num == 0 && app_ref != 0 {
+        resource_files.iter().any(|file| file.ref_num == 0)
+            || vfs_resources.iter().any(|record| record.ref_num == 0)
+    } else {
+        ref_num == 0
+            || ref_num == current_resource_refnum
+            || resource_files.iter().any(|file| file.ref_num == ref_num)
+            || vfs_resources.iter().any(|record| record.ref_num == ref_num)
+    };
     if !file_exists {
         *last_resource_error = PPC_RES_F_NOT_FOUND_ERR;
         return;

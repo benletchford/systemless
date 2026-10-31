@@ -367,13 +367,14 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             ))))
         }
         PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            *current_resource_refnum,
+            ppc_guest_resource_refnum(memory, *current_resource_refnum),
         ))),
         PpcImportDispatcherTarget::UseResFile => {
+            let refnum = ppc_internal_resource_refnum(memory, cpu.gpr[3] as u16 as i16);
             ppc_set_current_resource_refnum(
                 memory,
                 current_resource_refnum,
-                cpu.gpr[3] as u16 as i16,
+                refnum,
             );
             *last_resource_error = 0;
             Some(PpcImportAction::ReturnPreserve)
@@ -615,8 +616,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             let out = cpu.gpr[4];
             let result = if out == 0 || !ppc_memory_can_write_bytes(memory, out, 2) {
                 PPC_PARAM_ERR
-            } else if files.iter().any(|file| file.ref_num == ref_num)
-                || resource_files.iter().any(|file| file.ref_num == ref_num)
+            } else if ref_num != 0
+                && (files.iter().any(|file| file.ref_num == ref_num)
+                    || resource_files.iter().any(|file| file.ref_num == ref_num))
             {
                 let _ = memory.write_u16_be(out, PPC_BOOT_VOLUME_REF_NUM as u16);
                 PPC_NO_ERR
