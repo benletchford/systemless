@@ -1694,10 +1694,15 @@ impl super::TrapDispatcher {
     }
 
     /// The darkest index of the device CLUT, which kiosk margins take.
+    /// Ties resolve to the highest index. QuickDraw keeps black in the last
+    /// entry, while a SetEntries fade can briefly make entry 0 just as dark;
+    /// margins filled with that entry would reappear white once the palette
+    /// is restored. Imaging With QuickDraw 1994, p. 4-82
     pub(super) fn kiosk_black_index(&self) -> u8 {
         self.device_clut
             .iter()
             .enumerate()
+            .rev()
             .min_by_key(|(_, rgb)| u32::from(rgb[0]) + u32::from(rgb[1]) + u32::from(rgb[2]))
             .map(|(index, _)| index as u8)
             .unwrap_or(255)
@@ -7776,6 +7781,40 @@ mod redraw_chrome_tests {
         assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 40), 37);
         assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 42);
         assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 37);
+    }
+
+    #[test]
+    fn kiosk_stage_keeps_terminal_black_while_a_fade_collapses_the_clut() {
+        // Maelstrom fades its title screen with SetEntries. A presentation
+        // pass between those calls sees every entry at black; the margins
+        // must not take entry 0, which returns as white after the fade.
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _, screen_h, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * screen_h as u32, 7);
+        bus.write_word(PORT_PTR + 8, (-100i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-138i16) as u16);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 400);
+        bus.write_word(PORT_PTR + 22, 524);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list.replace(vec![PORT_PTR]);
+        disp.window_proc_ids.insert(PORT_PTR, 2);
+        disp.menu_bar_hidden = true;
+        disp.device_clut.replace([[0, 0, 0]; 256]);
+
+        disp.fill_kiosk_stage_for_centered_game_surface(&mut bus, PORT_PTR);
+
+        assert_eq!(bus.read_byte(screen_base), 255);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 20), 255);
+        assert_eq!(bus.read_byte(screen_base + 300 * row_bytes + 400), 7);
+        assert_eq!(bus.read_byte(screen_base + 599 * row_bytes + 799), 255);
+
+        // A unique darkest entry still wins wherever it sits.
+        disp.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        disp.device_clut.set_entry(3, [0x1000, 0, 0]);
+        assert_eq!(disp.kiosk_black_index(), 3);
     }
 
     #[test]
