@@ -3607,6 +3607,12 @@ pub(crate) fn ppc_begin_custom_menu_bar_tracking(
         0,
         Vec::new(),
     )?;
+    // TopMenuItem and AtMenuBottom position the rows an MDEF draws and scrolls.
+    ppc_write_menu_scrolling_bounds(
+        memory,
+        layout.content_top,
+        layout.content_top.saturating_add(layout.height),
+    );
     state.definition = Some(MenuDefinitionTracking::begin_draw(
         menu_handle,
         state.dropdown_rect(),
