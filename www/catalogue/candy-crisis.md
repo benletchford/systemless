@@ -11,6 +11,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -29,7 +30,25 @@ compatibility:
       labels are dim. Full matches, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4789
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: d24b7354 browser build with launch flag and 10 MHz pacing
+    architecture: ppc
+    environment: >-
+      At the default 25 MHz budget, two of three browser samples failed the runtime
+      audio queue minimum (20.8 and 37.5 ms). With runtime pacing at 10 MHz, three
+      release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of a
+      locally served trunk build used the actual Systemless-hosted archive, whose
+      bytes matched the pinned size and SHA-256. Scripted ordinary input passed the
+      shareware notice, chose One Player Game and pressed D; live Stage 1 play was
+      visible. Twenty-second samples reached 60.39, 60.25 and 60.20 guest ticks per
+      second at matching host frame rates, with no console errors. This approves
+      bounded browser launch; full matches and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4789
 runtime:
+  runtime_pacing:
+    cpu_mhz: 10
   executable_path: Candy Crisis/Candy Crisis
   screen_depth: 8
 artifacts:
