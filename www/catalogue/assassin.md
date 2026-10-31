@@ -3,8 +3,8 @@ id: assassin
 kind: game
 title: Assassin 1.1.2
 summary: >-
-  Plot simultaneous moves and shots through a maze to hunt down rival assassins in
-  Steven H. Taylor's turn-based networked strategy game.
+  Plot simultaneous moves and shots through a maze to hunt down rival assassins
+  in Steven H. Taylor's turn-based networked strategy game.
 developer: Steven H. Taylor
 year: 1996
 architectures:
@@ -19,14 +19,13 @@ compatibility:
     systemless_version: 52de7794 deterministic play runner
     architecture: 68k
     environment: >-
-      The original Info-Mac archive ran natively in headless mode. Choosing Solo
-      and accepting Game Setup opened the Dead Zone maze against two computer
-      players. Clicking the on-screen Up and Right move buttons entered moves and
-      moved the player's marker. A matched control without the clicks was identical
-      until the input and then differed by 238 pixels. An exact replay matched every
-      checkpoint, with zero exhausted frames. Keyboard move entry was not accepted
-      in this run. Turn resolution, network play, audio and browser performance
-      remain unverified.
+      The original Info-Mac archive ran natively in headless mode. Choosing Solo and
+      accepting Game Setup opened the Dead Zone maze against two computer players.
+      Clicking the on-screen Up and Right move buttons entered moves and moved the player's
+      marker. A matched control without the clicks was identical until the input and
+      then differed by 238 pixels. An exact replay matched every checkpoint, with zero
+      exhausted frames. Keyboard move entry was not accepted in this run. Turn
+      resolution, network play, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5425
 runtime:
@@ -36,10 +35,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/brd/assassin-112.hqx
-    expected_sha256: 7ca8caa8df392db268823df910de0cf0732af77ea20d54681fc08b0b31a2377f
-    expected_size: 517649
+    type: sha256
+    sha256: 7ca8caa8df392db268823df910de0cf0732af77ea20d54681fc08b0b31a2377f
+    size_bytes: 517649
   provenance:
     redistribution: permitted
     original: true
@@ -50,16 +48,16 @@ artifacts:
     rights_holder: Steven H. Taylor
     permission: >-
       The bundled Read Me permits copying and distributing the software freely, as
-      long as that Read Me is included. Modified copies and charging for the
-      software or its distribution are not permitted. Preserve the complete
-      unchanged archive.
+      long as that Read Me is included. Modified copies and charging for the software or
+      its distribution are not permitted. Preserve the complete unchanged archive.
     notes: The archive contains the 68K application, instructions and Read Me.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/assassin/maze.png
+    type: sha256
+    sha256: 79875856f42337d23553f0635ccda792a3513579a7c070e5a4bc76620b43ea2a
+    size_bytes: 19898
   provenance:
     redistribution: permitted
     original: true
@@ -74,7 +72,7 @@ references:
 
 ## Plan your strike
 
-![Assassin Dead Zone maze](incoming/assassin/maze.png)
+![Assassin Dead Zone maze](https://assets.systemless.org/catalogue/media/sha256/79/79875856f42337d23553f0635ccda792a3513579a7c070e5a4bc76620b43ea2a.png)
 
 Every player secretly plots a turn of moves and shots. All the moves then play
 out at once. Hunt your target through the maze while avoiding the assassin hunting
