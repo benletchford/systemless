@@ -126,7 +126,16 @@ fn hle_import_runner_handles_font_metrics() {
         loaded.memory.read_u32_be(metrics_ptr + 12),
         Some(to_fixed(metrics.wid_max.saturating_mul(scale)))
     );
-    assert_eq!(loaded.memory.read_u32_be(metrics_ptr + 16), Some(0));
+    let table = loaded
+        .memory
+        .read_u32_be(metrics_ptr + 16)
+        .and_then(|handle| loaded.memory.read_u32_be(handle))
+        .unwrap();
+    let width = ppc_text_width_bytes(text_font, loaded.quickdraw_text_size, 0, b"A");
+    assert_eq!(
+        loaded.memory.read_u32_be(table + 4 * u32::from(b'A')),
+        Some(to_fixed(width)),
+    );
     assert_eq!(loaded.cpu.gpr[3], metrics_ptr);
 }
 
@@ -477,4 +486,17 @@ fn ppc_src_copy_space_clears_cell_with_clip_and_scale() {
             }
         }
     }
+}
+
+#[test]
+fn font_metrics_ignores_a_nil_record() {
+    let pef = synthetic_pef_with_import(b"FontMetrics");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let before = loaded.memory.read_u32_be(16);
+    loaded.cpu.gpr[3] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u32_be(16), before);
 }
