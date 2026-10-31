@@ -24,6 +24,7 @@ const VISE_VERSION_36_FULL: u32 = 0x8001_0304;
 const VISE_VERSION_EARLY_EXTENDED_CATALOG: u32 = 0x8001_0306;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
+const VISE_VERSION_MID_PACKED_CATALOG: u32 = 0x8001_030A;
 const VISE_VERSION_LATE_PACKED_CATALOG: u32 = 0x8001_030B;
 const VISE_VERSION_EXPANDED_PACKED_CATALOG: u32 = 0x8001_030D;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
@@ -48,6 +49,7 @@ fn depth_catalog(version: u32) -> bool {
             | VISE_VERSION_36_LITE
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_MID_PACKED_CATALOG
             | VISE_VERSION_LATE_PACKED_CATALOG
             | VISE_VERSION_EXPANDED_PACKED_CATALOG
     )
@@ -64,6 +66,7 @@ fn packed_catalog(version: u32) -> bool {
     matches!(
         version,
         VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_MID_PACKED_CATALOG
             | VISE_VERSION_LATE_PACKED_CATALOG
             | VISE_VERSION_EXPANDED_PACKED_CATALOG
     )
@@ -305,6 +308,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
             | VISE_VERSION_EARLY_EXTENDED_CATALOG
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_MID_PACKED_CATALOG
             | VISE_VERSION_LATE_PACKED_CATALOG
             | VISE_VERSION_EXPANDED_PACKED_CATALOG
     ) {
@@ -491,6 +495,22 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     cursor += suffix_len;
                 }
                 let name = decode_catalog_name(catalog_data, &mut cursor, name_len, "file name")?;
+                if version == VISE_VERSION_MID_PACKED_CATALOG {
+                    // A display string of no recorded length can follow the
+                    // name, and segment zero holds installer actions.
+                    if index + 1 < entry_count {
+                        let window = &catalog_data[cursor..catalog_data.len().min(cursor + 259)];
+                        cursor += window
+                            .windows(4)
+                            .position(|magic| magic == b"FVCT" || magic == b"DVCT")
+                            .ok_or_else(|| format!("{name} has invalid display string"))?;
+                    } else {
+                        cursor = catalog_data.len();
+                    }
+                    if read_u16(record, 94, "file segment number")? == 0 {
+                        continue;
+                    }
+                }
                 let parent_index = if depth_catalog(version) {
                     depth_catalog_parent(&directory_stack, parent)?
                 } else {
@@ -1834,6 +1854,59 @@ pub(crate) mod tests {
         let archive = padded_packed_fixture(&longest, 1, &[]);
         let parsed = parse_vise(&archive).unwrap().unwrap();
         assert_eq!(parsed.entries[0].path.len(), 255);
+    }
+
+    #[test]
+    fn mid_packed_catalog_skips_display_strings_and_installer_actions() {
+        let mut records = Vec::new();
+        records.extend_from_slice(b"DVCT");
+        let mut directory = [0u8; VISE_DIRECTORY_RECORD_LEN];
+        directory[76] = 4;
+        records.extend_from_slice(&directory);
+        records.extend_from_slice(&[0; VISE_PACKED_DIRECTORY_SUFFIX_LEN]);
+        records.extend_from_slice(b"Root");
+        for (segment, depth, name, display) in [
+            (0u16, 0u16, "", "Move \"Root\" somewhere"),
+            (1, 1, "Profile", "Friendly name"),
+            (1, 1, "Last", "Final display string"),
+        ] {
+            records.extend_from_slice(b"FVCT");
+            let mut record = [0u8; VISE_FILE_RECORD_LEN];
+            record[92..94].copy_from_slice(&depth.to_be_bytes());
+            record[94..96].copy_from_slice(&segment.to_be_bytes());
+            record[118] = name.len() as u8;
+            records.extend_from_slice(&record);
+            records.extend_from_slice(&[0; VISE_PACKED_FILE_SUFFIX_LEN]);
+            records.extend_from_slice(name.as_bytes());
+            records.extend_from_slice(display.as_bytes());
+        }
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&records).unwrap();
+        let mut packed = encoder.finish().unwrap();
+        for pair in packed.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_MID_PACKED_CATALOG.to_be_bytes());
+        archive[36..40].copy_from_slice(&(VISE_HEADER_LEN as u32).to_be_bytes());
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[4..8].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        catalog[16..18].copy_from_slice(&4u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+        prefix[..4].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&prefix);
+        archive.extend_from_slice(&packed);
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        let paths: Vec<_> = parsed
+            .entries
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(paths, ["Root/Profile", "Root/Last"]);
     }
 
     #[test]
