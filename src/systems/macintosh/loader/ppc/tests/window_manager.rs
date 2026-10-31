@@ -2694,7 +2694,7 @@ fn hle_import_runner_handles_get_new_cwindow() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], storage_ptr);
     assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-    assert_eq!(*loaded.current_gworld, storage_ptr);
+    assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
     assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
     assert_eq!(loaded.gworlds.len(), gworld_count + 1);
     let record = loaded
@@ -10591,4 +10591,92 @@ fn select_window_preserves_current_port_and_device() {
     assert_eq!(*loaded.current_gworld, current);
     assert_eq!(*loaded.current_gdevice, device);
     assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(selected));
+}
+
+#[test]
+fn classic_window_creation_preserves_port_for_hidden_and_backmost_windows() {
+    use PpcImportDispatcherTarget as T;
+    for target in [T::NewCWindow, T::LegacyWindow(PpcLegacyWindowOperation::NewWindow)] {
+        for (visible, behind, preserve) in [
+            (false, u32::MAX, true),
+            (true, 0, true),
+            (true, u32::MAX, false),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+            let scratch = PPC_DATA_BASE + 0x1400;
+            loaded.memory.add_region(scratch, vec![0; 0x100]);
+            ppc_write_rect(&mut loaded.memory, scratch, 40, 50, 140, 250).unwrap();
+            let old_port = create_test_cwindow(
+                &mut loaded, scratch, (20, 20, 120, 220), 0, true, u32::MAX,
+            );
+            let old_device = *loaded.current_gdevice;
+            ppc_write_rect(&mut loaded.memory, scratch, 40, 50, 140, 250).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = 0;
+            loaded.cpu.gpr[6] = u32::from(visible);
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = behind;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            run_test_import(&mut loaded, target.clone());
+            let window = loaded.cpu.gpr[3];
+            assert_ne!(window, 0);
+            assert_eq!(
+                *loaded.current_gworld,
+                if preserve { old_port } else { window },
+                "{target:?}, visible={visible}, behind={behind:#x}"
+            );
+            if preserve {
+                assert_eq!(*loaded.current_gdevice, old_device);
+            }
+        }
+    }
+}
+
+#[test]
+fn resource_window_creation_preserves_port_for_hidden_and_backmost_windows() {
+    use PpcImportDispatcherTarget as T;
+    for target in [T::GetNewCWindow, T::LegacyWindow(PpcLegacyWindowOperation::GetNewWindow)] {
+        for (visible, behind, preserve) in [
+            (false, u32::MAX, true),
+            (true, 0, true),
+            (true, u32::MAX, false),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNewCWindow")).unwrap();
+            let scratch = PPC_DATA_BASE + 0x1400;
+            loaded.memory.add_region(scratch, vec![0; 0x100]);
+            let old_port = create_test_cwindow(
+                &mut loaded, scratch, (20, 20, 120, 220), 0, true, u32::MAX,
+            );
+            let old_device = *loaded.current_gdevice;
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"WIND"),
+                res_id: 1000,
+                name: Vec::new(),
+                data: test_wind_resource((40, 50, 140, 250), 0, visible, true, 0, b"Test").into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+            loaded.cpu.gpr[3] = 1000;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = behind;
+            run_test_import(&mut loaded, target.clone());
+            let window = loaded.cpu.gpr[3];
+            assert_ne!(window, 0);
+            assert_eq!(
+                *loaded.current_gworld,
+                if preserve { old_port } else { window },
+                "{target:?}, visible={visible}, behind={behind:#x}"
+            );
+            if preserve {
+                assert_eq!(*loaded.current_gdevice, old_device);
+            }
+        }
+    }
 }
