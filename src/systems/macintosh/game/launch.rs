@@ -2505,21 +2505,34 @@ fn payload_from_forks(
     finder_flags: u16,
     executable_priority: u8,
 ) -> Result<Payload, String> {
+    // An archive this loader cannot expand may be unrelated to the application.
+    let mut skipped_disk_image_errors = Vec::new();
     if is_stuffit_archive(&data) {
         if crate::runner::trace_load_enabled() {
             eprintln!("[LOAD] Extracting nested StuffIt archive from data fork \"{name}\"");
         }
-        return payload_from_stuffit_bytes(name, &data, executable_priority);
+        match payload_from_stuffit_bytes(name, &data, executable_priority) {
+            Ok(payload) => return Ok(payload),
+            Err(err) => skipped_disk_image_errors.push(format!("Nested StuffIt {name}: {err}")),
+        }
     }
 
     if is_stuffit_archive(&rsrc) {
         if crate::runner::trace_load_enabled() {
             eprintln!("[LOAD] Extracting nested StuffIt archive from resource fork \"{name}\"");
         }
-        return payload_from_stuffit_bytes(name, &rsrc, executable_priority);
+        match payload_from_stuffit_bytes(name, &rsrc, executable_priority) {
+            Ok(payload) => return Ok(payload),
+            Err(err) => skipped_disk_image_errors.push(format!("Nested StuffIt {name}: {err}")),
+        }
     }
 
-    if let Some(files) = crate::game::smaller_installer::expand_compact_pro(&data)? {
+    let compact_pro =
+        crate::game::smaller_installer::expand_compact_pro(&data).unwrap_or_else(|err| {
+            skipped_disk_image_errors.push(format!("Compact Pro archive {name}: {err}"));
+            None
+        });
+    if let Some(files) = compact_pro {
         let mut payload = Payload {
             dirs: vec![name.to_string()],
             files: Vec::new(),
@@ -2547,7 +2560,12 @@ fn payload_from_forks(
     }
 
     if file_type == *b"APPL" {
-        if let Some(files) = crate::game::smaller_installer::expand(&data, &rsrc)? {
+        let smaller_installer = crate::game::smaller_installer::expand(&data, &rsrc)
+            .unwrap_or_else(|err| {
+                skipped_disk_image_errors.push(format!("Smaller Installer {name}: {err}"));
+                None
+            });
+        if let Some(files) = smaller_installer {
             let mut payload = Payload {
                 dirs: vec![name.to_string()],
                 files: Vec::new(),
@@ -2614,7 +2632,6 @@ fn payload_from_forks(
         });
     }
 
-    let mut skipped_disk_image_errors = Vec::new();
     match crate::disk_image::extract_dc42_or_hfs(&data) {
         Ok(Some(image)) => {
             if crate::runner::trace_load_enabled() {
@@ -8026,6 +8043,49 @@ mod tests {
                 app_stack_size: 0,
             })
         );
+    }
+
+    #[test]
+    fn unreadable_nested_archive_is_kept_as_an_opaque_file() {
+        let mut archive = b"SIT!".to_vec();
+        archive.resize(80, 0);
+        let payload = payload_from_forks(
+            "Disc/Extras/Locked.sit",
+            archive.clone(),
+            Vec::new(),
+            *b"SITD",
+            *b"SIT!",
+            0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].data, archive);
+        assert!(payload.skipped_disk_image_errors[0].contains("Locked.sit"));
+    }
+
+    #[test]
+    fn invalid_compact_pro_archive_is_kept_as_an_opaque_file() {
+        // A Compact Pro header whose valid directory lists no entries.
+        let mut archive = vec![1, 1, 0, 0, 0, 0, 0, 8];
+        archive.extend_from_slice(&0x00be_26edu32.to_be_bytes());
+        archive.extend_from_slice(&[0, 0, 0]);
+        let payload = payload_from_forks(
+            "Disc/Extras/Empty.cpt",
+            archive.clone(),
+            Vec::new(),
+            *b"PACT",
+            *b"CPCT",
+            0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].data, archive);
+        assert!(payload
+            .skipped_disk_image_errors
+            .iter()
+            .any(|err| err.contains("Compact Pro archive") && err.contains("Empty.cpt")));
     }
 
     #[test]
