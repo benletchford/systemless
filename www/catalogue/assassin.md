@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,8 +29,26 @@ compatibility:
       resolution, network play, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5425
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: 78ec4f28 browser build with launch flag and 10 MHz pacing
+    architecture: 68k
+    environment: >-
+      At the default 25 MHz budget, browser pacing held only 34.6 to 35.6 guest
+      ticks per second. With runtime pacing at 10 MHz, three release-mode headless
+      Chromium 156 (aarch64 Linux) worker/WebGL runs of a locally served trunk build
+      used the actual Systemless-hosted archive, whose bytes matched the pinned size
+      and SHA-256. Scripted ordinary clicks chose Solo, accepted Game Setup and
+      entered moves with the on-screen buttons; the move list updated. Twenty-second
+      samples reached 60.00, 60.00 and 60.01 guest ticks per second (host 61.04,
+      61.04 and 60.01 fps), with no console errors. This approves bounded browser
+      launch; turn resolution, network play and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5425
 runtime:
   show_menu_bar: true
+  runtime_pacing:
+    cpu_mhz: 10
 artifacts:
 - id: archive
   role: archive
