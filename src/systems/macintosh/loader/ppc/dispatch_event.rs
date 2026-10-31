@@ -1475,8 +1475,14 @@ pub(super) fn dispatch_event_import(
         PpcImportDispatcherTarget::GetMouse => {
             let point_ptr = cpu.gpr[3];
             if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
-                let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
-                let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
+                // The classic Mouse global is authoritative: guest code may
+                // recenter it without generating a physical mouse event.
+                let global_v = memory.read_u16_be(crate::memory::globals::addr::MOUSE_LOC2)
+                    .unwrap_or(input.mouse_v as u16);
+                let global_h = memory.read_u16_be(crate::memory::globals::addr::MOUSE_LOC2 + 2)
+                    .unwrap_or(input.mouse_h as u16);
+                let _ = memory.write_u16_be(point_ptr, global_v);
+                let _ = memory.write_u16_be(point_ptr + 2, global_h);
                 // GetMouse reports the position in the current graphics port's
                 // local coordinate system. EventRecord.where remains global.
                 // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-25.
