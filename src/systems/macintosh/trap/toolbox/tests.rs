@@ -1140,6 +1140,7 @@ fn test_get_next_event_with_event() {
 
     // Push a mouseDown event
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -1470,6 +1471,7 @@ fn test_get_next_event_mask_miss_returns_null_and_preserves_queue() {
     bus.write_word(sp + 6, 0xBEEF);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown (not in keyDownMask)
         message: 0,
         when: 0,
@@ -1754,6 +1756,7 @@ fn test_event_avail_with_event() {
     bus.write_word(sp + 6, 0x0000);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown
         message: 0,
         when: 0,
@@ -1809,6 +1812,7 @@ fn test_event_avail_mask_miss_returns_null_and_preserves_queue() {
     bus.write_word(sp + 6, 0xBEEF);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown
         message: 0x1234_5678,
         when: 0,
@@ -1840,6 +1844,7 @@ fn test_event_avail_then_get_next_event_returns_same_event() {
     bus.write_word(sp + 6, 0x0000);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0xCAFEBABE,
         when: 0,
@@ -12491,6 +12496,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return opens the Pilots folder
         when: 0,
@@ -12503,6 +12509,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F, // ArrowDown
         when: 0,
@@ -12515,6 +12522,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return
         when: 0,
@@ -12624,6 +12632,7 @@ fn standard_get_file_gui_navigates_folder_then_cancels_with_original_abi() {
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -12644,6 +12653,7 @@ fn standard_get_file_gui_navigates_folder_then_cancels_with_original_abi() {
     assert_eq!(cpu.read_reg(Register::A7), sp);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -12757,6 +12767,7 @@ fn sf_get_file_gui_tracking_opens_selected_pilots_file_with_wdrefnum() {
     );
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return opens the Pilots folder
         when: 0,
@@ -12769,6 +12780,7 @@ fn sf_get_file_gui_tracking_opens_selected_pilots_file_with_wdrefnum() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -12879,7 +12891,15 @@ fn standard_put_cancel_tracks_release_and_drag_out() {
     let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
     let v = bounds.0 + super::STANDARD_FILE_CANCEL_RECT.0 + 4;
     let h = bounds.1 + super::STANDARD_FILE_CANCEL_RECT.1 + 4;
-    let event = |what, v, h| QueuedEvent { what, message: 0, when: 0, where_v: v, where_h: h, modifiers: 0 };
+    let event = |what, v, h| QueuedEvent {
+        delivery_id: None,
+        what,
+        message: 0,
+        when: 0,
+        where_v: v,
+        where_h: h,
+        modifiers: 0,
+    };
     disp.event_queue.push_back(event(1, v, h));
     disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
     assert!(disp.standard_file_put_tracking.as_ref().unwrap().active_button.is_some());
@@ -12949,6 +12969,7 @@ fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     // A key edits the name: that pass redraws the dialog.
     let before_key = bus.screen_mark().expect("presented screen");
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (u32::from(b'R') << 8) | u32::from(b'R'),
         when: 0,
@@ -12996,6 +13017,7 @@ fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
 
     for byte in b"Rick" {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: (u32::from(*byte) << 8) | u32::from(*byte),
             when: 0,
@@ -13009,6 +13031,7 @@ fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
     }
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13061,6 +13084,7 @@ fn standard_put_file_gui_reply_can_drive_fspcreate_save_file() {
 
     for byte in b"Rick Hardslab" {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: (u32::from(*byte) << 8) | u32::from(*byte),
             when: 0,
@@ -13074,6 +13098,7 @@ fn standard_put_file_gui_reply_can_drive_fspcreate_save_file() {
             .is_ok());
     }
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13181,6 +13206,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     // Return and a direct click on the disabled Save button are no-ops.
     for event in [
         QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x0000_240D,
             when: 0,
@@ -13189,6 +13215,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
             modifiers: 0,
         },
         QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -13210,6 +13237,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
 
     let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -13224,6 +13252,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
         .unwrap();
     assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().current_dir_id, locked_dir);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 2,
         message: 0,
         when: 0,
@@ -13257,6 +13286,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
     for _ in 0..2 {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -13277,6 +13307,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     );
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -13330,6 +13361,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
     let row_v = bounds.0 + STANDARD_FILE_PUT_LIST_RECT.0 + 7;
     let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -13341,6 +13373,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F,
         when: 0,
@@ -13360,6 +13393,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
     );
     // The filename remains the active editable item after navigation.
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_5858,
         when: 0,
@@ -13372,6 +13406,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
         .unwrap();
     assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().name, "X");
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13432,6 +13467,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         .unwrap();
     disp.standard_file_put_tracking.as_mut().unwrap().selected = Some(0);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F,
         when: 0,
@@ -13443,6 +13479,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13478,6 +13515,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         saves_dir
     );
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -13642,6 +13680,7 @@ fn sf_put_file_gui_tracking_returns_working_directory_refnum() {
     assert!(disp.is_standard_file_put_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -17550,6 +17589,58 @@ fn pack8_aeprocessappleevent_callback_allocation_failure_is_atomic() {
 }
 
 #[test]
+fn pack8_launch_dispatch_allocation_failure_preserves_outstanding_event() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let event_class = u32::from_be_bytes(*b"aevt");
+    let event_id = u32::from_be_bytes(*b"oapp");
+
+    cpu.write_reg(Register::D0, 0x091F);
+    bus.write_word(sp, 0);
+    bus.write_long(sp + 2, 0x1111_2222);
+    bus.write_long(sp + 6, 0x0040_9000);
+    bus.write_long(sp + 10, event_id);
+    bus.write_long(sp + 14, event_class);
+    bus.write_word(sp + 18, 0);
+    assert!(disp
+        .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+
+    let event_record = 0x0032_1000;
+    bus.write_word(event_record, 23);
+    bus.write_long(event_record + 2, event_class);
+    bus.write_word(event_record + 10, (event_id >> 16) as u16);
+    bus.write_word(event_record + 12, event_id as u16);
+    disp.apple_event_launch_state
+        .note_open_application_event_delivered();
+    disp.ae_trampoline_addr = Some(0x0012_3456);
+    let heap_limit = bus.application_memory_limit();
+    let transient_descriptor = heap_limit - 12;
+    bus.reserve_heap_until(transient_descriptor);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, 0x00f0_5678);
+    cpu.write_reg(Register::D0, 0x021B);
+    bus.write_long(sp, 0x0032_1000);
+    bus.write_word(sp + 4, 0);
+    assert!(disp
+        .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+
+    assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    assert_eq!(cpu.read_reg(Register::D0), -108i32 as u32);
+    assert_eq!(bus.read_word(sp + 4), (-108i16) as u16);
+    assert_eq!(bus.get_alloc_size(transient_descriptor), None);
+    assert!(disp.ae_descriptor_state.events.is_empty());
+    assert!(disp.ae_descriptor_state.descriptors.is_empty());
+    assert!(disp.ae_call_state.is_none());
+    assert!(disp
+        .apple_event_launch_state
+        .has_outstanding_open_application_event());
+}
+
+#[test]
 fn pack8_aeprocessappleevent_dispatches_matching_event_on_repeated_calls() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
@@ -21201,4 +21292,30 @@ fn apple_event_attribute_backing_survives_classic_descriptor_value_copies() {
     assert_eq!(bus.read_long(actual_type), u32::from_be_bytes(*b"shor"));
     assert_eq!(bus.read_long(actual_size), 2);
     assert_eq!(bus.read_word(output), 17);
+}
+
+#[test]
+fn pack8_get_current_event_returns_null_or_parameter_error() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let output = 0x20000;
+    disp.current_trap_word = 0xa816;
+    bus.write_long(TEST_SP, output);
+    cpu.write_reg(Register::D0, 0x021a);
+    assert!(disp
+        .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_long(output), AE_TYPE_NULL);
+    assert_eq!(bus.read_long(output + 4), 0);
+    assert_eq!(bus.read_word(TEST_SP + 4), 0);
+    for selector in [0x021a, 0x022c] {
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, selector);
+        bus.write_long(TEST_SP, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 4), (-50i16) as u16);
+    }
 }

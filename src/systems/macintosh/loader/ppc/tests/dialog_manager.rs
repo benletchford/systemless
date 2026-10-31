@@ -95,6 +95,7 @@ fn standard_alert_waits_for_input_then_disposes_the_dialog() {
 
     loaded.set_event_queue([
         PpcQueuedEvent {
+            delivery_id: None,
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 13,
             when: 0,
@@ -103,6 +104,7 @@ fn standard_alert_waits_for_input_then_disposes_the_dialog() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 6,
             message: dialog,
             when: 0,
@@ -178,6 +180,7 @@ fn standard_alert_preserves_optional_button_ids_for_keyboard_and_mouse() {
             (0, 0)
         };
         loaded.set_event_queue([PpcQueuedEvent {
+            delivery_id: None,
             what: if key == 0 { 1 } else { 3 },
             message: (u32::from(key) << 8) | character,
             when: 0,
@@ -605,6 +608,7 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     loaded.cpu.gpr[3] = 0;
     loaded.cpu.gpr[4] = item_hit_ptr;
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 6,
         message: dialog,
         when: 1,
@@ -615,6 +619,7 @@ fn draw_dialog_calls_native_user_item_procedure_with_dialog_and_item_number() {
     loaded.run_with_hle_imports(128);
     assert_eq!(loaded.cpu.gpr[4], item_hit_ptr);
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0d,
         when: 2,
@@ -693,6 +698,7 @@ fn recorded_modal_filter_call(loaded: &mut PpcLoadedApp, record: u32) -> Recorde
         item_hit_ptr: memory.read_u32_be(record + 12).unwrap(),
         sp: memory.read_u32_be(record + 16).unwrap(),
         event: PpcQueuedEvent {
+            delivery_id: None,
             what: memory.read_u16_be(record + 20).unwrap(),
             message: memory.read_u32_be(record + 22).unwrap(),
             when: memory.read_u32_be(record + 26).unwrap(),
@@ -751,6 +757,7 @@ fn modal_dialog_with_filter(filter: u32) -> (PpcLoadedApp, u32, u32) {
 
 fn modal_filter_mouse_down(v: i16, h: i16) -> PpcQueuedEvent {
     PpcQueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 77,
@@ -930,6 +937,7 @@ fn modal_dialog_offers_null_events_to_its_filter_on_every_idle_pass() {
         assert_eq!(
             call.event,
             PpcQueuedEvent {
+                delivery_id: None,
                 what: 0,
                 message: 0,
                 when: call.event.when,
@@ -2038,6 +2046,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         .current_gworld
         .with_mut(|current_gworld| *current_gworld = dialog);
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 10,
@@ -2067,6 +2076,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
         Some(second_item_text_handle)
     );
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (2 << 8) | u32::from(b'D'),
         when: 0,
@@ -2089,6 +2099,7 @@ fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
 
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
         when: 0,

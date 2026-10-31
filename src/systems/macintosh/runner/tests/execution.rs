@@ -674,6 +674,7 @@ fn assert_ppc_sound_event_boundary(
         .process_context
         .shared_event_queue()
         .push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x1122_3344,
             when: 0,
@@ -803,6 +804,7 @@ fn ppc_event_queue_has_immediate_bidirectional_visibility() {
         let event = app.event_queue.pop_front().unwrap();
         assert_eq!((event.where_v, event.where_h), (10, 20));
         app.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2, // mouseUp
             message: 0,
             when: 0,
@@ -1479,6 +1481,7 @@ fn gui_host_work_batches_only_quiet_null_event_polls() {
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         if real_event {
             runner.dispatcher.event_queue.push_back(QueuedEvent {
+                delivery_id: None,
                 what: 1,
                 message: 0,
                 when: 0,
