@@ -6761,6 +6761,45 @@ pub(super) fn ppc_resolve_alias(
     PPC_NO_ERR
 }
 
+/// GetAliasInfo: index 0 is the target's name, -1 its volume, -2 and -3 the
+/// AppleShare server and zone, and N > 0 the Nth folder above the target.
+pub(super) fn ppc_get_alias_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    handles: &[PpcHandleRecord],
+    aliases: &[PpcAliasRecord],
+) -> i16 {
+    let alias_handle = cpu.gpr[3];
+    let index = cpu.gpr[4] as i16;
+    let out = cpu.gpr[5];
+    let Some(alias) = aliases
+        .iter()
+        .find(|record| record.handle == alias_handle)
+        .cloned()
+        .or_else(|| {
+            ppc_alias_record_from_handle(memory, handles, alias_handle, Some(vfs_directories))
+        })
+    else {
+        return PPC_PARAM_ERR;
+    };
+    let name = match index {
+        0 => alias.target_name,
+        -1 => encode_mac_roman_lossy(crate::trap::TrapDispatcher::boot_volume_name()),
+        n if n > 0 => vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == alias.target_dir_id)
+            .and_then(|directory| {
+                directory.path.rsplit('/').filter(|part| !part.is_empty()).nth(n as usize - 1)
+            })
+            .map(encode_mac_roman_lossy)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    ppc_write_pstring_bytes(memory, out, &name);
+    PPC_NO_ERR
+}
+
 pub(super) fn ppc_update_alias(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,

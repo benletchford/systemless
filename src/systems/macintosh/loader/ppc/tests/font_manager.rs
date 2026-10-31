@@ -478,3 +478,40 @@ fn ppc_src_copy_space_clears_cell_with_clip_and_scale() {
         }
     }
 }
+
+
+#[test]
+fn built_in_fond_reports_its_family_through_get_res_info() {
+    let pef = synthetic_pef_with_import(b"GetResource");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (id_ptr, type_ptr, name_ptr) = (scratch, scratch + 4, scratch + 8);
+    loaded.memory.add_region(scratch, vec![0xcc; 0x120]);
+    let get_fond = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"FOND");
+        loaded.cpu.gpr[4] = 3;
+        run_test_import(loaded, PpcImportDispatcherTarget::GetResource);
+        loaded.cpu.gpr[3]
+    };
+
+    let handle = get_fond(&mut loaded);
+    assert_ne!(handle, 0);
+    assert_eq!(get_fond(&mut loaded), handle);
+
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = id_ptr;
+    loaded.cpu.gpr[5] = type_ptr;
+    loaded.cpu.gpr[6] = name_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetResInfo);
+
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(3));
+    assert_eq!(
+        loaded.memory.read_u32_be(type_ptr),
+        Some(u32::from_be_bytes(*b"FOND"))
+    );
+    assert_eq!(
+        ppc_read_pascal_string(&mut loaded.memory, name_ptr),
+        Some(b"Geneva".to_vec())
+    );
+}

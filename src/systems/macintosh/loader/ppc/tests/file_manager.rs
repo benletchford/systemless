@@ -767,6 +767,40 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn get_alias_info_reports_the_target_name_and_folders() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetAliasInfo")).unwrap();
+        let out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(out, vec![0xAA; 64]);
+        let aliases = [PpcAliasRecord {
+            handle: 0x1234_0000,
+            target_vref: -1,
+            target_dir_id: 77,
+            target_name: b"Pub".to_vec(),
+        }];
+        let directories = [PpcVfsDirectory {
+            dir_id: 77,
+            parent_dir_id: 2,
+            path: "Disk/Folder".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        }];
+        let mut cpu = loaded.cpu.clone();
+        cpu.gpr[3] = 0x1234_0000;
+        cpu.gpr[5] = out;
+        cpu.gpr[4] = 0;
+        assert_eq!(ppc_get_alias_info(&cpu, &mut loaded.memory, &directories, &[], &aliases), PPC_NO_ERR);
+        assert_eq!(ppc_read_pascal_string(&mut loaded.memory, out).as_deref(), Some(&b"Pub"[..]));
+        cpu.gpr[4] = 1;
+        assert_eq!(ppc_get_alias_info(&cpu, &mut loaded.memory, &directories, &[], &aliases), PPC_NO_ERR);
+        assert_eq!(ppc_read_pascal_string(&mut loaded.memory, out).as_deref(), Some(&b"Folder"[..]));
+        cpu.gpr[4] = 5;
+        assert_eq!(ppc_get_alias_info(&cpu, &mut loaded.memory, &directories, &[], &aliases), PPC_NO_ERR);
+        assert_eq!(ppc_read_pascal_string(&mut loaded.memory, out).as_deref(), Some(&b""[..]));
+    }
+
+    #[test]
     fn match_alias_returns_one_fsspec_candidate() {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewAlias")).unwrap();
         let scratch = PPC_HEAP_BASE + 0x1200;
