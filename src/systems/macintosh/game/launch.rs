@@ -3120,6 +3120,9 @@ fn load_powerpc_executable(
     );
     loaded.seed_vfs_files_and_resources(ppc_vfs.files, ppc_vfs.resource_files, ppc_vfs.resources);
     loaded.set_launched_app_path(&executable.name);
+    loaded
+        .initialize_application_resource_reference()
+        .map_err(|error| format!("Failed to open application resource fork: {error}"))?;
     Ok(loaded)
 }
 

@@ -51,6 +51,63 @@ impl PpcLoadedApp {
         self.process_file_system.launched_app_path.as_deref()
     }
 
+    /// Initialize the guest-visible application resource fork reference.
+    pub(crate) fn initialize_application_resource_reference(&mut self) -> Result<(), i16> {
+        // The classic FCB buffer begins with a two-byte length word, so the
+        // first open fork uses offset 2. Resource records retain internal key 0.
+        let path = self.launched_app_path().ok_or(PPC_FNF_ERR)?.to_owned();
+        let result = self.process_file_system.with_mut(|file_system| {
+            let resource_manager = file_system.resource_manager.shared_handle();
+            resource_manager.with_mut(|resources| {
+                if !resources
+                    .vfs_resource_files
+                    .iter()
+                    .any(|file| file.path.eq_ignore_ascii_case(&path))
+                {
+                    resources.vfs_resource_files.push(PpcVfsResourceFileRecord {
+                        path: path.clone(),
+                        creator: 0,
+                        file_type: 0,
+                        finder_flags: 0,
+                        resource_len: 0,
+                        raw_data: None,
+                        map_attrs: 0,
+                        dirty: false,
+                    });
+                }
+                if !resources.resource_files.iter().any(|file| file.ref_num == 0) {
+                    resources.resource_files.push(PpcResourceFileRecord {
+                        ref_num: 0,
+                        path: path.clone(),
+                        writable: None,
+                    });
+                }
+                let mut next_ref = 2;
+                file_system.writable_refnums.with_mut(|writable| {
+                    file_system.files.with_mut(|files| {
+                        ppc_open_resource_fork_access(
+                            &path,
+                            1,
+                            &mut file_system.vfs_files,
+                            &mut resources.vfs_resource_files,
+                            &resources.vfs_resources,
+                            files,
+                            writable,
+                            &mut next_ref,
+                        )
+                    })
+                })
+            })
+        })?;
+        debug_assert_eq!(result, 2);
+        let _ = self
+            .memory
+            .write_u16_be(crate::memory::globals::addr::CUR_APREF_NUM, 2);
+        let current = self.current_resource_refnum();
+        self.set_current_resource_refnum(current);
+        Ok(())
+    }
+
     pub fn seed_cfm_library_fragments(&mut self, fragments: Vec<PpcCfmLibraryFragment>) {
         self.cfm
             .as_mut()

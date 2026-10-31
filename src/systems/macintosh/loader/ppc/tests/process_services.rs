@@ -1101,6 +1101,43 @@ fn process_resource_records_remain_canonical_during_native_execution_panic_cross
 }
 
 #[test]
+fn classic_fcb_info_identifies_native_application_resource_fork() {
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"GetEOF")).unwrap();
+    native.seed_vfs_files_and_resources(Vec::new(), vec![PpcVfsResourceFileRecord {
+        path: "Games/Test App".to_string(), creator: 0, file_type: 0, finder_flags: 0,
+        resource_len: 4, raw_data: Some(vec![1, 2, 3, 4].into()), map_attrs: 0, dirty: false,
+    }], Vec::new());
+    native.set_launched_app_path("Games/Test App");
+    native.initialize_application_resource_reference().unwrap();
+    let app_ref = native.memory.read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM).unwrap();
+    let mut context = ProcessContext::default();
+    native.attach_unconverted_process_services(&mut context);
+    let (mut classic, mut cpu, mut bus) = crate::trap::test_helpers::setup();
+    classic.attach_unconverted_process_services(&mut context);
+    let pb = 0x300000;
+    let name = 0x310000;
+    cpu.write_reg(Register::A0, pb);
+    bus.write_word(pb + 24, app_ref);
+    bus.write_long(pb + 32, name);
+    bus.write_long(pb + 36, 4);
+    bus.write_word(pb + 44, 0);
+    classic.dispatch_resource(false, 0x02, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_bytes(name, 4), vec![1, 2, 3, 4]);
+
+    cpu.write_reg(Register::D0, 8);
+    bus.write_long(pb + 18, name);
+    bus.write_word(pb + 24, app_ref);
+    bus.write_word(pb + 28, 0);
+    classic.dispatch_resource(false, 0x60, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_word(pb + 36) & 0x0200, 0x0200);
+    assert_eq!(bus.read_pstring(name), b"Test App");
+    assert_eq!(bus.read_long(pb + 40), 4);
+    assert_eq!(bus.read_long(pb + 48), 4);
+}
+
+#[test]
 fn open_file_sessions_cross_cpu_adapters_and_detach_with_clone() {
     let pef = synthetic_pef_with_import(b"GetEOF");
     let mut native = load_pef_application(&pef).unwrap();

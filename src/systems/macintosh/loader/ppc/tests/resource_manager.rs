@@ -322,6 +322,115 @@ fn hle_import_runner_reports_resource_autoload_state() {
 }
 
 #[test]
+fn closing_application_resource_file_releases_file_reference() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CloseResFile")).unwrap();
+    loaded.set_launched_app_path("Games/Test App");
+    loaded.initialize_application_resource_reference().unwrap();
+    let app_ref = loaded.memory.read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM).unwrap();
+    loaded.push_resource_file(PpcResourceFileRecord {
+        ref_num: 130,
+        path: "Games/Other Resources".to_string(),
+        writable: None,
+    });
+    loaded.set_current_resource_refnum(130);
+    loaded.cpu.gpr[3] = u32::from(app_ref);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    assert_eq!(loaded.current_resource_refnum(), 130);
+    assert!(!loaded.files.iter().any(|file| file.ref_num == app_ref as i16));
+    loaded.cpu.gpr[3] = u32::from(app_ref);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseResFile);
+    assert_eq!(loaded.test_resource_error(), PPC_RES_F_NOT_FOUND_ERR);
+}
+
+#[test]
+fn launched_application_resource_reference_is_usable_by_file_manager() {
+    let mut resource = load_pef_application(&synthetic_pef_with_import(b"LMGetCurMap")).unwrap();
+    resource.set_launched_app_path("Games/Test App");
+    resource.initialize_application_resource_reference().unwrap();
+    let probe = resource.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    let app_ref = resource.cpu.gpr[3] as u16;
+    assert_ne!(app_ref, 0, "the application map must have a guest file reference");
+    assert_eq!(resource.memory.read_u16_be(crate::memory::globals::addr::CUR_APREF_NUM), Some(app_ref));
+    assert_eq!(resource.memory.read_u16_be(PPC_CUR_RES_FILE_ADDR), Some(app_ref));
+
+    let mut file = load_pef_application(&synthetic_pef_with_import(b"GetVRefNum")).unwrap();
+    file.set_launched_app_path("Games/Test App");
+    file.initialize_application_resource_reference().unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    file.memory.add_region(output, vec![0; 4]);
+    file.cpu.gpr[3] = u32::from(app_ref);
+    file.cpu.gpr[4] = output;
+    let probe = file.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(file.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(file.memory.read_u16_be(output), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+    file.cpu.gpr[3] = 0;
+    file.cpu.gpr[4] = output;
+    file.memory.write_u16_be(output, 0x1234).unwrap();
+    run_test_import(&mut file, PpcImportDispatcherTarget::GetVRefNum);
+    assert_eq!(file.cpu.gpr[3], ppc_i16_result(PPC_RF_NUM_ERR));
+    assert_eq!(file.memory.read_u16_be(output), Some(0x1234));
+
+    let mut switch = load_pef_application(&synthetic_pef_with_import(b"UseResFile")).unwrap();
+    switch.set_launched_app_path("Games/Test App");
+    switch.initialize_application_resource_reference().unwrap();
+    switch.set_current_resource_refnum(130);
+    switch.cpu.gpr[3] = u32::from(app_ref);
+    let probe = switch.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(switch.current_resource_refnum(), 0);
+    assert_eq!(switch.memory.read_u16_be(PPC_CUR_RES_FILE_ADDR), Some(app_ref));
+
+    let mut eof = load_pef_application(&synthetic_pef_with_import(b"GetEOF")).unwrap();
+    eof.seed_vfs_files_and_resources(Vec::new(), vec![PpcVfsResourceFileRecord {
+        path: "Games/Test App".to_string(), creator: 0, file_type: 0, finder_flags: 0,
+        resource_len: 4, raw_data: Some(vec![1, 2, 3, 4].into()), map_attrs: 0, dirty: false,
+    }], Vec::new());
+    eof.set_launched_app_path("Games/Test App");
+    eof.initialize_application_resource_reference().unwrap();
+    eof.memory.add_region(output, vec![0; 4]);
+    eof.cpu.gpr[3] = u32::from(app_ref);
+    eof.cpu.gpr[4] = output;
+    let probe = eof.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(eof.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(eof.memory.read_u32_be(output), Some(4));
+
+    let mut reopen = load_pef_application(&synthetic_pef_with_import(b"OpenResFile")).unwrap();
+    reopen.set_launched_app_path("Games/Test App");
+    reopen.initialize_application_resource_reference().unwrap();
+    reopen.push_resource_file(PpcResourceFileRecord {
+        ref_num: 130,
+        path: "Games/Other Resources".to_string(),
+        writable: None,
+    });
+    reopen.set_current_resource_refnum(130);
+    let name = PPC_DATA_BASE + 0x2000;
+    reopen.memory.add_region(name, b"\x08Test App".to_vec());
+    reopen.cpu.gpr[3] = name;
+    let probe = reopen.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(reopen.cpu.gpr[3], u32::from(app_ref));
+    assert_eq!(reopen.current_resource_refnum(), 130);
+
+    let mut home = load_pef_application(&synthetic_pef_with_import(b"HomeResFile")).unwrap();
+    home.seed_vfs_files_and_resources(Vec::new(), Vec::new(), vec![PpcVfsResourceRecord {
+        ref_num: 0, path: "Games/Test App".to_string(), res_type: u32::from_be_bytes(*b"TEST"),
+        res_id: 128, name: Vec::new(), data: vec![1].into(), raw_data: None,
+        raw_attrs: None, attrs: 0, handle: 0x1234,
+    }]);
+    home.set_launched_app_path("Games/Test App");
+    home.initialize_application_resource_reference().unwrap();
+    home.cpu.gpr[3] = 0x1234;
+    let probe = home.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(home.cpu.gpr[3], u32::from(app_ref));
+}
+
+#[test]
 fn hle_import_runner_lm_get_cur_map_reads_shared_signed_reference_without_error_changes() {
     assert_eq!(dispatcher_target_for_import("InterfaceLib", "LMGetCurMap"),
         PpcImportDispatcherTarget::CurResFile);

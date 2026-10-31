@@ -9,6 +9,9 @@ pub(super) struct PpcResourceDispatchContext<'a> {
     pub(super) heap_limit: u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) files: &'a mut Vec<PpcFileRecord>,
+    pub(super) writable_refnums: &'a mut HashSet<u16>,
+    pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
     pub(super) resource_files: &'a mut Vec<PpcResourceFileRecord>,
     pub(super) vfs_resource_files: &'a mut ProcessVfsResourceFileRecords,
     pub(super) vfs_resources: &'a mut Vec<PpcVfsResourceRecord>,
@@ -29,6 +32,9 @@ pub(super) fn dispatch_resource_import(
         heap_limit,
         last_mem_error,
         handles,
+        files,
+        writable_refnums,
+        vfs_files,
         resource_files,
         vfs_resource_files,
         vfs_resources,
@@ -365,9 +371,15 @@ pub(super) fn dispatch_resource_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::HomeResFile => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_home_res_file(cpu, vfs_resources, last_resource_error),
-        ))),
+        PpcImportDispatcherTarget::HomeResFile => {
+            let refnum = ppc_home_res_file(cpu, vfs_resources, last_resource_error);
+            let guest_refnum = if *last_resource_error == PPC_NO_ERR {
+                ppc_guest_resource_refnum(memory, refnum)
+            } else {
+                refnum
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(guest_refnum)))
+        }
         PpcImportDispatcherTarget::UpdateResFile => {
             ppc_update_res_file(
                 cpu,
@@ -437,6 +449,7 @@ pub(super) fn dispatch_resource_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CloseResFile => {
+            let guest_refnum = cpu.gpr[3] as u16 as i16;
             ppc_close_res_file(
                 cpu,
                 process_memory_manager,
@@ -451,6 +464,13 @@ pub(super) fn dispatch_resource_import(
                 current_resource_refnum,
                 last_resource_error,
             );
+            if *last_resource_error == PPC_NO_ERR
+                && files.iter().any(|file| file.ref_num == guest_refnum)
+            {
+                let _ = ppc_fs_close(
+                    cpu, files, writable_refnums, vfs_files, vfs_resource_files, vfs_resources,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPicture => {

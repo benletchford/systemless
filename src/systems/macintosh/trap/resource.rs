@@ -4202,7 +4202,7 @@ impl super::TrapDispatcher {
                 // share the data-fork code path. Mirror writes back so a later
                 // OpenRFPerm/PBOpenRF reads the latest data (Mars Rising's
                 // installer copies its rsrc fork to a temp file then re-opens it).
-                if let Some(real_name) = filename.strip_prefix("__rsrc__") {
+                if let Some(real_name) = Self::resource_fork_backing_path(&filename) {
                     if let Some(buf) = self.vfs.get(&filename).cloned() {
                         self.vfs_rsrc.insert(real_name.to_string(), buf);
                     }
@@ -7592,7 +7592,7 @@ impl super::TrapDispatcher {
                             .map(str::to_owned)
                             .map(|vfs_name| (vfs_name, true))
                     } else if let Some(vfs_name) = self.open_files.get(&ref_num).cloned() {
-                        let is_resource_fork = vfs_name.starts_with("__rsrc__");
+                        let is_resource_fork = Self::resource_fork_backing_path(&vfs_name).is_some();
                         Some((vfs_name, is_resource_fork))
                     } else {
                         self.resource_file_name(ref_num)
@@ -7600,8 +7600,7 @@ impl super::TrapDispatcher {
                     };
 
                     if let Some((open_vfs_name, is_resource_fork)) = resolved_fcb {
-                        let metadata_name = open_vfs_name
-                            .strip_prefix("__rsrc__")
+                        let metadata_name = Self::resource_fork_backing_path(&open_vfs_name)
                             .unwrap_or(&open_vfs_name)
                             .to_string();
                         let base_name = super::TrapDispatcher::hfs_name_from_vfs_component(
