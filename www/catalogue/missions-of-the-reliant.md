@@ -29,7 +29,7 @@ compatibility:
       crew portraits and the menu background behind dialogs show speckled colour
       corruption. Combat, saves, audio and browser performance remain unverified.
     status: playable
-    evidence: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/missions-of-reliant-22.hqx
+    evidence: https://github.com/benletchford/systemless/issues/5412
 runtime:
   executable_path: Missions 2.2/Missions of the Reliant! 2.2
 artifacts:
@@ -76,6 +76,7 @@ artifacts:
       the HQ station. The game draws over the whole screen; no desktop, menu bar
       or emulator interface is visible.
 references:
+- https://github.com/benletchford/systemless/issues/5412
 - https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/missions-of-reliant-22.hqx
 ---
 
