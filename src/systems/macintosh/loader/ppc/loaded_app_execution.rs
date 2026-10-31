@@ -3,6 +3,25 @@
 use super::*;
 use super::loaded_app::{PpcGlmCallbackOperation, PpcGlmCallbackState};
 
+fn ppc_rebase_mouse_warp(
+    sprocket: &mut PpcInputSprocketState,
+    input: PpcInputSnapshot,
+    position: (i16, i16),
+) {
+    if let Some(anchor) = sprocket.device_mouse_v.as_mut() {
+        sprocket.device_mouse_v_carry = sprocket
+            .device_mouse_v_carry
+            .wrapping_add(i32::from(*anchor) - i32::from(input.mouse_v));
+        *anchor = position.0;
+    }
+    if let Some(anchor) = sprocket.device_mouse_h.as_mut() {
+        sprocket.device_mouse_h_carry = sprocket
+            .device_mouse_h_carry
+            .wrapping_add(i32::from(input.mouse_h) - i32::from(*anchor));
+        *anchor = position.1;
+    }
+}
+
 fn ppc_glm_zero_guest_range(memory: &mut PpcSectionMem, pointer: u32, size: u32) -> bool {
     const ZEROES: [u8; 4096] = [0; 4096];
     let mut written = 0;
@@ -2052,34 +2071,23 @@ impl PpcLoadedApp {
                     action
                 };
 
-                if binding.dispatcher_target
+                let cursor_device_move = binding.dispatcher_target
                     == PpcImportDispatcherTarget::SystemCompatibility(
                         PpcSystemCompatibilityOperation::CursorDeviceMove,
-                    )
+                    );
+                if (cursor_device_move || binding.dispatcher_target == PpcImportDispatcherTarget::GetMouse)
                     && action.is_some()
                 {
-                    if let Some(point) =
-                        memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2)
-                    {
+                    if let Some(point) = memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2) {
                         let (v, h) = ((point >> 16) as i16, point as i16);
-                        // A programmatic warp is not physical mouse movement.
-                        // Carry unread motion separately while rebasing the
-                        // anchors, including at the 16-bit coordinate limits.
-                        if let Some(anchor) = input_sprocket.device_mouse_v.as_mut() {
-                            input_sprocket.device_mouse_v_carry = input_sprocket
-                                .device_mouse_v_carry
-                                .wrapping_add(i32::from(*anchor) - i32::from(input.mouse_v));
-                            *anchor = v;
-                        }
-                        if let Some(anchor) = input_sprocket.device_mouse_h.as_mut() {
-                            input_sprocket.device_mouse_h_carry = input_sprocket
-                                .device_mouse_h_carry
-                                .wrapping_add(i32::from(input.mouse_h) - i32::from(*anchor));
-                            *anchor = h;
+                        if cursor_device_move || (v, h) != (input.mouse_v, input.mouse_h) {
+                            // A programmatic warp is not physical mouse movement.
+                            // Preserve unread motion while rebasing the anchors.
+                            ppc_rebase_mouse_warp(&mut input_sprocket, input, (v, h));
                         }
                         input.mouse_v = v;
                         input.mouse_h = h;
-                        process_input.set_mouse_position((input.mouse_v, input.mouse_h));
+                        process_input.set_mouse_position((v, h));
                     }
                 }
                 ppc_sync_process_window_list(memory, &window_list);
@@ -2482,6 +2490,16 @@ impl PpcLoadedApp {
             }
         };
         drop(fetch_observer);
+
+        // A guest can update Mouse immediately before a slice ends, without
+        // calling GetMouse. Publish that warp before the next input mirror.
+        if let Some(point) = self.memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2) {
+            let position = ((point >> 16) as i16, point as i16);
+            if position != (input.mouse_v, input.mouse_h) {
+                ppc_rebase_mouse_warp(&mut input_sprocket, input, position);
+                self.process_input.set_mouse_position(position);
+            }
+        }
 
         // Native execution never projects a scalar baseline back into guest
         // memory. Low-memory `Ticks` remains the source of truth, including
