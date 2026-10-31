@@ -4307,6 +4307,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetTheMenu") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetTheMenu)
         }
+        ("InterfaceLib", "LMGetScrHRes") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetScrHRes)
+        }
+        ("InterfaceLib", "LMGetScrVRes") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetScrVRes)
+        }
+        ("InterfaceLib", "LMGetTopMapHndl") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetTopMapHndl)
+        }
+        ("InterfaceLib", "LMSetTopMapHndl") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetTopMapHndl)
+        }
         ("InterfaceLib", "LMSetCursorNew") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetCursorNew)
         }

@@ -386,6 +386,33 @@ fn replace_gestalt_value_requires_an_existing_selector() {
 }
 
 #[test]
+fn top_map_handle_accessors_share_the_low_memory_global() {
+    use crate::memory::globals::addr;
+    let mut loaded = loaded_with(b"LMSetTopMapHndl");
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "LMSetTopMapHndl"),
+    );
+    assert_eq!(loaded.memory.read_u32_be(addr::TOP_MAP_HNDL), Some(0x1234_5678));
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "LMGetTopMapHndl"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
+fn screen_resolution_accessors_report_the_seeded_72_dpi() {
+    let mut loaded = loaded_with(b"LMGetScrHRes");
+    for symbol in ["LMGetScrHRes", "LMGetScrVRes"] {
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        assert_eq!(loaded.cpu.gpr[3], 72, "{symbol}");
+    }
+}
+
+#[test]
 fn imperialism_low_memory_getters_read_current_values() {
     use crate::memory::globals::addr;
     let mut loaded = loaded_with(b"LMGetFSFCBLen");
