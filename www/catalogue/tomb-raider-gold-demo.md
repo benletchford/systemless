@@ -47,8 +47,27 @@ compatibility:
       unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5410
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: cac764da browser build with 60 MHz adaptive pacing
+    architecture: ppc
+    environment: >-
+      At the default 25 MHz budget the live v0.104.0 route held 60 guest ticks
+      per second but executed only about 25 million guest instructions per
+      second, leaving the software-rendered 3D demo sluggish. With runtime
+      pacing at 60 MHz (adaptive minimum 25 MHz), three release-mode headless
+      Chromium 156 (aarch64 Linux) worker/WebGL runs of a locally served trunk
+      build used the actual Systemless-hosted archive. Scripted input reached
+      the level and ran Lara forward. Twenty-second samples reached 58.10, 61.01
+      and 59.99 guest ticks per second at 54.1, 51.2 and 50.9 guest MIPS, with
+      no console errors.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5410
 runtime:
   executable_path: Tomb Raider Gold/Tomb Raider I Demo
+  runtime_pacing:
+    cpu_mhz: 60
+    adaptive_min_cpu_mhz: 25
 artifacts:
 - id: archive
   role: archive
