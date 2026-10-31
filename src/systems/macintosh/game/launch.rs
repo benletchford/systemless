@@ -2824,6 +2824,29 @@ fn vise_locale_overlay_path(path: &str) -> Option<String> {
     Some(format!("Universal/App/RSRC/{rest}"))
 }
 
+fn apply_vise_locale_overlay(entries: &mut Vec<crate::game::vise::ViseEntry<'_>>) {
+    if entries
+        .iter()
+        .any(|entry| entry.path.starts_with("Universal/App/RSRC/"))
+    {
+        let overlaid = entries
+            .iter()
+            .filter_map(|entry| vise_locale_overlay_path(&entry.path))
+            .collect::<std::collections::HashSet<_>>();
+        entries.retain(|entry| !overlaid.contains(&entry.path));
+        // US/X and US/RSRC/X land on the same path; two writers would mix their forks.
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|entry| {
+            vise_locale_overlay_path(&entry.path).is_none_or(|path| seen.insert(path))
+        });
+        for entry in entries.iter_mut() {
+            if let Some(path) = vise_locale_overlay_path(&entry.path) {
+                entry.path = path;
+            }
+        }
+    }
+}
+
 fn expand_vise_payload(
     name: &str,
     data: &[u8],
@@ -2905,21 +2928,7 @@ fn expand_vise_payload(
         skipped_disk_image_errors: Vec::new(),
     };
     let mut entries = archive.entries;
-    if entries
-        .iter()
-        .any(|entry| entry.path.starts_with("Universal/App/RSRC/"))
-    {
-        let overlaid = entries
-            .iter()
-            .filter_map(|entry| vise_locale_overlay_path(&entry.path))
-            .collect::<std::collections::HashSet<_>>();
-        entries.retain(|entry| !overlaid.contains(&entry.path));
-        for entry in &mut entries {
-            if let Some(path) = vise_locale_overlay_path(&entry.path) {
-                entry.path = path;
-            }
-        }
-    }
+    apply_vise_locale_overlay(&mut entries);
     for entry in entries {
         let extract_fork = |packed_offset: usize,
                             packed: &[u8],
@@ -4893,6 +4902,40 @@ mod tests {
             finder_flags: 0,
             executable_priority: 0,
         }
+    }
+
+    #[test]
+    fn vise_locale_overlay_keeps_one_entry_per_target_path() {
+        let entry = |path: &str, data_unpacked_len| crate::game::vise::ViseEntry {
+            path: path.to_string(),
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            external: false,
+            data_packed: &[],
+            rsrc_packed: &[],
+            data_packed_offset: 0,
+            rsrc_packed_offset: 0,
+            unpacked_offset: 0,
+            data_unpacked_offset: 0,
+            rsrc_unpacked_offset: 0,
+            data_unpacked_len,
+            rsrc_unpacked_len: 0,
+        };
+        let mut entries = vec![
+            entry("Universal/App/RSRC/a", 1),
+            entry("US/a", 2),
+            entry("US/RSRC/a", 3),
+            entry("Universal/App/RSRC/b", 4),
+        ];
+        apply_vise_locale_overlay(&mut entries);
+        let kept = entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.data_unpacked_len))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kept,
+            [("Universal/App/RSRC/a", 2), ("Universal/App/RSRC/b", 4)]
+        );
     }
 
     #[test]
