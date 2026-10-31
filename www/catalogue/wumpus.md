@@ -21,11 +21,10 @@ compatibility:
     environment: >-
       The original Info-Mac archive ran natively in headless mode and opened a game
       in the first cavern. Holding Up moved the explorer through several caverns,
-      revealing the map and using lantern oil. A matched control without the key
-      was identical until the input and then differed by 11,358 pixels; Left,
-      Right and Down were blocked from the starting cavern. An exact replay matched
-      both checkpoints, with zero exhausted frames. Hazards, dynamite, shooting and
-      audio remain unverified.
+      revealing the map and using lantern oil. A matched control without the key was
+      identical until the input and then differed by 11,358 pixels; Left, Right and Down were
+      blocked from the starting cavern. An exact replay matched both checkpoints, with
+      zero exhausted frames. Hazards, dynamite, shooting and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5443
 runtime:
@@ -36,10 +35,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/adv/wumpus-10.hqx
-    expected_sha256: d623afcbe9eac142bde1094025814ba50ace6095d3013226fa56cfcf0fb9db71
-    expected_size: 1065335
+    type: sha256
+    sha256: d623afcbe9eac142bde1094025814ba50ace6095d3013226fa56cfcf0fb9db71
+    size_bytes: 1065335
   provenance:
     redistribution: permitted
     original: true
@@ -49,16 +47,17 @@ artifacts:
     license: Original freeware distribution notice
     rights_holder: Joe Strout (Codenautics)
     permission: >-
-      The author's Info-Mac submission says Wumpus is freeware and may be
-      distributed at will, including on CD-ROM archives, as long as the program
-      and its resources are not modified. Preserve the unchanged archive.
+      The author's Info-Mac submission says Wumpus is freeware and may be distributed
+      at will, including on CD-ROM archives, as long as the program and its resources
+      are not modified. Preserve the unchanged archive.
     notes: The archive contains only the PowerPC application.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/wumpus/caverns.png
+    type: sha256
+    sha256: 339dfc34609b3240664f68556fdc4a5196370814d899d5248f90702fac9d6c8c
+    size_bytes: 2896
   provenance:
     redistribution: permitted
     original: true
@@ -73,7 +72,7 @@ references:
 
 ## Hunt the Wumpus
 
-![Wumpus caverns](incoming/wumpus/caverns.png)
+![Wumpus caverns](https://assets.systemless.org/catalogue/media/sha256/33/339dfc34609b3240664f68556fdc4a5196370814d899d5248f90702fac9d6c8c.png)
 
 Wander the caverns with a single tranquilliser dart, a lantern, a few sticks of
 dynamite and a canary. Read the clues, avoid the hazards and get the Wumpus before
