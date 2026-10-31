@@ -21,11 +21,11 @@ compatibility:
     architecture: 68k
     environment: >-
       The original Info-Mac archive ran natively in headless mode. After OK on the
-      unregistered notice, the two-deck tableau was dealt into ten columns.
-      Clicking the stock dealt a new face-up row onto every column. A matched
-      control without the click was identical until the input and then differed by
-      21,634 pixels. An exact replay matched both checkpoints, with zero exhausted
-      frames. Card dragging, completed suits, scoring and audio remain unverified.
+      unregistered notice, the two-deck tableau was dealt into ten columns. Clicking the
+      stock dealt a new face-up row onto every column. A matched control without the
+      click was identical until the input and then differed by 21,634 pixels. An exact
+      replay matched both checkpoints, with zero exhausted frames. Card dragging,
+      completed suits, scoring and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5445
   - date: "2026-10-31"
@@ -33,12 +33,12 @@ compatibility:
     systemless_version: ce44cad5 browser build with launch flag
     architecture: 68k
     environment: >-
-      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs
-      of a locally served trunk build used the exact pinned original archive.
-      Scripted ordinary clicks dismissed the unregistered notice and dealt from
-      the stock. Twenty-second samples reached 59.97, 60.00 and 60.00 guest
-      ticks per second, with no console errors. This approves bounded browser
-      launch; card dragging and completed suits remain unverified.
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of a
+      locally served trunk build used the exact pinned original archive. Scripted
+      ordinary clicks dismissed the unregistered notice and dealt from the stock.
+      Twenty-second samples reached 59.97, 60.00 and 60.00 guest ticks per second, with no
+      console errors. This approves bounded browser launch; card dragging and completed
+      suits remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5445
 runtime:
@@ -49,10 +49,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/crd/tarantula-100.hqx
-    expected_sha256: 2dec515826f48b5cd399104acf8b6b1e11ca8f5db6c2ae2cae1e1b80c8e53534
-    expected_size: 508574
+    type: sha256
+    sha256: 2dec515826f48b5cd399104acf8b6b1e11ca8f5db6c2ae2cae1e1b80c8e53534
+    size_bytes: 508574
   provenance:
     redistribution: permitted
     original: true
@@ -71,8 +70,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/tarantula/tableau.png
+    type: sha256
+    sha256: bc6dee0373da007a48015c89b72832df2d85797bdd18ec62486f23475b7d060d
+    size_bytes: 7763
   provenance:
     redistribution: permitted
     original: true
@@ -80,14 +80,16 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/5445
     permission: Fresh gameplay capture from the permitted unchanged original package.
-    notes: Native 68K tableau after dealing a row from the stock, cropped to the game window.
+    notes: >-
+      Native 68K tableau after dealing a row from the stock, cropped to the game
+      window.
 references:
 - https://github.com/benletchford/systemless/issues/5445
 ---
 
 ## Spin your web
 
-![Tarantula tableau](incoming/tarantula/tableau.png)
+![Tarantula tableau](https://assets.systemless.org/catalogue/media/sha256/bc/bc6dee0373da007a48015c89b72832df2d85797bdd18ec62486f23475b7d060d.png)
 
 Two decks are dealt into ten columns. Build down regardless of suit, and remove
 complete runs from king to ace of a single suit. When you're stuck, deal another
