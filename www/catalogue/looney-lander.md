@@ -21,12 +21,11 @@ compatibility:
     architecture: 68k
     environment: >-
       The original Info-Mac archive ran natively in headless mode. After the title,
-      File > New Game opened the lunar landscape with the lander and fuel gauge.
-      Holding K (thrust) for 90 ticks burned fuel and moved the lander. A matched
-      control without the key was identical until the input and then differed by
-      1,032 pixels. An exact replay matched both checkpoints, with zero exhausted
-      frames. The File menu title stays highlighted during play. Landings, scoring
-      and audio remain unverified.
+      File > New Game opened the lunar landscape with the lander and fuel gauge. Holding
+      K (thrust) for 90 ticks burned fuel and moved the lander. A matched control
+      without the key was identical until the input and then differed by 1,032 pixels. An
+      exact replay matched both checkpoints, with zero exhausted frames. The File menu
+      title stays highlighted during play. Landings, scoring and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5427
   - date: "2026-10-31"
@@ -34,13 +33,13 @@ compatibility:
     systemless_version: 05ea3765 browser build with launch flag
     architecture: 68k
     environment: >-
-      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of
-      a locally served trunk build used the exact pinned original archive. Scripted
-      ordinary input passed the title, started a game with Command-N and thrust with
-      K. Each unattended run reached Game Over within the sample window. Twenty-
-      second samples reached 58.98, 58.90 and 59.86 guest ticks per second (host
-      61.05, 62.05 and 60.89 fps), with no console errors. This approves bounded
-      browser launch; deployed replay, landings and audio remain unverified.
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of a
+      locally served trunk build used the exact pinned original archive. Scripted
+      ordinary input passed the title, started a game with Command-N and thrust with K.
+      Each unattended run reached Game Over within the sample window. Twenty- second
+      samples reached 58.98, 58.90 and 59.86 guest ticks per second (host 61.05, 62.05 and
+      60.89 fps), with no console errors. This approves bounded browser launch; deployed
+      replay, landings and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5427
 runtime:
@@ -51,10 +50,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://mirrors.nic.funet.fi/pub/mac/info-mac/game/arc/looney-lander.hqx
-    expected_sha256: 7a2357cf7b1be3c8e1c71c833af42fb8e9af51b2160a046ea948d1b393ab198f
-    expected_size: 383736
+    type: sha256
+    sha256: 7a2357cf7b1be3c8e1c71c833af42fb8e9af51b2160a046ea948d1b393ab198f
+    size_bytes: 383736
   provenance:
     redistribution: permitted
     original: true
@@ -64,16 +62,17 @@ artifacts:
     license: Original free distribution notice
     rights_holder: MASS Productions (Tom Stromar and Andrew Reimer)
     permission: >-
-      The bundled Readme's distribution and licence agreement says Looney Lander
-      may be freely distributed as long as the Readme accompanies it. Preserve the
-      complete unchanged archive.
+      The bundled Readme's distribution and licence agreement says Looney Lander may
+      be freely distributed as long as the Readme accompanies it. Preserve the complete
+      unchanged archive.
     notes: The archive contains the 68K application and Readme.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/looney-lander/landing.png
+    type: sha256
+    sha256: c61953301f2c84800f10501f686361d196ad6eca021cde18aa8aa787f748b033
+    size_bytes: 56703
   provenance:
     redistribution: permitted
     original: true
@@ -88,7 +87,7 @@ references:
 
 ## Bring it down gently
 
-![Looney Lander lunar landscape](incoming/looney-lander/landing.png)
+![Looney Lander lunar landscape](https://assets.systemless.org/catalogue/media/sha256/c6/c61953301f2c84800f10501f686361d196ad6eca021cde18aa8aa787f748b033.png)
 
 Steer your lander between jagged peaks and touch down softly on the landing pad
 before your fuel runs out. Higher gravity earns a bigger bonus.
