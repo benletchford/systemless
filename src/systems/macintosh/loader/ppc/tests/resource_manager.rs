@@ -819,7 +819,8 @@ fn lowercase_named_resource_imports_decode_c_names_and_preserve_scope() {
                 handle: 0,
             }
         }));
-        for (current, expected) in [(9, Some(9)), (11, (!current_only).then_some(7))] {
+        // From refnum 11 the chain reaches 9 before 7.
+        for (current, expected) in [(9, Some(9)), (11, (!current_only).then_some(9))] {
             loaded.set_current_resource_refnum(current);
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;

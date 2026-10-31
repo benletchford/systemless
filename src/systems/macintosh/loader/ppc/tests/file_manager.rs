@@ -6320,6 +6320,39 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn ppc_vfs_resource_index_searches_down_from_the_current_file() {
+        let pict = u32::from_be_bytes(*b"PICT");
+        let record = |ref_num: i16, res_id: i16| PpcVfsResourceRecord {
+            ref_num,
+            path: format!("File {ref_num}"),
+            res_type: pict,
+            res_id,
+            name: Vec::new(),
+            data: Vec::new().into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        };
+        let resources = vec![
+            record(133, 207),
+            record(139, 207),
+            record(140, 1),
+            record(141, 208),
+        ];
+
+        // The most recently opened file below the current one wins.
+        assert_eq!(ppc_vfs_resource_index(&resources, 140, pict, 207, false), Some(1));
+        // The current file still wins over everything else.
+        assert_eq!(ppc_vfs_resource_index(&resources, 133, pict, 207, false), Some(0));
+        // A file below the current one is preferred to one opened later.
+        assert_eq!(ppc_vfs_resource_index(&resources, 135, pict, 207, false), Some(0));
+        // Nothing lower in the chain: an open file is still found.
+        assert_eq!(ppc_vfs_resource_index(&resources, 140, pict, 208, false), Some(3));
+        assert_eq!(ppc_vfs_resource_index(&resources, 140, pict, 999, false), None);
+    }
+
+    #[test]
     fn hle_import_runner_handles_get1_ind_resource() {
         let pef = synthetic_pef_with_import(b"Get1IndResource");
         let mut loaded = load_pef_application(&pef).unwrap();
