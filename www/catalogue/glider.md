@@ -9,7 +9,7 @@ year: 1991
 architectures:
 - 68k
 default_architecture: 68k
-launch_enabled: true
+launch_enabled: false
 category: Arcade
 compatibility:
   status: playable
@@ -31,31 +31,6 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3054
 artifacts:
-- id: archive
-  role: archive
-  format: sit
-  source:
-    type: sha256
-    sha256: a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c
-    size_bytes: 357942
-  provenance:
-    redistribution: permitted
-    original: true
-    sources:
-    - https://classicmacdemos.com/glider
-    - https://download.classicmacdemos.com/Glider%20Demo.sit
-    - https://static.classicmacdemos.com/demos/glider/README.txt
-    - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
-    rights_holder: Glider rights holders
-    permission: >-
-      This unchanged Casady & Greene promotional demo is not the retail game. Its
-      included 1992 Read Me identifies Glider 4.06 Demo and directs players to the
-      publisher for more information. Classic Macintosh Game Demos records it on 30
-      contemporary cover discs. No express redistribution clause is present.
-    notes: >-
-      Original 357,942-byte StuffIt archive, SHA-256
-      a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c. The tested Glider Demo 4.06 application has a
-      runnable 68K CODE resource.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -83,6 +58,7 @@ references:
 - https://static.classicmacdemos.com/demos/glider/README.txt
 - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
 - https://github.com/benletchford/systemless/issues/3153
+- https://github.com/benletchford/systemless/issues/5274
 ---
 
 ## A little paper plane
@@ -100,4 +76,9 @@ Systemless reached interactive Demo House play with the unchanged archive.
 A separate BasiliskII run reached the starting room but did not reproduce
 the scripted mouse-steered room change. A release-mode browser test did move
 from Welcome into Top of the reading list using the game's Mouse control mode.
-Browser launch is enabled.
+Launch is disabled while redistribution terms are investigated.
+
+<!-- Candidate archive receipt: 357,942 bytes; SHA-256
+a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c.
+The included read-me does not state redistribution permission; public availability
+and historic cover-disc inclusion do not by themselves establish permission. -->
