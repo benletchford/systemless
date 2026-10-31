@@ -40,7 +40,7 @@ use crate::ui_theme::UiThemeId;
 use crate::Result;
 
 /// A single menu item.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuItem {
     pub text: String,
     pub icon: u8,
@@ -51,7 +51,7 @@ pub struct MenuItem {
 }
 
 /// A parsed menu with its items.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Menu {
     pub id: i16,
     pub title: String,
@@ -65,6 +65,22 @@ pub struct Menu {
     /// Derived regular-partition membership that contributes a visible title.
     /// Macintosh Toolbox Essentials 1992, p. 3-121.
     pub visible_in_menu_bar: bool,
+}
+
+/// A menu mutation whose guest bytes and cached mirror are already stable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum IdleMenuMutation {
+    Disable(i16),
+    SetText(i16, Vec<u8>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleMenuProof {
+    pub(crate) handle: u32,
+    pub(crate) pointer: u32,
+    pub(crate) allocation_size: u32,
+    pub(crate) mutation: IdleMenuMutation,
+    pub(crate) menu: Menu,
 }
 
 pub(crate) type MenuTrackingState = ProcessMenuTrackingState;
@@ -451,6 +467,64 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    /// Prove the non-growing, already-identical path of menu mutations. The
+    /// normal handler still runs during recording; this only establishes that
+    /// omitted repeats have no additional guest or cached-menu consequences.
+    pub(crate) fn idle_menu_proof(
+        &self,
+        bus: &MacMemoryBus,
+        handle: u32,
+        mutation: IdleMenuMutation,
+    ) -> Option<IdleMenuProof> {
+        if handle == 0
+            || handle.checked_add(4).is_none()
+            || !bus.idle_memory_range_is_journal_safe(handle, handle, 4)
+        {
+            return None;
+        }
+        let pointer = bus.read_long(handle);
+        let allocation_size = bus.get_alloc_size(pointer)?;
+        if allocation_size == 0
+            || allocation_size > 4096
+            || pointer.checked_add(allocation_size).is_none()
+            || !bus.idle_memory_range_is_journal_safe(pointer, pointer, allocation_size)
+        {
+            return None;
+        }
+        let original = bus.read_bytes(pointer, allocation_size as usize);
+        let mut items = crate::menu_manager::MenuItems::decode(&original)?;
+        let changed = match &mutation {
+            IdleMenuMutation::Disable(item) => items.set_enabled(*item, false),
+            IdleMenuMutation::SetText(item, text) => items.set_text(*item, text),
+        };
+        if !changed {
+            return None;
+        }
+        let rebuilt = items.rebuild(&original)?;
+        if rebuilt.len() > original.len()
+            || original.get(..rebuilt.len()) != Some(rebuilt.as_slice())
+        {
+            return None;
+        }
+        let menu = self
+            .menus
+            .iter()
+            .find(|menu| menu.handle == handle)?
+            .clone();
+        let mut refreshed = menu.clone();
+        refresh_menu_from_memory(bus, &mut refreshed);
+        if menu != refreshed {
+            return None;
+        }
+        Some(IdleMenuProof {
+            handle,
+            pointer,
+            allocation_size,
+            mutation,
+            menu,
+        })
+    }
+
     /// A clear request is inert only when no dropdown or title needs clearing.
     pub(crate) fn hilite_menu_clear_is_noop(&self, bus: &MacMemoryBus, menu_id: i16) -> bool {
         menu_id == 0 && self.menu_tracking.is_none() && bus.read_word(addr::THE_MENU) == 0

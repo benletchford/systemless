@@ -213,7 +213,7 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
     for opcode in [
         0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917, 0xA924,
         0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA, 0xACAD,
-        0xA858, 0xA85D, 0xA86B, 0xA873, 0xA875, 0xA9F1, 0xAC58, 0xAC5D, 0xAC6B,
+        0xA851, 0xAC51, 0xA858, 0xA85D, 0xA86B, 0xA873, 0xA875, 0xA9F1, 0xAC58, 0xAC5D, 0xAC6B,
         0xAC73, 0xAC75, 0xADF1, 0xA97F, 0xAD7F,
     ] {
         runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
@@ -3531,6 +3531,40 @@ fn dialog_host_snapshot_changes_with_front_and_membership() {
 }
 
 #[test]
+fn setcursor_idle_cycle_checks_cursor_state_memory_and_patches() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let image = 0x0020_0000u32;
+    // TickCount; discard; SetCursor(image); branch to TickCount.
+    let words = [0x594F, 0xA975, 0x588F, 0x4879, (image >> 16) as u16,
+                 image as u16, 0xA851, 0x6000, 0xFFF0];
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x0010_0000, image);
+    assert!(runner.idle_cursor_call_guards().is_some());
+    runner.bus.write_long(0x0010_0000, u32::MAX - 16);
+    assert!(runner.idle_cursor_call_guards().is_none(), "unmapped cursor records must not be elided");
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = runner.run_steps_internal(
+        20_000, Some(100), 0, true, false, FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(runner.idle_cycle_sleep.is_some(), "stable cursor cycle should park");
+    runner.bus.write_byte(image, 0x80);
+    assert!(!runner.try_resume_proven_idle_cycle(Some(102)), "guest cursor edits must revoke the proof");
+    assert!(runner.idle_cycle_sleep.is_none());
+    runner.dispatcher.install_trap_address(&mut runner.bus, 0xA851, 0x0030_0000).unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA851));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xAC51));
+}
+
+#[test]
 fn dialog_state_changes_cancel_a_parked_idle_cycle() {
     for change_membership in [false, true] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -4316,4 +4350,549 @@ fn held_repeat_isolate_write_probe_and_cpu_rollback_scratch() {
         );
     }
     println!("first rollback scratch difference with write probe: {first_scratch_difference:?}");
+}
+
+#[test]
+fn blockmove_idle_cycle_requires_unobserved_ram_and_unpatched_trap() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let source = 0x0020_0000u32;
+    let destination = 0x0020_0100u32;
+    runner.bus.write_long(source, 0x1234_5678);
+    runner.bus.write_long(destination, 0x1234_5678);
+    // TickCount; discard; BlockMove(source, destination, 4); repeat.
+    let words = [
+        0x594F,
+        0xA975,
+        0x588F,
+        0x207C,
+        (source >> 16) as u16,
+        source as u16,
+        0x227C,
+        (destination >> 16) as u16,
+        destination as u16,
+        0x7004,
+        0xA02E,
+        0x6000,
+        0xFFE8,
+    ];
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = runner.run_steps_internal(
+        20_000,
+        Some(100),
+        0,
+        true,
+        false,
+        FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(
+        runner.idle_cycle_sleep.is_some(),
+        "stable copy cycle should park"
+    );
+    runner.bus.write_byte(source, 0xFF);
+    assert!(
+        !runner.try_resume_proven_idle_cycle(Some(102)),
+        "source edits must revoke the proof"
+    );
+    assert!(!runner
+        .bus
+        .idle_memory_range_is_journal_safe(source, 0x07FF_FFFF, 4));
+    assert!(!runner
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, 4097));
+    assert!(!runner
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, u32::MAX));
+    assert!(
+        runner
+            .bus
+            .idle_memory_range_is_journal_safe(source, source + 1, 4),
+        "overlap in ordinary RAM is supported"
+    );
+    runner.m68k.cpu.write_reg(Register::A0, source);
+    runner.m68k.cpu.write_reg(Register::A1, destination);
+    runner.m68k.cpu.write_reg(Register::D0, 4);
+    assert!(!runner.idle_query_has_unsafe_dispatch(0xA02E));
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xA02E, 0x0030_0000)
+        .unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA02E));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA22E));
+
+    // With a quiet presentation, ordinary RAM copies can park. A pending
+    // superseded write is host-only state, so it must revoke that sleep.
+    let mut presented = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    presented
+        .bus
+        .enable_outline_presentation((0x0070_0000, 16, 16, 16, 8), [[0; 3]; 256], 2);
+    assert!(presented
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, 4));
+    for (i, word) in words.into_iter().enumerate() {
+        presented.bus.write_word(code + i as u32 * 2, word);
+    }
+    presented.bus.write_long(source, 0x1234_5678);
+    presented.bus.write_long(destination, 0x1234_5678);
+    presented.m68k.cpu.write_reg(Register::PC, code);
+    presented.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    presented.bus.write_long(0x016A, 100);
+    presented.set_guest_tick_for_test(100);
+    presented.set_instructions_per_tick(100_000);
+    presented.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = presented.run_steps_internal(
+        20_000,
+        Some(100),
+        0,
+        true,
+        false,
+        FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(
+        presented.idle_cycle_sleep.is_some(),
+        "unobserved presentation copy should park"
+    );
+    presented
+        .bus
+        .set_idle_test_superseded_store(Some(destination));
+    assert!(
+        !presented.try_resume_proven_idle_cycle(Some(102)),
+        "pending presentation store must revoke the proof"
+    );
+    assert!(!presented
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, 4));
+    presented.bus.set_idle_test_superseded_store(None);
+    presented
+        .bus
+        .enable_outline_presentation((source, 16, 16, 16, 8), [[0; 3]; 256], 2);
+    assert!(!presented
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, 4));
+
+    let mut foreign = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    assert!(foreign
+        .bus
+        .idle_memory_range_is_journal_safe(source, destination, 4));
+    let memory = PpcSectionMem::new();
+    foreign.bus.attach_guest_address_space(memory.shared_view());
+    assert!(
+        !foreign
+            .bus
+            .idle_memory_range_is_journal_safe(source, destination, 4),
+        "cross-ISA writes can bypass the classic bus journal"
+    );
+}
+
+#[test]
+fn resident_getresource_cycle_rechecks_shared_state_and_guest_pointer() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let ptr = 0x0020_0000u32;
+    let handle = 0x0020_0100u32;
+    let kind = *b"STR#";
+    let id = 150;
+    runner.dispatcher.register_empty_resource_file(5);
+    runner
+        .dispatcher
+        .set_current_resource_refnum(&mut runner.bus, 5);
+    runner
+        .dispatcher
+        .insert_resource_pointer_for_test(5, (kind, id), ptr);
+    runner
+        .dispatcher
+        .insert_loaded_resource_handle_for_test(handle, (ptr, kind, id));
+    runner
+        .dispatcher
+        .insert_resource_handle_file_for_test(handle, 5);
+    runner
+        .dispatcher
+        .remember_resource_handle_index(handle, 5, kind, id);
+    runner.dispatcher.with_resource_manager_mut(|manager| {
+        manager.resident_resources.insert((5, kind, id));
+    });
+    runner.dispatcher.track_handle_ptr(ptr, handle);
+    runner.dispatcher.set_handle_state_bits(handle, 0x20);
+    runner.bus.write_long(handle, ptr);
+    let proof = runner
+        .idle_resident_resource(kind, id)
+        .expect("resident fixed point");
+    runner.dispatcher.register_empty_resource_file(9);
+    runner
+        .dispatcher
+        .set_current_resource_refnum(&mut runner.bus, 9);
+    runner
+        .dispatcher
+        .insert_resource_backing_data_for_test((9, kind, id), vec![1]);
+    assert!(
+        runner.idle_resident_resource(kind, id).is_none(),
+        "a higher-priority file may need a reload"
+    );
+    runner.dispatcher.with_resource_manager_mut(|manager| {
+        manager.resource_backing_data.remove(&(9, kind, id));
+    });
+    assert_eq!(runner.idle_resident_resource(kind, id), Some(proof.clone()));
+    runner
+        .dispatcher
+        .set_current_resource_refnum(&mut runner.bus, 5);
+    assert!(runner.idle_memory_guard(u32::MAX - 4, 10).is_none());
+    runner.dispatcher.set_handle_state_bits(handle, 0);
+    assert!(runner.idle_resident_resource(kind, id).is_none());
+    runner.dispatcher.set_handle_state_bits(handle, 0x20);
+    runner.dispatcher.untrack_handle_ptr(ptr);
+    assert!(runner.idle_resident_resource(kind, id).is_none());
+    runner.dispatcher.track_handle_ptr(ptr, handle);
+    runner.dispatcher.with_resource_manager_mut(|manager| {
+        manager.resident_resources.remove(&(5, kind, id));
+    });
+    assert!(runner.idle_resident_resource(kind, id).is_none());
+    runner.dispatcher.with_resource_manager_mut(|manager| {
+        manager.resident_resources.insert((5, kind, id));
+    });
+    runner.bus.write_long(handle, 0);
+    assert!(runner.idle_resident_resource(kind, id).is_none());
+    runner.bus.write_long(handle, ptr);
+    assert_eq!(runner.idle_resident_resource(kind, id), Some(proof.clone()));
+
+    // TickCount; GetResource('STR#', 150); discard result; repeat.
+    let words = [
+        0x594F, 0xA975, 0x588F, 0x598F, 0x2F3C, 0x5354, 0x5223, 0x3F3C, 150, 0xA9A0, 0x588F,
+        0x6000, 0xFFE8,
+    ];
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = runner.run_steps_internal(
+        20_000,
+        Some(100),
+        0,
+        true,
+        false,
+        FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(
+        runner.idle_cycle_sleep.is_some(),
+        "stable resource cycle should park"
+    );
+    runner.dispatcher.untrack_handle_ptr(ptr);
+    assert!(
+        !runner.try_resume_proven_idle_cycle(Some(102)),
+        "host handle changes must revoke the proof"
+    );
+    runner.dispatcher.track_handle_ptr(ptr, handle);
+    assert_eq!(runner.idle_resident_resource(kind, id), Some(proof));
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xA9A0, 0x0030_0000)
+        .unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA9A0));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xADA0));
+}
+
+#[test]
+fn stable_menu_mutations_park_and_recheck_host_mirror() {
+    use crate::trap::menu::{IdleMenuMutation, Menu, MenuItem};
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let text = 0x0021_0000u32;
+    let handle = runner.bus.alloc(4);
+    let pointer = runner.bus.alloc(128);
+    let mut record = crate::menu_manager::new_standard_menu_record(100, 0, b"Edit");
+    record.pop();
+    record.extend_from_slice(&[4, b'U', b'n', b'd', b'o', 0, 0, 0, 0, 0]);
+    record[10..14].copy_from_slice(&0xFFFF_FFFDu32.to_be_bytes());
+    runner.bus.write_long(handle, pointer);
+    runner.bus.write_bytes(pointer, &record);
+    runner.bus.write_bytes(text, &[4, b'U', b'n', b'd', b'o']);
+    runner.dispatcher.menus.push(Menu {
+        id: 100,
+        title: "Edit".into(),
+        items: vec![MenuItem {
+            text: "Undo".into(),
+            icon: 0,
+            key_equiv: 0,
+            mark: 0,
+            style: 0,
+            enabled: false,
+        }],
+        enabled: true,
+        handle,
+        in_menu_bar: true,
+        hierarchical: false,
+        visible_in_menu_bar: true,
+    });
+    let disabled = IdleMenuMutation::Disable(1);
+    let set_text = IdleMenuMutation::SetText(1, b"Undo".to_vec());
+    assert!(runner
+        .dispatcher
+        .idle_menu_proof(&runner.bus, handle, disabled.clone())
+        .is_some());
+    assert!(runner
+        .dispatcher
+        .idle_menu_proof(&runner.bus, handle, set_text.clone())
+        .is_some());
+    assert!(runner
+        .dispatcher
+        .idle_menu_proof(
+            &runner.bus,
+            handle,
+            IdleMenuMutation::SetText(1, b"Redo".to_vec())
+        )
+        .is_none());
+    runner.dispatcher.menus[0].items[0].text = "Stale".into();
+    assert!(runner
+        .dispatcher
+        .idle_menu_proof(&runner.bus, handle, disabled.clone())
+        .is_none());
+    runner.dispatcher.menus[0].items[0].text = "Undo".into();
+    runner.bus.write_long(pointer + 10, 0xFFFF_FFFF);
+    assert!(runner
+        .dispatcher
+        .idle_menu_proof(&runner.bus, handle, disabled.clone())
+        .is_none());
+    runner.bus.write_long(pointer + 10, 0xFFFF_FFFD);
+
+    // TickCount; DisableItem(menu, 1); SetItem(menu, 1, "Undo"); repeat.
+    let mut words = vec![
+        0x594F,
+        0xA975,
+        0x588F,
+        0x2F3C,
+        (handle >> 16) as u16,
+        handle as u16,
+        0x3F3C,
+        1,
+        0xA93A,
+        0x2F3C,
+        (handle >> 16) as u16,
+        handle as u16,
+        0x3F3C,
+        1,
+        0x4879,
+        (text >> 16) as u16,
+        text as u16,
+        0xA947,
+        0x6000,
+    ];
+    words.push((-(words.len() as i32 * 2) as i16) as u16);
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let (_, running) = runner.run_steps_internal(
+        20_000,
+        Some(100),
+        0,
+        true,
+        false,
+        FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(
+        runner.idle_cycle_sleep.is_some(),
+        "stable menu loop should park"
+    );
+    runner.dispatcher.menus[0].items[0].enabled = true;
+    assert!(
+        !runner.try_resume_proven_idle_cycle(Some(102)),
+        "host menu changes must revoke the proof"
+    );
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xA93A, 0x0030_0000)
+        .unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA93A));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xAD3A));
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xA947, 0x0030_0100)
+        .unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xA947));
+    assert!(runner.idle_query_has_unsafe_dispatch(0xAD47));
+}
+
+#[test]
+fn deferred_idle_probe_guards_slice_exit_state_and_pending_events() {
+    fn arm() -> FixtureRunner {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let code = 0x0002_0000u32;
+        runner.bus.write_word(code, 0x4E71); // NOP
+        runner.bus.write_word(code + 2, 0x4E71);
+        runner.m68k.cpu.write_reg(Register::PC, code);
+        runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.bus.write_long(0x016A, 100);
+        runner.set_guest_tick_for_test(100);
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(code, 101, Some(100)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(code, 101, Some(100)));
+        assert!(runner.idle_cycle_probe.is_some());
+        runner
+    }
+    let mut runner = arm();
+    // Model a guest SetPort before the slice ends: its intermediate state may
+    // differ from the anchor, but the frontend must leave it untouched.
+    runner
+        .dispatcher
+        .current_port
+        .with_mut(|port| *port = 0x0020_0000);
+    let slice_host = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.idle_cycle_probe.as_mut().unwrap().slice_host = Some(slice_host);
+    let (_, running) =
+        runner.run_steps_internal(1, Some(100), 0, true, false, FrameFinalization::Deferred);
+    assert!(running);
+    assert!(
+        runner.idle_cycle_probe.is_some(),
+        "unchanged intermediate state must survive a deferred boundary"
+    );
+    runner
+        .dispatcher
+        .current_port
+        .with_mut(|port| *port = 0x0020_0100);
+    runner.run_steps_internal(1, Some(100), 0, true, false, FrameFinalization::Deferred);
+    assert!(
+        runner.idle_cycle_probe.is_none(),
+        "frontend host changes must cancel the proof"
+    );
+
+    let mut pending = arm();
+    let slice_host = IdleCycleHostSnapshot::capture(&pending.dispatcher);
+    pending.idle_cycle_probe.as_mut().unwrap().slice_host = Some(slice_host);
+    pending
+        .dispatcher
+        .event_queue
+        .push_back(crate::event_queue::QueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+    pending.run_steps_internal(1, Some(100), 0, true, false, FrameFinalization::Deferred);
+    assert!(
+        pending.idle_cycle_probe.is_none(),
+        "a newly pending event must cancel the proof"
+    );
+
+    let launch = arm();
+    launch
+        .dispatcher
+        .apple_event_launch_state
+        .reset_for_launch(true);
+    assert!(!launch
+        .dispatcher
+        .apple_event_launch_state
+        .is_open_application_event_sent());
+    assert!(launch.idle_slice_has_pending_events());
+    assert!(
+        !launch
+            .dispatcher
+            .apple_event_launch_state
+            .is_open_application_event_sent(),
+        "the guard must not claim the launch event"
+    );
+    assert!(
+        launch.dispatcher.event_queue.is_empty(),
+        "the guard must not enqueue events"
+    );
+
+    let mut stale = arm();
+    stale
+        .dispatcher
+        .flushed_update_events
+        .push_back(crate::event_queue::QueuedEvent {
+            what: 6,
+            message: 0x0030_0000,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    assert!(!stale.idle_slice_has_pending_events());
+    assert_eq!(
+        stale.dispatcher.flushed_update_events.len(),
+        1,
+        "the guard must not prune stale update markers"
+    );
+}
+
+#[test]
+fn real_setport_cycle_can_close_across_single_instruction_slices() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let original = 0x0020_0000u32;
+    let temporary = 0x0020_0100u32;
+    runner
+        .dispatcher
+        .current_port
+        .with_mut(|port| *port = original);
+    runner
+        .bus
+        .write_long(crate::memory::globals::addr::THE_PORT, original);
+    // TickCount; SetPort(temporary); SetPort(original); repeat.
+    let mut words = vec![
+        0x594F,
+        0xA975,
+        0x588F,
+        0x4879,
+        (temporary >> 16) as u16,
+        temporary as u16,
+        0xA873,
+        0x4879,
+        (original >> 16) as u16,
+        original as u16,
+        0xA873,
+        0x6000,
+    ];
+    words.push((-(words.len() as i32 * 2) as i16) as u16);
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    let mut saw_temporary_probe = false;
+    for _ in 0..4_000 {
+        let (_, running) = runner.run_gui_cpu_slice_until_host_work(1, 100);
+        assert!(running);
+        saw_temporary_probe |=
+            runner.idle_cycle_probe.is_some() && *runner.dispatcher.current_port == temporary;
+        if runner.idle_cycle_sleep.is_some() {
+            break;
+        }
+    }
+    assert!(
+        saw_temporary_probe,
+        "the real SetPort must cross a deferred boundary"
+    );
+    assert!(
+        runner.idle_cycle_sleep.is_some(),
+        "restored port cycle should close and park"
+    );
+    assert_eq!(*runner.dispatcher.current_port, original);
 }

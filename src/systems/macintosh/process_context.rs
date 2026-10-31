@@ -5334,6 +5334,12 @@ impl SharedProcessAppleEventLaunchState {
         self.with_mut(|state| std::mem::take(&mut state.outstanding_open_application_event))
     }
 
+    /// Read whether an event poll would synthesize the launch event, without
+    /// claiming it or changing the event queue.
+    pub(crate) fn has_unclaimed_open_application_event(&self) -> bool {
+        self.with_ref(|state| state.high_level_event_aware && !state.open_application_event_sent)
+    }
+
     /// Atomically claim the process-wide one-shot launch event. The caller
     /// must still check its event mask before invoking this method.
     pub(crate) fn claim_open_application_event(&self) -> bool {
@@ -6579,6 +6585,17 @@ impl SharedProcessMemoryManager {
 
     pub(crate) fn handle_state(&self, handle: u32) -> Option<u8> {
         self.handle_state_bits.get(&handle)
+    }
+
+    /// Whether setting the resource bit would leave all handle metadata unchanged.
+    pub(crate) fn resource_handle_state_is_stable(&self, handle: u32) -> Option<u8> {
+        let state = self.handle_state_bits.get(&handle)?;
+        if state & 0x20 == 0
+            || (state & 0x80 == 0 && self.handle_high_locked.get(&handle).is_some())
+        {
+            return None;
+        }
+        Some(state)
     }
 
     pub(crate) fn update_handle_state(

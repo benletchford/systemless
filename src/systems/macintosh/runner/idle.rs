@@ -138,11 +138,35 @@ impl CpuArchitecturalSnapshot {
     }
 }
 
+/// An already-resident resource whose lookup was proven idempotent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdleResidentResource {
+    pub(crate) resource_type: [u8; 4],
+    pub(crate) resource_id: i16,
+    pub(crate) file: u16,
+    pub(crate) ptr: u32,
+    pub(crate) handle: u32,
+    pub(crate) handle_state: u8,
+}
+
+/// Guest ranges whose routing, presentation and sound-watch conditions must stay safe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IdleMemoryGuard {
+    pub(crate) src: u32,
+    pub(crate) dst: u32,
+    pub(crate) count: u32,
+}
+
 pub(crate) struct IdleCycleProbe {
     pub(crate) trap_pc: u32,
     pub(crate) tick: u32,
     pub(crate) cpu: CpuArchitecturalSnapshot,
     pub(crate) host: IdleCycleHostSnapshot,
+    /// Host state at a deferred slice exit, checked before guest execution resumes.
+    pub(crate) slice_host: Option<IdleCycleHostSnapshot>,
+    pub(crate) resources: Vec<IdleResidentResource>,
+    pub(crate) memory_guards: Vec<IdleMemoryGuard>,
+    pub(crate) menus: Vec<crate::trap::menu::IdleMenuProof>,
     /// Same-site arrivals observed since the probe began without matching
     /// the starting CPU state. A wait cycle may have a small period (EV
     /// Override's crawl alternates two polled keycodes through D5, a
@@ -401,4 +425,7 @@ pub(crate) struct ProvenIdleCycleSleep {
     pub(crate) tick: u32,
     pub(crate) cpu: CpuArchitecturalSnapshot,
     pub(crate) host: IdleCycleHostSnapshot,
+    pub(crate) resources: Vec<IdleResidentResource>,
+    pub(crate) memory_guards: Vec<IdleMemoryGuard>,
+    pub(crate) menus: Vec<crate::trap::menu::IdleMenuProof>,
 }

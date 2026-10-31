@@ -1729,6 +1729,40 @@ impl MacMemoryBus {
         }
     }
 
+    /// Whether a guest range can be read or rewritten with only journaled
+    /// local-RAM effects. Display presentation and sound watches carry host state;
+    /// only unobserved presentation ranges without an in-flight store or glyph
+    /// can participate, and callers must recheck this while parked. Attached
+    /// cross-ISA memory is excluded because writes can bypass this bus journal.
+    pub(crate) fn idle_memory_range_is_journal_safe(&self, src: u32, dst: u32, count: u32) -> bool {
+        if count == 0
+            || count > 4096
+            || self.legacy_sound_watch.is_some()
+            || self.foreign_address_space.is_some()
+        {
+            return false;
+        }
+        let len = count as usize;
+        let Some(src_ram) = self.range_translates_contiguously(src, len) else {
+            return false;
+        };
+        let Some(dst_ram) = self.range_translates_contiguously(dst, len) else {
+            return false;
+        };
+        u64::from(src_ram) + u64::from(count) <= u64::from(self.ram_size)
+            && u64::from(dst_ram) + u64::from(count) <= u64::from(self.ram_size)
+            && self.route(src, len) == GuestMemoryRoute::Flat
+            && self.route(dst, len) == GuestMemoryRoute::Flat
+            && self.presentation.as_ref().is_none_or(|presentation| {
+                presentation.idle_copy_is_quiescent(src_ram, dst_ram, len)
+            })
+            && !protected_ranges_overlap(
+                &self.readonly_code_ranges,
+                u64::from(dst_ram),
+                u64::from(dst_ram) + u64::from(count),
+            )
+    }
+
     /// `BlockMove` fast path. Copies `count` bytes from `src` to
     /// `dst`, handling overlap correctly. When both ranges are fully
     /// inside RAM and no watchpoint is armed, uses `slice::copy_within`

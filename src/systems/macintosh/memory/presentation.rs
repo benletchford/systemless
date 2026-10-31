@@ -1124,6 +1124,15 @@ impl Presentation {
         std::mem::take(&mut self.store_filter_new_pages)
     }
 
+    /// A byte-wise copy outside retained pixels leaves no presentation state
+    /// behind only when no glyph or superseded store is in progress.
+    pub(super) fn idle_copy_is_quiescent(&self, src: u32, dst: u32, len: usize) -> bool {
+        self.glyph.is_none()
+            && self.superseded_write.is_none()
+            && !self.observes_range(src, len)
+            && !self.observes_range(dst, len)
+    }
+
     /// A glyph capture observes every byte write, wherever it lands.
     pub(crate) fn glyph_active(&self) -> bool {
         self.glyph.is_some()
@@ -2899,6 +2908,14 @@ fn paint_offscreen_glyph_coverage(
 }
 
 impl MacMemoryBus {
+    #[cfg(test)]
+    pub(crate) fn set_idle_test_superseded_store(&mut self, address: Option<u32>) {
+        self.presentation
+            .as_mut()
+            .expect("presentation enabled")
+            .superseded_write = address;
+    }
+
     pub(crate) fn begin_cpu_drawing(&mut self) {
         if let Some(mut p) = self.presentation.as_mut() {
             p.cpu_drawing = true;
