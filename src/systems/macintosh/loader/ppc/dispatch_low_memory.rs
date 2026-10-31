@@ -27,6 +27,11 @@ pub enum PpcLowMemoryAccessor {
     /// LMSetRawMouseLocation: the RawMouse Point at $082C.
     SetRawMouseLocation,
     SetTopMapHndl,
+    GetFractEnable,
+    SetFractEnable,
+    SetFScaleDisable,
+    SetLastSpExtra,
+    SetMenuDisable,
 }
 
 pub(super) struct PpcLowMemoryDispatchContext<'a> {
@@ -115,6 +120,22 @@ pub(super) fn dispatch_low_memory_import(
                 }
                 PpcLowMemoryAccessor::SetTopMapHndl => {
                     memory.write_u32_be(addr::TOP_MAP_HNDL, cpu.gpr[3])
+                }
+                PpcLowMemoryAccessor::GetFractEnable => {
+                    let value = memory.read_u8(addr::FRACT_ENABLE).unwrap_or(0);
+                    return Some(PpcImportAction::Return(u32::from(value)));
+                }
+                PpcLowMemoryAccessor::SetFractEnable => {
+                    memory.write_u8(addr::FRACT_ENABLE, cpu.gpr[3] as u8)
+                }
+                PpcLowMemoryAccessor::SetFScaleDisable => {
+                    memory.write_u8(addr::FSCALE_DISABLE, cpu.gpr[3] as u8)
+                }
+                PpcLowMemoryAccessor::SetLastSpExtra => {
+                    memory.write_u32_be(addr::LAST_SP_EXTRA, cpu.gpr[3])
+                }
+                PpcLowMemoryAccessor::SetMenuDisable => {
+                    memory.write_u32_be(addr::MENU_DISABLE, cpu.gpr[3])
                 }
             };
             Some(written.map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve))
