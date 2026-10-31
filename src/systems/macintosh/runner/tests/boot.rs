@@ -120,6 +120,7 @@ fn init_app_seeds_current_application_fcb_low_memory_state() {
         APPLICATION_RESOURCE_REFNUM,
         "CurApRefNum should be the app resource fork access path"
     );
+    assert_eq!(runner.bus.read_word(0x0A5A), APPLICATION_RESOURCE_REFNUM);
     assert_eq!(
         runner.bus.read_word(addr::BOOT_DRIVE) as i16,
         crate::trap::dispatch::BOOT_VOLUME_REF_NUM,
