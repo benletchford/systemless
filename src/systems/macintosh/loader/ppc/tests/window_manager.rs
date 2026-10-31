@@ -31,7 +31,7 @@ fn update_event_recurs_until_the_update_region_is_empty() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNextEvent")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1400;
     loaded.memory.add_region(scratch, vec![0; 0x100]);
-    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
     let update_rgn = loaded
         .memory
         .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
@@ -59,6 +59,35 @@ fn update_event_recurs_until_the_update_region_is_empty() {
     ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 0, 0, 0, 0);
     loaded.cpu.gpr[3] = 0xFFFF;
     loaded.cpu.gpr[4] = event;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert!(!loaded.event_queue().iter().any(|queued| queued.what == 6));
+}
+
+#[test]
+fn update_event_does_not_recur_for_a_hidden_window() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNextEvent")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    let update_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 0, 0, 10, 10);
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 6,
+        message: window,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+
+    loaded.cpu.gpr[3] = 0xFFFF;
+    loaded.cpu.gpr[4] = scratch + 0x80;
     run_test_import(
         &mut loaded,
         PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),

@@ -1382,6 +1382,9 @@ pub(super) fn dispatch_event_import(
             if has_event
                 && what == 6
                 && memory
+                    .read_u8(message + PPC_CWINDOW_VISIBLE_OFFSET)
+                    .is_some_and(|visible| visible != 0)
+                && memory
                     .read_u32_be(message + PPC_CWINDOW_UPDATE_RGN_OFFSET)
                     .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
                     .is_some_and(|(top, left, bottom, right)| top < bottom && left < right)
