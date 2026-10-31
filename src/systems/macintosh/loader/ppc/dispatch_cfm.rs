@@ -321,6 +321,7 @@ pub(super) fn ppc_get_shared_library(
         acquire_reference: !created_connection && find_flags != PPC_CFM_FIND_LIB,
         id: CfmLoadId(connection.id),
         created_connection,
+        first_created_id: connection.id,
         main_address: connection.main_addr,
         outputs: CfmLoadOutputs {
             connection: conn_id_ptr,
@@ -498,6 +499,48 @@ pub(super) fn ppc_get_mem_fragment(
     disk_container_size: Option<u32>,
     disk_file_name: Option<&str>,
 ) -> PpcImportAction {
+    let first_created_id = *next_cfm_connection_id;
+    let action = ppc_load_mem_fragment(
+        cpu,
+        guest_calls,
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        stack_base,
+        cfm_connections,
+        cfm_library_fragments,
+        next_cfm_connection_id,
+        import_run_state,
+        disk_container_size,
+        disk_file_name,
+    );
+    if !matches!(action, PpcImportAction::Continue | PpcImportAction::Return(0)) {
+        // Every id from first_created_id on is gone, so a retry can reuse them.
+        // Failed loads keep their heap and import slots, as single-fragment failures do.
+        cfm_connections.retain(|connection| connection.id < first_created_id);
+        *next_cfm_connection_id = first_created_id;
+    }
+    action
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_load_mem_fragment(
+    cpu: &mut PpcCpu,
+    guest_calls: &SharedGuestCallStack,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    stack_base: u32,
+    cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &[PpcCfmLibraryFragment],
+    next_cfm_connection_id: &mut u32,
+    import_run_state: &mut PpcImportRunState,
+    disk_container_size: Option<u32>,
+    disk_file_name: Option<&str>,
+) -> PpcImportAction {
+    let first_created_id = *next_cfm_connection_id;
     // Inside Macintosh: PowerPC System Software (1994), pp. 3-21--3-22:
     // GetMemFragment binds an in-memory PEF and returns a connection ID plus
     // its callable main address.
@@ -575,6 +618,7 @@ pub(super) fn ppc_get_mem_fragment(
             let mut dependency_initializers = Vec::new();
             if let Err(error) = ppc_connect_fragment_dependencies(
                 &fragment,
+                guest_calls,
                 process_memory_manager,
                 memory,
                 heap_cursor,
@@ -695,6 +739,7 @@ pub(super) fn ppc_get_mem_fragment(
         acquire_reference: !created_connection && find_flags != PPC_CFM_FIND_LIB,
         id: CfmLoadId(connection.id),
         created_connection,
+        first_created_id,
         main_address: connection.main_addr,
         outputs: CfmLoadOutputs {
             connection: conn_id_ptr,
@@ -725,6 +770,7 @@ pub(super) fn ppc_get_mem_fragment(
 #[allow(clippy::too_many_arguments)]
 fn ppc_connect_fragment_dependencies(
     fragment: &[u8],
+    guest_calls: &SharedGuestCallStack,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -738,10 +784,13 @@ fn ppc_connect_fragment_dependencies(
 ) -> Result<(), i16> {
     let imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     for import in imports {
-        if cfm_connections
+        if let Some(connection) = cfm_connections
             .iter()
-            .any(|connection| connection.library_name.eq_ignore_ascii_case(&import.library_name))
+            .find(|connection| connection.library_name.eq_ignore_ascii_case(&import.library_name))
         {
+            if guest_calls.is_cfm_load_pending(CfmLoadId(connection.id)) {
+                return Err(PPC_FRAG_INIT_LOOP);
+            }
             continue;
         }
         let Some(library) = cfm_library_fragments
@@ -779,6 +828,7 @@ fn ppc_connect_fragment_dependencies(
         });
         ppc_connect_fragment_dependencies(
             &library.bytes,
+            guest_calls,
             process_memory_manager,
             memory,
             heap_cursor,
