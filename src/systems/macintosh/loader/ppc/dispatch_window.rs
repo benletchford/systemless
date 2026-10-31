@@ -1126,22 +1126,15 @@ pub(super) fn dispatch_window_import(
                         toolbox_startup.host_menu_bar_hidden,
                     );
                 }
-                *current_gworld = window;
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
-                ppc_register_gdevice(toolbox_startup, *current_gdevice);
-                ppc_restore_port_colors(
-                    memory,
-                    *current_gworld,
-                    quickdraw_fore_color,
-                    quickdraw_back_color,
-                );
-                let _ = ppc_set_window_hilited(memory, *current_gworld, true);
+                let window_device =
+                    ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
+                ppc_register_gdevice(toolbox_startup, window_device);
+                let _ = ppc_set_window_hilited(memory, window, true);
                 if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
-                        *current_gdevice,
+                        window_device,
                         screen_clut,
                         color_manager_clut,
                         toolbox_startup,

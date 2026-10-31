@@ -3182,8 +3182,8 @@ fn hle_import_runner_handles_select_window() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(*loaded.current_gworld, window_ptr);
-    assert_eq!(*loaded.current_gdevice, gdevice);
+    assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
+    assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
     assert_eq!(
         ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
         Some(window_ptr)
@@ -10576,4 +10576,19 @@ fn fullscreen_preflight_and_invalid_outputs_leave_guest_state_unchanged() {
     assert_eq!(loaded.memory.read_u32_be(scratch), Some(0xa5a5a5a5));
     assert_eq!(*loaded.current_gworld, port);
     assert!(loaded.toolbox_startup.fullscreen.is_none());
+}
+
+#[test]
+fn select_window_preserves_current_port_and_device() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let selected = create_test_cwindow(&mut loaded, scratch, (20, 20, 120, 220), 0, true, u32::MAX);
+    let current = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    let device = *loaded.current_gdevice;
+    loaded.cpu.gpr[3] = selected;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+    assert_eq!(*loaded.current_gworld, current);
+    assert_eq!(*loaded.current_gdevice, device);
+    assert_eq!(ppc_front_visible_process_window(&mut loaded.memory, &loaded.window_list), Some(selected));
 }
