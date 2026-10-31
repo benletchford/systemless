@@ -22,6 +22,12 @@ const PPC_DRAW_PICTURE_IMPORT_EXTRA_CYCLES: u64 = 2_048;
 const PPC_BIT_TRANSFER_IMPORT_EXTRA_CYCLES: u64 = 1_024;
 const PPC_DRAW_PRIMITIVE_IMPORT_EXTRA_CYCLES: u64 = 256;
 const PPC_RESOURCE_IMPORT_EXTRA_CYCLES: u64 = 128;
+// A bounded estimate, not a hardware measurement. Classic PPC Event Manager
+// calls cross an ISA boundary and perform process/event dispatch even when
+// WaitNextEvent has zero sleep. Charging each call preserves guest iterations
+// and event delivery while accounting for work performed by the host adapter.
+// https://dev.os9.ca/techpubs/mac/PPCSoftware/PPCSoftware-16.html
+const PPC_WAIT_NEXT_EVENT_IMPORT_EXTRA_CYCLES: u64 = 512;
 
 pub(crate) struct PpcHleFetchObserver<'a> {
     pub(crate) histogram: Option<&'a mut PpcFetchHistogram>,
@@ -302,6 +308,9 @@ pub(crate) fn ppc_import_action_with_extra_cycles(
 pub(crate) fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64 {
     match target {
         PpcImportDispatcherTarget::Q3ViewEndRendering => 0,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent) => {
+            PPC_WAIT_NEXT_EVENT_IMPORT_EXTRA_CYCLES
+        }
         PpcImportDispatcherTarget::MathCeil
         | PpcImportDispatcherTarget::MathSqrt
         | PpcImportDispatcherTarget::MathHypot

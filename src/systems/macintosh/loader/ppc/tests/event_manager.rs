@@ -1557,3 +1557,43 @@ fn hle_run_mirrors_shared_process_input_into_powerpc_low_memory() {
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2), Some(115));
     assert_eq!(loaded.memory.read_u16_be(addr::MOUSE_LOC2 + 2), Some(210));
 }
+
+#[test]
+fn wait_next_event_charges_toolbox_time_without_losing_queued_input() {
+    let pef = synthetic_pef_with_import(b"WaitNextEvent");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let event_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(event_ptr, vec![0; 16]);
+    loaded.cpu.gpr[3] = u32::from(u16::MAX);
+    loaded.cpu.gpr[4] = event_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    let empty = loaded.run_with_hle_imports(64);
+    assert_eq!(empty.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert!(
+        ppc_run_result_cycles(empty.result) > 64,
+        "the Toolbox call must consume guest time"
+    );
+
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 1,
+        message: 0,
+        when: 0,
+        where_v: 120,
+        where_h: 180,
+        modifiers: 0,
+    }]);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = u32::from(u16::MAX);
+    loaded.cpu.gpr[4] = event_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    let input = loaded.run_with_hle_imports(64);
+    assert_eq!(input.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(1));
+    assert!(loaded.event_queue().is_empty());
+    assert!(ppc_run_result_cycles(input.result) > 64);
+}
