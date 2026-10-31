@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.103.0](https://github.com/benletchford/systemless/compare/v0.102.0...v0.103.0) (2026-10-31)
+
+
+### Features
+
+* **catalogue:** add Abbalone 3D source intake ([43214a1](https://github.com/benletchford/systemless/commit/43214a1cf30de02033056d72340cdd4eb02cb7e8))
+* **catalogue:** add and approve siege shareware ([#5367](https://github.com/benletchford/systemless/issues/5367)) ([669744e](https://github.com/benletchford/systemless/commit/669744eda28c21d97963157ac6444a53794942dc))
+* **catalogue:** add original Otello 2.0 intake ([53d748b](https://github.com/benletchford/systemless/commit/53d748b97d344f591415e564af01341e71212daa))
+* **catalogue:** add original Otello 2.0 intake ([42a8d5d](https://github.com/benletchford/systemless/commit/42a8d5d013fd9d89fa71f03d175c08f696708a4b))
+* **catalogue:** add Powerball shareware intake ([#5382](https://github.com/benletchford/systemless/issues/5382)) ([4ec317a](https://github.com/benletchford/systemless/commit/4ec317a30ef0cbc1ae3f0fc1e6e024573967e3a2))
+* **catalogue:** approve Otello browser launch ([8f82318](https://github.com/benletchford/systemless/commit/8f8231817ed663842693fe4a1d22300c388f5f03))
+* **catalogue:** approve Otello browser launch ([635d4a5](https://github.com/benletchford/systemless/commit/635d4a5a64cedc299432fe1789ba20e33e3ed6f9))
+
+
+### Bug Fixes
+
+* batch bounded sound status queries in browser ([713569d](https://github.com/benletchford/systemless/commit/713569dc7c8d885fab3c65de91b9ca42c308fcee))
+* **catalogue:** approve realmz browser launch ([#5366](https://github.com/benletchford/systemless/issues/5366)) ([4d9e76e](https://github.com/benletchford/systemless/commit/4d9e76eea3ec5760d083c13d70a3e6c67be3b3f6))
+* **catalogue:** hold crystal quest pending rights evidence ([d0791ad](https://github.com/benletchford/systemless/commit/d0791ada6e7f02eade5c1c93eb849070a9e0317f))
+* **catalogue:** hold glider pending rights evidence ([416e734](https://github.com/benletchford/systemless/commit/416e7346aba9d004f7b6ed5557ce250f7d22d3ce))
+* **catalogue:** hold realmz launch pending browser approval ([#5344](https://github.com/benletchford/systemless/issues/5344)) ([17d6a2b](https://github.com/benletchford/systemless/commit/17d6a2b241d874c89a54faf6d9376fcc61b977c2))
+* discard activation events for removed windows ([634bab1](https://github.com/benletchford/systemless/commit/634bab15a790f5b17389d5450d9088b7fe4bad91))
+* dispatch classic Apple events by class and ID ([b446f49](https://github.com/benletchford/systemless/commit/b446f497cf9f09af7b1ff3ac8bbfb3eebe032437))
+* dispatch indexed picture bitmap callbacks ([124685a](https://github.com/benletchford/systemless/commit/124685ab09961abfc8002ebe66318c471c2f93ad))
+* expose the current resource file reference ([a1e9f91](https://github.com/benletchford/systemless/commit/a1e9f9114042f31e66799a673989d1fa37e05bd1))
+* identify populated folders when resolving aliases ([5b477c0](https://github.com/benletchford/systemless/commit/5b477c0931522d717f0c18d5e796b8140daf25cc))
+* **ppc:** account for event polling time ([#5384](https://github.com/benletchford/systemless/issues/5384)) ([2353cca](https://github.com/benletchford/systemless/commit/2353ccaabe4ac3a2bc969f2ed2df981e8031bb22))
+* **ppc:** expose a usable application resource reference ([49597a5](https://github.com/benletchford/systemless/commit/49597a5b2d8e8d7608ecce3a80e8cb5e06e2c0e0))
+* **ppc:** honor inverted QuickDraw text modes ([#5381](https://github.com/benletchford/systemless/issues/5381)) ([a8e8baa](https://github.com/benletchford/systemless/commit/a8e8baaa14f545b9a455aaffdf1e263c002ce3ab))
+* **ppc:** preserve the port when creating hidden windows ([6138079](https://github.com/benletchford/systemless/commit/613807958c50843a74513279b4f70f33a08571d3))
+* **ppc:** preserve the port when creating hidden windows ([e6bca9d](https://github.com/benletchford/systemless/commit/e6bca9dfe747687d9c12a7efd7aeef6333f13783))
+* **ppc:** preserve the port when selecting windows ([e2cbad7](https://github.com/benletchford/systemless/commit/e2cbad734c845a8b5ecb1826a4632f03f4a1ab22))
+* **ppc:** preserve the port when selecting windows ([153f794](https://github.com/benletchford/systemless/commit/153f7940914df9e7d07035d1da58e9d435c5db8e))
+* preserve idle pacing while key repeat is pending ([#5342](https://github.com/benletchford/systemless/issues/5342)) ([7cfcd9b](https://github.com/benletchford/systemless/commit/7cfcd9bd06c4587b3c65c329048c09053f816181))
+* preserve idle proofs across browser slices ([5288300](https://github.com/benletchford/systemless/commit/52883003d4ea84209cc2cc4f73b251c6ea046c3e))
+
+
+### Performance Improvements
+
+* batch safe event and rectangle queries ([#5363](https://github.com/benletchford/systemless/issues/5363)) ([856f5f7](https://github.com/benletchford/systemless/commit/856f5f79d721ce383c4cd2e93db2165da90d117d))
+* preserve pacing through proven device polling cycles ([#5359](https://github.com/benletchford/systemless/issues/5359)) ([840d509](https://github.com/benletchford/systemless/commit/840d509f20039fd55065e393e9d9e4231679c90e))
+
 ## [0.102.0](https://github.com/benletchford/systemless/compare/v0.101.0...v0.102.0) (2026-10-30)
 
 
