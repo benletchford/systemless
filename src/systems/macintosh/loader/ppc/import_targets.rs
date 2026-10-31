@@ -914,6 +914,9 @@ pub enum PpcImportDispatcherTarget {
     AEGetInteractionAllowed,
     AEInteractWithUser,
     AEManagerInfo,
+    PPCOpenSync,
+    PPCCloseSync,
+    GetSpecificHighLevelEvent,
     LMGetCurDirStore,
     LMSetCurDirStore,
     LMGetSFSaveDisk,
@@ -2893,6 +2896,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "_BreakPoint") | ("StdCLib", "__NubAt3") => {
             PpcImportDispatcherTarget::NoOpPreserve
         }
+        // No other process exists to exchange PPC Toolbox or high-level events
+        // with, so these succeed without any peer to observe them.
+        ("InterfaceLib", "PPCInit" | "AEInstallCoercionHandler") => {
+            PpcImportDispatcherTarget::ReturnNoErr
+        }
+        ("InterfaceLib", "GetPortNameFromProcessSerialNumber") => {
+            PpcImportDispatcherTarget::ReturnError(PPC_PROC_NOT_FOUND_ERR)
+        }
+        ("InterfaceLib", "GetSpecificHighLevelEvent") => {
+            PpcImportDispatcherTarget::GetSpecificHighLevelEvent
+        }
+        ("InterfaceLib", "PPCOpenSync") => PpcImportDispatcherTarget::PPCOpenSync,
+        ("InterfaceLib", "PPCCloseSync") => PpcImportDispatcherTarget::PPCCloseSync,
+        // Icon masks are not converted to regions.
+        ("InterfaceLib", "IconIDToRgn") => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
         ("InterfaceLib", "AEInstallSpecialHandler") => {
             PpcImportDispatcherTarget::AEInstallSpecialHandler
         }
@@ -5836,9 +5854,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PurgeSpace") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::PurgeSpace,
         ),
-        ("InterfaceLib", "ReserveMem") => PpcImportDispatcherTarget::LegacyMemoryUtility(
-            PpcLegacyMemoryUtilityOperation::ReserveMem,
-        ),
+        ("InterfaceLib", "ReserveMem" | "ReserveMemSys") => {
+            PpcImportDispatcherTarget::LegacyMemoryUtility(
+                PpcLegacyMemoryUtilityOperation::ReserveMem,
+            )
+        }
         ("InterfaceLib", "SetGrowZone") => PpcImportDispatcherTarget::LegacyMemoryUtility(
             PpcLegacyMemoryUtilityOperation::SetGrowZone,
         ),
