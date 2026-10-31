@@ -3,6 +3,52 @@ use crate::cpu::{CpuOps, Register};
 use crate::trap::test_helpers::{setup_with_port, MockCpu, TEST_SP};
 
 #[test]
+fn draw_string_inverted_source_modes_apply_to_ink_and_character_cell() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    let port = *loaded.current_gworld;
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(front.depth, 8);
+    loaded.quickdraw_fore_color = PpcRgbColor { red: 0, green: 0, blue: 0 };
+    loaded.quickdraw_fore_indices.insert(port, 255);
+    loaded.quickdraw_text_size = 12;
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"\x010".to_vec());
+    let mut copy_pixels = Vec::new();
+    for mode in 4..=7 {
+        for y in 0..32 {
+            for x in 0..32 {
+                assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 128));
+            }
+        }
+        loaded.cpu.gpr[3] = mode;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextMode);
+        loaded.cpu.gpr[3] = 5;
+        loaded.cpu.gpr[4] = 20;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawString);
+        let pixels: Vec<_> = (0..32).flat_map(|y| (0..32).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap())
+            .collect();
+        if mode == 4 {
+            assert!(pixels.contains(&0), "notSrcCopy must draw background-colored glyphs");
+            assert!(pixels.contains(&255), "notSrcCopy must draw foreground-colored cell background");
+            copy_pixels = pixels;
+        } else {
+            for (index, (&source, &actual)) in copy_pixels.iter().zip(&pixels).enumerate() {
+                let expected = match (mode, source) {
+                    (5, 255) => 255,
+                    (6, 255) => 127,
+                    (7, 255) => 0,
+                    _ => 128,
+                };
+                assert_eq!(actual, expected, "mode {mode}, pixel {index}");
+            }
+        }
+    }
+}
+
+#[test]
 fn host_chrome_text_ignores_and_restores_application_screen_clip() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
     let clip = loaded

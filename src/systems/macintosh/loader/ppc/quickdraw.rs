@@ -2206,7 +2206,7 @@ pub(crate) fn ppc_draw_text_bytes_styled_clipped(
     let advance = i32::from(ppc_scale_font_value(base_advance, numerator, denominator))
         .saturating_add(ppc_char_extra_width(packed_extra, text_size, bytes))
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    if style.is_plain() {
+    if style.is_plain() && !matches!(text_mode & 0x3f, 4..=7) {
         ppc_draw_text_chars(
             memory,
             gworlds,
@@ -2641,6 +2641,64 @@ pub(crate) fn ppc_draw_text_chars_styled(
                 paint_pixels.push((source_x, source_y));
             }
         }
+        // Inverted source modes operate on both the ink and the white part of
+        // the character cell. Keep this on the CPU so presentation sees the
+        // same result regardless of whether the GPU text path is available.
+        if matches!(text_mode & 0x3f, 4..=7) {
+            if style.underline() && style.smear_max().is_none() {
+                let thickness = get_underline_thickness(text_font, face.size).max(1);
+                for y in 1..=i32::from(thickness) {
+                    for x in source_advance..source_advance + style.glyph_advance(i32::from(glyph.advance)) {
+                        paint_pixels.push((x, y));
+                    }
+                }
+            }
+            let mut ink = HashSet::new();
+            for (source_x, source_y) in paint_pixels {
+                let x = ppc_scale_font_floor(source_x, numerator, denominator);
+                let y = ppc_scale_font_floor(source_y, numerator, denominator);
+                let right = ppc_scale_font_floor(source_x + 1, numerator, denominator).max(x + 1);
+                let bottom = ppc_scale_font_floor(source_y + 1, numerator, denominator).max(y + 1);
+                for py in local_v + y..local_v + bottom {
+                    for px in local_h + x..local_h + right {
+                        ink.insert((px, py));
+                    }
+                }
+            }
+            let left = local_h + ppc_scale_font_floor(source_advance, numerator, denominator);
+            let right = left + ppc_scale_font_floor(style.glyph_advance(i32::from(glyph.advance)), numerator, denominator);
+            let top = local_v + ppc_scale_font_floor(-i32::from(metrics.ascent), numerator, denominator);
+            let bottom = local_v + ppc_scale_font_floor(i32::from(metrics.descent), numerator, denominator);
+            let background = ppc_read_rgb_color(memory, current_gworld + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)
+                .and_then(|color| ppc_quickdraw_surface_color_pixel(memory, surface, color));
+            if let Some(background) = background {
+                let mut points = ink.clone();
+                for y in top..bottom {
+                    for x in left..right {
+                        points.insert((x, y));
+                    }
+                }
+                for point in points {
+                    if !ppc_local_point_in_port_regions(surface, point, vis_storage.as_deref(), clip_storage.as_deref()) {
+                        continue;
+                    }
+                    let covered = ink.contains(&point);
+                    let pixel = match (text_mode & 0x3f, covered) {
+                        (4, true) => Some(background),
+                        (4 | 5, false) => Some(color_pixel),
+                        (6, false) => ppc_quickdraw_read_pixel(memory, front_buffer, point).map(|dst| dst ^ match front_buffer.depth { 16 => 0x7fff, depth => (1u16 << depth) - 1 }),
+                        (7, false) => Some(background),
+                        _ => None,
+                    };
+                    if let Some(pixel) = pixel {
+                        let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, pixel);
+                    }
+                }
+            }
+            source_advance = source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
+            nonspaces += i32::from(ch != ' ');
+            continue;
+        }
         let gpu_painted = ppc_gpu_text_points(
             memory,
             surface,
@@ -2676,7 +2734,7 @@ pub(crate) fn ppc_draw_text_chars_styled(
         nonspaces += i32::from(ch != ' ');
     }
 
-    if style.underline() && style.smear_max().is_none() && source_advance > 0 {
+    if style.underline() && style.smear_max().is_none() && source_advance > 0 && !matches!(text_mode & 0x3f, 4..=7) {
         let thickness = get_underline_thickness(text_font, face.size).max(1);
         let gpu_painted = ppc_gpu_text_points(
             memory,
