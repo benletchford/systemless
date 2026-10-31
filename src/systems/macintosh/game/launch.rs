@@ -2655,7 +2655,7 @@ fn payload_from_forks(
         });
     }
 
-    match crate::disk_image::extract_dc42_or_hfs(&data) {
+    match crate::disk_image::extract_forked_image(&data, &rsrc) {
         Ok(Some(image)) => {
             if crate::runner::trace_load_enabled() {
                 eprintln!(
