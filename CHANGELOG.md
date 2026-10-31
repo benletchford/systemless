@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.105.0](https://github.com/benletchford/systemless/compare/v0.104.0...v0.105.0) (2026-10-31)
+
+
+### Features
+
+* **catalogue:** add Continuum intake ([#5454](https://github.com/benletchford/systemless/issues/5454)) ([6fee697](https://github.com/benletchford/systemless/commit/6fee697d42a75c8b406c5c7748384149226fb6c1))
+
+
+### Bug Fixes
+
+* **ppc:** report File Manager resource forks by their file in PBGetFCBInfo ([#5457](https://github.com/benletchford/systemless/issues/5457)) ([cac764d](https://github.com/benletchford/systemless/commit/cac764da9046e15035890416c7a247ec5e2a9bf4))
+
+
+### Performance Improvements
+
+* **catalogue:** raise Tomb Raider Gold demo CPU budget ([#5458](https://github.com/benletchford/systemless/issues/5458)) ([a31cd29](https://github.com/benletchford/systemless/commit/a31cd299a6d2ad844bbc46466ba1c3286d287c9a))
+
 ## [0.104.0](https://github.com/benletchford/systemless/compare/v0.103.0...v0.104.0) (2026-10-31)
 
 
