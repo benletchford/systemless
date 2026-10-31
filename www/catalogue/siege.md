@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -33,9 +34,25 @@ compatibility:
       interception. The original notice and player turn were inspected; a 20-second sample
       measured 60.166 guest ticks and 60.416 worker replies per second following the generic
       pacing fix merged in PR 5363. A separate local replay completed round one and
-      entered round two. Managed hosting and hosted browser approval remain pending.
+      entered round two. This preceded the hosted-archive approval below.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5362
+  - date: "2026-10-31"
+    tester: Catalogue maintainer
+    systemless_version: aa6f95c051abff3ff7e2b4ed55a8feda02406ea1
+    architecture: 68k
+    environment: >-
+      Chrome 156 fetched the promoted original archive directly and verified its
+      expected hash. In a production-origin preview, frontend files were substituted
+      and the worker bootstrap loaded the identical Wasm through a data URL. The 68K
+      worker used WebGL at 25 MHz. The shareware notice was dismissed and ordinary
+      clicks placed red 3 and yellow 2 from the player hand; computer moves followed.
+      Inspected captures show the board and hand changes. A 20-second player-turn
+      sample measured 60.161 guest ticks and 60.010 worker replies per second, with no
+      recorded browser errors. Browser approval covers this bounded play; full game,
+      audio fidelity and an independent deployed replay remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5345
 runtime:
   executable_path: Siege 1.1/Siege
   screen_depth: 8
@@ -94,7 +111,8 @@ next to those already on the board and try to enclose spaces belonging to your
 opponents. The computer plays three hands; the round ends when no cards can be
 played.
 
-The original shareware registration notice remains. Native card placement and one
-local browser round are verified; hosted browser qualification is pending.
+The original shareware registration notice remains. Native card placement, hosted
+browser input and one local browser round are verified; full-game completion and
+audio fidelity remain unverified.
 
 ![Siege round in progress](https://assets.systemless.org/catalogue/media/sha256/b3/b36694f0ea78b4074f1d203d755a456f87ab3c256afb449b38d38aef06d26bd4.png)
