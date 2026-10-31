@@ -549,9 +549,34 @@ pub(super) fn dispatch_dialog_import(
                             let kind = memory
                                 .read_u16_be(dialog + DIALOG_WINDOW_KIND_OFFSET)
                                 .map(|kind| kind as i16);
-                            if evaluate_get_dialog_from_window(dialog, kind) == 0
-                                || !ppc_window_is_visible(memory, dialog)
-                            {
+                            if evaluate_get_dialog_from_window(dialog, kind) == 0 {
+                                continue;
+                            }
+                            // The active editText item shares its handle with
+                            // the dialog's TERec, whose layout must follow it.
+                            let te_handle = memory
+                                .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                                .unwrap_or(0);
+                            if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
+                                if memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET)
+                                    == Some(eval.item_handle)
+                                {
+                                    let _ = memory.write_u16_be(
+                                        te_ptr + PPC_TE_LENGTH_OFFSET,
+                                        eval.byte_len() as u16,
+                                    );
+                                    let _ = ppc_te_recalculate_layout(
+                                        Some(&mut allocator),
+                                        memory,
+                                        heap_cursor,
+                                        heap_limit,
+                                        last_mem_error,
+                                        handles,
+                                        te_handle,
+                                    );
+                                }
+                            }
+                            if !ppc_window_is_visible(memory, dialog) {
                                 continue;
                             }
                             let _ = ppc_draw_dialog_items(

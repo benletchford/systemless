@@ -2066,6 +2066,67 @@ fn hle_import_runner_handles_dialog_text_and_modal_defaults() {
 }
 
 #[test]
+fn set_dialog_item_text_updates_the_layout_of_the_dialog_text_record() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 16];
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&120i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let item_text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+
+    let text = b"several words that have to wrap inside this narrow item";
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text_ptr, vec![0; 256]);
+    write_ppc_pstring(&mut loaded.memory, text_ptr, text);
+    loaded.cpu.gpr[3] = item_text_handle;
+    loaded.cpu.gpr[4] = text_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET),
+        Some(text.len() as u16)
+    );
+    assert!(loaded.memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET).unwrap() > 1);
+}
+
+#[test]
 fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
