@@ -632,10 +632,11 @@ use super::*;
             "nonfront NSetPalette is deferred"
         );
 
+        let current_port = *loaded.current_gworld;
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
         assert_eq!(loaded.screen_clut[1], color_b);
-        assert_eq!(*loaded.current_gworld, window_b);
+        assert_eq!(*loaded.current_gworld, current_port);
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
             Some(window_b)
@@ -644,7 +645,7 @@ use super::*;
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::HideWindow);
         assert_eq!(loaded.screen_clut[1], color_a);
-        assert_eq!(*loaded.current_gworld, window_b);
+        assert_eq!(*loaded.current_gworld, current_port);
 
         loaded.cpu.gpr[3] = window_b;
         loaded.cpu.gpr[4] = palette_b2_handle;
