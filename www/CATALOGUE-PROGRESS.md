@@ -97,7 +97,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 16 | Sid Meier's Alpha Centauri | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 17 | The Sims | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 18 | Heroes of Might and Magic III | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 19 | Tomb Raider (Gold demo; retired candidate) | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 19 | Tomb Raider (Gold demo) | Maintainer-accepted free promotional demo; Read Me has no explicit grant | Exact classicmacdemos receipt; SHA-256 `b7a5fd3e…` / 2,724,762 bytes; nine files | N/A: PPC-only demo | Native run-forward vs matched no-input control (298,131 px differ); exact replay | Pending | Pending | Pending |
 | 20 | Tomb Raider II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 21 | Duke Nukem 3D | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 22 | A-Train | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
