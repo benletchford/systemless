@@ -116,9 +116,11 @@ impl PpcImportBindingPlan {
                 dispatcher_target = PpcImportDispatcherTarget::UnresolvedWeak;
                 0
             } else {
+                // System libraries export functions as transition vectors,
+                // whichever code class the importer declared.
                 match import.class {
-                    2 => checked_slot_address(layout.tvector_base, symbol_index, 8)?,
-                    0 | 4 => trap_pc,
+                    0 | 2 => checked_slot_address(layout.tvector_base, symbol_index, 8)?,
+                    4 => trap_pc,
                     _ => 0,
                 }
             };
@@ -130,7 +132,7 @@ impl PpcImportBindingPlan {
                 class: import.class,
                 weak: import.weak,
                 address,
-                tvector_address: (import.class == 2
+                tvector_address: (matches!(import.class, 0 | 2)
                     && !unresolved_weak
                     && resolved_address.is_none())
                 .then_some(address),
@@ -649,7 +651,7 @@ mod tests {
 
         assert_eq!(
             plan.relocation_addresses(),
-            &[0, 0x0300_0000, 0x0100_0010, 0x0200_000c]
+            &[0, 0x0300_0000, 0x0100_0010, 0x0100_0018]
         );
         let bindings = plan.into_initial_bindings();
         assert_eq!(bindings.len(), 4);
@@ -662,7 +664,8 @@ mod tests {
         assert_eq!(bindings[1].address, 0x0300_0000);
         assert_eq!(bindings[1].tvector_address, None);
         assert_eq!(bindings[2].tvector_address, Some(0x0100_0010));
-        assert_eq!(bindings[3].address, 0x0200_000c);
+        assert_eq!(bindings[3].address, 0x0100_0018);
+        assert_eq!(bindings[3].tvector_address, Some(0x0100_0018));
         assert_eq!(bindings[3].trap_pc, 0x0200_000c);
         assert_eq!(bindings[3].library_index, 7);
     }
