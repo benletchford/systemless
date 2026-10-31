@@ -14891,6 +14891,228 @@ fn pack14_records_low_word_identity_without_changing_behavior() {
 }
 
 #[test]
+fn pack14_help_extraction_handle_allocation_failure_preserves_resource_state() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let data = [
+        0, 2, 0, 0, 0, 5, 0, 126, 0, 3, 0, 1, 0, 4, 1, 0, 0, 12, 0, 1, 1, b'A', 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let resource = disp.install_test_resource(&mut bus, *b"hmnu", 200, &data);
+    let output = bus.alloc(256);
+    let sp = TEST_SP;
+    bus.write_long(sp, output);
+    bus.write_word(sp + 4, 0);
+    bus.write_word(sp + 6, 1);
+    bus.write_word(sp + 8, 200);
+    bus.write_long(sp + 10, u32::from_be_bytes(*b"hmnu"));
+    bus.reserve_heap_range(bus.heap_bump_ptr(), bus.classic_heap_limit());
+    assert_eq!(bus.alloc(4), 0);
+    cpu.write_reg(Register::D0, 0x0711);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), (-108i16) as i32 as u32);
+    assert!(!disp.loaded_handles.contains_key(&0));
+    assert_eq!(
+        disp.find_or_load_resource_any(&mut bus, *b"hmnu", 200),
+        Some((0, resource))
+    );
+}
+
+#[test]
+fn pack14_extract_help_message_reads_resource() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let data = [
+        0, 2, 0, 0, 0, 5, 0, 126, 0, 3, 0, 1, 0, 4, 1, 0, 0, 12, 0, 1, 1, b'A', 0, 0, 0, 0, 0, 0, 0,
+    ];
+    disp.install_named_test_resource_in_file(&mut bus, 0, *b"hmnu", 200, "Help", &data);
+    let output = bus.alloc(256);
+    let sp = TEST_SP;
+    bus.write_long(sp, output);
+    bus.write_word(sp + 4, 0);
+    bus.write_word(sp + 6, 1);
+    bus.write_word(sp + 8, 200);
+    bus.write_long(sp + 10, u32::from_be_bytes(*b"hmnu"));
+    cpu.write_reg(Register::D0, 0x0711);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+    assert_eq!(bus.read_word(sp + 14), 0);
+    assert_eq!(bus.read_word(output), 1);
+    assert_eq!(bus.read_byte(output + 2), 1);
+    assert_eq!(bus.read_byte(output + 3), b'A');
+    bus.write_word(output, 0xbeef);
+    bus.write_word(sp + 6, 2);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0711);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), (-857i16) as i32 as u32);
+    assert_eq!(bus.read_word(output), 0xbeef);
+}
+
+#[test]
+fn pack14_help_extraction_respects_rectangle_resource_scope() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let rectangle = [
+        0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 18, 0, 1, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 1,
+        b'R',
+    ];
+    let dialog = [
+        0, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 1, 0, 0, 22, 0, 1, 0, 7, 0, 8, 0, 0, 0, 0,
+        0, 0, 0, 0, 1, b'D', 0, 0, 0, 0,
+    ];
+    disp.install_test_resource_in_file(&mut bus, 1, *b"hrct", 200, &rectangle);
+    disp.install_test_resource_in_file(&mut bus, 1, *b"hdlg", 200, &dialog);
+    disp.register_empty_resource_file(2);
+    let sp = TEST_SP;
+    let output = bus.alloc(256);
+    for (current, kind, expected, letter) in [
+        (2, *b"hrct", -192i16, 0),
+        (1, *b"hrct", 0, b'R'),
+        (2, *b"hdlg", 0, b'D'),
+    ] {
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, current);
+        assert!(disp
+            .dispatch_toolbox(true, 0x198, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0711);
+        bus.write_long(sp, output);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 1);
+        bus.write_word(sp + 8, 200);
+        bus.write_long(sp + 10, u32::from_be_bytes(kind));
+        assert!(disp
+            .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), expected as i32 as u32);
+        if expected == 0 {
+            assert_eq!(bus.read_byte(output + 3), letter);
+        }
+    }
+}
+
+#[test]
+fn pack14_get_ind_help_message_extracts_resource_data() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let data = [
+        0, 2, 0, 0, 0, 5, 0, 126, 0, 3, 0, 1, 0, 4, 1, 0, 0, 12, 0, 1, 1, b'A', 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let resource =
+        disp.install_named_test_resource_in_file(&mut bus, 0, *b"hmnu", 200, "Help", &data);
+    let output = bus.alloc(320);
+    let sp = TEST_SP;
+    for (offset, pointer) in [
+        (0, output + 300),
+        (4, output + 20),
+        (8, output + 18),
+        (12, output + 16),
+        (16, output + 8),
+        (20, output + 4),
+        (24, output),
+    ] {
+        bus.write_long(sp + offset, pointer);
+    }
+    bus.write_word(sp + 28, 0);
+    bus.write_word(sp + 30, 1);
+    bus.write_word(sp + 32, 200);
+    bus.write_long(sp + 34, u32::from_be_bytes(*b"hmnu"));
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 38);
+    assert_eq!(bus.read_word(sp + 38), 0);
+    assert_eq!(bus.read_long(output), 5);
+    assert_eq!(bus.read_word(output + 16), 126);
+    assert_eq!(bus.read_word(output + 18), 3);
+    assert_eq!(bus.read_word(output + 20), 1);
+    assert_eq!(bus.read_byte(output + 22), 1);
+    assert_eq!(bus.read_byte(output + 23), b'A');
+    assert_eq!(bus.read_word(output + 300), 1);
+
+    bus.write_byte(resource + 21, b'B');
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_byte(output + 23), b'B');
+
+    let handle = disp.get_or_create_resource_handle(&mut bus, *b"hmnu", 200, resource);
+    let _blocker = bus.alloc(64);
+    cpu.write_reg(Register::A0, handle);
+    cpu.write_reg(Register::D0, 128);
+    assert!(disp
+        .dispatch_memory(false, 0x24, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    let relocated = bus.read_long(handle);
+    assert_ne!(relocated, resource);
+    bus.write_byte(relocated + 21, b'C');
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_byte(output + 23), b'C');
+
+    cpu.write_reg(Register::A0, handle);
+    assert!(disp
+        .dispatch_memory(false, 0x2b, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_long(handle), 0);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_byte(output + 23), b'A');
+    assert_ne!(bus.read_long(handle), 0);
+
+    bus.write_long(output, 0xfeed_beef);
+    bus.write_long(sp, 0xffff_fffe);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), (-50i16) as i32 as u32);
+    assert_eq!(bus.read_long(output), 0xfeed_beef);
+
+    bus.write_long(sp, output + 300);
+    bus.write_word(sp + 30, 2);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x1306);
+    assert!(disp
+        .dispatch_toolbox(true, 0x030, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::D0), (-857i16) as i32 as u32);
+    assert_eq!(bus.read_long(output), 0xfeed_beef);
+}
+
+#[test]
 fn pack14_hmgethelpmenuhandle_writes_nil_and_returns_hmhelpmanagernotinited() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;

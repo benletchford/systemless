@@ -16846,16 +16846,6 @@ impl super::TrapDispatcher {
                     // ever loaded → resNotFound.
                     0x0410 => finish(bus, cpu, 8, RES_NOT_FOUND),
 
-                    // FUNCTION HMExtractHelpMsg(whichType: ResType;
-                    //                           whichResID, whichMsg,
-                    //                           whichState: Integer;
-                    //                           VAR aHelpMsg:
-                    //                           HMMessageRecord): OSErr;
-                    // IM:MMTb 3-126. Pop = 14. No help resources →
-                    // resNotFound. Don't touch aHelpMsg (caller's
-                    // record stays untouched).
-                    0x0711 => finish(bus, cpu, 14, RES_NOT_FOUND),
-
                     // FUNCTION HMShowBalloon(aHelpMsg: HMMessageRecord;
                     //                        tip: Point;
                     //                        alternateRect: RectPtr;
@@ -16890,12 +16880,147 @@ impl super::TrapDispatcher {
                     //                          VAR aHelpMsg:
                     //                          HMMessageRecord;
                     //                          VAR count: Integer): OSErr;
-                    // IM:MMTb 3-128. Pop = 38. No help resources →
-                    // resNotFound. Don't touch any VAR-out param —
-                    // caller's records stay untouched per the IM
-                    // contract that resNotFound means "did not
-                    // populate anything".
-                    0x1306 => finish(bus, cpu, 38, RES_NOT_FOUND),
+                    // HMExtractHelpMsg and HMGetIndHelpMsg share resource
+                    // decoding; Pascal arguments are reversed on the stack.
+                    0x0711 | 0x1306 => {
+                        use crate::systems::macintosh::help_manager::{
+                            menu_help_message, positioned_help_message, HelpMessage,
+                            HelpResourceError,
+                        };
+                        let result = (|| -> std::result::Result<(), i16> {
+                            let indexed = selector == 0x1306;
+                            let base = if indexed { 24 } else { 0 };
+                            let resource_type = bus.read_long(sp + base + 10).to_be_bytes();
+                            if !matches!(
+                                &resource_type,
+                                b"hmnu" | b"hdlg" | b"hrct" | b"hovr" | b"hfdr"
+                            ) {
+                                return Err(-50);
+                            }
+                            let resource_id = bus.read_word(sp + base + 8) as i16;
+                            let index = bus.read_word(sp + base + 6);
+                            let state = bus.read_word(sp + base + 4);
+                            let outputs = if indexed {
+                                [24, 20, 16, 12, 8, 4, 0].map(|offset| bus.read_long(sp + offset))
+                            } else {
+                                [0, 0, 0, 0, 0, bus.read_long(sp), 0]
+                            };
+                            if outputs[5] == 0 || (indexed && outputs.contains(&0)) {
+                                return Err(-50);
+                            }
+                            let found = if resource_type == *b"hrct" {
+                                self.find_or_load_resource_in_file(
+                                    bus,
+                                    self.current_resource_refnum(),
+                                    resource_type,
+                                    resource_id,
+                                )
+                            } else {
+                                self.find_or_load_resource_any(bus, resource_type, resource_id)
+                            };
+                            let (refnum, pointer) = found.ok_or(RES_NOT_FOUND)?;
+                            let handle = self.get_or_create_resource_handle_in_file(
+                                bus,
+                                resource_type,
+                                resource_id,
+                                pointer,
+                                refnum,
+                            );
+                            if handle == 0 {
+                                return Err(-108);
+                            }
+                            let pointer = bus.read_long(handle);
+                            if pointer == 0 {
+                                return Err(RES_NOT_FOUND);
+                            }
+                            let size = bus.get_alloc_size(pointer).ok_or(RES_NOT_FOUND)? as usize;
+                            let mut data = Vec::new();
+                            data.try_reserve_exact(size).map_err(|_| -108i16)?;
+                            for offset in 0..size {
+                                let address =
+                                    pointer.checked_add(offset as u32).ok_or(RES_NOT_FOUND)?;
+                                data.push(bus.read_byte(address));
+                            }
+                            let parsed = if resource_type == *b"hmnu" {
+                                menu_help_message(&data, index, state).map(|value| {
+                                    (
+                                        value.options,
+                                        value.proc_id,
+                                        value.variant,
+                                        value.count,
+                                        [0; 4],
+                                        [0; 8],
+                                        value.message,
+                                    )
+                                })
+                            } else {
+                                positioned_help_message(&data, resource_type, index, state).map(
+                                    |value| {
+                                        (
+                                            value.options,
+                                            value.proc_id,
+                                            value.variant,
+                                            value.count,
+                                            value.tip,
+                                            value.rect,
+                                            value.message,
+                                        )
+                                    },
+                                )
+                            };
+                            let (options, proc_id, variant, count, tip, rect, message) = parsed
+                                .map_err(|error| match error {
+                                    HelpResourceError::WrongVersion => -858,
+                                    HelpResourceError::Skipped => -857,
+                                    HelpResourceError::Unsupported => -859,
+                                    HelpResourceError::Malformed => RES_NOT_FOUND,
+                                    HelpResourceError::OutOfMemory => -108,
+                                })?;
+                            let mut message_bytes = Vec::new();
+                            message_bytes.try_reserve_exact(258).map_err(|_| -108i16)?;
+                            match message {
+                                HelpMessage::String(text) => {
+                                    message_bytes.extend_from_slice(&1u16.to_be_bytes());
+                                    message_bytes.push(text.len() as u8);
+                                    message_bytes.extend_from_slice(&text);
+                                }
+                                HelpMessage::Resource { kind, id, index } => {
+                                    message_bytes.extend_from_slice(&kind.to_be_bytes());
+                                    message_bytes.extend_from_slice(&id.to_be_bytes());
+                                    if let Some(index) = index {
+                                        message_bytes.extend_from_slice(&index.to_be_bytes());
+                                    }
+                                }
+                            }
+                            let fields: [(u32, &[u8]); 7] = [
+                                (outputs[0], &options.to_be_bytes()),
+                                (outputs[1], &tip),
+                                (outputs[2], &rect),
+                                (outputs[3], &proc_id.to_be_bytes()),
+                                (outputs[4], &variant.to_be_bytes()),
+                                (outputs[5], &message_bytes),
+                                (outputs[6], &count.to_be_bytes()),
+                            ];
+                            if fields.iter().enumerate().any(|(index, (address, bytes))| {
+                                (indexed || index == 5)
+                                    && !bus.is_guest_address_writable(*address, bytes.len())
+                            }) {
+                                return Err(-50);
+                            }
+                            for (index, (address, bytes)) in fields.into_iter().enumerate() {
+                                if !indexed && index != 5 {
+                                    continue;
+                                }
+                                for (offset, byte) in bytes.iter().copied().enumerate() {
+                                    bus.write_byte(address + offset as u32, byte);
+                                }
+                            }
+                            Ok(())
+                        })()
+                        .err()
+                        .unwrap_or(0);
+                        finish(bus, cpu, if selector == 0x1306 { 38 } else { 14 }, result);
+                    }
 
                     // Unknown selector — preserve the stack and return
                     // noErr in D0. A future System addition that assigns

@@ -1888,6 +1888,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LoadResource
         | PpcImportDispatcherTarget::GetResource
         | PpcImportDispatcherTarget::Get1Resource
+        | PpcImportDispatcherTarget::HMGetIndHelpMsg
         | PpcImportDispatcherTarget::GetNamedResource
         | PpcImportDispatcherTarget::Get1NamedResource
         | PpcImportDispatcherTarget::GetIndResource
