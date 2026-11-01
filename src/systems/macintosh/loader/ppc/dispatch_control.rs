@@ -1099,6 +1099,8 @@ pub(super) fn ppc_dispatch_legacy_control(
                 .iter()
                 .any(|record| record.handle == cpu.gpr[3] && (1008..=1023).contains(&record.proc_id));
             if part != 0 && part != 129 && !is_popup && action_proc == 0 && input.mouse_button {
+                // Re-entry after release cannot re-derive a start point from the held mouse.
+                cpu.gpr[4] = (u32::from(v as u16) << 16) | u32::from(h as u16);
                 return Some(PpcImportAction::Yield(u64::MAX));
             }
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:

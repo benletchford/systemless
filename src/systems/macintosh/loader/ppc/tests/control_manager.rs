@@ -901,6 +901,16 @@ fn hle_import_runner_test_control_returns_the_hit_part() {
 #[test]
 fn track_control_with_nil_action_returns_only_after_the_button_is_released() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
+    let bounds = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(bounds, vec![0; 8]);
+    let window = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds,
+        (40, 50, 140, 250),
+        0,
+        true,
+        u32::MAX,
+    );
     let mut last_mem_error = loaded.last_mem_error();
     let scratch = ppc_heap_alloc(
         &mut loaded.memory,
@@ -921,7 +931,7 @@ fn track_control_with_nil_action_returns_only_after_the_button_is_released() {
             &mut last_mem_error,
             test_handles!(loaded),
             controls,
-            PPC_MAIN_GWORLD,
+            window,
             scratch,
             scratch + 8,
             true,
@@ -933,13 +943,21 @@ fn track_control_with_nil_action_returns_only_after_the_button_is_released() {
         )
     );
     assert_ne!(control_handle, 0);
+    // A global start point misses the local rect; only the held mouse resolves the hit.
+    let (origin_h, origin_v) = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, window)
+        .unwrap()
+        .local_point((0, 0));
+    let (global_v, global_h) = (origin_v as i16 + 10, origin_h as i16 + 10);
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl);
+    loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = control_handle;
-    loaded.cpu.gpr[4] = (10 << 16) | 10;
+    loaded.cpu.gpr[4] = (u32::from(global_v as u16) << 16) | u32::from(global_h as u16);
     loaded.cpu.gpr[5] = 0;
     loaded.set_input_snapshot(PpcInputSnapshot {
         mouse_button: true,
-        mouse_v: 10,
-        mouse_h: 10,
+        mouse_v: global_v,
+        mouse_h: global_h,
         ..PpcInputSnapshot::default()
     });
     let held = loaded.run_with_hle_imports(64);
