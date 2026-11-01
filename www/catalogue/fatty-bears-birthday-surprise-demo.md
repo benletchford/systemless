@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -24,7 +25,7 @@ compatibility:
       moonlit front-yard scene with Fatty Bear. Clicking in the scene triggered its
       animations. A matched idle control was identical until the input and then differed by
       15,760 pixels. An exact replay matched both checkpoints, with zero exhausted frames.
-      Later scenes, puzzles, audio and browser performance remain unverified.
+      Later scenes, puzzles, and audio remain unverified. Browser pacing passed five of six samples in the front yard at about 60 host fps and 55–57 guest ticks/s; one earlier sample dipped to 36.6 ticks/s.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5487
 runtime:
