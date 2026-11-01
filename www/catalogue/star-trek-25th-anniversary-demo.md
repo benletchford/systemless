@@ -46,7 +46,7 @@ artifacts:
     original: true
     sources:
     - https://classicmacdemos.com/star-trek-25th-anniversary
-    - https://download.classicmacdemos.com/Putt-Putt%20Moon.sit
+    - https://download.classicmacdemos.com/Star%20Trek%20demo.sit
     - https://github.com/benletchford/systemless/issues/5491
     license: Maintainer-accepted freely distributed promotional demo
     rights_holder: Interplay Productions
