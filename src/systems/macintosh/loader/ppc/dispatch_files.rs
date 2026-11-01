@@ -379,6 +379,25 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             *last_resource_error = 0;
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::OpenResFileCString => {
+            // The lowercase C glue converts the file name to a Pascal string in
+            // place, calls OpenResFile, and converts it back.
+            ppc_c2pstr(cpu, memory);
+            let refnum = ppc_open_res_file(
+                cpu,
+                memory,
+                vfs_files,
+                vfs_resource_files,
+                resource_files,
+                vfs_resources,
+                next_file_ref_num,
+                current_resource_refnum,
+                last_resource_error,
+                launched_app_path,
+            );
+            ppc_p2cstr(cpu, memory);
+            Some(PpcImportAction::Return(refnum as u16 as u32))
+        }
         PpcImportDispatcherTarget::OpenResFile => Some(PpcImportAction::Return(ppc_open_res_file(
             cpu,
             memory,

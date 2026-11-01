@@ -1830,6 +1830,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
+        | PpcImportDispatcherTarget::OpenResFileCString
         | PpcImportDispatcherTarget::OpenRFPerm
         | PpcImportDispatcherTarget::HOpenResFile
         | PpcImportDispatcherTarget::ResError
@@ -2040,6 +2041,7 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawChar
         | PpcImportDispatcherTarget::DrawText
         | PpcImportDispatcherTarget::DrawString
+        | PpcImportDispatcherTarget::DrawCString
         | PpcImportDispatcherTarget::TextFont
         | PpcImportDispatcherTarget::TextFace
         | PpcImportDispatcherTarget::TextMode
@@ -2414,6 +2416,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::SysEnvirons
         | PpcImportDispatcherTarget::SVersion
         | PpcImportDispatcherTarget::EqualString
+        | PpcImportDispatcherTarget::EqualCString
+        | PpcImportDispatcherTarget::UpperCString
         | PpcImportDispatcherTarget::RelString
         | PpcImportDispatcherTarget::InitEditionPackVersion
         | PpcImportDispatcherTarget::StuffHex
@@ -3315,6 +3319,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::EventAvail
         | PpcImportDispatcherTarget::OSEventAvail
         | PpcImportDispatcherTarget::PostEvent
+        | PpcImportDispatcherTarget::PPostEvent
         | PpcImportDispatcherTarget::Button
         | PpcImportDispatcherTarget::StillDown
         | PpcImportDispatcherTarget::WaitMouseUp

@@ -355,7 +355,13 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 FONT_NOT_OUTLINE_ERR,
             )))
         }
-        PpcImportDispatcherTarget::DrawString => {
+        PpcImportDispatcherTarget::DrawString | PpcImportDispatcherTarget::DrawCString => {
+            // drawstring is the C glue for DrawString: it converts the caller's
+            // string to Pascal form in place for the call and back afterwards.
+            let c_string = binding.dispatcher_target == PpcImportDispatcherTarget::DrawCString;
+            if c_string {
+                ppc_c2pstr(cpu, memory);
+            }
             if let Some(bytes) = ppc_read_pascal_string(memory, cpu.gpr[3]) {
                 let text_font = ppc_current_text_font(memory, current_gworld);
                 let text_style = ppc_current_text_style(memory, current_gworld);
@@ -403,6 +409,9 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 };
                 *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
                 ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
+            }
+            if c_string {
+                ppc_p2cstr(cpu, memory);
             }
             Some(PpcImportAction::ReturnPreserve)
         }

@@ -218,6 +218,7 @@ mod gworld;
 mod blit;
 mod carbon_toolbox;
 mod carbon_services;
+mod c_string_glue;
 
 mod alias_relative;
 mod file_manager;

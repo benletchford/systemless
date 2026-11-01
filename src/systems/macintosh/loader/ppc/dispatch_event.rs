@@ -1413,7 +1413,14 @@ pub(super) fn dispatch_event_import(
             }
             Some(PpcImportAction::Return(u32::from(has_event)))
         }
-        PpcImportDispatcherTarget::PostEvent => {
+        PpcImportDispatcherTarget::PostEvent | PpcImportDispatcherTarget::PPostEvent => {
+            // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-112:
+            // PPostEvent behaves like PostEvent and also returns the posted
+            // queue element through qEl. This queue holds no guest-visible
+            // elements, so qEl receives NIL.
+            if binding.dispatcher_target == PpcImportDispatcherTarget::PPostEvent && cpu.gpr[5] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[5], 0);
+            }
             let what = cpu.gpr[3] as u16;
             let system_event_mask = memory
                 .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
