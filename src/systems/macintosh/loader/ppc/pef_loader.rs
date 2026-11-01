@@ -449,6 +449,7 @@ fn load_pef_application_with_optional_disk_fragment(
     let raw_sections = parse_pef_sections(data).ok_or(PpcLoadError::PefParse)?;
     let loader = parse_pef_loader_header(data).ok_or(PpcLoadError::PefParse)?;
     let resolved_imports = resolve_pef_imports(data).unwrap_or_default();
+    let writes_own_code = ppc_imports_declare_code_writes(&resolved_imports);
     let imported_symbols = parse_pef_imported_symbols(data).unwrap_or_default();
     let stack_size = normalize_stack_size(config.stack_size)?;
     // When physical RAM can hold the native heap and stack, place their
@@ -725,8 +726,16 @@ fn load_pef_application_with_optional_disk_fragment(
         })
         .collect();
     for section in mapped_sections {
-        if section.section_kind == SECTION_KIND_CODE
-            || section.section_kind == SECTION_KIND_CONSTANT
+        // Classic Mac OS never write-protected application code. Apps that
+        // patch their own instructions announce it by importing a code-cache
+        // flush, which they must call after writing code (Inside Macintosh:
+        // PowerPC System Software, MakeDataExecutable). Keep their code
+        // writable; everything else stays read-only so instruction blocks can
+        // be cached.
+        let writable_code = writes_own_code && section.section_kind == SECTION_KIND_CODE;
+        if !writable_code
+            && (section.section_kind == SECTION_KIND_CODE
+                || section.section_kind == SECTION_KIND_CONSTANT)
         {
             memory.add_readonly_region(section.base, section.bytes);
         } else {
@@ -1235,6 +1244,24 @@ fn load_pef_application_with_optional_disk_fragment(
 
 /// Where an application's data sections begin: the usual base when they
 /// end at or below the framebuffer, otherwise the high data base.
+/// Whether an application's imports show it writes its own instructions.
+/// MakeDataExecutable and the code-cache flush calls exist only to make newly
+/// written instructions visible, so importing one is that declaration.
+pub(crate) fn ppc_imports_declare_code_writes(
+    imports: &[crate::loader::pef::PefResolvedImport],
+) -> bool {
+    imports.iter().any(|import| {
+        import.library_name == "InterfaceLib"
+            && matches!(
+                import.symbol_name.as_str(),
+                "MakeDataExecutable"
+                    | "FlushCodeCache"
+                    | "FlushCodeCacheRange"
+                    | "FlushInstructionCache"
+            )
+    })
+}
+
 pub(crate) fn ppc_data_section_base(data_size: u32) -> u32 {
     if PPC_DATA_BASE
         .checked_add(data_size)

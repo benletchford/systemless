@@ -127,6 +127,10 @@ pub(crate) fn import_data_address_for(library_name: &str, symbol_name: &str) -> 
         ("StdCLib", "_FLT_MIN") => Some(PPC_IMPORT_STD_FLT_MIN),
         ("StdCLib", "errno") => Some(PPC_IMPORT_STD_ERRNO),
         ("StdCLib", "MacOSErr") => Some(PPC_IMPORT_STD_MAC_OS_ERR),
+        // Open Transport's XTI library exports its own writable `errno` integer
+        // (OpenTptXTI.h). Networking is not emulated, but clients may still
+        // reset or read it, so give it stable storage of its own.
+        ("OTXTILib", "errno") => Some(PPC_IMPORT_OT_XTI_ERRNO),
         // PowerPC Numerics exposes `pi` as an addressable MathLib export.
         // Some CFM clients label the import as a transition-vector symbol but
         // dereference it directly as a double, so bind the known export to
