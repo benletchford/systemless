@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.105.1](https://github.com/benletchford/systemless/compare/v0.105.0...v0.105.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **ppc:** honor guest mouse position updates ([#5391](https://github.com/benletchford/systemless/issues/5391)) ([142e5d4](https://github.com/benletchford/systemless/commit/142e5d4e1a2b719f900c2e7efc9d647919ef9615))
+
+
+### Performance Improvements
+
+* **trap:** skip come-from classification in default gateway lookups ([#5460](https://github.com/benletchford/systemless/issues/5460)) ([e5aa082](https://github.com/benletchford/systemless/commit/e5aa0826280a5bad9243ead15bae09bb4a9a5bd8))
+
 ## [0.105.0](https://github.com/benletchford/systemless/compare/v0.104.0...v0.105.0) (2026-10-31)
 
 
