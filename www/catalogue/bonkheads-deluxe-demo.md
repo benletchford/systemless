@@ -20,13 +20,12 @@ compatibility:
     systemless_version: 4e72291b deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice. 1 Player and OK
-      on the Worlds screen opened Surfaceville level 1 with bulldogs on the
-      platforms. Holding Right for 60 ticks walked Grag along the floor. A
-      matched control without the key was identical until the input and then
-      differed by 2,877 pixels. An exact replay matched both checkpoints, with
-      zero exhausted frames. Bonking pests, two-player play, audio and browser
-      performance remain unverified.
+      The unchanged demo archive ran natively on the 68K slice. 1 Player and OK on
+      the Worlds screen opened Surfaceville level 1 with bulldogs on the platforms.
+      Holding Right for 60 ticks walked Grag along the floor. A matched control without the
+      key was identical until the input and then differed by 2,877 pixels. An exact
+      replay matched both checkpoints, with zero exhausted frames. Bonking pests,
+      two-player play, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5481
 runtime:
@@ -36,10 +35,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Bonkheads%20Deluxe%20Demo.sit
-    expected_sha256: e0f909205dc13ea1ccf3e66c406212983f9cd1c66255b0354bf9c2b808dfe821
-    expected_size: 2373392
+    type: sha256
+    sha256: e0f909205dc13ea1ccf3e66c406212983f9cd1c66255b0354bf9c2b808dfe821
+    size_bytes: 2373392
   provenance:
     redistribution: permitted
     original: true
@@ -50,21 +48,19 @@ artifacts:
     license: Maintainer-accepted freely distributed promotional demo
     rights_holder: Varcon Systems
     permission: >-
-      Hosting was accepted by the Systemless maintainer on 1 November 2026 under
-      the policy for unchanged, freely circulated promotional demos. The
-      unchanged demo appeared on at least 28 period Macintosh magazine cover
-      discs. The bundled documents contain no explicit redistribution grant or
-      restriction. Preserve the complete unchanged archive and remove it if a
-      rights holder objects.
-    notes: >-
-      Demo of the Mario Bros.-style platform game, with the first worlds
-      playable.
+      Hosting was accepted by the Systemless maintainer on 1 November 2026 under the
+      policy for unchanged, freely circulated promotional demos. The unchanged demo
+      appeared on at least 28 period Macintosh magazine cover discs. The bundled documents
+      contain no explicit redistribution grant or restriction. Preserve the complete
+      unchanged archive and remove it if a rights holder objects.
+    notes: Demo of the Mario Bros.-style platform game, with the first worlds playable.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/bonkheads-deluxe-demo/gameplay.png
+    type: sha256
+    sha256: b7517ba02c20e492cdaadae0239cb1fa41177d91b04e01e1d7dce22436542cdc
+    size_bytes: 716462
   provenance:
     redistribution: permitted
     original: true
@@ -82,7 +78,7 @@ references:
 
 ## Bonk them from below
 
-![Bonkheads Deluxe Demo](incoming/bonkheads-deluxe-demo/gameplay.png)
+![Bonkheads Deluxe Demo](https://assets.systemless.org/catalogue/media/sha256/b7/b7517ba02c20e492cdaadae0239cb1fa41177d91b04e01e1d7dce22436542cdc.png)
 
 Hit the pests from underneath to stun them, then kick them off the platforms before they recover. Play alone as Grag or team up with a friend as Thog.
 
