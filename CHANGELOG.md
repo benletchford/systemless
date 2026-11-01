@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.106.0](https://github.com/benletchford/systemless/compare/v0.105.1...v0.106.0) (2026-11-01)
+
+
+### Features
+
+* **catalogue:** add Age of Empires and Alpha Centauri demos ([#5473](https://github.com/benletchford/systemless/issues/5473)) ([341438b](https://github.com/benletchford/systemless/commit/341438b1f3bee2ac35785f256826537af78adf08))
+* **catalogue:** approve Missions of the Reliant browser launch ([#5469](https://github.com/benletchford/systemless/issues/5469)) ([88cca74](https://github.com/benletchford/systemless/commit/88cca74610735edadfbb7e65131cd97129aa5556))
+* **catalogue:** restore Glider and Crystal Quest promotional demos ([#5470](https://github.com/benletchford/systemless/issues/5470)) ([f5ff7e7](https://github.com/benletchford/systemless/commit/f5ff7e7b334512b22675a546811735ed5d7fa289))
+
+
+### Performance Improvements
+
+* **quickdraw:** skip per-pixel tests for rectangular CopyBits regions ([#5465](https://github.com/benletchford/systemless/issues/5465)) ([547c622](https://github.com/benletchford/systemless/commit/547c622413dcfb62fcf56330b206e9a82b21bc24))
+* **runner:** fast-forward saved-tick-plus-constant TickCount waits ([#5463](https://github.com/benletchford/systemless/issues/5463)) ([321a7a6](https://github.com/benletchford/systemless/commit/321a7a6a875f4e500aa266d2b4c5e741d15f24b6))
+* **runner:** fast-forward SUBQ-reserved signed TickCount delays ([#5468](https://github.com/benletchford/systemless/issues/5468)) ([dc0b47f](https://github.com/benletchford/systemless/commit/dc0b47fb263edfe1a07267dffc96b1c6248d9dd7))
+
 ## [0.105.1](https://github.com/benletchford/systemless/compare/v0.105.0...v0.105.1) (2026-11-01)
 
 
