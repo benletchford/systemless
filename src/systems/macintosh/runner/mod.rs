@@ -13169,6 +13169,7 @@ impl FixtureRunner {
             // their dialog content from this path (e.g., idle redraw).
             let (v, h) = self.dispatcher.mouse_position();
             crate::trap::dispatch::QueuedEvent {
+                delivery_id: None,
                 what: 0,
                 message: 0,
                 when: ticks,

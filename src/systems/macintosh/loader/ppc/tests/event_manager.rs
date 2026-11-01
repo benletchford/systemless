@@ -714,6 +714,7 @@ fn carbon_main_event_queue_ref_is_stable_and_flushes_pending_events() {
     );
     loaded.set_event_queue([
         PpcQueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x4120,
             when: 1,
@@ -722,6 +723,7 @@ fn carbon_main_event_queue_ref_is_stable_and_flushes_pending_events() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 23,
             message: PPC_CORE_EVENT_CLASS,
             when: 1,
@@ -745,6 +747,7 @@ fn carbon_main_event_queue_ref_is_stable_and_flushes_pending_events() {
 #[test]
 fn event_avail_peeks_without_consuming_matching_event() {
     let queue = VecDeque::from([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_4120,
         when: 0,
@@ -763,6 +766,7 @@ fn event_avail_peeks_without_consuming_matching_event() {
 fn os_event_accessors_skip_toolbox_and_high_level_events() {
     let mut queue = VecDeque::from([
         PpcQueuedEvent {
+            delivery_id: None,
             what: 6,
             message: 0x1000,
             when: 0,
@@ -771,6 +775,7 @@ fn os_event_accessors_skip_toolbox_and_high_level_events() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 23,
             message: PPC_CORE_EVENT_CLASS,
             when: 0,
@@ -779,6 +784,7 @@ fn os_event_accessors_skip_toolbox_and_high_level_events() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x0000_4120,
             when: 0,
@@ -807,6 +813,7 @@ fn os_event_accessors_skip_toolbox_and_high_level_events() {
 fn toolbox_event_accessors_apply_documented_event_priority() {
     let mut queue = VecDeque::from([
         PpcQueuedEvent {
+            delivery_id: None,
             what: 6,
             message: 0x1000,
             when: 0,
@@ -815,6 +822,7 @@ fn toolbox_event_accessors_apply_documented_event_priority() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 23,
             message: PPC_CORE_EVENT_CLASS,
             when: 0,
@@ -823,6 +831,7 @@ fn toolbox_event_accessors_apply_documented_event_priority() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -831,6 +840,7 @@ fn toolbox_event_accessors_apply_documented_event_priority() {
             modifiers: 0,
         },
         PpcQueuedEvent {
+            delivery_id: None,
             what: 8,
             message: 0x2000,
             when: 0,
@@ -896,6 +906,7 @@ fn hle_import_runner_posts_events_with_the_current_mouse_position() {
     assert_eq!(
         loaded.event_queue(),
         &VecDeque::from([PpcQueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x3120,
             when: 42,
@@ -931,6 +942,7 @@ fn hle_post_event_uses_current_button_and_modifier_state() {
     assert_eq!(
         loaded.event_queue().front(),
         Some(PpcQueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0xA1B2_C3D4,
             when: expected_when,
@@ -1035,6 +1047,7 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
     loaded.set_tick_count(42);
     loaded.set_clock_cycle_timing(1_000, 0);
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (0x31 << 8) | 0x20,
         when: 42,
@@ -1068,6 +1081,7 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
         ..PpcInputSnapshot::default()
     });
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (0x31 << 8) | 0x20,
         when: 0,
@@ -1139,6 +1153,7 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
         ..PpcInputSnapshot::default()
     });
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -1321,6 +1336,7 @@ fn still_down_requires_pressed_button_without_pending_mouse_events() {
     assert_eq!(action, PpcImportAction::Return(1));
 
     let event_queue = VecDeque::from([PpcQueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,

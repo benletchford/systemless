@@ -95,6 +95,7 @@ fn active_draw_sprocket_blanking_window_owns_clicks_and_is_disposed() {
     assert_eq!(loaded.cpu.gpr[3], 0);
 
     let update = |message| PpcQueuedEvent {
+        delivery_id: None,
         what: 6,
         message,
         when: 0,

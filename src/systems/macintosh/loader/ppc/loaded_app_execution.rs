@@ -451,6 +451,57 @@ impl PpcLoadedApp {
                     return PpcImportAction::Yield(1);
                 }
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
+                    let classic_return = apple_events
+                        .pending_dispatches
+                        .last()
+                        .filter(|dispatch| dispatch.resume_guest_call_depth == guest_calls.depth())
+                        .and_then(|dispatch| {
+                            dispatch
+                                .mixed_resume_return_pc
+                                .or(dispatch.classic_return_pc)
+                        });
+                    if let Some(return_pc) = classic_return {
+                        let heap = process_memory_manager
+                            .native_heap_state()
+                            .expect("native allocator registered during execution");
+                        let mut heap_cursor = heap.heap_cursor;
+                        let mut last_mem_error = heap.last_mem_error;
+                        let mut handles = process_memory_manager.native_handle_records().to_vec();
+
+                        ppc_complete_apple_event_dispatch(
+                            cpu,
+                            &mut apple_events,
+                            guest_calls.depth(),
+                            process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            &mut handles,
+                        );
+                        let process_tick = memory
+                            .read_u32_be(crate::memory::globals::addr::TICKS)
+                            .map(|guest_ticks| tick_state.read_tick_count(guest_ticks))
+                            .unwrap_or_else(|| tick_state.current_tick());
+                        let when = ppc_virtual_tick_count(
+                            process_tick,
+                            clock_cycles_per_tick,
+                            clock_cycle_phase,
+                            elapsed,
+                        );
+                        event_queue.with_mut(|queue| {
+                            ppc_queue_completed_apple_event_replies(
+                                &mut apple_events,
+                                queue,
+                                when,
+                                ppc_current_event_modifiers(input),
+                            )
+                        });
+                        process_memory_manager.set_native_mem_error(last_mem_error);
+                        cpu.lr = return_pc;
+
+                        cpu.pc = return_pc;
+                        return PpcImportAction::Continue;
+                    }
                     let mut resource_call = None;
                     if toolbox_startup
                         .execution
@@ -460,6 +511,7 @@ impl PpcLoadedApp {
                         || guest_calls
                             .ready_menu_bar_build(GuestIsa::PowerPc)
                             .is_some()
+                        || ppc_resume_m68k_coercion(cpu, guest_calls.depth(), &apple_events)
                         || guest_calls.complete_powerpc_resuming_operation(
                             cpu,
                             process_memory_manager,
@@ -567,6 +619,60 @@ impl PpcLoadedApp {
                         let heap_limit = process_memory_manager
                             .native_allocation_limit(native_heap.heap_limit);
                         let handles = &mut process_memory_manager.native_handle_records().to_vec();
+                        ppc_complete_coercion_descriptor(
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            handles,
+                        );
+                        ppc_complete_coercion_handle(
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                        );
+                        if let Some(action) = event_queue.with_mut(|queue| {
+                            ppc_continue_coercion(
+                                cpu,
+                                guest_calls.depth(),
+                                &mut apple_events,
+                                &mut *process_memory_manager,
+                                memory,
+                                &mut heap_cursor,
+                                heap_limit,
+                                &mut last_mem_error,
+                                handles,
+                                &mut toolbox_startup,
+                                queue,
+                                tick_state.current_tick(),
+                                input,
+                            )
+                        }) {
+                            ppc_complete_getter_coercion(
+                                cpu,
+                                guest_calls.depth(),
+                                &mut apple_events,
+                                &mut *process_memory_manager,
+                                memory,
+                                &mut heap_cursor,
+                                &mut last_mem_error,
+                                handles,
+                            );
+                            process_memory_manager.set_native_mem_error(last_mem_error);
+                            return guest_calls.externalize_powerpc_action(cpu, action);
+                        }
+                        ppc_complete_getter_coercion(
+                            cpu,
+                            guest_calls.depth(),
+                            &mut apple_events,
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            handles,
+                        );
                         if let Some(action) = ppc_continue_ae_resolve_cleanup(
                             cpu,
                             guest_calls.depth(),
@@ -621,6 +727,24 @@ impl PpcLoadedApp {
                             &mut last_mem_error,
                             handles,
                         );
+                        let process_tick = memory
+                            .read_u32_be(crate::memory::globals::addr::TICKS)
+                            .map(|guest_ticks| tick_state.read_tick_count(guest_ticks))
+                            .unwrap_or_else(|| tick_state.current_tick());
+                        let when = ppc_virtual_tick_count(
+                            process_tick,
+                            clock_cycles_per_tick,
+                            clock_cycle_phase,
+                            elapsed,
+                        );
+                        event_queue.with_mut(|queue| {
+                            ppc_queue_completed_apple_event_replies(
+                                &mut apple_events,
+                                queue,
+                                when,
+                                ppc_current_event_modifiers(input),
+                            );
+                        });
                         process_memory_manager.set_native_mem_error(last_mem_error);
                         return PpcImportAction::Continue;
                     }
