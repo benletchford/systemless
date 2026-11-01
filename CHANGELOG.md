@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.107.0](https://github.com/benletchford/systemless/compare/v0.106.0...v0.107.0) (2026-11-01)
+
+
+### Features
+
+* **catalogue:** add Bonkheads Deluxe and Alley 19 Bowling demos ([#5483](https://github.com/benletchford/systemless/issues/5483)) ([9b61c26](https://github.com/benletchford/systemless/commit/9b61c2653e108c2ba99f2805bbf93dd3060dd82b))
+* **catalogue:** add Deliverance and Fatty Bear's Birthday Surprise demos ([#5488](https://github.com/benletchford/systemless/issues/5488)) ([0af9049](https://github.com/benletchford/systemless/commit/0af90492aa541fe32d7f7ffab297828e1eba1f1a))
+* **catalogue:** add Duke Nukem 3D demo ([#5478](https://github.com/benletchford/systemless/issues/5478)) ([12dda61](https://github.com/benletchford/systemless/commit/12dda612c453ebdcfced39ee0942af37317f0175))
+* **catalogue:** add Expert Backgammon demo ([#5485](https://github.com/benletchford/systemless/issues/5485)) ([8033466](https://github.com/benletchford/systemless/commit/80334667ce162d615d49a9cd302ff06d5efaa23a))
+* **catalogue:** add Heretic shareware port ([#5496](https://github.com/benletchford/systemless/issues/5496)) ([59393c0](https://github.com/benletchford/systemless/commit/59393c00a85aece3f0b320f518370a41b128f528))
+* **catalogue:** add Hoyle Word Games demo ([#5498](https://github.com/benletchford/systemless/issues/5498)) ([3fce315](https://github.com/benletchford/systemless/commit/3fce3151def4b895a72652f21cb468995205385e))
+* **catalogue:** add Mario Teaches Typing demo ([#5511](https://github.com/benletchford/systemless/issues/5511)) ([8405f61](https://github.com/benletchford/systemless/commit/8405f61f8ac643e9310404d4e65e822f3b153035))
+* **catalogue:** add Pro Pinball: Big Race USA and Icebreaker demos ([#5505](https://github.com/benletchford/systemless/issues/5505)) ([f868108](https://github.com/benletchford/systemless/commit/f868108b250dbc8375d926a69f6b082b00fae6ab))
+* **catalogue:** add Putt-Putt Goes to the Moon demo ([#5490](https://github.com/benletchford/systemless/issues/5490)) ([8a78973](https://github.com/benletchford/systemless/commit/8a789733c55cac8e1a7061603bce3068116c11a7))
+* **catalogue:** add Return of the Incredible Machine: Contraptions demo ([#5500](https://github.com/benletchford/systemless/issues/5500)) ([4949289](https://github.com/benletchford/systemless/commit/49492891ec89f4988f388aa2a19906d2589b5cd9))
+* **catalogue:** add Star Trek: 25th Anniversary demo ([#5492](https://github.com/benletchford/systemless/issues/5492)) ([c46ec6b](https://github.com/benletchford/systemless/commit/c46ec6b64a15c34f581c7d4967ca2fcffb1fbb8b))
+* **catalogue:** add Sub Battle Simulator demo ([#5502](https://github.com/benletchford/systemless/issues/5502)) ([54c38b3](https://github.com/benletchford/systemless/commit/54c38b3ebd5f47e31722387b44b576e3e2cd070e))
+* **catalogue:** add The Battle of Britain II demo ([#5519](https://github.com/benletchford/systemless/issues/5519)) ([dc04091](https://github.com/benletchford/systemless/commit/dc0409131249d6c952a81284311d74d97d8ea215))
+* **catalogue:** add The Tinies demo ([#5515](https://github.com/benletchford/systemless/issues/5515)) ([6fb4eb6](https://github.com/benletchford/systemless/commit/6fb4eb6389f0f4c76c11dd3b3a02f2de2472db27))
+* **catalogue:** add Theme Park demo ([#5507](https://github.com/benletchford/systemless/issues/5507)) ([bdff375](https://github.com/benletchford/systemless/commit/bdff3750b2510aa40dda1633e936a2166fccea93))
+* **catalogue:** add Tomb Raider II demo ([#5480](https://github.com/benletchford/systemless/issues/5480)) ([4e72291](https://github.com/benletchford/systemless/commit/4e72291b23324ff11cca32ae307df10c0fd8b897))
+* **catalogue:** add Where in Time is Carmen Sandiego? demo ([#5509](https://github.com/benletchford/systemless/issues/5509)) ([37b68e0](https://github.com/benletchford/systemless/commit/37b68e065f30eab393673d4c848be78f27a37855))
+* **catalogue:** enable Fatty Bear's Birthday Surprise launch ([#5494](https://github.com/benletchford/systemless/issues/5494)) ([7497ce0](https://github.com/benletchford/systemless/commit/7497ce011a83f5b539c7df3c7dc0cfcdedb71530))
+* **catalogue:** enable Putt-Putt Goes to the Moon launch ([#5493](https://github.com/benletchford/systemless/issues/5493)) ([55d5e22](https://github.com/benletchford/systemless/commit/55d5e22e9b444b9340133ac04f788903dc1a3fc7))
+
+
+### Bug Fixes
+
+* **ppc:** run self-modifying code and bind C-string Toolbox glue ([#5475](https://github.com/benletchford/systemless/issues/5475)) ([81da99b](https://github.com/benletchford/systemless/commit/81da99bd54007c63472d089c2bc76255efbf277d))
+* **quickdraw:** reinstall palette colors cleared from the guest device ColorTable ([#5513](https://github.com/benletchford/systemless/issues/5513)) ([a5762fe](https://github.com/benletchford/systemless/commit/a5762fe3e39feeec40dc7839ce46b34d3cda4480))
+
 ## [0.106.0](https://github.com/benletchford/systemless/compare/v0.105.1...v0.106.0) (2026-11-01)
 
 
