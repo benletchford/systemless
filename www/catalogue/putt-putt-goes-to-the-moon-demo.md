@@ -20,11 +20,11 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice and reached the
-      lunar landing scene with Putt-Putt. Clicking in the scene triggered its
-      animations. A matched idle control was identical until the input and then differed by
-      4,364 pixels. An exact replay matched both checkpoints, with zero exhausted frames.
-      Later scenes, puzzles, audio and browser performance remain unverified.
+      The unchanged demo archive ran natively on the 68K slice and reached the lunar
+      landing scene with Putt-Putt. Clicking in the scene triggered its animations. A
+      matched idle control was identical until the input and then differed by 4,364
+      pixels. An exact replay matched both checkpoints, with zero exhausted frames. Later
+      scenes, puzzles, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5489
 runtime:
@@ -34,10 +34,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Putt-Putt%20Moon.sit
-    expected_sha256: 34b6f6d13b4d87f57ae2913b91a3720d84701be4c8baaa9c9eee2462bf4d7381
-    expected_size: 1171117
+    type: sha256
+    sha256: 34b6f6d13b4d87f57ae2913b91a3720d84701be4c8baaa9c9eee2462bf4d7381
+    size_bytes: 1171117
   provenance:
     redistribution: permitted
     original: true
@@ -60,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/putt-putt-goes-to-the-moon-demo/gameplay.png
+    type: sha256
+    sha256: bbaed17b96262c8d2c68c877f384cbe1c30778c516769f776b3be242e77212a9
+    size_bytes: 32357
   provenance:
     redistribution: permitted
     original: true
@@ -79,7 +79,7 @@ references:
 
 ## Stranded on the Moon
 
-![Putt-Putt Goes to the Moon Demo](incoming/putt-putt-goes-to-the-moon-demo/gameplay.png)
+![Putt-Putt Goes to the Moon Demo](https://assets.systemless.org/catalogue/media/sha256/bb/bbaed17b96262c8d2c68c877f384cbe1c30778c516769f776b3be242e77212a9.png)
 
 A fireworks mishap has sent Putt-Putt to the Moon. Explore the lunar surface, meet its residents and find a way back to Cartown.
 
