@@ -963,7 +963,11 @@ impl super::TrapDispatcher {
     /// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107, 3-111--3-112.
     fn load_menu_resource(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
         let Some((refnum, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) else {
-            bus.write_word(0x0A60, (-192i16) as u16);
+            // GetMenu reads the MENU through GetResource, whose miss returns
+            // NIL with ResErr = noErr (BasiliskII/System 7.5.3). The PowerPC
+            // GetMenu path already matches. Tubular Worlds probes MENU 1..19
+            // with gaps and aborts if ResError is nonzero after any GetMenu.
+            bus.write_word(0x0A60, 0);
             return 0;
         };
 
