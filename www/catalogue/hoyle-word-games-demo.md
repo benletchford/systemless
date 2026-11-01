@@ -3,8 +3,8 @@ id: hoyle-word-games-demo
 kind: game
 title: Hoyle Word Games Demo
 summary: >-
-  Solve crosswords and other word puzzles in Sierra's Hoyle collection, with
-  clue lists, hints and a newspaper-style grid.
+  Solve crosswords and other word puzzles in Sierra's Hoyle collection, with clue
+  lists, hints and a newspaper-style grid.
 developer: Sierra On-Line
 publisher: Sierra On-Line
 year: 1999
@@ -21,12 +21,12 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: ppc
     environment: >-
-      The unchanged demo archive ran natively on PowerPC and opened a Crosswords puzzle
-      from the game hub. Typing ARCH filled 1-Across. A matched idle control was identical
-      until the input and then differed by 13,203 pixels. An exact replay matched every
-      checkpoint, with zero exhausted frames. The other word games, audio remain unverified.
-      Browser pacing in the crossword passed three of four samples at about 60 host fps and
-      60 guest ticks/s; the fourth had one 51.1 ms frame.
+      The unchanged demo archive ran natively on PowerPC and opened a Crosswords
+      puzzle from the game hub. Typing ARCH filled 1-Across. A matched idle control was
+      identical until the input and then differed by 13,203 pixels. An exact replay
+      matched every checkpoint, with zero exhausted frames. The other word games, audio
+      remain unverified. Browser pacing in the crossword passed three of four samples at
+      about 60 host fps and 60 guest ticks/s; the fourth had one 51.1 ms frame.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5497
 artifacts:
@@ -34,10 +34,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Hoyle%20Word%20Games%20Demo.sit
-    expected_sha256: 5457f1c4b3ec355305ee69a01b8428e44984520dffb12d5a05eb69f22b5a8f7d
-    expected_size: 18867363
+    type: sha256
+    sha256: 5457f1c4b3ec355305ee69a01b8428e44984520dffb12d5a05eb69f22b5a8f7d
+    size_bytes: 18867363
   provenance:
     redistribution: permitted
     original: true
@@ -60,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/hoyle-word-games-demo/gameplay.png
+    type: sha256
+    sha256: 7e9c838749256bacbf38dd9e7087c47fedbc4dcc281dd0519819fdbf59ee5d45
+    size_bytes: 173368
   provenance:
     redistribution: permitted
     original: true
@@ -69,8 +69,8 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/5497
     permission: >-
-      Fresh gameplay capture from the unchanged demo archive. The underlying game artwork
-      remains its owners' property.
+      Fresh gameplay capture from the unchanged demo archive. The underlying game
+      artwork remains its owners' property.
     notes: Native PowerPC Crosswords puzzle, cropped to the game window.
 references:
 - https://classicmacdemos.com/hoyle-word-games
@@ -79,7 +79,7 @@ references:
 
 ## Crossword time
 
-![Hoyle Word Games Demo](incoming/hoyle-word-games-demo/gameplay.png)
+![Hoyle Word Games Demo](https://assets.systemless.org/catalogue/media/sha256/7e/7e9c838749256bacbf38dd9e7087c47fedbc4dcc281dd0519819fdbf59ee5d45.png)
 
 Pick a word game from the hub and play. The crossword offers full Across and Down clue lists and hints, and lets you reveal a letter, word or whole puzzle.
 
