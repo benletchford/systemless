@@ -2743,7 +2743,7 @@ fn insert_menu_uses_live_guest_list_order_instead_of_the_presentation_cache() {
 #[test]
 fn test_get_menu_returns_nil_when_resource_missing() {
     let (mut disp, mut cpu, mut bus) = setup();
-    bus.write_word(0x0A60, 0);
+    bus.write_word(0x0A60, (-192i16) as u16);
     bus.write_word(TEST_SP, 999); // menu_id = 999 (missing)
     let result = disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus);
     assert!(result.is_some(), "GetMenu should be handled");
@@ -2757,8 +2757,8 @@ fn test_get_menu_returns_nil_when_resource_missing() {
     );
     assert_eq!(
         bus.read_word(0x0A60) as i16,
-        -192,
-        "GetMenu miss must set ResErr to resNotFound"
+        0,
+        "GetMenu miss follows GetResource: NIL with ResErr = noErr"
     );
 }
 
