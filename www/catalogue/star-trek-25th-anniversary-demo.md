@@ -1,7 +1,7 @@
 ---
 id: star-trek-25th-anniversary-demo
 kind: game
-title: 'Star Trek: 25th Anniversary Demo'
+title: "Star Trek: 25th Anniversary Demo"
 summary: >-
   Command the starship Enterprise through a mock battle against the U.S.S.
   Republic in Interplay's adventure and starship combat game.
@@ -21,11 +21,13 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice and reached the Enterprise
-      bridge with the Captain's Log. Pressing Escape advanced the log to Lieutenant Uhura's
-      report. A matched idle control was identical until the input and then differed by
-      57,008 pixels. An exact replay matched both checkpoints, with zero exhausted frames.
-      Browser pacing at 10 MHz passed three samples on the bridge at about 60 host fps and 60 guest ticks/s. Starship combat, away missions and audio remain unverified.
+      The unchanged demo archive ran natively on the 68K slice and reached the
+      Enterprise bridge with the Captain's Log. Pressing Escape advanced the log to
+      Lieutenant Uhura's report. A matched idle control was identical until the input and then
+      differed by 57,008 pixels. An exact replay matched both checkpoints, with zero
+      exhausted frames. Browser pacing at 10 MHz passed three samples on the bridge at
+      about 60 host fps and 60 guest ticks/s. Starship combat, away missions and audio
+      remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5491
 runtime:
@@ -36,10 +38,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Star%20Trek%20demo.sit
-    expected_sha256: da00d1cd3fa4db2ce5cbd5f8ba57957964f92e709f7081b2646b4d39b3b3bb06
-    expected_size: 1056219
+    type: sha256
+    sha256: da00d1cd3fa4db2ce5cbd5f8ba57957964f92e709f7081b2646b4d39b3b3bb06
+    size_bytes: 1056219
   provenance:
     redistribution: permitted
     original: true
@@ -55,14 +56,14 @@ artifacts:
       appeared on period Macintosh magazine cover discs. The bundled documents contain no
       explicit redistribution grant or restriction. Preserve the complete unchanged
       archive and remove it if a rights holder objects.
-    notes: >-
-      68K demo of the Macintosh port of the Star Trek adventure.
+    notes: 68K demo of the Macintosh port of the Star Trek adventure.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/star-trek-25th-anniversary-demo/gameplay.png
+    type: sha256
+    sha256: 7c26d388f56280039aa1a55eccd7c0fce63540c51fe7776cbda17117828de151
+    size_bytes: 23682
   provenance:
     redistribution: permitted
     original: true
@@ -80,7 +81,7 @@ references:
 
 ## Mock battle
 
-![Star Trek: 25th Anniversary Demo](incoming/star-trek-25th-anniversary-demo/gameplay.png)
+![Star Trek: 25th Anniversary Demo](https://assets.systemless.org/catalogue/media/sha256/7c/7c26d388f56280039aa1a55eccd7c0fce63540c51fe7776cbda17117828de151.png)
 
 Captain Kirk takes the Enterprise into a training exercise against the U.S.S. Republic. Weapons are set to minimal strength while the ship's computers simulate the damage.
 
