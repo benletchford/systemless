@@ -2,6 +2,37 @@
 
 use super::*;
 
+/// Read one control-part color from a guest CtlCTab handle. ColorSpec entries
+/// are keyed by part ID, not by their position in the table. Toolbox
+/// Essentials (1992), pp. 5-71--5-72.
+pub(super) fn ppc_control_table_color(
+    memory: &mut PpcSectionMem,
+    table_handle: u32,
+    part: i16,
+) -> Option<[u16; 3]> {
+    if table_handle == 0 {
+        return None;
+    }
+    let table = memory.read_u32_be(table_handle).filter(|ptr| *ptr != 0)?;
+    let last_index = memory.read_u16_be(table.checked_add(6)?)? as i16;
+    if last_index < 0 {
+        return None;
+    }
+    for index in 0..=last_index as u32 {
+        let entry = table.checked_add(8)?.checked_add(index.checked_mul(8)?)?;
+        let identifier = memory.read_u16_be(entry)? as i16;
+        let color = [
+            memory.read_u16_be(entry.checked_add(2)?)?,
+            memory.read_u16_be(entry.checked_add(4)?)?,
+            memory.read_u16_be(entry.checked_add(6)?)?,
+        ];
+        if identifier == part {
+            return Some(color);
+        }
+    }
+    None
+}
+
 pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -388,6 +419,7 @@ pub enum PpcLegacyControlOperation {
     GetControlTitle,
     GetControlValue,
     GetControlVariant,
+    GetAuxiliaryControlRecord,
     GetIndexedSubControl,
     GetKeyboardFocus,
     GetNewControl,
@@ -411,6 +443,7 @@ pub enum PpcLegacyControlOperation {
     SendControlMessage,
     SetControlAction,
     SetControlBounds,
+    SetControlColor,
     SetControlColorProc,
     SetControlCommandID,
     SetControlData,
@@ -552,6 +585,35 @@ pub(super) fn ppc_dispatch_legacy_control(
             } else {
                 PPC_NO_ERR
             };
+            if handle != 0 {
+                if let Some(index) = ppc_vfs_resource_index(
+                    vfs_resources,
+                    current_resource_refnum,
+                    u32::from_be_bytes(*b"cctb"),
+                    resource_id,
+                    false,
+                ) {
+                    let table = ppc_materialize_vfs_resource_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        vfs_resources,
+                        index,
+                        true,
+                        last_resource_error,
+                    );
+                    if table != 0 {
+                        if let Some(aux) = ppc_find_control_aux(memory, handle).flatten() {
+                            if let Some(record) = ppc_control_ptr(memory, aux) {
+                                let _ = memory.write_u32_be(record + 8, table);
+                            }
+                        }
+                    }
+                }
+            }
             ppc_initialize_popup_control(
                 process_memory_manager,
                 memory,
@@ -927,6 +989,94 @@ pub(super) fn ppc_dispatch_legacy_control(
         PpcLegacyControlOperation::SetControlAction => {
             if let Some(control) = ppc_control_ptr(memory, cpu.gpr[3]) {
                 let _ = memory.write_u32_be(control + PPC_CONTROL_ACTION_OFFSET, cpu.gpr[4]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcLegacyControlOperation::GetAuxiliaryControlRecord => {
+            let found = (cpu.gpr[3] != 0)
+                .then(|| ppc_find_control_aux(memory, cpu.gpr[3]).flatten())
+                .flatten();
+            let aux = found
+                .or_else(|| ppc_standard_control_aux(memory).map(|(handle, _)| handle))
+                .unwrap_or(PPC_DEFAULT_AUX_CONTROL_HANDLE);
+            if cpu.gpr[4] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[4], aux);
+            }
+            Some(PpcImportAction::Return(u32::from(
+                cpu.gpr[3] == 0 || found.is_some(),
+            )))
+        }
+        PpcLegacyControlOperation::SetControlColor => {
+            let control = cpu.gpr[3];
+            let color_table = if cpu.gpr[4] == 0 {
+                if control == 0 {
+                    PPC_DEFAULT_CONTROL_CTABLE_HANDLE
+                } else {
+                    ppc_standard_control_aux(memory)
+                        .and_then(|(_, record)| memory.read_u32_be(record + 8))
+                        .unwrap_or(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+                }
+            } else {
+                cpu.gpr[4]
+            };
+            if control == 0 {
+                ppc_set_standard_control_color(memory, color_table);
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            if controls.iter().any(|record| record.handle == control)
+                && ppc_control_ptr(memory, control).is_some()
+            {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let changed = match ppc_find_control_aux(memory, control) {
+                    Some(Some(aux)) => ppc_control_ptr(memory, aux)
+                        .is_some_and(|ptr| memory.write_u32_be(ptr + 8, color_table).is_some()),
+                    Some(None) => {
+                        let head = memory.read_u32_be(PPC_AUX_CTL_HEAD).unwrap_or(0);
+                        let aux = allocator.allocate_handle(
+                            memory,
+                            heap_cursor,
+                            last_mem_error,
+                            handles,
+                            22,
+                            true,
+                        );
+                        let published = ppc_control_ptr(memory, aux).is_some_and(|ptr| {
+                            memory.write_u32_be(ptr, head).is_some()
+                                && memory.write_u32_be(ptr + 4, control).is_some()
+                                && memory.write_u32_be(ptr + 8, color_table).is_some()
+                                && memory.write_u32_be(PPC_AUX_CTL_HEAD, aux).is_some()
+                        });
+                        if aux != 0 && !published {
+                            let _ = allocator.dispose_handle(
+                                memory,
+                                heap_cursor,
+                                heap_limit,
+                                last_mem_error,
+                                handles,
+                                aux,
+                            );
+                        }
+                        published
+                    }
+                    None => false,
+                };
+                if changed
+                    && ppc_control_ptr(memory, control).is_some_and(|ptr| {
+                        memory.read_u8(ptr + PPC_CONTROL_VISIBLE_OFFSET) == Some(255)
+                    })
+                {
+                    let _ = ppc_draw_control(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        control,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -1799,6 +1949,15 @@ pub(super) fn ppc_new_control_record_values(
             true,
         );
         let Some(data) = ppc_control_ptr(memory, data_handle) else {
+            ppc_discard_control_handle(
+                allocator.as_deref_mut(),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                handle,
+            );
             *last_mem_error = PPC_MEM_FULL_ERR;
             return 0;
         };
@@ -1870,6 +2029,17 @@ pub(super) fn ppc_new_control_record_values(
             .write_u32_be(owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET), handle)
             .is_some();
     if !wrote {
+        for allocated in [popup_data, handle] {
+            ppc_discard_control_handle(
+                allocator.as_deref_mut(),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                allocated,
+            );
+        }
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
@@ -1897,6 +2067,39 @@ pub(super) fn ppc_new_control_record_values(
         native_definition_pending_init: true,
         native_definition_draws: Default::default(),
     });
+    let default_color = ppc_standard_control_aux(memory)
+        .and_then(|(_, record)| memory.read_u32_be(record + 8))
+        .unwrap_or(PPC_DEFAULT_CONTROL_CTABLE_HANDLE);
+    let aux = ppc_create_control_aux(
+        allocator.as_deref_mut(),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        handle,
+        default_color,
+    );
+    if aux == 0 {
+        let _ = memory.write_u32_be(
+            owner.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET),
+            old_head,
+        );
+        controls.retain(|record| record.handle != handle);
+        for allocated in [popup_data, handle] {
+            ppc_discard_control_handle(
+                allocator.as_deref_mut(),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                allocated,
+            );
+        }
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
     *last_mem_error = PPC_NO_ERR;
     handle
 }
@@ -2023,10 +2226,187 @@ pub(super) fn ppc_window_control_handles(memory: &mut PpcSectionMem, owner: u32)
     out
 }
 
+// AuxCtlHead points to one process-wide list of relocatable AuxCtlRec handles.
+// Universal Interfaces 3.4.1 Controls.h; Toolbox Essentials, pp. 5-69--5-70.
+const PPC_AUX_CTL_HEAD: u32 = 0x0cd4;
+
+fn ppc_standard_control_aux(memory: &mut PpcSectionMem) -> Option<(u32, u32)> {
+    let mut handle = memory.read_u32_be(PPC_AUX_CTL_HEAD)?;
+    let mut visited = Vec::new();
+    while handle != 0 {
+        if visited.len() >= 4096 || visited.contains(&handle) {
+            return None;
+        }
+        visited.push(handle);
+        let record = ppc_control_ptr(memory, handle)?;
+        let next = memory.read_u32_be(record)?;
+        let owner = memory.read_u32_be(record.checked_add(4)?)?;
+        if next == 0 && owner == 0 {
+            return Some((handle, record));
+        }
+        handle = next;
+    }
+    None
+}
+
+fn ppc_set_standard_control_color(memory: &mut PpcSectionMem, color_table: u32) {
+    let Some((_, standard_record)) = ppc_standard_control_aux(memory) else {
+        return;
+    };
+    let Some(old_table) = memory.read_u32_be(standard_record + 8) else {
+        return;
+    };
+    let Some(mut handle) = memory.read_u32_be(PPC_AUX_CTL_HEAD) else {
+        return;
+    };
+    let mut records = Vec::new();
+    while handle != 0 {
+        let Some(record) = ppc_control_ptr(memory, handle) else {
+            return;
+        };
+        let Some(table) = memory.read_u32_be(record + 8) else {
+            return;
+        };
+        if table == old_table {
+            records.push(record);
+        }
+        let Some(next) = memory.read_u32_be(record) else {
+            return;
+        };
+        handle = next;
+    }
+    if records
+        .iter()
+        .any(|record| !ppc_memory_can_write_bytes(memory, record + 8, 4))
+    {
+        return;
+    }
+    for record in records {
+        let _ = memory.write_u32_be(record + 8, color_table);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_discard_control_handle(
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    _heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    handle: u32,
+) {
+    if handle == 0 {
+        return;
+    }
+    if let Some(allocator) = allocator {
+        let disposed = allocator
+            .memory_manager
+            .dispose_process_handle_from_native_import(memory, handle);
+        ppc_apply_process_native_allocator(
+            allocator.memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        if disposed {
+            handles.retain(|record| record.handle != handle);
+        }
+    } else if let Some(index) = handles.iter().position(|record| record.handle == handle) {
+        handles.remove(index);
+        let _ = memory.write_u32_be(handle, 0);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_create_control_aux(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    control: u32,
+    color_table: u32,
+) -> u32 {
+    let Some(head) = memory.read_u32_be(PPC_AUX_CTL_HEAD) else {
+        return 0;
+    };
+    let aux = ppc_allocator_view_allocate_handle(
+        allocator.as_deref_mut(),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        22,
+        true,
+    );
+    let published = ppc_control_ptr(memory, aux).is_some_and(|ptr| {
+        memory.write_u32_be(ptr, head).is_some()
+            && memory.write_u32_be(ptr + 4, control).is_some()
+            && memory.write_u32_be(ptr + 8, color_table).is_some()
+            && memory.write_u32_be(PPC_AUX_CTL_HEAD, aux).is_some()
+    });
+    if published {
+        aux
+    } else {
+        ppc_discard_control_handle(
+            allocator,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            aux,
+        );
+        0
+    }
+}
+
+pub(super) fn ppc_find_control_aux(
+    memory: &mut PpcSectionMem,
+    control: u32,
+) -> Option<Option<u32>> {
+    let mut handle = memory.read_u32_be(PPC_AUX_CTL_HEAD)?;
+    let mut visited = Vec::new();
+    while handle != 0 {
+        if visited.len() >= 4096 || visited.contains(&handle) {
+            return None;
+        }
+        visited.push(handle);
+        let record = ppc_control_ptr(memory, handle)?;
+        if memory.read_u32_be(record.checked_add(4)?)? == control {
+            return Some(Some(handle));
+        }
+        handle = memory.read_u32_be(record)?;
+    }
+    Some(None)
+}
+
+pub(super) fn ppc_unlink_control_aux(memory: &mut PpcSectionMem, control: u32) -> Option<u32> {
+    let mut link = PPC_AUX_CTL_HEAD;
+    let mut visited = Vec::new();
+    while let Some(handle) = memory.read_u32_be(link).filter(|handle| *handle != 0) {
+        if visited.len() >= 4096 || visited.contains(&handle) {
+            return None;
+        }
+        visited.push(handle);
+        let record = memory.read_u32_be(handle).filter(|record| *record != 0)?;
+        let next = memory.read_u32_be(record)?;
+        if memory.read_u32_be(record.checked_add(4)?)? == control {
+            memory.write_u32_be(link, next)?;
+            return Some(handle);
+        }
+        link = record;
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_dispose_control(
-    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
-    legacy_free_handle_blocks: Option<&mut Vec<PpcHandleRecord>>,
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    mut legacy_free_handle_blocks: Option<&mut Vec<PpcHandleRecord>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -2062,8 +2442,31 @@ pub(super) fn ppc_dispose_control(
             }
         }
     }
+    if let Some(aux_handle) = ppc_unlink_control_aux(memory, handle) {
+        if let Some(allocator) = allocator.as_deref_mut() {
+            ppc_discard_control_handle(
+                Some(allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                aux_handle,
+            );
+        } else if let Some(free_handle_blocks) = legacy_free_handle_blocks.as_deref_mut() {
+            if let Some(index) = handles
+                .iter()
+                .position(|record| record.handle == aux_handle)
+            {
+                let record = handles.remove(index);
+                let _ = memory.write_u32_be(aux_handle, 0);
+                free_handle_blocks.push(record);
+            }
+        }
+    }
     if let Some(allocator) = allocator {
-        let _ = allocator.dispose_handle(
+        ppc_discard_control_handle(
+            Some(allocator),
             memory,
             heap_cursor,
             heap_limit,
@@ -3272,6 +3675,45 @@ pub(super) fn ppc_draw_control_inner(
             ..palette
         }
     };
+    // Classic standard controls use CtlCTab part colors. Appearance-themed
+    // controls continue to use their theme, per the Control Manager reference.
+    let color_table =
+        if ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 && matches!(proc_id, 0..=2) {
+            ppc_find_control_aux(memory, handle)
+                .flatten()
+                .and_then(|aux| ppc_control_ptr(memory, aux))
+                .and_then(|aux| memory.read_u32_be(aux + 8))
+                .filter(|table| *table != PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+    let mut part_color = |part, default| {
+        ppc_control_table_color(memory, color_table, part)
+            .map(|[red, green, blue]| PpcRgbColor { red, green, blue })
+            .unwrap_or(default)
+    };
+    let frame_color = part_color(0, ppc_theme_rgb(palette.frame_dark));
+    let mut body_color = part_color(1, ppc_theme_rgb(palette.window_background));
+    let mut text_color = part_color(2, ppc_theme_rgb(palette.frame_dark));
+    if !active && color_table != 0 {
+        let blend =
+            |ink: u16, background: u16| ((u32::from(ink) + u32::from(background)) / 2) as u16;
+        text_color = PpcRgbColor {
+            red: blend(text_color.red, body_color.red),
+            green: blend(text_color.green, body_color.green),
+            blue: blend(text_color.blue, body_color.blue),
+        };
+    }
+    if active
+        && proc_id == 0
+        && color_table != 0
+        && memory
+            .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+            .is_some_and(|h| h != 0 && h != 255)
+    {
+        std::mem::swap(&mut body_color, &mut text_color);
+    }
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let is_default = ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7
@@ -3309,13 +3751,13 @@ pub(super) fn ppc_draw_control_inner(
                         let foreground = ppc_quickdraw_surface_fore_pixel(
                             memory,
                             surface,
-                            ppc_theme_rgb(palette.frame_dark),
+                            frame_color,
                             None,
                         )? as u32;
                         let background = ppc_quickdraw_surface_fore_pixel(
                             memory,
                             surface,
-                            ppc_theme_rgb(palette.window_background),
+                            body_color,
                             None,
                         )? as u32;
                         let clip = memory
@@ -3361,7 +3803,7 @@ pub(super) fn ppc_draw_control_inner(
                     memory,
                     gworlds,
                     owner,
-                    ppc_theme_rgb(palette.window_background),
+                    body_color,
                     None,
                 );
                 let framed = ppc_frame_round_rect(
@@ -3369,7 +3811,7 @@ pub(super) fn ppc_draw_control_inner(
                     memory,
                     gworlds,
                     owner,
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                 );
                 slot.finish_rounded_control(detail, |address| memory.read_u8(address).unwrap_or(0));
@@ -3388,7 +3830,7 @@ pub(super) fn ppc_draw_control_inner(
                     gworlds,
                     owner,
                     layout.indicator,
-                    ppc_theme_rgb(palette.window_background),
+                    body_color,
                     None,
                 );
                 wrote |= ppc_line_to(
@@ -3397,7 +3839,7 @@ pub(super) fn ppc_draw_control_inner(
                     owner,
                     (box_left, box_top),
                     (box_right.saturating_sub(1), box_top),
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                 );
                 wrote |= ppc_line_to(
@@ -3406,7 +3848,7 @@ pub(super) fn ppc_draw_control_inner(
                     owner,
                     (box_right.saturating_sub(1), box_top),
                     (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                 );
                 wrote |= ppc_line_to(
@@ -3415,7 +3857,7 @@ pub(super) fn ppc_draw_control_inner(
                     owner,
                     (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
                     (box_left, box_bottom.saturating_sub(1)),
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                 );
                 wrote |= ppc_line_to(
@@ -3424,7 +3866,7 @@ pub(super) fn ppc_draw_control_inner(
                     owner,
                     (box_left, box_bottom.saturating_sub(1)),
                     (box_left, box_top),
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                 );
                 if memory
@@ -3441,7 +3883,7 @@ pub(super) fn ppc_draw_control_inner(
                                 owner,
                                 (box_left.saturating_add(x), box_top.saturating_add(y)),
                                 (box_left.saturating_add(x), box_top.saturating_add(y)),
-                                ppc_theme_rgb(palette.frame_dark),
+                                frame_color,
                                 None,
                             );
                         },
@@ -3461,7 +3903,7 @@ pub(super) fn ppc_draw_control_inner(
                     gworlds,
                     owner,
                     indicator,
-                    ppc_theme_rgb(palette.window_background),
+                    body_color,
                     None,
                     false,
                 );
@@ -3470,7 +3912,7 @@ pub(super) fn ppc_draw_control_inner(
                     gworlds,
                     owner,
                     indicator,
-                    ppc_theme_rgb(palette.frame_dark),
+                    frame_color,
                     None,
                     true,
                 );
@@ -3490,7 +3932,7 @@ pub(super) fn ppc_draw_control_inner(
                             dot_bottom.saturating_sub(3),
                             dot_right.saturating_sub(3),
                         ),
-                        ppc_theme_rgb(palette.frame_dark),
+                        frame_color,
                         None,
                         false,
                     );
@@ -3785,7 +4227,7 @@ pub(super) fn ppc_draw_control_inner(
         let title_color = title_style
             .foreground
             .filter(|_| active)
-            .unwrap_or_else(|| ppc_theme_rgb(palette.frame_dark));
+            .unwrap_or(text_color);
         // Control titles are confined to the control rectangle. This matters
         // for compact custom CDEFs whose title is metadata rather than text
         // intended to be painted beside the control.

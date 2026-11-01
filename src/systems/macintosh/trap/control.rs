@@ -1180,23 +1180,36 @@ impl super::TrapDispatcher {
             return 0;
         }
 
-        let default_ctab = self.default_control_color_table_handle(bus);
+        let default_ctab = self
+            .standard_control_color_table_from_list(bus)
+            .unwrap_or_else(|| self.default_control_color_table_handle(bus));
         if let Some(state) = self.control_aux_records.get(&ctrl_handle).copied() {
-            let aux_ptr = bus.read_long(state.handle);
-            if aux_ptr != 0 {
-                bus.write_long(aux_ptr + Self::AUX_CTL_OWNER_OFFSET, ctrl_handle);
-                if bus.read_long(aux_ptr + Self::AUX_CTL_CTABLE_OFFSET) == 0 {
-                    bus.write_long(aux_ptr + Self::AUX_CTL_CTABLE_OFFSET, default_ctab);
+            if self.control_aux_handle_from_list(bus, ctrl_handle) != state.handle {
+                self.control_aux_records.remove(&ctrl_handle);
+            } else {
+                let aux_ptr = bus.read_long(state.handle);
+                if aux_ptr != 0 {
+                    bus.write_long(aux_ptr + Self::AUX_CTL_OWNER_OFFSET, ctrl_handle);
+                    if bus.read_long(aux_ptr + Self::AUX_CTL_CTABLE_OFFSET) == 0 {
+                        bus.write_long(aux_ptr + Self::AUX_CTL_CTABLE_OFFSET, default_ctab);
+                    }
+                    bus.write_word(aux_ptr + Self::AUX_CTL_FLAGS_OFFSET, 0);
+                    bus.write_long(
+                        aux_ptr + Self::AUX_CTL_RESERVED_OFFSET,
+                        self.control_aux_reserved_value(bus, ctrl_handle),
+                    );
                 }
-                bus.write_word(aux_ptr + Self::AUX_CTL_FLAGS_OFFSET, 0);
-                bus.write_long(
-                    aux_ptr + Self::AUX_CTL_RESERVED_OFFSET,
-                    self.control_aux_reserved_value(bus, ctrl_handle),
-                );
+                return state.handle;
             }
-            return state.handle;
         }
 
+        let existing = self.control_aux_handle_from_list(bus, ctrl_handle);
+        if existing != 0 {
+            return existing;
+        }
+
+        // The guest list can also be updated by the PowerPC Control Manager.
+        self.control_aux_head = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
         let aux_ptr = bus.alloc(Self::AUX_CTL_RECORD_SIZE);
         let aux_handle = bus.alloc(4);
         bus.write_long(aux_handle, aux_ptr);
@@ -1217,10 +1230,15 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn release_control_aux_record(&mut self, bus: &mut MacMemoryBus, ctrl_handle: u32) {
-        let Some(state) = self.control_aux_records.remove(&ctrl_handle) else {
+        let handle = self.control_aux_handle_from_list(bus, ctrl_handle);
+        let state = self.control_aux_records.remove(&ctrl_handle);
+        let manager = self.process_memory_manager();
+        let native = manager.borrow().native_allocation(handle).is_some();
+        if handle == 0 || (!native && state.is_none_or(|state| state.handle != handle)) {
             return;
-        };
+        }
 
+        self.control_aux_head = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
         let mut prev_handle = 0u32;
         let mut cur_handle = self.control_aux_head;
         while cur_handle != 0 {
@@ -1229,7 +1247,7 @@ impl super::TrapDispatcher {
                 break;
             }
             let next_handle = bus.read_long(cur_ptr + Self::AUX_CTL_NEXT_OFFSET);
-            if cur_handle == state.handle {
+            if cur_handle == handle {
                 if prev_handle == 0 {
                     self.control_aux_head = next_handle;
                 } else {
@@ -1245,15 +1263,232 @@ impl super::TrapDispatcher {
         }
         self.sync_control_aux_head_lowmem(bus);
 
-        let aux_ptr = bus.read_long(state.handle);
-        if aux_ptr != 0 {
-            bus.free(aux_ptr);
+        if native {
+            let mut manager = manager.borrow_mut();
+            manager.attach_classic_memory_bus(bus);
+            let _ = manager.dispose_process_handle(bus, handle, true);
+        } else {
+            let aux_ptr = bus.read_long(handle);
+            if aux_ptr != 0 {
+                bus.free(aux_ptr);
+            }
+            bus.free(handle);
         }
-        bus.free(state.handle);
     }
 
     pub(crate) fn control_aux_state(&self, ctrl_handle: u32) -> Option<ControlAuxRecordState> {
         self.control_aux_records.get(&ctrl_handle).copied()
+    }
+
+    pub(crate) fn control_aux_handle_from_list(&self, bus: &MacMemoryBus, ctrl_handle: u32) -> u32 {
+        if ctrl_handle == 0 {
+            return 0;
+        }
+        let mut handle = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
+        let mut visited = Vec::new();
+        while handle != 0 && visited.len() < 4096 && !visited.contains(&handle) {
+            if handle.checked_add(3).is_none() || !bus.is_guest_address_mapped(handle, 4) {
+                return 0;
+            }
+            visited.push(handle);
+            let record = bus.read_long(handle);
+            if record == 0
+                || record.checked_add(11).is_none()
+                || !bus.is_guest_address_mapped(record, 12)
+            {
+                break;
+            }
+            if bus.read_long(record.wrapping_add(Self::AUX_CTL_OWNER_OFFSET)) == ctrl_handle {
+                return handle;
+            }
+            handle = bus.read_long(record.wrapping_add(Self::AUX_CTL_NEXT_OFFSET));
+        }
+        0
+    }
+
+    pub(crate) fn control_part_color(
+        &self,
+        bus: &MacMemoryBus,
+        ctrl_ptr: u32,
+        part: i16,
+    ) -> Option<(u16, u16, u16)> {
+        let mut handle = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
+        let mut visited = Vec::new();
+        while handle != 0 && visited.len() < 4096 && !visited.contains(&handle) {
+            if handle.checked_add(3).is_none() || !bus.is_guest_address_mapped(handle, 4) {
+                return None;
+            }
+            visited.push(handle);
+            let record = bus.read_long(handle);
+            if record == 0
+                || record.checked_add(11).is_none()
+                || !bus.is_guest_address_mapped(record, 12)
+            {
+                return None;
+            }
+            let owner = bus.read_long(record + Self::AUX_CTL_OWNER_OFFSET);
+            if owner != 0
+                && owner.checked_add(3).is_some()
+                && bus.is_guest_address_mapped(owner, 4)
+                && bus.read_long(owner) == ctrl_ptr
+            {
+                let table_handle = bus.read_long(record + Self::AUX_CTL_CTABLE_OFFSET);
+                if table_handle == 0
+                    || table_handle == self.current_gdevice_ctab_handle(bus)
+                    || table_handle.checked_add(3).is_none()
+                    || !bus.is_guest_address_mapped(table_handle, 4)
+                {
+                    return None;
+                }
+                let table = bus.read_long(table_handle);
+                if table == 0
+                    || table.checked_add(7).is_none()
+                    || !bus.is_guest_address_mapped(table, 8)
+                {
+                    return None;
+                }
+                let last_index = bus.read_word(table + 6) as i16;
+                for index in 0..=last_index {
+                    let entry = table.checked_add(8 + u32::from(index as u16) * 8)?;
+                    let entry_end = 16 + u32::from(index as u16) * 8;
+                    if bus
+                        .get_alloc_size(table)
+                        .is_some_and(|size| entry_end > size)
+                        || entry.checked_add(7).is_none()
+                        || !bus.is_guest_address_mapped(entry, 8)
+                    {
+                        return None;
+                    }
+                    if bus.read_word(entry) as i16 == part {
+                        return Some((
+                            bus.read_word(entry + 2),
+                            bus.read_word(entry + 4),
+                            bus.read_word(entry + 6),
+                        ));
+                    }
+                }
+                return None;
+            }
+            handle = bus.read_long(record + Self::AUX_CTL_NEXT_OFFSET);
+        }
+        None
+    }
+
+    fn set_standard_control_color(&mut self, bus: &mut MacMemoryBus, table: u32) {
+        let mut handle = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
+        let mut visited = Vec::new();
+        let mut records = Vec::new();
+        let mut sentinel = None;
+        while handle != 0 {
+            if visited.len() >= 4096
+                || visited.contains(&handle)
+                || handle.checked_add(3).is_none()
+                || !bus.is_guest_address_mapped(handle, 4)
+            {
+                return;
+            }
+            visited.push(handle);
+            let record = bus.read_long(handle);
+            if record == 0
+                || record.checked_add(11).is_none()
+                || !bus.is_guest_address_mapped(record, 12)
+            {
+                return;
+            }
+            let next = bus.read_long(record);
+            if next == 0 && bus.read_long(record + Self::AUX_CTL_OWNER_OFFSET) == 0 {
+                sentinel = Some(record);
+            }
+            records.push(record);
+            handle = next;
+        }
+        let old_table = sentinel
+            .map(|record| bus.read_long(record + Self::AUX_CTL_CTABLE_OFFSET))
+            .unwrap_or_else(|| self.default_control_color_table_handle(bus));
+        let default_ppc = crate::loader::ppc::PPC_DEFAULT_CONTROL_CTABLE_HANDLE;
+        let new_table = if table != 0 {
+            table
+        } else if bus.is_guest_address_mapped(default_ppc, 4) {
+            default_ppc
+        } else {
+            self.default_control_color_table_handle(bus)
+        };
+        let updates: Vec<_> = records
+            .iter()
+            .copied()
+            .filter(|record| bus.read_long(record + Self::AUX_CTL_CTABLE_OFFSET) == old_table)
+            .collect();
+        if updates
+            .iter()
+            .any(|record| !bus.is_guest_address_writable(record + Self::AUX_CTL_CTABLE_OFFSET, 4))
+        {
+            return;
+        }
+        if sentinel.is_none() {
+            if records
+                .last()
+                .is_some_and(|record| !bus.is_guest_address_writable(*record, 4))
+            {
+                return;
+            }
+            if records.is_empty() && !bus.is_guest_address_writable(Self::LOWMEM_AUX_CTL_HEAD, 4) {
+                return;
+            }
+            let record = bus.alloc(Self::AUX_CTL_RECORD_SIZE);
+            if record == 0 {
+                return;
+            }
+            let new_handle = bus.alloc(4);
+            if new_handle == 0 {
+                bus.free(record);
+                return;
+            }
+            if !bus.is_guest_address_writable(record, Self::AUX_CTL_RECORD_SIZE as usize)
+                || !bus.is_guest_address_writable(new_handle, 4)
+            {
+                bus.free(new_handle);
+                bus.free(record);
+                return;
+            }
+            bus.write_bytes(record, &[0; Self::AUX_CTL_RECORD_SIZE as usize]);
+            bus.write_long(new_handle, record);
+            bus.write_long(record, 0);
+            bus.write_long(record + Self::AUX_CTL_OWNER_OFFSET, 0);
+            bus.write_long(record + Self::AUX_CTL_CTABLE_OFFSET, new_table);
+            if let Some(last) = records.last() {
+                bus.write_long(*last, new_handle);
+            } else {
+                bus.write_long(Self::LOWMEM_AUX_CTL_HEAD, new_handle);
+            }
+        }
+        for record in updates {
+            bus.write_long(record + Self::AUX_CTL_CTABLE_OFFSET, new_table);
+        }
+    }
+
+    fn standard_control_color_table_from_list(&self, bus: &MacMemoryBus) -> Option<u32> {
+        let mut handle = bus.read_long(Self::LOWMEM_AUX_CTL_HEAD);
+        let mut visited = Vec::new();
+        while handle != 0 && visited.len() < 4096 && !visited.contains(&handle) {
+            if handle.checked_add(3).is_none() || !bus.is_guest_address_mapped(handle, 4) {
+                return None;
+            }
+            visited.push(handle);
+            let record = bus.read_long(handle);
+            if record == 0
+                || record.checked_add(11).is_none()
+                || !bus.is_guest_address_mapped(record, 12)
+            {
+                return None;
+            }
+            let next = bus.read_long(record.wrapping_add(Self::AUX_CTL_NEXT_OFFSET));
+            if next == 0 && bus.read_long(record.wrapping_add(Self::AUX_CTL_OWNER_OFFSET)) == 0 {
+                let table = bus.read_long(record.wrapping_add(Self::AUX_CTL_CTABLE_OFFSET));
+                return (table != 0).then_some(table);
+            }
+            handle = next;
+        }
+        None
     }
 
     pub(crate) fn initialize_control_record(
@@ -1388,7 +1623,15 @@ impl super::TrapDispatcher {
             }
             self.release_control_aux_record(bus, ctrl_handle);
             self.control_manager.remove_pointer(ctrl_ptr);
-            bus.free(ctrl_ptr);
+            let manager = self.process_memory_manager();
+            if manager.borrow().native_allocation(ctrl_handle).is_some() {
+                let mut manager = manager.borrow_mut();
+                manager.attach_classic_memory_bus(bus);
+                let _ = manager.dispose_process_handle(bus, ctrl_handle, true);
+                return;
+            } else {
+                bus.free(ctrl_ptr);
+            }
         }
         bus.free(ctrl_handle);
     }
@@ -1522,6 +1765,11 @@ impl super::TrapDispatcher {
                 // pushButProc — push button
                 self.draw_push_button_control(
                     cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                    if self.ui_theme_id == crate::ui_theme::UiThemeId::ClassicSystem7 {
+                        [0, 1, 2].map(|part| self.control_part_color(bus, ctrl_ptr, part))
+                    } else {
+                        [None; 3]
+                    },
                 );
             }
             1 => {
@@ -1551,14 +1799,16 @@ impl super::TrapDispatcher {
                     checked,
                     false,
                 ) {
-                    // Erase checkbox area
-                    self.draw_rect(cpu, bus, &box_r, ShapeOp::Erase);
-                    // Frame checkbox border
-                    self.draw_rect(cpu, bus, &box_r, ShapeOp::Frame);
+                    let colors = if self.ui_theme_id == crate::ui_theme::UiThemeId::ClassicSystem7 {
+                        [0, 1].map(|part| self.control_part_color(bus, ctrl_ptr, part))
+                    } else {
+                        [None; 2]
+                    };
+                    self.draw_classic_control_indicator(cpu, bus, &box_r, false, colors);
 
                     if checked {
                         // Draw X inside the checkbox
-                        self.draw_checkbox_x(bus, scr_top + box_top, scr_left + box_left, box_size);
+                        self.draw_checkbox_x(cpu, bus, &box_r, box_size, colors[0]);
                     }
                 }
 
@@ -1575,7 +1825,26 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                if self.control_text_uses_port_surface(bus) {
+                    let (top, left) = self.port_bounds_top_left(bus, *self.current_port);
+                    let color = self
+                        .control_label_color(bus, ctrl_ptr, hilite == 255)
+                        .or_else(|| (hilite == 255).then_some((0x7fff, 0x7fff, 0x7fff)));
+                    self.draw_direct_control_title(
+                        cpu,
+                        bus,
+                        (
+                            abs_top + top,
+                            text_x + left,
+                            abs_bottom + top,
+                            abs_right + left,
+                        ),
+                        &title,
+                        false,
+                        color,
+                    );
+                } else {
+                self.draw_control_label_text_with_color(
                     bus,
                     abs_top,
                     scr_left + box_left + box_size + 1,
@@ -1587,7 +1856,9 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    self.control_label_color(bus, ctrl_ptr, hilite == 255),
                 );
+                }
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the checkbox box area
@@ -1621,10 +1892,12 @@ impl super::TrapDispatcher {
                     selected,
                     false,
                 ) {
-                    // Erase circle area
-                    self.draw_oval(cpu, bus, &circle_r, ShapeOp::Erase);
-                    // Frame circle
-                    self.draw_oval(cpu, bus, &circle_r, ShapeOp::Frame);
+                    let colors = if self.ui_theme_id == crate::ui_theme::UiThemeId::ClassicSystem7 {
+                        [0, 1].map(|part| self.control_part_color(bus, ctrl_ptr, part))
+                    } else {
+                        [None; 2]
+                    };
+                    self.draw_classic_control_indicator(cpu, bus, &circle_r, true, colors);
 
                     if selected {
                         // Fill inner circle (smaller by 3px on each side)
@@ -1634,7 +1907,17 @@ impl super::TrapDispatcher {
                             bottom: circle_top + circle_size - 3,
                             right: circle_left + circle_size - 3,
                         };
-                        self.draw_oval(cpu, bus, &inner_r, ShapeOp::Paint);
+                        if let Some(color) = colors[0] {
+                            self.draw_classic_control_indicator(
+                                cpu,
+                                bus,
+                                &inner_r,
+                                true,
+                                [Some(color); 2],
+                            );
+                        } else {
+                            self.draw_oval(cpu, bus, &inner_r, ShapeOp::Paint);
+                        }
                     }
                 }
 
@@ -1651,7 +1934,26 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                if self.control_text_uses_port_surface(bus) {
+                    let (top, left) = self.port_bounds_top_left(bus, *self.current_port);
+                    let color = self
+                        .control_label_color(bus, ctrl_ptr, hilite == 255)
+                        .or_else(|| (hilite == 255).then_some((0x7fff, 0x7fff, 0x7fff)));
+                    self.draw_direct_control_title(
+                        cpu,
+                        bus,
+                        (
+                            abs_top + top,
+                            text_x + left,
+                            abs_bottom + top,
+                            abs_right + left,
+                        ),
+                        &title,
+                        false,
+                        color,
+                    );
+                } else {
+                self.draw_control_label_text_with_color(
                     bus,
                     abs_top,
                     scr_left + circle_left + circle_size + 1,
@@ -1663,7 +1965,9 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    self.control_label_color(bus, ctrl_ptr, hilite == 255),
                 );
+                }
 
                 if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
                     // Pressed: invert the circle area
@@ -1741,6 +2045,7 @@ impl super::TrapDispatcher {
                 ) {
                     self.draw_push_button_control(
                         cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                        [None; 3],
                     );
                 }
             }
@@ -1762,6 +2067,59 @@ impl super::TrapDispatcher {
         );
         if *self.current_port != saved_port || *self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
+        }
+    }
+
+    fn draw_classic_control_indicator<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        rect: &Rect,
+        oval: bool,
+        colors: [Option<(u16, u16, u16)>; 2],
+    ) {
+        let port = *self.current_port;
+        let saved_fg = self.fg_color;
+        let saved_flags = self.resolved_port_color_fields.get(&port).copied();
+        let custom = colors.iter().any(Option::is_some);
+        let saved_pattern = if custom && bus.read_word(port + 6) & 0xc000 != 0 {
+            let pattern = bus.read_long(port + 58);
+            bus.write_long(port + 58, 0);
+            Some(pattern)
+        } else {
+            None
+        };
+        for (color, op) in [(colors[1], ShapeOp::Paint), (colors[0], ShapeOp::Frame)] {
+            if custom {
+                let flags = if color.is_some() {
+                    saved_flags.unwrap_or(0) & !1
+                } else {
+                    saved_flags.unwrap_or(0)
+                };
+                self.resolved_port_color_fields.insert(port, flags);
+            }
+            self.fg_color = color.unwrap_or(saved_fg);
+            let op = if color.is_none() && matches!(op, ShapeOp::Paint) {
+                ShapeOp::Erase
+            } else {
+                op
+            };
+            if oval {
+                self.draw_control_oval(cpu, bus, rect, op);
+            } else {
+                self.draw_control_rect(cpu, bus, rect, op);
+            }
+        }
+        self.fg_color = saved_fg;
+        if custom {
+            if let Some(flags) = saved_flags {
+                self.resolved_port_color_fields.insert(port, flags);
+            } else {
+                self.resolved_port_color_fields.remove(&port);
+            }
+        }
+        if let Some(pattern) = saved_pattern {
+            bus.write_long(port + 58, pattern);
         }
     }
 
@@ -1836,6 +2194,7 @@ impl super::TrapDispatcher {
         abs_right: i16,
         hilite: u8,
         title: &str,
+        colors: [Option<(u16, u16, u16)>; 3],
     ) {
         if self.draw_theme_push_button_chrome(
             bus,
@@ -1847,11 +2206,22 @@ impl super::TrapDispatcher {
             hilite == 1,
             false,
         ) {
-            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+            self.draw_control_text(
+                cpu, bus, abs_top, abs_left, abs_bottom, abs_right, title, None,
+            );
             if hilite == 255 {
                 self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
             }
             return;
+        }
+
+        let mut colors = colors;
+        let custom_colors = colors.iter().any(Option::is_some);
+        if hilite == 1 && custom_colors {
+            let body = colors[1].unwrap_or(self.bg_color);
+            let text = colors[2].unwrap_or((0, 0, 0));
+            colors[1] = Some(text);
+            colors[2] = Some(body);
         }
 
         // Standard CDEF uses FrameRoundRect with oval 10x10.
@@ -1885,8 +2255,34 @@ impl super::TrapDispatcher {
             }
             _ => u32::from(index),
         };
-        let foreground = color_pixel(self.fg_color, foreground);
-        let background = color_pixel(self.bg_color, background);
+        let frame_color = colors[0].unwrap_or(self.fg_color);
+        let body_color = colors[1].unwrap_or(self.bg_color);
+        let foreground = color_pixel(
+            frame_color,
+            if colors[0].is_some() {
+                super::pict::closest_clut_index(
+                    frame_color.0,
+                    frame_color.1,
+                    frame_color.2,
+                    &self.device_clut,
+                )
+            } else {
+                foreground
+            },
+        );
+        let background = color_pixel(
+            body_color,
+            if colors[1].is_some() {
+                super::pict::closest_clut_index(
+                    body_color.0,
+                    body_color.1,
+                    body_color.2,
+                    &self.device_clut,
+                )
+            } else {
+                background
+            },
+        );
         let port = *self.current_port;
         let vis = bus.read_long(port + 24);
         let clip = bus.read_long(port + 28);
@@ -1918,13 +2314,56 @@ impl super::TrapDispatcher {
                 Some((address, bus.read_byte(address)))
             },
         );
-        self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Erase);
-        self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
+        let custom_shape_colors = colors[0].is_some() || colors[1].is_some();
+        let saved_pixpat = if custom_shape_colors && bus.read_word(port + 6) & 0xc000 != 0 {
+            let handle = bus.read_long(port + 58);
+            bus.write_long(port + 58, 0);
+            Some(handle)
+        } else {
+            None
+        };
+        let saved_resolved = self.resolved_port_color_fields.get(&port).copied();
+        if colors[1].is_some() {
+            self.resolved_port_color_fields
+                .insert(port, saved_resolved.unwrap_or(0) & !1);
+        }
+        if let Some(color) = colors[1] {
+            let saved_fg = self.fg_color;
+            self.fg_color = color;
+            self.draw_control_round_rect(cpu, bus, r, oval, oval, ShapeOp::Paint);
+            self.fg_color = saved_fg;
+        } else {
+            self.draw_control_round_rect(cpu, bus, r, oval, oval, ShapeOp::Erase);
+        }
+        if custom_shape_colors {
+            let flags = if colors[0].is_some() {
+                saved_resolved.unwrap_or(0) & !1
+            } else {
+                saved_resolved.unwrap_or(0)
+            };
+            self.resolved_port_color_fields.insert(port, flags);
+        }
+        let saved_fg = self.fg_color;
+        self.fg_color = frame_color;
+        self.draw_control_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
+        self.fg_color = saved_fg;
+        if colors[0].is_some() || colors[1].is_some() {
+            if let Some(flags) = saved_resolved {
+                self.resolved_port_color_fields.insert(port, flags);
+            } else {
+                self.resolved_port_color_fields.remove(&port);
+            }
+        }
+        if let Some(handle) = saved_pixpat {
+            bus.write_long(port + 58, handle);
+        }
         slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
-        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+        self.draw_control_text(
+            cpu, bus, abs_top, abs_left, abs_bottom, abs_right, title, colors[2],
+        );
 
-        if hilite == 1 {
+        if hilite == 1 && !custom_colors {
             // Pressed: invert the interior.
             let inv = Rect {
                 top: r.top + 1,
@@ -1935,8 +2374,20 @@ impl super::TrapDispatcher {
             let inv_oval = (oval - 2).max(0);
             self.draw_round_rect(cpu, bus, &inv, inv_oval, inv_oval, ShapeOp::Invert);
         } else if hilite == 255 {
-            // Inactive: dim by clearing every other pixel to white.
-            self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
+            // Match the existing checkerboard dimming through the owning port.
+            let saved_fg = self.fg_color;
+            let port = *self.current_port;
+            let saved_flags = self.resolved_port_color_fields.get(&port).copied();
+            self.resolved_port_color_fields
+                .insert(port, saved_flags.unwrap_or(0) & !1);
+            self.fg_color = (0xffff, 0xffff, 0xffff);
+            self.draw_control_glyph(cpu, bus, r, |y, x| if (x + y) & 1 == 0 { 255 } else { 0 });
+            self.fg_color = saved_fg;
+            if let Some(flags) = saved_flags {
+                self.resolved_port_color_fields.insert(port, flags);
+            } else {
+                self.resolved_port_color_fields.remove(&port);
+            }
         }
     }
 
@@ -1949,6 +2400,22 @@ impl super::TrapDispatcher {
         font_size: i16,
         centered: bool,
         inactive: bool,
+    ) {
+        self.draw_multiline_control_title_with_color(
+            bus, rect, title, font_id, font_size, centered, inactive, None,
+        );
+    }
+
+    fn draw_multiline_control_title_with_color(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        centered: bool,
+        inactive: bool,
+        text_color: Option<(u16, u16, u16)>,
     ) {
         let (base, row_bytes, width, height, depth) = self.get_screen_params();
         let metrics = get_font_metrics(font_id, font_size);
@@ -1966,10 +2433,11 @@ impl super::TrapDispatcher {
             centered,
         );
         let ink = (depth == 8).then(|| {
-            if inactive {
+            if inactive && text_color.is_none() {
                 self.inactive_control_title_index()
             } else {
-                super::pict::closest_clut_index(0, 0, 0, &self.device_clut)
+                let (red, green, blue) = text_color.unwrap_or((0, 0, 0));
+                super::pict::closest_clut_index(red, green, blue, &self.device_clut)
             }
         });
         for (line, (x, y)) in lines.into_iter().zip(origins) {
@@ -1983,18 +2451,163 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Draw centered text for a push button control using fb_draw_string.
-    fn draw_control_text(
+    fn control_label_color(
         &self,
+        bus: &MacMemoryBus,
+        ctrl_ptr: u32,
+        inactive: bool,
+    ) -> Option<(u16, u16, u16)> {
+        if self.ui_theme_id != crate::ui_theme::UiThemeId::ClassicSystem7 {
+            return None;
+        }
+        let text = self.control_part_color(bus, ctrl_ptr, 2);
+        if !inactive {
+            return text;
+        }
+        let body = self.control_part_color(bus, ctrl_ptr, 1);
+        if text.is_none() && body.is_none() {
+            return None;
+        }
+        let (r, g, b) = text.unwrap_or((0, 0, 0));
+        let (br, bg, bb) = body.unwrap_or((0xffff, 0xffff, 0xffff));
+        let blend = |a: u16, b: u16| ((u32::from(a) + u32::from(b)) / 2) as u16;
+        Some((blend(r, br), blend(g, bg), blend(b, bb)))
+    }
+
+    fn control_port_pixel_depth(&self, bus: &MacMemoryBus) -> u16 {
+        let port = *self.current_port;
+        if port != 0 && bus.read_word(port + 6) & 0xc000 != 0 {
+            let handle = bus.read_long(port + 2);
+            if handle != 0 && bus.is_guest_address_mapped(handle, 4) {
+                let pixmap = bus.read_long(handle);
+                if pixmap != 0 && bus.is_guest_address_mapped(pixmap, 34) {
+                    return bus.read_word(pixmap + 32);
+                }
+            }
+            return 0;
+        }
+        if port != 0
+            && bus.read_long(port + 2) == self.screen_mode.0
+            && u32::from(bus.read_word(port + 6) & 0x3fff) == self.screen_mode.1
+        {
+            return self.screen_mode.4;
+        }
+        1
+    }
+
+    fn control_text_uses_port_surface(&self, bus: &MacMemoryBus) -> bool {
+        let depth = self.control_port_pixel_depth(bus);
+        if matches!(depth, 16 | 32) {
+            return true;
+        }
+        let port = *self.current_port;
+        if !matches!(depth, 2 | 4 | 8) || port == 0 || bus.read_word(port + 6) & 0xc000 == 0 {
+            return false;
+        }
+        let handle = bus.read_long(port + 2);
+        if !bus.is_guest_address_mapped(handle, 4) {
+            return false;
+        }
+        let pixmap = bus.read_long(handle);
+        if !bus.is_guest_address_mapped(pixmap, 6) {
+            return false;
+        }
+        Self::offscreen_pixmap_base_ptr(bus, pixmap) != self.screen_mode.0
+            || u32::from(bus.read_word(pixmap + 4) & 0x3fff) != self.screen_mode.1
+    }
+
+    fn draw_direct_control_title<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        title: &str,
+        centered: bool,
+        text_color: Option<(u16, u16, u16)>,
+    ) {
+        let metrics = get_font_metrics(0, 12);
+        let lines: Vec<_> = title.split('\r').collect();
+        let widths: Vec<_> = lines
+            .iter()
+            .map(|line| Self::fb_measure_string(line, 0, 12))
+            .collect();
+        let origins = crate::control_manager::control_title_line_origins(
+            rect,
+            &widths,
+            metrics.ascent,
+            metrics.descent,
+            metrics.leading,
+            centered,
+        );
+        let saved_fg = self.fg_color;
+        let port = *self.current_port;
+        let saved_flags = self.resolved_port_color_fields.get(&port).copied();
+        self.resolved_port_color_fields
+            .insert(port, saved_flags.unwrap_or(0) & !1);
+        self.fg_color = text_color.unwrap_or((0, 0, 0));
+        for (line, (mut x, y)) in lines.into_iter().zip(origins) {
+            for ch in line.chars() {
+                if let Some((glyph, data)) = crate::quickdraw::text::get_unicode_glyph(0, 12, ch) {
+                    let glyph_top = y + glyph.origin_y as i16;
+                    let glyph_left = x + glyph.origin_x as i16;
+                    let glyph_rect = Rect {
+                        top: glyph_top.max(rect.0),
+                        left: glyph_left.max(rect.1),
+                        bottom: (glyph_top + glyph.height as i16).min(rect.2),
+                        right: (glyph_left + glyph.width as i16).min(rect.3),
+                    };
+                    self.draw_control_glyph(cpu, bus, &glyph_rect, |py, px| {
+                        let row = (py - glyph_top) as usize;
+                        let col = (px - glyph_left) as usize;
+                        data.get(glyph.data_offset + row * glyph.width as usize + col)
+                            .copied()
+                            .unwrap_or(0)
+                    });
+                    x += glyph.advance as i16;
+                } else {
+                    x += 6;
+                }
+            }
+        }
+        self.fg_color = saved_fg;
+        if let Some(flags) = saved_flags {
+            self.resolved_port_color_fields.insert(port, flags);
+        } else {
+            self.resolved_port_color_fields.remove(&port);
+        }
+    }
+
+    /// Draw centered text for a push button control using fb_draw_string.
+    fn draw_control_text<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
         bus: &mut MacMemoryBus,
         abs_top: i16,
         abs_left: i16,
         abs_bottom: i16,
         abs_right: i16,
         title: &str,
+        text_color: Option<(u16, u16, u16)>,
     ) {
+        if self.control_text_uses_port_surface(bus) {
+            let (top, left) = self.port_bounds_top_left(bus, *self.current_port);
+            self.draw_direct_control_title(
+                cpu,
+                bus,
+                (
+                    abs_top + top,
+                    abs_left + left,
+                    abs_bottom + top,
+                    abs_right + left,
+                ),
+                title,
+                true,
+                text_color,
+            );
+            return;
+        }
         if title.contains('\r') {
-            self.draw_multiline_control_title(
+            self.draw_multiline_control_title_with_color(
                 bus,
                 (abs_top, abs_left, abs_bottom, abs_right),
                 title,
@@ -2002,6 +2615,7 @@ impl super::TrapDispatcher {
                 12,
                 true,
                 false,
+                text_color,
             );
             return;
         }
@@ -2031,7 +2645,8 @@ impl super::TrapDispatcher {
             // inverse table is derived from its own palette, which
             // low-level `cscSetEntries` palette animation does not update.
             // For a screen-backed draw the hardware CLUT is the authority.
-            let ink = super::pict::closest_clut_index(0, 0, 0, &self.device_clut);
+            let (red, green, blue) = text_color.unwrap_or((0, 0, 0));
+            let ink = super::pict::closest_clut_index(red, green, blue, &self.device_clut);
             Self::fb_draw_string_styled_index(
                 bus,
                 screen_base,
@@ -2079,8 +2694,39 @@ impl super::TrapDispatcher {
         font_size: i16,
         inactive: bool,
     ) {
+        self.draw_control_label_text_with_color(
+            bus,
+            label_top,
+            label_left,
+            label_bottom,
+            label_right,
+            text_x,
+            text_y,
+            title,
+            font_id,
+            font_size,
+            inactive,
+            None,
+        );
+    }
+
+    fn draw_control_label_text_with_color(
+        &self,
+        bus: &mut MacMemoryBus,
+        label_top: i16,
+        label_left: i16,
+        label_bottom: i16,
+        label_right: i16,
+        text_x: i16,
+        text_y: i16,
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        inactive: bool,
+        text_color: Option<(u16, u16, u16)>,
+    ) {
         if title.contains('\r') {
-            self.draw_multiline_control_title(
+            self.draw_multiline_control_title_with_color(
                 bus,
                 (label_top, text_x, label_bottom, label_right),
                 title,
@@ -2088,17 +2734,23 @@ impl super::TrapDispatcher {
                 font_size,
                 false,
                 inactive,
+                text_color,
             );
             return;
         }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if inactive && pixel_size == 8 {
+        if (inactive || text_color.is_some()) && pixel_size == 8 {
             // Control drawing writes directly to the screen framebuffer, so
             // resolve against the same live device CLUT used by screenshots
             // instead of TheGDevice, which games may leave on an offscreen
             // palette while redrawing dialogs.
-            let ink = self.inactive_control_title_index();
+            let ink = if inactive && text_color.is_none() {
+                self.inactive_control_title_index()
+            } else {
+                let (red, green, blue) = text_color.unwrap();
+                super::pict::closest_clut_index(red, green, blue, &self.device_clut)
+            };
             Self::fb_draw_string_styled_index(
                 bus,
                 screen_base,
@@ -2142,27 +2794,23 @@ impl super::TrapDispatcher {
     /// System 7.5.3 checkbox X spans the full interior diagonal (i=1..size-1),
     /// starting one pixel inside the box border on each side.
     /// Inside Macintosh Volume I, I-322 figure 27.
-    fn draw_checkbox_x(
-        &self,
+    fn draw_checkbox_x<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
         bus: &mut MacMemoryBus,
-        box_top_screen: i16,
-        box_left_screen: i16,
+        bounds: &Rect,
         box_size: i16,
+        color: Option<(u16, u16, u16)>,
     ) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
+        let color = color.unwrap_or(self.fg_color);
         crate::control_manager::for_each_standard_checkbox_mark_pixel(box_size, |x, y| {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                box_left_screen + x,
-                box_top_screen + y,
-                true,
-            );
+            let pixel = Rect {
+                top: bounds.top + y,
+                left: bounds.left + x,
+                bottom: bounds.top + y + 1,
+                right: bounds.left + x + 1,
+            };
+            self.draw_classic_control_indicator(cpu, bus, &pixel, false, [Some(color); 2]);
         });
     }
 
@@ -3169,10 +3817,7 @@ impl super::TrapDispatcher {
                             break;
                         }
                         let next = bus.read_long(ctrl_ptr);
-                        self.release_control_aux_record(bus, ctrl_handle);
-                        self.control_manager.remove_pointer(ctrl_ptr);
-                        bus.free(ctrl_ptr);
-                        bus.free(ctrl_handle);
+                        self.dispose_control_handle(bus, ctrl_handle);
                         ctrl_handle = next;
                     }
                     // Nil out the window's control list head
@@ -4704,12 +5349,14 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let color_table = bus.read_long(sp);
                 let ctrl_handle = bus.read_long(sp + 4);
-                if ctrl_handle != 0 {
-                    let default_ctab = self.default_control_color_table_handle(bus);
+                if ctrl_handle == 0 {
+                    self.set_standard_control_color(bus, color_table);
+                } else {
                     let effective_ctab = if color_table != 0 {
                         color_table
                     } else {
-                        default_ctab
+                        self.standard_control_color_table_from_list(bus)
+                            .unwrap_or_else(|| self.default_control_color_table_handle(bus))
                     };
                     let aux_handle = self.ensure_control_aux_record(bus, ctrl_handle);
                     let aux_ptr = bus.read_long(aux_handle);

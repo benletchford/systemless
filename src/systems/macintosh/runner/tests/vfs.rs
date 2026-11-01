@@ -181,6 +181,21 @@ fn event_yield_services_pending_launch_application_from_vfs() {
     runner.bus.write_long(addr::TIME, 0x1020_3040);
     runner.bus.write_long(addr::RND_SEED, 0x89AB_CDEF);
     runner.set_guest_tick_for_test(1234);
+    let color_table = runner.bus.alloc(4);
+    let sp = 0x0010_0000;
+    let mut control_cpu = crate::trap::test_helpers::MockCpu::new();
+    crate::cpu::CpuOps::write_reg(&mut control_cpu, Register::A7, sp);
+    runner.bus.write_long(sp, color_table);
+    runner.bus.write_long(sp + 4, 0);
+    runner
+        .dispatcher
+        .dispatch_control(true, 0x243, &mut control_cpu, &mut runner.bus)
+        .unwrap()
+        .unwrap();
+    let old_aux = runner.bus.read_long(0x0cd4);
+    assert_ne!(old_aux, 0);
+    let old_record = runner.bus.read_long(old_aux);
+    assert_eq!(runner.bus.read_long(old_record + 8), color_table);
     runner
         .dispatcher
         .queue_pending_launch_application("Apps/Register Helper", true);
@@ -210,6 +225,26 @@ fn event_yield_services_pending_launch_application_from_vfs() {
     );
     assert_eq!(runner.bus.read_long(addr::TIME), 0x1020_3040);
     assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89AB_CDEF);
+    assert_eq!(
+        runner.bus.read_long(0x0cd4),
+        0,
+        "new application must not inherit the prior standard control record"
+    );
+    let new_table = runner.bus.alloc(4);
+    crate::cpu::CpuOps::write_reg(&mut control_cpu, Register::A7, sp);
+    runner.bus.write_long(sp, new_table);
+    runner.bus.write_long(sp + 4, 0);
+    runner
+        .dispatcher
+        .dispatch_control(true, 0x243, &mut control_cpu, &mut runner.bus)
+        .unwrap()
+        .unwrap();
+    let new_aux = runner.bus.read_long(0x0cd4);
+    assert_ne!(new_aux, 0);
+    assert_eq!(
+        runner.bus.read_long(runner.bus.read_long(new_aux) + 8),
+        new_table
+    );
     assert!(
         !runner.dispatcher.has_native_trap_patch(&runner.bus, 0xA975),
         "application trap patches must be torn down at a foreground launch"
