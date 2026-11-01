@@ -21,12 +21,12 @@ compatibility:
     systemless_version: 9b61c265 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice and opened
-      directly to the board for game 1. Clicking on the board rolled the dice,
-      and the computer moved its checkers. A matched control without the click
-      was identical until the input and then differed by 5,422 pixels. An exact
-      replay matched both checkpoints, with zero exhausted frames. Full games,
-      the doubling cube, audio and browser performance remain unverified.
+      The unchanged demo archive ran natively on the 68K slice and opened directly to
+      the board for game 1. Clicking on the board rolled the dice, and the computer
+      moved its checkers. A matched control without the click was identical until the
+      input and then differed by 5,422 pixels. An exact replay matched both checkpoints,
+      with zero exhausted frames. Full games, the doubling cube, audio and browser
+      performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5484
   - date: "2026-11-01"
@@ -34,11 +34,11 @@ compatibility:
     systemless_version: 9b61c265 browser build with launch flag
     architecture: 68k
     environment: >-
-      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs
-      of a locally served trunk build used the exact pinned original archive.
-      Scripted ordinary input clicked the board to roll. Twenty-second samples
-      reached 60.17, 59.02 and 58.99 guest ticks per second at 60 host fps, with
-      no console errors. This approves bounded browser launch.
+      Three release-mode headless Chromium 156 (aarch64 Linux) worker/WebGL runs of a
+      locally served trunk build used the exact pinned original archive. Scripted
+      ordinary input clicked the board to roll. Twenty-second samples reached 60.17, 59.02
+      and 58.99 guest ticks per second at 60 host fps, with no console errors. This
+      approves bounded browser launch.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5484
 runtime:
@@ -49,10 +49,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Backgammon.sit
-    expected_sha256: 0d40278d5f0a9f2c530f886047bfddba5e5c195ceb00670b5c34ce190d8cf651
-    expected_size: 327136
+    type: sha256
+    sha256: 0d40278d5f0a9f2c530f886047bfddba5e5c195ceb00670b5c34ce190d8cf651
+    size_bytes: 327136
   provenance:
     redistribution: permitted
     original: true
@@ -63,20 +62,19 @@ artifacts:
     license: Maintainer-accepted freely distributed promotional demo
     rights_holder: Lazarus Software
     permission: >-
-      Hosting was accepted by the Systemless maintainer on 1 November 2026 under
-      the policy for unchanged, freely circulated promotional demos. The
-      unchanged demo appeared on period Macintosh magazine cover discs. The
-      bundled documents contain no explicit redistribution grant or restriction.
-      Preserve the complete unchanged archive and remove it if a rights holder
-      objects.
-    notes: >-
-      68K demo of Expert Backgammon 3 with the full board and computer opponent.
+      Hosting was accepted by the Systemless maintainer on 1 November 2026 under the
+      policy for unchanged, freely circulated promotional demos. The unchanged demo
+      appeared on period Macintosh magazine cover discs. The bundled documents contain no
+      explicit redistribution grant or restriction. Preserve the complete unchanged
+      archive and remove it if a rights holder objects.
+    notes: 68K demo of Expert Backgammon 3 with the full board and computer opponent.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/expert-backgammon-demo/gameplay.png
+    type: sha256
+    sha256: 3ee8f0fbefaa96de083b42545e7210034e26e2bd98055c9fad60dbf51dc82c99
+    size_bytes: 92227
   provenance:
     redistribution: permitted
     original: true
@@ -94,7 +92,7 @@ references:
 
 ## Roll the dice
 
-![Expert Backgammon Demo](incoming/expert-backgammon-demo/gameplay.png)
+![Expert Backgammon Demo](https://assets.systemless.org/catalogue/media/sha256/3e/3ee8f0fbefaa96de083b42545e7210034e26e2bd98055c9fad60dbf51dc82c99.png)
 
 Race your checkers home and bear them off before the computer does. Use the doubling cube to raise the stakes.
 
