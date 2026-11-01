@@ -97,20 +97,7 @@ pub(super) fn complete_reply(
     let Some(mut reply) = ppc_ae_descriptor(memory, &state.descriptors, source) else {
         return -1707;
     };
-    // Inside Macintosh, "Replying to an Apple Event": the handler's error
-    // belongs in keyErrorNumber; preserve an explicit error supplied by it.
-    if handler_result != PPC_NO_ERR {
-        let keyword = u32::from_be_bytes(*b"errn");
-        if !reply.fields.contains_key(&keyword) {
-            let error = ProcessAeDescriptor {
-                desc_type: u32::from_be_bytes(*b"long"),
-                data: i32::from(handler_result).to_be_bytes().to_vec(),
-                ..Default::default()
-            };
-            reply.fields.insert(keyword, error.clone());
-            reply.items.push((keyword, error));
-        }
-    }
+    add_handler_error(&mut reply, handler_result);
     let result = ppc_create_process_owned_ae_desc(
         manager,
         memory,
@@ -127,4 +114,22 @@ pub(super) fn complete_reply(
         ppc_store_ae_descriptor_semantics(memory, &state.descriptors, output, reply);
     }
     result
+}
+
+/// Preserve explicit keyErrorNumber values supplied by an event handler.
+pub(super) fn add_handler_error(reply: &mut ProcessAeDescriptor, handler_result: i16) {
+    // Inside Macintosh, "Replying to an Apple Event": the handler's error
+    // belongs in keyErrorNumber; preserve an explicit error supplied by it.
+    if handler_result != PPC_NO_ERR {
+        let keyword = u32::from_be_bytes(*b"errn");
+        if !reply.fields.contains_key(&keyword) {
+            let error = ProcessAeDescriptor {
+                desc_type: u32::from_be_bytes(*b"long"),
+                data: i32::from(handler_result).to_be_bytes().to_vec(),
+                ..Default::default()
+            };
+            reply.fields.insert(keyword, error.clone());
+            reply.items.push((keyword, error));
+        }
+    }
 }

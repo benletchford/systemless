@@ -4250,6 +4250,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AESizeOfNthItem") => PpcImportDispatcherTarget::AppleEventCompatibility(
             PpcAppleEventCompatibilityOperation::SizeOfNthItem,
         ),
+        ("InterfaceLib", "AESuspendTheCurrentEvent") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::SuspendTheCurrentEvent,
+            )
+        }
+        ("InterfaceLib", "AEResumeTheCurrentEvent") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::ResumeTheCurrentEvent,
+            )
+        }
+        ("InterfaceLib", "AESetTheCurrentEvent") => {
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::SetTheCurrentEvent,
+            )
+        }
         ("InterfaceLib", "AEGetTheCurrentEvent") => {
             PpcImportDispatcherTarget::AppleEventCompatibility(
                 PpcAppleEventCompatibilityOperation::GetTheCurrentEvent,
