@@ -197,6 +197,9 @@ impl GuiDriver {
             if generation == self.generation
                 && self.pending_warp.is_some_and(|warp| warp.serial == serial)
             {
+                if let (Some(runner), Some(warp)) = (&mut self.runner, self.pending_warp) {
+                    runner.acknowledge_guest_cursor_warp(warp.position);
+                }
                 self.pending_warp = None;
             }
             return;
@@ -933,31 +936,79 @@ mod snapshot_tests {
         driver.capture_state(&mut state, false);
         let first = state.warp.expect("guest instruction should request a warp");
         assert_eq!(first.position, (11, 13));
+        let original_mouse = driver
+            .runner
+            .as_ref()
+            .unwrap()
+            .dispatcher()
+            .mouse_position();
         driver.capture_state(&mut state, false);
         assert_eq!(state.warp, Some(first));
+        assert_eq!(
+            driver
+                .runner
+                .as_ref()
+                .unwrap()
+                .dispatcher()
+                .mouse_position(),
+            original_mouse
+        );
         driver.apply_command(GuiCommand::AcknowledgeWarp {
             generation: state.generation + 1,
             serial: first.serial,
         });
         driver.capture_state(&mut state, false);
         assert_eq!(state.warp, Some(first));
+        assert_eq!(
+            driver
+                .runner
+                .as_ref()
+                .unwrap()
+                .dispatcher()
+                .mouse_position(),
+            original_mouse
+        );
         guest_warp(&mut driver, (17, 19));
         driver.capture_state(&mut state, false);
         let second = state.warp.unwrap();
         assert!(second.serial > first.serial);
         assert_eq!(second.position, (17, 19));
+        let latest_mouse = driver
+            .runner
+            .as_ref()
+            .unwrap()
+            .dispatcher()
+            .mouse_position();
         driver.apply_command(GuiCommand::AcknowledgeWarp {
             generation: state.generation,
             serial: first.serial,
         });
         driver.capture_state(&mut state, false);
         assert_eq!(state.warp, Some(second));
+        assert_eq!(
+            driver
+                .runner
+                .as_ref()
+                .unwrap()
+                .dispatcher()
+                .mouse_position(),
+            latest_mouse
+        );
         driver.apply_command(GuiCommand::AcknowledgeWarp {
             generation: state.generation,
             serial: second.serial,
         });
         driver.capture_state(&mut state, false);
         assert_eq!(state.warp, None);
+        assert_eq!(
+            driver
+                .runner
+                .as_ref()
+                .unwrap()
+                .dispatcher()
+                .mouse_position(),
+            (17, 19)
+        );
     }
 
     #[test]
