@@ -317,7 +317,7 @@ fn ppc_dispatch_popup_track_control(
             let item = result as u16 as i16;
             if item > 0 && ppc_menu_item_is_selectable(memory, menu_handle, item) {
                 let _ = memory.write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, item as u16);
-                let _ = ppc_draw_control(
+                let _ = ppc_draw_control_inner(
                     memory,
                     handles,
                     controls,
@@ -325,6 +325,7 @@ fn ppc_dispatch_popup_track_control(
                     vfs_resources,
                     current_resource_refnum,
                     control_handle,
+                    true,
                 );
                 PpcImportAction::Return(ppc_i16_result(10))
             } else {
@@ -1090,6 +1091,16 @@ pub(super) fn ppc_dispatch_legacy_control(
                     return Some(action);
                 }
             }
+            // TrackControl keeps control until the button is released; a caller that
+            // resumes early sees the held button as a second click.
+            // Releasing outside the control still counts as a hit; dragging away
+            // does not cancel.
+            let is_popup = controls
+                .iter()
+                .any(|record| record.handle == cpu.gpr[3] && (1008..=1023).contains(&record.proc_id));
+            if part != 0 && part != 129 && !is_popup && action_proc == 0 && input.mouse_button {
+                return Some(PpcImportAction::Yield(u64::MAX));
+            }
             // Macintosh Toolbox Essentials (1992), pp. 5-79--5-80:
             // Arrow/page value changes belong to the action procedure.
             // A nil action only returns the hit part to the caller.
@@ -1132,7 +1143,7 @@ pub(super) fn ppc_dispatch_legacy_control(
             )
         }
         PpcLegacyControlOperation::DrawOneControl => {
-            let _ = ppc_draw_control(
+            let _ = ppc_draw_control_inner(
                 memory,
                 handles,
                 controls,
@@ -1140,6 +1151,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                 vfs_resources,
                 current_resource_refnum,
                 cpu.gpr[3],
+                true,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -1956,6 +1968,23 @@ pub(super) fn ppc_initialize_popup_control(
                 true,
                 last_resource_error,
             );
+            // The pop-up CDEF keeps its menu in the hierarchical portion of the menu list.
+            if menu != 0 {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let _ = ppc_insert_menu_with_allocator(
+                    Some(&mut allocator),
+                    None,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    menu,
+                    -1,
+                );
+            }
         }
     }
     if let Some(data_handle) = memory.read_u32_be(control + PPC_CONTROL_DATA_OFFSET) {
@@ -2915,7 +2944,7 @@ pub(super) fn ppc_draw_control(
         vfs_resources,
         current_resource_refnum,
         handle,
-        false,
+        true,
     )
 }
 
