@@ -20818,6 +20818,49 @@ fn copy_bits_converts_between_direct_color_depths() {
         );
     }
 
+    #[test]
+    fn activatepalette_reinstalls_colors_cleared_from_guest_device_table() {
+        // The Tinies clears RGB of device ColorTable entries 1..254 directly
+        // and then calls ActivatePalette again with an unchanged palette.
+        // The Palette Manager matches against the guest table, so the
+        // palette colors must be written back (with a new seed).
+        let (mut d, _cpu, mut bus) = setup();
+        let window = 0x0020_6200u32;
+        let colors = [[0x1414, 0x7575, 0x4747], [0xB8B8, 0x0000, 0x2C2C]];
+        let src = make_test_ctab_handle(&mut bus, &colors, 0x1234_5678, 0);
+        let palette = d.create_palette_from_ctab(&mut bus, 2, src, super::PM_TOLERANT, 0);
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.activate_associated_palette_for_window(&mut bus, window);
+
+        let gd = d.active_gdevice_or_main(&mut bus);
+        let ctab = TrapDispatcher::gdevice_ctab_handle(&bus, gd);
+        let ctab_ptr = bus.read_long(ctab);
+        let installed = *d.device_clut;
+        let read = |bus: &MacMemoryBus, index: u32| {
+            let entry = ctab_ptr + 8 + index * 8;
+            [bus.read_word(entry + 2), bus.read_word(entry + 4), bus.read_word(entry + 6)]
+        };
+        let claimed: Vec<u32> = (1..255)
+            .filter(|&index| colors.contains(&installed[index as usize]))
+            .collect();
+        assert_eq!(claimed.len(), 2);
+
+        for index in 1..255u32 {
+            let entry = ctab_ptr + 8 + index * 8;
+            for offset in [2, 4, 6] {
+                bus.write_word(entry + offset, 0);
+            }
+        }
+        let seed_before = bus.read_long(ctab_ptr);
+        d.activate_associated_palette_for_window(&mut bus, window);
+
+        for &index in &claimed {
+            assert_eq!(read(&bus, index), installed[index as usize]);
+        }
+        assert_ne!(bus.read_long(ctab_ptr), seed_before);
+    }
+
     fn prepare_animatepalette_negative_span_case(
         d: &mut TrapDispatcher,
         bus: &mut MacMemoryBus,

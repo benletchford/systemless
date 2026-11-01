@@ -17300,6 +17300,9 @@ impl super::TrapDispatcher {
         self.palette_device_indices
             .retain(|(palette, _), _| *palette != palette_handle);
         let mut claimed = [false; 256];
+        // Cells this activation assigned to palette entries (excludes the
+        // reserved endpoints unless an entry actually maps to them).
+        let mut installed = [false; 256];
         // Color QuickDraw keeps the white and black endpoints available for
         // its standard drawing operations. Tolerant white and black entries
         // may share those exact cells; other tolerant colors may not consume
@@ -17363,6 +17366,7 @@ impl super::TrapDispatcher {
                 bus.read_word(color_info + 4),
             ];
             claimed[device_index] = true;
+            installed[device_index] = true;
             self.palette_device_indices
                 .insert((palette_handle, index as u16), device_index as u8);
         }
@@ -17403,6 +17407,7 @@ impl super::TrapDispatcher {
                 continue;
             };
             claimed[device_index] = true;
+            installed[device_index] = true;
             self.palette_device_indices
                 .insert((palette_handle, index as u16), device_index as u8);
 
@@ -17417,7 +17422,36 @@ impl super::TrapDispatcher {
                 updated_clut[device_index] = requested;
             }
         }
-        let color_environment_changed = updated_clut != current_clut;
+        // The Palette Manager compares requests with the device's own
+        // ColorTable (gdPMap^^.pmTable), not with a private shadow. Some
+        // applications clear that table directly and then call
+        // ActivatePalette to force every requested color back in (The
+        // Tinies zeroes entries 1..254 before each activation). An installed
+        // cell whose guest RGB no longer matches therefore needs the
+        // ordinary reinstall, even though the host shadow is unchanged.
+        // Inside Macintosh Volume V (1986), V-160..V-162.
+        let guest_table_stale = {
+            let gdh = self.active_gdevice_or_main(bus);
+            let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
+            let ctab_ptr = if ctab_handle != 0 {
+                bus.read_long(ctab_handle)
+            } else {
+                0
+            };
+            ctab_ptr != 0 && {
+                let entries = Self::color_table_entry_count(bus, ctab_handle).min(256) as usize;
+                (0..entries).any(|index| {
+                    let entry = ctab_ptr + 8 + (index as u32) * 8;
+                    installed[index]
+                        && [
+                            bus.read_word(entry + 2),
+                            bus.read_word(entry + 4),
+                            bus.read_word(entry + 6),
+                        ] != updated_clut[index]
+                })
+            }
+        };
+        let color_environment_changed = updated_clut != current_clut || guest_table_stale;
         self.device_clut.replace(updated_clut);
         if color_environment_changed {
             // A palette that only matches existing device colors must not
