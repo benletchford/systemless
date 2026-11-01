@@ -7051,6 +7051,13 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "ObscureCursor") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::ObscureCursor,
         ),
+        (
+            "QuickTimeLib",
+            "TuneGetStatus" | "TunePreroll" | "TuneQueue" | "TuneSetHeader" | "TuneSetHeaderWithSize"
+            | "TuneSetTimeScale" | "TuneSetVolume" | "TuneStop" | "TuneTask" | "TuneUnroll",
+        ) => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::TunePlayerCall,
+        ),
         ("InterfaceLib", "GetComponentVersion") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetComponentVersion,
         ),

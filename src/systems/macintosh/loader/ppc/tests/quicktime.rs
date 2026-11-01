@@ -509,6 +509,37 @@ fn carbon_multimedia_movie_imports_bind_existing_quicktime_handlers() {
 }
 
 #[test]
+fn tune_player_imports_resolve_and_report_a_bad_component_instance() {
+    for name in [
+        "TuneGetStatus",
+        "TunePreroll",
+        "TuneQueue",
+        "TuneSetHeader",
+        "TuneSetHeaderWithSize",
+        "TuneSetTimeScale",
+        "TuneSetVolume",
+        "TuneStop",
+        "TuneTask",
+        "TuneUnroll",
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("Apple;Carbon;Multimedia", name),
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::TunePlayerCall
+            ),
+            "{name}"
+        );
+        let pef = synthetic_pef_with_library_import(b"QuickTimeLib", name.as_bytes());
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None, "{name}");
+        assert_eq!(loaded.cpu.gpr[3], 0x8000_8001, "{name}");
+    }
+}
+
+#[test]
 fn hle_import_runner_tracks_quicktime_init_and_error_state() {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"EnterMovies");
     let mut loaded = load_pef_application(&pef).unwrap();

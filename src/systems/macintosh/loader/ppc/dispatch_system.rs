@@ -33,6 +33,7 @@ pub enum PpcSystemCompatibilityOperation {
     CursorDeviceFlush,
     GetComponentRefcon,
     GetComponentVersion,
+    TunePlayerCall,
     SetComponentRefcon,
     FindScriptRun,
     FindWord,
@@ -942,6 +943,11 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // long GetComponentVersion(ComponentInstance). No component
             // instance can be open here (OpenDefaultComponent returns nil), so
             // the call reports badComponentInstance (Components.h).
+            PpcImportAction::Return(0x8000_8001)
+        }
+        PpcSystemCompatibilityOperation::TunePlayerCall => {
+            // ComponentResult Tune*(TunePlayer, ...). OpenDefaultComponent cannot
+            // produce a tune player, so every instance is invalid (Components.h).
             PpcImportAction::Return(0x8000_8001)
         }
         PpcSystemCompatibilityOperation::SetComponentRefcon => {
