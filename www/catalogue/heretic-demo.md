@@ -3,8 +3,8 @@ id: heretic-demo
 kind: game
 title: Heretic
 summary: >-
-  Fight through D'Sparil's castle with a magic wand and an inventory of
-  artefacts in Raven Software's dark-fantasy follow-up to Doom.
+  Fight through D'Sparil's castle with a magic wand and an inventory of artefacts
+  in Raven Software's dark-fantasy follow-up to Doom.
 developer: Raven Software
 publisher: id Software
 year: 1996
@@ -21,13 +21,12 @@ compatibility:
     architecture: ppc
     environment: >-
       The unchanged archive ran natively on PowerPC. Escape, Return three times (New
-      Game, episode, skill) and Escape reached the first level of the shareware episode.
-      Holding Up and Left walked forward and picked up a wand crystal. A matched idle
-      control was identical until the input and then differed by 208,136 pixels. An exact
-      replay matched both checkpoints, with zero exhausted frames. Combat, later levels,
-      and audio remain unverified. Browser pacing
-      in gameplay reached 46–62 host fps with occasional 53–58 ms frames at 20–60 MHz
-      pacing, so launch stays disabled.
+      Game, episode, skill) and Escape reached the first level of the shareware
+      episode. Holding Up and Left walked forward and picked up a wand crystal. A matched idle
+      control was identical until the input and then differed by 208,136 pixels. An
+      exact replay matched both checkpoints, with zero exhausted frames. Combat, later
+      levels, and audio remain unverified. Browser pacing in gameplay reached 46–62 host
+      fps with occasional 53–58 ms frames at 20–60 MHz pacing, so launch stays disabled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5495
 artifacts:
@@ -35,10 +34,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Heretic%200.9.2.sit
-    expected_sha256: 34fc81b06fc1d1570542d9be8ebf1e06da9ea8d419cb46caad59f5096b622c5a
-    expected_size: 2905323
+    type: sha256
+    sha256: 34fc81b06fc1d1570542d9be8ebf1e06da9ea8d419cb46caad59f5096b622c5a
+    size_bytes: 2905323
   provenance:
     redistribution: permitted
     original: true
@@ -61,8 +59,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/heretic-demo/gameplay.png
+    type: sha256
+    sha256: 757c0eca8ef7021e470dd0204b869fa6a9f0643f3c68e12e70c55c8c912fc400
+    size_bytes: 32426
   provenance:
     redistribution: permitted
     original: true
@@ -70,8 +69,8 @@ artifacts:
     sources:
     - https://github.com/benletchford/systemless/issues/5495
     permission: >-
-      Fresh gameplay capture from the unchanged archive. The underlying game
-      artwork remains its owners' property.
+      Fresh gameplay capture from the unchanged archive. The underlying game artwork
+      remains its owners' property.
     notes: Native PowerPC first-level gameplay, cropped to the game window.
 references:
 - https://classicmacdemos.com/heretic
@@ -80,7 +79,7 @@ references:
 
 ## Into the castle
 
-![Heretic](incoming/heretic-demo/gameplay.png)
+![Heretic](https://assets.systemless.org/catalogue/media/sha256/75/757c0eca8ef7021e470dd0204b869fa6a9f0643f3c68e12e70c55c8c912fc400.png)
 
 The Serpent Riders have conquered the land, and one elven wanderer is left to fight back. Explore D'Sparil's castle, gather artefacts and fight off gargoyles, golems and undead warriors.
 
