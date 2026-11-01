@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,6 +29,24 @@ compatibility:
       checkpoints, with zero exhausted frames. Sprites, crew portraits and the menu
       background behind dialogs show speckled colour corruption. Combat, saves, audio and
       browser performance remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5412
+  - date: "2026-11-01"
+    tester: Catalogue maintainer
+    systemless_version: dc0b47fb browser build with launch flag
+    architecture: 68k
+    environment: >-
+      Earlier browser runs reached about 52 host frames per second because the
+      game's delay routine (SUBQ #4,A7; _TickCount; CMP.L (A7)+,D7; BGT) busy-
+      polled TickCount about 65.6 million times per 2,000 ticks. After the spin
+      fast-forward in dc0b47fb, three release-mode headless Chromium 156
+      (aarch64 Linux) worker/WebGL runs of a locally served trunk build used the
+      actual Systemless-hosted archive, whose bytes matched the pinned size and
+      SHA-256. Scripted ordinary input reached the tactical view and held Up.
+      Twenty-second samples reached 59.62, 59.45 and 59.38 guest ticks per
+      second (host 58.63, 57.50 and 60.40 fps), with no console errors. This
+      approves bounded browser launch; combat, later missions and the known
+      sprite colour speckling remain.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5412
 runtime:
