@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.108.0](https://github.com/benletchford/systemless/compare/v0.107.0...v0.108.0) (2026-11-01)
+
+
+### Features
+
+* **catalogue:** add Empire Deluxe demo ([#5522](https://github.com/benletchford/systemless/issues/5522)) ([63f0d47](https://github.com/benletchford/systemless/commit/63f0d477a77874d1650d81e359811ffda494e434))
+
+
+### Bug Fixes
+
+* **menu:** leave ResError at noErr when GetMenu misses a MENU resource ([#5517](https://github.com/benletchford/systemless/issues/5517)) ([99c7056](https://github.com/benletchford/systemless/commit/99c7056a17a8412a76148bdac267f7023439465d))
+
 ## [0.107.0](https://github.com/benletchford/systemless/compare/v0.106.0...v0.107.0) (2026-11-01)
 
 
