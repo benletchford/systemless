@@ -12,6 +12,52 @@ pub(crate) const CANT_GET_FLAVOR_ERR: i16 = -1854;
 pub(crate) const DUPLICATE_HANDLER_ERR: i16 = -1855;
 pub(crate) const HANDLER_NOT_FOUND_ERR: i16 = -1856;
 
+/// A ZoomRects path in global QuickDraw coordinates. The exact rounding and
+/// acceleration curves still need a classic-system comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ZoomRectPath {
+    from: [i16; 4],
+    to: [i16; 4],
+    steps: u16,
+    acceleration: i16,
+}
+
+impl ZoomRectPath {
+    pub(crate) fn new(from: [i16; 4], to: [i16; 4], steps: i16, acceleration: i16) -> Option<Self> {
+        if !(0..=2).contains(&acceleration) {
+            return None;
+        }
+        Some(Self {
+            from,
+            to,
+            steps: steps.clamp(4, 25) as u16,
+            acceleration,
+        })
+    }
+
+    pub(crate) fn steps(self) -> u16 {
+        self.steps
+    }
+
+    pub(crate) fn frame(self, step: u16) -> [i16; 4] {
+        let count = i64::from(self.steps);
+        let position = i64::from(step.min(self.steps));
+        let (numerator, denominator) = match self.acceleration {
+            1 => (position * position, count * count),
+            2 => (
+                count * count - (count - position) * (count - position),
+                count * count,
+            ),
+            _ => (position, count),
+        };
+        std::array::from_fn(|index| {
+            let start = i64::from(self.from[index]);
+            let delta = i64::from(self.to[index]) - start;
+            (start + delta * numerator / denominator) as i16
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MouseMoveWaitResult {
     Moved,
@@ -548,6 +594,24 @@ mod tests {
         assert_eq!(record.item_bounds(42), Ok((90, 190, 110, 210)));
         assert_eq!(record.item_bounds(99), Err(BAD_DRAG_ITEM_ERR));
     }
+    #[test]
+    fn zoom_rect_path_clamps_steps_and_interpolates_signed_endpoints() {
+        for (steps, expected) in [(-1, 4), (4, 4), (9, 9), (30, 25)] {
+            let path =
+                ZoomRectPath::new([-100, 50, 40, 200], [100, -50, 80, -100], steps, 0).unwrap();
+            assert_eq!(path.steps(), expected);
+            assert_eq!(path.frame(0), [-100, 50, 40, 200]);
+            assert_eq!(path.frame(expected), [100, -50, 80, -100]);
+            assert_eq!(path.frame(u16::MAX), [100, -50, 80, -100]);
+        }
+        let linear = ZoomRectPath::new([0; 4], [100; 4], 4, 0).unwrap();
+        let fast = ZoomRectPath::new([0; 4], [100; 4], 4, 1).unwrap();
+        let slow = ZoomRectPath::new([0; 4], [100; 4], 4, 2).unwrap();
+        assert!(fast.frame(1)[0] < linear.frame(1)[0]);
+        assert!(slow.frame(1)[0] > linear.frame(1)[0]);
+        assert!(ZoomRectPath::new([0; 4], [0; 4], 4, 3).is_none());
+    }
+
     #[test]
     fn hilite_is_two_pixels_and_excludes_the_region_boundary() {
         let rect = |v, h| (10..20).contains(&v) && (10..20).contains(&h);

@@ -1132,6 +1132,16 @@ pub(crate) fn dispatch_supported_import(
         && toolbox_startup.drag_hilite.as_ref().is_some_and(|hilite| hilite.reference == cpu.gpr[3]) {
         dispatch_drag::hide_drag_hilite(memory, toolbox_startup);
     }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::ZoomRects) {
+        return Some(dispatch_drag::zoom_rects(
+            cpu,
+            memory,
+            gworlds,
+            toolbox_startup,
+            *tick_count,
+            cycles_per_tick,
+        ));
+    }
     if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::WaitMouseMoved) {
         let initial = ((cpu.gpr[3] >> 16) as u16 as i16, cpu.gpr[3] as u16 as i16);
         return Some(match crate::drag_manager::wait_mouse_moved(initial, (input.mouse_v, input.mouse_h), input.mouse_button) {
