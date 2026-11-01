@@ -2077,6 +2077,11 @@ impl PpcLoadedApp {
                                 .wrapping_add(i32::from(input.mouse_h) - i32::from(*anchor));
                             *anchor = h;
                         }
+                        let physical_origin = input_sprocket
+                            .device_mouse_rebased_warp
+                            .map(|(_, origin)| origin)
+                            .unwrap_or((input.mouse_v, input.mouse_h));
+                        input_sprocket.device_mouse_rebased_warp = Some(((v, h), physical_origin));
                         input.mouse_v = v;
                         input.mouse_h = h;
                         process_input.set_mouse_position((input.mouse_v, input.mouse_h));
