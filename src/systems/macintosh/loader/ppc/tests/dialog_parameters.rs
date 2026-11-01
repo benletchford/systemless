@@ -309,6 +309,7 @@ fn hle_import_runner_keeps_resource_alert_modal_until_default_item() {
     );
 
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
         when: 0,

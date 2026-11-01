@@ -501,6 +501,7 @@
                 .dispatcher_mut()
                 .event_queue
                 .push_back(crate::event_queue::QueuedEvent {
+                delivery_id: None,
                     what: 3,
                     message: 0,
                     when: 0,

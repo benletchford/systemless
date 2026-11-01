@@ -211,6 +211,7 @@ pub(crate) fn ppc_peek_event(
     (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
 }
 
+#[cfg(test)]
 pub(crate) fn ppc_dequeue_event(
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     event_mask: u16,
@@ -218,19 +219,35 @@ pub(crate) fn ppc_dequeue_event(
     os_only: bool,
     tick_count: u32,
 ) -> (u16, u32, u32, i16, i16, u16, bool) {
+    ppc_dequeue_event_with_identity(event_queue, event_mask, input, os_only, tick_count).0
+}
+
+pub(crate) fn ppc_dequeue_event_with_identity(
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    event_mask: u16,
+    input: PpcInputSnapshot,
+    os_only: bool,
+    tick_count: u32,
+) -> ((u16, u32, u32, i16, i16, u16, bool), Option<u64>) {
     if let Some(index) = ppc_matching_event_index(event_queue, event_mask, os_only) {
         let event = event_queue.remove(index).unwrap();
         return (
-            event.what,
-            event.message,
-            event.when,
-            event.where_v,
-            event.where_h,
-            event.modifiers,
-            true,
+            (
+                event.what,
+                event.message,
+                event.when,
+                event.where_v,
+                event.where_h,
+                event.modifiers,
+                true,
+            ),
+            event.delivery_id,
         );
     }
-    (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
+    (
+        (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false),
+        None,
+    )
 }
 
 pub(crate) fn ppc_enqueue_window_update_event(
@@ -250,6 +267,7 @@ pub(crate) fn ppc_enqueue_window_update_event(
     // previously invisible window makes its content region invalid and the
     // Window Manager posts an updateEvt for the application to redraw it.
     event_queue.push_back(PpcQueuedEvent {
+        delivery_id: None,
         what: 6,
         message: window,
         when,
@@ -273,6 +291,7 @@ pub(crate) fn ppc_enqueue_window_activation_event(
     event_queue.retain(|event| event.what != 8 || (event.modifiers & 1) != active_flag);
     let _ = memory.write_u32_be(if activating { 0x0A64 } else { 0x0A68 }, window);
     event_queue.push_back(PpcQueuedEvent {
+        delivery_id: None,
         what: 8,
         message: window,
         when,
