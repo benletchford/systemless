@@ -4592,6 +4592,80 @@ fn make_test_ditl(items: &[Vec<u8>]) -> Vec<u8> {
 }
 
 #[test]
+fn append_ditl_creates_controls_that_shorten_ditl_disposes() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CountDITL");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    let text = make_test_ditl_item_typed(10, 10, 26, 160, PPC_DIALOG_ITEM_STATIC_TEXT, b"Note");
+    let ditl_bytes = make_test_ditl(&[text]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+    let append_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &make_test_ditl(&[make_test_ditl_item(40, 10, 60, 80, b"OK")]),
+    );
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = append_handle;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let control_handle = loaded
+        .memory
+        .read_u32_be(items_ptr + ditl_bytes.len() as u32)
+        .unwrap();
+    assert_ne!(control_handle, 0);
+    assert!(loaded
+        .controls
+        .records()
+        .iter()
+        .any(|record| record.handle == control_handle));
+
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
+    );
+
+    assert!(!loaded
+        .controls
+        .records()
+        .iter()
+        .any(|record| record.handle == control_handle));
+}
+
+#[test]
 fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
     let dialog_ptr = PPC_DATA_BASE + 0x1000;
     let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CountDITL");
@@ -4703,6 +4777,14 @@ fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
         PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::CountDitl),
     );
     assert_eq!(loaded.cpu.gpr[3], 3);
+    // 3b. The appended button has a live control, as if NewDialog had built it
+    let appended_offset = ditl_bytes.len() as u32;
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let appended_control = loaded.memory.read_u32_be(items_ptr + appended_offset).unwrap();
+    assert_ne!(appended_control, 0);
+    assert!(with_test_controls!(loaded, |controls| controls
+        .iter()
+        .any(|record: &PpcControlRecord| record.handle == appended_control)));
 
     // 4. ShortenDITL: Remove 1 item from the end
     loaded.cpu.gpr[3] = dialog_ptr;
@@ -4711,6 +4793,10 @@ fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
         &mut loaded,
         PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
     );
+
+    assert!(!with_test_controls!(loaded, |controls| controls
+        .iter()
+        .any(|record: &PpcControlRecord| record.handle == appended_control)));
 
     // 4a. CountDITL reports 2 items
     loaded.cpu.gpr[3] = dialog_ptr;
