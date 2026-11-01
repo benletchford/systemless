@@ -621,6 +621,10 @@ fn ppc_width_table_bytes(text_font: i16, text_size: i16, style: u8) -> Vec<u8> {
     // inNumer and inDenom are 1:1 Points.
     table[1044..1052].copy_from_slice(&[0, 1, 0, 1, 0, 1, 0, 1]);
     table[1052..1054].copy_from_slice(&text_font.to_be_bytes());
+    // vOutput, hOutput, vFactor and hFactor are 8.8 Fixed 1.0; the font is not scaled.
+    table[1060..1068].copy_from_slice(&[1, 0, 1, 0, 1, 0, 1, 0]);
+    table[1068..1070].copy_from_slice(&text_size.to_be_bytes());
+    table[1070..1072].copy_from_slice(&0x430u16.to_be_bytes());
     table
 }
 
@@ -666,4 +670,18 @@ fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16
             denominator,
         )),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn width_table_reports_actual_size_and_unit_scaling() {
+        let table = ppc_width_table_bytes(20, 12, 0);
+        assert_eq!(table.len(), 1072);
+        assert_eq!(&table[1060..1068], &[1, 0, 1, 0, 1, 0, 1, 0]);
+        assert_eq!(&table[1068..1070], &12i16.to_be_bytes());
+        assert_eq!(&table[1070..1072], &1072u16.to_be_bytes());
+    }
 }
