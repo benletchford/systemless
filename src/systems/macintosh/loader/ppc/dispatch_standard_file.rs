@@ -1652,16 +1652,18 @@ fn ppc_standard_file_get_service(
                     .max(0) as usize;
                 let first_visible = tracking.selected.saturating_sub(7);
                 let index = first_visible.saturating_add(row);
-                if index < tracking.entries.len() {
+                let double_time = memory
+                    .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
+                    .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
+                // The first click can scroll the list, so the second opens its selection.
+                open = tracking.last_list_click.is_some_and(|(when, last_row)| {
+                    last_row == row && event.when.wrapping_sub(when) <= double_time
+                });
+                if open {
+                    tracking.last_list_click = None;
+                } else if index < tracking.entries.len() {
                     tracking.selected = index;
-                    let double_time = memory
-                        .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
-                        .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
-                    // Compare rows: the list can scroll when the first click selects.
-                    open = tracking.last_list_click.is_some_and(|(when, last_row)| {
-                        last_row == row && event.when.wrapping_sub(when) <= double_time
-                    });
-                    tracking.last_list_click = (!open).then_some((event.when, row));
+                    tracking.last_list_click = Some((event.when, row));
                 } else {
                     tracking.last_list_click = None;
                 }

@@ -3004,6 +3004,48 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn standard_get_file_double_click_in_a_scrolled_list_opens_the_first_selection() {
+        let (mut loaded, _) = standard_get_file_in_nested_folders();
+        for n in 0..12u32 {
+            loaded.vfs_directories.push(PpcVfsDirectory {
+                dir_id: 100 + n,
+                parent_dir_id: PPC_ROOT_DIR_ID,
+                path: format!("Folder {n:02}"),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        // Reopen the dialog so it lists the new folders.
+        let reply = PPC_DATA_BASE + 0x1000;
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.take();
+        let bounds = tracking.unwrap().bounds;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0xffff;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+        loaded.run_with_hle_imports(64);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_mut();
+        let tracking = tracking.unwrap();
+        // Selecting index 9 scrolls the list so row 0 shows index 2.
+        tracking.selected = 9;
+        let expected = tracking.entries[7].dir_id;
+        let v = bounds.0
+            + PPC_STANDARD_FILE_GET_LIST_RECT.0
+            + 2
+            + 5 * PPC_STANDARD_FILE_GET_ROW_HEIGHT
+            + 4;
+        let h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+
+        standard_get_file_mouse(&mut loaded, 1, 100, v, h);
+        standard_get_file_mouse(&mut loaded, 1, 105, v, h);
+
+        assert_eq!(standard_get_file_dir(&loaded), expected);
+    }
+
+    #[test]
     fn standard_get_file_folder_popup_navigates_to_enclosing_folders() {
         let (mut loaded, bounds) = standard_get_file_in_nested_folders();
         let list_v = bounds.0 + PPC_STANDARD_FILE_GET_LIST_RECT.0 + 5;
