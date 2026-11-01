@@ -4971,3 +4971,67 @@ fn spin_fastfwd_template_h_ignores_an_expired_deadline() {
     assert_eq!(runner.guest_tick(), 100);
     assert_eq!(runner.bus.read_long(sp - 4), 100);
 }
+
+fn subq_signed_deadline_wait(word: u16, tick: u32, deadline: u32) -> FixtureRunner {
+    // Missions of the Reliant 2.2's delay routine:
+    //   SUBQ.W #4,A7; _TickCount; CMP.L (A7)+,D7; BGT.S back-to-SUBQ
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    for (offset, w) in [0x594F, 0xA975, 0xBE9F, word, 0x4E71]
+        .into_iter()
+        .enumerate()
+    {
+        runner.bus.write_word(base + offset as u32 * 2, w);
+    }
+    runner.bus.write_long(0x016A, tick);
+    runner.set_guest_tick_for_test(tick);
+    runner.m68k.cpu.write_reg(Register::D7, deadline);
+    runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+    runner.m68k.cpu.write_reg(Register::PC, base + 4);
+    runner.bus.write_long(sp - 4, tick);
+    runner
+}
+
+#[test]
+fn spin_fastfwd_template_d_subq_bgt_waits_until_the_deadline() {
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    let mut runner = subq_signed_deadline_wait(0x6EF8, 100, 160);
+    let mut count = 0usize;
+
+    assert!(!runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count));
+    assert_eq!(runner.guest_tick(), 160);
+    assert_eq!(runner.bus.read_long(sp - 4), 160);
+
+    for _ in 0..2 {
+        assert!(matches!(
+            runner.m68k.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+    }
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 8);
+}
+
+#[test]
+fn spin_fastfwd_template_d_subq_bge_exits_after_the_deadline() {
+    let base = 0x0001_0000u32;
+    let mut runner = subq_signed_deadline_wait(0x6CF8, 100, 160);
+    let mut count = 0usize;
+
+    assert!(!runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count));
+    assert_eq!(runner.guest_tick(), 161);
+}
+
+#[test]
+fn spin_fastfwd_template_d_signed_ignores_an_expired_deadline() {
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    let mut runner = subq_signed_deadline_wait(0x6EF8, 100, 90);
+    let mut count = 0usize;
+
+    assert!(!runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count));
+    assert_eq!(runner.guest_tick(), 100);
+    assert_eq!(runner.bus.read_long(sp - 4), 100);
+}
