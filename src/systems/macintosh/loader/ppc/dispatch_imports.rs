@@ -80,6 +80,10 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) vbl_tasks: &'a SharedProcessVblTasks,
     pub(crate) callback_scheduling: &'a SharedProcessCallbackScheduling,
     pub(crate) files: &'a mut Vec<PpcFileRecord>,
+    pub(crate) desktop_databases:
+        &'a mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+    pub(crate) desktop_file_metadata:
+        &'a HashMap<String, crate::systems::macintosh::process_context::ProcessVfsMetadata>,
     pub(crate) writable_refnums: &'a mut HashSet<u16>,
     pub(crate) vfs_files: &'a mut ProcessVfsFileRecords,
     pub(crate) stdio_streams: &'a mut HashMap<u32, PpcStdioStreamRecord>,
@@ -204,6 +208,8 @@ pub(crate) fn dispatch_supported_import(
         vbl_tasks,
         callback_scheduling,
         files,
+        desktop_databases,
+        desktop_file_metadata,
         writable_refnums,
         vfs_files,
         stdio_streams,
@@ -467,6 +473,8 @@ pub(crate) fn dispatch_supported_import(
             handles,
             aliases,
             files,
+            desktop_databases,
+            desktop_file_metadata,
             writable_refnums,
             vfs_files,
             vfs_directories,
@@ -1847,6 +1855,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetVInfo
         | PpcImportDispatcherTarget::GetVRefNum
         | PpcImportDispatcherTarget::PBDTGetPath
+        | PpcImportDispatcherTarget::PBDTAddIconSync
+        | PpcImportDispatcherTarget::PBDTGetIconSync
+        | PpcImportDispatcherTarget::PBDTGetIconInfoSync
+        | PpcImportDispatcherTarget::PBDTAddAPPLSync
         | PpcImportDispatcherTarget::PBDTGetAPPL
         | PpcImportDispatcherTarget::PBDTGetCommentSync
         | PpcImportDispatcherTarget::PBGetFInfo

@@ -10,6 +10,10 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
     pub(super) aliases: &'a mut Vec<PpcAliasRecord>,
     pub(super) files: &'a mut Vec<PpcFileRecord>,
+    pub(super) desktop_databases:
+        &'a mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+    pub(super) desktop_file_metadata:
+        &'a HashMap<String, crate::systems::macintosh::process_context::ProcessVfsMetadata>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
     pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
@@ -40,6 +44,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         handles,
         aliases,
         files,
+        desktop_databases,
+        desktop_file_metadata,
         writable_refnums,
         vfs_files,
         vfs_directories,
@@ -628,11 +634,55 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::PBDTGetPath => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_dt_get_path(cpu, memory, vfs_volumes),
+            ppc_pb_dt_get_path(cpu, memory, vfs_volumes, desktop_databases, false),
         ))),
-        PpcImportDispatcherTarget::PBDTGetAPPL => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pb_dt_get_appl(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
+        PpcImportDispatcherTarget::PBDTAddIconSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_dt_icon(
+                cpu,
+                memory,
+                vfs_volumes,
+                desktop_databases,
+                true,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBDTGetIconSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_dt_icon(
+                cpu,
+                memory,
+                vfs_volumes,
+                desktop_databases,
+                false,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBDTGetIconInfoSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_pb_dt_icon_info(cpu, memory, vfs_volumes, desktop_databases),
+            )))
+        }
+        PpcImportDispatcherTarget::PBDTAddAPPLSync => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_dt_add_appl(
+                cpu,
+                memory,
+                vfs_volumes,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                desktop_file_metadata,
+                desktop_databases,
+            ))))
+        }
+        PpcImportDispatcherTarget::PBDTGetAPPL => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_dt_get_appl(
+                cpu,
+                memory,
+                vfs_volumes,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                desktop_file_metadata,
+                desktop_databases,
+            ))))
+        }
         PpcImportDispatcherTarget::PBDTGetCommentSync => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_pb_dt_get_comment(cpu, memory, vfs_volumes)),
         )),
@@ -889,6 +939,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                     cpu,
                     memory,
                     files,
+                    desktop_databases,
                     writable_refnums,
                     vfs_files,
                     vfs_directories,
@@ -1016,6 +1067,215 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
 /// MacErrors.h: missing comment or APPL entry in the desktop database.
 const PPC_AFP_ITEM_NOT_FOUND: i16 = -5012;
 
+/// PBDTAddIcon and PBDTGetIcon use the same packed DTPBRec fields.
+fn ppc_pb_dt_icon(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    volumes: &[PpcVfsVolumeRecord],
+    databases: &mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+    adding: bool,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 60) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(volume) = ppc_dt_volume_ref(memory.read_u16_be(pb + 24).unwrap_or(0), volumes) else {
+        return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
+    };
+    if adding {
+        if let Some(attributes) = volumes
+            .iter()
+            .find(|candidate| candidate.ref_num == volume)
+            .map(|candidate| candidate.attributes)
+        {
+            // Files.h: ioVAtrb bits 7 and 15 report hardware and software locks.
+            if attributes & 0x0080 != 0 {
+                return ppc_complete_pb(memory, pb, -44); // wPrErr
+            }
+            if attributes & 0x8000 != 0 {
+                return ppc_complete_pb(memory, pb, -46); // vLckdErr
+            }
+        }
+    }
+    let buffer = memory.read_u32_be(pb + 32).unwrap_or(0);
+    let length = memory.read_u32_be(pb + 36).unwrap_or(u32::MAX);
+    let creator = memory.read_u32_be(pb + 52).unwrap_or(0);
+    let file_type = memory.read_u32_be(pb + 56).unwrap_or(0);
+    let icon_type = memory.read_u8(pb + 45).unwrap_or(0);
+    if length > i32::MAX as u32 || memory.read_u32_be(pb + 28) != Some(0) {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    if adding {
+        if length != 0 && !ppc_memory_can_read_bytes(memory, buffer, length) {
+            return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+        }
+        let mut data = Vec::new();
+        if data.try_reserve_exact(length as usize).is_err() {
+            return ppc_complete_pb(memory, pb, PPC_MEM_FULL_ERR);
+        }
+        data.resize(length as usize, 0);
+        if length != 0 && memory.read_bytes_into(buffer, &mut data).is_none() {
+            for (offset, byte) in data.iter_mut().enumerate() {
+                let Some(address) = buffer.checked_add(offset as u32) else {
+                    return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+                };
+                let Some(value) = memory.read_u8(address) else {
+                    return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+                };
+                *byte = value;
+            }
+        }
+        let icon = crate::systems::macintosh::desktop_manager::DesktopIcon {
+            creator,
+            file_type,
+            icon_type,
+            data,
+        };
+        let result = databases.entry(volume).or_default().add_icon(icon);
+        ppc_complete_pb(memory, pb, result.err().unwrap_or(PPC_NO_ERR))
+    } else {
+        let Some(icon) = databases
+            .get(&volume)
+            .and_then(|database| database.icon(creator, file_type, icon_type))
+        else {
+            return ppc_complete_pb(memory, pb, -5012); // afpItemNotFound
+        };
+        let count = icon.data.len().min(length as usize);
+        if count != 0 && memory.write_bytes(buffer, &icon.data[..count]).is_none() {
+            return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+        }
+        let _ = memory.write_u32_be(pb + 40, icon.data.len() as u32);
+        ppc_complete_pb(memory, pb, PPC_NO_ERR)
+    }
+}
+
+fn ppc_dt_volume_ref(desktop_ref: u16, volumes: &[PpcVfsVolumeRecord]) -> Option<i16> {
+    match desktop_ref.checked_sub(0x7f00)? {
+        0 => Some(PPC_BOOT_VOLUME_REF_NUM),
+        index => volumes
+            .get(usize::from(index - 1))
+            .map(|volume| volume.ref_num),
+    }
+}
+
+fn ppc_pb_dt_icon_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    volumes: &[PpcVfsVolumeRecord],
+    databases: &HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 60) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(volume) = ppc_dt_volume_ref(memory.read_u16_be(pb + 24).unwrap_or(0), volumes) else {
+        return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
+    };
+    if memory.read_u32_be(pb + 28) != Some(0) {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    let index = memory.read_u16_be(pb + 26).unwrap_or(0) as i16;
+    let creator = memory.read_u32_be(pb + 52).unwrap_or(0);
+    let Some(icon) = usize::try_from(index).ok().and_then(|index| {
+        databases
+            .get(&volume)
+            .and_then(|database| database.icon_info(creator, index))
+    }) else {
+        return ppc_complete_pb(memory, pb, -5012); // afpItemNotFound
+    };
+    let _ = memory.write_u32_be(pb + 40, icon.data.len() as u32);
+    let _ = memory.write_u8(pb + 45, icon.icon_type);
+    let _ = memory.write_u32_be(pb + 56, icon.file_type);
+    ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
+fn ppc_dt_path_volume(
+    path: &str,
+    volumes: &[PpcVfsVolumeRecord],
+    directories: &[PpcVfsDirectory],
+) -> i16 {
+    let path = path.to_ascii_lowercase();
+    volumes
+        .iter()
+        .filter_map(|volume| {
+            let root = ppc_directory_path_for_id(directories, volume.root_dir_id)?;
+            let root = root.to_ascii_lowercase();
+            (!root.is_empty() && path.starts_with(&(root.clone() + "/")))
+                .then_some((root.len(), volume.ref_num))
+        })
+        .max_by_key(|(length, _)| *length)
+        .map_or(PPC_BOOT_VOLUME_REF_NUM, |(_, volume)| volume)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_pb_dt_add_appl(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    volumes: &[PpcVfsVolumeRecord],
+    directories: &[PpcVfsDirectory],
+    files: &[PpcVfsFileRecord],
+    resource_files: &[PpcVfsResourceFileRecord],
+    metadata: &HashMap<String, crate::systems::macintosh::process_context::ProcessVfsMetadata>,
+    databases: &mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 56) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(volume) = ppc_dt_volume_ref(memory.read_u16_be(pb + 24).unwrap_or(0), volumes) else {
+        return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
+    };
+    if let Some(attributes) = volumes
+        .iter()
+        .find(|entry| entry.ref_num == volume)
+        .map(|entry| entry.attributes)
+    {
+        if attributes & 0x0080 != 0 {
+            return ppc_complete_pb(memory, pb, -44);
+        }
+        if attributes & 0x8000 != 0 {
+            return ppc_complete_pb(memory, pb, -46);
+        }
+    }
+    if memory.read_u32_be(pb + 28) != Some(0) {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    let name_ptr = memory.read_u32_be(pb + 18).unwrap_or(0);
+    let Some(name) = ppc_read_pstring(memory, name_ptr).filter(|name| !name.is_empty()) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let parent = memory.read_u32_be(pb + 48).unwrap_or(0);
+    let Some(parent_path) = ppc_directory_path_for_id(directories, parent) else {
+        return ppc_complete_pb(memory, pb, PPC_FNF_ERR);
+    };
+    let path = ppc_join_vfs_path(parent_path, &name);
+    let file_is_present = files.iter().any(|file| {
+        file.path.eq_ignore_ascii_case(&path) && file.file_type == u32::from_be_bytes(*b"APPL")
+    }) || resource_files.iter().any(|file| {
+        file.path.eq_ignore_ascii_case(&path) && file.file_type == u32::from_be_bytes(*b"APPL")
+    });
+    let actual_volume = ppc_dt_path_volume(&path, volumes, directories);
+    if !file_is_present || actual_volume != volume {
+        return ppc_complete_pb(memory, pb, PPC_FNF_ERR);
+    }
+    let Some(date) = metadata
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(&path))
+        .map(|(_, entry)| entry.created_date)
+    else {
+        return ppc_complete_pb(memory, pb, PPC_FNF_ERR);
+    };
+    databases.entry(volume).or_default().add_application(
+        crate::systems::macintosh::desktop_manager::DesktopApplication {
+            creator: memory.read_u32_be(pb + 52).unwrap_or(0),
+            name,
+            parent_dir_id: parent,
+            creation_date: date,
+        },
+    );
+    ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
 /// PBDTGetAPPL: find the ioIndex-th application whose creator matches
 /// ioFileCreator (+52), returning its name through ioNamePtr (+18) and its
 /// parent directory in ioAPPLParID (+100). An ioIndex of 0 asks for the
@@ -1023,9 +1283,12 @@ const PPC_AFP_ITEM_NOT_FOUND: i16 = -5012;
 fn ppc_pb_dt_get_appl(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
+    volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
+    metadata: &HashMap<String, crate::systems::macintosh::process_context::ProcessVfsMetadata>,
+    databases: &HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
 ) -> i16 {
     let pb = cpu.gpr[3];
     if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 104) {
@@ -1034,6 +1297,9 @@ fn ppc_pb_dt_get_appl(
     let name_ptr = memory.read_u32_be(pb + 18).unwrap_or(0);
     let index = memory.read_u16_be(pb + 26).unwrap_or(0) as i16;
     let creator = memory.read_u32_be(pb + 52).unwrap_or(0);
+    let Some(volume) = ppc_dt_volume_ref(memory.read_u16_be(pb + 24).unwrap_or(0), volumes) else {
+        return ppc_complete_pb(memory, pb, PPC_RF_NUM_ERR);
+    };
     let appl = u32::from_be_bytes(*b"APPL");
     let mut paths: Vec<&str> = vfs_files
         .iter()
@@ -1045,18 +1311,45 @@ fn ppc_pb_dt_get_appl(
                 .filter(|file| file.file_type == appl && file.creator == creator)
                 .map(|file| file.path.as_str()),
         )
+        .filter(|path| ppc_dt_path_volume(path, volumes, vfs_directories) == volume)
         .collect();
     paths.sort_unstable();
-    paths.dedup();
-    let Some(path) = paths.get(usize::from(index.max(1) as u16) - 1) else {
+    paths.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    let mut combined = databases.get(&volume).cloned().unwrap_or_default();
+    let mut implicit = crate::systems::macintosh::desktop_manager::DesktopDatabase::default();
+    for path in paths {
+        let creation_date = metadata
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(path))
+            .map_or(0, |(_, entry)| entry.created_date);
+        implicit.add_application(
+            crate::systems::macintosh::desktop_manager::DesktopApplication {
+                creator,
+                name: path.rsplit('/').next().unwrap_or(path).to_owned(),
+                parent_dir_id: ppc_parent_dir_id_for_path(vfs_directories, path),
+                creation_date,
+            },
+        );
+    }
+    combined.merge_missing(implicit);
+    let Some(entry) = usize::try_from(index).ok().and_then(|index| {
+        if index == 0 {
+            databases
+                .get(&volume)
+                .and_then(|database| database.application(creator, 0))
+                .or_else(|| combined.application(creator, 0))
+        } else {
+            combined.application(creator, index)
+        }
+    }) else {
         return ppc_complete_pb(memory, pb, PPC_AFP_ITEM_NOT_FOUND);
     };
-    let name = encode_mac_roman_lossy(path.rsplit('/').next().unwrap_or(path));
+    let name = encode_mac_roman_lossy(&entry.name);
     if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &name) {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    let _ = memory.write_u32_be(pb + 28, 0);
-    let _ = memory.write_u32_be(pb + 100, ppc_parent_dir_id_for_path(vfs_directories, path));
+    let _ = memory.write_u32_be(pb + 28, entry.creation_date);
+    let _ = memory.write_u32_be(pb + 100, entry.parent_dir_id);
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
@@ -1064,12 +1357,14 @@ pub(super) fn ppc_pb_dt_get_path(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_volumes: &[PpcVfsVolumeRecord],
+    databases: &mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
+    inform: bool,
 ) -> i16 {
     // DTPBRec uses the classic parameter-block header: ioNamePtr at +18,
     // ioVRefNum at +22, and ioDTRefNum at +24. More Macintosh Toolbox
     // (1993), pp. 9-6–9-9.
     let pb = cpu.gpr[3];
-    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 26) {
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, if inform { 32 } else { 26 }) {
         return PPC_PARAM_ERR;
     }
     let name_ptr = memory.read_u32_be(pb + 18).unwrap_or(0);
@@ -1106,8 +1401,21 @@ pub(super) fn ppc_pb_dt_get_path(
         let _ = memory.write_u16_be(pb + 24, 0);
         return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
     };
-    let desktop_ref = 0x7f00u16.saturating_add(volume_index as u16);
+    let Some(desktop_ref) = u16::try_from(volume_index)
+        .ok()
+        .and_then(|index| 0x7f00u16.checked_add(index))
+    else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(volume) = ppc_dt_volume_ref(desktop_ref, vfs_volumes) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let existed = databases.contains_key(&volume);
+    databases.entry(volume).or_default();
     let _ = memory.write_u16_be(pb + 24, desktop_ref);
+    if inform {
+        let _ = memory.write_u32_be(pb + 28, u32::from(existed));
+    }
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 

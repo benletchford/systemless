@@ -58,6 +58,8 @@ pub(super) struct PpcFileManagerContext<'a> {
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
     pub(super) files: &'a mut Vec<PpcFileRecord>,
+    pub(super) desktop_databases:
+        &'a mut HashMap<i16, crate::systems::macintosh::desktop_manager::DesktopDatabase>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
     pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
@@ -81,6 +83,7 @@ pub(super) fn ppc_dispatch_file_manager(
         cpu,
         memory,
         files,
+        desktop_databases,
         writable_refnums,
         vfs_files,
         vfs_directories,
@@ -339,14 +342,7 @@ pub(super) fn ppc_dispatch_file_manager(
             ppc_complete_pb(memory, pb, result)
         }
         PpcFileManagerOperation::PbDtOpenInform => {
-            // More Macintosh Toolbox (PBDTOpenInform): PBDTGetPath that also
-            // returns ioTagInfo. No inform flags are reported.
-            let pb = cpu.gpr[3];
-            let result = dispatch_files::ppc_pb_dt_get_path(cpu, memory, vfs_volumes);
-            if result == PPC_NO_ERR {
-                let _ = memory.write_u32_be(pb + 28, 0);
-            }
-            result
+            dispatch_files::ppc_pb_dt_get_path(cpu, memory, vfs_volumes, desktop_databases, true)
         }
         PpcFileManagerOperation::PbDtSetComment => ppc_pb_dt_set_comment(
             cpu.gpr[3],
