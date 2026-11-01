@@ -6585,8 +6585,6 @@ impl super::TrapDispatcher {
         );
     }
 
-    /// DrawDialog paints items in the existing window; creating or erasing
-    /// that window belongs to the Window Manager (MTE 1992, 6-142).
     /// The dialog port's txFont, txFace and txSize, in which its items are
     /// drawn whatever the current port is. A new dialog port has the system
     /// font, plain, at its standard size (IM:I I-163).
@@ -6609,6 +6607,8 @@ impl super::TrapDispatcher {
             .unwrap_or((self.tx_font, self.tx_face as u8, self.tx_size))
     }
 
+    /// DrawDialog paints items in the existing window; creating or erasing
+    /// that window belongs to the Window Manager (MTE 1992, 6-142).
     fn draw_dialog_items(
         &mut self,
         bus: &mut MacMemoryBus,
