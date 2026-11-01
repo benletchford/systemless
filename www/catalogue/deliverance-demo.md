@@ -20,12 +20,11 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice and reached the
-      first castle level. A burst of arrow keys, Space and a click moved the
-      warrior. A matched idle control was identical until the input and then
-      differed by 234,932 pixels. An exact replay matched both checkpoints, with
-      zero exhausted frames. Combat, later rooms, audio and browser performance
-      remain unverified.
+      The unchanged demo archive ran natively on the 68K slice and reached the first
+      castle level. A burst of arrow keys, Space and a click moved the warrior. A
+      matched idle control was identical until the input and then differed by 234,932
+      pixels. An exact replay matched both checkpoints, with zero exhausted frames. Combat,
+      later rooms, audio and browser performance remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5486
 runtime:
@@ -36,10 +35,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Deliverance%20Demo.sit
-    expected_sha256: 0624f6762aa815e2443d67d121d27ddde3982de9f04fdb7be0b2a923e5621bf1
-    expected_size: 765776
+    type: sha256
+    sha256: 0624f6762aa815e2443d67d121d27ddde3982de9f04fdb7be0b2a923e5621bf1
+    size_bytes: 765776
   provenance:
     redistribution: permitted
     original: true
@@ -50,20 +48,19 @@ artifacts:
     license: Maintainer-accepted freely distributed promotional demo
     rights_holder: 21st Century Entertainment
     permission: >-
-      Hosting was accepted by the Systemless maintainer on 1 November 2026 under
-      the policy for unchanged, freely circulated promotional demos. The
-      unchanged demo appeared on at least 14 period Macintosh magazine cover
-      discs. The bundled documents contain no explicit redistribution grant or
-      restriction. Preserve the complete unchanged archive and remove it if a
-      rights holder objects.
-    notes: >-
-      68K demo of the action platformer (known elsewhere as Stormlord II).
+      Hosting was accepted by the Systemless maintainer on 1 November 2026 under the
+      policy for unchanged, freely circulated promotional demos. The unchanged demo
+      appeared on at least 14 period Macintosh magazine cover discs. The bundled documents
+      contain no explicit redistribution grant or restriction. Preserve the complete
+      unchanged archive and remove it if a rights holder objects.
+    notes: 68K demo of the action platformer (known elsewhere as Stormlord II).
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/deliverance-demo/gameplay.png
+    type: sha256
+    sha256: 3af27ef638055e0f107ab352d3b92cc4a19e210864ea3f603a08b549b8024673
+    size_bytes: 16128
   provenance:
     redistribution: permitted
     original: true
@@ -81,7 +78,7 @@ references:
 
 ## Storm the castle
 
-![Deliverance Demo](incoming/deliverance-demo/gameplay.png)
+![Deliverance Demo](https://assets.systemless.org/catalogue/media/sha256/3a/3af27ef638055e0f107ab352d3b92cc4a19e210864ea3f603a08b549b8024673.png)
 
 Fight your way through a castle full of monsters to rescue the captive fairies.
 
