@@ -460,6 +460,7 @@ fn sfputfile_reads_c_strings_and_returns_a_c_string_file_name() {
     assert_eq!(tracking.name, b"Game 1");
     assert_eq!(tracking.prompt, b"Save game:");
     loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
         when: 0,

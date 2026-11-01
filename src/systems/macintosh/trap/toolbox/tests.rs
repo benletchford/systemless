@@ -1140,6 +1140,7 @@ fn test_get_next_event_with_event() {
 
     // Push a mouseDown event
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -1470,6 +1471,7 @@ fn test_get_next_event_mask_miss_returns_null_and_preserves_queue() {
     bus.write_word(sp + 6, 0xBEEF);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown (not in keyDownMask)
         message: 0,
         when: 0,
@@ -1754,6 +1756,7 @@ fn test_event_avail_with_event() {
     bus.write_word(sp + 6, 0x0000);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown
         message: 0,
         when: 0,
@@ -1809,6 +1812,7 @@ fn test_event_avail_mask_miss_returns_null_and_preserves_queue() {
     bus.write_word(sp + 6, 0xBEEF);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1, // mouseDown
         message: 0x1234_5678,
         when: 0,
@@ -1840,6 +1844,7 @@ fn test_event_avail_then_get_next_event_returns_same_event() {
     bus.write_word(sp + 6, 0x0000);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0xCAFEBABE,
         when: 0,
@@ -12500,6 +12505,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return opens the Pilots folder
         when: 0,
@@ -12512,6 +12518,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F, // ArrowDown
         when: 0,
@@ -12524,6 +12531,7 @@ fn standard_get_file_gui_tracking_opens_selected_pilots_file() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return
         when: 0,
@@ -12633,6 +12641,7 @@ fn standard_get_file_gui_navigates_folder_then_cancels_with_original_abi() {
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -12653,6 +12662,7 @@ fn standard_get_file_gui_navigates_folder_then_cancels_with_original_abi() {
     assert_eq!(cpu.read_reg(Register::A7), sp);
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -12766,6 +12776,7 @@ fn sf_get_file_gui_tracking_opens_selected_pilots_file_with_wdrefnum() {
     );
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D, // Return opens the Pilots folder
         when: 0,
@@ -12778,6 +12789,7 @@ fn sf_get_file_gui_tracking_opens_selected_pilots_file_with_wdrefnum() {
     assert!(disp.is_standard_file_get_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -12888,7 +12900,15 @@ fn standard_put_cancel_tracks_release_and_drag_out() {
     let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
     let v = bounds.0 + super::STANDARD_FILE_CANCEL_RECT.0 + 4;
     let h = bounds.1 + super::STANDARD_FILE_CANCEL_RECT.1 + 4;
-    let event = |what, v, h| QueuedEvent { what, message: 0, when: 0, where_v: v, where_h: h, modifiers: 0 };
+    let event = |what, v, h| QueuedEvent {
+        delivery_id: None,
+        what,
+        message: 0,
+        when: 0,
+        where_v: v,
+        where_h: h,
+        modifiers: 0,
+    };
     disp.event_queue.push_back(event(1, v, h));
     disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus).unwrap().unwrap();
     assert!(disp.standard_file_put_tracking.as_ref().unwrap().active_button.is_some());
@@ -12958,6 +12978,7 @@ fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     // A key edits the name: that pass redraws the dialog.
     let before_key = bus.screen_mark().expect("presented screen");
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: (u32::from(b'R') << 8) | u32::from(b'R'),
         when: 0,
@@ -13005,6 +13026,7 @@ fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
 
     for byte in b"Rick" {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: (u32::from(*byte) << 8) | u32::from(*byte),
             when: 0,
@@ -13018,6 +13040,7 @@ fn standard_put_file_gui_tracking_accepts_typed_name_on_return() {
     }
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13070,6 +13093,7 @@ fn standard_put_file_gui_reply_can_drive_fspcreate_save_file() {
 
     for byte in b"Rick Hardslab" {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: (u32::from(*byte) << 8) | u32::from(*byte),
             when: 0,
@@ -13083,6 +13107,7 @@ fn standard_put_file_gui_reply_can_drive_fspcreate_save_file() {
             .is_ok());
     }
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13190,6 +13215,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     // Return and a direct click on the disabled Save button are no-ops.
     for event in [
         QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x0000_240D,
             when: 0,
@@ -13198,6 +13224,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
             modifiers: 0,
         },
         QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -13219,6 +13246,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
 
     let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -13233,6 +13261,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
         .unwrap();
     assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().current_dir_id, locked_dir);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 2,
         message: 0,
         when: 0,
@@ -13266,6 +13295,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
     for _ in 0..2 {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -13286,6 +13316,7 @@ fn sf_put_file_gui_locked_volume_requires_navigation_and_persists_cancelled_dire
     );
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -13339,6 +13370,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
     let row_v = bounds.0 + STANDARD_FILE_PUT_LIST_RECT.0 + 7;
     let row_h = bounds.1 + STANDARD_FILE_PUT_LIST_RECT.1 + 8;
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -13350,6 +13382,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F,
         when: 0,
@@ -13369,6 +13402,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
     );
     // The filename remains the active editable item after navigation.
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_5858,
         when: 0,
@@ -13381,6 +13415,7 @@ fn sf_put_file_gui_navigation_returns_selected_directory_wdref_for_pbcreate() {
         .unwrap();
     assert_eq!(disp.standard_file_put_tracking.as_ref().unwrap().name, "X");
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13441,6 +13476,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         .unwrap();
     disp.standard_file_put_tracking.as_mut().unwrap().selected = Some(0);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_7D1F,
         when: 0,
@@ -13452,6 +13488,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         .unwrap()
         .unwrap();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
@@ -13487,6 +13524,7 @@ fn standard_put_file_gui_navigation_returns_modern_parent_and_seeds_next_dialog(
         saves_dir
     );
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_351B,
         when: 0,
@@ -13651,6 +13689,7 @@ fn sf_put_file_gui_tracking_returns_working_directory_refnum() {
     assert!(disp.is_standard_file_put_tracking());
 
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x0000_240D,
         when: 0,
