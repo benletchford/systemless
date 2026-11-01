@@ -4896,3 +4896,78 @@ fn real_setport_cycle_can_close_across_single_instruction_slices() {
     );
     assert_eq!(*runner.dispatcher.current_port, original);
 }
+
+#[test]
+fn spin_fastfwd_template_h_saved_tick_plus_constant_frame_limiter() {
+    // Continuum 1.03's frame limiter:
+    //   CLR.L -(A7); _TickCount; MOVE.L (A7)+,D0
+    //   MOVE.L (-$2144,A5),D1; ADDQ.L #3,D1; CMP.L D1,D0; BLT.S back
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    let a5 = 0x0004_0000u32;
+    for (offset, word) in [
+        0x42A7, 0xA975, 0x201F, 0x222D, 0xDEBC, 0x5681, 0xB081, 0x6DF0, 0x4E71,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runner.bus.write_word(base + offset as u32 * 2, word);
+    }
+    let saved = a5.wrapping_add(0xDEBC_u16 as i16 as i32 as u32);
+    runner.bus.write_long(saved, 100);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.m68k.cpu.write_reg(Register::A5, a5);
+    runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+    runner.m68k.cpu.write_reg(Register::PC, base + 4);
+    runner.bus.write_long(sp - 4, 100);
+
+    let mut count = 0usize;
+    let hit_cap = runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count);
+
+    assert!(!hit_cap);
+    assert_eq!(runner.guest_tick(), 103);
+    assert_eq!(runner.bus.read_long(sp - 4), 103);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 4);
+    assert_eq!(count, 0, "post-trap body remains for exact CPU execution");
+
+    for _ in 0..5 {
+        assert!(matches!(
+            runner.m68k.cpu.step(&mut runner.bus),
+            crate::cpu::StepResult::Ok
+        ));
+    }
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 103);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::PC), base + 16);
+}
+
+#[test]
+fn spin_fastfwd_template_h_ignores_an_expired_deadline() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    let a5 = 0x0004_0000u32;
+    for (offset, word) in [
+        0x42A7, 0xA975, 0x201F, 0x222D, 0xDEBC, 0x5681, 0xB081, 0x6DF0, 0x4E71,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runner.bus.write_word(base + offset as u32 * 2, word);
+    }
+    runner
+        .bus
+        .write_long(a5.wrapping_add(0xDEBC_u16 as i16 as i32 as u32), 90);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_guest_tick_for_test(100);
+    runner.m68k.cpu.write_reg(Register::A5, a5);
+    runner.m68k.cpu.write_reg(Register::A7, sp - 4);
+    runner.bus.write_long(sp - 4, 100);
+
+    let mut count = 0usize;
+    assert!(!runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count));
+    assert_eq!(runner.guest_tick(), 100);
+    assert_eq!(runner.bus.read_long(sp - 4), 100);
+}
