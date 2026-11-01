@@ -21,13 +21,14 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice. File > Play > Basic Rules >
-      Person versus Computer, with Return for the name and setup dialogs, started a game on
-      the partly explored map. The numeric keypad then moved the map cursor. A matched idle
-      control was identical until the input and then differed by 33,485 pixels. An exact
-      replay matched every checkpoint, with zero exhausted frames. Combat, production, audio remain unverified.
-      Three browser samples on the intro scene passed at about 60 host fps and 60 guest
-      ticks/s; in-game pacing was not separately measured.
+      The unchanged demo archive ran natively on the 68K slice. File > Play > Basic
+      Rules > Person versus Computer, with Return for the name and setup dialogs,
+      started a game on the partly explored map. The numeric keypad then moved the map
+      cursor. A matched idle control was identical until the input and then differed by
+      33,485 pixels. An exact replay matched every checkpoint, with zero exhausted frames.
+      Combat, production, audio remain unverified. Three browser samples on the intro
+      scene passed at about 60 host fps and 60 guest ticks/s; in-game pacing was not
+      separately measured.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5520
 runtime:
@@ -39,10 +40,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Empire%20Deluxe%20Demo.sit
-    expected_sha256: 647be14dd5fc0abe6e542009f9b8c7b913d7e0bab89270d366fdb738377d761a
-    expected_size: 1999580
+    type: sha256
+    sha256: 647be14dd5fc0abe6e542009f9b8c7b913d7e0bab89270d366fdb738377d761a
+    size_bytes: 1999580
   provenance:
     redistribution: permitted
     original: true
@@ -63,8 +63,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/empire-deluxe-demo/gameplay.png
+    type: sha256
+    sha256: 5d68bfd9ce01d5d504089c389cb727747673e065ecf5ef221e4b708ef801d755
+    size_bytes: 13910
   provenance:
     redistribution: permitted
     original: true
@@ -74,7 +75,9 @@ artifacts:
     permission: >-
       Fresh gameplay capture from the unchanged demo archive. The underlying game
       artwork remains its owners' property.
-    notes: Native 68K opening turn after Person versus Computer setup, cropped to the game window.
+    notes: >-
+      Native 68K opening turn after Person versus Computer setup, cropped to the game
+      window.
 references:
 - https://classicmacdemos.com/empire-deluxe
 - https://github.com/benletchford/systemless/issues/5520
@@ -82,7 +85,7 @@ references:
 
 ## Conquer the world
 
-![Empire Deluxe Demo](incoming/empire-deluxe-demo/gameplay.png)
+![Empire Deluxe Demo](https://assets.systemless.org/catalogue/media/sha256/5d/5d68bfd9ce01d5d504089c389cb727747673e065ecf5ef221e4b708ef801d755.png)
 
 Start with a single city on a map shrouded in darkness. Produce units, explore, take neutral cities and race your rivals to control the world.
 
