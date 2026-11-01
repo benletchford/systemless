@@ -1,6 +1,6 @@
 [package]
 name = "systemless-org"
-version = "0.107.0"
+version = "0.108.0"
 edition = "2021"
 rust-version = "1.93"
 description = "Browser frontend for Systemless"
@@ -102,6 +102,6 @@ systemless-catalogue-tools = { path = "tools/catalogue" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser compute workers run the same kernels as the desktop renderer.
-systemless = { path = "..", version = "0.107.0", default-features = false, features = ["wgpu-compute"] }
+systemless = { path = "..", version = "0.108.0", default-features = false, features = ["wgpu-compute"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
 futures-channel = "0.3"
