@@ -75,6 +75,18 @@ impl TrapTableProfile {
         }
     }
 
+    /// Gateway identity used for `word`'s default routine: `$AA6E` for an
+    /// unimplemented slot, otherwise the profile's default gateway word. This
+    /// matches `route`, without its come-from classification.
+    fn default_gateway_identity(self, trap_word: u16) -> u16 {
+        let canonical_word = raw_trap_route(trap_word).canonical_word;
+        if self.unimplemented_traps().contains(&canonical_word) {
+            0xAA6E
+        } else {
+            self.default_gateway_word(canonical_word)
+        }
+    }
+
     pub(crate) fn route(self, trap_word: u16) -> ProfileTrapRoute {
         let raw = *raw_trap_route(trap_word);
         ProfileTrapRoute {
@@ -142,12 +154,9 @@ impl TrapSystemGateways {
     }
 
     pub(crate) fn default_gateway(&self, profile: TrapTableProfile, word: u16) -> Option<u32> {
-        let route = profile.route(word);
-        self.get(if route.default_is_unimplemented {
-            0xAA6E
-        } else {
-            route.default_gateway_word
-        })
+        // Hot on every trap dispatch: derive only the fields this lookup needs,
+        // skipping the come-from classification that `route` also computes.
+        self.get(profile.default_gateway_identity(word))
     }
 
     /// Required new storage using the memory owner's actual allocation bucket.
@@ -247,6 +256,25 @@ impl TrapSystemGateways {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_gateway_identity_matches_full_route_for_every_trap_word() {
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            for word in 0..=u16::MAX {
+                let route = profile.route(word);
+                let expected = if route.default_is_unimplemented {
+                    0xAA6E
+                } else {
+                    route.default_gateway_word
+                };
+                assert_eq!(
+                    profile.default_gateway_identity(word),
+                    expected,
+                    "{word:#06X}"
+                );
+            }
+        }
+    }
 
     struct CodeMemory {
         next: u32,
