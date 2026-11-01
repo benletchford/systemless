@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -24,7 +25,7 @@ compatibility:
       landing scene with Putt-Putt. Clicking in the scene triggered its animations. A
       matched idle control was identical until the input and then differed by 4,364
       pixels. An exact replay matched both checkpoints, with zero exhausted frames. Later
-      scenes, puzzles, audio and browser performance remain unverified.
+      scenes, puzzles, and audio remain unverified. Browser pacing passed four of five samples in the lunar scene at about 60 host fps and 56 guest ticks/s; the fifth had one 51.7 ms frame.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5489
 runtime:
