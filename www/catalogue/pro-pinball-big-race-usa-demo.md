@@ -1,10 +1,10 @@
 ---
 id: pro-pinball-big-race-usa-demo
 kind: game
-title: 'Pro Pinball: Big Race USA Demo'
+title: "Pro Pinball: Big Race USA Demo"
 summary: >-
-  Race a taxi across America on a high-resolution 3D pinball table with
-  realistic ball physics, ramps and video modes.
+  Race a taxi across America on a high-resolution 3D pinball table with realistic
+  ball physics, ramps and video modes.
 developer: Cunning Developments
 publisher: Empire Interactive
 year: 1999
@@ -22,27 +22,26 @@ compatibility:
     architecture: ppc
     environment: >-
       The unchanged demo archive ran natively on PowerPC and reached the 3D table in
-      attract mode after Return three times. Pressing S, the game's Start key, started a game
-      and the meter read $11,000. A matched idle control was identical until the input and
-      then differed by 24,309 pixels. An exact replay matched both checkpoints, with zero
-      exhausted frames. Flipper play, scoring, audio remain unverified. With 30 MHz pacing
-      (adaptive minimum 12), three browser samples on the table passed at 56.5–59.8 host fps;
-      default pacing reached 51–53 fps.
+      attract mode after Return three times. Pressing S, the game's Start key, started
+      a game and the meter read $11,000. A matched idle control was identical until the
+      input and then differed by 24,309 pixels. An exact replay matched both
+      checkpoints, with zero exhausted frames. Flipper play, scoring, audio remain unverified.
+      With 30 MHz pacing (adaptive minimum 12), three browser samples on the table
+      passed at 56.5–59.8 host fps; default pacing reached 51–53 fps.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5503
 runtime:
   runtime_pacing:
-    cpu_mhz: 30
     adaptive_min_cpu_mhz: 12
+    cpu_mhz: 30
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Big%20Race%20USA.sit
-    expected_sha256: 59ff203ad91670446de9e5f46afae55be4302733de66dacc99457d5f39760420
-    expected_size: 26623475
+    type: sha256
+    sha256: 59ff203ad91670446de9e5f46afae55be4302733de66dacc99457d5f39760420
+    size_bytes: 26623475
   provenance:
     redistribution: permitted
     original: true
@@ -65,8 +64,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/pro-pinball-big-race-usa-demo/gameplay.png
+    type: sha256
+    sha256: 7b984ed3916f4380fb017ae82a377db497e2dff993ee230e37fab26b3e793ccf
+    size_bytes: 558200
   provenance:
     redistribution: permitted
     original: true
@@ -84,7 +84,7 @@ references:
 
 ## Coast to coast
 
-![Pro Pinball: Big Race USA Demo](incoming/pro-pinball-big-race-usa-demo/gameplay.png)
+![Pro Pinball: Big Race USA Demo](https://assets.systemless.org/catalogue/media/sha256/7b/7b984ed3916f4380fb017ae82a377db497e2dff993ee230e37fab26b3e793ccf.png)
 
 Drive a cab across the United States by hitting ramps, targets and the city map on a detailed pinball table. Multiball, video modes and a dot-matrix display complete the arcade feel.
 
