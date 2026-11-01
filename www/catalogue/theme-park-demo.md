@@ -3,8 +3,8 @@ id: theme-park-demo
 kind: game
 title: Theme Park Demo
 summary: >-
-  Build rides, shops and paths, then keep the crowds happy and the money
-  flowing in Bullfrog's theme park management game.
+  Build rides, shops and paths, then keep the crowds happy and the money flowing
+  in Bullfrog's theme park management game.
 developer: Bullfrog Productions
 publisher: Electronic Arts
 year: 1994
@@ -21,13 +21,13 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive ran natively on the 68K slice. Pressing 1 started the demo
-      version in the park editor. Selecting the path tool and clicking near the entrance
-      advanced the tutorial and laid path. A matched idle control was identical until the
-      input and then differed by 4,822 pixels. An exact replay matched both checkpoints, with
-      zero exhausted frames. Rides, shops, the park economy, and audio remain unverified.
-      Three browser samples in the park passed at about 60 host fps and 60 guest ticks/s at
-      default pacing.
+      The unchanged demo archive ran natively on the 68K slice. Pressing 1 started
+      the demo version in the park editor. Selecting the path tool and clicking near the
+      entrance advanced the tutorial and laid path. A matched idle control was
+      identical until the input and then differed by 4,822 pixels. An exact replay matched both
+      checkpoints, with zero exhausted frames. Rides, shops, the park economy, and
+      audio remain unverified. Three browser samples in the park passed at about 60 host
+      fps and 60 guest ticks/s at default pacing.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5506
 runtime:
@@ -37,10 +37,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/MacThemePark%20Demo.sit
-    expected_sha256: fdce4467cee061c01913854f111304c2f07d2b0648609de6bb3f6374fc8e0c3b
-    expected_size: 756462
+    type: sha256
+    sha256: fdce4467cee061c01913854f111304c2f07d2b0648609de6bb3f6374fc8e0c3b
+    size_bytes: 756462
   provenance:
     redistribution: permitted
     original: true
@@ -61,8 +60,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/theme-park-demo/gameplay.png
+    type: sha256
+    sha256: c75b4ccad000be6912d6c51be0ae4d2eb990dc3ef69374e7e823ccd879afd3a3
+    size_bytes: 12030
   provenance:
     redistribution: permitted
     original: true
@@ -80,7 +80,7 @@ references:
 
 ## Open the gates
 
-![Theme Park Demo](incoming/theme-park-demo/gameplay.png)
+![Theme Park Demo](https://assets.systemless.org/catalogue/media/sha256/c7/c75b4ccad000be6912d6c51be0ae4d2eb990dc3ef69374e7e823ccd879afd3a3.png)
 
 Start with an empty field and a budget. Lay paths, build rides and stalls, hire staff and watch the visitors decide whether your park is worth the ticket price.
 
