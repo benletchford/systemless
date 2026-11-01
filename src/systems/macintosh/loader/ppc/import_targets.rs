@@ -7382,6 +7382,68 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "SetTimeBaseFlags") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
         ),
+        ("QuickTimeLib", "NewTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::NewTimeBase,
+        ),
+        ("QuickTimeLib", "DisposeTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::DisposeTimeBase,
+        ),
+        ("QuickTimeLib", "GetTimeBaseTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTimeBaseTime,
+        ),
+        ("QuickTimeLib", "GetTimeBaseRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTimeBaseRate,
+        ),
+        ("QuickTimeLib", "GetTimeBaseEffectiveRate") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetTimeBaseEffectiveRate,
+            )
+        }
+        ("QuickTimeLib", "GetTimeBaseFlags") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::GetTimeBaseFlags,
+        ),
+        ("QuickTimeLib", "GetTimeBaseStartTime") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetTimeBaseStartTime,
+            )
+        }
+        ("QuickTimeLib", "GetTimeBaseStopTime") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetTimeBaseStopTime,
+            )
+        }
+        ("QuickTimeLib", "SetTimeBaseValue") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseValue,
+        ),
+        ("QuickTimeLib", "SetTimeBaseRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseRate,
+        ),
+        ("QuickTimeLib", "SetTimeBaseStartTime") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetTimeBaseStartTime,
+            )
+        }
+        ("QuickTimeLib", "SetTimeBaseStopTime") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetTimeBaseStopTime,
+            )
+        }
+        ("QuickTimeLib", "SetTimeBaseMasterTimeBase") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::SetTimeBaseMasterTimeBase,
+            )
+        }
+        ("QuickTimeLib", "GetTimeBaseMasterTimeBase") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetTimeBaseMasterTimeBase,
+            )
+        }
+        ("QuickTimeLib", "SetTimeBaseTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::SetTimeBaseTime,
+        ),
+        ("QuickTimeLib", "ConvertTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::ConvertTime,
+        ),
         ("QuickTimeLib", "UpdateMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::UpdateMovie,
         ),

@@ -1004,6 +1004,12 @@ pub(crate) fn dispatch_supported_import(
             .current_subtick()
             .max(u64::from(*tick_count) * crate::time_manager::SUBTICKS_PER_TICK),
     );
+    quicktime::ppc_qt_service_time_bases(
+        quicktime,
+        callback_scheduling
+            .current_subtick()
+            .max(u64::from(*tick_count) * crate::time_manager::SUBTICKS_PER_TICK),
+    );
     if let Some(action) = dispatch_quicktime::dispatch_quicktime_import(
         dispatch_quicktime::PpcQuickTimeDispatchContext {
             binding,
@@ -3177,6 +3183,14 @@ pub(crate) fn dispatch_supported_import(
                     | PpcQuickTimeCompatibilityOperation::SetMovieRate
                     | PpcQuickTimeCompatibilityOperation::SetMovieTime
             );
+            let service_timebase_callbacks = matches!(
+                operation,
+                PpcQuickTimeCompatibilityOperation::GetTimeBaseTime
+                    | PpcQuickTimeCompatibilityOperation::SetTimeBaseValue
+                    | PpcQuickTimeCompatibilityOperation::SetTimeBaseTime
+                    | PpcQuickTimeCompatibilityOperation::SetTimeBaseRate
+                    | PpcQuickTimeCompatibilityOperation::SetTimeBaseMasterTimeBase
+            );
             let service_drawing = operation != PpcQuickTimeCompatibilityOperation::MCDoAction
                 || matches!(cpu.gpr[4] as i16, 1 | 8);
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
@@ -3195,7 +3209,9 @@ pub(crate) fn dispatch_supported_import(
                 files.as_slice(),
                 vfs_files.as_slice(),
             );
-            Some(if service_callbacks {
+            Some(if service_timebase_callbacks {
+                dispatch_quicktime::finish_timebase_callbacks(action, cpu, memory, quicktime, sound)
+            } else if service_callbacks {
                 dispatch_quicktime::finish_controller_callbacks(
                     action,
                     cpu,

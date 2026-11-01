@@ -3,6 +3,7 @@
 pub(crate) mod callbacks;
 pub(crate) mod controller;
 pub(crate) mod decompression;
+pub(super) mod timebase;
 mod toolbox;
 
 pub(crate) use toolbox::{
@@ -53,6 +54,22 @@ const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
+    NewTimeBase,
+    DisposeTimeBase,
+    GetTimeBaseTime,
+    GetTimeBaseRate,
+    GetTimeBaseEffectiveRate,
+    GetTimeBaseFlags,
+    GetTimeBaseMasterTimeBase,
+    GetTimeBaseStartTime,
+    GetTimeBaseStopTime,
+    SetTimeBaseValue,
+    SetTimeBaseTime,
+    SetTimeBaseRate,
+    SetTimeBaseStartTime,
+    SetTimeBaseStopTime,
+    SetTimeBaseMasterTimeBase,
+    ConvertTime,
     GetMovieTime,
     SetMovieTime,
     SetMovieTimeValue,
@@ -274,6 +291,7 @@ pub struct PpcQuickTimeControllerRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
+    pub(crate) time_bases: timebase::TimeBases,
     pub(crate) decompression_sequences: decompression::Sequences,
     pub(crate) callbacks: callbacks::Callbacks,
     pub(crate) callback_frames: Vec<callbacks::ContinuationFrame>,
@@ -338,6 +356,9 @@ pub struct PpcQuickTimeState {
     pub movie_disposed: bool,
     pub movie_volume: i16,
     pub movie_time_base_flags: u32,
+    pub(crate) movie_time_base_phase: Option<i128>,
+    pub(crate) movie_time_base_start: Option<i128>,
+    pub(crate) movie_time_base_stop: Option<i128>,
     /// Time scale the movie was created with; stored times use this scale.
     pub movie_creation_time_scale: u32,
     pub movie_matrix: Option<[u32; 9]>,
@@ -351,6 +372,7 @@ pub struct PpcQuickTimeState {
 impl Default for PpcQuickTimeState {
     fn default() -> Self {
         Self {
+            time_bases: timebase::TimeBases::default(),
             decompression_sequences: decompression::Sequences::default(),
             callbacks: callbacks::Callbacks::default(),
             callback_frames: Vec::new(),
@@ -420,6 +442,9 @@ impl Default for PpcQuickTimeState {
             movie_disposed: false,
             movie_volume: 0x0100,
             movie_time_base_flags: 0,
+            movie_time_base_phase: None,
+            movie_time_base_start: None,
+            movie_time_base_stop: None,
             movie_creation_time_scale: 600,
             movie_matrix: None,
             movie_display_clip: None,
@@ -476,11 +501,44 @@ pub(super) fn dispatch_quicktime_compatibility(
     files: &[PpcFileRecord],
     vfs_files: &[PpcVfsFileRecord],
 ) -> PpcImportAction {
+    if matches!(
+        operation,
+        PpcQuickTimeCompatibilityOperation::NewTimeBase
+            | PpcQuickTimeCompatibilityOperation::DisposeTimeBase
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseTime
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseRate
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseEffectiveRate
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseFlags
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseMasterTimeBase
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseStartTime
+            | PpcQuickTimeCompatibilityOperation::GetTimeBaseStopTime
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseValue
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseTime
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseRate
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseStartTime
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseStopTime
+            | PpcQuickTimeCompatibilityOperation::SetTimeBaseMasterTimeBase
+            | PpcQuickTimeCompatibilityOperation::ConvertTime
+    ) {
+        return timebase::dispatch(
+            operation,
+            cpu,
+            memory,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            quicktime,
+            sound,
+            gworlds,
+            current_gworld,
+        );
+    }
     match operation {
         PpcQuickTimeCompatibilityOperation::NewCallBack => {
             let time_base = cpu.gpr[3];
             let kind = cpu.gpr[4] as u16;
-            if time_base != PPC_QT_TIME_BASE || quicktime.movie_disposed
+            if !(time_base == PPC_QT_TIME_BASE && !quicktime.movie_disposed
+                || quicktime.time_bases.records.contains_key(&time_base))
                 || !(1..=5).contains(&(kind & 0x3fff)) {
                 ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
                 return PpcImportAction::Return(0);
@@ -570,11 +628,22 @@ pub(super) fn dispatch_quicktime_compatibility(
                 let scale = record.checked_add(8).and_then(|p| memory.read_u32_be(p));
                 let base = record.checked_add(12).and_then(|p| memory.read_u32_be(p));
                 if let (Some(time), Some(scale), Some(base)) = (time, scale, base) {
-                    if record != 0 && scale as i32 > 0 && (base == 0 || base == PPC_QT_TIME_BASE) {
-                        let time = (i128::from(time as i64).max(0)
-                            * i128::from(quicktime.movie_time_scale)
-                            / i128::from(scale))
-                        .min(i128::from(u64::MAX)) as u64;
+                    let scale = timebase::record_scale(quicktime, scale, base);
+                    let converted = if record == 0 || scale.is_none() {
+                        None
+                    } else if base == 0 || base == PPC_QT_TIME_BASE {
+                        let scale = scale.unwrap();
+                        Some(
+                            (i128::from(time as i64).max(0)
+                                * i128::from(quicktime.movie_time_scale)
+                                / i128::from(scale))
+                            .min(i128::from(u64::MAX)) as u64,
+                        )
+                    } else {
+                        timebase::convert_to_movie_time(quicktime, time as i64, scale.unwrap(), base)
+                            .map(|time| time.max(0) as u64)
+                    };
+                    if let Some(time) = converted {
                         ppc_qt_seek_movie(quicktime, sound, time);
                         PPC_NO_ERR
                     } else {
@@ -613,6 +682,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                 -2010
             } else if start == -1 {
                 quicktime.movie_active_segment = None;
+                quicktime.movie_time_base_phase = None;
                 PPC_NO_ERR
             } else if start < 0 || u64::from(start as u32) > ppc_qt_movie_duration_value(quicktime)
             {
@@ -624,8 +694,12 @@ pub(super) fn dispatch_quicktime_compatibility(
                 -2014
             } else {
                 quicktime.movie_active_segment = Some((start as u32, duration as u32));
+                quicktime.movie_time_base_phase = None;
                 PPC_NO_ERR
             };
+            if error == PPC_NO_ERR && quicktime.movie_started && quicktime.movie_active {
+                let _ = ppc_qt_start_movie_audio(quicktime, sound);
+            }
             let _ = ppc_qt_record_error(quicktime, error);
             PpcImportAction::ReturnPreserve
         }
@@ -1162,6 +1236,12 @@ pub(super) fn dispatch_quicktime_compatibility(
         PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags => {
             if cpu.gpr[3] == PPC_QT_TIME_BASE {
                 quicktime.movie_time_base_flags = cpu.gpr[4];
+                quicktime.movie_time_base_phase = None;
+                if quicktime.movie_started && quicktime.movie_active {
+                    let _ = ppc_qt_start_movie_audio(quicktime, sound);
+                }
+            } else if let Some(record) = quicktime.time_bases.records.get_mut(&cpu.gpr[3]) {
+                record.flags = cpu.gpr[4];
             }
             PpcImportAction::ReturnPreserve
         }
@@ -1251,6 +1331,9 @@ pub(super) fn dispatch_quicktime_compatibility(
             quicktime.movie_active = cpu.gpr[6] & 1 != 0;
             quicktime.movie_task_count = 0;
             quicktime.movie_active_segment = None;
+            quicktime.movie_time_base_phase = None;
+            quicktime.movie_time_base_start = None;
+            quicktime.movie_time_base_stop = None;
             quicktime.movie_task_fraction = 0;
             quicktime.movie_clock_remainder = 0;
             quicktime.movie_disposed = false;
@@ -3957,6 +4040,9 @@ pub(crate) fn ppc_qt_new_movie_from_file(
     quicktime.movie_active = cpu.gpr[7] & 1 != 0;
     quicktime.movie_task_count = 0;
     quicktime.movie_active_segment = None;
+    quicktime.movie_time_base_phase = None;
+    quicktime.movie_time_base_start = None;
+    quicktime.movie_time_base_stop = None;
     quicktime.movie_task_fraction = 0;
     quicktime.movie_clock_remainder = 0;
     quicktime.movie_disposed = false;
@@ -4329,6 +4415,7 @@ fn ppc_qt_seek_movie(quicktime: &mut PpcQuickTimeState, sound: &mut PpcSoundStat
         (u128::from(time) * u128::from(tasks) * 65536 / u128::from(duration.max(1))) as u64;
     quicktime.movie_task_count = (position >> 16) as u32;
     quicktime.movie_task_fraction = position as u16;
+    quicktime.movie_time_base_phase = None;
     quicktime.movie_clock_remainder = 0;
     quicktime.movie_at_beginning = time == 0;
     ppc_qt_reset_movie_video_decode_cache(quicktime);
@@ -4411,6 +4498,49 @@ pub(crate) fn ppc_qt_stop_movie(
     PPC_NO_ERR
 }
 
+fn ppc_qt_movie_playback_bounds(quicktime: &PpcQuickTimeState) -> (i128, i128) {
+    let duration = i128::from(ppc_qt_movie_duration_value(quicktime).max(1));
+    let limit = i128::from(quicktime.movie_tasks_until_done.max(1)) << 16;
+    let (mut start, mut stop) =
+        quicktime
+            .movie_active_segment
+            .map_or((0, limit), |(start, length)| {
+                let stop = i128::from(u64::from(start) + u64::from(length)) * limit / duration;
+                let start = i128::from(start) * limit / duration;
+                (start.clamp(0, limit), stop.clamp(0, limit))
+            });
+    if let Some(bound) = quicktime.movie_time_base_start {
+        if let Some(value) = timebase::to_scaled(bound, quicktime.movie_time_scale) {
+            start = start.max((i128::from(value) * limit / duration).clamp(0, limit));
+        }
+    }
+    if let Some(bound) = quicktime.movie_time_base_stop {
+        if let Some(value) = timebase::to_scaled(bound, quicktime.movie_time_scale) {
+            stop = stop.min((i128::from(value) * limit / duration).clamp(0, limit));
+        }
+    }
+    stop = stop.max(start);
+    (start, stop)
+}
+
+fn ppc_qt_movie_effective_rate(quicktime: &PpcQuickTimeState, rate: i32) -> i32 {
+    let (start, stop) = ppc_qt_movie_playback_bounds(quicktime);
+    let position =
+        (i128::from(quicktime.movie_task_count) << 16) + i128::from(quicktime.movie_task_fraction);
+    let mut base = timebase::TimeBase::new(0, rate);
+    base.start = Some(start);
+    base.stop = Some(stop);
+    base.flags = quicktime.movie_time_base_flags;
+    base.value = quicktime
+        .movie_time_base_phase
+        .filter(|phase| {
+            base.value = *phase;
+            base.displayed_value() == position
+        })
+        .unwrap_or(position);
+    base.effective_rate(0x10000)
+}
+
 /// Advance the movie from the canonical guest clock, not the number of calls
 /// to MoviesTask. Retain division remainders across frequent clock reads.
 pub(crate) fn ppc_qt_service_clock(
@@ -4442,25 +4572,146 @@ pub(crate) fn ppc_qt_service_clock(
     let delta = numerator / denominator;
     quicktime.movie_clock_remainder = numerator % denominator;
     let limit = tasks << 16;
-    let (start, stop) = quicktime
-        .movie_active_segment
-        .map_or((0, limit), |(start, length)| {
-            let stop = i128::from(u64::from(start) + u64::from(length)) * limit / duration;
-            let start = i128::from(start) * limit / duration;
-            (start.clamp(0, limit), stop.clamp(0, limit))
-        });
-    let position = ((i128::from(quicktime.movie_task_count) << 16)
-        + i128::from(quicktime.movie_task_fraction))
-    .saturating_add(delta)
-    .clamp(start, stop);
+    let (start, stop) = ppc_qt_movie_playback_bounds(quicktime);
+    let old_position =
+        (i128::from(quicktime.movie_task_count) << 16) + i128::from(quicktime.movie_task_fraction);
+    let loops = quicktime.movie_time_base_flags & 1 != 0 && start < stop;
+    let palindrome = loops && quicktime.movie_time_base_flags & 2 != 0;
+    let mut loop_base = timebase::TimeBase::new(0, rate);
+    loop_base.start = Some(start);
+    loop_base.stop = Some(stop);
+    loop_base.flags = quicktime.movie_time_base_flags;
+    let old_phase = if palindrome {
+        quicktime
+            .movie_time_base_phase
+            .filter(|phase| {
+                loop_base.value = *phase;
+                loop_base.displayed_value() == old_position
+            })
+            .unwrap_or(old_position)
+    } else {
+        old_position
+    };
+    let raw_position = old_phase.saturating_add(delta);
+    loop_base.value = raw_position;
+    let (crossed_start, crossed_stop) = loop_base.crossed_extremes(old_phase);
+    let position = if loops {
+        loop_base.displayed_value()
+    } else {
+        raw_position.clamp(start, stop)
+    };
+    if palindrome && (crossed_start || crossed_stop) && !quicktime.time_bases.records.is_empty() {
+        let width = stop - start;
+        let mut phase = old_phase.saturating_sub(start);
+        let target = raw_position.saturating_sub(start);
+        let forward = target > phase;
+        // Two full periods visit both directions; callbacks are one-shot and
+        // further complete periods return all movie-driven bases to their prior time.
+        for _ in 0..4 {
+            let quotient = phase.div_euclid(width);
+            let boundary = if forward {
+                quotient.saturating_add(1).saturating_mul(width)
+            } else if phase.rem_euclid(width) == 0 {
+                quotient.saturating_sub(1).saturating_mul(width)
+            } else {
+                quotient.saturating_mul(width)
+            };
+            if (forward && boundary > target) || (!forward && boundary < target) {
+                break;
+            }
+            let at_stop = boundary.div_euclid(width).rem_euclid(2) != 0;
+            let turning_position = if at_stop { stop } else { start };
+            quicktime.movie_task_count = (turning_position >> 16) as u32;
+            quicktime.movie_task_fraction = turning_position as u16;
+            ppc_qt_service_time_bases(quicktime, now);
+            phase = boundary;
+            if phase == target {
+                break;
+            }
+        }
+    }
+    if loops && !palindrome && !quicktime.time_bases.records.is_empty() {
+        let width = stop - start;
+        let forward = raw_position > old_position;
+        let mut remaining = if forward {
+            raw_position.saturating_sub(start).div_euclid(width)
+        } else if raw_position < start {
+            start.saturating_sub(raw_position).saturating_add(width - 1) / width
+        } else {
+            0
+        };
+        // A full wrap revisits the same master time. Two wraps cover every
+        // one-shot callback without iterating over an unbounded clock gap.
+        for _ in 0..2 {
+            if remaining <= 0 {
+                break;
+            }
+            let end = if forward { stop } else { start };
+            let beginning = if forward { start } else { stop };
+            quicktime.movie_task_count = (end >> 16) as u32;
+            quicktime.movie_task_fraction = end as u16;
+            ppc_qt_service_time_bases(quicktime, now);
+            quicktime.movie_task_count = (beginning >> 16) as u32;
+            quicktime.movie_task_fraction = beginning as u16;
+            ppc_qt_service_time_bases_after_movie_jump(quicktime, now);
+            remaining -= 1;
+        }
+    }
+    quicktime.movie_time_base_phase = palindrome.then_some(raw_position);
     quicktime.movie_task_count = (position >> 16) as u32;
     quicktime.movie_task_fraction = position as u16;
     quicktime.movie_at_beginning = position == start;
     let after = super::dispatch_quicktime::quicktime_callback_time(quicktime);
-    quicktime
-        .callbacks
-        .mark_time_due(PPC_QT_TIME_BASE, before, after, quicktime.movie_time_scale);
-    if (rate > 0 && position == stop) || (rate < 0 && position == start) {
+    if loops {
+        let movie_value = |position: i128| {
+            (position.saturating_mul(duration) / limit)
+                .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+        };
+        if palindrome {
+            quicktime.callbacks.mark_palindrome_time_due(
+                PPC_QT_TIME_BASE,
+                movie_value(old_phase),
+                movie_value(raw_position),
+                movie_value(start),
+                movie_value(stop),
+                quicktime.movie_time_scale,
+            );
+        } else {
+            quicktime.callbacks.mark_loop_time_due(
+                PPC_QT_TIME_BASE,
+                movie_value(old_phase),
+                movie_value(raw_position),
+                movie_value(start),
+                movie_value(stop),
+                quicktime.movie_time_scale,
+            );
+        }
+        if !palindrome && (raw_position < start || raw_position >= stop) {
+            quicktime
+                .callbacks
+                .mark_event(PPC_QT_TIME_BASE, callbacks::Event::Jump);
+        }
+        if crossed_start || crossed_stop {
+            quicktime.callbacks.mark_event(
+                PPC_QT_TIME_BASE,
+                callbacks::Event::Extremes {
+                    start: crossed_start,
+                    stop: crossed_stop,
+                },
+            );
+            ppc_qt_reset_movie_video_decode_cache(quicktime);
+            ppc_qt_stop_movie_audio(sound);
+            let _ = ppc_qt_start_movie_audio(quicktime, sound);
+        }
+    } else {
+        quicktime.callbacks.mark_time_due(
+            PPC_QT_TIME_BASE,
+            before,
+            after,
+            quicktime.movie_time_scale,
+        );
+    }
+    if !loops && ((rate > 0 && position == stop) || (rate < 0 && position == start)) {
         quicktime.movie_started = false;
         quicktime.movie_clock_remainder = 0;
         ppc_qt_stop_movie_audio(sound);
@@ -4478,6 +4729,565 @@ pub(crate) fn ppc_qt_service_clock(
                 stop: position == stop,
             },
         );
+    }
+}
+
+// Experimental bounded traversal: every continuous span and jump is forwarded
+// separately so descendants observe turns even if endpoints coincide.
+fn ppc_qt_propagate_standalone_path(
+    bases: &mut timebase::TimeBases,
+    callbacks: &mut callbacks::Callbacks,
+    id: u32,
+    source: i128,
+    jump: bool,
+    child_index: &std::collections::HashMap<u32, Vec<u32>>,
+    budget: &mut std::collections::HashMap<u32, usize>,
+) -> bool {
+    type Seen = std::collections::HashMap<(i128, Vec<(u32, timebase::TimeBase)>), i128>;
+    enum Work {
+        Visit(u32, i128, bool),
+        MarkJump(u32),
+        Loop {
+            id: u32,
+            record: timebase::TimeBase,
+            phase: i128,
+            target: i128,
+            seen: Seen,
+        },
+    }
+    fn send(stack: &mut Vec<Work>, children: &[u32], source: i128, jump: bool) -> bool {
+        if stack.try_reserve(children.len()).is_err() {
+            return false;
+        }
+        stack.extend(
+            children
+                .iter()
+                .rev()
+                .map(|&id| Work::Visit(id, source, jump)),
+        );
+        true
+    }
+    let mut stack = Vec::new();
+    if stack.try_reserve(1).is_err() {
+        return false;
+    }
+    stack.push(Work::Visit(id, source, jump));
+    while let Some(work) = stack.pop() {
+        match work {
+            Work::Visit(id, source, jump) => {
+                let Some(old) = bases.records.get(&id).copied() else {
+                    return false;
+                };
+                let record = bases.records.get_mut(&id).unwrap();
+                record.advance(source);
+                let new = *record;
+                let scale = 60_000_000;
+                let scaled = |value| timebase::to_scaled(value, scale).unwrap_or(0);
+                if jump {
+                    if old.value != new.value {
+                        callbacks.mark_event(id, callbacks::Event::Jump);
+                    }
+                } else {
+                    let (start, stop) = new.crossed_extremes(old.value);
+                    if start || stop {
+                        callbacks.mark_event(id, callbacks::Event::Extremes { start, stop });
+                    }
+                    if let (Some(start), Some(stop)) = (new.start, new.stop) {
+                        if new.flags & 1 != 0 && start < stop {
+                            if new.flags & 2 != 0 {
+                                callbacks.mark_palindrome_time_due(
+                                    id,
+                                    scaled(old.value),
+                                    scaled(new.value),
+                                    scaled(start),
+                                    scaled(stop),
+                                    scale,
+                                );
+                            } else {
+                                callbacks.mark_loop_time_due(
+                                    id,
+                                    scaled(old.value),
+                                    scaled(new.value),
+                                    scaled(start),
+                                    scaled(stop),
+                                    scale,
+                                );
+                            }
+                        } else {
+                            callbacks.mark_time_due(
+                                id,
+                                scaled(old.displayed_value()),
+                                scaled(new.displayed_value()),
+                                scale,
+                            );
+                        }
+                    } else {
+                        callbacks.mark_time_due(
+                            id,
+                            scaled(old.displayed_value()),
+                            scaled(new.displayed_value()),
+                            scale,
+                        );
+                    }
+                }
+
+                let Some(children) = child_index.get(&id) else {
+                    continue;
+                };
+                if jump {
+                    if !send(&mut stack, children, new.displayed_value(), true) {
+                        return false;
+                    }
+                    continue;
+                }
+                let (Some(start), Some(stop)) = (new.start, new.stop) else {
+                    if !send(&mut stack, children, new.displayed_value(), false) {
+                        return false;
+                    }
+                    continue;
+                };
+                if new.flags & 1 == 0 || start >= stop || old.value == new.value {
+                    if !send(&mut stack, children, new.displayed_value(), false) {
+                        return false;
+                    }
+                    continue;
+                }
+                if stack.try_reserve(1).is_err() {
+                    return false;
+                }
+                stack.push(Work::Loop {
+                    id,
+                    record: new,
+                    phase: old.value.saturating_sub(start),
+                    target: new.value.saturating_sub(start),
+                    seen: Seen::new(),
+                });
+            }
+            Work::MarkJump(id) => callbacks.mark_event(id, callbacks::Event::Jump),
+            Work::Loop {
+                id,
+                record,
+                mut phase,
+                target,
+                mut seen,
+            } => {
+                if phase == target {
+                    continue;
+                }
+                let children = &child_index[&id];
+                let (Some(start), Some(stop)) = (record.start, record.stop) else {
+                    return false;
+                };
+                let width = stop - start;
+                let period = if record.flags & 2 != 0 {
+                    width.saturating_mul(2)
+                } else {
+                    width
+                };
+                if phase.abs_diff(target) >= period as u128 {
+                    let mut descendants = Vec::new();
+                    let mut pending = Vec::new();
+                    if pending.try_reserve(children.len()).is_err() {
+                        return false;
+                    }
+                    pending.extend_from_slice(children);
+                    while let Some(child) = pending.pop() {
+                        let Some(child_record) = bases.records.get(&child).copied() else {
+                            return false;
+                        };
+                        if descendants.try_reserve(1).is_err() {
+                            return false;
+                        }
+                        descendants.push((child, child_record));
+                        if let Some(next) = child_index.get(&child) {
+                            if pending.try_reserve(next.len()).is_err() {
+                                return false;
+                            }
+                            pending.extend_from_slice(next);
+                        }
+                    }
+                    descendants.sort_unstable_by_key(|(child, _)| *child);
+                    let key = (phase.rem_euclid(period), descendants);
+                    if seen.try_reserve(1).is_err() {
+                        return false;
+                    }
+                    if let Some(previous) = seen.insert(key, phase) {
+                        let Some(cycle) = phase.checked_sub(previous) else {
+                            return false;
+                        };
+                        if cycle != 0 {
+                            let Some(remaining) = target.checked_sub(phase) else {
+                                return false;
+                            };
+                            let repeats = remaining / cycle;
+                            if repeats > 0 {
+                                let Some(skipped) = repeats.checked_mul(cycle) else {
+                                    return false;
+                                };
+                                let Some(next) = phase.checked_add(skipped) else {
+                                    return false;
+                                };
+                                phase = next;
+                                if phase == target {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                let remaining = budget.entry(id).or_insert(4096);
+                if *remaining == 0 {
+                    return false;
+                }
+                *remaining -= 1;
+                let forward = target > phase;
+                let reverse_jump =
+                    !forward && record.flags & 2 == 0 && phase.rem_euclid(width) == 0;
+                let quotient = phase.div_euclid(width);
+                let boundary = if forward {
+                    quotient.saturating_add(1).saturating_mul(width)
+                } else if phase.rem_euclid(width) == 0 {
+                    quotient.saturating_sub(1).saturating_mul(width)
+                } else {
+                    quotient.saturating_mul(width)
+                };
+                let crossed = if forward {
+                    boundary <= target
+                } else {
+                    boundary >= target
+                };
+                let next = if crossed { boundary } else { target };
+                let value = if crossed && record.flags & 2 == 0 {
+                    if forward {
+                        stop
+                    } else {
+                        start
+                    }
+                } else {
+                    let mut point = record;
+                    point.value = start.saturating_add(next);
+                    point.displayed_value()
+                };
+                let forward_jump = crossed && forward && record.flags & 2 == 0;
+                if stack.try_reserve(3).is_err() {
+                    return false;
+                }
+                stack.push(Work::Loop {
+                    id,
+                    record,
+                    phase: next,
+                    target,
+                    seen,
+                });
+                if forward_jump {
+                    if !send(&mut stack, children, start, true) {
+                        return false;
+                    }
+                    if stack.try_reserve(1).is_err() {
+                        return false;
+                    }
+                    stack.push(Work::MarkJump(id));
+                }
+                if !send(&mut stack, children, value, false) {
+                    return false;
+                }
+                if reverse_jump {
+                    if !send(&mut stack, children, stop, true) {
+                        return false;
+                    }
+                    if stack.try_reserve(1).is_err() {
+                        return false;
+                    }
+                    stack.push(Work::MarkJump(id));
+                }
+            }
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn short_loop_paths_reach_deep_looping_descendants() {
+        let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+        let mut bases = timebase::TimeBases::default();
+        let root = 0x4000_0000;
+        let base = timebase::TimeBase {
+            value: 0,
+            source: 0,
+            remainder: 0,
+            rate: 0x10000,
+            start: Some(0),
+            stop: Some(width),
+            flags: 1,
+            master: None,
+        };
+        bases.records.insert(root, base);
+        let mut children = std::collections::HashMap::new();
+        for index in 1..=3_000u32 {
+            bases.records.insert(
+                root + index,
+                timebase::TimeBase {
+                    master: Some(root + index - 1),
+                    ..base
+                },
+            );
+            children.insert(root + index - 1, vec![root + index]);
+        }
+        let mut callbacks = callbacks::Callbacks::default();
+        let registration = callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 150, 600],
+        };
+        assert!(callbacks.create(0x3000, root + 3_000, 1));
+        assert!(callbacks.arm(0x3000, registration));
+        assert!(ppc_qt_propagate_standalone_path(
+            &mut bases,
+            &mut callbacks,
+            root,
+            width / 2,
+            false,
+            &children,
+            &mut std::collections::HashMap::new(),
+        ));
+        assert_eq!(callbacks.take_ready(), Some((0x3000, registration)));
+        assert_eq!(bases.records[&(root + 3_000)].value, width / 2);
+    }
+
+    #[test]
+    fn loop_path_reaches_deep_descendant_without_recursion() {
+        let width = 60 * crate::time_manager::SUBTICKS_PER_TICK as i128 * 65536;
+        let mut bases = timebase::TimeBases::default();
+        let root = 0x4000_0000;
+        let base = timebase::TimeBase {
+            value: 0,
+            source: 0,
+            remainder: 0,
+            rate: 0x10000,
+            start: Some(0),
+            stop: Some(width),
+            flags: 1,
+            master: None,
+        };
+        bases.records.insert(root, base);
+        let mut children = std::collections::HashMap::new();
+        for index in 1..=10_000u32 {
+            bases.records.insert(
+                root + index,
+                timebase::TimeBase {
+                    start: None,
+                    stop: None,
+                    flags: 0,
+                    master: Some(root + index - 1),
+                    ..base
+                },
+            );
+            children.insert(root + index - 1, vec![root + index]);
+        }
+        let mut callbacks = callbacks::Callbacks::default();
+        let registration = callbacks::Registration {
+            procedure: 0x1000,
+            rtoc: 0,
+            refcon: 0,
+            parameters: [1, 300, 600],
+        };
+        assert!(callbacks.create(0x3000, root + 10_000, 1));
+        assert!(callbacks.arm(0x3000, registration));
+        assert!(ppc_qt_propagate_standalone_path(
+            &mut bases,
+            &mut callbacks,
+            root,
+            width + width / 2,
+            false,
+            &children,
+            &mut std::collections::HashMap::new(),
+        ));
+        assert_eq!(callbacks.take_ready(), Some((0x3000, registration)));
+    }
+}
+
+pub(crate) fn ppc_qt_service_time_bases(quicktime: &mut PpcQuickTimeState, now: u64) {
+    ppc_qt_service_time_bases_inner(quicktime, now, false);
+}
+
+fn ppc_qt_service_time_bases_after_movie_jump(quicktime: &mut PpcQuickTimeState, now: u64) {
+    ppc_qt_service_time_bases_inner(quicktime, now, true);
+}
+
+fn ppc_qt_service_time_bases_inner(quicktime: &mut PpcQuickTimeState, now: u64, movie_jump: bool) {
+    if quicktime.time_bases.records.is_empty() {
+        return;
+    }
+    let now = quicktime.movie_clock_subtick.unwrap_or(now).max(now);
+    let movie_time = timebase::from_scaled(
+        super::dispatch_quicktime::quicktime_callback_time(quicktime),
+        quicktime.movie_time_scale.max(1),
+    )
+    .unwrap_or(0);
+    // Process standalone master trees along their actual path, including
+    // intermediate loop turns and discontinuities. Retain the previous path
+    // if the bounded experimental traversal cannot finish.
+    if !movie_jump {
+        let clock = timebase::clock_units(now);
+        let records = &quicktime.time_bases.records;
+        let mut child_index: std::collections::HashMap<u32, Vec<u32>> =
+            std::collections::HashMap::new();
+        let mut roots = std::collections::HashSet::new();
+        let mut indexed = child_index.try_reserve(records.len()).is_ok()
+            && roots.try_reserve(records.len()).is_ok();
+        if indexed {
+            for (&child, record) in records {
+                if let Some(parent) = record.master {
+                    let children = child_index.entry(parent).or_default();
+                    if children.try_reserve(1).is_err() {
+                        indexed = false;
+                        break;
+                    }
+                    children.push(child);
+                }
+            }
+        }
+        if indexed {
+            for (&id, record) in records {
+                if record.flags & 1 == 0
+                    || !record
+                        .start
+                        .zip(record.stop)
+                        .is_some_and(|(start, stop)| start < stop)
+                    || !child_index.contains_key(&id)
+                {
+                    continue;
+                }
+                let mut current = id;
+                for _ in 0..=records.len() {
+                    let Some(parent) = records.get(&current) else {
+                        break;
+                    };
+                    match parent.master {
+                        Some(master) => current = master,
+                        None => {
+                            roots.insert(current);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        for root in roots {
+            let records = &quicktime.time_bases.records;
+            let mut bases = quicktime.time_bases.clone();
+            let mut callbacks = quicktime.callbacks.clone();
+            let mut budget = std::collections::HashMap::new();
+            if budget.try_reserve(records.len()).is_err() {
+                continue;
+            }
+            if ppc_qt_propagate_standalone_path(
+                &mut bases,
+                &mut callbacks,
+                root,
+                clock,
+                false,
+                &child_index,
+                &mut budget,
+            ) {
+                let mut subtree = Vec::new();
+                if subtree.try_reserve(bases.records.len()).is_err() {
+                    continue;
+                }
+                subtree.push(root);
+                let mut index = 0;
+                let mut valid = true;
+                while index < subtree.len() {
+                    let id = subtree[index];
+                    index += 1;
+                    if !bases.records.contains_key(&id) {
+                        valid = false;
+                        break;
+                    }
+                    if let Some(children) = child_index.get(&id) {
+                        if children.len() > bases.records.len().saturating_sub(subtree.len()) {
+                            valid = false;
+                            break;
+                        }
+                        subtree.extend_from_slice(children);
+                    }
+                }
+                if !valid {
+                    continue;
+                }
+                for id in subtree {
+                    quicktime.time_bases.records.insert(id, bases.records[&id]);
+                }
+                quicktime.callbacks = callbacks;
+            }
+        }
+    }
+    let before: Vec<_> = quicktime
+        .time_bases
+        .records
+        .iter()
+        .map(|(&id, record)| {
+            (
+                id,
+                timebase::to_scaled(record.displayed_value(), 60_000_000).unwrap_or(0),
+                timebase::to_scaled(record.value, 60_000_000).unwrap_or(0),
+                record.value,
+                movie_jump && quicktime.time_bases.depends_on(id, PPC_QT_TIME_BASE),
+            )
+        })
+        .collect();
+    quicktime
+        .time_bases
+        .service(timebase::clock_units(now), PPC_QT_TIME_BASE, movie_time);
+    for (id, before, raw_before, unscaled_before, jumped) in before {
+        if let Some(record) = quicktime.time_bases.records.get(&id) {
+            if jumped {
+                if record.value != unscaled_before {
+                    quicktime.callbacks.mark_event(id, callbacks::Event::Jump);
+                }
+                continue;
+            }
+            let after = timebase::to_scaled(record.displayed_value(), 60_000_000).unwrap_or(0);
+            let (start, stop) = record.crossed_extremes(unscaled_before);
+            if start || stop {
+                quicktime
+                    .callbacks
+                    .mark_event(id, callbacks::Event::Extremes { start, stop });
+            }
+            if let (Some(start), Some(stop)) = (record.start, record.stop) {
+                if record.flags & 1 != 0 && start < stop {
+                    if record.flags & 2 == 0 {
+                        let width = stop - start;
+                        let before_cycle = unscaled_before.saturating_sub(start).div_euclid(width);
+                        let after_cycle = record.value.saturating_sub(start).div_euclid(width);
+                        if before_cycle != after_cycle {
+                            quicktime.callbacks.mark_event(id, callbacks::Event::Jump);
+                        }
+                    }
+                    let raw_after = timebase::to_scaled(record.value, 60_000_000).unwrap_or(0);
+                    let start = timebase::to_scaled(start, 60_000_000).unwrap_or(0);
+                    let stop = timebase::to_scaled(stop, 60_000_000).unwrap_or(0);
+                    if record.flags & 2 != 0 {
+                        quicktime.callbacks.mark_palindrome_time_due(
+                            id, raw_before, raw_after, start, stop, 60_000_000,
+                        );
+                    } else {
+                        quicktime
+                            .callbacks
+                            .mark_loop_time_due(id, raw_before, raw_after, start, stop, 60_000_000);
+                    }
+                    continue;
+                }
+            }
+            quicktime
+                .callbacks
+                .mark_time_due(id, before, after, 60_000_000);
+        }
     }
 }
 
@@ -4590,14 +5400,30 @@ pub(crate) fn ppc_qt_start_movie_audio(
         / (u128::from(quicktime.movie_time_scale.max(1)) << 16))
         .min(decoded_sound.samples.len() as u128) as usize;
     let mut samples = decoded_sound.samples;
-    if quicktime.movie_playback_rate < 0 {
-        samples.truncate(offset);
+    let rate = ppc_qt_movie_effective_rate(quicktime, quicktime.movie_playback_rate);
+    let (start, stop) = ppc_qt_movie_playback_bounds(quicktime);
+    let duration = i128::from(ppc_qt_movie_duration_value(quicktime).max(1));
+    let limit = i128::from(quicktime.movie_tasks_until_done.max(1)) << 16;
+    let sample_at = |position: i128| {
+        let value = position
+            .saturating_mul(duration)
+            .saturating_mul(i128::from(source_rate))
+            / (limit * i128::from(quicktime.movie_time_scale.max(1)) * 65536);
+        usize::try_from(value)
+            .unwrap_or(usize::MAX)
+            .min(samples.len())
+    };
+    let start = sample_at(start);
+    let stop = sample_at(stop);
+    if rate < 0 {
+        samples.truncate(offset.min(stop));
+        samples.drain(..start.min(samples.len()));
         samples.reverse();
     } else {
-        samples.drain(..offset);
+        samples.truncate(stop);
+        samples.drain(..offset.max(start).min(samples.len()));
     }
-    let rate = ((u64::from(source_rate) * u64::from(quicktime.movie_playback_rate.unsigned_abs()))
-        >> 16)
+    let rate = ((u64::from(source_rate) * u64::from(rate.unsigned_abs())) >> 16)
         .min(u64::from(u32::MAX)) as u32;
     if rate == 0 || samples.is_empty() {
         return false;
