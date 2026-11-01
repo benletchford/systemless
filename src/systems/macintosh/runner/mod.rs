@@ -5557,6 +5557,14 @@ impl FixtureRunner {
             return self.try_spin_template_g(pc_after_trap, dn, w1, tick_cap);
         }
 
+        // Template H: compare with a saved tick plus a small constant.
+        //   MOVE.L (A7)+,Dn; MOVE.L (d16,An),Dm; ADDQ.L #q,Dm
+        //   CMP.L Dm,Dn; BLT.S/BLE.S <back-to-CLR.L -(A7) or SUBQ #4,A7>
+        // Continuum uses this as its frame limiter.
+        if (w1 & 0xF1F8) == 0x2028 && ((w1 >> 9) & 7) as usize != dn {
+            return self.try_spin_template_h(pc_after_trap, dn, w1, tick_cap);
+        }
+
         // Template A: SUBQ.L #imm, Dn; CMP.L Dn, Dm; BHI.S <back-to-SUBQ-#4,A7>
         if (w1 & 0xF1F8) == 0x5180 && (w1 & 0x0007) as usize == dn {
             return self.try_spin_template_a(pc_after_trap, dn, w1, tick_cap, count);
@@ -5573,6 +5581,78 @@ impl FixtureRunner {
         }
 
         false
+    }
+
+    /// Template H: saved-tick plus constant frame limiter.
+    ///   CLR.L -(A7) or SUBQ #4,A7; _TickCount; MOVE.L (A7)+,Dn
+    ///   MOVE.L (d16,An),Dm; ADDQ.L #q,Dm; CMP.L Dm,Dn; BLT.S/BLE.S back
+    ///
+    /// The loop exits once the signed sample reaches `saved + q` (BLT) or
+    /// passes it (BLE). As with template F, only the stacked TickCount result
+    /// is replaced; the post-trap instructions run exactly once on the CPU.
+    fn try_spin_template_h(
+        &mut self,
+        pc_after_trap: u32,
+        dn: usize,
+        w_load: u16,
+        tick_cap: Option<u32>,
+    ) -> bool {
+        let dm = ((w_load >> 9) & 7) as usize;
+        let an = (w_load & 7) as usize;
+        let disp = self.bus.read_word(pc_after_trap.wrapping_add(4)) as i16 as i32;
+        let w_add = self.bus.read_word(pc_after_trap.wrapping_add(6));
+        if (w_add & 0xF1F8) != 0x5080 || (w_add & 7) as usize != dm {
+            return false;
+        }
+        let addend = match (w_add >> 9) & 7 {
+            0 => 8,
+            q => q as i32,
+        };
+        let w_cmp = self.bus.read_word(pc_after_trap.wrapping_add(8));
+        if (w_cmp & 0xF1F8) != 0xB080
+            || ((w_cmp >> 9) & 7) as usize != dn
+            || (w_cmp & 7) as usize != dm
+        {
+            return false;
+        }
+        let branch_pc = pc_after_trap.wrapping_add(10);
+        let w_branch = self.bus.read_word(branch_pc);
+        if !matches!(w_branch & 0xFF00, 0x6D00 | 0x6F00) || (w_branch & 0x00FF) == 0 {
+            return false;
+        }
+        let displacement = (w_branch & 0xFF) as i8 as i32;
+        let target = (branch_pc.wrapping_add(2) as i32).wrapping_add(displacement) as u32;
+        let canonical_target = pc_after_trap.wrapping_sub(4);
+        if target != canonical_target
+            || !matches!(self.bus.read_word(canonical_target), 0x42A7 | 0x594F | 0x598F)
+            || self.bus.read_word(canonical_target.wrapping_add(2)) != 0xA975
+        {
+            return false;
+        }
+
+        let sp = self.m68k.cpu.core.a(7);
+        let captured_tick = self.bus.read_long(sp) as i32;
+        let base_addr = (self.m68k.cpu.core.a(an) as i32).wrapping_add(disp) as u32;
+        let deadline = (self.bus.read_long(base_addr) as i32).wrapping_add(addend);
+        let exit_tick = if w_branch & 0xFF00 == 0x6F00 {
+            deadline.wrapping_add(1)
+        } else {
+            deadline
+        };
+        if exit_tick.wrapping_sub(captured_tick) <= 0 {
+            return false;
+        }
+        match self.advance_until_tick(exit_tick as u32, tick_cap) {
+            AdvanceResult::CapHit => {
+                self.bus.write_long(sp, self.guest_tick());
+                true
+            }
+            AdvanceResult::Advanced => {
+                self.bus.write_long(sp, self.guest_tick());
+                false
+            }
+            AdvanceResult::Interrupted | AdvanceResult::TooFar => false,
+        }
     }
 
     /// Template F: saved-register tick-change or unsigned-deadline wait.
