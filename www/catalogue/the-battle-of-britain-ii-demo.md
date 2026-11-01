@@ -20,13 +20,13 @@ compatibility:
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
     environment: >-
-      The unchanged demo archive refuses to run above 16 colours, so it ran natively on the
-      68K slice at a 4-bit screen depth. It reached the RAF briefing, and a click advanced to
-      the south-east England campaign map with airfields, sectors and the plotting clock. A
-      matched idle control was identical until the input and then differed by 173,884
-      pixels. An exact replay matched both checkpoints, with zero exhausted frames. Raids,
-      interceptions, audio remain unverified. In the browser
-      the briefing ran at 60 fps but clicks did not advance to the map, so launch stays
+      The unchanged demo archive refuses to run above 16 colours, so it ran natively
+      on the 68K slice at a 4-bit screen depth. It reached the RAF briefing, and a
+      click advanced to the south-east England campaign map with airfields, sectors and the
+      plotting clock. A matched idle control was identical until the input and then
+      differed by 173,884 pixels. An exact replay matched both checkpoints, with zero
+      exhausted frames. Raids, interceptions, audio remain unverified. In the browser the
+      briefing ran at 60 fps but clicks did not advance to the map, so launch stays
       disabled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5518
@@ -38,10 +38,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Battle%20of%20Britain%20II.sit
-    expected_sha256: 73dac15f47f1e7aeff6ebb9b6a775f4311f489d15115ec1fa0b8ab06088bd94a
-    expected_size: 465122
+    type: sha256
+    sha256: 73dac15f47f1e7aeff6ebb9b6a775f4311f489d15115ec1fa0b8ab06088bd94a
+    size_bytes: 465122
   provenance:
     redistribution: permitted
     original: true
@@ -62,8 +61,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/the-battle-of-britain-ii-demo/gameplay.png
+    type: sha256
+    sha256: 1fed1720f77777aa29134360b0848e5a68879904f77f0330a4059875649115b6
+    size_bytes: 7145
   provenance:
     redistribution: permitted
     original: true
@@ -81,7 +81,7 @@ references:
 
 ## Scramble
 
-![The Battle of Britain II Demo](incoming/the-battle-of-britain-ii-demo/gameplay.png)
+![The Battle of Britain II Demo](https://assets.systemless.org/catalogue/media/sha256/1f/1fed1720f77777aa29134360b0848e5a68879904f77f0330a4059875649115b6.png)
 
 Radar stations along the coast report incoming raids. Watch the plotting map, judge the threat and send fighter squadrons up in time to meet the bombers.
 
