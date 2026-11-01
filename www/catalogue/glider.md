@@ -9,7 +9,7 @@ year: 1991
 architectures:
 - 68k
 default_architecture: 68k
-launch_enabled: false
+launch_enabled: true
 category: Arcade
 compatibility:
   status: playable
@@ -30,7 +30,50 @@ compatibility:
       one 117.7 ms frame over the generic 50 ms threshold; play continued.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3054
+  - date: "2026-11-01"
+    tester: Catalogue maintainer
+    systemless_version: 88cca746 browser build
+    architecture: 68k
+    environment: >-
+      Re-verified for restoration under the maintainer-accepted promotional-demo
+      policy. Three release-mode headless Chromium 156 (aarch64 Linux)
+      worker/WebGL runs of a locally served trunk build used the actual
+      Systemless-hosted archive, whose bytes matched the pinned size and
+      SHA-256. Twenty-second samples reached 60.00, 59.55 and 60.00 guest ticks
+      per second with no console errors. Earlier browser input evidence (two-
+      colour mode, Mouse controls, New Game and a room advance) is unchanged.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5274
 artifacts:
+- id: archive
+  role: archive
+  format: sit
+  source:
+    type: sha256
+    sha256: a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c
+    size_bytes: 357942
+  provenance:
+    redistribution: permitted
+    original: true
+    sources:
+    - https://classicmacdemos.com/glider
+    - https://download.classicmacdemos.com/Glider%20Demo.sit
+    - https://static.classicmacdemos.com/demos/glider/README.txt
+    - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
+    rights_holder: Glider rights holders
+    license: Maintainer-accepted freely distributed promotional demo
+    permission: >-
+      This unchanged Casady & Greene promotional demo is not the retail game. Its
+      included 1992 Read Me identifies Glider 4.06 Demo and directs players to the
+      publisher for more information. Classic Macintosh Game Demos records it on 30
+      contemporary cover discs. No express redistribution clause is present.
+      Hosting was accepted by the Systemless maintainer on 1 November 2026 under the
+      policy for unchanged, freely circulated promotional demos (see #5274). Preserve the
+      complete unchanged archive and remove it if a rights holder objects.
+    notes: >-
+      Original 357,942-byte StuffIt archive, SHA-256
+      a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c. The tested Glider Demo 4.06 application has a
+      runnable 68K CODE resource.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -58,7 +101,6 @@ references:
 - https://static.classicmacdemos.com/demos/glider/README.txt
 - https://github.com/EngineersNeedArt/SoftDorothy-CasadyGreeneProjects
 - https://github.com/benletchford/systemless/issues/3153
-- https://github.com/benletchford/systemless/issues/5274
 ---
 
 ## A little paper plane
@@ -76,9 +118,4 @@ Systemless reached interactive Demo House play with the unchanged archive.
 A separate BasiliskII run reached the starting room but did not reproduce
 the scripted mouse-steered room change. A release-mode browser test did move
 from Welcome into Top of the reading list using the game's Mouse control mode.
-Launch is disabled while redistribution terms are investigated.
-
-<!-- Candidate archive receipt: 357,942 bytes; SHA-256
-a3b0678a93a095be8b4c49e0f9c8d37fddb3fc198d5e0adb4c4868850fa12e2c.
-The included read-me does not state redistribution permission; public availability
-and historic cover-disc inclusion do not by themselves establish permission. -->
+Browser launch is enabled.

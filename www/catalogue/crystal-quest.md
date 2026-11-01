@@ -29,6 +29,35 @@ runtime:
   application_partition_size: 8388608
   show_menu_bar: true
 artifacts:
+- id: archive
+  role: archive
+  format: sit
+  source:
+    type: sha256
+    sha256: 88cf365c6985786e383acec7582ea6467b448f6f12c43cb9f46cd1fd1a552f0e
+    size_bytes: 252570
+  provenance:
+    redistribution: permitted
+    original: true
+    sources:
+    - https://classicmacdemos.com/crystal-quest
+    - https://classicmacdemos.com/download/crystal-quest/
+    - https://static.classicmacdemos.com/demos/crystal-quest/README.txt
+    license: Maintainer-accepted freely distributed promotional demo
+    rights_holder: Crystal Quest rights holders
+    permission: >-
+      Casady & Greene packaged and distributed this self-contained title as Crystal
+      Quest Sample v2.2.5. Its included July 1994 read-me identifies the sample,
+      explains its monitor options, and gives ordering information for the commercial game.
+      Classic Macintosh Game Demos documents the sample on four contemporary demo discs
+      and continues to offer this specific archive as the demo. Only the original sample
+      is staged, not the commercial release or its modern revival.
+      Hosting was accepted by the Systemless maintainer on 1 November 2026 under the
+      policy for unchanged, freely circulated promotional demos (see #5273). Preserve the
+      complete unchanged archive and remove it if a rights holder objects.
+    notes: >-
+      Unchanged 252,570-byte StuffIt archive from Classic Macintosh Game Demos;
+      SHA-256 88cf365c6985786e383acec7582ea6467b448f6f12c43cb9f46cd1fd1a552f0e.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -53,9 +82,7 @@ artifacts:
       3af891b065525c6d0d403289da716f8abc5790a5c7f4acc77e0034ba2df88d78; 8,728 bytes.
 references:
 - https://classicmacdemos.com/crystal-quest
-- https://classicmacdemos.com/download/crystal-quest/
 - https://static.classicmacdemos.com/demos/crystal-quest/README.txt
-- https://github.com/benletchford/systemless/issues/5273
 ---
 
 ## Chase the next crystal
@@ -69,11 +96,5 @@ crystals and portals stand apart against the black background.
 
 This is Casady & Greene's original Macintosh sample, not the retail game.
 Holding Option during launch opens a monitor configuration dialog; the sample
-can switch to color when the video device supports it. The candidate archive
-contains the 68K application; launch is disabled while its redistribution terms
-are investigated.
-
-<!-- Candidate archive receipt: 252,570 bytes; SHA-256
-88cf365c6985786e383acec7582ea6467b448f6f12c43cb9f46cd1fd1a552f0e.
-The July 1994 read-me does not state redistribution permission. Public availability
-and historic demo-disc inclusion do not by themselves establish permission. -->
+can switch to color when the video device supports it. The catalogue preserves
+the promotional StuffIt archive byte-for-byte and launches its 68K application.
