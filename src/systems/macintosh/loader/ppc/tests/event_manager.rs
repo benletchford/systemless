@@ -1205,6 +1205,73 @@ fn get_mouse_returns_current_port_local_coordinates() {
 }
 
 #[test]
+fn get_mouse_honors_guest_low_memory_warp_across_slices() {
+    let mut code = Vec::new();
+    for word in [
+        d_form_u(15, 7, 0, 300),
+        d_form_u(24, 7, 7, 400),
+        d_form_u(36, 7, 0, 0x0830),
+    ] {
+        code.extend_from_slice(&word.to_be_bytes());
+    }
+    code.extend_from_slice(&synthetic_code());
+    let pef = synthetic_pef_with_loader_code_and_data(
+        synthetic_loader(b"InterfaceLib", b"GetMouse"),
+        &code,
+        &[0; 8],
+    );
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let point = PPC_DATA_BASE + 0x1120;
+    loaded.memory.add_region(point, vec![0; 4]);
+    ppc_write_rect(&mut loaded.memory, PPC_MAIN_PIXMAP + 6, -80, -120, 520, 680).unwrap();
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: 404,
+        mouse_h: 526,
+        ..PpcInputSnapshot::default()
+    });
+    loaded.input_sprocket.device_mouse_v = Some(400);
+    loaded.input_sprocket.device_mouse_h = Some(520);
+    loaded.cpu.gpr[3] = point;
+    let first = loaded.run_with_hle_imports(64);
+    assert_eq!(first.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u16_be(point), Some(220));
+    assert_eq!(loaded.memory.read_u16_be(point + 2), Some(280));
+    assert_eq!(loaded.process_input.mouse_state_snapshot().0, (300, 400));
+    assert_eq!(loaded.input_sprocket.device_mouse_v, Some(300));
+    assert_eq!(loaded.input_sprocket.device_mouse_h, Some(400));
+    assert_eq!(loaded.input_sprocket.device_mouse_v_carry, -4);
+    assert_eq!(loaded.input_sprocket.device_mouse_h_carry, 6);
+
+    // A new slice without another host input must retain the guest warp.
+    loaded.cpu.pc = loaded.entry_pc + 12;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = point;
+    let second = loaded.run_with_hle_imports(64);
+    assert_eq!(second.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u16_be(point), Some(220));
+    assert_eq!(loaded.memory.read_u16_be(point + 2), Some(280));
+
+    // The guest can also write Mouse at the end of a slice before calling
+    // GetMouse. The next slice must not overwrite that write with host state.
+    let mut boundary = load_pef_application(&pef).unwrap();
+    boundary.memory.add_region(point, vec![0; 4]);
+    ppc_write_rect(&mut boundary.memory, PPC_MAIN_PIXMAP + 6, -80, -120, 520, 680).unwrap();
+    boundary.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: 404,
+        mouse_h: 526,
+        ..PpcInputSnapshot::default()
+    });
+    boundary.cpu.gpr[3] = point;
+    let partial = boundary.run_with_hle_imports(3);
+    assert_eq!(partial.handled_import_count, 0);
+    assert_eq!(boundary.process_input.mouse_state_snapshot().0, (300, 400));
+    let resumed = boundary.run_with_hle_imports(64);
+    assert_eq!(resumed.handled_import_count, 1);
+    assert_eq!(boundary.memory.read_u16_be(point), Some(220));
+    assert_eq!(boundary.memory.read_u16_be(point + 2), Some(280));
+}
+
+#[test]
 fn getkeys_poll_fast_forward_requires_repeated_idle_caller() {
     let key_map_ptr = PPC_DATA_BASE + 0x1000;
     let mut memory = PpcSectionMem::new();
