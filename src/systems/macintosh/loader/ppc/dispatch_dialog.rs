@@ -1130,6 +1130,21 @@ pub(super) fn dispatch_dialog_import(
                     quickdraw_text_size,
                     *quickdraw_fore_color,
                 );
+                // TESetSelect highlights the new selection immediately.
+                if ppc_window_is_visible(memory, params.dialog_ptr()) {
+                    let _ = ppc_draw_dialog(
+                        window_list,
+                        param_text,
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        params.dialog_ptr(),
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
