@@ -3,8 +3,8 @@ id: mario-teaches-typing-demo
 kind: game
 title: Mario Teaches Typing Demo
 summary: >-
-  Learn to touch-type with Mario, hopping over letter-marked turtles and
-  blocks as you hit the right keys in Interplay's typing tutor.
+  Learn to touch-type with Mario, hopping over letter-marked turtles and blocks
+  as you hit the right keys in Interplay's typing tutor.
 developer: Interplay Productions
 publisher: Interplay Productions
 year: 1995
@@ -19,14 +19,7 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: 80334667 deterministic play runner
     architecture: 68k
-    environment: >-
-      The unchanged demo archive ran natively on the 68K slice and reached the lesson menu.
-      Clicking lesson 1 opened the typing game with Mario and the letter turtles. A matched
-      idle control was identical until the input and then differed by 160,938 pixels. An
-      exact replay matched both checkpoints, with zero exhausted frames. Typing scoring,
-      other lessons, and audio remain unverified.
-      Browser pacing during the lesson was inconsistent: about 17–20 guest ticks/s at default
-      pacing and 27–60 at 6 MHz, so launch stays disabled.
+    environment: "The unchanged demo archive ran natively on the 68K slice and reached the lesson menu. Clicking lesson 1 opened the typing game with Mario and the letter turtles. A matched idle control was identical until the input and then differed by 160,938 pixels. An exact replay matched both checkpoints, with zero exhausted frames. Typing scoring, other lessons, and audio remain unverified. Browser pacing during the lesson was inconsistent: about 17–20 guest ticks/s at default pacing and 27–60 at 6 MHz, so launch stays disabled."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5510
 runtime:
@@ -36,10 +29,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Mario%20Demo%20folder.sit
-    expected_sha256: 7be55665587319638f496c3a0f171964117842d625abc373e80ba1917c096d4c
-    expected_size: 1145949
+    type: sha256
+    sha256: 7be55665587319638f496c3a0f171964117842d625abc373e80ba1917c096d4c
+    size_bytes: 1145949
   provenance:
     redistribution: permitted
     original: true
@@ -60,8 +52,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/mario-teaches-typing-demo/gameplay.png
+    type: sha256
+    sha256: 33358edac43c0ae39ca0c7ffae8d79cfc540592beef2bbf6c1b8bcc9c6c346c7
+    size_bytes: 35561
   provenance:
     redistribution: permitted
     original: true
@@ -79,7 +72,7 @@ references:
 
 ## Type to jump
 
-![Mario Teaches Typing Demo](incoming/mario-teaches-typing-demo/gameplay.png)
+![Mario Teaches Typing Demo](https://assets.systemless.org/catalogue/media/sha256/33/33358edac43c0ae39ca0c7ffae8d79cfc540592beef2bbf6c1b8bcc9c6c346c7.png)
 
 Each lesson turns typing drills into a short Mario run. Hit the letter shown on each turtle or block to keep Mario moving, while the game tracks your speed and errors.
 
