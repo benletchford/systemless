@@ -4239,32 +4239,41 @@ impl super::TrapDispatcher {
                         }
                         // Skip the 3 region checks entirely when
                         // we precomputed that no clipping is in effect.
+                        // The loop bounds already include every region's
+                        // bounding box, so only non-rectangular regions (or
+                        // unreadable ones) need a per-pixel membership test.
                         if !no_clipping {
-                            if !Self::region_contains_point_cached(
-                                bus,
-                                vis_rgn_handle,
-                                vis_membership.as_ref(),
-                                dy,
-                                dx,
-                            ) {
+                            if vis_test
+                                && !Self::region_contains_point_cached(
+                                    bus,
+                                    vis_rgn_handle,
+                                    vis_membership.as_ref(),
+                                    dy,
+                                    dx,
+                                )
+                            {
                                 continue;
                             }
-                            if !Self::region_contains_point_cached(
-                                bus,
-                                clip_rgn_handle,
-                                clip_membership.as_ref(),
-                                dy,
-                                dx,
-                            ) {
+                            if clip_test
+                                && !Self::region_contains_point_cached(
+                                    bus,
+                                    clip_rgn_handle,
+                                    clip_membership.as_ref(),
+                                    dy,
+                                    dx,
+                                )
+                            {
                                 continue;
                             }
-                            if !Self::region_contains_point_cached(
-                                bus,
-                                mask_rgn,
-                                mask_membership.as_ref(),
-                                dy,
-                                dx,
-                            ) {
+                            if mask_test
+                                && !Self::region_contains_point_cached(
+                                    bus,
+                                    mask_rgn,
+                                    mask_membership.as_ref(),
+                                    dy,
+                                    dx,
+                                )
+                            {
                                 continue;
                             }
                         }
