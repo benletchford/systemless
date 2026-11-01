@@ -5520,8 +5520,9 @@ impl FixtureRunner {
         let w0 = self.bus.read_word(pc_after_trap);
 
         // Template D consumes TickCount directly from its stack result slot:
-        //   CLR.L -(A7); _TickCount; CMP.L (A7)+,Dn; Bcc.S <back-to-CLR>
-        // Lemmings uses the BEQ form for its frame delay loop.
+        //   CLR.L -(A7) or SUBQ #4,A7; _TickCount; CMP.L (A7)+,Dn; Bcc.S back
+        // Lemmings uses the BEQ form for its frame delay loop; Missions of
+        // the Reliant's delay routine uses SUBQ and BGT.
         if (w0 & 0xF1FF) == 0xB09F {
             let dn = ((w0 >> 9) & 7) as usize;
             return self.try_spin_template_d(pc_after_trap, dn, tick_cap);
@@ -6868,7 +6869,7 @@ impl FixtureRunner {
     ) -> bool {
         let w_branch = self.bus.read_word(pc_after_trap.wrapping_add(2));
         let branch_condition = w_branch & 0xFF00;
-        if branch_condition != 0x6400 && branch_condition != 0x6700 {
+        if !matches!(branch_condition, 0x6400 | 0x6700 | 0x6C00 | 0x6E00) {
             return false;
         }
         let displacement = (w_branch & 0xFF) as i8 as i32;
@@ -6877,7 +6878,10 @@ impl FixtureRunner {
         }
         let branch_pc = pc_after_trap.wrapping_add(2);
         let target = (branch_pc.wrapping_add(2) as i32).wrapping_add(displacement) as u32;
-        if target != pc_after_trap.wrapping_sub(4) || self.bus.read_word(target) != 0x42A7 {
+        // The result slot may be reserved by CLR.L -(A7) or SUBQ #4,A7.
+        if target != pc_after_trap.wrapping_sub(4)
+            || !matches!(self.bus.read_word(target), 0x42A7 | 0x594F | 0x598F)
+        {
             return false;
         }
 
@@ -6887,7 +6891,23 @@ impl FixtureRunner {
             // BEQ would already fall through, so there is no wait to skip.
             return false;
         }
-        let target_tick = dn_value.wrapping_add(1);
+        let target_tick = match branch_condition {
+            // CMP.L (A7)+,Dn; BGT repeats while the signed deadline Dn is
+            // still after the sample, so the first exiting tick is Dn. BGE
+            // also repeats at Dn itself. Leave expired deadlines to the CPU.
+            0x6E00 | 0x6C00 => {
+                let exit = if branch_condition == 0x6E00 {
+                    dn_value
+                } else {
+                    dn_value.wrapping_add(1)
+                };
+                if (exit.wrapping_sub(captured_tick) as i32) <= 0 {
+                    return false;
+                }
+                exit
+            }
+            _ => dn_value.wrapping_add(1),
+        };
         match self.advance_until_tick(target_tick, tick_cap) {
             AdvanceResult::CapHit => {
                 // The trap's result was captured before the synthetic VBLs.
