@@ -5669,7 +5669,19 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                if let Some(vfs_name) = self.find_vfs_file(&filename) {
+                let is_hfs = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
+                let vref = bus.read_word(pb + 22) as i16;
+                let dir_id = bus.read_long(pb + 48);
+                let target = if is_hfs && dir_id > 1 {
+                    let directory = self.resolve_directory_id(vref, dir_id);
+                    self.find_vfs_file_in_directory(directory, &filename)
+                } else {
+                    self.find_vfs_file(&filename)
+                };
+                if let Some(vfs_name) = target {
                     if self.vfs_path_is_read_only(&vfs_name) {
                         bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
                         cpu.write_reg(Register::D0, (-44i32) as u32);

@@ -7383,6 +7383,85 @@ fn test_pb_open_rf_current_permission_allows_fswrite() {
 
 // HCreateResFile ($A81B) — missing file creation plus PBOpenRF visibility.
 #[test]
+fn hfs_resource_files_with_same_name_are_isolated_by_directory() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let temporary = disp.ensure_vfs_directory("Temporary Items");
+    let extensions = disp.ensure_vfs_directory("System Folder/Extensions");
+    let name_ptr = 0x310000u32;
+    bus.write_pstring(name_ptr, b"Shared Engine");
+    for directory in [temporary, extensions] {
+        bus.write_long(TEST_SP, name_ptr);
+        bus.write_long(TEST_SP + 4, directory);
+        bus.write_word(TEST_SP + 8, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x01B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(0x0A60), 0);
+    }
+    assert!(disp.vfs_rsrc.contains_key("Temporary Items/Shared Engine"));
+    assert!(disp
+        .vfs_rsrc
+        .contains_key("System Folder/Extensions/Shared Engine"));
+    bus.write_long(TEST_SP, name_ptr);
+    bus.write_long(TEST_SP + 4, temporary);
+    bus.write_word(TEST_SP + 8, 0);
+    cpu.write_reg(Register::A7, TEST_SP);
+    disp.dispatch_toolbox(true, 0x01B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(0x0A60) as i16, -48);
+    for (directory, path) in [
+        (temporary, "Temporary Items/Shared Engine"),
+        (extensions, "System Folder/Extensions/Shared Engine"),
+    ] {
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, name_ptr);
+        bus.write_long(TEST_SP + 6, directory);
+        bus.write_word(TEST_SP + 10, 0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_toolbox(true, 0x01A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.resource_file_name(bus.read_word(TEST_SP + 12)),
+            Some(path)
+        );
+    }
+    let pb = 0x300000u32;
+    bus.write_long(pb + 18, name_ptr);
+    bus.write_word(pb + 22, 0);
+    bus.write_long(pb + 48, temporary);
+    cpu.write_reg(Register::A0, pb);
+    disp.current_trap_word = 0xA209;
+    disp.dispatch_resource(false, 0x09, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert!(!disp.vfs_rsrc.contains_key("Temporary Items/Shared Engine"));
+    assert!(disp
+        .vfs_rsrc
+        .contains_key("System Folder/Extensions/Shared Engine"));
+    bus.write_word(TEST_SP, 1);
+    bus.write_long(TEST_SP + 2, name_ptr);
+    bus.write_long(TEST_SP + 6, temporary);
+    bus.write_word(TEST_SP + 10, 0);
+    cpu.write_reg(Register::A7, TEST_SP);
+    disp.dispatch_toolbox(true, 0x01A, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(TEST_SP + 12) as i16, -1);
+    assert_eq!(bus.read_word(0x0A60) as i16, -43);
+    bus.write_byte(pb + 27, 1);
+    cpu.write_reg(Register::A0, pb);
+    disp.current_trap_word = 0xA20A;
+    disp.dispatch_toolbox(false, 0x0A, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(pb + 16) as i16, -43);
+}
+
+#[test]
 fn test_hcreate_res_file_creates_missing_file_and_resource_fork() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
