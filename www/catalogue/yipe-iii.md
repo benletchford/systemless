@@ -9,7 +9,6 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
-launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -18,13 +17,12 @@ compatibility:
     systemless_version: fd35169ca
     architecture: 68k
     environment: >-
-      Original author-hosted version 1.4, 800-by-600 at 8-bit depth, explicit
-      68K preference. New Game, Done, first character choice and Skip Intro
-      reach the town. A moves the avatar one tile left; a same-duration no-key
-      control remains in place, with 1054 differing pixels in the screenshots.
-      Character selection portraits are blank, tracked in issue 5529, although
-      their hit regions work. No browser pacing, combat, saves or audio
-      verification is claimed; launch remains disabled.
+      Original author-hosted version 1.4, 800-by-600 at 8-bit depth, explicit 68K
+      preference. New Game, Done, first character choice and Skip Intro reach the town. A
+      moves the avatar one tile left; a same-duration no-key control remains in place,
+      with 1054 differing pixels in the screenshots. Character selection portraits are
+      blank, tracked in issue 5529, although their hit regions work. No browser pacing,
+      combat, saves or audio verification is claimed; launch remains disabled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5530
 runtime:
@@ -36,10 +34,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://www.yipesoftware.com/files/yipeiii.sit
-    expected_sha256: e0638f6c10dcb4f430771fcba80afb7a3a1ab89b84ae4834658a073ec64e9ccd
-    expected_size: 621950
+    type: sha256
+    sha256: e0638f6c10dcb4f430771fcba80afb7a3a1ab89b84ae4834658a073ec64e9ccd
+    size_bytes: 621950
   provenance:
     redistribution: permitted
     original: true
@@ -49,21 +46,22 @@ artifacts:
     license: Original unchanged-package distribution permission
     rights_holder: Kevin Kinell / Yipe Software
     permission: >-
-      The bundled Yipe! License permits electronic and other distribution of
-      the complete software without modification; it prohibits distribution of
-      registered versions. This is the author-hosted shareware package, kept
-      complete and unchanged, including Monsters, registration form and licence.
+      The bundled Yipe! License permits electronic and other distribution of the
+      complete software without modification; it prohibits distribution of registered
+      versions. This is the author-hosted shareware package, kept complete and unchanged,
+      including Monsters, registration form and licence.
     notes: >-
       Production packing identifies five files including the original application,
-      Monsters data, licence, registration form and folder icon. The application has
-      an empty data fork, nine CODE resources and no cfrg resource. Independent
-      extraction parity and full unregistered-game coverage remain pending.
+      Monsters data, licence, registration form and folder icon. The application has an
+      empty data fork, nine CODE resources and no cfrg resource. Independent extraction
+      parity and full unregistered-game coverage remain pending.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/yipe-iii/gameplay.png
+    type: sha256
+    sha256: dfea1085d6bb8f1e216cec6787da3a0b5f8e1f3fdef60472cffc2c08621efabf
+    size_bytes: 99831
   provenance:
     redistribution: permitted
     original: true
@@ -76,7 +74,7 @@ references:
 - https://www.yipesoftware.com/yipeiii_MAC.html
 ---
 
-![The player exploring the town of Yipe](incoming/yipe-iii/gameplay.png)
+![The player exploring the town of Yipe](https://assets.systemless.org/catalogue/media/sha256/df/dfea1085d6bb8f1e216cec6787da3a0b5f8e1f3fdef60472cffc2c08621efabf.png)
 
 Create a character and search Yipe's world for the king's missing stamps and
 princesses. The original unregistered shareware edition limits access to later
