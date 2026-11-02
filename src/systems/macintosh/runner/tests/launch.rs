@@ -197,9 +197,17 @@ fn init_ppc_app_applies_pinned_launch_state_to_both_memories() {
     assert!(runner.dispatcher.aline_vector_is_default(&runner.bus));
 
     assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
+    assert_eq!(
+        runner.bus.read_word(addr::SYS_VERSION),
+        crate::machine_profile::POWERPC_SYSTEM_VERSION_BCD
+    );
     assert_eq!(runner.guest_tick(), 4321);
     assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
     let ppc_app = runner.native.application_mut().expect("PPC app installed");
+    assert_eq!(
+        ppc_app.memory.read_u16_be(addr::SYS_VERSION),
+        Some(crate::machine_profile::POWERPC_SYSTEM_VERSION_BCD)
+    );
     assert_eq!(
         ppc_app
             .memory

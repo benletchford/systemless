@@ -4178,6 +4178,10 @@ impl FixtureRunner {
         self.m68k.cpu.core.set_sr_noint_nosp(launch_sr);
 
         // Initialize low-memory globals
+        self.bus.write_word(
+            addr::SYS_VERSION,
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.system_version_bcd,
+        );
         self.bus.write_long(addr::MEM_TOP, ram_size);
         // CurStackBase ($0908): "Address of base of stack; start of
         // application global variables." Per Inside Macintosh: Memory
@@ -4980,6 +4984,10 @@ impl FixtureRunner {
 
         self.bus.detach_guest_address_space();
         self.adopt_ppc_process_memory_image(&mut ppc_app);
+        self.bus.write_word(
+            addr::SYS_VERSION,
+            crate::machine_profile::POWERPC_SYSTEM_VERSION_BCD,
+        );
         // These are process launch defaults, not PEF-loader state. Reapply
         // them after adopting a sparse construction image so a synthetic
         // adapter that maps zero-filled low memory cannot erase the process

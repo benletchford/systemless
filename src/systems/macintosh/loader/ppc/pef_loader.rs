@@ -643,6 +643,10 @@ fn load_pef_application_with_optional_disk_fragment(
             .ok_or(PpcLoadError::AddressOverflow)?;
     }
     memory.add_region(PPC_HALT_PC, vec![0u8; PPC_LOW_MEMORY_SIZE]);
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::SYS_VERSION,
+        POWERPC_SYSTEM_VERSION_BCD,
+    );
     let _ = memory.write_u8(
         crate::memory::globals::addr::KBD_TYPE,
         crate::machine_profile::KEYBOARD_PHYSICAL_TYPE,

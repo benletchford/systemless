@@ -25,6 +25,11 @@ fn init_app_zeroes_fresh_top_of_stack() {
 
     runner.init_app(&app);
 
+    assert_eq!(
+        runner.bus.read_word(addr::SYS_VERSION),
+        crate::machine_profile::REFERENCE_MACHINE_PROFILE.system_version_bcd
+    );
+
     let stack_seed_start = app.initial_sp.saturating_sub(0x8000);
     assert_eq!(
         runner.bus.read_long(stack_seed_start),
