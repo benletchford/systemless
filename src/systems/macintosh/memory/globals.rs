@@ -43,6 +43,7 @@ pub mod addr {
     /// Inside Macintosh Volume III (1985), low-memory globals table.
     pub const SYS_EVT_MASK: u32 = 0x0144;
     pub const RND_SEED: u32 = 0x0156; // Random number seed (long) - Inside Macintosh Volume II, II-387
+    pub const SYS_VERSION: u32 = 0x015A; // RAM-based system version (word)
     pub const TICKS: u32 = 0x016A; // Tick count (long) - system timer
     pub const MB_STATE: u32 = 0x0172; // Mouse button state (byte) - 0=down, $80=up
     /// KeyMapLM: current keyboard bitmap, 4 longs / 16 bytes.

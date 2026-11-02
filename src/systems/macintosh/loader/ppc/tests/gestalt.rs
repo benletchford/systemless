@@ -2,6 +2,21 @@ use super::*;
 use crate::machine_profile::{POWERPC_CARBON_VERSION_BCD, REFERENCE_POWERPC_CPU_CLOCK_HZ};
 
 #[test]
+fn native_system_version_low_memory_matches_gestalt() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Gestalt")).unwrap();
+    let response_ptr = PPC_HEAP_BASE;
+    loaded.memory.add_region(response_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"sysv");
+    loaded.cpu.gpr[4] = response_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Gestalt);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(response_ptr),
+        loaded.memory.read_u16_be(crate::memory::globals::addr::SYS_VERSION).map(u32::from)
+    );
+}
+
+#[test]
 fn new_gestalt_value_registers_selector_and_rejects_duplicates() {
     let pef = synthetic_pef_with_import(b"NewGestaltValue");
     let mut loaded = load_pef_application(&pef).unwrap();
