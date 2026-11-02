@@ -229,7 +229,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 148 | Empire Deluxe | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 149 | Civil War | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 150 | Sub Battle Simulator | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 151 | Worms | Complete-package terms under review | [Original demo receipt](CATALOGUE-SOURCES.md#worms-demo--2026-11-02-intake) | Play Game reaches team selection; match and cursor mapping unresolved | Main menu; play input unresolved | Pending | Not submitted | Pending |
+| 151 | Worms | Complete-package terms under review | [Original demo receipt](CATALOGUE-SOURCES.md#worms-demo--2026-11-02-intake) | Play Game reaches team selection; match and cursor mapping unresolved | Play Game reaches team selection; match unresolved | Pending | Not submitted | Pending |
 | 152 | Tomb Raider Chronicles | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 153 | Tomb Raider III: Adventures of Lara Croft | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 154 | Tomb Raider: The Last Revelation | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

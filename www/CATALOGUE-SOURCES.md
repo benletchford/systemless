@@ -2876,7 +2876,11 @@ not independent emulator comparisons.
   selection, so that sample did not measure the Hangar. A second sample using
   longer waits reached the Hangar and measured 31.84 guest ticks/s and 43.69
   host fps, with a 59.9 ms runtime frame; it also failed the pacing thresholds.
-  Browser input, sustained gameplay and pacing qualification remain open.
+  A separate fixed-25-MHz preview reached the Hangar but measured 28.17 guest
+  ticks/s and 43.73 host fps, with a 58.9 ms runtime frame, also failing the
+  thresholds. These samples do not establish equal guest progress or compare
+  game speed at the two settings. Browser input, sustained gameplay and pacing
+  qualification remain open.
 
 Neither candidate is hosted, launch-approved or counted live. The browser
 preview worktree is `/tmp/systemless-catalogue-browser-20261102`; its temporary
@@ -2898,9 +2902,9 @@ main menu at 1,200 frontend ticks. Both reports have zero exhausted frames and
 no assertions; this is startup evidence only. On 68K, an initial click, a
 longer held click and Return did not start a match; on PPC, Space did not start
 one. A further 68K replay moving the mouse to `(v=257,h=250)`, waiting 30 ticks
-and clicking at that position opened the team-selection screen. Subsequent
-attempts to select a team did not begin a match. The guest cursor appeared at
-different positions from requested coordinates, including after button events;
+and clicking at that position opened the team-selection screen on both 68K and
+PPC. Subsequent 68K attempts to select a team did not begin a match. The guest
+cursor appeared at different positions from requested coordinates, including after button events;
 the exact control path and any runtime defect need investigation before
 claiming gameplay. No browser test, hosting, launch approval or released-route
 check has been performed.
