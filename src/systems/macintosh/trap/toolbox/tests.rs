@@ -13321,6 +13321,41 @@ fn standard_put_name_selection_is_clipped_to_the_field() {
     assert_eq!(row(&bus), unselected, "nothing painted right of the field");
 }
 
+// The selection is measured as the field draws its text (plain system font
+// at 12), not in the application's current text size and face.
+#[test]
+fn standard_put_name_selection_ignores_the_current_text_state() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005);
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let mut tracking = disp.standard_file_put_tracking.take().unwrap();
+    tracking.name = "Dullsville".to_string();
+    tracking.sel_start = 2;
+    tracking.sel_end = 6;
+    let v = tracking.bounds.0 + super::STANDARD_FILE_NAME_RECT.0 + 1;
+    let field = |bus: &MacMemoryBus| {
+        (0..512)
+            .map(|x| bus.read_byte(base + v as u32 * 64 + x as u32 / 8) & (0x80 >> (x % 8)) != 0)
+            .collect::<Vec<_>>()
+    };
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    let plain = field(&bus);
+    disp.tx_size = 24;
+    disp.tx_face = 1; // bold
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    assert_eq!(
+        field(&bus),
+        plain,
+        "the highlight where the plain text puts it"
+    );
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();
