@@ -149,7 +149,8 @@ impl GuiDriver {
         }
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
-        let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
+        let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner)
+            .expect("Failed to open desktop save store");
         eprintln!(
             "[SYSTEMLESS] Desktop save dir: {}",
             save_store.root().display()

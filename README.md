@@ -393,11 +393,43 @@ guest menus are mirrored into the native menu bar and the guest's application
 name and icon are integrated with the Dock. Other platforms render the classic
 menu bar according to the guest application's own visibility state.
 
-Desktop saves are stored next to the launched archive under
-`.systemless/saves/<archive-name>/`. For example, launching
-`/Games/EV Override 1.0.1.sit` restores and persists saves under
-`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
-resource forks and is kept separate from the original archive.
+Desktop saves live in your per-user application-data directory, under
+`saves/<full-SHA256-of-archive-bytes>/`:
+
+- macOS: `~/Library/Application Support/Systemless/`
+- Windows: `%LOCALAPPDATA%\Systemless\`
+- Linux: `$XDG_DATA_HOME/systemless/`, or `~/.local/share/systemless/`
+
+Moving, renaming, or making a byte-identical copy of an archive keeps its saves.
+Changing the archive's contents creates a separate store. A versioned
+`manifest.json` records the display name, source-path history, and imports;
+names and paths do not determine save identity.
+
+To find a game's save directory without launching it:
+
+```sh
+systemless /path/to/game.sit --save-dir
+```
+
+On first launch, Systemless copies any legacy
+`.systemless/saves/<archive-name>/` store beside the current archive into the
+new location. The legacy copy is kept. If the new store already exists, it is
+authoritative; legacy saves are not merged automatically. Once a legacy source
+has been imported, changing the archive does not automatically reuse that backup;
+use an explicit import to transfer state to a different version.
+
+To recover saves left beside an archive's previous location, or explicitly
+transfer saves from another version, provide the source save directory:
+
+```sh
+systemless /path/to/game.sit --import-saves /old/location/.systemless/saves/Game
+```
+
+The command prints the destination directory and exits. It preserves both Mac
+forks and Finder metadata, records the source in the destination manifest, and
+leaves the source untouched. Conflicting guest filenames cause an error before
+any saves are imported; Systemless never overwrites an existing save during
+import. Choose a source containing only the files you intend to recover.
 
 System Folder preferences are persisted with the saves, under
 `System Folder/Preferences/` inside the save directory. Pass
@@ -457,8 +489,9 @@ new or changed user-save files. Save-file filtering is frontend policy; the
 desktop runner excludes temporary items, Trash, and desktop database files, but
 keeps System Folder preferences.
 
-The built-in desktop runner uses this API and stores snapshots next to the
-launched archive under `.systemless/saves/<archive-name>/`.
+The built-in desktop runner uses this API and stores snapshots under
+`saves/<full-SHA256-of-archive-bytes>/` in the per-user application-data
+directory. See the desktop save-location and import commands above.
 
 ## Crate Map
 
