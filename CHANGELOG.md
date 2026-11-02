@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.108.0](https://github.com/benletchford/systemless/compare/v0.107.0...v0.108.0) (2026-11-02)
+
+
+### Features
+
+* **catalogue:** add Empire Deluxe demo ([#5522](https://github.com/benletchford/systemless/issues/5522)) ([63f0d47](https://github.com/benletchford/systemless/commit/63f0d477a77874d1650d81e359811ffda494e434))
+* **catalogue:** enable the deliverance demo ([#5525](https://github.com/benletchford/systemless/issues/5525)) ([2c00952](https://github.com/benletchford/systemless/commit/2c00952b6d30b35cabc5504b6df80e693b962aa5))
+* **catalogue:** enable yipe ii and iii shareware ([#5538](https://github.com/benletchford/systemless/issues/5538)) ([9044ca5](https://github.com/benletchford/systemless/commit/9044ca5715bf10615053c21fc24f1c5c53fa114f))
+* **catalogue:** stage yipe ii and iii shareware ([#5532](https://github.com/benletchford/systemless/issues/5532)) ([f17298d](https://github.com/benletchford/systemless/commit/f17298d7d79f2827d9bef72056dac119963a2caa))
+
+
+### Bug Fixes
+
+* **devices:** provide stable virtual disk icons ([8eca1b1](https://github.com/benletchford/systemless/commit/8eca1b1f3c0e8e6fd06757c997e81852d7103e25))
+* **dialog:** draw dialog items in the dialog port's text state ([d5f042b](https://github.com/benletchford/systemless/commit/d5f042bce5f9f2496404b677a21f0c4f97b76c4b))
+* **mac:** expose application resource file references ([#5544](https://github.com/benletchford/systemless/issues/5544)) ([383919f](https://github.com/benletchford/systemless/commit/383919f81a8ecdf739f1f2b37ed5855347486f26))
+* **mac:** honor guest resource loading hooks ([#5547](https://github.com/benletchford/systemless/issues/5547)) ([1aef37d](https://github.com/benletchford/systemless/commit/1aef37d5ded50b7ee8e6ffe0ad0862313aab99e1))
+* **mac:** preserve caller identity during launch ([#5549](https://github.com/benletchford/systemless/issues/5549)) ([d9ea1c5](https://github.com/benletchford/systemless/commit/d9ea1c5707895cab628246aa7e2aa15faa949043))
+* **mac:** preserve color icons in dialog snapshots ([#5537](https://github.com/benletchford/systemless/issues/5537)) ([4450b11](https://github.com/benletchford/systemless/commit/4450b11f4e47262096cdb64071724d26b22c2cba))
+* **menu:** leave ResError at noErr when GetMenu misses a MENU resource ([#5517](https://github.com/benletchford/systemless/issues/5517)) ([99c7056](https://github.com/benletchford/systemless/commit/99c7056a17a8412a76148bdac267f7023439465d))
+* **standard-file:** read SFGetFile's where point at its stack offset ([d867d6e](https://github.com/benletchford/systemless/commit/d867d6e048f3d99fe52f644390b2830e9d761ac0))
+* **storage:** preserve desktop saves across archive moves ([0f160d8](https://github.com/benletchford/systemless/commit/0f160d8066418c0dfdb3320d513e1706d1c75c65))
+
 ## [0.107.0](https://github.com/benletchford/systemless/compare/v0.106.0...v0.107.0) (2026-11-01)
 
 
