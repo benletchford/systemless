@@ -2909,6 +2909,22 @@ the exact control path and any runtime defect need investigation before
 claiming gameplay. No browser test, hosting, launch approval or released-route
 check has been performed.
 
+
+**Battle and combat follow-up, 3 November:** the unchanged original demo on
+both 68K and PPC selects two teams, starts a landscape and enters a battle when
+the headless setup accounts for the guest's mouse recentering. On each slice,
+a held Right input and same-duration idle control start from pixel-identical
+battle frames; the post-input view scrolls in the input run. Four observed
+pixel assertions pass in each movement/control replay, with zero exhausted
+frames. A separate matched Space hold/release produces a visible explosion and
+reduces the active worm's displayed health from 100 to 50; six observed pixel
+checks pass in each fire/no-fire replay on both slices, with zero exhausted
+frames. These bounded native results are not a complete match, browser or
+independent-emulator qualification. The exact package's distribution terms
+remain unestablished, and the mouse-warp behavior and safe frontend handling
+remain under investigation in [#5558](https://github.com/benletchford/systemless/issues/5558).
+No entry or managed asset is approved by this evidence.
+
 ## Fatty Bear's Birthday Surprise — direct public replay
 
 On 2 November 2026, fresh Chromium 156 worker/WebGL sessions opened the
