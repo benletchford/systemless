@@ -2908,3 +2908,30 @@ cursor appeared at different positions from requested coordinates, including aft
 the exact control path and any runtime defect need investigation before
 claiming gameplay. No browser test, hosting, launch approval or released-route
 check has been performed.
+
+## Fatty Bear's Birthday Surprise — direct public replay
+
+On 2 November 2026, fresh Chromium 156 worker/WebGL sessions opened the
+[public player](https://systemless.org/fatty-bears-birthday-surprise-demo/)
+without a preview bridge or local archive substitution. A fresh managed archive
+download matched 1,199,592 bytes and SHA-256
+`c524b0e05f2f96b9fa31432d5306b525bc897702f6b6fc1a146d735029e007d0`;
+the catalogue screenshot matched 21,855 bytes and SHA-256
+`90d437f17d7b045c85c57bed7d4d0d22a554846ddb9e6802015270b1ca6d1551`.
+The unchanged application's data fork is empty; its resource map contains eight
+CODE resources and no cfrg. The bundled data files remain in the original
+archive.
+
+The opening grayscale front-yard animation occurs without input and is not
+counted as gameplay. After it and the title sequence, the original colour yard
+and inventory appear. At guest tick 5,100, a click on the skateboard made Fatty
+walk toward it; a same-duration no-click control left him at the house. Inspected
+captures differed by 102 pixels before the input and 4,071 pixels afterward in
+the game-content region. A repeated clicked run showed the same movement, with
+94 differing pixels in that region at the later capture. Captures are browser
+observations, not an independent Macintosh emulator oracle. Twenty-second samples
+measured 59.78 and 59.93 guest ticks/s for the clicked runs and 60.37 for the
+control, with no console errors. Other puzzles, later scenes, saves and audio
+fidelity were not assessed. With the existing original-package acceptance,
+native evidence, promoted assets and launch approval, this verifies one
+existing distinct title live; it adds no source entry or release.
