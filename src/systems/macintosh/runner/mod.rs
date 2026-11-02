@@ -4068,6 +4068,15 @@ impl FixtureRunner {
         self.bus.write_word(addr::FS_FCB_LEN, HFS_FCB_SIZE);
         self.bus
             .write_word(addr::CUR_APREF_NUM, APPLICATION_RESOURCE_REFNUM);
+        // The application map is created before its resource fork receives an
+        // FCB. Publish that FCB reference to native Resource Manager clients.
+        let map_handle = self.bus.read_long(0x0A50);
+        if map_handle != 0 {
+            let map = self.bus.read_long(map_handle);
+            if map != 0 && self.bus.read_word(map + 20) == 0 {
+                self.bus.write_word(map + 20, APPLICATION_RESOURCE_REFNUM);
+            }
+        }
         self.dispatcher.sync_guest_curmap(&mut self.bus);
 
         self.dispatcher

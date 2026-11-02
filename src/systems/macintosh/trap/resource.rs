@@ -1834,10 +1834,15 @@ impl super::TrapDispatcher {
                 ResourceFork::parse(&bytes)
             })?;
         let reference_offset = fork.get(res_type, res_id)?.reference_offset as u32;
+        let guest_refnum = if refnum == 0 {
+            bus.read_word(addr::CUR_APREF_NUM)
+        } else {
+            refnum
+        };
         let top_handle = bus.read_long(0x0A50);
         if refnum == 0 && top_handle != 0 {
             let map = bus.read_long(top_handle);
-            if map != 0 && bus.read_word(map + 20) == refnum {
+            if map != 0 && bus.read_word(map + 20) == guest_refnum {
                 let reference = map + reference_offset;
                 bus.write_long(reference + 8, handle);
                 return Some((reference, top_handle, None));
@@ -1854,7 +1859,7 @@ impl super::TrapDispatcher {
         }
         bus.write_bytes(map, fork.map());
         bus.write_long(map + 16, 0);
-        bus.write_word(map + 20, refnum);
+        bus.write_word(map + 20, guest_refnum);
         bus.write_long(map_handle, map);
         for resource in fork.resources().values() {
             let key = (refnum, resource.res_type, resource.id);
