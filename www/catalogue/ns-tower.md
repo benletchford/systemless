@@ -59,6 +59,21 @@ compatibility:
       not verification of the repaired runtime on the public route.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5275
+  - date: "2026-11-02"
+    tester: Catalogue maintainer
+    systemless_version: public deployment observed 2026-11-02
+    architecture: 68k
+    environment: >-
+      Direct systemless.org player, Chrome 156 worker/WebGL, 800-by-600/8-bit,
+      25 MHz. Return dismisses the original notice and starts a game; a 700 ms
+      Space charge is released in the tower. Two fresh 20-second game samples
+      report 60.223 and 60.282 guest ticks/sec, with no console errors. The
+      clean sidebar is visible. The hosted original archive and current page
+      screenshot independently match their recorded hashes and sizes. Earlier
+      public interaction captures show the charge meter and upward jump; floor
+      advancement, long runs, score persistence and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4480
 runtime:
   executable_path: NS-TOWER 2.5/NS-TOWER
   screen_depth: 8
