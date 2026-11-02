@@ -1863,6 +1863,10 @@ impl super::TrapDispatcher {
         }
 
         let len = bytes.len();
+        let backing_key = format!("__rsrc__{file_name}");
+        if self.vfs.contains_key(&backing_key) {
+            self.vfs.insert(backing_key, bytes.clone());
+        }
         self.vfs_rsrc.insert(file_name.clone(), bytes);
         self.touch_vfs_entry(&file_name);
         if super::dispatch::trace_resfile_enabled() {

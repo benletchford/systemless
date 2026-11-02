@@ -1947,6 +1947,58 @@ fn release_resource_invalidates_handle_and_getresource_allocates_fresh_handle() 
 }
 
 #[test]
+fn resource_manager_open_refnum_reads_raw_fork_and_closes_access_path() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let bytes = make_single_resource_fork_bytes(*b"TEST", 7, b"payload");
+    disp.vfs_rsrc.insert("Engine".to_string(), bytes.clone());
+    let refnum = disp.open_resource_file_from_vfs_key(&mut bus, "Engine", false);
+    assert_ne!(refnum, u16::MAX);
+    let pb = 0x300000u32;
+    let output = 0x310000u32;
+    cpu.write_reg(Register::A0, pb);
+    bus.write_word(pb + 24, refnum);
+    bus.write_long(pb + 32, output);
+    bus.write_long(pb + 36, 12);
+    bus.write_word(pb + 44, 1); // fsFromStart
+    bus.write_long(pb + 46, 0);
+    call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert_eq!(bus.read_long(pb + 40), 12);
+    assert_eq!(bus.read_bytes(output, 12), bytes[..12]);
+    assert_eq!(disp.file_positions.get(&refnum).copied(), Some(12));
+    assert!(disp.close_resource_file_refnum(&mut bus, refnum));
+    assert!(!disp.open_files.contains_key(&refnum));
+    assert!(!disp.file_positions.contains_key(&refnum));
+    cpu.write_reg(Register::A0, pb);
+    call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+    assert_eq!(bus.read_word(pb + 16) as i16, -51);
+}
+
+#[test]
+fn resource_manager_reopen_reads_recreated_fork_not_old_backing() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let old = make_single_resource_fork_bytes(*b"TEST", 7, b"old bytes");
+    let new = make_single_resource_fork_bytes(*b"TEST", 7, b"new bytes");
+    disp.vfs_rsrc.insert("Engine".into(), old);
+    let first = disp.open_resource_file_from_vfs_key(&mut bus, "Engine", false);
+    assert!(disp.close_resource_file_refnum(&mut bus, first));
+    assert!(disp.remove_vfs_path("Engine"));
+    disp.vfs_rsrc.insert("Engine".into(), new.clone());
+    let second = disp.open_resource_file_from_vfs_key(&mut bus, "Engine", false);
+    let pb = 0x300000u32;
+    let output = 0x310000u32;
+    cpu.write_reg(Register::A0, pb);
+    bus.write_word(pb + 24, second);
+    bus.write_long(pb + 32, output);
+    bus.write_long(pb + 36, new.len() as u32);
+    bus.write_word(pb + 44, 1);
+    bus.write_long(pb + 46, 0);
+    call(&mut disp, false, 0x02, &mut cpu, &mut bus).unwrap();
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert_eq!(bus.read_bytes(output, new.len()), new);
+}
+
+#[test]
 fn release_resource_unloads_vfs_backed_resource_and_getresource_reloads() {
     let (mut disp, mut cpu, mut bus) = setup();
     let bytes = [0xAB; 8];
@@ -3620,6 +3672,11 @@ fn writeresource_persists_added_resource_to_writable_vfs_resource_fork() {
         0
     );
 
+    assert_eq!(
+        disp.vfs.get("__rsrc__Prefs"),
+        disp.vfs_rsrc.get("Prefs"),
+        "raw File Manager reads must see Resource Manager writeback"
+    );
     let fork = crate::managers::resource::ResourceFork::parse(
         disp.vfs_rsrc.get("Prefs").expect("Prefs resource fork"),
     )
