@@ -1078,6 +1078,13 @@ fn load_pef_application_with_optional_disk_fragment(
     memory.add_region(stack_base, stack);
     let mut cpu = PpcCpu::new();
     cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
+    // Enable the PowerPC JIT; `PPC_JIT=0` falls back to the interpreter.
+    #[cfg(feature = "jit")]
+    if std::env::var("PPC_JIT").as_deref() != Ok("0") {
+        if let Err(error) = cpu.enable_jit(ppc::PpcJitConfig::default()) {
+            eprintln!("ppc jit unavailable: {error}");
+        }
+    }
     cpu.pc = startup.map_or(entry_pc, |startup| startup.0);
     cpu.gpr[1] = stack_pointer;
     cpu.gpr[2] = startup.map_or(rtoc, |startup| startup.1);
