@@ -12974,6 +12974,67 @@ fn standard_put_held_button_stays_highlighted_through_the_repaint() {
     assert!(!lit(&bus));
 }
 
+// At 2 and 4 bits a pixel isn't a bit: the held button's highlight inverts
+// the button's own pixels, and none in the dialog's rows left of it (where
+// treating the screen as 1 bit put it, at half or a quarter of its columns).
+#[test]
+fn standard_put_held_button_highlight_respects_packed_depths() {
+    for depth in [2u16, 4] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let row_bytes = 512 * u32::from(depth) / 8;
+        let base = bus.alloc(row_bytes * 342);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, depth);
+        disp.yield_for_ui = true;
+        bus.write_word(TEST_SP, 0x0005);
+        bus.write_long(TEST_SP + 2, 0x3201c0);
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+        let rect = super::STANDARD_FILE_CANCEL_RECT;
+        let (top, left, bottom) = (bounds.0 + rect.0, bounds.1 + rect.1, bounds.0 + rect.2);
+        let pixel = |bus: &MacMemoryBus, x: i16, y: i16| {
+            let bit = x as u32 * u32::from(depth);
+            let byte = bus.read_byte(base + y as u32 * row_bytes + bit / 8);
+            (byte >> (8 - u32::from(depth) - bit % 8)) & ((1u8 << depth) - 1)
+        };
+        let rows = |bus: &MacMemoryBus| {
+            (top..bottom)
+                .map(|y| {
+                    (bounds.1..left)
+                        .map(|x| pixel(bus, x, y))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = rows(&bus);
+        let (v, h) = (top + 4, left + 6);
+        let face = pixel(&bus, h, v);
+        disp.input_state.set_mouse_position_for_test((v, h));
+        disp.event_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: v,
+            where_h: h,
+            modifiers: 0,
+        });
+        disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rows(&bus),
+            before,
+            "{depth} bits: the dialog left of the button unchanged"
+        );
+        assert_eq!(
+            pixel(&bus, h, v),
+            face ^ ((1u8 << depth) - 1),
+            "{depth} bits: the button's face inverted"
+        );
+    }
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();

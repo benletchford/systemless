@@ -9569,12 +9569,22 @@ impl super::TrapDispatcher {
                 if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
                     bus.invert_screen_byte(addr);
-                } else {
-                    let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
-                    let bit = 7 - (x as u32 % 8);
-                    let addr = screen_base + byte_offset;
+                } else if pixel_size < 8 {
+                    // 1, 2 or 4 bits a pixel, packed from the byte's high bits.
+                    let depth = u32::from(pixel_size);
+                    let bit = x as u32 * depth;
+                    let addr = screen_base + (y as u32) * row_bytes + bit / 8;
+                    let mask = (((1u16 << depth) - 1) as u8) << (8 - depth - bit % 8);
                     let b = bus.read_byte(addr);
-                    bus.write_byte(addr, b ^ (1 << bit));
+                    bus.write_byte(addr, b ^ mask);
+                } else {
+                    // 16 and 32 bits: every byte of the pixel.
+                    let bytes = u32::from(pixel_size) / 8;
+                    let addr = screen_base + (y as u32) * row_bytes + x as u32 * bytes;
+                    for offset in 0..bytes {
+                        let b = bus.read_byte(addr + offset);
+                        bus.write_byte(addr + offset, !b);
+                    }
                 }
             }
         }
