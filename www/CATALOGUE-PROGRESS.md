@@ -250,7 +250,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 169 | Freddi Fish 4: The Case of the Hogfish Rustlers of Briny Gulch | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 170 | Freddi Fish and the Case of the Missing Kelp Seeds | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 171 | Pajama Sam 2: Thunder and Lightning Aren't So Frightening | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 172 | Fatty Bear's Birthday Surprise | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 172 | Fatty Bear's Birthday Surprise | [Maintainer-accepted original promotional demo](catalogue/fatty-bears-birthday-surprise-demo.md) | Managed archive and screenshot match original receipts | Native scene/input replay; resource-only 68K app | N/A: no data fork or cfrg in original app | Public click and idle controls; 59.78 / 59.93 / 60.37 ticks/sec | [Merged and launch enabled](catalogue/fatty-bears-birthday-surprise-demo.md) | [Verified public bounded gameplay](https://systemless.org/fatty-bears-birthday-surprise-demo/) |
 | 173 | Living Books Sampler | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 174 | Living Books: Arthur's Birthday | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 175 | Living Books: Dr. Seuss's ABC | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

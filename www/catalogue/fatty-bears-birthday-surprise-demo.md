@@ -28,6 +28,20 @@ compatibility:
       Later scenes, puzzles, and audio remain unverified. Browser pacing passed five of six samples in the front yard at about 60 host fps and 55–57 guest ticks/s; one earlier sample dipped to 36.6 ticks/s.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5487
+  - date: "2026-11-02"
+    tester: Catalogue maintainer
+    systemless_version: public systemless.org release player
+    architecture: 68k
+    environment: >-
+      Direct Chromium 156 worker/WebGL runs on the public route loaded the
+      unchanged managed archive. After the introduction, clicking the skateboard
+      made Fatty walk toward it in two runs; a matched idle run remained at the
+      house. The clicked runs measured 59.78 and 59.93 guest ticks per second,
+      and the idle run measured 60.37, with no console errors. Fresh downloads
+      of the archive and catalogue screenshot matched their pinned sizes and
+      SHA-256 values. Later puzzles and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5487
 runtime:
   executable_path: Fatty Bear Demo/Fatty Bear Demo
   show_menu_bar: true
