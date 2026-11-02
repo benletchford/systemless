@@ -33,10 +33,8 @@ fn hle_import_runner_enumerates_the_single_process() {
     );
 
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
-    assert_eq!(
-        loaded.memory.read_u32_be(psn_ptr + 4),
-        Some(ProcessSerialNumber::CURRENT.low)
-    );
+    assert_eq!(loaded.memory.read_u32_be(psn_ptr), Some(ProcessSerialNumber::NONE.high));
+    assert_eq!(loaded.memory.read_u32_be(psn_ptr + 4), Some(ProcessSerialNumber::NONE.low));
 
     loaded
         .memory
@@ -50,7 +48,7 @@ fn hle_import_runner_enumerates_the_single_process() {
         ),
     );
 
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     assert_eq!(
         loaded.memory.read_u32_be(psn_ptr + 4),
         Some(ProcessSerialNumber::CURRENT.low + 1)
