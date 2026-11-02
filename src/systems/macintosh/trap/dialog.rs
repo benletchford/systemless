@@ -6585,9 +6585,60 @@ impl super::TrapDispatcher {
         );
     }
 
+    /// The dialog port's txFont, txFace and txSize, in which its items are
+    /// drawn whatever the current port is. A new dialog port has the system
+    /// font, plain, at its standard size (IM:I I-163).
+    fn dialog_port_text_state(bus: &MacMemoryBus, dialog_ptr: u32) -> (i16, u8, i16) {
+        if dialog_ptr == 0 {
+            return (0, 0, 0);
+        }
+        (
+            bus.read_word(dialog_ptr + 68) as i16,
+            bus.read_byte(dialog_ptr + 70),
+            bus.read_word(dialog_ptr + 74) as i16,
+        )
+    }
+
+    /// The text state items are drawn in: the dialog's while one is drawn,
+    /// else the current port's.
+    fn item_text_state(&self) -> (i16, u8, i16) {
+        self.dialog_text_state
+            .get()
+            .unwrap_or((self.tx_font, self.tx_face as u8, self.tx_size))
+    }
+
     /// DrawDialog paints items in the existing window; creating or erasing
     /// that window belongs to the Window Manager (MTE 1992, 6-142).
     fn draw_dialog_items(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        skip_pictures: bool,
+        dialog_ptr: u32,
+    ) {
+        let previous = self
+            .dialog_text_state
+            .replace(Some(Self::dialog_port_text_state(bus, dialog_ptr)));
+        self.draw_dialog_items_in_port_text(
+            bus,
+            bounds,
+            proc_id,
+            items,
+            default_item,
+            edit_text,
+            edit_item,
+            skip_pictures,
+            dialog_ptr,
+        );
+        self.dialog_text_state.set(previous);
+    }
+
+    fn draw_dialog_items_in_port_text(
         &mut self,
         bus: &mut MacMemoryBus,
         bounds: (i16, i16, i16, i16),
@@ -7007,6 +7058,33 @@ impl super::TrapDispatcher {
     }
 
     fn redraw_standard_dialog_items(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        dialog_ptr: u32,
+        only_item: Option<i16>,
+    ) {
+        let previous = self
+            .dialog_text_state
+            .replace(Some(Self::dialog_port_text_state(bus, dialog_ptr)));
+        self.redraw_standard_dialog_items_in_port_text(
+            bus,
+            bounds,
+            items,
+            default_item,
+            edit_text,
+            edit_item,
+            dialog_ptr,
+            only_item,
+        );
+        self.dialog_text_state.set(previous);
+    }
+
+    fn redraw_standard_dialog_items_in_port_text(
         &self,
         bus: &mut MacMemoryBus,
         bounds: (i16, i16, i16, i16),
@@ -8948,10 +9026,11 @@ impl super::TrapDispatcher {
             self.get_screen_params();
         // SetDialogFont/SetDAFont affects statText and editText items but
         // not control titles (IM:I I-412; MTE 1992 p. 6-105).
-        let font_id = style.map(|value| value.font).unwrap_or(self.tx_font);
-        let raw_font_size = style.map(|value| value.size).unwrap_or(self.tx_size);
+        let (port_font, port_face, port_size) = self.item_text_state();
+        let font_id = style.map(|value| value.font).unwrap_or(port_font);
+        let raw_font_size = style.map(|value| value.size).unwrap_or(port_size);
         let font_size = Self::font_lookup_size(raw_font_size);
-        let face = style.map(|value| value.face).unwrap_or(self.tx_face as u8);
+        let face = style.map(|value| value.face).unwrap_or(port_face);
         let foreground = style.and_then(|value| value.foreground);
         let _mode = style.map(|value| value.mode).unwrap_or(self.tx_mode);
         let metrics = get_font_metrics(font_id, font_size);
@@ -9097,8 +9176,8 @@ impl super::TrapDispatcher {
             // outside that display rectangle.
             self.draw_rect_border(bus, frame_top, frame_left, frame_bottom, frame_right);
         }
-        let font_id = self.tx_font;
-        let font_size = Self::font_lookup_size(self.tx_size);
+        let (font_id, _, raw_font_size) = self.item_text_state();
+        let font_size = Self::font_lookup_size(raw_font_size);
         let metrics = get_font_metrics(font_id, font_size);
         let text_y = top + metrics.ascent;
         Self::fb_draw_string(
