@@ -2935,3 +2935,24 @@ control, with no console errors. Other puzzles, later scenes, saves and audio
 fidelity were not assessed. With the existing original-package acceptance,
 native evidence, promoted assets and launch approval, this verifies one
 existing distinct title live; it adds no source entry or release.
+
+## NS-SHAFT — direct public replay 2 November 2026
+
+The enabled [public player](https://systemless.org/ns-shaft/) was tested directly
+with no preview bridge or substituted assets. The hosted original archive
+independently matches SHA-256 `ced6dfcab13f4fd7a4a7f949467bcc4de0f7abd519dae379bf351761a8efcba1`
+and 382,228 bytes; its hosted screenshot matches SHA-256
+`86e82d659bf504f96fcf00c99e5522e164f4ff89d4e0fbe2bca7fc5dba2ed710`
+and 84,418 bytes. Existing intake #4475 records the original grant, matching
+forks and 68K-only executable.
+
+In a fresh Chrome 156 worker/WebGL session at 25 MHz, Return dismissed the
+original shareware notice and a second Return started the game. An 800 ms Right
+hold produced a character on a lower platform at B0002F; a fresh matched
+no-arrow control instead reached the high-score prompt, with the character at
+the spikes. A separate 20-second sample after Right input included the end-of-run
+prompt and reported 60.026 guest ticks/sec, 61.061 host frames/sec and no
+console errors. This is bounded gameplay, not a full run or an audio or score
+persistence test. Some title-dialog remnants remain tracked by #4477. The
+latest published release observed was v0.107.0, but the deployed player asset
+was not independently mapped to that tag.
