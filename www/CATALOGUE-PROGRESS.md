@@ -229,7 +229,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 148 | Empire Deluxe | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 149 | Civil War | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 150 | Sub Battle Simulator | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 151 | Worms | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 151 | Worms | Complete-package terms under review | [Original demo receipt](CATALOGUE-SOURCES.md#worms-demo--2026-11-02-intake) | Play Game reaches team selection; match and cursor mapping unresolved | Main menu; play input unresolved | Pending | Not submitted | Pending |
 | 152 | Tomb Raider Chronicles | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 153 | Tomb Raider III: Adventures of Lara Croft | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 154 | Tomb Raider: The Last Revelation | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -270,7 +270,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 189 | 3-D Ultra NASCAR Pinball | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 190 | Absolute Zero | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 191 | Active Lancer | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 192 | After Dark Games | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 192 | After Dark Games | Complete-package terms under review; installer has compressed text and bundled runtime libraries | [Original demo receipt](CATALOGUE-SOURCES.md#after-dark-games-and-tony-hawk-2--2026-11-02-intake) | N/A: game is PPC | Roof Rats: create player and remove two rooms; exact replay matches | Preview move and three pacing samples; hosted-archive replay pending | Not submitted | Pending |
 | 193 | Al Unser Jr. Arcade Racing | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 194 | Alien Nations | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 195 | Alone in the Dark 2 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -437,7 +437,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 356 | Tom Clancy's Ghost Recon | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 357 | Tom Clancy's Rainbow Six | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 358 | Tom Clancy's Rainbow Six: Rogue Spear | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 359 | Tony Hawk's Pro Skater 2 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 359 | Tony Hawk's Pro Skater 2 | Complete-package terms under review | [Original demo receipt](CATALOGUE-SOURCES.md#after-dark-games-and-tony-hawk-2--2026-11-02-intake) | Not tested; OS 9 PPC PEF identified | Hangar session and ollie; exact replay matches | Preview skater menu and Hangar below pacing target | Not submitted | Pending |
 | 360 | Traitors Gate | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 361 | TriBond | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 362 | Trophy Bass | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
