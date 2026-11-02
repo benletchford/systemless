@@ -2829,6 +2829,13 @@ impl super::TrapDispatcher {
         location_label: &str,
         writable: bool,
     ) -> Vec<DialogItem> {
+        let (start, end) = Self::standard_file_selection_range(tracking);
+        let mac_roman = |offset: usize| {
+            encode_mac_roman_lossy(&tracking.name[..offset])
+                .len()
+                .min(i16::MAX as usize) as i16
+        };
+        let (mac_roman_start, mac_roman_end) = (mac_roman(start), mac_roman(end));
         vec![
             DialogItem {
                 item_type: if writable { 4 } else { 0x84 },
@@ -2880,8 +2887,10 @@ impl super::TrapDispatcher {
                 item_type: 16,
                 rect: STANDARD_FILE_NAME_RECT,
                 text: tracking.name.clone(),
-                sel_start: tracking.sel_start,
-                sel_end: tracking.sel_end,
+                // The field draws Mac Roman text: its selection in Mac Roman
+                // offsets (the name's own are UTF-8).
+                sel_start: mac_roman_start,
+                sel_end: mac_roman_end,
                 ..DialogItem::default()
             },
             DialogItem {

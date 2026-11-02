@@ -13253,6 +13253,33 @@ fn standard_put_insertion_point_stays_inside_the_name_field() {
     );
 }
 
+// The Save dialog's selection is kept as offsets in the name's UTF-8 text,
+// while the field draws Mac Roman text: the item handed to the drawing must
+// carry Mac Roman offsets, or a name with an accent highlights the next
+// character ("A" of "CaféABC" is bytes 5..6 in UTF-8, 4..5 in Mac Roman).
+#[test]
+fn standard_put_name_selection_is_drawn_in_mac_roman_offsets() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005);
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let mut tracking = disp.standard_file_put_tracking.take().unwrap();
+    tracking.name = "CaféABC".to_string();
+    tracking.sel_start = 5;
+    tracking.sel_end = 6;
+    let items = TrapDispatcher::standard_file_put_dialog_items(&tracking, "Disk", true);
+    let name_item = items
+        .iter()
+        .find(|item| item.rect == super::STANDARD_FILE_NAME_RECT)
+        .expect("the name field");
+    assert_eq!((name_item.sel_start, name_item.sel_end), (4, 5));
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();
