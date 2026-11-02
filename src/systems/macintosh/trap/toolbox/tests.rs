@@ -13280,6 +13280,47 @@ fn standard_put_name_selection_is_drawn_in_mac_roman_offsets() {
     assert_eq!((name_item.sel_start, name_item.sel_end), (4, 5));
 }
 
+// A selection running past the name field's right edge (a name wider than
+// the field) is painted no further than the field.
+#[test]
+fn standard_put_name_selection_is_clipped_to_the_field() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005);
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let mut tracking = disp.standard_file_put_tracking.take().unwrap();
+    let (top, left, _, right) = tracking.bounds;
+    let field_left = left + super::STANDARD_FILE_NAME_RECT.1;
+    let field_right = left + super::STANDARD_FILE_NAME_RECT.3;
+    // A name whose part up to the selection's end lies right of the dialog.
+    let name = "W".repeat(63);
+    let end = (1..63)
+        .find(|&n| field_left + TrapDispatcher::fb_measure_string(&name[..n], 0, 12) > right + 4)
+        .expect("a prefix reaching past the dialog");
+    tracking.name = name;
+    let ink = |bus: &MacMemoryBus, x: i16, y: i16| {
+        bus.read_byte(base + y as u32 * 64 + x as u32 / 8) & (0x80 >> (x % 8)) != 0
+    };
+    let v = top + super::STANDARD_FILE_NAME_RECT.0 + 4;
+    let row = |bus: &MacMemoryBus| {
+        (field_right + 4..512)
+            .map(|x| ink(bus, x, v))
+            .collect::<Vec<_>>()
+    };
+    tracking.sel_start = 2;
+    tracking.sel_end = 2;
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    let unselected = row(&bus);
+    tracking.sel_end = end as i16;
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    assert_eq!(row(&bus), unselected, "nothing painted right of the field");
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();

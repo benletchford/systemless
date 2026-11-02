@@ -9210,20 +9210,25 @@ impl super::TrapDispatcher {
                     let selection_left = if start == 0 {
                         left
                     } else {
-                        left + Self::TE_LINE_LEFT_INSET
+                        (left
+                            + Self::TE_LINE_LEFT_INSET
                             + self.te_measure_text_width(
                                 font_id,
                                 self.tx_size,
                                 &text_bytes,
                                 0,
                                 start,
-                            )
+                            ))
+                        .min(right)
                     };
                     let selection_right = if end >= text_bytes.len() {
                         right
                     } else {
-                        left + Self::TE_LINE_LEFT_INSET
-                            + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end)
+                        // Kept inside the field: a name wider than it.
+                        (left
+                            + Self::TE_LINE_LEFT_INSET
+                            + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end))
+                        .min(right)
                     };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
