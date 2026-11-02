@@ -3015,3 +3015,15 @@ exhaustion. This is bounded input evidence from Systemless, not an independent
 classic-Mac oracle or a browser pacing measurement. Full gameplay, audio,
 architecture completeness, permission, asset promotion, browser launch and public
 delivery remain unverified. [Intake and reproduction](https://github.com/benletchford/systemless/issues/5535).
+
+A further matched 3 November PowerPC replay uses the same unchanged DMG and the
+local `ci-test` executable SHA-256
+`bf259eddd3ad1c8aa3b299b0ad3d918e9feaf3242a28041017f8a41b3994ce07`, with
+Metal rendering. The fire and idle captures match before input at frontend/guest
+tick 5,218. Holding Space for 60 ticks produces visible weapon feedback and
+reduces the displayed ammunition from 50 to 46; the idle run remains at 50.
+Three observed HUD pixel checks pass in each repeated run at tick 5,278 with
+zero exhausted frames; the outcome captures differ by 3,371 pixels. This is
+bounded native weapon input, not a confirmed hit, completed game or browser
+performance result. The original licence restriction remains; no hosting or
+live qualification is claimed. [Replay details](https://github.com/benletchford/systemless/issues/5535).
