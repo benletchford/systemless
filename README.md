@@ -414,7 +414,9 @@ systemless /path/to/game.sit --save-dir
 On first launch, Systemless copies any legacy
 `.systemless/saves/<archive-name>/` store beside the current archive into the
 new location. The legacy copy is kept. If the new store already exists, it is
-authoritative; legacy saves are not merged automatically.
+authoritative; legacy saves are not merged automatically. Once a legacy source
+has been imported, changing the archive does not automatically reuse that backup;
+use an explicit import to transfer state to a different version.
 
 To recover saves left beside an archive's previous location, or explicitly
 transfer saves from another version, provide the source save directory:

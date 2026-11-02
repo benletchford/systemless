@@ -395,6 +395,37 @@ fn strict_snapshots(root: &Path) -> io::Result<Vec<VfsFileSnapshot>> {
     paths.iter().map(|p| read_saved_file(p)).collect()
 }
 
+/// A retained legacy backup must not silently transfer state to a later
+/// archive version. The first migration claims its source in the published
+/// manifest; subsequent content identities require an explicit import.
+fn legacy_import_already_claimed(stores: &Path, source: &Path) -> io::Result<bool> {
+    let source = fs::canonicalize(source)?.to_string_lossy().into_owned();
+    for entry in fs::read_dir(stores)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !entry.file_type()?.is_dir()
+            || name.len() != 64
+            || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path.join("manifest.json").try_exists()? {
+            continue;
+        }
+        let manifest = read_manifest(&path)?;
+        if manifest
+            .imports
+            .iter()
+            .any(|import| import.sha256.is_none() && import.source == source)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Serialize migration/import decisions across processes. Build a complete
 /// sibling directory before publishing it, so an interrupted copy cannot
 /// become an authoritative, partially migrated store on the next launch.
@@ -442,7 +473,13 @@ fn prepare_store(game_path: &Path, data_dir: &Path, import: Option<&Path>) -> io
     let legacy = legacy_root_for_game_path(game_path);
     let source = match import {
         Some(source) => Some(source.to_path_buf()),
-        None if !existed && legacy.try_exists()? => Some(legacy),
+        None if !existed && legacy.try_exists()? => {
+            if legacy_import_already_claimed(&stores, &legacy)? {
+                None
+            } else {
+                Some(legacy)
+            }
+        }
         None => None,
     };
     let snapshots = if let Some(source) = source.as_deref() {
@@ -1109,5 +1146,27 @@ mod tests {
             vec![snapshot("manifest.json")]
         );
         assert_eq!(read_manifest(&root).unwrap().imports[0].sha256, None);
+    }
+    #[test]
+    fn changed_archive_does_not_automatically_reimport_a_retained_legacy_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"original archive").unwrap();
+        let data = temp.path().join("data");
+        let legacy = legacy_root_for_game_path(&game);
+        write_snapshot(&legacy, &snapshot("Game/Pilot"));
+        let original = prepare_store(&game, &data, None).unwrap();
+        assert_eq!(load_saved_files_from_root(&original).unwrap().len(), 1);
+        fs::write(&game, b"updated archive").unwrap();
+        let updated = prepare_store(&game, &data, None).unwrap();
+        assert_ne!(updated, original);
+        assert!(load_saved_files_from_root(&updated).unwrap().is_empty());
+        assert!(read_manifest(&updated).unwrap().imports.is_empty());
+        assert_eq!(load_saved_files_from_root(&legacy).unwrap().len(), 1);
+        prepare_store(&game, &data, Some(&legacy)).unwrap();
+        assert_eq!(
+            load_saved_files_from_root(&updated).unwrap(),
+            vec![snapshot("Game/Pilot")]
+        );
     }
 }
