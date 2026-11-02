@@ -11375,6 +11375,9 @@ fn resource_lookups_invoke_checkload_with_a_real_map_and_restore_the_caller() {
         disp.vfs_rsrc.insert("CheckLoad Test".into(), bytes);
         disp.set_launched_app_path("CheckLoad Test");
         disp.load_resources(&fork, &mut bus);
+        bus.write_word(addr::CUR_APREF_NUM, 2);
+        let live_map = bus.read_long(bus.read_long(0x0A50));
+        bus.write_word(live_map + 20, 2);
         disp.install_trap_address(&mut bus, 0xA0FC, 0x300000)
             .unwrap();
         cpu.write_reg(Register::PC, 0x290002);
@@ -11402,6 +11405,7 @@ fn resource_lookups_invoke_checkload_with_a_real_map_and_restore_the_caller() {
         let map_handle = bus.read_long(0x0A50);
         assert_eq!(cpu.read_reg(Register::PC), 0x300000, "trap {trap:04X}");
         assert_eq!(cpu.read_reg(Register::A4), map_handle);
+        assert_eq!(bus.read_word(bus.read_long(map_handle) + 20), 2);
         assert_eq!(
             cpu.read_reg(Register::A2),
             bus.read_long(map_handle) + reference_offset
@@ -11436,6 +11440,7 @@ fn resource_lookups_invoke_checkload_with_a_real_map_and_restore_the_caller() {
 #[test]
 fn checkload_callbacks_nest_and_release_temporary_maps() {
     let (mut disp, mut cpu, mut bus) = setup_with_trap_tables();
+    bus.write_word(addr::CUR_APREF_NUM, 2);
     let ptr = setup_resources(&mut disp, &mut bus, b"TEST", 7, b"payload");
     let handle = disp.get_or_create_resource_handle(&mut bus, *b"TEST", 7, ptr);
     disp.install_trap_address(&mut bus, 0xA0FC, 0x300000)
@@ -11445,6 +11450,7 @@ fn checkload_callbacks_nest_and_release_temporary_maps() {
     let outer_reference = cpu.read_reg(Register::A2);
     let outer_sp = cpu.read_reg(Register::A7);
     let outer_map = cpu.read_reg(Register::A4);
+    assert_eq!(bus.read_word(bus.read_long(outer_map) + 20), 2);
     cpu.write_reg(Register::PC, 0x300020);
     disp.maybe_inject_resource_checkload(&mut bus, &mut cpu, handle, None);
     assert_eq!(disp.resource_checkload_stack.len(), 2);
