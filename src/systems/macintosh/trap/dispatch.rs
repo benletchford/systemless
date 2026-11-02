@@ -1629,6 +1629,8 @@ pub struct TrapDispatcher {
     /// Guest SndChannel storage used by writes to the ROM Sound Driver
     /// reference number (-4). Allocated lazily on the first StartSound write.
     pub(crate) legacy_sound_driver_channel: Option<u32>,
+    /// Stable, driver-owned ICN# and Pascal device name for virtual disks.
+    pub(crate) disk_driver_icon: Option<u32>,
     /// Process-owned refnums whose access paths grant write permission.
     /// Files 1992, pp. 2-7--2-8 and 2-121 defines permission as access-path
     /// state and `wrPermErr` (-61) for writes through a read-only path.
@@ -3904,6 +3906,7 @@ impl TrapDispatcher {
             open_files,
             synthetic_drivers: HashMap::default(),
             legacy_sound_driver_channel: None,
+            disk_driver_icon: None,
             write_refnums,
             file_positions,
             recent_file_read: None,

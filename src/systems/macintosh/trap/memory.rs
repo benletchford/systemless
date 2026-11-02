@@ -2487,6 +2487,58 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, result as i32 as u32);
                     return Some(Ok(()));
                 }
+                // PBHGetVInfo advertises driver 0 and positive drive numbers
+                // equal to abs(vRefNum) for our virtual volumes. Route disk
+                // selectors before the video controls sharing that driver ref.
+                // PowerBook 190 Developer Note (1995), pp. 87–88: selectors
+                // 21/22 return ICN# image + mask followed by a Pascal device
+                // name; ioVRefNum is a logical drive, not a volume refnum.
+                if pb != 0 && matches!(bus.read_word(pb + 26), 21 | 22) {
+                    let drive = bus.read_word(pb + 22) as i16;
+                    let exists = drive == 1
+                        || (drive > 0 && self.vfs_volumes.iter().any(|volume| {
+                            volume.ref_num.unsigned_abs() == drive as u16
+                        }));
+                    let result = if bus.read_word(pb + 24) != 0 {
+                        CONTROL_ERR
+                    } else if !exists {
+                        (-56i32) as u32 // nsDrvErr
+                    } else {
+                        let icon = if let Some(icon) = self.disk_driver_icon {
+                            icon
+                        } else {
+                            let icon = bus.alloc_synthetic(256 + 1 + 15);
+                            if icon != 0 {
+                                // Original generic fixed-disk artwork. Each row
+                                // is MSB-first, as required by the ICN# format.
+                                for y in 0..32u32 {
+                                    let mask = if (6..26).contains(&y) { 0x3fff_fffc } else { 0 };
+                                    let image = match y {
+                                        6 | 22 | 25 => 0x3fff_fffc,
+                                        7..=21 => 0x2000_0004,
+                                        23 => 0x2000_0034,
+                                        24 => 0x2000_0004,
+                                        _ => 0,
+                                    };
+                                    bus.write_long(icon + y * 4, image);
+                                    bus.write_long(icon + 128 + y * 4, mask);
+                                }
+                                Self::write_pstring(bus, icon + 256, "Systemless Disk");
+                                self.disk_driver_icon = Some(icon);
+                            }
+                            icon
+                        };
+                        if icon == 0 {
+                            MEM_FULL_ERR
+                        } else {
+                            bus.write_long(pb + 28, icon);
+                            NO_ERR
+                        }
+                    };
+                    bus.write_word(pb + 16, result as u16);
+                    cpu.write_reg(Register::D0, result);
+                    return Some(Ok(()));
+                }
                 let mut control_result = NO_ERR;
                 if pb != 0 {
                     let cs_code = bus.read_word(pb + 26) as i16;
