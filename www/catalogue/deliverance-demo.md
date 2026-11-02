@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,23 @@ compatibility:
       matched idle control was identical until the input and then differed by 234,932
       pixels. An exact replay matched both checkpoints, with zero exhausted frames. Combat,
       later rooms, audio and browser performance remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5486
+  - date: "2026-11-02"
+    tester: Catalogue maintainer
+    systemless_version: d5f042bce browser preview with launch enabled
+    architecture: 68k
+    environment: >-
+      A release-mode Chromium 156 worker/WebGL preview on macOS used the
+      unchanged managed archive directly under the production origin. Three
+      20-second castle-scene samples measured 60.01, 59.95 and 60.95 guest
+      ticks per second, with no console errors. After Start, Space and Right,
+      holding Right again scrolled the warrior into the next castle section;
+      a same-duration control remained by the torch. The movement and control
+      samples measured 59.28 and 60.02 guest ticks per second. Before the first
+      Right input, two controls remained on a black game surface and measured
+      14.24 and 15.28 ticks per second. Combat, later rooms, audio fidelity and
+      the released production route remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5486
 runtime:
@@ -82,4 +100,5 @@ references:
 
 Fight your way through a castle full of monsters to rescue the captive fairies.
 
-Use the arrow keys to move and climb, and the space bar to attack.
+Click Start, then press Space and Right to enter the castle if the game screen
+is black. Use the arrow keys to move and climb, and the space bar to attack.
