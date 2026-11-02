@@ -8394,6 +8394,21 @@ impl super::TrapDispatcher {
                     outline.oval_height(),
                     outline.thickness(),
                 );
+                // The ring of a disabled default button is drawn in gray:
+                // below 8 bits, the gray pattern over it, as System 7 draws
+                // it (the button's own frame stays solid).
+                if !enabled && pixel_size < 8 {
+                    for y in hilite_top..hilite_bottom {
+                        for x in hilite_left..hilite_right {
+                            let in_button = y >= top && y < bottom && x >= left && x < right;
+                            if !in_button && (x + y) & 1 == 1 {
+                                Self::fb_set_pixel(
+                                    bus, base, row_bytes, pixel_size, width, height, x, y, false,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -8493,6 +8508,17 @@ impl super::TrapDispatcher {
                 font_id,
                 font_size,
             );
+            // Below 8 bits there is no gray to draw in: a disabled title is
+            // dimmed with the gray pattern, as multi-line titles are.
+            if !enabled && pixel_size < 8 {
+                self.dim_rect(
+                    bus,
+                    text_y - metrics.ascent,
+                    text_x,
+                    text_y + metrics.descent,
+                    text_x + text_w,
+                );
+            }
         } else {
             let gray_index = self
                 .device_clut
