@@ -38,8 +38,10 @@ compatibility:
       as the pre-repair replay. Chrome 156 worker/WebGL preview uses local
       frontend bytes and the untouched promoted archive (HTTP 200), selects a
       visible portrait and moves right. A 20-second sample after input,
-      including idle town time, reports 59.018 guest ticks/sec with no console
-      errors. Public release, combat, saves and audio remain unverified.
+      including idle town time, reports 59.018 guest ticks/sec. A matched
+      no-key control reports 60.856 ticks/sec and retains the starting position;
+      its capture differs from the input run by 794 pixels. Neither run
+      reports console errors. Public release, combat, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/5537
 runtime:
