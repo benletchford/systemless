@@ -622,7 +622,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 541 | Vic Kombat | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 542 | War of Flowers | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 543 | X-Moto | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 544 | Yipe III | Original complete unchanged-package grant | Author original 1.4, pinned SHA-256/size; independent extraction pending | Town movement with matched idle control | No cfrg; nine CODE resources, empty data fork | Pending; blank character choices [#5529](https://github.com/benletchford/systemless/issues/5529) | Disabled entry submitted; asset promotion pending | Pending |
+| 544 | Yipe III | Original complete unchanged-package grant | Author original 1.4, pinned SHA-256/size; independent extraction pending | Town movement with matched idle control | No cfrg; nine CODE resources, empty data fork | Pending; blank character choices [#5529](https://github.com/benletchford/systemless/issues/5529) | Disabled entry submitted; promoted hosted assets hash-verified | Pending |
 | 545 | Zauron | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 546 | Adventures of Sean | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 547 | Barney Blaster | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -715,7 +715,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 634 | NetRPG | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 635 | Otello | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 636 | PC Invaders | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 637 | Quest of Yipe! II | Original complete unchanged-package grant | Author original 1.05, pinned SHA-256/size; independent extraction pending | Town movement with matched idle control | No cfrg; eight CODE resources, empty data fork | Pending; blank character choices [#5529](https://github.com/benletchford/systemless/issues/5529) | Disabled entry submitted; asset promotion pending | Pending |
+| 637 | Quest of Yipe! II | Original complete unchanged-package grant | Author original 1.05, pinned SHA-256/size; independent extraction pending | Town movement with matched idle control | No cfrg; eight CODE resources, empty data fork | Pending; blank character choices [#5529](https://github.com/benletchford/systemless/issues/5529) | Disabled entry submitted; promoted hosted assets hash-verified | Pending |
 | 638 | Reckless Drivin' | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 639 | Same | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 640 | Techoids | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
