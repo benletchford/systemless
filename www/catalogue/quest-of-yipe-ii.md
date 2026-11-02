@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,6 +26,22 @@ compatibility:
       combat, saves or audio verification is claimed; launch remains disabled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5530
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 56f634acd
+    architecture: 68k
+    environment: >-
+      Original version 1.05, 800-by-600/8-bit, with PlotCIcon snapshot
+      repair in PR 5537. Native replay shows the original character choices
+      and passes 3 portrait pixel assertions with zero exhausted frames;
+      selecting a character and moving right reaches the same gameplay image
+      as the pre-repair replay. Chrome 156 worker/WebGL preview uses local
+      frontend bytes and the untouched promoted archive (HTTP 200), selects a
+      visible portrait and moves right. A 20-second sample after input,
+      including idle town time, reports 59.018 guest ticks/sec with no console
+      errors. Public release, combat, saves and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5537
 runtime:
   executable_path: Quest of Yipe! II/Yipe! II  v1.05
   screen_depth: 8
@@ -53,8 +70,9 @@ artifacts:
     notes: >-
       Production packing identifies four files including the original application,
       licence, registration form and folder icon. The application has an empty data fork,
-      eight CODE resources and no cfrg resource. Independent extraction parity and
-      full unregistered-game coverage remain pending.
+      eight CODE resources and no cfrg resource. Independent unar extraction matches
+      all four files, eight forks and Finder metadata. Full unregistered-game
+      coverage remains pending.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,5 +98,5 @@ Create a character and explore the town and surrounding lands. Use the keyboard
 to move and encounter monsters, shops and treasures. This is the original
 shareware edition; its registration limits remain in place.
 
-The character-selection portraits currently appear blank, though their locations
-can be clicked. Browser gameplay, combat and saved games remain unverified.
+Character selection and movement were checked in the repaired browser preview.
+Combat, saved games and the public release remain unverified.
