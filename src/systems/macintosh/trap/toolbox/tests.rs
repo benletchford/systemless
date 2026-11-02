@@ -4219,10 +4219,7 @@ fn launch_legacy_cmdline_queues_existing_target_and_preserves_page_option() {
     assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
     assert_eq!(cpu.read_reg(Register::A7), sp_before);
     assert_eq!(bus.read_word(0x0936), 0xFFFF);
-    assert_eq!(
-        disp.launched_app_path(),
-        Some("LaunchTargets/Legacy Helper")
-    );
+    assert_eq!(disp.launched_app_path(), None);
     assert_eq!(
         disp.take_pending_launch_application(false, false)
             .as_deref(),
@@ -4256,7 +4253,7 @@ fn launch_legacy_cmdline_missing_target_halts_without_clobbering_d0() {
     assert_eq!(cpu.read_reg(Register::D0), 0x89AB_CDEF);
     assert_eq!(cpu.read_reg(Register::A7), sp_before);
     assert_eq!(bus.read_word(0x0936), 1);
-    assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
+    assert_eq!(disp.launched_app_path(), None);
     assert!(
         disp.take_pending_launch_application(false, true).is_none(),
         "a missing legacy target must not be queued"
@@ -4264,7 +4261,7 @@ fn launch_legacy_cmdline_missing_target_halts_without_clobbering_d0() {
 }
 
 #[test]
-fn launchapplication_launchcontinue_clear_records_target_app_path_and_halts() {
+fn launchapplication_launchcontinue_clear_preserves_caller_identity_and_halts() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp_before = cpu.read_reg(Register::A7);
     let launch_pb = bus.alloc(64);
@@ -4304,13 +4301,13 @@ fn launchapplication_launchcontinue_clear_records_target_app_path_and_halts() {
     assert_eq!(bus.read_long(launch_pb + 28), 0);
     assert_eq!(bus.read_long(launch_pb + 32), 0);
     assert_eq!(bus.read_long(launch_pb + 36), 0);
-    assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
-    assert_eq!(*disp.default_dir_id, target_dir_id);
-    assert_ne!(disp.app_wd_refnum, 0);
+    assert_eq!(disp.launched_app_path(), None);
+    assert_ne!(*disp.default_dir_id, target_dir_id);
+    assert_eq!(*disp.app_wd_refnum, -1);
 }
 
 #[test]
-fn launchapplication_launchcontinue_set_records_target_app_path_and_returns() {
+fn launchapplication_launchcontinue_set_preserves_caller_identity_and_returns() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp_before = cpu.read_reg(Register::A7);
     let launch_pb = bus.alloc(64);
@@ -4350,9 +4347,9 @@ fn launchapplication_launchcontinue_set_records_target_app_path_and_returns() {
     assert_eq!(bus.read_long(launch_pb + 28), 0);
     assert_eq!(bus.read_long(launch_pb + 32), 0);
     assert_eq!(bus.read_long(launch_pb + 36), 0);
-    assert_eq!(disp.launched_app_path(), Some("LaunchTargets/NoSuchApp"));
-    assert_eq!(*disp.default_dir_id, target_dir_id);
-    assert_ne!(disp.app_wd_refnum, 0);
+    assert_eq!(disp.launched_app_path(), None);
+    assert_ne!(*disp.default_dir_id, target_dir_id);
+    assert_eq!(*disp.app_wd_refnum, -1);
 }
 
 #[test]
@@ -4393,10 +4390,7 @@ fn launchapplication_existing_foreground_target_queues_runner_launch() {
     assert_eq!(cpu.read_reg(Register::A0), launch_pb);
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp_before);
-    assert_eq!(
-        disp.launched_app_path(),
-        Some("LaunchTargets/Register Helper")
-    );
+    assert_eq!(disp.launched_app_path(), None);
     assert!(
         disp.take_pending_launch_application(false, false).is_none(),
         "launchContinue target should not start until an Event Manager yield"
@@ -4445,10 +4439,7 @@ fn launchapplication_existing_target_without_launchcontinue_queues_immediate_run
     assert_eq!(cpu.read_reg(Register::A0), launch_pb);
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp_before);
-    assert_eq!(
-        disp.launched_app_path(),
-        Some("LaunchTargets/Register Helper")
-    );
+    assert_eq!(disp.launched_app_path(), None);
     assert_eq!(
         disp.take_pending_launch_application(false, false)
             .as_deref(),
@@ -4495,10 +4486,7 @@ fn launchapplication_launchdontswitch_defers_existing_target_until_caller_exit()
     assert_eq!(cpu.read_reg(Register::A0), launch_pb);
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp_before);
-    assert_eq!(
-        disp.launched_app_path(),
-        Some("LaunchTargets/Register Helper")
-    );
+    assert_eq!(disp.launched_app_path(), None);
     assert!(
         disp.take_pending_launch_application(true, false).is_none(),
         "launchDontSwitch target must remain in the background while its caller runs"
@@ -21240,4 +21228,77 @@ fn apple_event_attribute_backing_survives_classic_descriptor_value_copies() {
     assert_eq!(bus.read_long(actual_type), u32::from_be_bytes(*b"shor"));
     assert_eq!(bus.read_long(actual_size), 2);
     assert_eq!(bus.read_word(output), 17);
+}
+
+#[test]
+fn launchapplication_keeps_caller_identity_until_a_process_switch() {
+    for extended in [false, true] {
+        for target_exists in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            disp.vfs.insert("Caller/Caller App".into(), Vec::new());
+            disp.set_launched_app_path("Caller/Caller App");
+            let original_dir = *disp.default_dir_id;
+            let original_wd = *disp.app_wd_refnum;
+            let target_dir = disp.ensure_vfs_directory("Target");
+            if target_exists {
+                disp.vfs.insert("Target/Helper".into(), Vec::new());
+            }
+            let pb = bus.alloc(64);
+            let spec = bus.alloc(32);
+            let name = bus.alloc(32);
+            for offset in 0..64 {
+                bus.write_byte(pb + offset, 0);
+            }
+            for offset in 0..32 {
+                bus.write_byte(spec + offset, 0);
+            }
+            cpu.write_reg(Register::A0, pb);
+            if extended {
+                bus.write_word(pb + 6, 0x4C43);
+                bus.write_long(pb + 8, 32);
+                bus.write_word(pb + 14, 0x4000);
+                bus.write_long(pb + 16, spec);
+                bus.write_word(spec, 0);
+                bus.write_long(spec + 2, target_dir);
+                write_pascal_string(&mut bus, spec + 6, "Helper");
+            } else {
+                // Legacy names are relative to the caller's working directory.
+                // Use a separate target name in that directory.
+                if target_exists {
+                    disp.vfs.insert("Caller/Helper".into(), Vec::new());
+                }
+                write_pascal_string(&mut bus, name, "Helper");
+                bus.write_long(pb, name);
+            }
+            let result = disp.dispatch_toolbox(true, 0x1F2, &mut cpu, &mut bus);
+            assert!(result.is_some(), "launch must be dispatched");
+            if extended {
+                assert!(result.unwrap().is_ok());
+                assert_eq!(
+                    cpu.read_reg(Register::D0) as i32,
+                    if target_exists { 0 } else { -43 }
+                );
+            }
+            assert_eq!(
+                disp.launched_app_path(),
+                Some("Caller/Caller App"),
+                "extended={extended} target_exists={target_exists}"
+            );
+            assert_eq!(*disp.default_dir_id, original_dir);
+            assert_eq!(*disp.app_wd_refnum, original_wd);
+            let queued = disp.take_pending_launch_application(true, true);
+            if target_exists {
+                assert_eq!(
+                    queued.as_deref(),
+                    Some(if extended {
+                        "Target/Helper"
+                    } else {
+                        "Caller/Helper"
+                    })
+                );
+            } else {
+                assert!(queued.is_none());
+            }
+        }
+    }
 }
