@@ -2826,3 +2826,85 @@ Approve the existing entry's two browser CPU routes. The contribution still requ
 validation and a replay of its final committed head before normal merge. **Human release
 and exact released production-route verification remain pending.** Source stock remains
 **221 records**; this approval adds no source game and no qualified-live increment.
+
+## After Dark Games and Tony Hawk 2 — 2026-11-02 intake
+
+On master `d5f042bce`, the `ci-test` native play runner exercised two intact
+promotional demos. These are bounded native observations, not browser, rights or
+release approvals. The local scenarios and captures are under `/tmp` and are
+not independent emulator comparisons.
+
+- **After Dark Games Demo:** [original BinHex](https://download.classicmacdemos.com/After%20Dark%20Games%20Demo.hqx),
+  10,327,704 bytes, SHA-256 `0fea33ca33c78263fe042917dd9cbbd6d97dfee0b2a8ba1bc4fc390de484f2c1`.
+  The PPC game now opens after the VISE importer fix tracked by #3928. In Roof
+  Rats, creating a player and clicking two adjacent matching rooms changed the
+  room counter from 150 to 148. A matched idle control differed by 6,580 pixels
+  after the move; an exact replay matched all three checkpoints at ticks 340,
+  402 and 464, with no exhausted frames. Other sampler games and audio remain
+  untested. The installed readme describes the limited demo, but does not grant
+  redistribution. The installer contains compressed text resources not yet
+  decoded in this audit, and the install tree includes runtime libraries. An
+  inspection-only reconstruction of the original installer with a modified 68K
+  profile advertising PowerPC reached its splash; Continue created a text dialog
+  with a Decline control, then the guest exited before its contents could be
+  captured. This does not establish what the dialog says. Review the complete
+  package and its terms before hosting. Three 20-second local Chromium 156
+  worker/WebGL preview samples using the exact archive and 60 MHz pacing measured
+  60.26, 59.70 and 60.31 guest ticks/s, with one substituted archive request and
+  no console errors each. The first screenshot visibly shows the board at 148
+  rooms. The other two screenshots appeared black in the image inspection tool,
+  but independent AppKit pixel reads found their board regions identical to the
+  first, and converting one to JPEG showed the same board and 148-room count.
+  A GPU-allowed, overlay-off run visibly showed the same board and measured
+  60.76 guest ticks/s. The preview substituted locally served original bytes;
+  the managed hosted archive and released route remain untested, so this is not
+  browser launch approval.
+- **Tony Hawk's Pro Skater 2 Demo:** [original StuffIt archive](https://classicmacdemos.com/download/tony-hawks-pro-skater-2/),
+  23,248,987 bytes, SHA-256 `3576065f578a4ec66315d56e3a5deeb37b8a14c578c63efc289aee55be93ea24`.
+  Selecting `Tony Hawk Demo (OS9)` on PPC now reaches the Hangar single-session
+  level. Holding Space for 20 ticks produces an airborne skater; the matched idle
+  run was pixel-identical at tick 440 and differed by 298,263 pixels at tick 490.
+  An exact replay matched both checkpoints with no exhausted frames. Score,
+  audio, other controls and full-session behaviour remain unverified. The readme
+  does not grant complete-package redistribution. The archive contains OS 9 and
+  OS X executables and game data; complete-package rights review remains open.
+  The headless runs took longer than their simulated duration under concurrent
+  load; they are not a performance measurement. A local Chromium 156
+  worker/WebGL preview with the exact archive and 60 MHz pacing reached skater
+  selection; one 20-second sample measured 17.76 guest ticks/s and 41.92 host
+  fps, below the probe's 50/55 thresholds. Its screenshot remained on skater
+  selection, so that sample did not measure the Hangar. A second sample using
+  longer waits reached the Hangar and measured 31.84 guest ticks/s and 43.69
+  host fps, with a 59.9 ms runtime frame; it also failed the pacing thresholds.
+  A separate fixed-25-MHz preview reached the Hangar but measured 28.17 guest
+  ticks/s and 43.73 host fps, with a 58.9 ms runtime frame, also failing the
+  thresholds. These samples do not establish equal guest progress or compare
+  game speed at the two settings. Browser input, sustained gameplay and pacing
+  qualification remain open.
+
+Neither candidate is hosted, launch-approved or counted live. The browser
+preview worktree is `/tmp/systemless-catalogue-browser-20261102`; its temporary
+entries are test fixtures and must not be published as catalogue metadata.
+
+## Worms demo — 2026-11-02 intake
+
+The original [Worms demo](https://classicmacdemos.com/worms) was downloaded
+from the linked archive (2,123,427 bytes, SHA-256
+`afc5a0c21989e0b7fe0c23b7b73116ede921436d2aed4db04b60e8bcb53ccd6b`);
+the source lists it on 12 period cover discs. The application contains 68K
+CODE resources and a PowerPC PEF. Its extracted tree contains game data and no
+separate readme or licence file; the application resource map has CODE, DATA,
+SIZE and cfrg resources, with no TEXT or STR resources. Complete-package terms
+are not established by this inventory alone.
+
+On master `d5f042bce`, 68K and PPC native runs each reached the playable-demo
+main menu at 1,200 frontend ticks. Both reports have zero exhausted frames and
+no assertions; this is startup evidence only. On 68K, an initial click, a
+longer held click and Return did not start a match; on PPC, Space did not start
+one. A further 68K replay moving the mouse to `(v=257,h=250)`, waiting 30 ticks
+and clicking at that position opened the team-selection screen on both 68K and
+PPC. Subsequent 68K attempts to select a team did not begin a match. The guest
+cursor appeared at different positions from requested coordinates, including after button events;
+the exact control path and any runtime defect need investigation before
+claiming gameplay. No browser test, hosting, launch approval or released-route
+check has been performed.
