@@ -2956,3 +2956,24 @@ console errors. This is bounded gameplay, not a full run or an audio or score
 persistence test. Some title-dialog remnants remain tracked by #4477. The
 latest published release observed was v0.107.0, but the deployed player asset
 was not independently mapped to that tag.
+
+## NS-TOWER — direct public pacing recheck 2 November 2026
+
+The enabled [public player](https://systemless.org/ns-tower/) was tested directly
+without frontend or archive substitution. The hosted author-original archive
+matches SHA-256 `50e9a1fd942cebf9d3a549fee19b590b0248e009d1c3cfcd613ae4ef600d3d51`
+and 829,529 bytes. The public page references the clean replacement screenshot,
+whose hosted bytes match SHA-256
+`99c877db2efdf9885cd9530fafa351ad33b31af3f2fda02ecb6eb1c56f6ce058` and
+86,330 bytes. Intake #4480 records unchanged-package permission, independent fork
+comparison and the 68K-only executable. Its earlier direct public captures show
+Space charging the meter and the character rising on release.
+
+Two fresh Chrome 156 worker/WebGL runs at 25 MHz dismiss the shareware notice,
+start the tower and release a 700 ms Space charge. The clean sidebar and active
+playfield were inspected. Two 20-second samples report 60.223 and 60.282 guest
+ticks/sec, 60.223 and 60.282 host frames/sec respectively, and no console
+errors. This replaces the earlier contention-affected 35.48 ticks/sec observation
+as the quiet public pacing check; it does not establish floor-counter advancement,
+long runs, saved-score persistence or audio fidelity. The latest published release
+observed was v0.107.0; the deployed player asset was not mapped to a tag.
