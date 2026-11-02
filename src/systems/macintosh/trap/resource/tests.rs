@@ -11085,8 +11085,8 @@ fn osdispatch_getcurrentprocess_selector_0037_returns_current_psn() {
     assert_eq!(bus.read_long(psn_ptr), 0, "highLongOfPSN");
     assert_eq!(
         bus.read_long(psn_ptr + 4),
-        2,
-        "lowLongOfPSN = kCurrentProcess"
+        crate::process_manager::ProcessSerialNumber::ACTUAL.low,
+        "real lowLongOfPSN"
     );
     assert_eq!(bus.read_word(TEST_SP + 6), 0, "noErr result");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
@@ -11105,7 +11105,11 @@ fn osdispatch_getnextprocess_selector_0038_from_knoprocess_returns_first_process
     call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
 
     assert_eq!(bus.read_long(psn_ptr), 0);
-    assert_eq!(bus.read_long(psn_ptr + 4), 2, "first process PSN");
+    assert_eq!(
+        bus.read_long(psn_ptr + 4),
+        crate::process_manager::ProcessSerialNumber::ACTUAL.low,
+        "first process PSN"
+    );
     assert_eq!(bus.read_word(TEST_SP + 6), 0, "noErr result");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
 }
@@ -11143,7 +11147,11 @@ fn osdispatch_getfrontprocess_selector_0039_returns_foreground_psn() {
     call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
 
     assert_eq!(bus.read_long(psn_ptr), 0);
-    assert_eq!(bus.read_long(psn_ptr + 4), 2, "foreground process PSN");
+    assert_eq!(
+        bus.read_long(psn_ptr + 4),
+        crate::process_manager::ProcessSerialNumber::ACTUAL.low,
+        "foreground process PSN"
+    );
     assert_eq!(bus.read_word(TEST_SP + 10), 0, "noErr result");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
 }
@@ -11193,7 +11201,10 @@ fn osdispatch_getprocessinformation_current_process_returns_populated_info() {
     assert_eq!(bus.read_word(TEST_SP + 10), 0, "noErr");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
     assert_eq!(bus.read_long(info_ptr + 8), expected_psn_high);
-    assert_eq!(bus.read_long(info_ptr + 12), expected_psn_low);
+    assert_eq!(
+        bus.read_long(info_ptr + 12),
+        crate::process_manager::ProcessSerialNumber::ACTUAL.low
+    );
     assert_eq!(bus.read_long(info_ptr + 16), u32::from_be_bytes(*b"APPL"));
     assert_eq!(bus.read_long(info_ptr + 20), u32::from_be_bytes(*b"GAME"));
     assert_eq!(bus.read_long(info_ptr + 24), 0, "processMode");

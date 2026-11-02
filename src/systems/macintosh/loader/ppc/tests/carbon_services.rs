@@ -250,6 +250,7 @@ fn start_nav_put_file(loaded: &mut PpcLoadedApp, options: u32, reply: u32) {
 
 fn key_event(message: u32) -> PpcQueuedEvent {
     PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message,
         when: 0,
@@ -331,7 +332,7 @@ fn nav_put_file_uses_the_put_dialog_and_returns_an_fsspec_selection() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
-    assert_eq!(loaded.memory.read_u32_be(reply + 6), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(reply + 6), Some(PPC_TYPE_NULL));
     assert_eq!(loaded.memory.read_u32_be(reply + 10), Some(0));
 
     // Cancelling returns userCanceledErr and an invalid reply.
