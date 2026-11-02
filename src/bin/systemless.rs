@@ -4230,6 +4230,10 @@ fn keycode_to_mac(key: &PhysicalKey) -> u8 {
             KeyCode::Numpad7 => 0x59,
             KeyCode::Numpad8 => 0x5B,
             KeyCode::Numpad9 => 0x5C,
+            KeyCode::Home => 0x73,
+            KeyCode::PageUp => 0x74,
+            KeyCode::End => 0x77,
+            KeyCode::PageDown => 0x79,
             KeyCode::ArrowLeft => 0x7B,
             KeyCode::ArrowRight => 0x7C,
             KeyCode::ArrowDown => 0x7D,
@@ -4265,6 +4269,10 @@ fn keycode_to_mac_char(key: &PhysicalKey) -> u8 {
             KeyCode::Space => 32,
             KeyCode::Backspace => 8,
             KeyCode::Escape => 27,
+            KeyCode::Home => 0x01,
+            KeyCode::End => 0x04,
+            KeyCode::PageUp => 0x0B,
+            KeyCode::PageDown => 0x0C,
             KeyCode::ArrowLeft => 28,
             KeyCode::ArrowRight => 29,
             KeyCode::ArrowUp => 30,
@@ -4991,6 +4999,28 @@ mod tests {
             ),
             Some((0x78, 0x10)),
         );
+    }
+
+    #[test]
+    fn navigation_keys_use_mac_codes_even_when_host_text_is_missing_or_nul() {
+        // Apple Events.h virtual keys and MacRoman navigation characters.
+        for (physical, logical, expected) in [
+            (KeyCode::Home, NamedKey::Home, (0x73, 0x01)),
+            (KeyCode::End, NamedKey::End, (0x77, 0x04)),
+            (KeyCode::PageUp, NamedKey::PageUp, (0x74, 0x0B)),
+            (KeyCode::PageDown, NamedKey::PageDown, (0x79, 0x0C)),
+        ] {
+            for text in [None, Some("\0"), Some("x")] {
+                assert_eq!(
+                    host_keyboard_event_to_mac(
+                        &Key::Named(logical.clone()),
+                        &PhysicalKey::Code(physical),
+                        text,
+                    ),
+                    Some(expected),
+                );
+            }
+        }
     }
 
     #[test]
