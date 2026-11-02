@@ -8918,7 +8918,7 @@ fn unsupported_control_request_reports_error_without_fabricating_output() {
     // Inside Macintosh: Devices (1994), pp. 1-76--1-77: controlErr
     // means the driver does not respond to this control request; the OS
     // trap returns its result in D0 and the parameter block's ioResult.
-    for code in [0, 21, 22, 0xFFFF] {
+    for code in [0, 0xFFFF] {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let pb = 0x300000;
         bus.write_word(pb + 26, code);
@@ -10223,4 +10223,94 @@ fn status_gamma_rejects_invalid_driver_and_output_without_overwriting_output() {
         assert_eq!(cpu.read_reg(Register::D0), (-50i32) as u32);
         assert_eq!(bus.read_word(pb + 16), (-50i16) as u16);
     }
+}
+
+#[test]
+fn disk_icon_controls_return_stable_masked_artwork_and_device_name() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let pb = 0x300000;
+    bus.write_word(pb + 22, 1);
+    bus.write_word(pb + 24, 0);
+    let mut first = None;
+    for code in [21, 22, 21] {
+        bus.write_word(pb + 26, code);
+        bus.write_bytes(pb + 28, &[0xA5; 22]);
+        cpu.write_reg(Register::A0, pb);
+        let sp = cpu.read_reg(Register::A7);
+        dispatcher
+            .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(cpu.read_reg(Register::A0), pb);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_bytes(pb + 32, 18), vec![0xA5; 18]);
+        let icon = bus.read_long(pb + 28);
+        assert_ne!(icon, 0);
+        assert_eq!(*first.get_or_insert(icon), icon);
+        assert_eq!(bus.read_long(icon + 6 * 4), 0x3fff_fffc);
+        assert_eq!(bus.read_long(icon + 128 + 10 * 4), 0x3fff_fffc);
+        assert_eq!(
+            bus.read_bytes(icon + 256, 16),
+            b"\x0fSystemless Disk".to_vec()
+        );
+        for row in 0..32 {
+            assert_eq!(
+                bus.read_long(icon + row * 4) & !bus.read_long(icon + 128 + row * 4),
+                0
+            );
+        }
+        // Guest allocation/disposal cannot invalidate driver-owned storage.
+        let allocation = bus.alloc(1024);
+        bus.free(allocation);
+    }
+}
+
+#[test]
+fn disk_icon_controls_reject_unknown_drives_and_other_devices() {
+    for code in [21, 22] {
+        for (drive, device, error) in [
+            (0, 0, -56),
+            (2, 0, -56),
+            (0xffff, 0, -56),
+            (1, 0xfffc, -17),
+            (1, 99, -17),
+        ] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let pb = 0x300000;
+            bus.write_word(pb + 22, drive);
+            bus.write_word(pb + 24, device);
+            bus.write_word(pb + 26, code);
+            bus.write_bytes(pb + 28, &[0xA5; 22]);
+            cpu.write_reg(Register::A0, pb);
+            dispatcher
+                .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(cpu.read_reg(Register::D0) as i32, error);
+            assert_eq!(bus.read_word(pb + 16) as i16, error as i16);
+            assert_eq!(bus.read_bytes(pb + 28, 22), vec![0xA5; 22]);
+            assert!(dispatcher.disk_driver_icon.is_none());
+        }
+    }
+}
+
+#[test]
+fn disk_icon_controls_use_the_mounted_volume_drive_number() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let volume =
+        dispatcher.mount_vfs_volume("Extra Disk", 0, 0, 100, 512, 512, 50, 0, 0, 0, 16, 0, 0);
+    assert!(volume < -1);
+    let pb = 0x300000;
+    bus.write_word(pb + 22, volume.unsigned_abs());
+    bus.write_word(pb + 24, 0);
+    bus.write_word(pb + 26, 21);
+    cpu.write_reg(Register::A0, pb);
+    dispatcher
+        .dispatch_memory(false, 0x04, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_ne!(bus.read_long(pb + 28), 0);
 }
