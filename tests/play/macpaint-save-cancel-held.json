@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 300,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 52
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 74,
+      "h": 65
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 74,
+      "h": 65
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "screenshot",
+      "name": "save"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 305,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "mouse_move",
+      "v": 308,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_down",
+      "v": 308,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "screenshot",
+      "name": "held"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 305,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 305,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "mouse_move",
+      "v": 250,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "screenshot",
+      "name": "outside"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 305,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "mouse_up",
+      "v": 250,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "released"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 305,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 296,
+      "y": 298,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

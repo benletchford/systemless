@@ -12903,6 +12903,77 @@ fn standard_put_cancel_tracks_release_and_drag_out() {
     assert!(!disp.is_standard_file_put_tracking());
 }
 
+// IM I-323 (TrackControl, inButton): a Standard File button held down is
+// highlighted while the pointer is inside it and unhighlighted outside. The
+// highlight drawn at the press must survive the pass's repaint of a dialog
+// whose pixels changed, and dragging out must unhighlight it.
+#[test]
+fn standard_put_held_button_stays_highlighted_through_the_repaint() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005);
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let bounds = disp.standard_file_put_tracking.as_ref().unwrap().bounds;
+    let v = bounds.0 + super::STANDARD_FILE_CANCEL_RECT.0 + 4;
+    let h = bounds.1 + super::STANDARD_FILE_CANCEL_RECT.1 + 6;
+    let event = |what, v, h| QueuedEvent {
+        what,
+        message: 0,
+        when: 0,
+        where_v: v,
+        where_h: h,
+        modifiers: 0,
+    };
+    // A pixel of the button's face, left of its title: black when highlighted.
+    let lit = |bus: &MacMemoryBus| {
+        bus.read_byte(base + v as u32 * 64 + h as u32 / 8) & (0x80 >> (h % 8)) != 0
+    };
+    assert!(!lit(&bus));
+
+    disp.input_state.set_mouse_position_for_test((v, h));
+    disp.event_queue.push_back(event(1, v, h));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(lit(&bus), "highlighted at the press");
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(lit(&bus), "still highlighted while held inside");
+
+    disp.input_state
+        .set_mouse_position_for_test((bounds.0 + 5, bounds.1 + 5));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(!lit(&bus), "unhighlighted once dragged out");
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(!lit(&bus));
+
+    disp.input_state.set_mouse_position_for_test((v, h));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(lit(&bus), "highlighted again back inside");
+    disp.event_queue
+        .push_back(event(2, bounds.0 + 5, bounds.1 + 5));
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(
+        disp.is_standard_file_put_tracking(),
+        "released outside: nothing done"
+    );
+    assert!(!lit(&bus));
+}
+
 #[test]
 fn standard_put_file_idle_pass_redraws_only_a_changed_dialog() {
     let (mut disp, mut cpu, mut bus) = setup();

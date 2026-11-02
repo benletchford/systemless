@@ -2274,6 +2274,11 @@ impl super::TrapDispatcher {
             left + sright,
         );
         self.draw_standard_file_get_list(bus, tracking);
+        // A button held down with the pointer inside stays highlighted
+        // through a repaint (TrackControl's inButton, IM I-323).
+        if let Some((rect, true)) = tracking.active_button {
+            self.draw_standard_file_button(bus, tracking.bounds, rect, true, true);
+        }
         self.standard_file_drawn = bus.screen_mark();
     }
 
@@ -2930,6 +2935,11 @@ impl super::TrapDispatcher {
             &location_label,
         );
         self.draw_standard_file_put_list(bus, tracking);
+        // A button held down with the pointer inside stays highlighted
+        // through a repaint (TrackControl's inButton, IM I-323).
+        if let Some((rect, true)) = tracking.active_button {
+            self.draw_standard_file_button(bus, tracking.bounds, rect, false, true);
+        }
         self.standard_file_drawn = bus.screen_mark();
     }
 
