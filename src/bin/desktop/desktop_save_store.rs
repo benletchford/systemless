@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
+
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -77,32 +79,47 @@ struct StoredSaveMetadata {
 }
 
 impl DesktopSaveStore {
-    pub fn root_for_game_path(game_path: &Path) -> PathBuf {
-        save_root_for_game_path(game_path)
+    pub fn root_for_game_path(game_path: &Path) -> io::Result<PathBuf> {
+        Ok(application_data_dir()?
+            .join("saves")
+            .join(archive_digest(game_path)?))
     }
 
-    pub fn for_loaded_archive(game_path: &Path, runner: &mut FixtureRunner) -> Self {
+    pub fn for_loaded_archive(game_path: &Path, runner: &mut FixtureRunner) -> io::Result<Self> {
+        Self::for_loaded_archive_in(game_path, &application_data_dir()?, runner)
+    }
+
+    pub(super) fn for_loaded_archive_in(
+        game_path: &Path,
+        data_dir: &Path,
+        runner: &mut FixtureRunner,
+    ) -> io::Result<Self> {
+        Ok(Self::at_root(
+            prepare_store(game_path, data_dir, None)?,
+            vfs_stats(runner),
+        ))
+    }
+
+    fn at_root(root: PathBuf, archive_vfs_stats: HashMap<String, VfsFileStat>) -> Self {
         Self {
-            root: Self::root_for_game_path(game_path),
-            archive_vfs_stats: vfs_stats(runner),
+            root,
+            archive_vfs_stats,
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
         }
     }
 
-    /// Delete the persisted System Folder preferences for this archive, so
-    /// preferences written under an emulation bug don't outlive its fix.
+    /// Locate and prepare the store without launching a guest. An explicit
+    /// import fails on conflicting guest paths and never alters its source.
+    pub fn locate(game_path: &Path, import: Option<&Path>) -> io::Result<PathBuf> {
+        prepare_store(game_path, &application_data_dir()?, import)
+    }
+
+    /// Delete persisted preferences after migrating any discoverable legacy
+    /// store, so the next launch cannot reintroduce the old preferences.
     pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
-        let root = save_root_for_game_path(game_path);
-        let mut removed = 0;
-        for system in matching_child_dirs(&root, "system folder")? {
-            for prefs in matching_child_dirs(&system, "preferences")? {
-                fs::remove_dir_all(&prefs)?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
+        reset_preferences_in_root(&Self::locate(game_path, None)?)
     }
 
     pub fn root(&self) -> &Path {
@@ -274,6 +291,264 @@ impl DesktopSaveStore {
     }
 }
 
+fn reset_preferences_in_root(root: &Path) -> io::Result<usize> {
+    let mut removed = 0;
+    for system in matching_child_dirs(root, "system folder")? {
+        for prefs in matching_child_dirs(&system, "preferences")? {
+            fs::remove_dir_all(&prefs)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct StoreManifest {
+    version: u8,
+    sha256: String,
+    display_name: String,
+    source_paths: Vec<String>,
+    imports: Vec<StoreImport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct StoreImport {
+    source: String,
+    sha256: Option<String>,
+}
+
+fn application_data_dir() -> io::Result<PathBuf> {
+    // Native per-user data locations; an unavailable home is an error rather
+    // than permission to write private state beside an archive or in cwd.
+    let absolute_env = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    #[cfg(target_os = "windows")]
+    let root = absolute_env("LOCALAPPDATA").map(|p| p.join("Systemless"));
+    #[cfg(target_os = "macos")]
+    let root = absolute_env("HOME").map(|p| p.join("Library/Application Support/Systemless"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let root = absolute_env("XDG_DATA_HOME")
+        .map(|p| p.join("systemless"))
+        .or_else(|| absolute_env("HOME").map(|p| p.join(".local/share/systemless")));
+    root.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "per-user application-data directory is unavailable",
+        )
+    })
+}
+
+fn archive_digest(game_path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(game_path)?;
+    let mut hash = Sha256::new();
+    let mut bytes = [0; 64 * 1024];
+    loop {
+        let len = file.read(&mut bytes)?;
+        if len == 0 {
+            break;
+        }
+        hash.update(&bytes[..len]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+fn manifest_bytes(manifest: &StoreManifest) -> io::Result<Vec<u8>> {
+    serde_json::to_vec_pretty(manifest)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+}
+
+fn read_manifest(root: &Path) -> io::Result<StoreManifest> {
+    let manifest: StoreManifest = serde_json::from_slice(&fs::read(root.join("manifest.json"))?)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    if manifest.version != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported save-store manifest version",
+        ));
+    }
+    Ok(manifest)
+}
+
+fn strict_snapshots(root: &Path) -> io::Result<Vec<VfsFileSnapshot>> {
+    let mut paths = Vec::new();
+    collect_metadata_files(root, &mut paths)?;
+    paths.sort();
+    paths.iter().map(|p| read_saved_file(p)).collect()
+}
+
+/// Serialize migration/import decisions across processes. Build a complete
+/// sibling directory before publishing it, so an interrupted copy cannot
+/// become an authoritative, partially migrated store on the next launch.
+fn prepare_store(game_path: &Path, data_dir: &Path, import: Option<&Path>) -> io::Result<PathBuf> {
+    let digest = archive_digest(game_path)?;
+    let stores = data_dir.join("saves");
+    fs::create_dir_all(&stores)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(stores.join(".migration.lock"))?;
+    lock.lock()?;
+    let root = stores.join(&digest);
+    let existed = root.try_exists()?;
+    let source_path = fs::canonicalize(game_path)?.to_string_lossy().into_owned();
+    let display_name = game_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let mut manifest = if existed && root.join("manifest.json").try_exists()? {
+        let manifest = read_manifest(&root)?;
+        if manifest.sha256 != digest {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "save-store identity does not match archive",
+            ));
+        }
+        manifest
+    } else {
+        StoreManifest {
+            version: 1,
+            sha256: digest,
+            display_name: String::new(),
+            source_paths: Vec::new(),
+            imports: Vec::new(),
+        }
+    };
+    manifest.display_name = display_name;
+    if !manifest.source_paths.contains(&source_path) {
+        manifest.source_paths.push(source_path);
+    }
+
+    let legacy = legacy_root_for_game_path(game_path);
+    let source = match import {
+        Some(source) => Some(source.to_path_buf()),
+        None if !existed && legacy.try_exists()? => Some(legacy),
+        None => None,
+    };
+    let snapshots = if let Some(source) = source.as_deref() {
+        let source = fs::canonicalize(source)?;
+        if existed && source == fs::canonicalize(&root)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot import a save store into itself",
+            ));
+        }
+        let incoming = strict_snapshots(&source)?;
+        let mut names = HashSet::new();
+        if existed {
+            for file in strict_snapshots(&root)? {
+                names.insert(file.path.to_ascii_lowercase());
+            }
+        }
+        for file in &incoming {
+            if !names.insert(file.path.to_ascii_lowercase()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("save import conflict: {}", file.path),
+                ));
+            }
+        }
+        let source_digest = if source.join("manifest.json").try_exists()? {
+            Some(read_manifest(&source)?.sha256)
+        } else {
+            None
+        };
+        manifest.imports.push(StoreImport {
+            source: source.to_string_lossy().into_owned(),
+            sha256: source_digest,
+        });
+        incoming
+    } else {
+        Vec::new()
+    };
+
+    if existed {
+        let live = DesktopSaveStore::at_root(root.clone(), HashMap::new());
+        for snapshot in &snapshots {
+            if live.save_dir_for_vfs_path(&snapshot.path).try_exists()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("save import destination already exists: {}", snapshot.path),
+                ));
+            }
+        }
+    }
+
+    // A unique staging sibling also makes incomplete work easy to distinguish
+    // from a live store. Never overwrite or remove an existing destination.
+    let staging = stores.join(format!(
+        ".staging-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    fs::create_dir(&staging)?;
+    let result = (|| {
+        let store = DesktopSaveStore::at_root(staging.clone(), HashMap::new());
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            if existed {
+                let isolated =
+                    DesktopSaveStore::at_root(staging.join(index.to_string()), HashMap::new());
+                isolated.persist_save_file(snapshot)?;
+            } else {
+                store.persist_save_file(snapshot)?;
+            }
+        }
+        fs::write(staging.join("manifest.json"), manifest_bytes(&manifest)?)?;
+        if existed {
+            // Imports are preflighted before touching the live store. Publish
+            // new file directories individually; retain existing files on errors.
+            let live = DesktopSaveStore::at_root(root.clone(), HashMap::new());
+            let mut published = Vec::new();
+            let publish = (|| -> io::Result<()> {
+                for (index, snapshot) in snapshots.iter().enumerate() {
+                    let source =
+                        DesktopSaveStore::at_root(staging.join(index.to_string()), HashMap::new())
+                            .save_dir_for_vfs_path(&snapshot.path);
+                    let target = live.save_dir_for_vfs_path(&snapshot.path);
+                    if target.try_exists()? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!(
+                                "save import destination already exists: {}",
+                                target.display()
+                            ),
+                        ));
+                    }
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::rename(source, &target)?;
+                    published.push(target);
+                }
+                fs::rename(staging.join("manifest.json"), root.join("manifest.json"))
+            })();
+            if let Err(error) = publish {
+                for target in published.into_iter().rev() {
+                    if let Err(rollback) = fs::remove_dir_all(&target) {
+                        return Err(io::Error::other(format!(
+                            "{error}; import rollback at {} failed: {rollback}",
+                            target.display()
+                        )));
+                    }
+                }
+                return Err(error);
+            }
+        } else {
+            fs::rename(&staging, &root)?;
+        }
+        Ok(root.clone())
+    })();
+    let _ = fs::remove_dir_all(&staging);
+    result
+}
+
 fn vfs_stats(runner: &mut FixtureRunner) -> HashMap<String, VfsFileStat> {
     runner
         .vfs_file_stats_where(|_| true)
@@ -384,7 +659,7 @@ fn read_fork_file(path: &Path) -> io::Result<Vec<u8>> {
     }
 }
 
-fn save_root_for_game_path(game_path: &Path) -> PathBuf {
+fn legacy_root_for_game_path(game_path: &Path) -> PathBuf {
     let archive_dir = game_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -499,13 +774,13 @@ mod tests {
     }
 
     #[test]
-    fn save_root_sits_next_to_archive() {
+    fn legacy_root_sits_next_to_archive() {
         assert_eq!(
-            save_root_for_game_path(Path::new("/Games/EV Override 1.0.1.sit")),
+            legacy_root_for_game_path(Path::new("/Games/EV Override 1.0.1.sit")),
             Path::new("/Games/.systemless/saves/EV Override 1.0.1")
         );
         assert_eq!(
-            save_root_for_game_path(Path::new("EVO.sit")),
+            legacy_root_for_game_path(Path::new("EVO.sit")),
             Path::new("./.systemless/saves/EVO")
         );
     }
@@ -545,9 +820,12 @@ mod tests {
         let mut packaged = snapshot("EV Override 1.0.1/Pilots/Packaged Pilot");
         runner.import_vfs_file(&packaged);
 
-        let mut store = DesktopSaveStore::for_loaded_archive(&game_path, &mut runner);
+        fs::write(&game_path, b"archive").unwrap();
+        let data = temp.path().join("data");
+        let root = prepare_store(&game_path, &data, None).unwrap();
+        let mut store = DesktopSaveStore::at_root(root, vfs_stats(&mut runner));
         store.sync_save_files_now(&mut runner);
-        assert!(!store.root().exists());
+        assert!(load_saved_files_from_root(store.root()).unwrap().is_empty());
 
         packaged.resource_fork.push(8);
         packaged.modified_date += 1;
@@ -560,13 +838,11 @@ mod tests {
 
     #[test]
     fn reset_preferences_removes_only_system_folder_preferences() {
-        let base = std::env::temp_dir().join(format!(
-            "systemless-reset-prefs-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("systemless-reset-prefs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let game_path = base.join("Deimos Rising.sit");
-        let root = save_root_for_game_path(&game_path);
+        let root = legacy_root_for_game_path(&game_path);
         let store = DesktopSaveStore {
             root: root.clone(),
             archive_vfs_stats: HashMap::new(),
@@ -577,12 +853,14 @@ mod tests {
         store
             .persist_save_file(&snapshot("System Folder/Preferences/Deimos Prefs"))
             .unwrap();
-        store.persist_save_file(&snapshot("Pilots/Rick Hardslab")).unwrap();
+        store
+            .persist_save_file(&snapshot("Pilots/Rick Hardslab"))
+            .unwrap();
 
-        assert_eq!(DesktopSaveStore::reset_preferences(&game_path).unwrap(), 1);
+        assert_eq!(reset_preferences_in_root(&root).unwrap(), 1);
         let loaded = load_saved_files_from_root(&root).unwrap();
         assert_eq!(loaded, vec![snapshot("Pilots/Rick Hardslab")]);
-        assert_eq!(DesktopSaveStore::reset_preferences(&game_path).unwrap(), 0);
+        assert_eq!(reset_preferences_in_root(&root).unwrap(), 0);
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -602,5 +880,170 @@ mod tests {
         assert!(!is_user_save_path("Desktop DF"));
         assert!(!is_user_save_path("TheVolume"));
         assert!(!is_user_save_path("__rsrc__/Pilots/Rick Hardslab"));
+    }
+    fn write_snapshot(root: &Path, file: &VfsFileSnapshot) {
+        DesktopSaveStore::at_root(root.to_path_buf(), HashMap::new())
+            .persist_save_file(file)
+            .unwrap();
+    }
+
+    #[test]
+    fn content_identity_survives_moves_renames_and_copies_but_not_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("data");
+        let original = temp.path().join("Original.sit");
+        fs::write(&original, b"abc").unwrap();
+        let root = prepare_store(&original, &data, None).unwrap();
+        assert_eq!(
+            root.file_name().unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        write_snapshot(&root, &snapshot("Game/Pilot"));
+        let renamed = temp.path().join("Renamed.sit");
+        fs::rename(&original, &renamed).unwrap();
+        assert_eq!(prepare_store(&renamed, &data, None).unwrap(), root);
+        let folder = temp.path().join("Moved");
+        fs::create_dir(&folder).unwrap();
+        let moved = folder.join("Renamed.sit");
+        fs::rename(&renamed, &moved).unwrap();
+        assert_eq!(prepare_store(&moved, &data, None).unwrap(), root);
+        let copy = temp.path().join("Copy.sit");
+        fs::copy(&moved, &copy).unwrap();
+        assert_eq!(prepare_store(&copy, &data, None).unwrap(), root);
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![snapshot("Game/Pilot")]
+        );
+        let manifest = read_manifest(&root).unwrap();
+        assert_eq!(manifest.display_name, "Copy.sit");
+        assert_eq!(manifest.source_paths.len(), 4);
+        fs::write(&copy, b"updated").unwrap();
+        let updated = prepare_store(&copy, &data, None).unwrap();
+        assert_ne!(updated, root);
+        assert!(load_saved_files_from_root(&updated).unwrap().is_empty());
+        prepare_store(&copy, &data, Some(&root)).unwrap();
+        assert_eq!(
+            load_saved_files_from_root(&updated).unwrap(),
+            vec![snapshot("Game/Pilot")]
+        );
+        let manifest = read_manifest(&updated).unwrap();
+        assert_eq!(
+            manifest.imports[0].sha256.as_deref(),
+            Some(read_manifest(&root).unwrap().sha256.as_str())
+        );
+    }
+
+    #[test]
+    fn legacy_migration_preserves_both_forks_metadata_and_the_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let legacy = legacy_root_for_game_path(&game);
+        let original = snapshot("Game/Pilots/Rick");
+        write_snapshot(&legacy, &original);
+        let root = prepare_store(&game, &temp.path().join("data"), None).unwrap();
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![original.clone()]
+        );
+        assert_eq!(load_saved_files_from_root(&legacy).unwrap(), vec![original]);
+        assert_eq!(
+            read_manifest(&root).unwrap().imports[0].source,
+            fs::canonicalize(legacy).unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn new_store_wins_and_explicit_recovery_rejects_all_conflicts_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let data = temp.path().join("data");
+        let root = prepare_store(&game, &data, None).unwrap();
+        write_snapshot(&root, &snapshot("Game/Pilot"));
+        let legacy = legacy_root_for_game_path(&game);
+        let mut other = snapshot("game/pilot");
+        other.data_fork = b"legacy".to_vec();
+        write_snapshot(&legacy, &other);
+        write_snapshot(&legacy, &snapshot("Game/Other Pilot"));
+        assert_eq!(prepare_store(&game, &data, None).unwrap(), root);
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![snapshot("Game/Pilot")]
+        );
+        let before = fs::read(root.join("manifest.json")).unwrap();
+        assert_eq!(
+            prepare_store(&game, &data, Some(&legacy))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(root.join("manifest.json")).unwrap(), before);
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![snapshot("Game/Pilot")]
+        );
+        assert_eq!(load_saved_files_from_root(&legacy).unwrap().len(), 2);
+        let recovery = temp.path().join("old-location");
+        write_snapshot(&recovery, &snapshot("Game/Recovered"));
+        prepare_store(&game, &data, Some(&recovery)).unwrap();
+        assert_eq!(load_saved_files_from_root(&root).unwrap().len(), 2);
+        assert_eq!(
+            load_saved_files_from_root(&recovery).unwrap(),
+            vec![snapshot("Game/Recovered")]
+        );
+    }
+
+    #[test]
+    fn failed_migration_does_not_publish_a_partial_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let legacy = legacy_root_for_game_path(&game);
+        write_snapshot(&legacy, &snapshot("Game/Pilot"));
+        fs::create_dir_all(legacy.join("Broken")).unwrap();
+        fs::write(legacy.join("Broken/metadata.json"), b"not json").unwrap();
+        let data = temp.path().join("data");
+        assert!(prepare_store(&game, &data, None).is_err());
+        assert!(!data
+            .join("saves")
+            .join(archive_digest(&game).unwrap())
+            .exists());
+        fs::remove_dir_all(legacy.join("Broken")).unwrap();
+        let root = prepare_store(&game, &data, None).unwrap();
+        assert_eq!(load_saved_files_from_root(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unknown_manifest_version_is_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let data = temp.path().join("data");
+        let root = prepare_store(&game, &data, None).unwrap();
+        let mut manifest = read_manifest(&root).unwrap();
+        manifest.version = 2;
+        let bytes = manifest_bytes(&manifest).unwrap();
+        fs::write(root.join("manifest.json"), &bytes).unwrap();
+        assert!(prepare_store(&game, &data, None).is_err());
+        assert_eq!(fs::read(root.join("manifest.json")).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_source_directory_does_not_prevent_saving() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        let game = source.join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o555)).unwrap();
+        let result = prepare_store(&game, &temp.path().join("data"), None);
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        let root = result.unwrap();
+        write_snapshot(&root, &snapshot("Game/Pilot"));
+        assert_eq!(load_saved_files_from_root(&root).unwrap().len(), 1);
+        assert!(!source.join(".systemless").exists());
     }
 }

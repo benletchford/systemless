@@ -487,6 +487,9 @@ mod tests {
         for (fail_audio, host_close) in [(false, false), (true, false), (false, true)] {
             let temporary = tempfile::tempdir().unwrap();
             let game_path = temporary.path().join("Game.sit");
+            std::fs::write(&game_path, b"shutdown-test").unwrap();
+            let data_dir = temporary.path().join("data");
+            let runtime_data_dir = data_dir.clone();
             let mut config = config();
             config.game_path = game_path.clone();
             let original = VfsFileSnapshot {
@@ -524,7 +527,9 @@ mod tests {
                     );
                     runner.cpu_mut().write_reg(Register::PC, 0x10000);
                     runner.cpu_mut().write_reg(Register::A7, 0x700000);
-                    let store = DesktopSaveStore::for_loaded_archive(&archive, &mut runner);
+                    let store = DesktopSaveStore::for_loaded_archive_in(
+                        &archive, &runtime_data_dir, &mut runner,
+                    ).expect("Failed to open desktop save store");
                     runner.import_vfs_file(&saved);
                     if fail_audio {
                         runner.set_audio(Box::new(FailingRuntimeAudio {
@@ -569,7 +574,9 @@ mod tests {
             // Read from disk only after the public terminal acknowledgement.
             // No helper is allowed to trigger an extra owner-side flush here.
             let mut reader = FixtureRunner::new(8 * 1024 * 1024, Default::default());
-            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, &mut reader);
+            let mut store = DesktopSaveStore::for_loaded_archive_in(
+                &game_path, &data_dir, &mut reader,
+            ).expect("Failed to open desktop save store");
             let persisted = store.load_saved_files();
             assert_eq!(persisted.len(), 1);
             let actual = &persisted[0];

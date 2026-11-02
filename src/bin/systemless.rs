@@ -388,6 +388,15 @@ struct Cli {
     #[arg(long)]
     reset_preferences: bool,
 
+    /// Print this archive's private save directory, then exit
+    #[arg(long, conflicts_with = "play_script")]
+    save_dir: bool,
+
+    /// Copy snapshots from a legacy or content-addressed save directory, then exit;
+    /// conflicts are reported without overwriting existing saves
+    #[arg(long, value_name = "DIRECTORY", conflicts_with = "play_script")]
+    import_saves: Option<PathBuf>,
+
     /// Print a JSON report of PowerPC imports the runtime cannot satisfy, then exit
     #[arg(long)]
     ppc_import_audit: bool,
@@ -720,8 +729,8 @@ struct CachedContentRect {
 }
 
 #[cfg(target_os = "macos")]
-fn viewport_cache_path(game_path: &std::path::Path) -> PathBuf {
-    DesktopSaveStore::root_for_game_path(game_path).join(VIEWPORT_CACHE_FILE)
+fn viewport_cache_path(game_path: &std::path::Path) -> std::io::Result<PathBuf> {
+    Ok(DesktopSaveStore::root_for_game_path(game_path)?.join(VIEWPORT_CACHE_FILE))
 }
 
 #[cfg(target_os = "macos")]
@@ -742,7 +751,7 @@ fn valid_cached_content_rect(cache: &CachedContentRect) -> bool {
 
 #[cfg(target_os = "macos")]
 fn load_cached_content_rect(game_path: &std::path::Path) -> Option<CachedContentRect> {
-    let path = viewport_cache_path(game_path);
+    let path = viewport_cache_path(game_path).ok()?;
     let bytes = std::fs::read(&path).ok()?;
     let cache: CachedContentRect = serde_json::from_slice(&bytes).ok()?;
     valid_cached_content_rect(&cache).then_some(cache)
@@ -774,8 +783,8 @@ fn persist_content_rect(
         pixel_size: screen_mode.4,
         content,
     };
-    let path = viewport_cache_path(game_path);
     let result = (|| -> std::io::Result<()> {
+        let path = viewport_cache_path(game_path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -784,11 +793,7 @@ fn persist_content_rect(
         std::fs::write(&path, bytes)
     })();
     if let Err(err) = result {
-        eprintln!(
-            "[SYSTEMLESS] Could not cache guest viewport at {}: {}",
-            path.display(),
-            err
-        );
+        eprintln!("[SYSTEMLESS] Could not cache guest viewport: {}", err);
     }
 }
 
@@ -3734,7 +3739,8 @@ fn run_headless(
             .set_quickdraw_gpu_renderer(Box::new(wgpu_quickdraw::QuickDrawRenderer::new()));
     }
     let app = session.load_path(game_path).expect("Failed to load game");
-    let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut());
+    let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut())
+        .expect("Failed to open desktop save store");
     eprintln!(
         "[SYSTEMLESS] Desktop save dir: {}",
         save_store.root().display()
@@ -3963,6 +3969,17 @@ fn main() {
     if !game_path.exists() {
         eprintln!("Error: Game file not found: {}", game_path.display());
         std::process::exit(1);
+    }
+
+    if cli.save_dir || cli.import_saves.is_some() {
+        match DesktopSaveStore::locate(&game_path, cli.import_saves.as_deref()) {
+            Ok(root) => println!("{}", root.display()),
+            Err(error) => {
+                eprintln!("Error: Could not prepare desktop saves: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
     }
 
     if cli.reset_preferences {

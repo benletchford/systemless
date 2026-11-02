@@ -147,7 +147,8 @@ pub(super) fn run(
     }
     runner.set_app_start_time(start_time);
     let app = game::load_game_from_path(&mut runner, path).expect("Failed to load game");
-    let mut saves = DesktopSaveStore::for_loaded_archive(path, &mut runner);
+    let mut saves = DesktopSaveStore::for_loaded_archive(path, &mut runner)
+        .expect("Failed to open desktop save store");
     for file in saves.load_saved_files() {
         runner.import_vfs_file(&file);
     }
