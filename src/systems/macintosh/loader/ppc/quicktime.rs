@@ -1370,7 +1370,7 @@ pub(crate) fn ppc_qt_open_default_component(
 }
 
 /// Upper bound on the guest bytes copied from the importer data handle.
-/// Startup GIF/TGA assets are small; this only prevents reading an unbounded
+/// Startup image assets are small; this only prevents reading an unbounded
 /// guest allocation into host memory.
 const PPC_QT_GRAPHICS_IMPORTER_MAX_DATA: u32 = 16 * 1024 * 1024;
 const PPC_QT_GRAPHICS_IMPORTER_MAX_DIMENSION: u32 = 8192;
@@ -1378,6 +1378,7 @@ const PPC_QT_GRAPHICS_IMPORTER_MAX_PIXELS: u32 = 16 * 1024 * 1024;
 
 fn ppc_qt_graphics_image_format(subtype: u32) -> Option<image::ImageFormat> {
     match subtype.to_be_bytes() {
+        [b't', b'i', b'f', b'f'] => Some(image::ImageFormat::Tiff),
         [b'G', b'I', b'F', b' '] => Some(image::ImageFormat::Gif),
         [b'T', b'G', b'A', b' '] => Some(image::ImageFormat::Tga),
         [b'j', b'p', b'e', b'g'] | [b'J', b'P', b'E', b'G'] => Some(image::ImageFormat::Jpeg),
@@ -1547,8 +1548,8 @@ pub(crate) fn ppc_qt_graphics_import_set_data_handle(
     if memory.read_bytes_into(source.ptr, &mut data).is_none() {
         return PPC_PARAM_ERR;
     }
-    // GIF is indexed; TGA declares its depth; JPEG carries RGB samples and
-    // PNG is decoded to RGBA for the graphics importer's image description.
+    // GIF is indexed; TGA declares its depth; JPEG carries RGB samples, and
+    // PNG and TIFF are decoded to RGBA for the image description.
     let declared_depth = if subtype == TGA_SUBTYPE {
         let Some(header) = data.get(..18) else {
             return PPC_PARAM_ERR;
@@ -1560,7 +1561,7 @@ pub(crate) fn ppc_qt_graphics_import_set_data_handle(
     } else {
         match ppc_qt_graphics_image_format(subtype) {
             Some(image::ImageFormat::Jpeg) => 24,
-            Some(image::ImageFormat::Png) => 32,
+            Some(image::ImageFormat::Png | image::ImageFormat::Tiff) => 32,
             _ => 8,
         }
     };
@@ -1617,6 +1618,7 @@ fn ppc_qt_image_description_bytes(
         Some(image::ImageFormat::Jpeg) => b"JPEG",
         Some(image::ImageFormat::Png) => b"PNG",
         Some(image::ImageFormat::Gif) => b"GIF",
+        Some(image::ImageFormat::Tiff) => b"TIFF",
         _ => b"TGA",
     };
     description[50] = name.len() as u8;
@@ -1722,6 +1724,7 @@ pub(crate) fn ppc_qt_get_graphics_importer_for_file(
     // and may retain a generic Finder type. TGA has no reliable magic, so its
     // established file type or extension is used only after signature detection.
     let subtype = match image::guess_format(&file.data) {
+        Ok(image::ImageFormat::Tiff) => Some(u32::from_be_bytes(*b"tiff")),
         Ok(image::ImageFormat::Jpeg) => Some(u32::from_be_bytes(*b"jpeg")),
         Ok(image::ImageFormat::Png) => Some(u32::from_be_bytes(*b"png ")),
         Ok(image::ImageFormat::Gif) => Some(u32::from_be_bytes(*b"GIF ")),
@@ -1863,7 +1866,7 @@ pub(crate) fn ppc_qt_graphics_import_draw(
         }
         return PPC_NO_ERR;
     }
-    // Only the PICT fallback paints synthesized pixels. A decoded GIF/TGA that
+    // Only the PICT fallback paints synthesized pixels. A decoded image that
     // produced nothing must not be replaced with an invented image.
     let fallback_drawn = quicktime.graphics_importer_subtype == 0
         && ppc_qt_draw_placeholder_frame(

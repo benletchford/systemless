@@ -271,3 +271,33 @@ fn file_image_draw_maps_natural_coordinates_into_shifted_pixmap_bounds() {
         }
     }
 }
+
+#[test]
+fn extensionless_tiff_file_decodes_and_draws_pixels() {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::codecs::tiff::TiffEncoder::new(&mut bytes)
+        .encode(
+            &[220, 30, 20].repeat(64),
+            8,
+            8,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    let mut loaded = import_file(b"Legal", bytes.into_inner());
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.graphics_importer_bounds, Some((0, 0, 8, 8)));
+    assert_eq!(
+        loaded.quicktime.graphics_importer_subtype,
+        u32::from_be_bytes(*b"tiff")
+    );
+    let row_bytes = destination(&mut loaded, 32);
+    draw(&mut loaded);
+    for y in 0..8 {
+        for x in 0..8 {
+            assert_eq!(
+                loaded.memory.read_u32_be(PIXELS + y * row_bytes + x * 4),
+                Some(0x00dc_1e14)
+            );
+        }
+    }
+}
