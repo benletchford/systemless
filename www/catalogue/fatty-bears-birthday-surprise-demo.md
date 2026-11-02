@@ -41,7 +41,7 @@ compatibility:
       of the archive and catalogue screenshot matched their pinned sizes and
       SHA-256 values. Later puzzles and audio fidelity remain unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/5487
+    evidence: https://github.com/benletchford/systemless/pull/5526
 runtime:
   executable_path: Fatty Bear Demo/Fatty Bear Demo
   show_menu_bar: true
