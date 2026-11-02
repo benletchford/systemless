@@ -2977,3 +2977,25 @@ errors. This replaces the earlier contention-affected 35.48 ticks/sec observatio
 as the quiet public pacing check; it does not establish floor-counter advancement,
 long runs, saved-score persistence or audio fidelity. The latest published release
 observed was v0.107.0; the deployed player asset was not mapped to a tag.
+
+## Nanosaur original demo — native movement recheck 3 November 2026
+
+The publisher's original [Mac OS 9 1.3.4 image](https://www.pangeasoft.net/nano/Nanosaur.dmg)
+remains unchanged: SHA-256
+`0cda02a8caceae0c2d9165f9fdb019d01be7312cd87afbf7f57cb07d69f80b5f`,
+14,376,561 bytes. Its embedded licence restricts redistribution and network
+transmission, so the image remains unhosted pending applicable permission. The
+publisher-endorsed modern port's licence is not applied to this classic image.
+
+Two fresh native-hosted PowerPC guest runs of the exact original image on integrated
+master `9044ca571`, with the Apple M3 Metal QD3D renderer, select the unregistered
+Demo and progress through the original title and 3D selection to the game world.
+The captures immediately before input match pixel for pixel at frontend/guest
+tick 5,218. Holding Up for 120 frontend ticks moves the dinosaur away from the
+circular starting marker; a matched no-key run remains at the marker. At tick
+5,338 the inspected screenshots differ by 160,462 pixels and show the same
+countdown. Both structured runs complete without guest instruction-budget
+exhaustion. This is bounded input evidence from Systemless, not an independent
+classic-Mac oracle or a browser pacing measurement. Full gameplay, audio,
+architecture completeness, permission, asset promotion, browser launch and public
+delivery remain unverified. [Intake and reproduction](https://github.com/benletchford/systemless/issues/5535).
