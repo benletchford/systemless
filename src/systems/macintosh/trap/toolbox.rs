@@ -6607,7 +6607,6 @@ impl super::TrapDispatcher {
                                 let app_path = self
                                     .vfs_key_for_fsspec(vref, dir_id, &filename)
                                     .unwrap_or(filename);
-                                self.set_launched_app_path(&app_path);
                                 let target_exists = self.find_vfs_file(&app_path).is_some()
                                     || self.find_vfs_rsrc_file(&app_path).is_some();
                                 if target_exists {
@@ -6639,7 +6638,6 @@ impl super::TrapDispatcher {
                                 }
                                 _ => app_name,
                             };
-                            self.set_launched_app_path(&app_path);
                             let target_exists = self.find_vfs_file(&app_path).is_some()
                                 || self.find_vfs_rsrc_file(&app_path).is_some();
                             if target_exists {
