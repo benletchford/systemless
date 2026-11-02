@@ -44,7 +44,7 @@ compatibility:
       14.24 and 15.28 ticks per second. Combat, later rooms, audio fidelity and
       the released production route remain unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/5486
+    evidence: https://github.com/benletchford/systemless/pull/5525
 runtime:
   executable_path: Deliverance™ DEMO/Deliverance™ DEMO
   show_menu_bar: true
