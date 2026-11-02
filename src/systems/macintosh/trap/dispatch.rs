@@ -5916,6 +5916,7 @@ impl TrapDispatcher {
         let modifiers = self.current_event_modifiers();
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1, // mouseDown
             message: 0,
             when: tick,
@@ -5945,6 +5946,7 @@ impl TrapDispatcher {
         let modifiers = self.current_event_modifiers();
         let tick = self.current_tick();
         self.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2, // mouseUp
             message: 0,
             when: tick,
@@ -6005,6 +6007,7 @@ impl TrapDispatcher {
         let tick = self.current_tick();
         let (mouse_v, mouse_h) = self.input_state.mouse_position();
         self.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 3, // keyDown
             message,
             when: tick,
@@ -6067,6 +6070,7 @@ impl TrapDispatcher {
             let tick = self.current_tick();
             let (mouse_v, mouse_h) = self.input_state.mouse_position();
             self.event_queue.push_back(QueuedEvent {
+                delivery_id: None,
                 what: 4, // keyUp
                 message,
                 when: tick,

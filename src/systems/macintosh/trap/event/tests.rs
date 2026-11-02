@@ -11,6 +11,7 @@ fn native_menu_mouse_down_is_latched_and_rate_limited_until_menuselect() {
     let (mut disp, _cpu, mut bus) = setup();
     disp.set_tick_count_for_test(&mut bus, 100);
     disp.pending_native_menu_event = Some(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -39,6 +40,7 @@ fn native_menu_mouse_down_follows_older_low_level_events() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.set_tick_count_for_test(&mut bus, 100);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 0x1234,
         when: 0,
@@ -47,6 +49,7 @@ fn native_menu_mouse_down_follows_older_low_level_events() {
         modifiers: 0,
     });
     disp.pending_native_menu_event = Some(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -64,6 +67,7 @@ fn native_menu_mouse_down_follows_older_low_level_events() {
     let next_tick = disp.current_tick().wrapping_add(1);
     disp.set_tick_count_for_test(&mut bus, next_tick);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 4,
         message: 0x5678,
         when: 0,
@@ -81,6 +85,7 @@ fn flush_events_clears_queue_and_sets_d0_zero() {
 
     // Push a couple of events into the queue
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -89,6 +94,7 @@ fn flush_events_clears_queue_and_sets_d0_zero() {
         modifiers: 0,
     });
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 3,
         message: 42,
         when: 0,
@@ -1281,6 +1287,7 @@ fn os_event_avail_peeks_latched_native_menu_mouse_down() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.set_tick_count_for_test(&mut bus, 100);
     disp.pending_native_menu_event = Some(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0,
         when: 0,
@@ -1327,6 +1334,7 @@ fn get_os_event_returns_d0_ffff_when_empty() {
 fn get_os_event_skips_toolbox_and_high_level_events() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: 0x1000,
         when: 0,
@@ -1335,6 +1343,7 @@ fn get_os_event_skips_toolbox_and_high_level_events() {
         modifiers: 0,
     });
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 23,
         message: u32::from_be_bytes(*b"aevt"),
         when: 0,
@@ -1376,6 +1385,7 @@ fn toolbox_event_accessors_apply_documented_event_priority() {
         (8, 0x2000),
     ] {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what,
             message,
             when: 0,
@@ -1399,6 +1409,7 @@ fn low_level_toolbox_events_preserve_fifo_order() {
     let (mut disp, mut cpu, mut bus) = setup();
     for (what, message) in [(3, 0x3000), (2, 0x2000), (7, 0x7000)] {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what,
             message,
             when: 0,
@@ -1443,6 +1454,7 @@ fn flushed_update_keeps_priority_between_autokey_and_os_events() {
 
     for what in [15, 5] {
         disp.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what,
             message: 0,
             when: 0,
@@ -1499,6 +1511,7 @@ fn stale_ordinary_update_does_not_precede_valid_recovered_update() {
     let visible = make_dirty_visible_window(&mut bus);
     disp.window_list.replace(vec![hidden, visible]);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: hidden,
         when: 0,
@@ -1511,6 +1524,7 @@ fn stale_ordinary_update_does_not_precede_valid_recovered_update() {
     // Restore the stale ordinary marker after FlushEvents recovered the
     // valid marker; this models an independently queued stale source.
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: hidden,
         when: 0,
@@ -1529,6 +1543,7 @@ fn stale_ordinary_update_does_not_precede_valid_recovered_update() {
 fn explicitly_posted_orphan_update_remains_deliverable() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 6,
         message: 0x1234_5678,
         when: 0,
@@ -1555,6 +1570,7 @@ fn picture_backed_update_peek_and_dequeue_skip_the_same_marker() {
     disp.window_list.push(picture_window);
     disp.queue_window_update_event(picture_window);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 15,
         message: 0,
         when: 0,
@@ -1574,6 +1590,7 @@ fn dequeue_does_not_synthesize_markerless_dirty_window_updates() {
     let window = make_dirty_visible_window(&mut bus);
     disp.window_list.push(window);
     disp.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 15,
         message: 0,
         when: 0,

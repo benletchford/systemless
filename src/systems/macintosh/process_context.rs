@@ -11646,6 +11646,7 @@ mod tests {
         let context = ProcessContext::default();
         assert!(context.event_queue().is_empty());
         context.shared_event_queue().push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1234,
             when: 0,
@@ -11682,6 +11683,7 @@ mod tests {
         assert!(context.menu_tracking().is_none());
 
         context.shared_event_queue().push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x5678,
             when: 0,
@@ -14133,6 +14135,7 @@ mod tests {
         let context = ProcessContext::default();
         let mut classic = SharedProcessEventQueue::default();
         classic.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1111,
             when: 0,
@@ -14147,6 +14150,7 @@ mod tests {
         let detached = native.clone();
 
         native.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2222,
             when: 0,
@@ -14315,6 +14319,7 @@ mod tests {
         assert!(!queue.menu_bar_is_invalid());
 
         let ev1 = QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x1000,
             when: 10,
@@ -14323,6 +14328,7 @@ mod tests {
             modifiers: 0,
         };
         let ev2 = QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2000,
             when: 20,
@@ -14331,6 +14337,7 @@ mod tests {
             modifiers: 0x0100,
         };
         let ev3 = QueuedEvent {
+            delivery_id: None,
             what: 3,
             message: 0x3000,
             when: 30,

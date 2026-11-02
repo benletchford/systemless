@@ -1077,3 +1077,1336 @@ fn aesend_direct_nested_handler_calls_release_their_own_temporaries() {
     assert_eq!(loaded.handles().len(), handles + 1);
     assert_eq!(loaded.ptrs(), pointers);
 }
+
+#[test]
+fn aesend_real_psn_queues_event_and_optional_reply() {
+    for mode in [1, 2] {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        loaded.memory.write_u32_be(scratch + 0x64, 256).unwrap();
+        loaded.cpu.gpr[3..7].copy_from_slice(&[
+            u32::from_be_bytes(*b"psn "),
+            scratch + 0x60,
+            8,
+            scratch + 0x38,
+        ]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::CreateDesc,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        // Recreate the event so the address attribute contains the real PSN.
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"TEST");
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"send");
+        loaded.cpu.gpr[5] = scratch + 0x38;
+        loaded.cpu.gpr[6] = 17;
+        loaded.cpu.gpr[7] = 42;
+        loaded.cpu.gpr[8] = scratch + 0x28;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::CreateAppleEvent,
+            ),
+        );
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            scratch + 0x28,
+            u32::from_be_bytes(*b"----"),
+            u32::from_be_bytes(*b"TEXT"),
+            scratch + 0x50,
+            7,
+        ]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutParamPtr,
+            ),
+        );
+        let entry = scratch + 0x200;
+        let observed = scratch + 0x100;
+        let mut binding = loaded.imports[0].clone();
+        binding.symbol_index = 1;
+        binding.symbol_name = "AEGetParamPtr".into();
+        binding.dispatcher_target = dispatcher_target_for_import("InterfaceLib", "AEGetParamPtr");
+        binding.trap_pc = PPC_IMPORT_TRAP_BASE + 4;
+        loaded.memory.add_region(binding.trap_pc, vec![0; 4]);
+        loaded.imports.push(binding);
+        loaded.import_count = 2;
+        let mut code = vec![
+            0x7c08_02a6,
+            d_form_u(36, 0, 1, 8),
+            d_form_u(37, 1, 1, (-96i16) as u16),
+            d_form_u(32, 6, 4, 0),
+            d_form_u(36, 6, 5, 32),
+            d_form_u(14, 6, 5, 0),
+            d_form_u(14, 7, 5, 8),
+            d_form_u(14, 9, 5, 4),
+            d_form_u(14, 8, 0, 16),
+            d_form_u(15, 4, 0, 0x2d2d),
+            d_form_u(24, 4, 4, 0x2d2d),
+            d_form_u(15, 5, 0, 0x5445),
+            d_form_u(24, 5, 5, 0x5854),
+        ];
+        let call_pc = entry + code.len() as u32 * 4;
+        code.push(0x4800_0001 | ((PPC_IMPORT_TRAP_BASE + 4).wrapping_sub(call_pc) & 0x03ff_fffc));
+        code.extend([
+            d_form_u(14, 1, 1, 96),
+            d_form_u(32, 0, 1, 8),
+            0x7c08_03a6,
+            d_form_u(14, 3, 0, (-50i16) as u16),
+            0x4e80_0020,
+        ]);
+        for (index, word) in code.iter().enumerate() {
+            loaded
+                .memory
+                .write_u32_be(entry + index as u32 * 4, *word)
+                .unwrap();
+        }
+        loaded.memory.write_u32_be(scratch + 0x80, entry).unwrap();
+        loaded
+            .memory
+            .write_u32_be(scratch + 0x84, loaded.rtoc)
+            .unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            u32::from_be_bytes(*b"TEST"),
+            u32::from_be_bytes(*b"send"),
+            scratch + 0x80,
+            observed,
+            0,
+        ]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AEInstallEventHandler,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 0x28, scratch + 16, mode]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let queue = loaded.event_queue();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.front().unwrap().what, PPC_HIGH_LEVEL_EVENT);
+        assert_eq!(queue.front().unwrap().message, u32::from_be_bytes(*b"TEST"));
+        let event = &loaded.apple_events.queued_self_events[0].1;
+        assert_eq!(event.fields[&u32::from_be_bytes(*b"----")].data, b"payload");
+        assert_eq!(
+            event.attributes[&u32::from_be_bytes(*b"esrc")].data,
+            2i16.to_be_bytes()
+        );
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert!(loaded.apple_events.current_self_event.is_none());
+        assert_eq!(loaded.apple_events.queued_self_events.len(), 1);
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        loaded.cpu.gpr[3] = scratch + 0x90;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        if mode == 2 {
+            loaded.apple_events.fail_self_queue_reservation = 11;
+        }
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AEProcessAppleEvent;
+        let probe = loaded.run_with_hle_imports(256);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 2);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-50));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, observed + 8, 7),
+            Some(b"payload".to_vec())
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(observed + 32),
+            Some(if mode == 1 {
+                PPC_TYPE_NULL
+            } else {
+                PPC_CORE_EVENT_CLASS
+            })
+        );
+        assert!(loaded.apple_events.current_self_event.is_none());
+        if mode == 2 {
+            assert_eq!(loaded.event_queue().len(), 0);
+            assert_eq!(loaded.apple_events.completed_self_replies.len(), 1);
+            loaded.apple_events.fail_self_queue_reservation = 0;
+            loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+            loaded.cpu.gpr[4] = scratch + 0x90;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+            assert_eq!(loaded.cpu.gpr[3], 1);
+            assert_eq!(loaded.event_queue().len(), 1);
+            let reply = &loaded.apple_events.queued_self_events[0].1;
+            assert_eq!(reply.data, b"aevtansr");
+            assert_eq!(
+                reply.fields[&u32::from_be_bytes(*b"errn")].data,
+                (-50i32).to_be_bytes()
+            );
+            assert_eq!(
+                reply.attributes[&u32::from_be_bytes(*b"rtid")].data,
+                17i16.to_be_bytes()
+            );
+            loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+            loaded.cpu.gpr[4] = scratch + 0x90;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+            );
+            assert_eq!(loaded.cpu.gpr[3], 1);
+            assert_eq!(
+                loaded.memory.read_u32_be(scratch + 0x92),
+                Some(PPC_CORE_EVENT_CLASS)
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(scratch + 0x9a),
+                Some(u32::from_be_bytes(*b"ansr"))
+            );
+            assert!(loaded.apple_events.current_self_event.is_some());
+            // Reuse the handler code to read the queued reply's error parameter.
+            code[9] = d_form_u(15, 4, 0, 0x6572);
+            code[10] = d_form_u(24, 4, 4, 0x726e);
+            code[11] = d_form_u(15, 5, 0, 0x6c6f);
+            code[12] = d_form_u(24, 5, 5, 0x6e67);
+            let return_index = code.len() - 2;
+            code[return_index] = d_form_u(14, 3, 0, 0);
+            for (index, word) in code.iter().enumerate() {
+                loaded
+                    .memory
+                    .write_u32_be(entry + index as u32 * 4, *word)
+                    .unwrap();
+            }
+            loaded.cpu.gpr[3..8].copy_from_slice(&[
+                PPC_CORE_EVENT_CLASS,
+                u32::from_be_bytes(*b"ansr"),
+                scratch + 0x80,
+                observed,
+                0,
+            ]);
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::AEInstallEventHandler,
+            );
+            loaded.cpu.gpr[3] = scratch + 0x90;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AEProcessAppleEvent;
+            let probe = loaded.run_with_hle_imports(256);
+            assert_eq!(probe.handled_import_count, 2);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(observed + 8),
+                Some((-50i32) as u32)
+            );
+            assert!(loaded.event_queue().is_empty());
+            continue;
+        }
+        assert!(loaded.apple_events.queued_self_events.is_empty());
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 0x28, 0, 1]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert!(loaded.apple_events.current_self_event.is_some());
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert!(loaded.apple_events.current_self_event.is_none());
+    }
+}
+
+#[test]
+fn aesend_signature_targets_launched_application_and_preserves_queue_order() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    for (path, creator) in [("Other", *b"OTHR"), ("Chosen", *b"APPL")] {
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: path.to_owned(),
+            data: Vec::new().into(),
+            creator: u32::from_be_bytes(creator),
+            file_type: u32::from_be_bytes(*b"APPL"),
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    loaded.set_launched_app_path("Chosen");
+    let input = PpcInputSnapshot::default();
+    loaded.set_input_snapshot(input);
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    let address = event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap();
+    address.desc_type = u32::from_be_bytes(*b"sign");
+    address.data = b"OTHR".to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event.clone(),
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, 0, 1]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+    assert!(loaded.event_queue().is_empty());
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = b"APPL".to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    for (payload, priority) in [
+        (b"first".as_slice(), 0),
+        (b"second".as_slice(), 0),
+        (b"high".as_slice(), 1),
+    ] {
+        loaded.memory.write_bytes(scratch + 0x50, payload).unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            scratch + 8,
+            u32::from_be_bytes(*b"----"),
+            u32::from_be_bytes(*b"TEXT"),
+            scratch + 0x50,
+            payload.len() as u32,
+        ]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutParamPtr,
+            ),
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, 0, 1]);
+        loaded.cpu.gpr[6] = priority;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    // The sender may dispose its event before the recipient processes it.
+    loaded.cpu.gpr[3] = scratch + 8;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::DisposeDesc,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.event_queue().len(), 3);
+    assert_eq!(
+        loaded.event_queue().front().unwrap().modifiers,
+        ppc_current_event_modifiers(input)
+    );
+    // An unrelated event can have the same guest-visible EventRecord bytes.
+    let mut collision = loaded.event_queue().front().unwrap();
+    collision.delivery_id = None;
+    loaded
+        .event_queue()
+        .with_mut(|queue| queue.push_front(collision));
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert!(loaded.apple_events.current_self_event.is_none());
+    assert_eq!(loaded.apple_events.queued_self_events.len(), 3);
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED)
+    );
+    assert_eq!(loaded.apple_events.queued_self_events.len(), 3);
+    for expected in [
+        b"high".as_slice(),
+        b"first".as_slice(),
+        b"second".as_slice(),
+    ] {
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        let event = &loaded.apple_events.current_self_event.as_ref().unwrap().1;
+        assert_eq!(event.fields[&u32::from_be_bytes(*b"----")].data, expected);
+    }
+    assert!(loaded.apple_events.queued_self_events.is_empty());
+}
+
+#[test]
+fn aesend_prunes_removed_queue_payload_without_losing_other_events() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    for payload in [b"first".as_slice(), b"second".as_slice()] {
+        loaded.memory.write_bytes(scratch + 0x50, payload).unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            scratch + 8,
+            u32::from_be_bytes(*b"----"),
+            u32::from_be_bytes(*b"TEXT"),
+            scratch + 0x50,
+            payload.len() as u32,
+        ]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::PutParamPtr,
+            ),
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, 0, 1]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    loaded.event_queue().with_mut(|queue| {
+        queue.pop_front();
+    });
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert!(loaded.apple_events.queued_self_events.is_empty());
+    let current = &loaded.apple_events.current_self_event.as_ref().unwrap().1;
+    assert_eq!(
+        current.fields[&u32::from_be_bytes(*b"----")].data,
+        b"second"
+    );
+}
+
+#[test]
+fn queued_apple_event_pruning_preserves_survivors_in_order() {
+    let mut state = PpcAppleEventState::default();
+    let mut queue = VecDeque::new();
+    for id in 1..=1000u64 {
+        let record = PpcQueuedEvent {
+            delivery_id: Some(id),
+            what: PPC_HIGH_LEVEL_EVENT,
+            message: u32::from_be_bytes(*b"TEST"),
+            when: 42,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        };
+        state.queued_self_events.push_back((
+            record,
+            ProcessAeDescriptor::default(),
+            PpcSelfReplyRoute::None,
+        ));
+        if id % 2 == 0 {
+            queue.push_back(record);
+        }
+    }
+    state.prune_queued_self_events(&queue);
+    let ids: Vec<_> = state
+        .queued_self_events
+        .iter()
+        .map(|(event, _, _)| event.delivery_id.unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        (1..=1000u64).filter(|id| id % 2 == 0).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn aesend_source_attribute_reservation_failure_leaves_request_unchanged() {
+    for direct in [false, true] {
+        for stage in [9, 10, 12] {
+            let (mut loaded, scratch) = self_addressed_send_fixture();
+            if !direct {
+                let mut event = ppc_ae_descriptor(
+                    &mut loaded.memory,
+                    &loaded.apple_events.descriptors,
+                    scratch + 8,
+                )
+                .unwrap();
+                event
+                    .attributes
+                    .get_mut(&u32::from_be_bytes(*b"addr"))
+                    .unwrap()
+                    .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+                ppc_store_ae_descriptor_semantics(
+                    &mut loaded.memory,
+                    &loaded.apple_events.descriptors,
+                    scratch + 8,
+                    event,
+                );
+            }
+            let before = ppc_ae_descriptor(
+                &mut loaded.memory,
+                &loaded.apple_events.descriptors,
+                scratch + 8,
+            )
+            .unwrap();
+            loaded.apple_events.fail_self_queue_reservation = stage;
+            loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, 0, 1]);
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::Send,
+                ),
+            );
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+            assert_eq!(loaded.event_queue().len(), 0);
+            assert!(loaded.apple_events.pending_dispatches.is_empty());
+            assert_eq!(
+                ppc_ae_descriptor(
+                    &mut loaded.memory,
+                    &loaded.apple_events.descriptors,
+                    scratch + 8,
+                )
+                .unwrap(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn aesend_queued_requests_do_not_expose_timeout_or_modify_sender() {
+    for reply_mode in [1, 2] {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        let mut event = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+        )
+        .unwrap();
+        event
+            .attributes
+            .get_mut(&u32::from_be_bytes(*b"addr"))
+            .unwrap()
+            .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+        event.attributes.insert(
+            u32::from_be_bytes(*b"timo"),
+            ProcessAeDescriptor {
+                desc_type: u32::from_be_bytes(*b"long"),
+                data: 120i32.to_be_bytes().to_vec(),
+                ..Default::default()
+            },
+        );
+        ppc_store_ae_descriptor_semantics(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+            event.clone(),
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, reply_mode]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert!(!loaded.apple_events.queued_self_events[0]
+            .1
+            .attributes
+            .contains_key(&u32::from_be_bytes(*b"timo")));
+        assert_eq!(
+            ppc_ae_descriptor(
+                &mut loaded.memory,
+                &loaded.apple_events.descriptors,
+                scratch + 8
+            ),
+            Some(event)
+        );
+    }
+}
+
+#[test]
+fn aesend_queue_reservation_failure_preserves_existing_event_and_retries() {
+    for stage in 1..=3 {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        let mut event = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+        )
+        .unwrap();
+        event
+            .attributes
+            .get_mut(&u32::from_be_bytes(*b"addr"))
+            .unwrap()
+            .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+        ppc_store_ae_descriptor_semantics(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+            event,
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, 0, 1]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let original = loaded.apple_events.queued_self_events[0].0;
+        loaded.apple_events.fail_self_queue_reservation = stage;
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        assert_eq!(loaded.event_queue().len(), 1);
+        assert_eq!(loaded.apple_events.queued_self_events.len(), 1);
+        assert_eq!(loaded.apple_events.queued_self_events[0].0, original);
+        loaded.apple_events.fail_self_queue_reservation = 0;
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.event_queue().len(), 2);
+        assert_eq!(loaded.apple_events.queued_self_events.len(), 2);
+        assert_eq!(loaded.apple_events.queued_self_events[0].0, original);
+    }
+}
+
+#[test]
+fn aesend_many_discarded_requests_each_produce_a_reply() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    for return_id in 0..32i16 {
+        let mut event = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+        )
+        .unwrap();
+        event
+            .attributes
+            .get_mut(&u32::from_be_bytes(*b"rtid"))
+            .unwrap()
+            .data = return_id.to_be_bytes().to_vec();
+        ppc_store_ae_descriptor_semantics(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+            event,
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    loaded.event_queue().with_mut(|queue| queue.clear());
+    loaded.apple_events.fail_self_queue_reservation = 8;
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.apple_events.completed_self_replies.len(), 32);
+    loaded.apple_events.fail_self_queue_reservation = 0;
+    for return_id in 0..32i16 {
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        let reply = &loaded.apple_events.current_self_event.as_ref().unwrap().1;
+        assert_eq!(reply.data, b"aevtansr");
+        assert_eq!(
+            reply.attributes[&u32::from_be_bytes(*b"rtid")].data,
+            return_id.to_be_bytes()
+        );
+        assert_eq!(
+            reply.fields[&u32::from_be_bytes(*b"errn")].data,
+            i32::from(PPC_ERR_AE_EVENT_NOT_HANDLED).to_be_bytes()
+        );
+    }
+    assert_eq!(loaded.event_queue().len(), 0);
+}
+
+#[test]
+fn aesend_completed_reply_survives_reservation_failure_until_retry() {
+    for stage in 4..=8 {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        let mut event = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+        )
+        .unwrap();
+        event
+            .attributes
+            .get_mut(&u32::from_be_bytes(*b"addr"))
+            .unwrap()
+            .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+        ppc_store_ae_descriptor_semantics(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+            event,
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        loaded.apple_events.fail_self_queue_reservation = stage;
+        loaded.cpu.gpr[3] = scratch + 0x90;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED)
+        );
+        assert_eq!(loaded.apple_events.completed_self_replies.len(), 1);
+        assert_eq!(loaded.event_queue().len(), 0);
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.apple_events.completed_self_replies.len(), 1);
+        loaded.apple_events.fail_self_queue_reservation = 0;
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        let reply = &loaded.apple_events.current_self_event.as_ref().unwrap().1;
+        assert_eq!(reply.data, b"aevtansr");
+        assert_eq!(
+            reply.fields[&u32::from_be_bytes(*b"errn")].data,
+            i32::from(PPC_ERR_AE_EVENT_NOT_HANDLED).to_be_bytes()
+        );
+        assert!(loaded.apple_events.completed_self_replies.is_empty());
+    }
+}
+
+#[test]
+fn waiting_self_reply_routes_handler_error_to_its_waiter() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.apple_events.queued_self_events[0].2 = PpcSelfReplyRoute::Waiting(42);
+    loaded.apple_events.completed_wait_replies.reserve(1);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED)
+    );
+    assert_eq!(loaded.event_queue().len(), 0);
+    assert!(loaded.apple_events.completed_self_replies.is_empty());
+    assert!(loaded.apple_events.take_wait_reply(99).is_none());
+    let reply = loaded.apple_events.take_wait_reply(42).unwrap();
+    let PpcPendingSelfReply::Error(request, error) = reply else {
+        panic!("expected an error reply");
+    };
+    assert_eq!(error, PPC_ERR_AE_EVENT_NOT_HANDLED);
+    assert_eq!(
+        request.attributes[&u32::from_be_bytes(*b"rtid")].data,
+        17i16.to_be_bytes()
+    );
+}
+
+#[test]
+fn waiting_self_reply_retrieves_handler_result_by_identity() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    let entry = scratch + 0x200;
+    loaded
+        .memory
+        .write_u32_be(entry, d_form_u(14, 3, 0, (-50i16) as u16))
+        .unwrap();
+    loaded.memory.write_u32_be(entry + 4, 0x4e80_0020).unwrap();
+    loaded.memory.write_u32_be(scratch + 0x80, entry).unwrap();
+    loaded
+        .memory
+        .write_u32_be(scratch + 0x84, loaded.rtoc)
+        .unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"TEST"),
+        u32::from_be_bytes(*b"send"),
+        scratch + 0x80,
+        0,
+        0,
+    ]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AEInstallEventHandler,
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.apple_events.queued_self_events[0].2 = PpcSelfReplyRoute::Waiting(42);
+    loaded.apple_events.completed_wait_replies.reserve(1);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AEProcessAppleEvent;
+    let probe = loaded.run_with_hle_imports(256);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-50));
+    assert_eq!(loaded.event_queue().len(), 0);
+    assert!(loaded.apple_events.take_wait_reply(99).is_none());
+    let PpcPendingSelfReply::Completed(reply, error) =
+        loaded.apple_events.take_wait_reply(42).unwrap()
+    else {
+        panic!("expected the handler reply");
+    };
+    assert_eq!(error, -50);
+    assert_eq!(reply.data, b"aevtansr");
+    assert_eq!(
+        reply.attributes[&u32::from_be_bytes(*b"rtid")].data,
+        17i16.to_be_bytes()
+    );
+    assert!(loaded.apple_events.take_wait_reply(42).is_none());
+}
+
+#[test]
+fn aesend_queued_reply_reports_missing_handler() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert_eq!(
+        loaded.cpu.gpr[3],
+        ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED)
+    );
+    assert_eq!(loaded.event_queue().len(), 1);
+    let reply = &loaded.apple_events.queued_self_events[0].1;
+    assert_eq!(reply.data, b"aevtansr");
+    assert_eq!(
+        reply.fields[&u32::from_be_bytes(*b"errn")].data,
+        i32::from(PPC_ERR_AE_EVENT_NOT_HANDLED).to_be_bytes()
+    );
+}
+
+#[test]
+fn aesend_queued_reply_reports_discarded_or_unprocessed_request() {
+    for discard_before_retrieval in [false, true] {
+        let (mut loaded, scratch) = self_addressed_send_fixture();
+        let mut event = ppc_ae_descriptor(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+        )
+        .unwrap();
+        event
+            .attributes
+            .get_mut(&u32::from_be_bytes(*b"addr"))
+            .unwrap()
+            .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+        ppc_store_ae_descriptor_semantics(
+            &mut loaded.memory,
+            &loaded.apple_events.descriptors,
+            scratch + 8,
+            event,
+        );
+        loaded.cpu.gpr[3..6].copy_from_slice(&[scratch + 8, scratch + 16, 2]);
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::AppleEventCompatibility(
+                PpcAppleEventCompatibilityOperation::Send,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        if discard_before_retrieval {
+            loaded.event_queue().with_mut(|queue| {
+                queue.pop_front();
+            });
+        } else {
+            loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+            loaded.cpu.gpr[4] = scratch + 0x90;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+            );
+            assert_eq!(loaded.cpu.gpr[3], 1);
+            assert!(loaded.apple_events.current_self_event.is_some());
+            loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+            loaded.cpu.gpr[4] = scratch + 0x90;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::EventAvail);
+            assert!(loaded.apple_events.current_self_event.is_some());
+        }
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        let reply = &loaded.apple_events.current_self_event.as_ref().unwrap().1;
+        assert_eq!(reply.data, b"aevtansr");
+        assert_eq!(
+            reply.fields[&u32::from_be_bytes(*b"errn")].data,
+            i32::from(PPC_ERR_AE_EVENT_NOT_HANDLED).to_be_bytes()
+        );
+        assert!(loaded.apple_events.queued_self_events.is_empty());
+    }
+}
+
+#[test]
+fn aesend_queued_reply_survives_classic_handler_return() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    let entry = scratch + 0x200;
+    for (index, word) in [0x3f7cu16, 0xffce, 0x0010, 0x4e74, 0x000c]
+        .into_iter()
+        .enumerate()
+    {
+        loaded
+            .memory
+            .write_u16_be(entry + index as u32 * 2, word)
+            .unwrap();
+    }
+    loaded.apple_events.handlers.install(
+        false,
+        u32::from_be_bytes(*b"TEST"),
+        u32::from_be_bytes(*b"send"),
+        ProcessAppleEventHandler {
+            procedure: crate::guest_procedure::GuestProcedure::raw_m68k(entry),
+            refcon: 0,
+        },
+    );
+    loaded.cpu.gpr[3..7].copy_from_slice(&[scratch + 8, scratch + 16, 2, 0]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert!(
+        loaded.apple_events.pending_dispatches.is_empty(),
+        "pc={:08x}, result={:08x}",
+        loaded.cpu.pc,
+        loaded.cpu.gpr[3]
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-50));
+    assert_eq!(loaded.event_queue().len(), 1);
+    let reply = &loaded.apple_events.queued_self_events[0].1;
+    assert_eq!(reply.data, b"aevtansr");
+    assert_eq!(
+        reply.fields[&u32::from_be_bytes(*b"errn")].data,
+        (-50i32).to_be_bytes()
+    );
+}
+
+#[test]
+fn aesend_queued_reply_reports_guest_heap_exhaustion() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    let procedure = resolve_guest_procedure(
+        &mut loaded.memory,
+        PPC_CODE_BASE,
+        loaded.rtoc,
+        None,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    )
+    .unwrap();
+    loaded.apple_events.handlers.install(
+        false,
+        u32::from_be_bytes(*b"TEST"),
+        u32::from_be_bytes(*b"send"),
+        ProcessAppleEventHandler {
+            procedure,
+            refcon: 0,
+        },
+    );
+    loaded.cpu.gpr[3..7].copy_from_slice(&[scratch + 8, scratch + 16, 2, 0]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    loaded.set_heap_cursor(loaded.heap_limit().saturating_sub(8));
+    let handles = loaded.handles();
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    assert_eq!(loaded.handles(), handles);
+    assert!(loaded.apple_events.pending_dispatches.is_empty());
+    assert_eq!(loaded.event_queue().len(), 1);
+    let reply = &loaded.apple_events.queued_self_events[0].1;
+    assert_eq!(reply.data, b"aevtansr");
+    assert_eq!(
+        reply.fields[&u32::from_be_bytes(*b"errn")].data,
+        i32::from(PPC_MEM_FULL_ERR).to_be_bytes()
+    );
+}
+
+#[test]
+fn aesend_queued_reply_reports_failed_classic_handler_setup() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    let mut procedure = crate::guest_procedure::GuestProcedure::raw_m68k(scratch + 0x200);
+    procedure.proc_info = 0xffff_ffff;
+    loaded.apple_events.handlers.install(
+        false,
+        u32::from_be_bytes(*b"TEST"),
+        u32::from_be_bytes(*b"send"),
+        ProcessAppleEventHandler {
+            procedure,
+            refcon: 0,
+        },
+    );
+    loaded.cpu.gpr[3..7].copy_from_slice(&[scratch + 8, scratch + 16, 2, 0]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+    loaded.cpu.gpr[4] = scratch + 0x90;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    let handles = loaded.handles();
+    let pointers = loaded.ptrs();
+    let mixed_mode = loaded.toolbox_startup.mixed_mode_m68k.snapshot();
+    loaded.cpu.gpr[3] = scratch + 0x90;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::AEProcessAppleEvent);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+    assert_eq!(loaded.handles(), handles);
+    assert_eq!(loaded.ptrs(), pointers);
+    assert_eq!(
+        loaded.toolbox_startup.mixed_mode_m68k.snapshot(),
+        mixed_mode
+    );
+    assert!(loaded.apple_events.pending_dispatches.is_empty());
+    assert_eq!(loaded.event_queue().len(), 1);
+    let reply = &loaded.apple_events.queued_self_events[0].1;
+    assert_eq!(reply.data, b"aevtansr");
+    assert_eq!(
+        reply.fields[&u32::from_be_bytes(*b"errn")].data,
+        i32::from(PPC_MEM_FULL_ERR).to_be_bytes()
+    );
+}
+
+#[test]
+fn aesend_new_request_has_distinct_identity_from_flushed_error_reply() {
+    let (mut loaded, scratch) = self_addressed_send_fixture();
+    let mut event = ppc_ae_descriptor(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+    )
+    .unwrap();
+    event
+        .attributes
+        .get_mut(&u32::from_be_bytes(*b"addr"))
+        .unwrap()
+        .data = [0, 0, 0, 0, 0, 0, 1, 0].to_vec();
+    ppc_store_ae_descriptor_semantics(
+        &mut loaded.memory,
+        &loaded.apple_events.descriptors,
+        scratch + 8,
+        event,
+    );
+    loaded.cpu.gpr[3..7].copy_from_slice(&[scratch + 8, scratch + 16, 2, 0]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.event_queue().with_mut(|queue| {
+        queue.pop_front();
+    });
+    loaded.cpu.gpr[3..7].copy_from_slice(&[scratch + 8, 0, 1, 0]);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::Send,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.event_queue().len(), 2);
+    let identities: Vec<_> = loaded.event_queue().with_ref(|queue| {
+        queue
+            .iter()
+            .map(|event| event.delivery_id.unwrap())
+            .collect()
+    });
+    assert_ne!(identities[0], identities[1]);
+    for expected in [b"aevtansr".as_slice(), b"TESTsend".as_slice()] {
+        loaded.cpu.gpr[3] = PPC_HIGH_LEVEL_EVENT_MASK as u32;
+        loaded.cpu.gpr[4] = scratch + 0x90;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(
+            loaded
+                .apple_events
+                .current_self_event
+                .as_ref()
+                .unwrap()
+                .1
+                .data,
+            expected
+        );
+    }
+    assert!(loaded.apple_events.queued_self_events.is_empty());
+}

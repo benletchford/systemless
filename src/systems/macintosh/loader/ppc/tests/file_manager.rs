@@ -2419,6 +2419,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
             when: 0,
@@ -2460,6 +2461,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
         assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
             when: 0,
@@ -2547,6 +2549,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             .unwrap()
             .selected = folder_index;
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -2570,6 +2573,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(loaded.cpu.lr, tracking.call.return_address);
 
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
             when: 0,
@@ -2713,6 +2717,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             .expect("StandardGetFile must retain its dialog across the import yield")
             .bounds;
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -2734,6 +2739,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             "TEXT filter must hide the DATA fixture after entering its folder"
         );
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
             when: 0,
@@ -2790,6 +2796,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
             when: 0,
@@ -2849,6 +2856,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             .expect("SFGetFile must retain its dialog across the import yield")
             .bounds;
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 1,
             message: 0,
             when: 0,
@@ -2861,6 +2869,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
             when: 0,
@@ -2909,6 +2918,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert!(loaded.toolbox_startup.standard_file_put_tracking.is_some());
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: 0x0000_0061,
             when: 0,
@@ -2919,6 +2929,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(b'S'),
             when: 0,
@@ -2929,6 +2940,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
             when: 0,
@@ -2964,6 +2976,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         assert!(loaded.toolbox_startup.standard_file_put_tracking.is_some());
         loaded.set_event_queue([PpcQueuedEvent {
+        delivery_id: None,
             what: 3,
             message: u32::from(PPC_KEY_ESCAPE) << 8,
             when: 0,

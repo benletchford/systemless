@@ -5331,6 +5331,7 @@ fn ppc_finish_modal_filter(
 
 fn ppc_read_event_record(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<PpcQueuedEvent> {
     Some(PpcQueuedEvent {
+        delivery_id: None,
         what: memory.read_u16_be(event_ptr)?,
         message: memory.read_u32_be(event_ptr + 2)?,
         when: memory.read_u32_be(event_ptr + 6)?,
