@@ -16622,6 +16622,62 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn plotcicon_preserves_screen_backed_dialog_pixels() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(64);
+        bus.fill_zeros(screen, 64);
+        bus.write_byte(screen, 0x0F);
+        bus.write_long(0x0824, screen);
+        d.screen_mode = (screen, 1, 8, 1, 1);
+
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(64);
+        bus.fill_zeros(pixmap, 64);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(pixmap, screen);
+        bus.write_word(pixmap + 4, 1);
+        write_rect(&mut bus, pixmap + 6, 0, 0, 1, 8);
+        let dialog = bus.alloc(170);
+        bus.fill_zeros(dialog, 170);
+        bus.write_long(dialog + 2, pixmap_handle);
+        bus.write_word(dialog + 6, 0xC000);
+        let globals = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals, dialog);
+
+        let bounds = (0, 0, 1, 8);
+        let pixels = d.save_dialog_pixels(&bus, bounds);
+        d.dialog_visible_snapshots.insert(
+            dialog,
+            crate::trap::dispatch::PersistentDialogSnapshot { bounds, pixels },
+        );
+        let cicn = make_test_cicn_resource(0xF0, 0x00, 0x55);
+        d.install_test_resource(&mut bus, *b"cicn", 128, &cicn);
+        bus.write_word(TEST_SP, 128);
+        d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let icon = bus.read_long(TEST_SP + 2);
+        let rect = 0x300120;
+        write_rect(&mut bus, rect, 0, 0, 1, 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon);
+        bus.write_long(TEST_SP + 4, rect);
+        d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(screen), 0x5F);
+
+        bus.write_byte(screen, 0x0F);
+        let snapshot = d.dialog_visible_snapshots.get(&dialog).unwrap().clone();
+        d.restore_dialog_pixels(&mut bus, snapshot.bounds, &snapshot.pixels);
+        assert_eq!(
+            bus.read_byte(screen),
+            0x5F,
+            "modal redraw must retain the icon"
+        );
+    }
+
+    #[test]
     fn plotcicon_uses_real_cgrafport_layout_and_honors_empty_visrgn() {
         // Systemless CGrafPorts store portPixMap at +2 and portVersion at
         // +6, matching Imaging With QuickDraw's CGrafPort layout. PlotCIcon

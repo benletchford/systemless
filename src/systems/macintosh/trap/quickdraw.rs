@@ -10312,6 +10312,21 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
+                if dst_base == self.screen_mode.0 {
+                    let screen_rect = (
+                        clip_top.saturating_sub(dst_bounds_top),
+                        clip_left.saturating_sub(dst_bounds_left),
+                        clip_bottom.saturating_sub(dst_bounds_top),
+                        clip_right.saturating_sub(dst_bounds_left),
+                    );
+                    // Applications can draw color icons into user items before
+                    // entering ModalDialog. Keep the retained dialog image in
+                    // sync just as CopyBits does for screen-backed ports.
+                    self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, screen_rect);
+                    self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+                        bus, port, screen_rect,
+                    );
+                }
                 Ok(())
             }
 
