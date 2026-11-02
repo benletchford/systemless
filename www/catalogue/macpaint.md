@@ -12,8 +12,20 @@ default_architecture: 68k
 category: Art
 launch_enabled: true
 compatibility:
-  status: boots
+  status: works
   verified:
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 0.107.0
+    architecture: 68k
+    environment: >-
+      Native structured headless runner on macOS ARM64, original Gryphel gry2
+      image, 512 x 342 monochrome display and 24-bit addressing. Nine replays
+      passed 21 pixel assertions for bucket, lasso, Copy, Cut/Paste, FatBits,
+      alert tracking, Save dialog and save/close/reopen at 4 MB and 128 MB.
+      No replay exhausted a frontend frame budget.
+    status: works
+    evidence: https://github.com/benletchford/systemless/issues/5211
   - date: "2026-10-28"
     tester: Issue reporter
     systemless_version: 16f24e9310cab886ce1088dc7c02d0831a829c82
