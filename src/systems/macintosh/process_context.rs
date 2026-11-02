@@ -6273,6 +6273,29 @@ impl SharedClassicHeapAllocator {
         self.0.borrow().heap_ptr
     }
 
+    pub(crate) fn can_adopt_reserved_image_allocation(&self, address: u32, size: u32) -> bool {
+        let Some(capacity) = Self::checked_allocation_bucket_size(size) else {
+            return false;
+        };
+        let Some(end) = address.checked_add(capacity) else {
+            return false;
+        };
+        let state = self.0.borrow();
+        address & 1 == 0
+            && state
+                .reserved_heap_ranges
+                .iter()
+                .any(|&(start, stop)| start <= address && end <= stop)
+            && state.alloc_sizes.iter().all(|(&other, &length)| {
+                let other_capacity = state
+                    .alloc_bucket_sizes
+                    .get(&other)
+                    .copied()
+                    .unwrap_or_else(|| Self::allocation_bucket_size(length));
+                end <= other || address >= other.saturating_add(other_capacity)
+            })
+    }
+
     /// Adopt a direct-loaded block inside an already reserved application image.
     /// Its bytes stay in place; ordinary handle size, resize and disposal now
     /// operate on the same allocation that the Segment Loader executes.

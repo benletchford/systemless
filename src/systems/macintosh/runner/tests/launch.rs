@@ -713,3 +713,58 @@ fn word_aligned_code_zero_keeps_its_address_and_resource_handle() {
         );
     }
 }
+
+#[test]
+fn relaunch_discards_inflight_resource_hook_context() {
+    let code0 = minimal_code0(0, 0x2000, 0, 0);
+    let code = [0, 0, 0, 0, 0x4E, 0x75];
+    let bytes = make_resource_fork_bytes(&[
+        (*b"CODE", 0, &code0),
+        (*b"CODE", 1, &code),
+        (*b"TEST", 7, b"payload"),
+    ]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&fork).unwrap();
+    runner.init_app(&app);
+    let (_, ptr) = runner
+        .dispatcher
+        .find_or_load_resource_any(&mut runner.bus, *b"TEST", 7)
+        .unwrap();
+    runner
+        .bus
+        .write_byte(crate::memory::globals::addr::RES_LOAD, 0);
+    let handle = runner.dispatcher.get_or_create_resource_handle_in_file(
+        &mut runner.bus,
+        *b"TEST",
+        7,
+        ptr,
+        0,
+    );
+    runner
+        .dispatcher
+        .install_trap_address(&mut runner.bus, 0xA0FC, 0x300000)
+        .unwrap();
+    runner.bus.write_word(0x300000, 0xA9F4); // guest callback exits instead of returning
+    runner.m68k.cpu.write_reg(Register::PC, 0x290002);
+    assert!(runner.dispatcher.maybe_inject_resource_checkload(
+        &mut runner.bus,
+        &mut runner.m68k.cpu,
+        handle,
+        None,
+        true
+    ));
+    assert_eq!(runner.dispatcher.resource_checkload_stack.len(), 1);
+    let (_, running) = runner.run_steps(4, None);
+    assert!(!running, "guest callback must terminate via ExitToShell");
+    assert_eq!(runner.halted_trap(), Some(0xA9F4));
+    runner.init_app(&app);
+    assert!(
+        runner.dispatcher.resource_checkload_stack.is_empty(),
+        "relaunch must not retain the prior app callback"
+    );
+    assert!(
+        runner.dispatcher.resource_checkload_trampoline.is_none(),
+        "relaunch must discard the old callback trampoline"
+    );
+}

@@ -3785,7 +3785,18 @@ impl FixtureRunner {
 
         let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
         self.dispatcher.register_segments(segments);
-        self.dispatcher.bind_application_code_handles(&mut self.bus);
+        let mut resident_segments: Vec<i16> = app
+            .jump_table
+            .iter()
+            .filter(|entry| entry.loaded)
+            .map(|entry| entry.segment)
+            .collect();
+        if let Some(entry) = app.jump_table.first() {
+            resident_segments.push(0);
+            resident_segments.push(entry.segment);
+        }
+        self.dispatcher
+            .bind_application_code_handles(&mut self.bus, &resident_segments);
 
         Some(app)
     }
@@ -4133,6 +4144,8 @@ impl FixtureRunner {
             (native, migrated_services)
         });
         assert!(self.native.reset_for_launch(native_launch.is_some()));
+        self.dispatcher
+            .reset_resource_checkload_for_launch(&mut self.bus);
         self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
         if let Some((ppc_app, migrated_services)) = native_launch {

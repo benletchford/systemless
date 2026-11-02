@@ -631,10 +631,52 @@ impl super::TrapDispatcher {
         // allocation truncates expanded code and leaves its entry points stale.
         let ptr = if handle == 0 { 0 } else { bus.read_long(handle) };
         if ptr != 0 {
+            if let Some((old_ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() {
+                if res_type == *b"CODE"
+                    && res_id == state.seg_num
+                    && self.handle_for_ptr(ptr).is_none_or(|owner| owner == handle)
+                {
+                    if old_ptr != ptr && self.handle_for_ptr(old_ptr) == Some(handle) {
+                        self.untrack_handle_ptr(old_ptr);
+                    }
+                    self.track_handle_ptr(ptr, handle);
+                    self.with_resource_manager_mut(|manager| {
+                        if let Some(entry) = manager.loaded_handles.get_mut(&handle) {
+                            entry.0 = ptr;
+                        }
+                        if let Some(refnum) = manager.resource_handle_files.get(&handle).copied() {
+                            manager
+                                .resident_resources
+                                .insert((refnum, res_type, res_id));
+                            if let Some(file) = manager
+                                .resources
+                                .as_mut()
+                                .and_then(|r| r.files.get_mut(&refnum))
+                            {
+                                if file.loaded.get(&(res_type, res_id)).copied() == Some(old_ptr) {
+                                    file.loaded.insert((res_type, res_id), ptr);
+                                }
+                                for ((kind, _), (id, named_ptr)) in &mut file.named {
+                                    if *kind == res_type && *id == res_id && *named_ptr == old_ptr {
+                                        *named_ptr = ptr;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
             self.segment_map.insert(state.seg_num, ptr);
             super::dispatch::record_segment_base(state.seg_num, ptr);
         }
-        self.finish_loadseg(bus, cpu, state.seg_num, Some(state.entry_addr), false)
+        self.finish_loadseg(
+            bus,
+            cpu,
+            state.seg_num,
+            Some(state.entry_addr),
+            false,
+            false,
+        )
     }
 
     fn finish_loadseg<C: CpuOps>(
@@ -644,6 +686,7 @@ impl super::TrapDispatcher {
         seg_num: i16,
         entry_addr: Option<u32>,
         refresh_from_resource: bool,
+        bind_direct_segment: bool,
     ) -> Result<()> {
         let trace_loadseg = trace_loadseg_enabled();
         let existing_seg_addr = self.segment_map.get(&seg_num).copied();
@@ -663,6 +706,18 @@ impl super::TrapDispatcher {
         if let Some(seg_addr) = seg_addr {
             if refresh_from_resource && existing_seg_addr.is_some() {
                 self.refresh_segment_from_resource(bus, seg_num, seg_addr, trace_loadseg);
+            }
+            let image_allocation = self
+                .resource_backing_data
+                .get(&(0, *b"CODE", seg_num))
+                .and_then(|data| u32::try_from(data.len()).ok())
+                .is_some_and(|size| bus.can_adopt_reserved_image_allocation(seg_addr, size));
+            if bind_direct_segment
+                && existing_seg_addr.is_some()
+                && bus.get_alloc_size(seg_addr).is_none()
+                && image_allocation
+            {
+                self.bind_application_code_handles(bus, &[seg_num]);
             }
 
             let segment_header =
@@ -843,6 +898,13 @@ impl super::TrapDispatcher {
         self.update_handle_state_bits(handle, |_| Some(initial));
     }
 
+    fn should_defer_resource_lookup(&self, bus: &MacMemoryBus) -> bool {
+        matches!(
+            self.current_trap_word & !0x0400,
+            0xA9A0 | 0xA9A1 | 0xA99D | 0xA81F | 0xA820 | 0xA80E | 0xA80C
+        ) && self.native_trap_handler(bus, 0xA0FC).is_some()
+    }
+
     pub(crate) fn get_or_create_resource_handle_in_file(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -878,6 +940,7 @@ impl super::TrapDispatcher {
                     }
                     if bus.read_long(handle) == 0
                         && (Self::resource_loading_enabled(bus) || recorded_resident)
+                        && !(self.should_defer_resource_lookup(bus) && !recorded_resident)
                     {
                         bus.write_long(handle, existing_ptr);
                         if existing_ptr != 0 {
@@ -908,7 +971,8 @@ impl super::TrapDispatcher {
         // an empty handle (master pointer NIL) for resource data that is not
         // already in memory. Keep the true data pointer in loaded_handles so
         // LoadResource can populate the master pointer later.
-        let materialize = Self::resource_loading_enabled(bus) || recorded_resident;
+        let materialize = (Self::resource_loading_enabled(bus) || recorded_resident)
+            && !(self.should_defer_resource_lookup(bus) && !recorded_resident);
         bus.write_long(handle, if materialize { ptr } else { 0 });
         self.with_resource_manager_mut(|resource_manager| {
             resource_manager
@@ -1877,33 +1941,47 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         handle: u32,
         result_sp: Option<u32>,
-    ) {
+        force_load: bool,
+    ) -> bool {
         if handle == 0 || bus.read_word(0x0A60) != 0 {
-            return;
+            return false;
         }
         let Some(handler) = self.native_trap_handler(bus, 0xA0FC) else {
-            return;
+            return false;
         };
         let Some((reference, map_handle, temporary_map)) = self.checkload_reference(bus, handle)
         else {
-            return;
+            return false;
         };
         let trampoline = if let Some(addr) = self.resource_checkload_trampoline {
             addr
         } else {
             let addr = bus.alloc(8);
+            if addr == 0 {
+                if let Some((map, map_handle)) = temporary_map {
+                    bus.free(map_handle);
+                    bus.free(map);
+                }
+                return false;
+            }
             bus.write_word(addr, 0x303C); // MOVE.W #sentinel,D0
             bus.write_word(addr + 2, super::dispatch::RESOURCE_CHECKLOAD_SENTINEL);
             bus.write_word(addr + 4, 0xA816); // Pack8 continuation
             self.resource_checkload_trampoline = Some(addr);
             addr
         };
+        let res_load_before = force_load.then(|| {
+            let old = bus.read_byte(addr::RES_LOAD);
+            bus.write_byte(addr::RES_LOAD, 0xFF);
+            old
+        });
         self.resource_checkload_stack
             .push(super::dispatch::ResourceCheckLoadState {
                 return_pc: cpu.read_reg(Register::PC),
                 result_sp,
                 reference,
                 temporary_map,
+                res_load_before,
                 d_regs: Self::save_d_regs(cpu),
                 a_regs: Self::save_a_regs(cpu),
             });
@@ -1913,6 +1991,22 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A2, reference);
         cpu.write_reg(Register::A4, map_handle);
         cpu.write_reg(Register::PC, handler);
+        true
+    }
+
+    pub(crate) fn reset_resource_checkload_for_launch(&mut self, bus: &mut MacMemoryBus) {
+        while let Some(state) = self.resource_checkload_stack.pop() {
+            if let Some(old) = state.res_load_before {
+                bus.write_byte(addr::RES_LOAD, old);
+            }
+            if let Some((map, map_handle)) = state.temporary_map {
+                bus.free(map_handle);
+                bus.free(map);
+            }
+        }
+        if let Some(trampoline) = self.resource_checkload_trampoline.take() {
+            bus.free(trampoline);
+        }
     }
 
     pub(crate) fn resume_resource_checkload<C: CpuOps>(
@@ -1925,6 +2019,9 @@ impl super::TrapDispatcher {
             .pop()
             .expect("CheckLoad continuation without saved call");
         let handle = bus.read_long(state.reference + 8);
+        if let Some(old) = state.res_load_before {
+            bus.write_byte(addr::RES_LOAD, old);
+        }
         Self::restore_regs(cpu, state.d_regs, state.a_regs);
         if let Some(result_sp) = state.result_sp {
             bus.write_long(result_sp, handle);
@@ -2382,6 +2479,16 @@ impl super::TrapDispatcher {
             (true, 0x1A2) => {
                 let sp = cpu.read_reg(Register::A7);
                 let handle = bus.read_long(sp);
+                if handle != 0
+                    && bus.read_long(handle) == 0
+                    && self.loaded_handles.contains_key(&handle)
+                    && matches!(self.current_trap_word, 0xA9A2 | 0xADA2)
+                    && self.native_trap_handler(bus, 0xA0FC).is_some()
+                {
+                    bus.write_word(0x0A60, 0);
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
+                }
                 if handle == 0 {
                     bus.write_word(0x0A60, Self::RES_NOT_FOUND as u16);
                 } else if let Some((ptr, res_type, res_id)) =
@@ -3105,7 +3212,7 @@ impl super::TrapDispatcher {
 
                 if refresh_from_resource {
                     self.preserve_auto_pop_pc_once = auto_pop_old_trap;
-                    self.finish_loadseg(bus, cpu, seg_num, entry_addr, true)
+                    self.finish_loadseg(bus, cpu, seg_num, entry_addr, true, true)
                 } else if let Some(entry_addr) = entry_addr {
                     if self.maybe_inject_native_getresource_for_loadseg(
                         bus,
@@ -3116,10 +3223,10 @@ impl super::TrapDispatcher {
                     ) {
                         Ok(())
                     } else {
-                        self.finish_loadseg(bus, cpu, seg_num, Some(entry_addr), false)
+                        self.finish_loadseg(bus, cpu, seg_num, Some(entry_addr), false, true)
                     }
                 } else {
-                    let result = self.finish_loadseg(bus, cpu, seg_num, None, false);
+                    let result = self.finish_loadseg(bus, cpu, seg_num, None, false, true);
                     if result.is_ok() {
                         if let Some(reentry) = saved_gateway_reentry {
                             self.preserve_auto_pop_pc_once = true;
