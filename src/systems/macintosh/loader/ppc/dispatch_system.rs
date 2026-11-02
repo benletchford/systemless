@@ -706,8 +706,15 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                     let _ = memory.write_u32_be(psn + 4, current.low);
                     PpcImportAction::Return(0)
                 }
-                SingleProcessEnumeration::End | SingleProcessEnumeration::Invalid => {
+                SingleProcessEnumeration::End => {
+                    // Inside Macintosh: Processes, GetNextProcess: the end
+                    // of the list returns kNoProcess with procNotFound.
+                    let _ = memory.write_u32_be(psn, ProcessSerialNumber::NONE.high);
+                    let _ = memory.write_u32_be(psn + 4, ProcessSerialNumber::NONE.low);
                     PpcImportAction::Return(ppc_i16_result(PPC_PROC_NOT_FOUND_ERR))
+                }
+                SingleProcessEnumeration::Invalid => {
+                    PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR))
                 }
             }
         }
