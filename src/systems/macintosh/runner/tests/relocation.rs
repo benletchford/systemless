@@ -234,3 +234,80 @@ fn invalid_retro68_relocations_do_not_partially_modify_memory() {
     );
     assert_eq!(runner.bus.read_long(target), 0x20);
 }
+
+#[test]
+fn prepatched_far_jump_table_segments_have_recoverable_handles() {
+    let mut code0 = minimal_code0(48, 0x2000, 16, 32);
+    code0[16..24].copy_from_slice(&[0x00, 0x01, 0xA9, 0xF0, 0x00, 0x00, 0x00, 0x28]);
+    code0[24..32].copy_from_slice(&[0x00, 0x02, 0xA9, 0xF0, 0x00, 0x00, 0x00, 0x28]);
+    let mut code1 = vec![0u8; 0x30];
+    let mut code2 = vec![0u8; 0x30];
+    code1[..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+    code2[..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+    code1[0x28..0x2A].copy_from_slice(&[0x4E, 0x75]);
+    code2[0x28..0x2A].copy_from_slice(&[0x4E, 0x75]);
+    let bytes = make_resource_fork_bytes(&[
+        (*b"CODE", 0, &code0),
+        (*b"CODE", 1, &code1),
+        (*b"CODE", 2, &code2),
+    ]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&fork).unwrap();
+    let jt = app.a5_base + app.code0_header.jump_table_offset;
+    assert_eq!(runner.bus.read_word(jt + 10), 0x4EF9);
+    assert_eq!(runner.bus.read_long(jt + 12), app.segment_bases[&2] + 0x28);
+    runner.init_app(&app);
+    let ptr = app.segment_bases[&2];
+    runner.m68k.cpu.write_reg(Register::A0, ptr);
+    runner
+        .dispatcher
+        .dispatch(0xA128, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    let handle = runner.m68k.cpu.read_reg(Register::A0);
+    assert_ne!(
+        handle, 0,
+        "prepatched executable code must have a recoverable handle"
+    );
+    assert_eq!(runner.bus.read_long(handle), ptr);
+}
+
+#[test]
+fn dynamically_loaded_near_segment_has_recoverable_handle() {
+    let mut code0 = minimal_code0(48, 0x2000, 16, 32);
+    code0[16..24].copy_from_slice(&[0, 0, 0x3F, 0x3C, 0, 1, 0xA9, 0xF0]);
+    code0[24..32].copy_from_slice(&[0, 0, 0x3F, 0x3C, 0, 2, 0xA9, 0xF0]);
+    let code1 = [0, 0, 0, 1, 0x4E, 0x75];
+    let code2 = [0, 8, 0, 1, 0x4E, 0x75];
+    let bytes = make_resource_fork_bytes(&[
+        (*b"CODE", 0, &code0),
+        (*b"CODE", 1, &code1),
+        (*b"CODE", 2, &code2),
+    ]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = runner.load_app(&fork).unwrap();
+    let jt = app.a5_base + app.code0_header.jump_table_offset;
+    let ptr = app.segment_bases[&2];
+    runner.init_app(&app);
+    let sp = runner.m68k.cpu.read_reg(Register::A7) - 2;
+    runner.bus.write_word(sp, 2);
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.m68k.cpu.write_reg(Register::PC, jt + 16);
+    runner
+        .dispatcher
+        .dispatch(0xA9F0, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    assert_eq!(runner.bus.read_word(jt + 10), 0x4EF9);
+    runner.m68k.cpu.write_reg(Register::A0, ptr);
+    runner
+        .dispatcher
+        .dispatch(0xA128, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    let handle = runner.m68k.cpu.read_reg(Register::A0);
+    assert_ne!(
+        handle, 0,
+        "loaded near segment must have a recoverable handle"
+    );
+    assert_eq!(runner.bus.read_long(handle), ptr);
+}

@@ -1088,6 +1088,7 @@ pub(crate) struct ResourceCheckLoadState {
     pub result_sp: Option<u32>,
     pub reference: u32,
     pub temporary_map: Option<(u32, u32)>,
+    pub res_load_before: Option<u8>,
     pub d_regs: [u32; 8],
     pub a_regs: [u32; 8],
 }
@@ -4620,7 +4621,11 @@ impl TrapDispatcher {
     /// Give loaded application CODE the same master pointers and allocation
     /// metadata used by the Resource Manager. Executing code may recover and
     /// detach its own handle before installing a segment decompressor.
-    pub(crate) fn bind_application_code_handles(&mut self, bus: &mut MacMemoryBus) {
+    pub(crate) fn bind_application_code_handles(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resident_segments: &[i16],
+    ) {
         let mut segments: Vec<_> = self
             .segment_map
             .iter()
@@ -4628,6 +4633,9 @@ impl TrapDispatcher {
             .collect();
         segments.sort_unstable_by_key(|&(id, _)| id);
         for (id, ptr) in segments {
+            if !resident_segments.is_empty() && !resident_segments.contains(&id) {
+                continue;
+            }
             let key = (0, *b"CODE", id);
             let Some(size) = self
                 .resource_backing_data
@@ -8961,11 +8969,33 @@ impl TrapDispatcher {
                 0x1A0 | 0x1A1 | 0x19D | 0x01F | 0x020 | 0x00E | 0x00C => {
                     Some((bus.read_long(result_sp), Some(result_sp)))
                 }
-                0x1A2 => Some((bus.read_long(sp_before), None)),
+                0x1A2
+                    if bus.read_long(sp_before) != 0
+                        && bus.read_long(bus.read_long(sp_before)) == 0 =>
+                {
+                    Some((bus.read_long(sp_before), None))
+                }
                 _ => None,
             };
             if let Some((handle, result_sp)) = resource_result {
-                self.maybe_inject_resource_checkload(bus, cpu, handle, result_sp);
+                let force_load = trap_num == 0x1A2;
+                if !self.maybe_inject_resource_checkload(bus, cpu, handle, result_sp, force_load)
+                    && handle != 0
+                    && bus.read_long(handle) == 0
+                    && (force_load || Self::resource_loading_enabled(bus))
+                {
+                    let sp = cpu.read_reg(Register::A7);
+                    bus.write_long(sp.wrapping_sub(4), handle);
+                    cpu.write_reg(Register::A7, sp.wrapping_sub(4));
+                    let previous_trap = self.current_trap_word;
+                    self.current_trap_word = 0xA0FC;
+                    let fallback = self.dispatch_resource(true, 0x1A2, cpu, bus);
+                    self.current_trap_word = previous_trap;
+                    cpu.write_reg(Register::A7, sp);
+                    if let Some(Err(err)) = fallback {
+                        return Err(err);
+                    }
+                }
             }
         }
 

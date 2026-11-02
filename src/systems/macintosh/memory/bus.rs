@@ -2907,6 +2907,11 @@ impl MacMemoryBus {
             .allocate(size, alignment, self.synthetic_floor)
     }
 
+    pub(crate) fn can_adopt_reserved_image_allocation(&self, address: u32, size: u32) -> bool {
+        self.heap_allocator
+            .can_adopt_reserved_image_allocation(address, size)
+    }
+
     /// Publish allocation metadata for a reserved direct-loaded CODE block.
     pub(crate) fn adopt_reserved_allocation(&self, address: u32, size: u32) {
         self.heap_allocator.adopt_reserved_allocation(address, size);
