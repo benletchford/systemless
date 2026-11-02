@@ -8,6 +8,8 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
+- **3 November 2026 — Yipe II and III public replays:** the human-published v0.108.0 website serves both approved routes and their pinned original archives; fresh archive and screenshot downloads match the recorded hashes and sizes. Public worker/WebGL input and matched idle replays show II's avatar move one tile right and III's one tile left. All four 20-second pacing checks pass with no console errors. [Production evidence and limits](https://github.com/benletchford/systemless/issues/5530). This verifies **two distinct existing catalogue games live**, without adding source records. Yipe I's distribution basis, full playthroughs, saves and audio fidelity remain unverified.
+
 - **3 November 2026 — Tomb Raider Gold public replay:** [the released v0.107.0 route](https://systemless.org/tomb-raider-gold-demo/) serves the pinned original archive; an independent public GET matches its 2,724,762 bytes and SHA-256. Fresh public-origin worker/WebGL runs reached the 3D level. Forward input moved Lara into the next chamber, while a matched no-input control remained in the opening corridor; 20-second samples met the pacing thresholds with no console errors. [Evidence and limits](https://github.com/benletchford/systemless/issues/5410). This verifies **one previously staged distinct game live**; no source record was added. Full level completion, saves and audio fidelity remain unverified.
 
 - **30 October 2026 — Enemy Bomber Balloons live verification:** this existing baseline game has an exact original-archive receipt and unchanged-package distribution terms, bounded native movement and firing with a matched no-fire control, and inspected production input and content-only screenshot evidence. The released `v0.101.0` page delivered the same original archive and a quiet 20-second active-play sample passed at **60.154 guest ticks/sec**. [Production evidence](https://github.com/benletchford/systemless/issues/3725#issuecomment-6519611391). This verifies **one existing distinct game live**; it adds no source record or new intake game. The rest of the baseline live count, full-game completion and audio fidelity remain unverified.
@@ -628,7 +630,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 541 | Vic Kombat | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 542 | War of Flowers | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 543 | X-Moto | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 544 | Yipe III | Original complete unchanged-package grant | Author original 1.4; five files/ten forks and Finder metadata matched | Town movement with matched idle control | No cfrg; nine CODE resources, empty data fork | Repaired preview: portraits, movement and pacing pass | Promoted hosted assets hash-verified; launch approval depends on [#5537](https://github.com/benletchford/systemless/pull/5537) | Pending |
+| 544 | Yipe III | Original complete unchanged-package grant | Author original 1.4; five files/ten forks and Finder metadata matched | Town movement with matched idle control | No cfrg; nine CODE resources, empty data fork | Public movement and pacing verified; portraits approved | Assets promoted; launch approval [#5538](https://github.com/benletchford/systemless/pull/5538) merged | [Live v0.108.0](https://systemless.org/yipe-iii/) |
 | 545 | Zauron | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 546 | Adventures of Sean | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 547 | Barney Blaster | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
@@ -721,7 +723,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 634 | NetRPG | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 635 | Otello | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 636 | PC Invaders | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 637 | Quest of Yipe! II | Original complete unchanged-package grant | Author original 1.05; four files/eight forks and Finder metadata matched | Town movement with matched idle control | No cfrg; eight CODE resources, empty data fork | Repaired preview: portraits, movement and pacing pass | Promoted hosted assets hash-verified; launch approval depends on [#5537](https://github.com/benletchford/systemless/pull/5537) | Pending |
+| 637 | Quest of Yipe! II | Original complete unchanged-package grant | Author original 1.05; four files/eight forks and Finder metadata matched | Town movement with matched idle control | No cfrg; eight CODE resources, empty data fork | Public movement and pacing verified; portraits approved | Assets promoted; launch approval [#5538](https://github.com/benletchford/systemless/pull/5538) merged | [Live v0.108.0](https://systemless.org/quest-of-yipe-ii/) |
 | 638 | Reckless Drivin' | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 639 | Same | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 640 | Techoids | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
