@@ -267,7 +267,23 @@ impl DesktopSaveStore {
             if component.is_empty() {
                 continue;
             }
-            dir.push(encode_host_component(component));
+            // Store metadata and the macOS viewport cache occupy root files.
+            // Escape their guest names injectively: a literal '%' already
+            // escapes to '%25', so it cannot alias this reserved spelling.
+            // Include trailing-dot/space spellings that Windows may normalize.
+            if !added
+                && matches!(
+                    component
+                        .trim_end_matches(|ch| ch == '.' || ch == ' ')
+                        .to_ascii_lowercase()
+                        .as_str(),
+                    "manifest.json" | "viewport.json"
+                )
+            {
+                dir.push(percent_encode_all(component.as_bytes()));
+            } else {
+                dir.push(encode_host_component(component));
+            }
             added = true;
         }
         if !added {
@@ -452,7 +468,9 @@ fn prepare_store(game_path: &Path, data_dir: &Path, import: Option<&Path>) -> io
                 ));
             }
         }
-        let source_digest = if source.join("manifest.json").try_exists()? {
+        // In legacy stores a guest file called manifest.json is a directory,
+        // not a store manifest. Only the new format has a file at this path.
+        let source_digest = if source.join("manifest.json").is_file() {
             Some(read_manifest(&source)?.sha256)
         } else {
             None
@@ -1045,5 +1063,51 @@ mod tests {
         write_snapshot(&root, &snapshot("Game/Pilot"));
         assert_eq!(load_saved_files_from_root(&root).unwrap().len(), 1);
         assert!(!source.join(".systemless").exists());
+    }
+    #[test]
+    fn guest_filenames_cannot_collide_with_store_metadata_or_viewport_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let root = prepare_store(&game, &temp.path().join("data"), None).unwrap();
+        fs::write(root.join("viewport.json"), b"viewport").unwrap();
+        for name in ["manifest.json", "manifest.json. ", "viewport.json"] {
+            write_snapshot(&root, &snapshot(name));
+        }
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![
+                snapshot("manifest.json"),
+                snapshot("manifest.json. "),
+                snapshot("viewport.json")
+            ]
+        );
+        assert_eq!(read_manifest(&root).unwrap().version, 1);
+        assert_eq!(fs::read(root.join("viewport.json")).unwrap(), b"viewport");
+    }
+
+    #[test]
+    fn legacy_guest_manifest_filename_is_migrated_as_a_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Game.sit");
+        fs::write(&game, b"archive").unwrap();
+        let legacy = legacy_root_for_game_path(&game);
+        write_snapshot(&legacy, &snapshot("manifest.json"));
+        // Recreate the legacy format, which did not reserve this component.
+        fs::rename(
+            legacy.join(percent_encode_all(b"manifest.json")),
+            legacy.join("manifest.json"),
+        )
+        .unwrap();
+        let root = prepare_store(&game, &temp.path().join("data"), None).unwrap();
+        assert_eq!(
+            load_saved_files_from_root(&root).unwrap(),
+            vec![snapshot("manifest.json")]
+        );
+        assert_eq!(
+            load_saved_files_from_root(&legacy).unwrap(),
+            vec![snapshot("manifest.json")]
+        );
+        assert_eq!(read_manifest(&root).unwrap().imports[0].sha256, None);
     }
 }
