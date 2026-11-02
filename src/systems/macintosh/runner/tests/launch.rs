@@ -352,6 +352,7 @@ fn init_ppc_app_merges_detached_events_then_attaches_the_process_queue() {
             .process_context
             .shared_event_queue()
             .push_back(QueuedEvent {
+                delivery_id: None,
                 what: 3,
                 message: 0x1111,
                 when: 0,
@@ -368,6 +369,7 @@ fn init_ppc_app_merges_detached_events_then_attaches_the_process_queue() {
         let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
         ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
         ppc_app.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x2222,
             when: 0,
@@ -408,6 +410,7 @@ fn init_ppc_app_merges_detached_events_then_attaches_the_process_queue() {
             .process_context
             .shared_event_queue()
             .push_back(QueuedEvent {
+                delivery_id: None,
                 what: 3,
                 message: 0x3333,
                 when: 0,
@@ -420,6 +423,7 @@ fn init_ppc_app_merges_detached_events_then_attaches_the_process_queue() {
         let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
         ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
         ppc_app.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1,
             message: 0x4444,
             when: 0,

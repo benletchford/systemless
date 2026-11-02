@@ -736,6 +736,7 @@ mod tests {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.dispatcher.set_sent_open_app_event_for_test(true);
         runner.dispatcher.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 1, message: 0, when: 0, where_v: 10, where_h: 20, modifiers: 0,
         });
         assert!(runner.dispatcher.peek_toolbox_event(&runner.bus, u16::MAX).is_some());

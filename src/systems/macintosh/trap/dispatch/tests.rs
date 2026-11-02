@@ -3214,6 +3214,7 @@
         let mut context = ProcessContext::default();
         dispatcher.attach_unconverted_process_services(&mut context);
         context.shared_event_queue().push_back(QueuedEvent {
+        delivery_id: None,
             what: 1,
             message: 0x1111,
             when: 0,
@@ -3224,6 +3225,7 @@
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
                 what: 2,
                 message: 0x2222,
                 when: 0,
@@ -3451,6 +3453,7 @@
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.with_process_state(|disp| {
                 disp.event_queue.push_back(QueuedEvent {
+                delivery_id: None,
                     what: 1,
                     message: 0x3333,
                     when: 0,

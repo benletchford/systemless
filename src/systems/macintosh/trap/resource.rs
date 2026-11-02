@@ -6169,8 +6169,8 @@ impl super::TrapDispatcher {
                         // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
                         // Processes 1994, p. 2-21
                         let psn_ptr = bus.read_long(sp);
-                        bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high); // highLongOfPSN
-                        bus.write_long(psn_ptr + 4, ProcessSerialNumber::CURRENT.low); // lowLongOfPSN = kCurrentProcess
+                        bus.write_long(psn_ptr, ProcessSerialNumber::ACTUAL.high); // highLongOfPSN
+                        bus.write_long(psn_ptr + 4, ProcessSerialNumber::ACTUAL.low); // lowLongOfPSN
                         bus.write_word(sp + 4, 0); // noErr
                         cpu.write_reg(Register::A7, sp + 4);
                         Ok(())
@@ -6218,8 +6218,8 @@ impl super::TrapDispatcher {
                         // Write result word at sp+8; A7 = sp+8 so caller's MOVE.W (SP)+, D0
                         // consumes the result and restores the pre-call stack pointer.
                         let psn_ptr = bus.read_long(sp + 4);
-                        bus.write_long(psn_ptr, ProcessSerialNumber::CURRENT.high);
-                        bus.write_long(psn_ptr.wrapping_add(4), ProcessSerialNumber::CURRENT.low);
+                        bus.write_long(psn_ptr, ProcessSerialNumber::ACTUAL.high);
+                        bus.write_long(psn_ptr.wrapping_add(4), ProcessSerialNumber::ACTUAL.low);
                         bus.write_word(sp + 8, 0);
                         cpu.write_reg(Register::A7, sp + 8);
                         Ok(())
@@ -6275,8 +6275,8 @@ impl super::TrapDispatcher {
                             Self::write_pstring(bus, app_spec_ptr + 6, &app_name);
                         }
 
-                        bus.write_long(info_ptr + 8, ProcessSerialNumber::CURRENT.high); // processNumber.highLongOfPSN
-                        bus.write_long(info_ptr + 12, ProcessSerialNumber::CURRENT.low); // processNumber.lowLongOfPSN
+                        bus.write_long(info_ptr + 8, ProcessSerialNumber::ACTUAL.high); // processNumber.highLongOfPSN
+                        bus.write_long(info_ptr + 12, ProcessSerialNumber::ACTUAL.low); // processNumber.lowLongOfPSN
                         bus.write_long(info_ptr + 16, app.file_type);
                         bus.write_long(info_ptr + 20, app.creator);
                         bus.write_long(info_ptr + 24, 0); // processMode
@@ -6337,7 +6337,7 @@ impl super::TrapDispatcher {
                             bus.read_long(psn2_ptr),
                             bus.read_long(psn2_ptr + 4),
                         );
-                        let same = psn1 == psn2;
+                        let same = psn1 == psn2 || (psn1.is_current() && psn2.is_current());
                         if result_ptr != 0 {
                             bus.write_byte(result_ptr, if same { 1 } else { 0 });
                         }

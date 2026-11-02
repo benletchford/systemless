@@ -2664,3 +2664,317 @@ fn native_control_executes_original_classic_definition_and_returns_to_caller() {
     assert_eq!(*native.current_gdevice, original_device);
     assert!(native.guest_calls().is_empty());
 }
+
+#[test]
+fn classic_handler_suspends_native_apple_event_through_runner() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    use crate::process_context::ProcessAppleEventHandler;
+
+    for duplicate in [false, true] {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"AEProcessAppleEvent")).unwrap();
+        let event_record = PPC_DATA_BASE + 0x2800;
+        native.memory.add_region(event_record, vec![0; 16]);
+        native
+            .memory
+            .write_u16_be(event_record, PPC_HIGH_LEVEL_EVENT)
+            .unwrap();
+        native
+            .memory
+            .write_u32_be(event_record + 2, PPC_CORE_EVENT_CLASS)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 10, (PPC_OPEN_APPLICATION_EVENT >> 16) as u16)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
+            .unwrap();
+        native.cpu.gpr[3] = event_record;
+        let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&LoadedApp::from_ppc(native));
+        let callback = 0x0002_2000;
+        let mut words: Vec<u16> = if duplicate {
+            vec![
+                0x558f, 0x2f2f, 0x000e, 0x2f3c, 0x0002, 0x0000, 0x303c, 0x0405, 0xa816, 0x548f,
+                0x558f, 0x2f2f, 0x000a, 0x2f3c, 0x0002, 0x0008, 0x303c, 0x0405, 0xa816, 0x548f,
+                0x558f, 0x2f3c, 0x0002, 0x0008, 0x2f3c, 0x2d2d, 0x2d2d, 0x2f3c, 0x5445, 0x5854,
+                0x2f3c, 0x0002, 0x0020, 0x2f3c, 0x0000, 0x0004, 0x303c, 0x0a0f, 0xa816, 0x548f,
+                0x558f, 0x2f3c, 0x0002, 0x0000, 0x303c, 0x022b, 0xa816, 0x548f, 0x3f7c, 0x0000,
+                0x0010, 0x4e74, 0x000c,
+            ]
+        } else {
+            vec![
+                0x558f, 0x2f2f, 0x000e, 0x303c, 0x022b, 0xa816, 0x548f, 0x3f7c, 0x0000, 0x0010,
+                0x4e74, 0x000c,
+            ]
+        };
+        let return_index = words.iter().position(|word| *word == 0x3f7c).unwrap();
+        words.splice(
+            return_index..return_index,
+            [
+                0x558f, 0x2f3c, 0x0002, 0x0030, 0x303c, 0x021a, 0xa816, 0x548f, 0x558f, 0x2f2f,
+                0x000e, 0x303c, 0x022c, 0xa816, 0x548f,
+            ],
+        );
+        for (index, word) in words.into_iter().enumerate() {
+            runner.bus.write_word(callback + index as u32 * 2, word);
+        }
+        if duplicate {
+            runner
+                .bus
+                .write_long(0x0002_0020, u32::from_be_bytes(*b"done"));
+        }
+        runner.dispatcher.ae_handlers.install(
+            false,
+            PPC_CORE_EVENT_CLASS,
+            PPC_OPEN_APPLICATION_EVENT,
+            ProcessAppleEventHandler {
+                procedure: crate::guest_procedure::GuestProcedure::raw_m68k(callback),
+                refcon: 0,
+            },
+        );
+        let initial_handles = runner.native.application().unwrap().handles();
+        let (_, running) = runner.run_steps(1024, None);
+        assert!(!running);
+        let native = runner.native.application_mut().expect("native application");
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert_eq!(native.apple_events.suspended_dispatch_count(), 1);
+        assert!(native.guest_calls().is_empty());
+        let descriptors = native.apple_events.suspended_descriptor_pair().unwrap();
+        let original_handle = native.memory.read_u32_be(descriptors + 4).unwrap();
+        assert_eq!(runner.bus.read_long(0x0002_0030), PPC_CORE_EVENT_CLASS);
+        assert_eq!(runner.bus.read_long(0x0002_0034), original_handle);
+        if duplicate {
+            let reply_handle = runner.bus.read_long(0x0002_000c);
+            let descriptor = runner
+                .process_context
+                .apple_event_descriptors()
+                .backing
+                .get(&reply_handle)
+                .unwrap();
+            assert_eq!(
+                descriptor.fields[&u32::from_be_bytes(*b"----")].data,
+                b"done"
+            );
+        }
+        let native = runner.native.application_mut().unwrap();
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::GetTheCurrentEvent,
+        );
+        native.cpu.gpr[3] = 0x0002_0040;
+        runner.halted = false;
+        let (_, running) = runner.run_steps(1024, None);
+        assert!(!running);
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert_eq!(
+            native.memory.read_u32_be(0x0002_0040),
+            Some(PPC_CORE_EVENT_CLASS)
+        );
+        assert_eq!(
+            native.memory.read_u32_be(0x0002_0044),
+            Some(original_handle)
+        );
+        if !duplicate {
+            let native = runner.native.application_mut().unwrap();
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target =
+                PpcImportDispatcherTarget::AppleEventCompatibility(
+                    PpcAppleEventCompatibilityOperation::ResumeTheCurrentEvent,
+                );
+            native.cpu.gpr[3..7].copy_from_slice(&[descriptors, descriptors + 8, u32::MAX, 0]);
+            runner.halted = false;
+            let (_, running) = runner.run_steps(1024, None);
+            assert!(!running);
+            let native = runner.native.application().unwrap();
+            assert_eq!(native.cpu.gpr[3], 0);
+            assert_eq!(native.apple_events.suspended_dispatch_count(), 1);
+            assert!(native.guest_calls().is_empty());
+        }
+        let native = runner.native.application_mut().unwrap();
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AppleEventCompatibility(
+            PpcAppleEventCompatibilityOperation::ResumeTheCurrentEvent,
+        );
+        let event = if duplicate { 0x0002_0000 } else { descriptors };
+        let reply = if duplicate {
+            0x0002_0008
+        } else {
+            descriptors + 8
+        };
+        native.cpu.gpr[3..7].copy_from_slice(&[event, reply, 0, 0]);
+        runner.halted = false;
+        let (_, running) = runner.run_steps(1024, None);
+        assert!(!running);
+        let native = runner.native.application().unwrap();
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert_eq!(native.apple_events.suspended_dispatch_count(), 0);
+        assert!(native.guest_calls().is_empty());
+        if duplicate {
+            for descriptor in [event, reply] {
+                let native = runner.native.application_mut().unwrap();
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target =
+                    PpcImportDispatcherTarget::AppleEventCompatibility(
+                        PpcAppleEventCompatibilityOperation::DisposeDesc,
+                    );
+                native.cpu.gpr[3] = descriptor;
+                runner.halted = false;
+                let (_, running) = runner.run_steps(1024, None);
+                assert!(!running);
+                assert_eq!(runner.native.application().unwrap().cpu.gpr[3], 0);
+            }
+        }
+        assert_eq!(
+            runner.native.application().unwrap().handles(),
+            initial_handles
+        );
+    }
+}
+
+#[test]
+fn filtered_wait_survives_68k_redispatch_and_resuspension() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    use crate::process_context::{ProcessAeDescriptor, ProcessAppleEventHandler};
+
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"AESend")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    native.memory.add_region(scratch, vec![0; 0x1000]);
+    native
+        .memory
+        .write_u32_be(scratch, PPC_CORE_EVENT_CLASS)
+        .unwrap();
+    native.memory.write_u32_be(scratch + 4, 0).unwrap();
+    native
+        .memory
+        .write_u32_be(scratch + 0x80, scratch + 0x200)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(scratch + 0x84, native.rtoc)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(scratch + 0x200, 0x3860_0001)
+        .unwrap();
+    native
+        .memory
+        .write_u32_be(scratch + 0x204, 0x4e80_0020)
+        .unwrap();
+    native.cpu.gpr[3..10].copy_from_slice(&[
+        scratch,
+        scratch + 8,
+        3,
+        0,
+        u32::MAX - 1,
+        0,
+        scratch + 0x80,
+    ]);
+    native.cpu.pc = native.entry_pc;
+    native.cpu.lr = PPC_HALT_PC;
+    let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    let mut descriptor = ProcessAeDescriptor {
+        desc_type: PPC_CORE_EVENT_CLASS,
+        data: b"TESTsend".to_vec(),
+        ..Default::default()
+    };
+    descriptor.attributes.insert(
+        u32::from_be_bytes(*b"addr"),
+        ProcessAeDescriptor {
+            desc_type: u32::from_be_bytes(*b"psn "),
+            data: [0, 0, 0, 0, 0, 0, 1, 0].to_vec(),
+            ..Default::default()
+        },
+    );
+    runner
+        .process_context
+        .apple_event_descriptors()
+        .with_mut(|state| {
+            state.descriptors.insert(scratch, descriptor);
+        });
+    let callback = 0x0002_2000;
+    let words = [
+        0x558fu16, 0x2f2f, 0x000e, 0x303c, 0x022b, 0xa816, 0x548f, 0x3f7c, 0x0000, 0x0010, 0x4e74,
+        0x000c,
+    ];
+    for (index, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(callback + index as u32 * 2, word);
+    }
+    runner.dispatcher.ae_handlers.install(
+        false,
+        u32::from_be_bytes(*b"TEST"),
+        u32::from_be_bytes(*b"send"),
+        ProcessAppleEventHandler {
+            procedure: crate::guest_procedure::GuestProcedure::raw_m68k(callback),
+            refcon: 0,
+        },
+    );
+    for _ in 0..8 {
+        let _ = runner.run_steps(1024, None);
+        if runner
+            .native
+            .application()
+            .unwrap()
+            .apple_events
+            .suspended_dispatch_count()
+            != 0
+        {
+            break;
+        }
+    }
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(
+        native.apple_events.suspended_dispatch_count(),
+        1,
+        "pc={:08x} gpr3={:08x} queue={} halted={}",
+        native.cpu.pc,
+        native.cpu.gpr[3],
+        native.event_queue().len(),
+        runner.halted
+    );
+    assert_eq!(native.memory.read_u32_be(scratch + 12), Some(0));
+    let descriptors = native.apple_events.suspended_descriptor_pair().unwrap();
+    let waiting_cpu = native.cpu.clone();
+    let native = runner.native.application_mut().unwrap();
+    native.cpu.pc = native.entry_pc;
+    native.cpu.lr = PPC_HALT_PC;
+    native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AppleEventCompatibility(
+        PpcAppleEventCompatibilityOperation::ResumeTheCurrentEvent,
+    );
+    native.cpu.gpr[3..7].copy_from_slice(&[descriptors, descriptors + 8, u32::MAX, 0]);
+    runner.halted = false;
+    let (_, running) = runner.run_steps(1024, None);
+    assert!(!running);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.cpu.gpr[3], 0);
+    assert_eq!(native.apple_events.suspended_dispatch_count(), 1);
+    assert_eq!(native.memory.read_u32_be(scratch + 12), Some(0));
+    let native = runner.native.application_mut().unwrap();
+    native.cpu.pc = native.entry_pc;
+    native.cpu.lr = PPC_HALT_PC;
+    native.cpu.gpr[3..7].copy_from_slice(&[descriptors, descriptors + 8, 0, 0]);
+    runner.halted = false;
+    let (_, running) = runner.run_steps(1024, None);
+    assert!(!running);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.cpu.gpr[3], 0);
+    assert_eq!(native.apple_events.suspended_dispatch_count(), 0);
+    native.cpu = waiting_cpu;
+    native.imports[0].dispatcher_target = PpcImportDispatcherTarget::AppleEventCompatibility(
+        PpcAppleEventCompatibilityOperation::Send,
+    );
+    runner.halted = false;
+    let (_, running) = runner.run_steps(1024, None);
+    assert!(!running);
+    let native = runner.native.application_mut().unwrap();
+    assert_eq!(native.cpu.gpr[3], 0);
+    assert_ne!(native.memory.read_u32_be(scratch + 12), Some(0));
+}

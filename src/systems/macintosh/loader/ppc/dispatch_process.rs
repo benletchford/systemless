@@ -63,10 +63,10 @@ fn ppc_get_current_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
         return PPC_PARAM_ERR;
     }
     if memory
-        .write_u32_be(psn_ptr, ProcessSerialNumber::CURRENT.high)
+        .write_u32_be(psn_ptr, ProcessSerialNumber::ACTUAL.high)
         .is_none()
         || memory
-            .write_u32_be(psn_ptr + 4, ProcessSerialNumber::CURRENT.low)
+            .write_u32_be(psn_ptr + 4, ProcessSerialNumber::ACTUAL.low)
             .is_none()
     {
         return PPC_PARAM_ERR;
@@ -120,7 +120,10 @@ fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let first = ProcessSerialNumber::new(first_high, first_low);
     let second = ProcessSerialNumber::new(second_high, second_low);
     if memory
-        .write_u8(result_ptr, u8::from(first == second))
+        .write_u8(
+            result_ptr,
+            u8::from(first == second || (first.is_current() && second.is_current())),
+        )
         .is_none()
     {
         return PPC_PARAM_ERR;
@@ -232,10 +235,10 @@ fn ppc_get_process_information(
     let process_size = stack_top - PPC_CODE_BASE;
     let process_free_mem = process_size / 2;
     if memory
-        .write_u32_be(info_ptr + 8, ProcessSerialNumber::CURRENT.high)
+        .write_u32_be(info_ptr + 8, ProcessSerialNumber::ACTUAL.high)
         .is_none()
         || memory
-            .write_u32_be(info_ptr + 12, ProcessSerialNumber::CURRENT.low)
+            .write_u32_be(info_ptr + 12, ProcessSerialNumber::ACTUAL.low)
             .is_none()
         || memory.write_u32_be(info_ptr + 16, app.file_type).is_none()
         || memory.write_u32_be(info_ptr + 20, app.creator).is_none()

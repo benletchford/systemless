@@ -250,6 +250,7 @@ fn start_nav_put_file(loaded: &mut PpcLoadedApp, options: u32, reply: u32) {
 
 fn key_event(message: u32) -> PpcQueuedEvent {
     PpcQueuedEvent {
+        delivery_id: None,
         what: 3,
         message,
         when: 0,

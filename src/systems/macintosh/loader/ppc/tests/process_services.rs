@@ -47,6 +47,7 @@ fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation(
     assert!(!context.event_queue().menu_bar_is_invalid());
 
     classic.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0x1111,
         when: 0,
@@ -55,6 +56,7 @@ fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation(
         modifiers: 0,
     });
     native.event_queue.push_back(QueuedEvent {
+        delivery_id: None,
         what: 2,
         message: 0x2222,
         when: 0,
@@ -200,6 +202,164 @@ fn attached_event_launch_state_shares_eventavail_peek_without_duplicate_oapp() {
         .apple_events
         .apple_event_launch_state
         .is_open_application_event_sent());
+}
+
+#[test]
+fn classic_launch_peek_preserves_identity_for_native_delivery() {
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let pef = synthetic_pef_with_import(b"EventAvail");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let low_memory = classic_bus
+        .shared_ram_region(0, 0x0010_0000)
+        .expect("classic adapter owns low memory");
+    context.attach_memory(0, low_memory, &mut native.memory);
+
+    let native_event = PPC_DATA_BASE + 0x3100;
+    native.memory.add_region(native_event, vec![0; 16]);
+    let classic_event = 0x0020_0000;
+    classic.apple_event_launch_state.reset_for_launch(true);
+
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    classic_bus.write_long(TEST_SP, classic_event);
+    classic_bus.write_word(TEST_SP + 4, u32::from(PPC_HIGH_LEVEL_EVENT_MASK) as u16);
+    classic_bus.write_word(TEST_SP + 6, 0);
+    assert!(classic
+        .dispatch_toolbox(true, 0x171, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(classic_bus.read_word(TEST_SP + 6), 0x0100);
+    assert_eq!(classic_bus.read_word(classic_event), 23);
+    assert_eq!(context.event_queue().len(), 1);
+
+    assert_eq!(
+        context.event_queue().with_mut(|queue| queue[0].delivery_id),
+        Some(crate::event_queue::CLASSIC_LAUNCH_EVENT_ID)
+    );
+    native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+    native.cpu.gpr[4] = native_event;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(native.cpu.gpr[3], 1);
+    let current = native.apple_events.current_launch_event.unwrap();
+    assert_eq!(
+        current.delivery_id,
+        Some(crate::event_queue::CLASSIC_LAUNCH_EVENT_ID)
+    );
+    assert!(native
+        .apple_events
+        .is_launch_event_id(current.delivery_id.unwrap()));
+    assert!(context.event_queue().is_empty());
+}
+
+#[test]
+fn native_launch_peek_delivers_finder_address_to_classic_handler() {
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let pef = synthetic_pef_with_import(b"EventAvail");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let low_memory = classic_bus
+        .shared_ram_region(0, 0x0010_0000)
+        .expect("classic adapter owns low memory");
+    context.attach_memory(0, low_memory, &mut native.memory);
+
+    let native_event = PPC_DATA_BASE + 0x3100;
+    native.memory.add_region(native_event, vec![0; 16]);
+    let classic_event = 0x0020_0000;
+    classic.apple_event_launch_state.reset_for_launch(true);
+
+    native.apple_events.handlers.install(
+        false,
+        PPC_CORE_EVENT_CLASS,
+        PPC_OPEN_APPLICATION_EVENT,
+        ProcessAppleEventHandler {
+            procedure: crate::guest_procedure::GuestProcedure::raw_m68k(0x0040_8000),
+            refcon: 0,
+        },
+    );
+    native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+    native.cpu.gpr[4] = native_event;
+    run_test_import(&mut native, PpcImportDispatcherTarget::EventAvail);
+    assert_eq!(native.cpu.gpr[3], 1);
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    classic_bus.write_long(TEST_SP, classic_event);
+    classic_bus.write_word(TEST_SP + 4, PPC_HIGH_LEVEL_EVENT_MASK);
+    classic_bus.write_word(TEST_SP + 6, 0);
+    assert!(classic
+        .dispatch_toolbox(true, 0x170, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(classic_bus.read_word(classic_event), PPC_HIGH_LEVEL_EVENT);
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    classic_cpu.write_reg(Register::D0, 0x021b);
+    classic_bus.write_long(TEST_SP, classic_event);
+    classic_bus.write_word(TEST_SP + 4, 0);
+    assert!(classic
+        .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    let descriptor = classic_bus.read_long(TEST_SP);
+    let sender = native.apple_events.descriptors.with_mut(|state| {
+        state.descriptors[&descriptor].attributes[&u32::from_be_bytes(*b"addr")].clone()
+    });
+    assert_eq!(sender.desc_type, u32::from_be_bytes(*b"sign"));
+    assert_eq!(sender.data, b"MACS");
+}
+
+#[test]
+fn native_launch_retrieval_delivers_finder_address_to_classic_handler() {
+    let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+    let pef = synthetic_pef_with_import(b"EventAvail");
+    let mut native = load_pef_application(&pef).unwrap();
+    let mut context = ProcessContext::default();
+    classic.attach_unconverted_process_services(&mut context);
+    native.attach_unconverted_process_services(&mut context);
+    let low_memory = classic_bus
+        .shared_ram_region(0, 0x0010_0000)
+        .expect("classic adapter owns low memory");
+    context.attach_memory(0, low_memory, &mut native.memory);
+
+    let shared_event = 0x0008_0000;
+    classic.apple_event_launch_state.reset_for_launch(true);
+
+    native.apple_events.handlers.install(
+        false,
+        PPC_CORE_EVENT_CLASS,
+        PPC_OPEN_APPLICATION_EVENT,
+        ProcessAppleEventHandler {
+            procedure: crate::guest_procedure::GuestProcedure::raw_m68k(0x0040_8000),
+            refcon: 0,
+        },
+    );
+    native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
+    native.cpu.gpr[4] = shared_event;
+    run_test_import(
+        &mut native,
+        PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+    );
+    assert_eq!(native.cpu.gpr[3], 1);
+    assert!(context.event_queue().is_empty());
+    assert_eq!(classic_bus.read_word(shared_event), PPC_HIGH_LEVEL_EVENT);
+    classic_cpu.write_reg(Register::A7, TEST_SP);
+    classic_cpu.write_reg(Register::D0, 0x021b);
+    classic_bus.write_long(TEST_SP, shared_event);
+    classic_bus.write_word(TEST_SP + 4, 0);
+    assert!(classic
+        .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+        .unwrap()
+        .is_ok());
+    let descriptor = classic_bus.read_long(TEST_SP);
+    let sender = native.apple_events.descriptors.with_mut(|state| {
+        state.descriptors[&descriptor].attributes[&u32::from_be_bytes(*b"addr")].clone()
+    });
+    assert_eq!(sender.desc_type, u32::from_be_bytes(*b"sign"));
+    assert_eq!(sender.data, b"MACS");
 }
 
 #[test]
@@ -685,6 +845,7 @@ fn attached_ppc_event_queue_remains_shared_through_panic() {
     let mut native = load_pef_application(&pef).unwrap();
     let mut context = ProcessContext::default();
     context.shared_event_queue().push_back(QueuedEvent {
+        delivery_id: None,
         what: 1,
         message: 0x1111,
         when: 0,
@@ -696,6 +857,7 @@ fn attached_ppc_event_queue_remains_shared_through_panic() {
 
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         native.event_queue.push_back(QueuedEvent {
+            delivery_id: None,
             what: 2,
             message: 0x2222,
             when: 0,

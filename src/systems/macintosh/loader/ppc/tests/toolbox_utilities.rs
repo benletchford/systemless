@@ -1386,6 +1386,7 @@ fn hle_import_runner_tracks_toolbox_startup_manager_state() {
 
     for what in [3, 6, 1, 4] {
         loaded.event_queue.push_back(PpcQueuedEvent {
+            delivery_id: None,
             what,
             message: 0,
             when: 0,

@@ -831,6 +831,7 @@ impl super::TrapDispatcher {
         if self.pending_native_menu_selection.stage(selection) {
             let tick = self.current_tick();
             self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
+                delivery_id: None,
                 what: 1,
                 message: 0,
                 when: tick,
