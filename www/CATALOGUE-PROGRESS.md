@@ -881,7 +881,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 800 | Knot | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 801 | Lost New York | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 802 | MacCrypt | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 803 | NS-SHAFT | [Original English 1.2 permission](CATALOGUE-SOURCES.md#ns-shaft-original-intake) | Exact original, ten forks matched | Native movement/descent; twenty assertions | N/A: four CODE resources, no CFM/PEF | Ordinary preview movement and lower-platform landing | Promoted and merged #4476 | Human release #4479 and public replay pending |
+| 803 | NS-SHAFT | [Original English 1.2 permission](CATALOGUE-SOURCES.md#ns-shaft-original-intake) | Exact original, ten forks matched | Native movement/descent; twenty assertions | N/A: four CODE resources, no CFM/PEF | Ordinary preview movement and lower-platform landing | Promoted and merged #4476 | [Public player: Right movement and B0002F, matched idle control](CATALOGUE-SOURCES.md#ns-shaft--direct-public-replay-2-november-2026) |
 | 804 | O!Kay! CD-ROMs 2003 + 2004 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 805 | Pillbug Golf | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 806 | QBz | Pending | Pending | Pending | Pending | Pending | Pending | Pending |

@@ -30,6 +30,22 @@ compatibility:
       entry, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4475
+  - date: "2026-11-02"
+    tester: Catalogue maintainer
+    systemless_version: public deployment observed 2026-11-02
+    architecture: 68k
+    environment: >-
+      Direct systemless.org player, Chrome 156 worker/WebGL, 800-by-600/8-bit,
+      25 MHz. Return dismisses the shareware notice and a second Return starts
+      New Game. Holding Right for 800 ms moves the character onto a lower
+      platform at B0002F; a matched no-arrow run instead reaches the high-score
+      prompt. A separate 20-second sample, including the end-of-run prompt,
+      reports 60.026 guest ticks/sec and no console errors. The original hosted
+      archive and screenshot independently match their recorded hashes and sizes.
+      Title-dialog remnants remain tracked in issue 4477; long runs, score
+      persistence and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4475
   - date: "2026-10-11"
     tester: Catalogue maintainer
     systemless_version: f457c9fc817caa8646c3f9bc1861429be1095b96
@@ -117,6 +133,7 @@ no protected functions. This application is 68K-only.
 
 Native testing verifies movement in both directions and descent to B0002F.
 Ordinary browser testing also verifies starting a game, movement in both
-directions and landing on a lower platform. [Some title-dialog remnants remain
+directions and landing on a lower platform. The public player was independently
+replayed through B0002F with Right movement on 2 November 2026. [Some title-dialog remnants remain
 outside the shaft](https://github.com/benletchford/systemless/issues/4477).
 Long runs, saved high scores and audio remain unverified.
