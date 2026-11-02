@@ -7266,7 +7266,10 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, (-35i32) as u32);
                     return Some(Ok(()));
                 }
-                let scoped_vfs_key = if is_hfs_variant {
+                let scoped_vfs_key = if is_hfs_variant && dir_id > 1 {
+                    let directory = self.resolve_directory_id(vref, dir_id);
+                    self.find_vfs_rsrc_file_in_directory(directory, &filename)
+                } else if is_hfs_variant {
                     self.hfs_lookup_directory_ids(vref, dir_id)
                         .into_iter()
                         .find_map(|dir_id| self.find_vfs_rsrc_file_in_directory(dir_id, &filename))
@@ -7281,7 +7284,7 @@ impl super::TrapDispatcher {
                     && self
                         .vfs_volume_for_ref_num(self.resolve_volume_ref_num(vref))
                         .is_some();
-                let vfs_key = if mounted_volume_selected {
+                let vfs_key = if mounted_volume_selected || (is_hfs_variant && dir_id != 0) {
                     scoped_vfs_key
                 } else {
                     scoped_vfs_key.or_else(|| self.find_vfs_rsrc_file(&filename))
@@ -10182,9 +10185,8 @@ impl super::TrapDispatcher {
             //   sp+12  result INTEGER (2 — refnum or -1)
             // Pop 12 bytes; result lands at the new SP.
             //
-            // Mounted disk-image volumes use their File Manager volume and
-            // directory identity; ordinary archive-backed paths retain the
-            // legacy broad name lookup. Behaviour otherwise mirrors
+            // Explicit directory IDs select the requested directory, also
+            // for archive-backed volumes. Behaviour otherwise mirrors
             // OpenRFPerm: dedup re-opens against `loaded_files`,
             // return the existing refnum, and leave current file unchanged
             // on already-open paths per MTb 1993 1-63. ResErr is noErr on
@@ -10213,12 +10215,15 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 12);
                     return Some(Ok(()));
                 }
-                let mounted_volume_selected =
-                    self.working_directory_info(v_ref).is_some_and(|working| {
+                let scoped_lookup = dir_id > 1
+                    || self.working_directory_info(v_ref).is_some_and(|working| {
                         self.vfs_volume_for_ref_num(working.volume_ref_num)
                             .is_some()
                     });
-                let vfs_key = if mounted_volume_selected {
+                let vfs_key = if dir_id > 1 {
+                    let directory = self.resolve_directory_id(v_ref, dir_id);
+                    self.find_vfs_rsrc_file_in_directory(directory, &name)
+                } else if scoped_lookup {
                     self.find_vfs_rsrc_file_for_hfs_lookup(v_ref, dir_id, &name)
                 } else {
                     self.find_vfs_rsrc_file(&name)
@@ -10293,12 +10298,15 @@ impl super::TrapDispatcher {
                 } else if name.is_empty() {
                     bus.write_word(0x0A60, (-37i16) as u16); // bdNamErr
                 } else {
-                    let mounted_volume_selected =
-                        self.working_directory_info(v_ref).is_some_and(|working| {
+                    let scoped_lookup = dir_id > 1
+                        || self.working_directory_info(v_ref).is_some_and(|working| {
                             self.vfs_volume_for_ref_num(working.volume_ref_num)
                                 .is_some()
                         });
-                    let existing_resource = if mounted_volume_selected {
+                    let existing_resource = if dir_id > 1 {
+                        let directory = self.resolve_directory_id(v_ref, dir_id);
+                        self.find_vfs_rsrc_file_in_directory(directory, &name)
+                    } else if scoped_lookup {
                         self.find_vfs_rsrc_file_for_hfs_lookup(v_ref, dir_id, &name)
                     } else {
                         self.find_vfs_rsrc_file(&name)
@@ -10306,7 +10314,7 @@ impl super::TrapDispatcher {
                     if existing_resource.is_some() {
                         bus.write_word(0x0A60, (-48i16) as u16); // dupFNErr
                     } else {
-                        let vfs_key = if mounted_volume_selected {
+                        let vfs_key = if scoped_lookup {
                             let Some(vfs_key) = self.vfs_key_for_fsspec(v_ref, dir_id, &name)
                             else {
                                 bus.write_word(0x0A60, (-120i16) as u16); // dirNFErr
