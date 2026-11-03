@@ -1,5 +1,6 @@
 ---
 id: theatre
+launch_enabled: true
 kind: game
 title: Theatre (Release 2)
 summary: >-
@@ -26,6 +27,22 @@ compatibility:
       An exact replay matched both checkpoints, with zero exhausted frames. The MaxZip
       status window renders as a solid black bar. Saves, longer play and browser
       performance remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5436
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: b919e74f8 browser preview
+    architecture: ppc
+    environment: >-
+      Three Chrome 156 worker/WebGL previews used local frontend assets at the
+      production origin and fetched the unchanged managed archive directly.
+      Pressing Space advanced the blank story window; LOOK reproduced the
+      lobby description and INVENTORY reported an empty inventory. First-input
+      worker round trips were 45.64, 45.40 and 45.61 ms. Subsequent 20-second
+      samples measured about 60.15 guest ticks per second without console errors.
+      The status window renders as a black bar; the initial wait has not been
+      compared with a reference Macintosh. Saves, longer play and audio fidelity
+      remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5436
 runtime:
@@ -84,5 +101,7 @@ references:
 
 Search a decaying old theatre for your lost pager on a night of horror in Brendon Wyber's text adventure.
 
-Type commands such as LOOK, EXAMINE DOOR or GO NORTH and press Return. Type HELP
-or ABOUT for the game's own instructions.
+If the story window is blank, press Space once and wait for the opening prompt.
+Then type commands such as LOOK, INVENTORY or GO NORTH and press Return. Type
+HELP or ABOUT for the game's own instructions. The separate status window may
+appear as a black bar.
