@@ -6783,6 +6783,15 @@ impl TrapDispatcher {
                 return u16::MAX;
             }
         };
+        // Resource Manager returns the File Manager's access-path reference.
+        // Keep raw fork reads, marks and closure on the same path as PBOpenRF.
+        // Inside Macintosh: More Macintosh Toolbox (1993), p. 1-58.
+        let backing_key = format!("__rsrc__{vfs_key}");
+        // Raw-fork writes are mirrored back to vfs_rsrc immediately. Refresh
+        // stale backing after a file has been deleted or recreated.
+        self.vfs.insert(backing_key.clone(), rsrc_data.clone());
+        self.open_files.insert(refnum, backing_key);
+        self.file_positions.insert(refnum, 0);
         if let Some(fork) = ResourceFork::parse(&rsrc_data) {
             self.merge_resources_from_fork(&fork, bus, refnum);
         } else {
@@ -6945,6 +6954,8 @@ impl TrapDispatcher {
             }
         });
 
+        self.open_files.remove(&refnum);
+        self.file_positions.remove(&refnum);
         self.write_refnums.remove(&refnum);
         Self::clear_file_fcb(bus, refnum);
         self.sync_guest_curmap(bus);
