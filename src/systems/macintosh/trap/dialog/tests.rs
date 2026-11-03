@@ -10257,6 +10257,62 @@
         );
     }
 
+    // The gray ring is drawn only where the ring is: on a black background, the
+    // gap between the ring and the button and the corners outside the ring
+    // keep what was there.
+    #[test]
+    fn disabled_default_ring_leaves_the_pixels_around_it() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let base = 0x300000;
+        disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+        let (top, left, bottom, right) = (160i16, 272i16, 182i16, 352i16);
+        // The ring's pixels, from an enabled default button on white.
+        disp.draw_button_state(
+            &mut bus,
+            top - 60,
+            left,
+            bottom - 60,
+            right,
+            "Save",
+            true,
+            true,
+        );
+        let in_button = |x: i16, y: i16| y >= top && y < bottom && x >= left && x < right;
+        let ring: Vec<(i16, i16)> = (top - 6..bottom + 6)
+            .flat_map(|y| (left - 6..right + 6).map(move |x| (x, y)))
+            .filter(|&(x, y)| !in_button(x, y) && screen_pixel_is_set(&bus, base, 64, x, y - 60))
+            .collect();
+        assert!(!ring.is_empty());
+        // A black background, then the disabled default button over it.
+        for y in top - 6..bottom + 6 {
+            for x in (left - 8) / 8..(right + 8) / 8 {
+                bus.write_byte(base + y as u32 * 64 + x as u32, 0xFF);
+            }
+        }
+        disp.draw_button_state(&mut bus, top, left, bottom, right, "Save", true, false);
+        let mut cleared = Vec::new();
+        for y in top - 6..bottom + 6 {
+            for x in left - 6..right + 6 {
+                if !in_button(x, y)
+                    && !ring.contains(&(x, y))
+                    && !screen_pixel_is_set(&bus, base, 64, x, y)
+                {
+                    cleared.push((x, y));
+                }
+            }
+        }
+        assert!(
+            cleared.is_empty(),
+            "pixels outside the ring cleared: {:?}",
+            &cleared[..cleared.len().min(8)]
+        );
+        // The ring itself in the gray pattern: black where x + y is even.
+        assert!(
+            ring.iter()
+                .all(|&(x, y)| screen_pixel_is_set(&bus, base, 64, x, y) == ((x + y) & 1 == 0))
+        );
+    }
+
     // A disabled default button at 1 bit, as System 7.1 draws Standard File's
     // Save with no name: its ring in the gray pattern (pixels with x + y even
     // kept), its frame solid, its title's ink kept only where x + y is odd.

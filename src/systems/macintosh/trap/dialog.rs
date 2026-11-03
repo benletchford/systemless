@@ -8384,6 +8384,35 @@ impl super::TrapDispatcher {
                     top, left, bottom, right,
                 ));
                 let (hilite_top, hilite_left, hilite_bottom, hilite_right) = outline.outer_rect();
+                // The ring of a disabled default button is drawn in gray:
+                // below 8 bits, in the gray pattern, as System 7 draws it
+                // (the button's own frame stays solid). Only the ring's own
+                // pixels take the pattern: drawn first on white to find them,
+                // what was under and around it is put back, then each ring
+                // pixel is set black where x + y is even, white elsewhere.
+                let dim_ring = !enabled && pixel_size < 8;
+                let in_button = |x: i16, y: i16| y >= top && y < bottom && x >= left && x < right;
+                let mut saved = Vec::new();
+                if dim_ring {
+                    for y in hilite_top..hilite_bottom {
+                        for x in hilite_left..hilite_right {
+                            if in_button(x, y) {
+                                continue;
+                            }
+                            let get = |bus: &MacMemoryBus| {
+                                Self::fb_get_pixel_index(
+                                    bus, base, row_bytes, pixel_size, width, height, x, y,
+                                )
+                            };
+                            if let Some(index) = get(bus) {
+                                Self::fb_set_pixel(
+                                    bus, base, row_bytes, pixel_size, width, height, x, y, false,
+                                );
+                                saved.push((x, y, index, get(bus)));
+                            }
+                        }
+                    }
+                }
                 self.fb_frame_round_rect(
                     bus,
                     hilite_top,
@@ -8394,18 +8423,27 @@ impl super::TrapDispatcher {
                     outline.oval_height(),
                     outline.thickness(),
                 );
-                // The ring of a disabled default button is drawn in gray:
-                // below 8 bits, the gray pattern over it, as System 7 draws
-                // it (the button's own frame stays solid).
-                if !enabled && pixel_size < 8 {
-                    for y in hilite_top..hilite_bottom {
-                        for x in hilite_left..hilite_right {
-                            let in_button = y >= top && y < bottom && x >= left && x < right;
-                            if !in_button && (x + y) & 1 == 1 {
-                                Self::fb_set_pixel(
-                                    bus, base, row_bytes, pixel_size, width, height, x, y, false,
-                                );
-                            }
+                if dim_ring {
+                    for (x, y, index, white) in saved {
+                        let on_ring = Self::fb_get_pixel_index(
+                            bus, base, row_bytes, pixel_size, width, height, x, y,
+                        ) != white;
+                        if on_ring {
+                            Self::fb_set_pixel(
+                                bus,
+                                base,
+                                row_bytes,
+                                pixel_size,
+                                width,
+                                height,
+                                x,
+                                y,
+                                (x + y) & 1 == 0,
+                            );
+                        } else {
+                            Self::fb_set_pixel_index(
+                                bus, base, row_bytes, pixel_size, width, height, x, y, index,
+                            );
                         }
                     }
                 }
