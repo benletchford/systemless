@@ -4050,18 +4050,21 @@ impl super::TrapDispatcher {
                 // CopyBits must preserve source pixels for overlapping blits.
                 // Snapshot the touched source rows when src and dst share storage
                 // so later writes don't affect subsequent reads.
+                // Both modes depend only on the saved source; retaining the
+                // destination expression would grow it on repeated copies.
                 let detail_table = (bus.has_outline_presentation()
-                    && mode_base == 0
+                    && matches!(mode_base, 0 | 4)
                     && src_info.pixel_size == 8
                     && dst_info.pixel_size == 8)
                     .then(|| {
-                        self.copy_bits_src_copy_table(
+                        self.copy_bits_source_only_table(
                             bus,
                             dst_ctab_handle,
                             src_clut,
                             dst_clut,
                             palette_translation,
-                            None,
+                            if mode_base == 0 { None } else { shared_indexed_pixel_mask },
+                            mode_base,
                             copy_fg_rgb,
                             copy_bg_rgb,
                         )
@@ -4156,13 +4159,14 @@ impl super::TrapDispatcher {
                         * (i32::from(clip_r) - i32::from(clip_l))
                         >= COPY_BITS_ROW_PATH_MIN_PIXELS
                     && self
-                        .copy_bits_src_copy_table(
+                        .copy_bits_source_only_table(
                             bus,
                             dst_ctab_handle,
                             src_clut,
                             dst_clut,
                             palette_translation,
                             shared_indexed_pixel_mask,
+                            0,
                             copy_fg_rgb,
                             copy_bg_rgb,
                         )
@@ -20510,14 +20514,11 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// The `srcCopy` byte table for an 8-bit indexed transfer: entry `s` is
-    /// what `copy_bits_color_source_mode_pixel` yields for source pixel `s`
-    /// under mode 0, evaluated with a destination byte of 0 -- for `srcCopy`
-    /// the result does not depend on the destination (covered by
-    /// `copy_bits_src_copy_table_is_destination_independent`). `None` if any
-    /// source value would be skipped, in which case the pixel loop must run.
+    /// Byte mapping for source-only `srcCopy` and `notSrcCopy` modes.
+    /// Both ignore the destination even across indexed color spaces. `None`
+    /// leaves unsupported or skipped transfers to the general pixel path.
     #[allow(clippy::too_many_arguments)]
-    fn copy_bits_src_copy_table(
+    fn copy_bits_source_only_table(
         &self,
         bus: &MacMemoryBus,
         dst_ctab_handle: u32,
@@ -20525,9 +20526,13 @@ impl super::TrapDispatcher {
         dst_clut: Option<&[[u16; 3]; 256]>,
         palette_translation: Option<&[u8; 256]>,
         shared_indexed_pixel_mask: Option<u8>,
+        mode_base: u16,
         fg_rgb: [u16; 3],
         bg_rgb: [u16; 3],
     ) -> Option<[u8; 256]> {
+        if !matches!(mode_base, 0 | 4) {
+            return None;
+        }
         let mut table = [0u8; 256];
         for (source, entry) in (0..=u8::MAX).zip(table.iter_mut()) {
             *entry = self.copy_bits_color_source_mode_pixel(
@@ -20538,7 +20543,7 @@ impl super::TrapDispatcher {
                 256,
                 palette_translation,
                 shared_indexed_pixel_mask,
-                0,
+                mode_base,
                 source,
                 0,
                 fg_rgb,
@@ -20589,7 +20594,7 @@ impl super::TrapDispatcher {
     /// loop does; otherwise source reads retain the original row path.
     ///
     /// For that shape every written destination pixel is `table[source
-    /// pixel]` (`copy_bits_src_copy_table`, derived from the same per-pixel
+    /// pixel]` (`copy_bits_source_only_table`, derived from the same per-pixel
     /// mode function the pixel loop calls). A plain row uses one bus read,
     /// one table pass and one bus write per covered span. A saved source
     /// retains the ordered per-pixel detail writes, but also avoids repeated
@@ -21185,18 +21190,21 @@ impl super::TrapDispatcher {
             false
         };
 
+        // Source-only modes can map saved detail without combining it with
+        // irrelevant destination detail.
         let detail_table = (bus.has_outline_presentation()
-            && mode_base == 0
+            && matches!(mode_base, 0 | 4)
             && src_info.pixel_size == 8
             && dst_info.pixel_size == 8)
             .then(|| {
-                self.copy_bits_src_copy_table(
+                self.copy_bits_source_only_table(
                     bus,
                     dst_ctab_handle,
                     src_clut,
                     dst_clut,
                     palette_translation,
-                    None,
+                    if mode_base == 0 { None } else { shared_indexed_pixel_mask },
+                    mode_base,
                     copy_fg_rgb,
                     copy_bg_rgb,
                 )
@@ -21290,13 +21298,14 @@ impl super::TrapDispatcher {
                     * (i32::from(clip_r) - i32::from(clip_l))
                     >= COPY_BITS_ROW_PATH_MIN_PIXELS
                 && self
-                    .copy_bits_src_copy_table(
+                    .copy_bits_source_only_table(
                         bus,
                         dst_ctab_handle,
                         src_clut,
                         dst_clut,
                         palette_translation,
                         None,
+                        0,
                         copy_fg_rgb,
                         copy_bg_rgb,
                     )

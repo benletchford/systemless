@@ -7830,6 +7830,71 @@
     }
 
     #[test]
+    fn shared_indexed_not_src_copy_round_trips_outline_detail() {
+        for (common, inherited) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            let base = bus.alloc(256);
+            let scratch = bus.alloc(256);
+            d.screen_mode = (base, 16, 16, 16, 8);
+            bus.write_long(0x0824, base);
+            bus.fill_bytes(base, 256, 0);
+            let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+            bus.enable_outline_presentation(d.screen_mode, palette, 4);
+            let colors = (0..=255).map(|i| [u16::from(255 - i as u8) * 257; 3]).collect::<Vec<_>>();
+            let ctab = make_test_ctab_handle(&mut bus, &colors, 1, 0);
+            let port = *d.current_port;
+            let screen = install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, base, 0, 0);
+            bus.write_long(screen + 42, if inherited { 0 } else { ctab });
+            let offscreen = bus.alloc(50);
+            write_pixmap_8(&mut bus, offscreen, scratch, 16, 16, ctab);
+            let rect = bus.alloc(8);
+            write_rect(&mut bus, rect, 0, 0, 16, 16);
+            TrapDispatcher::fb_draw_string(&mut bus, base, 16, 8, 16, 16, 3, 10, "a", 3, 9);
+            let original_bytes = bus.read_bytes(base, 256);
+            let original_rgb = bus.outline_presentation_rgb().unwrap().2;
+            let original_nodes: usize = (0..256).map(|i| bus.test_indexed_detail_nodes(base + i)).sum();
+            assert!(original_rgb.iter().any(|&v| v > 0 && v < 255));
+            for _ in 0..2 {
+                for (src, dst) in [(screen, offscreen), (offscreen, screen)] {
+                    if common {
+                        d.copy_bits_common(&mut cpu, &mut bus, src, dst, rect, rect, 4, 0).unwrap();
+                    } else {
+                        cpu.write_reg(Register::A7, TEST_SP);
+                        bus.write_long(TEST_SP, 0);
+                        bus.write_word(TEST_SP + 4, 4);
+                        bus.write_long(TEST_SP + 6, rect);
+                        bus.write_long(TEST_SP + 10, rect);
+                        bus.write_long(TEST_SP + 14, dst);
+                        bus.write_long(TEST_SP + 18, src);
+                        assert!(d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus).unwrap().is_ok());
+                    }
+                }
+                let nodes: usize = (0..256).map(|i| bus.test_indexed_detail_nodes(base + i)).sum();
+                assert!(nodes <= original_nodes, "source-only transfer expanded outline nodes: {nodes} > {original_nodes}, common={common}, inherited={inherited}");
+                assert_eq!(bus.read_bytes(base, 256), original_bytes, "guest pixels, common={common}, inherited={inherited}");
+                assert_eq!(bus.outline_presentation_rgb().unwrap().2, original_rgb, "outline, common={common}, inherited={inherited}");
+            }
+            // Plain source pixels replace destination detail completely;
+            // old destination ink must not survive a source-only transfer.
+            bus.fill_bytes(scratch, 256, 0);
+            if common {
+                d.copy_bits_common(&mut cpu, &mut bus, offscreen, screen, rect, rect, 4, 0).unwrap();
+            } else {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, 0);
+                bus.write_word(TEST_SP + 4, 4);
+                bus.write_long(TEST_SP + 6, rect);
+                bus.write_long(TEST_SP + 10, rect);
+                bus.write_long(TEST_SP + 14, screen);
+                bus.write_long(TEST_SP + 18, offscreen);
+                assert!(d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus).unwrap().is_ok());
+            }
+            let nodes: usize = (0..256).map(|i| bus.test_indexed_detail_nodes(base + i)).sum();
+            assert_eq!(nodes, 0, "plain source must clear destination detail, common={common}, inherited={inherited}");
+        }
+    }
+
+    #[test]
     fn copy_bits_src_copy_table_is_destination_independent() {
         // srcCopy through copy_bits_color_source_mode_pixel ignores the
         // destination byte in every colour-space case, which is what lets
@@ -7856,7 +7921,7 @@
         ];
         for (src, dst, xlate, mask) in cases {
             let table = d
-                .copy_bits_src_copy_table(&bus, 0, src, dst, xlate, mask, [0; 3], [0xFFFF; 3])
+                .copy_bits_source_only_table(&bus, 0, src, dst, xlate, mask, 0, [0; 3], [0xFFFF; 3])
                 .expect("srcCopy never skips a source value");
             for source in 0..=u8::MAX {
                 let expected = xlate.map_or(source, |t| t[usize::from(source)]);
@@ -7883,6 +7948,37 @@
                 }
             }
         }
+    }
+
+    #[test]
+    fn not_src_copy_table_ignores_destination_for_all_palette_cases() {
+        let (d, _cpu, bus) = setup_with_port();
+        let mut source = [[0u16; 3]; 256];
+        let mut destination = [[0u16; 3]; 256];
+        let mut translation = [0u8; 256];
+        for i in 0..256usize {
+            source[i] = [(i as u16) * 257, 0, 0];
+            destination[255 - i] = [(i as u16) * 257, 0, 0];
+            translation[i] = (255 - i) as u8;
+        }
+        let cases = [
+            (None, None, None, None),
+            (Some(&source), None, Some(&translation), None),
+            (Some(&source), Some(&destination), Some(&translation), None),
+            (Some(&source), Some(&source), None, Some(0xFF)),
+        ];
+        for (src, dst, xlate, mask) in cases {
+            let table = d.copy_bits_source_only_table(&bus, 0, src, dst, xlate, mask, 4, [0; 3], [0xFFFF; 3]).unwrap();
+            for source in 0..=u8::MAX {
+                for dest in [0x00, 0x5A, 0xFF] {
+                    assert_eq!(d.copy_bits_color_source_mode_pixel(
+                        &bus, 0, src, dst, 256, xlate, mask, 4, source, dest,
+                        [0; 3], [0xFFFF; 3],
+                    ), Some(table[source as usize]), "source={source} dest={dest}");
+                }
+            }
+        }
+        assert!(d.copy_bits_source_only_table(&bus, 0, None, None, None, None, 2, [0; 3], [0xFFFF; 3]).is_none());
     }
 
     #[test]
