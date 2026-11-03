@@ -4776,6 +4776,25 @@ fn deferred_idle_probe_guards_slice_exit_state_and_pending_events() {
         "frontend host changes must cancel the proof"
     );
 
+    let queued = crate::event_queue::QueuedEvent {
+        what: 2, message: 0, when: 99, where_v: 10, where_h: 20, modifiers: 0,
+    };
+    let mut unchanged = arm();
+    unchanged.dispatcher.event_queue.push_back(queued);
+    unchanged.idle_cycle_probe.as_mut().unwrap().slice_host =
+        Some(IdleCycleHostSnapshot::capture(&unchanged.dispatcher));
+    unchanged.run_steps_internal(1, Some(100), 0, true, false, FrameFinalization::Deferred);
+    assert!(unchanged.idle_cycle_probe.is_some(), "an unchanged queue must not revoke the in-progress proof");
+
+    let mut replaced = arm();
+    replaced.dispatcher.event_queue.push_back(queued);
+    replaced.idle_cycle_probe.as_mut().unwrap().slice_host =
+        Some(IdleCycleHostSnapshot::capture(&replaced.dispatcher));
+    replaced.dispatcher.event_queue.clear();
+    replaced.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent { when: 100, ..queued });
+    replaced.run_steps_internal(1, Some(100), 0, true, false, FrameFinalization::Deferred);
+    assert!(replaced.idle_cycle_probe.is_none(), "a same-length queue with changed contents must revoke the proof");
+
     let mut pending = arm();
     let slice_host = IdleCycleHostSnapshot::capture(&pending.dispatcher);
     pending.idle_cycle_probe.as_mut().unwrap().slice_host = Some(slice_host);
@@ -4805,7 +4824,7 @@ fn deferred_idle_probe_guards_slice_exit_state_and_pending_events() {
         .dispatcher
         .apple_event_launch_state
         .is_open_application_event_sent());
-    assert!(launch.idle_slice_has_pending_events());
+    assert!(launch.idle_slice_has_nonqueue_pending_events());
     assert!(
         !launch
             .dispatcher
@@ -4830,7 +4849,7 @@ fn deferred_idle_probe_guards_slice_exit_state_and_pending_events() {
             where_h: 0,
             modifiers: 0,
         });
-    assert!(!stale.idle_slice_has_pending_events());
+    assert!(!stale.idle_slice_has_nonqueue_pending_events());
     assert_eq!(
         stale.dispatcher.flushed_update_events.len(),
         1,
@@ -5034,4 +5053,40 @@ fn spin_fastfwd_template_d_signed_ignores_an_expired_deadline() {
     assert!(!runner.try_tickcount_spin_fastfwd(base + 4, None, &mut count));
     assert_eq!(runner.guest_tick(), 100);
     assert_eq!(runner.bus.read_long(sp - 4), 100);
+}
+
+#[test]
+fn deferred_eventavail_loop_ignores_unchanged_masked_queue_entry() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let event = 0x0010_0100u32;
+    // EventAvail(mask = mouseDown | keyDown) followed by a branch on false.
+    let words = [0x4227, 0x3f3c, 0x000a, 0x4879, (event >> 16) as u16,
+        event as u16, 0xa971, 0x4a1f, 0x67ee];
+    for (index, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + index as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016a, 100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent {
+        what: 2, message: 0, when: 99, where_v: 0, where_h: 0, modifiers: 0,
+    });
+    for _ in 0..100 {
+        let (_, running) = runner.run_gui_cpu_slice_until_host_work(64, 100);
+        assert!(running);
+        if runner.idle_cycle_sleep.is_some() { break; }
+    }
+    assert!(runner.idle_cycle_sleep.is_some(), "unchanged mask-excluded event must not prevent an exact proof");
+    assert_eq!(runner.dispatcher.event_queue.len(), 1, "EventAvail must not consume the excluded event");
+    runner.push_mouse_down(20, 30);
+    for _ in 0..30 {
+        let (_, running) = runner.run_gui_cpu_slice_until_host_work(64, 100);
+        assert!(running);
+        if runner.bus.read_word(event) == 1 { break; }
+    }
+    assert_eq!(runner.bus.read_word(event), 1, "new matching input must reach the guest");
+    assert!(runner.idle_cycle_sleep.is_none());
 }

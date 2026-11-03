@@ -6293,13 +6293,13 @@ impl FixtureRunner {
         })
     }
 
-    /// Conservative, read-only equivalent of asking whether a slice may
-    /// encounter an event. Peeking through the Event Manager can itself post
-    /// an auto-key or launch event and prune update markers.
-    fn idle_slice_has_pending_events(&self) -> bool {
+    /// Queue mutations are covered by `IdleCycleHostSnapshot`. All other
+    /// possible event sources remain conservative across a deferred slice.
+    /// Peeking through the Event Manager here could itself post an auto-key
+    /// or launch event and prune update markers.
+    fn idle_slice_has_nonqueue_pending_events(&self) -> bool {
         let dispatcher = &self.dispatcher;
         dispatcher.event_queue.menu_bar_is_invalid()
-            || !dispatcher.event_queue.is_empty()
             || dispatcher.has_pending_native_menu_event()
             || dispatcher.input_state.has_key_repeat()
             || dispatcher.pending_launch_app.is_some()
@@ -7391,7 +7391,7 @@ impl FixtureRunner {
         });
         let pending_event = self.idle_cycle_probe.is_some()
             && !host_changed
-            && self.idle_slice_has_pending_events();
+            && self.idle_slice_has_nonqueue_pending_events();
         let probe_interrupted = host_changed || pending_event;
         if finish_frame != FrameFinalization::Deferred || sound_work_only || probe_interrupted {
             self.cancel_idle_cycle_observation();
