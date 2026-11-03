@@ -4652,7 +4652,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.108.0"
+version = "0.109.0"
 dependencies = [
  "base64 0.22.1",
  "bzip2",
@@ -4695,7 +4695,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-catalogue-tools"
-version = "0.108.0"
+version = "0.109.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4719,7 +4719,7 @@ dependencies = [
 
 [[package]]
 name = "systemless-org"
-version = "0.108.0"
+version = "0.109.0"
 dependencies = [
  "base64 0.22.1",
  "futures-channel",
