@@ -12,10 +12,24 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
-launch_enabled: false
+launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: bb1d6e3ac browser preview with launch enabled
+    architecture: 68k
+    environment: >-
+      The unchanged hosted sample reached its color playfield in three Chromium
+      156 worker/WebGL previews. Twenty-second gameplay samples reported
+      60.22–61.24 guest ticks per second and 62.72–63.45 host frames per second,
+      with no captured console errors. Opposite mouse sweeps placed the visible
+      ship at different horizontal positions; a native replay also asserted
+      its movement. Audio fidelity, later waves and a public release remain
+      unverified. See https://github.com/benletchford/systemless/issues/5612.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5612
   - date: "2026-09-23"
     tester: Catalogue maintainer
     systemless_version: master at faa30e1975f7
