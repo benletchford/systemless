@@ -3237,6 +3237,22 @@ impl MacMemoryBus {
         pixels
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_indexed_detail_nodes(&self, address: u32) -> usize {
+        fn count(color: &IndexedColor) -> usize {
+            match color {
+                IndexedColor::Solid(_) => 1,
+                IndexedColor::Mix(foreground, background, _) => {
+                    1 + count(foreground) + count(background)
+                }
+            }
+        }
+        self.presentation
+            .as_ref()
+            .and_then(|p| p.detail(address))
+            .map_or(0, |cell| cell.ink.values().map(|ink| count(&ink.background)).sum())
+    }
+
     pub(crate) fn transfer_saved_pixel(
         &mut self,
         address: u32,
