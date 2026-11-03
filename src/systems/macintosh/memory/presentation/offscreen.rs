@@ -517,7 +517,19 @@ impl OffscreenDetail {
         if !self.may_hold_cells(from, last) {
             return removed;
         }
-        for (&key, chunk) in self.chunks.range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
+        let first_chunk = from >> CHUNK_SHIFT;
+        let last_chunk = last >> CHUNK_SHIFT;
+        if first_chunk == last_chunk {
+            let Some(chunk) = self.chunks.get_mut(&first_chunk) else {
+                return false;
+            };
+            let first = (from as usize) & (CHUNK_BYTES - 1);
+            let end = ((last as usize) & (CHUNK_BYTES - 1)) + 1;
+            let cleared = chunk.clear_span(first, end);
+            self.count -= cleared;
+            return cleared != 0;
+        }
+        for (&key, chunk) in self.chunks.range_mut(first_chunk..=last_chunk) {
             let base = key << CHUNK_SHIFT;
             let first = from.saturating_sub(base).min(CHUNK_BYTES as u32) as usize;
             let end = (u64::from(last) - u64::from(base) + 1).min(CHUNK_BYTES as u64) as usize;
@@ -774,6 +786,29 @@ mod tests {
                 })
                 .collect(),
         })
+    }
+
+    #[test]
+    fn short_invalidations_preserve_neighbors_snapshots_and_reused_chunks() {
+        let mut store = OffscreenDetail::default();
+        let held = cell(7, &[1, 2, 3, 4], &[(1, 9)]);
+        for address in [0x10fe, 0x10ff, 0x1100, u32::MAX] {
+            store.insert(address, &held);
+        }
+        let snapshot = store.get(0x10ff).unwrap();
+        assert!(store.remove_range(0x10ff, 0x1100));
+        assert!(!store.remove_range(0x10ff, 0x1100));
+        assert_eq!(store.get(0x10fe), Some(held.clone()));
+        assert_eq!(store.get(0x1100), Some(held.clone()));
+        assert_eq!(snapshot, held);
+        store.insert(0x10ff, &held);
+        assert!(store.remove_range(0x10fe, 0x1101));
+        assert!(!store.contains(0x10fe));
+        assert!(!store.contains(0x10ff));
+        assert!(!store.contains(0x1100));
+        assert!(store.remove_range(u32::MAX, u64::from(u32::MAX) + 2));
+        assert!(!store.contains(u32::MAX));
+        assert_eq!(store.len(), 0);
     }
 
     /// Deterministic xorshift: the model test needs varied but repeatable ops.
