@@ -44,6 +44,19 @@ compatibility:
       reports console errors. Public release, combat, saves and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/5537
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: v0.108.0
+    architecture: 68k
+    environment: >-
+      The released public site loaded the original managed archive in Chrome 156
+      with the worker and WebGL. After character selection, a matched input and
+      no-input replay reached the first cave; W moved the avatar one tile up.
+      Both 20-second post-input samples passed the existing pacing thresholds
+      and reported no console errors. Combat, saves and audio fidelity remain
+      unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5530
 runtime:
   executable_path: Quest of Yipe! II/Yipe! II  v1.05
   screen_depth: 8
@@ -100,5 +113,5 @@ Create a character and explore the town and surrounding lands. Use the keyboard
 to move and encounter monsters, shops and treasures. This is the original
 shareware edition; its registration limits remain in place.
 
-Character selection and movement were checked in the repaired browser preview.
-Combat, saved games and the public release remain unverified.
+The public release was checked through character selection and movement in the
+first cave. Combat, saved games and audio fidelity remain unverified.
