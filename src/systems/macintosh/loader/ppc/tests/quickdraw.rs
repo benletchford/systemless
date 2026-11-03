@@ -7528,3 +7528,88 @@ fn pt2rect_handles_reversed_signed_coordinates_and_preserves_return_register() {
         assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some(expected));
     }
 }
+
+#[test]
+fn rectangular_region_boolean_matches_scanline_reference() {
+    fn rect(top: i16, left: i16, bottom: i16, right: i16) -> Vec<u8> {
+        let mut result = vec![0, 10];
+        for value in [top, left, bottom, right] {
+            result.extend_from_slice(&value.to_be_bytes());
+        }
+        result
+    }
+    let mut inputs = vec![rect(0, 0, 0, 0), rect(2, 2, -2, -2)];
+    for top in [-2, 0, 2] {
+        for bottom in [-2, 0, 2] {
+            for left in [-2, 0, 2] {
+                for right in [-2, 0, 2] {
+                    inputs.push(rect(top, left, bottom, right));
+                }
+            }
+        }
+    }
+    inputs.extend([rect(i16::MIN, i16::MIN, i16::MAX, i16::MAX), rect(-1, -1, 1, 1)]);
+    for a in &inputs {
+        for b in &inputs {
+            let extreme = rect(i16::MIN, i16::MIN, i16::MAX, i16::MAX);
+            let representative = |value: &Vec<u8>| {
+                *value == extreme || *value == inputs[0] || *value == rect(-1, -1, 1, 1)
+            };
+            if (a == &extreme && !representative(b)) || (b == &extreme && !representative(a)) {
+                continue;
+            }
+            let boxes = [ppc_region_storage_bbox(a), ppc_region_storage_bbox(b)];
+            let top = boxes.iter().flatten().map(|bbox| bbox.0).min().unwrap_or(0);
+            let bottom = boxes.iter().flatten().map(|bbox| bbox.2).max().unwrap_or(0);
+            let rows_a = ppc_region_rows_for_band(a, top, bottom).unwrap();
+            let rows_b = ppc_region_rows_for_band(b, top, bottom).unwrap();
+            for operation in [PpcRegionBooleanOp::Intersection, PpcRegionBooleanOp::Union,
+                PpcRegionBooleanOp::Difference, PpcRegionBooleanOp::Xor] {
+                let rows = rows_a.iter().zip(&rows_b)
+                    .map(|(lhs, rhs)| ppc_region_combine_rows(lhs, rhs, operation))
+                    .collect::<Vec<_>>();
+                let reference = ppc_region_storage_from_rows(top, &rows).unwrap();
+                assert_eq!(ppc_rectangular_region_boolean(a, b, operation), Some(reference),
+                    "a={a:?}, b={b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn rectangular_boolean_imports_allow_either_source_as_destination() {
+    let cases = [
+        (PpcImportDispatcherTarget::SectRgn, PpcRegionBooleanOp::Intersection),
+        (PpcImportDispatcherTarget::UnionRgn, PpcRegionBooleanOp::Union),
+        (PpcImportDispatcherTarget::DiffRgn, PpcRegionBooleanOp::Difference),
+        (PpcImportDispatcherTarget::XorRgn, PpcRegionBooleanOp::Xor),
+    ];
+    for (target, operation) in cases {
+        for destination in 0..2 {
+            let pef = synthetic_pef_with_import(b"NewRgn");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                loaded.run_with_hle_imports(64);
+                handles.push(loaded.cpu.gpr[3]);
+            }
+            ppc_write_rgn_bbox(&mut loaded.memory, handles[0], -5, -7, 8, 9).unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, handles[1], -2, -3, 5, 4).unwrap();
+            let a = ppc_region_storage(&mut loaded.memory, handles[0]).unwrap();
+            let b = ppc_region_storage(&mut loaded.memory, handles[1]).unwrap();
+            let expected = ppc_rectangular_region_boolean(&a, &b, operation).unwrap();
+            loaded.imports[0].dispatcher_target = target.clone();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = handles[0];
+            loaded.cpu.gpr[4] = handles[1];
+            loaded.cpu.gpr[5] = handles[destination];
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+            assert_eq!(ppc_region_storage(&mut loaded.memory, handles[destination]), Some(expected));
+        }
+    }
+}
