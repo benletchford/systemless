@@ -10238,6 +10238,141 @@
         assert!(label_ink, "disabled labels should use device-gray ink");
     }
 
+    // At 1 bit there is no gray ink: a disabled push button's title is drawn
+    // and then dimmed with the gray pattern, half its ink cleared, as the
+    // multi-line titles already are.
+    #[test]
+    fn disabled_button_label_is_dimmed_at_one_bit() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let base = 0x300000;
+        disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+        disp.draw_button_state(&mut bus, 40, 40, 62, 120, "Save", false, true);
+        let enabled = count_set_pixels(&bus, base, 64, 42, 42, 60, 118);
+        disp.draw_button_state(&mut bus, 80, 40, 102, 120, "Save", false, false);
+        let disabled = count_set_pixels(&bus, base, 64, 82, 42, 100, 118);
+        assert!(enabled > 0);
+        assert!(
+            disabled * 3 < enabled * 2 && disabled * 4 > enabled,
+            "about half the title's ink: {disabled} of {enabled}"
+        );
+    }
+
+    // The gray ring is drawn only where the ring is: on a black background, the
+    // gap between the ring and the button and the corners outside the ring
+    // keep what was there.
+    #[test]
+    fn disabled_default_ring_leaves_the_pixels_around_it() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let base = 0x300000;
+        disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+        let (top, left, bottom, right) = (160i16, 272i16, 182i16, 352i16);
+        // The ring's pixels, from an enabled default button on white.
+        disp.draw_button_state(
+            &mut bus,
+            top - 60,
+            left,
+            bottom - 60,
+            right,
+            "Save",
+            true,
+            true,
+        );
+        let in_button = |x: i16, y: i16| y >= top && y < bottom && x >= left && x < right;
+        let ring: Vec<(i16, i16)> = (top - 6..bottom + 6)
+            .flat_map(|y| (left - 6..right + 6).map(move |x| (x, y)))
+            .filter(|&(x, y)| !in_button(x, y) && screen_pixel_is_set(&bus, base, 64, x, y - 60))
+            .collect();
+        assert!(!ring.is_empty());
+        // A black background, then the disabled default button over it.
+        for y in top - 6..bottom + 6 {
+            for x in (left - 8) / 8..(right + 8) / 8 {
+                bus.write_byte(base + y as u32 * 64 + x as u32, 0xFF);
+            }
+        }
+        disp.draw_button_state(&mut bus, top, left, bottom, right, "Save", true, false);
+        let mut cleared = Vec::new();
+        for y in top - 6..bottom + 6 {
+            for x in left - 6..right + 6 {
+                if !in_button(x, y)
+                    && !ring.contains(&(x, y))
+                    && !screen_pixel_is_set(&bus, base, 64, x, y)
+                {
+                    cleared.push((x, y));
+                }
+            }
+        }
+        assert!(
+            cleared.is_empty(),
+            "pixels outside the ring cleared: {:?}",
+            &cleared[..cleared.len().min(8)]
+        );
+        // The ring itself in the gray pattern: black where x + y is even.
+        assert!(
+            ring.iter()
+                .all(|&(x, y)| screen_pixel_is_set(&bus, base, 64, x, y) == ((x + y) & 1 == 0))
+        );
+    }
+
+    // A disabled default button at 1 bit, as System 7.1 draws Standard File's
+    // Save with no name: its ring in the gray pattern (pixels with x + y even
+    // kept), its frame solid, its title's ink kept only where x + y is odd.
+    #[test]
+    fn disabled_default_button_has_a_gray_ring_and_solid_frame_at_one_bit() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let base = 0x300000;
+        disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+        let (top, left, bottom, right) = (160i16, 270i16, 182i16, 356i16);
+        disp.draw_button_state(
+            &mut bus,
+            top - 60,
+            left,
+            bottom - 60,
+            right,
+            "Save",
+            true,
+            true,
+        );
+        disp.draw_button_state(&mut bus, top, left, bottom, right, "Save", true, false);
+        let set = |x: i16, y: i16| screen_pixel_is_set(&bus, base, 64, x, y);
+        let ring = |dy: i16| {
+            let mut count = 0;
+            let mut odd = 0;
+            for y in top - 4 + dy..bottom + 4 + dy {
+                for x in left - 4..right + 4 {
+                    let in_button = y >= top + dy && y < bottom + dy && x >= left && x < right;
+                    if !in_button && set(x, y) {
+                        count += 1;
+                        odd += ((x + y) & 1) as u32;
+                    }
+                }
+            }
+            (count, odd)
+        };
+        let (enabled_ring, _) = ring(-60);
+        let (disabled_ring, disabled_odd) = ring(0);
+        assert!(enabled_ring > 0);
+        assert_eq!(
+            disabled_odd, 0,
+            "only the gray pattern's pixels (x + y even) are left"
+        );
+        assert!(
+            disabled_ring * 3 < enabled_ring * 2 && disabled_ring * 3 > enabled_ring,
+            "about half the ring: {disabled_ring} of {enabled_ring}"
+        );
+        // The button's frame stays solid along its top edge.
+        assert!((left + 8..right - 8).all(|x| set(x, top)), "a solid frame");
+        // The title: ink only where x + y is odd.
+        let title_ink: Vec<(i16, i16)> = (top + 3..bottom - 3)
+            .flat_map(|y| (left + 4..right - 4).map(move |x| (x, y)))
+            .filter(|&(x, y)| set(x, y))
+            .collect();
+        assert!(!title_ink.is_empty(), "a dimmed title is drawn");
+        assert!(
+            title_ink.iter().all(|&(x, y)| (x + y) & 1 == 1),
+            "the title's ink in the gray pattern's other phase"
+        );
+    }
+
     #[test]
     fn modal_window_redraw_preserves_initial_border_and_guest_content() {
         for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
