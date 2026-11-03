@@ -1805,8 +1805,12 @@ pub(crate) fn ppc_begin_outline_text_glyph(
     };
     let fb = surface.front_buffer;
     let lanes = fb.depth / 8;
-    let mut vis_rows = regions::PpcRegionRowCache::new(vis);
-    let mut clip_rows = regions::PpcRegionRowCache::new(clip);
+    let band_top = (top.max(0) + i32::from(surface.top))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let band_bottom = (bottom.min(fb.height as i32) + i32::from(surface.top))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let mut vis_rows = regions::PpcRegionRowCache::for_band(vis, band_top, band_bottom);
+    let mut clip_rows = regions::PpcRegionRowCache::for_band(clip, band_top, band_bottom);
     for y in top.max(0)..bottom.min(fb.height as i32) {
         for x in left.max(0)..right.min(fb.width as i32) {
             if !ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {
@@ -2290,8 +2294,12 @@ fn ppc_clear_text_cell(
     let bottom =
         baseline + ppc_scale_font_floor(i32::from(metrics.descent), numerator, denominator);
     let right = left + ppc_scale_font_floor(advance, numerator, denominator);
-    let mut vis_rows = regions::PpcRegionRowCache::new(vis);
-    let mut clip_rows = regions::PpcRegionRowCache::new(clip);
+    let band_top = (top + i32::from(surface.top))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let band_bottom = (bottom + i32::from(surface.top))
+        .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    let mut vis_rows = regions::PpcRegionRowCache::for_band(vis, band_top, band_bottom);
+    let mut clip_rows = regions::PpcRegionRowCache::for_band(clip, band_top, band_bottom);
     for y in top..bottom {
         for x in left..right {
             if ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {

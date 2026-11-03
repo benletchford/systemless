@@ -1223,6 +1223,22 @@ impl<'a> PpcRegionRowCache<'a> {
         }
     }
 
+    pub(super) fn for_band(storage: Option<&'a [u8]>, top: i16, bottom: i16) -> Self {
+        let mut cache = Self::new(storage);
+        let Some(storage) = storage.filter(|storage| storage.len() > 10) else {
+            return cache;
+        };
+        if i32::from(bottom) - i32::from(top) > 4096 || bottom <= top {
+            return cache;
+        }
+        if let Some(rows) = ppc_region_rows_for_band(storage, top, bottom) {
+            for (offset, row) in rows.into_iter().enumerate() {
+                cache.rows.insert((i32::from(top) + offset as i32) as i16, row);
+            }
+        }
+        cache
+    }
+
     pub(super) fn contains(&mut self, v: i16, h: i16) -> bool {
         let Some(storage) = self.storage else {
             return true;
