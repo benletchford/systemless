@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -26,6 +27,20 @@ compatibility:
       key was identical until the input and then differed by 2,877 pixels. An exact
       replay matched both checkpoints, with zero exhausted frames. Bonking pests,
       two-player play, audio and browser performance remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5481
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: eae533549 with preview launch flag
+    architecture: 68k
+    environment: >-
+      Chrome 156 worker/WebGL preview at the production origin used locally
+      substituted frontend files and fetched the managed original archive directly.
+      After 1 Player and Worlds OK, holding Right moved Grag in Surfaceville.
+      A 20-second first-level worker sample measured 60.191 guest ticks and
+      60.989 worker replies per second with no captured page or console errors.
+      This approves bounded browser launch; the deployed replay, full game,
+      two-player play and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5481
 runtime:
