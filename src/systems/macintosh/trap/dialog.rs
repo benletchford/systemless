@@ -9207,23 +9207,25 @@ impl super::TrapDispatcher {
                     let line_height = metrics.ascent + metrics.descent + metrics.leading;
                     let selection_top = top;
                     let selection_bottom = top.saturating_add(line_height).min(bottom);
+                    // Measured as the text above is drawn (its font and
+                    // size, plain), not in the current port's txSize and
+                    // txFace; and kept inside the field.
+                    let width = |offset: usize| {
+                        Self::fb_measure_string(
+                            &decode_mac_roman(&text_bytes[..offset]),
+                            font_id,
+                            font_size,
+                        )
+                    };
                     let selection_left = if start == 0 {
                         left
                     } else {
-                        left + Self::TE_LINE_LEFT_INSET
-                            + self.te_measure_text_width(
-                                font_id,
-                                self.tx_size,
-                                &text_bytes,
-                                0,
-                                start,
-                            )
+                        (left + Self::TE_LINE_LEFT_INSET + width(start)).min(right)
                     };
                     let selection_right = if end >= text_bytes.len() {
                         right
                     } else {
-                        left + Self::TE_LINE_LEFT_INSET
-                            + self.te_measure_text_width(font_id, self.tx_size, &text_bytes, 0, end)
+                        (left + Self::TE_LINE_LEFT_INSET + width(end)).min(right)
                     };
                     if selection_left < selection_right && selection_top < selection_bottom {
                         if self.ui_theme_id() == UiThemeId::ClassicSystem7 {

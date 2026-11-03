@@ -771,6 +771,9 @@ pub(crate) struct StandardFilePutTrackingState {
     pub bounds: (i16, i16, i16, i16),
     pub saved_pixels: SavedPixels,
     pub active_button: Option<((i16, i16, i16, i16), bool)>,
+    /// A press in the name field held down: where it went
+    /// down (a byte offset in the name), the anchor a drag selects from.
+    pub name_anchor: Option<usize>,
 }
 
 /// Candidate file shown by a retained Standard File get dialog.

@@ -8995,6 +8995,7 @@ mod redraw_chrome_tests {
             bounds: put_bounds,
             saved_pixels: SavedPixels::default(),
             active_button: None,
+            name_anchor: None,
         });
         bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
         let put_probe = screen_base + 200 * row_bytes + 8;

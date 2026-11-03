@@ -2829,6 +2829,13 @@ impl super::TrapDispatcher {
         location_label: &str,
         writable: bool,
     ) -> Vec<DialogItem> {
+        let (start, end) = Self::standard_file_selection_range(tracking);
+        let mac_roman = |offset: usize| {
+            encode_mac_roman_lossy(&tracking.name[..offset])
+                .len()
+                .min(i16::MAX as usize) as i16
+        };
+        let (mac_roman_start, mac_roman_end) = (mac_roman(start), mac_roman(end));
         vec![
             DialogItem {
                 item_type: if writable { 4 } else { 0x84 },
@@ -2880,8 +2887,10 @@ impl super::TrapDispatcher {
                 item_type: 16,
                 rect: STANDARD_FILE_NAME_RECT,
                 text: tracking.name.clone(),
-                sel_start: tracking.sel_start,
-                sel_end: tracking.sel_end,
+                // The field draws Mac Roman text: its selection in Mac Roman
+                // offsets (the name's own are UTF-8).
+                sel_start: mac_roman_start,
+                sel_end: mac_roman_end,
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2940,7 +2949,68 @@ impl super::TrapDispatcher {
         if let Some((rect, true)) = tracking.active_button {
             self.draw_standard_file_button(bus, tracking.bounds, rect, false, true);
         }
+        self.draw_standard_file_name_caret(bus, tracking);
         self.standard_file_drawn = bus.screen_mark();
+    }
+
+    /// The byte offset in the name of the character
+    /// boundary nearest a global `h` in the name field (the glyphs start a
+    /// pixel inside its rect, as TextEdit draws them).
+    fn standard_file_name_offset_at(tracking: &StandardFilePutTrackingState, h: i16) -> usize {
+        let origin = tracking.bounds.1 + STANDARD_FILE_NAME_RECT.1 + 1;
+        let boundaries = tracking
+            .name
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(tracking.name.len()));
+        boundaries
+            .min_by_key(|&at| {
+                let x = origin + Self::fb_measure_string(&tracking.name[..at], 0, 12);
+                (i32::from(x) - i32::from(h)).abs()
+            })
+            .unwrap_or(0)
+    }
+
+    /// The insertion point, a line before the character it
+    /// stands at, when nothing is selected (it blinks on a Mac; drawn steady
+    /// here).
+    fn draw_standard_file_name_caret(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &StandardFilePutTrackingState,
+    ) {
+        let (start, end) = Self::standard_file_selection_range(tracking);
+        if start != end {
+            return;
+        }
+        let (top, left, bottom, right) = STANDARD_FILE_NAME_RECT;
+        let (top, left, bottom, right) = (
+            tracking.bounds.0 + top,
+            tracking.bounds.1 + left,
+            tracking.bounds.0 + bottom,
+            tracking.bounds.1 + right,
+        );
+        let x = left + Self::fb_measure_string(&tracking.name[..start], 0, 12);
+        // Past the field (a name wider than it), no insertion point is drawn
+        // rather than one outside the dialog.
+        if x >= right {
+            return;
+        }
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            x,
+            bottom,
+            x + 1,
+            true,
+        );
     }
 
     /// Whether the Standard File dialog drawn last still stands untouched:
@@ -3212,6 +3282,7 @@ impl super::TrapDispatcher {
             bounds,
             saved_pixels,
             active_button: None,
+            name_anchor: None,
         };
         self.draw_standard_file_put_dialog(bus, &tracking);
         self.standard_file_put_tracking = Some(tracking);
@@ -3225,6 +3296,31 @@ impl super::TrapDispatcher {
     ) {
         let mut action = None;
         let mut consumed_event = false;
+        // A press in the name field held down selects from
+        // where it went down to the pointer, until the button comes up.
+        if let Some(anchor) = tracking.name_anchor {
+            let release = self
+                .event_queue
+                .iter()
+                .position(|event| event.what == 2)
+                .and_then(|index| self.event_queue.remove(index));
+            let (_, h) = release
+                .as_ref()
+                .map(|event| (event.where_v, event.where_h))
+                .unwrap_or_else(|| self.input_state.mouse_position());
+            let at = Self::standard_file_name_offset_at(&tracking, h);
+            let (sel_start, sel_end) = (anchor.min(at) as i16, anchor.max(at) as i16);
+            if (sel_start, sel_end) != (tracking.sel_start, tracking.sel_end) {
+                tracking.sel_start = sel_start;
+                tracking.sel_end = sel_end;
+                self.draw_standard_file_put_dialog(bus, &tracking);
+            }
+            if release.is_none() {
+                self.standard_file_put_tracking = Some(tracking);
+                return;
+            }
+            tracking.name_anchor = None;
+        }
         if tracking.active_button.is_some() {
             if let Some((v, h)) = self.service_standard_file_button(bus, tracking.bounds, &mut tracking.active_button, false) {
                 action = self.standard_file_put_mouse_action(&mut tracking, v, h);
@@ -3239,6 +3335,20 @@ impl super::TrapDispatcher {
             match event.what {
                 1 => {
                     let local = (event.where_v - tracking.bounds.0, event.where_h - tracking.bounds.1);
+                    // A click in the name field puts the
+                    // insertion point at the nearest character boundary; held
+                    // down, a drag selects (TEClick, IM I-384).
+                    if Self::standard_file_point_in_rect(
+                        local.0,
+                        local.1,
+                        crate::dialog_manager::edit_text_frame_rect(STANDARD_FILE_NAME_RECT),
+                    ) {
+                        let at = Self::standard_file_name_offset_at(&tracking, event.where_h);
+                        tracking.sel_start = at as i16;
+                        tracking.sel_end = at as i16;
+                        tracking.name_anchor = Some(at);
+                        break;
+                    }
                     if let Some(rect) = [STANDARD_FILE_SAVE_RECT, STANDARD_FILE_CANCEL_RECT, STANDARD_FILE_PUT_DESKTOP_RECT]
                         .into_iter().find(|&rect| Self::standard_file_point_in_rect(local.0, local.1, rect)) {
                         if rect == STANDARD_FILE_SAVE_RECT {

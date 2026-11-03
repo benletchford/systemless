@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 600,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_up",
+      "v": 130,
+      "h": 200
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 52
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 74,
+      "h": 65
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 74,
+      "h": 65
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "screenshot",
+      "name": "save"
+    },
+    {
+      "type": "mouse_move",
+      "v": 273,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_down",
+      "v": 273,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 273,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "clicked"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 168,
+      "y": 267,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 190,
+      "y": 267,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 150,
+      "y": 267,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "key_down",
+      "key": 7,
+      "ch": 88
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "key_up",
+      "key": 7,
+      "ch": 88
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "typed"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 172,
+      "y": 272,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 176,
+      "y": 267,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 168,
+      "y": 267,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "mouse_move",
+      "v": 273,
+      "h": 152
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_down",
+      "v": 273,
+      "h": 152
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 273,
+      "h": 160
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 273,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 273,
+      "h": 180
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "screenshot",
+      "name": "dragging"
+    },
+    {
+      "type": "mouse_up",
+      "v": 273,
+      "h": 180
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "screenshot",
+      "name": "selected"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 150,
+      "y": 267,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 179,
+      "y": 267,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 183,
+      "y": 267,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}
