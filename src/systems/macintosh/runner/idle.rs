@@ -329,6 +329,10 @@ pub(crate) const IDLE_CYCLE_MAX_PROBES_PER_TICK: u8 = 2;
 /// are unchanged and the Event Manager still has no deliverable event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IdleCycleHostSnapshot {
+    /// Exact event-queue contents, including pending menu-bar invalidation.
+    /// A mask-excluded event can remain queued across an identity proof, but
+    /// any added, removed or changed event must revoke it.
+    pub(crate) event_queue: crate::event_queue::EventQueue,
     pub(crate) task: crate::execution_kernel::ExecutionTaskId,
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
@@ -381,6 +385,7 @@ impl IdleCycleHostSnapshot {
         let mut dialog_windows: Vec<_> = dispatcher.dialog_items.keys().copied().collect();
         dialog_windows.sort_unstable();
         Self {
+            event_queue: dispatcher.event_queue.with_ref(Clone::clone),
             task: dispatcher.guest_calls.current_task(),
             mouse_pos: dispatcher.input_state.mouse_position(),
             mouse_button: dispatcher.input_state.mouse_button_pressed(),
