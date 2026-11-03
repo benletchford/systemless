@@ -1897,6 +1897,54 @@ mod tests {
     }
 
     #[test]
+    fn gpu_qd3d_shared_texture_matches_duplicate_texture_packets() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                eprintln!("SKIP QD3D shared texture readback: {error}");
+                return;
+            }
+        };
+        let texture = PpcQ3GpuTexture {
+            width: 2,
+            height: 2,
+            rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
+            wrap_u: false,
+            wrap_v: false,
+        };
+        let mut first = triangle(0., [1.; 4]);
+        first.texture = Some(0);
+        for vertex in &mut first.vertices {
+            vertex.uv = [0.25, 0.75];
+        }
+        let mut second = triangle(-0.1, [1.; 4]);
+        second.texture = Some(0);
+        for vertex in &mut second.vertices {
+            vertex.uv = [0.75, 0.25];
+        }
+        let shared = PpcQ3RasterFrame {
+            width: 32,
+            height: 24,
+            viewport: [0, 0, 31, 23],
+            clear_color: None,
+            textures: vec![texture.clone()],
+            draws: vec![first, second],
+        };
+        let mut duplicate = shared.clone();
+        duplicate.textures.push(texture);
+        duplicate.draws[1].texture = Some(1);
+        let background = vec![0; 32 * 24];
+        let shared_pixels = state.render(&shared, &background).unwrap();
+        let duplicate_pixels = state.render(&duplicate, &background).unwrap();
+        assert!(shared_pixels.iter().any(|pixel| *pixel != 0));
+        assert_eq!(shared_pixels, duplicate_pixels);
+    }
+
+    #[test]
     fn gpu_qd3d_textures_preserve_wrap_clamp_and_bottom_origin() {
         let state = match State::new() {
             Ok(state) => state,

@@ -24077,6 +24077,21 @@ fn q3_software_renderer_samples_captured_mipmap_with_vertex_uvs() {
             lights: Vec::new(),
         });
 
+    // A packet may reuse an identical guest texture across meshes. Changes
+    // made by the guest before the next packet must still be visible.
+    let commands = loaded.q3_scene_commands();
+    let repeated = vec![commands[0].clone(), commands[0].clone()];
+    let packet = loaded.prepare_q3_gpu_frame(repeated.clone(), true).unwrap();
+    assert_eq!(packet.textures.len(), 1);
+    assert_eq!(packet.draws.len(), 2);
+    assert!(packet.draws.iter().all(|draw| draw.texture == Some(0)));
+    let before = packet.textures[0].rgba.clone();
+    loaded.memory.write_u8(image_ptr, 0).unwrap();
+    let next = loaded.prepare_q3_gpu_frame(repeated, true).unwrap();
+    assert_eq!(next.textures.len(), 1);
+    assert_ne!(next.textures[0].rgba, before);
+    loaded.memory.write_u8(image_ptr, 255).unwrap();
+
     let stats = loaded.render_q3_scene_commands_to_front_buffer();
 
     assert_eq!(stats.commands, 1);

@@ -80,6 +80,26 @@ fn q3_gpu_nonfilled_draw(
     })
 }
 
+fn q3_cached_gpu_texture(
+    memory: &mut PpcSectionMem,
+    textures: &mut Vec<PpcQ3GpuTexture>,
+    cache: &mut Vec<(PpcQ3SoftwareTexture, Option<PpcQ3ShaderBoundaryRecord>, usize)>,
+    texture: PpcQ3SoftwareTexture,
+    boundary: Option<PpcQ3ShaderBoundaryRecord>,
+) -> Option<usize> {
+    if let Some((_, _, index)) = cache
+        .iter()
+        .find(|(cached, cached_boundary, _)| *cached == texture && *cached_boundary == boundary)
+    {
+        return Some(*index);
+    }
+    let decoded = ppc_q3_gpu_texture_from_software(memory, texture, boundary)?;
+    let index = textures.len();
+    textures.push(decoded);
+    cache.push((texture, boundary, index));
+    Some(index)
+}
+
 impl PpcLoadedApp {
     fn q3_render_target(&mut self, commands: &[PpcQ3SceneCommand]) -> Option<PpcQ3RenderTarget> {
         commands
@@ -442,6 +462,9 @@ impl PpcLoadedApp {
             .unwrap_or_else(|| PpcQ3ViewportRect::full(front_buffer));
         let viewport_bounds = viewport.inclusive_bounds()?;
         let mut textures = Vec::new();
+        // Reuse decoded texels only within this packet. Guest writes between
+        // frames must always be observed by a fresh preparation.
+        let mut texture_cache = Vec::new();
         let mut draws = Vec::new();
 
         for command in commands {
@@ -587,16 +610,13 @@ impl PpcLoadedApp {
                             index
                         })
                 }
-                Some(texture) => {
-                    let texture = ppc_q3_gpu_texture_from_software(
-                        &mut self.memory,
-                        texture,
-                        material.shader_boundary,
-                    )?;
-                    let index = textures.len();
-                    textures.push(texture);
-                    Some(index)
-                }
+                Some(texture) => Some(q3_cached_gpu_texture(
+                    &mut self.memory,
+                    &mut textures,
+                    &mut texture_cache,
+                    texture,
+                    material.shader_boundary,
+                )?),
                 None => None,
             };
             let interpolation_style = ppc_q3_software_interpolation_style(&command.material);
@@ -2939,5 +2959,68 @@ impl PpcLoadedApp {
             alphas.push(ppc_q3_software_transparency_color_alpha(color)?);
         }
         Some(alphas)
+    }
+}
+
+#[cfg(test)]
+mod packet_texture_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_textures_respect_boundaries_and_reload_next_packet() {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![255, 255, 0, 0]);
+        let texture = PpcQ3SoftwareTexture {
+            image_base: 0x1000,
+            valid_size: 4,
+            image_offset: 0,
+            width: 1,
+            height: 1,
+            row_bytes: 4,
+            pixel_type: PPC_Q3_PIXEL_TYPE_ARGB32,
+            byte_order: PPC_Q3_ENDIAN_BIG,
+            pixel_bytes: 4,
+        };
+        let mut textures = Vec::new();
+        let mut cache = Vec::new();
+        assert_eq!(
+            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, None),
+            Some(0)
+        );
+        assert_eq!(
+            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, None),
+            Some(0)
+        );
+        assert_eq!(textures.len(), 1);
+        assert_eq!(textures[0].rgba, [255, 0, 0, 255]);
+        let clamp = Some(PpcQ3ShaderBoundaryRecord {
+            shader: 0,
+            u_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+            v_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+        });
+        assert_eq!(
+            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, clamp),
+            Some(1)
+        );
+        assert_eq!(textures.len(), 2);
+        assert!(!textures[1].wrap_u && !textures[1].wrap_v);
+        let invalid = Some(PpcQ3ShaderBoundaryRecord {
+            u_boundary: u32::MAX,
+            ..clamp.unwrap()
+        });
+        assert!(
+            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, invalid).is_none()
+        );
+        assert_eq!(textures.len(), 2);
+
+        memory.write_bytes(0x1000, &[255, 0, 255, 0]).unwrap();
+        let mut next_textures = Vec::new();
+        let mut next_cache = Vec::new();
+        assert_eq!(
+            q3_cached_gpu_texture(&mut memory, &mut next_textures, &mut next_cache, texture, None),
+            Some(0)
+        );
+        assert_eq!(next_textures[0].rgba, [0, 255, 0, 255]);
+        assert_eq!(textures[0].rgba, [255, 0, 0, 255]);
     }
 }
