@@ -3460,7 +3460,9 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "ppc"
-version = "0.7.3"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "007c5149829acbc03f69d03d082b57fd1156aae1633ea409ee3a242dcbe67f22"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
