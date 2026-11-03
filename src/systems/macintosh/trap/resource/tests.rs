@@ -7686,6 +7686,7 @@ fn pb_get_vinfo_trap_variants_respect_basic_and_hfs_parameter_block_boundaries()
         bus.write_long(pb + 18, name_buf);
         bus.write_long(pb + 64, 0xDEAD_BEEF);
         bus.write_long(pb + 68, 0xCAFE_BABE);
+        bus.write_long(pb + 90, 0x1234_5678);
 
         call_trap_word(&mut disp, trap_word, &mut cpu, &mut bus).unwrap();
 
@@ -7698,7 +7699,30 @@ fn pb_get_vinfo_trap_variants_respect_basic_and_hfs_parameter_block_boundaries()
         } else {
             assert_eq!(bus.read_long(pb + 64), 0xDEAD_BEEF);
             assert_eq!(bus.read_long(pb + 68), 0xCAFE_BABE);
+            assert_eq!(bus.read_long(pb + 90), 0x1234_5678);
         }
+    }
+}
+
+#[test]
+fn pb_hget_vinfo_reports_boot_system_folder_in_finder_info() {
+    for trap_word in [0xA207, 0xA607] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let system_dir = disp.ensure_vfs_directory("System Folder");
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 22, (-1i16) as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 90, 0xDEAD_BEEF);
+
+        call_trap_word(&mut disp, trap_word, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            bus.read_long(pb + 90),
+            system_dir,
+            "trap ${trap_word:04X}: blessed System Folder"
+        );
     }
 }
 

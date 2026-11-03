@@ -4586,6 +4586,12 @@ impl super::TrapDispatcher {
                     bus.write_word(pb + 66, volume_ref_num.unsigned_abs().max(1)); // ioVDrvInfo
                     bus.write_word(pb + 68, 0); // ioVDRefNum
                     bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
+                    if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
+                        // Finder info[0] is the blessed System Folder ID. The
+                        // synthetic boot catalogue reserves ID 16 for that folder.
+                        // Technical Note FL15, "Blessed Folder: A How-To Guide".
+                        bus.write_long(pb + 90, 16);
+                    }
                 }
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
