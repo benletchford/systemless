@@ -1209,6 +1209,51 @@ pub(super) fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v
     ppc_point_in_region_storage(&storage, v, h)
 }
 
+// Reuse decoded intervals across point queries in a QuickDraw region.
+pub(super) struct PpcRegionRowCache<'a> {
+    storage: Option<&'a [u8]>,
+    rows: HashMap<i16, Vec<i16>>,
+}
+
+impl<'a> PpcRegionRowCache<'a> {
+    pub(super) fn new(storage: Option<&'a [u8]>) -> Self {
+        Self {
+            storage,
+            rows: HashMap::new(),
+        }
+    }
+
+    pub(super) fn contains(&mut self, v: i16, h: i16) -> bool {
+        let Some(storage) = self.storage else {
+            return true;
+        };
+        let Some((top, left, bottom, right)) = ppc_region_storage_bbox(storage) else {
+            return false;
+        };
+        if v < top || v >= bottom || h < left || h >= right {
+            return false;
+        }
+        if storage.len() == 10 {
+            return true;
+        }
+        self.rows
+            .entry(v)
+            .or_insert_with(|| {
+                ppc_region_rows_for_band(storage, v, v.saturating_add(1))
+                    .and_then(|mut rows| {
+                        if rows.is_empty() {
+                            None
+                        } else {
+                            Some(rows.remove(0))
+                        }
+                    })
+                    .unwrap_or_default()
+            })
+            .chunks_exact(2)
+            .any(|interval| h >= interval[0] && h < interval[1])
+    }
+}
+
 pub(super) fn ppc_point_in_region_storage(storage: &[u8], v: i16, h: i16) -> bool {
     let Some((top, left, bottom, right)) = ppc_region_storage_bbox(&storage) else {
         return false;
