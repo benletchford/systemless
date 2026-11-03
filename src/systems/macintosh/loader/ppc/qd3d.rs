@@ -2203,12 +2203,14 @@ pub fn ppc_q3_gpu_texture_from_software(
         if let Some(row) = ppc_q3_gpu_texture_row(memory, texture, y) {
             // Borrow only this conversion's visible row. Guest writes between
             // frames remain observable; no texture cache or extra scratch copy.
-            for bytes in row.chunks_exact(texture.pixel_bytes as usize) {
-                let mut pixel = [0; 4];
-                pixel[..bytes.len()].copy_from_slice(bytes);
-                rgba.extend(ppc_q3_gpu_texture_rgba8(
-                    texture.pixel_type, texture.byte_order, &pixel,
-                )?);
+            if !ppc_q3_gpu_texture_fast_16_row(&mut rgba, row, texture) {
+                for bytes in row.chunks_exact(texture.pixel_bytes as usize) {
+                    let mut pixel = [0; 4];
+                    pixel[..bytes.len()].copy_from_slice(bytes);
+                    rgba.extend(ppc_q3_gpu_texture_rgba8(
+                        texture.pixel_type, texture.byte_order, &pixel,
+                    )?);
+                }
             }
             continue;
         }
@@ -2252,6 +2254,77 @@ pub fn ppc_q3_gpu_texture_from_software(
         wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
         wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
     })
+}
+
+/// Convert common 16-bit rows with the format dispatch outside the texel loop.
+/// Other formats and inconsistent descriptors keep the scalar conversion path.
+fn ppc_q3_gpu_texture_fast_16_row(
+    rgba: &mut Vec<u8>,
+    row: &[u8],
+    texture: PpcQ3SoftwareTexture,
+) -> bool {
+    if texture.pixel_bytes != 2
+        || !matches!(texture.byte_order, PPC_Q3_ENDIAN_BIG | PPC_Q3_ENDIAN_LITTLE)
+    {
+        return false;
+    }
+    let little = texture.byte_order == PPC_Q3_ENDIAN_LITTLE;
+    match (texture.pixel_type, little) {
+        (PPC_Q3_PIXEL_TYPE_RGB16, false) => q3_convert_16_row::<0, false>(rgba, row),
+        (PPC_Q3_PIXEL_TYPE_RGB16, true) => q3_convert_16_row::<0, true>(rgba, row),
+        (PPC_Q3_PIXEL_TYPE_ARGB16, false) => q3_convert_16_row::<1, false>(rgba, row),
+        (PPC_Q3_PIXEL_TYPE_ARGB16, true) => q3_convert_16_row::<1, true>(rgba, row),
+        (PPC_Q3_PIXEL_TYPE_RGB16_565, false) => q3_convert_16_row::<2, false>(rgba, row),
+        (PPC_Q3_PIXEL_TYPE_RGB16_565, true) => q3_convert_16_row::<2, true>(rgba, row),
+        _ => return false,
+    }
+    true
+}
+
+// FORMAT is 0 for RGB555, 1 for ARGB1555 and 2 for RGB565.
+fn q3_convert_16_row<const FORMAT: u8, const LITTLE: bool>(rgba: &mut Vec<u8>, row: &[u8]) {
+    const fn table<const N: usize>() -> [u8; N] {
+        let mut result = [0; N];
+        let mut i = 0;
+        while i < N {
+            result[i] = ((i * 255 + (N - 1) / 2) / (N - 1)) as u8;
+            i += 1;
+        }
+        result
+    }
+    const EXPAND_5: [u8; 32] = table::<32>();
+    const EXPAND_6: [u8; 64] = table::<64>();
+    let start = rgba.len();
+    rgba.resize(start + row.len() * 2, 0);
+    for (source, destination) in row.chunks_exact(2).zip(rgba[start..].chunks_exact_mut(4)) {
+        let value = if LITTLE {
+            u16::from_le_bytes([source[0], source[1]])
+        } else {
+            u16::from_be_bytes([source[0], source[1]])
+        };
+        let red = if FORMAT == 2 {
+            (value >> 11) & 31
+        } else {
+            (value >> 10) & 31
+        };
+        let green = if FORMAT == 2 {
+            (value >> 5) & 63
+        } else {
+            (value >> 5) & 31
+        };
+        destination[0] = EXPAND_5[red as usize];
+        destination[1] = if FORMAT == 2 {
+            EXPAND_6[green as usize]
+        } else {
+            EXPAND_5[green as usize]
+        };
+        destination[2] = EXPAND_5[(value & 31) as usize];
+        destination[3] = if FORMAT == 1 && value & 0x8000 == 0 {
+            0
+        } else {
+            255
+        };
+    }
 }
 
 fn ppc_q3_gpu_texture_row(
