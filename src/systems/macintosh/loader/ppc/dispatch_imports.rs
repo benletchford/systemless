@@ -745,12 +745,15 @@ pub(crate) fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
+            files,
+            vfs_files,
             vfs_resources,
             gworlds,
             current_gworld: *current_gworld,
             screen_clut,
             color_manager_clut,
             callback_stack: picture_callback_stack,
+            toolbox_startup,
         })
     {
         return Some(action);
@@ -1768,6 +1771,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetPictInfo
         | PpcImportDispatcherTarget::DrawPicture
+        | PpcImportDispatcherTarget::DrawPictureFile
         | PpcImportDispatcherTarget::KillPicture => {
             unreachable!("picture imports return through dispatch_picture_import")
         }
