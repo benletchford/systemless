@@ -7528,3 +7528,112 @@ fn pt2rect_handles_reversed_signed_coordinates_and_preserves_return_register() {
         assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some(expected));
     }
 }
+
+#[test]
+fn icon_renderer_can_select_application_family_over_driver_collision() {
+    use super::super::dispatch_cursor::{ppc_plot_icon_id, PpcIconResourceScope};
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PlotIconID")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 2, 33, 34).unwrap();
+    let mut resources = Vec::new();
+    for (path, refnum, index) in [("Drivers/Mouse", 128, 0u8), ("Games/Example", 0, 255u8)] {
+        let mut mono = vec![0; 256];
+        mono[128] = 0x80;
+        for (kind, data) in [(*b"ICN#", mono), (*b"icl8", vec![index; 1024])] {
+            resources.push(PpcVfsResourceRecord {
+                ref_num: refnum,
+                path: path.into(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+    }
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
+    let mut cursor = loaded.heap_cursor();
+    let mut error = 0;
+    let mut manager = loaded.process_memory_manager.0.borrow_mut();
+    assert_eq!(
+        ppc_plot_icon_id(
+            rect,
+            0,
+            0,
+            128,
+            &mut loaded.memory,
+            manager.native_mut(),
+            &mut cursor,
+            &mut error,
+            &resources,
+            PpcIconResourceScope::Application("games/example"),
+            &loaded.gworlds,
+            *loaded.current_gworld,
+            &loaded.screen_clut
+        ),
+        Ok(true)
+    );
+    let black = pict::closest_clut_index(0, 0, 0, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(u16::from(black))
+    );
+    // A color member from the driver must not be mixed with the application's
+    // monochrome mask when the application has no matching color member.
+    resources.retain(|record| {
+        !(record.path == "Games/Example" && record.res_type == u32::from_be_bytes(*b"icl8"))
+    });
+    resources
+        .iter_mut()
+        .find(|record| {
+            record.path == "Drivers/Mouse" && record.res_type == u32::from_be_bytes(*b"icl8")
+        })
+        .unwrap()
+        .data = vec![255; 1024].into();
+    assert_eq!(
+        ppc_plot_icon_id(
+            rect,
+            0,
+            0,
+            128,
+            &mut loaded.memory,
+            manager.native_mut(),
+            &mut cursor,
+            &mut error,
+            &resources,
+            PpcIconResourceScope::Application("Games/Example"),
+            &loaded.gworlds,
+            *loaded.current_gworld,
+            &loaded.screen_clut
+        ),
+        Ok(true)
+    );
+    let white = pict::closest_clut_index(u16::MAX, u16::MAX, u16::MAX, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(u16::from(white))
+    );
+    resources.retain(|record| record.path != "Games/Example");
+    assert_eq!(
+        ppc_plot_icon_id(
+            rect,
+            0,
+            0,
+            128,
+            &mut loaded.memory,
+            manager.native_mut(),
+            &mut cursor,
+            &mut error,
+            &resources,
+            PpcIconResourceScope::Application("Games/Example"),
+            &loaded.gworlds,
+            *loaded.current_gworld,
+            &loaded.screen_clut
+        ),
+        Err(PPC_RES_NOT_FOUND_ERR)
+    );
+}
