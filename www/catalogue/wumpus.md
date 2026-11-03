@@ -1,5 +1,6 @@
 ---
 id: wumpus
+launch_enabled: true
 kind: game
 title: Wumpus! 1.0
 summary: >-
@@ -25,6 +26,21 @@ compatibility:
       identical until the input and then differed by 11,358 pixels; Left, Right and Down were
       blocked from the starting cavern. An exact replay matched both checkpoints, with
       zero exhausted frames. Hazards, dynamite, shooting and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5443
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 64da0419b browser preview
+    architecture: ppc
+    environment: >-
+      Chrome 156 worker/WebGL previews used local frontend assets at the
+      production origin and fetched the unchanged managed archive directly.
+      Holding Up moved the explorer through several caverns; a same-duration
+      control remained in the initial cavern. Three standard-verifier 20-second
+      post-input samples passed the existing pacing thresholds, with steady
+      guest rates of 60.15, 60.21 and 59.92 ticks per second and host rates of
+      61.19, 63.44 and 59.92 frames per second. No console errors were captured.
+      Hazards, dynamite, shooting, saves and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5443
 runtime:
