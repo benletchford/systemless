@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.109.0](https://github.com/benletchford/systemless/compare/v0.108.0...v0.109.0) (2026-11-03)
+
+
+### Features
+
+* **catalogue:** enable bonkheads deluxe demo ([#5594](https://github.com/benletchford/systemless/issues/5594)) ([846c7ae](https://github.com/benletchford/systemless/commit/846c7aee57528f9f640795cfbca65b5473826403))
+* **catalogue:** enable Crystal Quest sample ([#5613](https://github.com/benletchford/systemless/issues/5613)) ([05d8385](https://github.com/benletchford/systemless/commit/05d8385f405d7f0753c96426ca4c2301722a5e58))
+* **catalogue:** enable Theatre release 2 ([#5610](https://github.com/benletchford/systemless/issues/5610)) ([64da041](https://github.com/benletchford/systemless/commit/64da0419b878f5d2ff1729074c5232b2ca5411ee))
+* **catalogue:** enable Wumpus 1.0 ([#5611](https://github.com/benletchford/systemless/issues/5611)) ([bb1d6e3](https://github.com/benletchford/systemless/commit/bb1d6e3ac2e7d620ba706dcdeefdc22963e70f92))
+
+
+### Bug Fixes
+
+* **input:** translate desktop navigation keys to Macintosh codes ([9e46f39](https://github.com/benletchford/systemless/commit/9e46f39a858249c4fc69597d7b6e16cfa513d1ae))
+* **mac:** correct PowerPC process enumeration results ([#5557](https://github.com/benletchford/systemless/issues/5557)) ([c1d975d](https://github.com/benletchford/systemless/commit/c1d975d9fa0c7f75c61a8b71fd654b5ddb68692d))
+* **mac:** expose resource forks to file manager ([#5584](https://github.com/benletchford/systemless/issues/5584)) ([8bfb476](https://github.com/benletchford/systemless/commit/8bfb47678702a5982a05781bf4ad18cd9b91ee3a))
+* **mac:** initialize the system version low-memory global ([#5571](https://github.com/benletchford/systemless/issues/5571)) ([e2438cf](https://github.com/benletchford/systemless/commit/e2438cf4e60696ac9edb856404427d014de579d7))
+* **mac:** preserve idle proofs across unchanged event queues ([#5609](https://github.com/benletchford/systemless/issues/5609)) ([b919e74](https://github.com/benletchford/systemless/commit/b919e74f895e95a76daf397ba115a4d41a056887))
+* **mac:** preserve source-only copybits outline detail ([#5593](https://github.com/benletchford/systemless/issues/5593)) ([eae5335](https://github.com/benletchford/systemless/commit/eae5335498256fa38eb3b5eafbd4c83abfb739df))
+* **mac:** scope HFS resource files to their directories ([#5573](https://github.com/benletchford/systemless/issues/5573)) ([08cadf5](https://github.com/benletchford/systemless/commit/08cadf5f27a71f9b029973f779202669f3b43829))
+* **ppc:** decode TIFF graphics importer files ([#5568](https://github.com/benletchford/systemless/issues/5568)) ([0884653](https://github.com/benletchford/systemless/commit/088465328519cb6ee6a11e3095a9813aa02c12d6))
+* **standard-file:** keep a held button highlighted through the dialog's repaint ([8ade24d](https://github.com/benletchford/systemless/commit/8ade24d50d45ea24532a2e846509a620e6b0c6e4))
+* **standard-file:** place the insertion point at a click in the Save name field and select on drag ([ae5a8cf](https://github.com/benletchford/systemless/commit/ae5a8cfe528513656e22e738ce796cc5baba5702))
+
+
+### Performance Improvements
+
+* **mac:** accelerate 16-bit qd3d texture rows ([#5591](https://github.com/benletchford/systemless/issues/5591)) ([dd81d38](https://github.com/benletchford/systemless/commit/dd81d387033ae452b263b481ceea8b7549b84769))
+* **mac:** combine rectangular regions at their edges ([#5602](https://github.com/benletchford/systemless/issues/5602)) ([95a65cc](https://github.com/benletchford/systemless/commit/95a65cc86d68b9ccd0fc782d79e0e2f4296bf3ac))
+* **mac:** decode bounded clipping bands once ([#5600](https://github.com/benletchford/systemless/issues/5600)) ([88b81dd](https://github.com/benletchford/systemless/commit/88b81dd40ac9b986d9cf282f1be3050e1d7730f1))
+* **mac:** reuse clipping rows for ppc text ([#5598](https://github.com/benletchford/systemless/issues/5598)) ([394eb0f](https://github.com/benletchford/systemless/commit/394eb0f852c80f3fa983bf4c2efccd517feaaf91))
+* **mac:** reuse clipping rows in control blits ([#5596](https://github.com/benletchford/systemless/issues/5596)) ([c988b44](https://github.com/benletchford/systemless/commit/c988b4406dc885934f3e3c6f7382cefd64a65a4d))
+* **mac:** reuse decoded textures within qd3d frames ([#5589](https://github.com/benletchford/systemless/issues/5589)) ([d4c7839](https://github.com/benletchford/systemless/commit/d4c7839b0701727c2a68ddd7691c56f07c0ca3f6))
+* **mac:** shorten single-chunk detail invalidation ([#5605](https://github.com/benletchford/systemless/issues/5605)) ([3c10dfe](https://github.com/benletchford/systemless/commit/3c10dfe67aef039fffd7c0123072143cbf676310))
+
 ## [0.108.0](https://github.com/benletchford/systemless/compare/v0.107.0...v0.108.0) (2026-11-02)
 
 
