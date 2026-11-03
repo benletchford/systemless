@@ -349,6 +349,20 @@ pub(crate) fn ppc_local_point_in_port_regions(
     })
 }
 
+fn ppc_cached_point_in_port_regions(
+    surface: PpcQuickDrawSurface,
+    (x, y): (i32, i32),
+    vis: &mut regions::PpcRegionRowCache<'_>,
+    clip: &mut regions::PpcRegionRowCache<'_>,
+) -> bool {
+    let port_h = x + i32::from(surface.left);
+    let port_v = y + i32::from(surface.top);
+    i16::try_from(port_h)
+        .ok()
+        .zip(i16::try_from(port_v).ok())
+        .is_some_and(|(h, v)| vis.contains(v, h) && clip.contains(v, h))
+}
+
 pub(crate) fn ppc_draw_oval(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -1791,9 +1805,11 @@ pub(crate) fn ppc_begin_outline_text_glyph(
     };
     let fb = surface.front_buffer;
     let lanes = fb.depth / 8;
+    let mut vis_rows = regions::PpcRegionRowCache::new(vis);
+    let mut clip_rows = regions::PpcRegionRowCache::new(clip);
     for y in top.max(0)..bottom.min(fb.height as i32) {
         for x in left.max(0)..right.min(fb.width as i32) {
-            if !ppc_local_point_in_port_regions(surface, (x, y), vis, clip) {
+            if !ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {
                 continue;
             }
             let address = fb.base_addr + y as u32 * fb.row_bytes + x as u32 * lanes;
@@ -2041,6 +2057,16 @@ pub(crate) fn ppc_apply_text_pixel(
     if !ppc_local_point_in_port_regions(surface, point, vis_storage, clip_storage) {
         return false;
     }
+    ppc_apply_text_pixel_unclipped(memory, surface, point, color_pixel, text_mode)
+}
+
+fn ppc_apply_text_pixel_unclipped(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    point: (i32, i32),
+    color_pixel: u16,
+    text_mode: i16,
+) -> bool {
     let front_buffer = surface.front_buffer;
     let mode = text_mode & 0x3f;
     match mode {
@@ -2264,9 +2290,11 @@ fn ppc_clear_text_cell(
     let bottom =
         baseline + ppc_scale_font_floor(i32::from(metrics.descent), numerator, denominator);
     let right = left + ppc_scale_font_floor(advance, numerator, denominator);
+    let mut vis_rows = regions::PpcRegionRowCache::new(vis);
+    let mut clip_rows = regions::PpcRegionRowCache::new(clip);
     for y in top..bottom {
         for x in left..right {
-            if ppc_local_point_in_port_regions(surface, (x, y), vis, clip) {
+            if ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {
                 let _ =
                     ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, (x, y), background);
             }
@@ -2305,6 +2333,8 @@ pub(crate) fn ppc_draw_text_chars(
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
 
+    let mut text_vis_rows = regions::PpcRegionRowCache::new(vis_storage.as_deref());
+    let mut text_clip_rows = regions::PpcRegionRowCache::new(clip_storage.as_deref());
     let (local_h, local_v) = surface.local_point((i32::from(pen.0), i32::from(pen.1)));
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let mut base_advance = 0i32;
@@ -2402,15 +2432,13 @@ pub(crate) fn ppc_draw_text_chars(
                                 );
                             for y in top..bottom {
                                 for x in left..right {
-                                    let _ = ppc_apply_text_pixel(
-                                        memory,
-                                        surface,
-                                        vis_storage.as_deref(),
-                                        clip_storage.as_deref(),
-                                        (x, y),
-                                        color_pixel,
-                                        text_mode,
-                                    );
+                                    if ppc_cached_point_in_port_regions(
+                                        surface, (x, y), &mut text_vis_rows, &mut text_clip_rows,
+                                    ) {
+                                        let _ = ppc_apply_text_pixel_unclipped(
+                                            memory, surface, (x, y), color_pixel, text_mode,
+                                        );
+                                    }
                                 }
                             }
                         }

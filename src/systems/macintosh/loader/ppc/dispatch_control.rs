@@ -3013,52 +3013,6 @@ pub(super) fn ppc_blit_theme_bitmap(
     ppc_blit_theme_bitmap_masked(memory, gworlds, port, top, left, bitmap, None)
 }
 
-// A theme blit can visit many pixels in the same scanline. Decode a complex
-// QuickDraw region at most once per row, retaining the normal point semantics.
-struct ThemeClipRows<'a> {
-    storage: Option<&'a [u8]>,
-    rows: HashMap<i16, Vec<i16>>,
-}
-
-impl<'a> ThemeClipRows<'a> {
-    fn new(storage: Option<&'a [u8]>) -> Self {
-        Self {
-            storage,
-            rows: HashMap::new(),
-        }
-    }
-
-    fn contains(&mut self, v: i16, h: i16) -> bool {
-        let Some(storage) = self.storage else {
-            return true;
-        };
-        let Some((top, left, bottom, right)) = regions::ppc_region_storage_bbox(storage) else {
-            return false;
-        };
-        if v < top || v >= bottom || h < left || h >= right {
-            return false;
-        }
-        if storage.len() == 10 {
-            return true;
-        }
-        self.rows
-            .entry(v)
-            .or_insert_with(|| {
-                regions::ppc_region_rows_for_band(storage, v, v.saturating_add(1))
-                    .and_then(|mut rows| {
-                        if rows.is_empty() {
-                            None
-                        } else {
-                            Some(rows.remove(0))
-                        }
-                    })
-                    .unwrap_or_default()
-            })
-            .chunks_exact(2)
-            .any(|interval| h >= interval[0] && h < interval[1])
-    }
-}
-
 pub(super) fn ppc_blit_theme_bitmap_masked(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -3077,8 +3031,8 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
     let vis_storage = memory
         .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
-    let mut vis_rows = ThemeClipRows::new(vis_storage.as_deref());
-    let mut clip_rows = ThemeClipRows::new(clip_storage.as_deref());
+    let mut vis_rows = regions::PpcRegionRowCache::new(vis_storage.as_deref());
+    let mut clip_rows = regions::PpcRegionRowCache::new(clip_storage.as_deref());
     let mut pixels = HashMap::new();
     let rgba = bitmap.rgba();
     let mut wrote = false;
@@ -3910,7 +3864,7 @@ mod theme_clip_row_tests {
         )
         .unwrap();
         for storage in [&rect, &complex] {
-            let mut cache = ThemeClipRows::new(Some(storage));
+            let mut cache = regions::PpcRegionRowCache::new(Some(storage));
             for v in -1..8 {
                 for h in -1..12 {
                     assert_eq!(
@@ -3921,7 +3875,7 @@ mod theme_clip_row_tests {
                 }
             }
         }
-        assert!(ThemeClipRows::new(None).contains(-20, 30));
-        assert!(!ThemeClipRows::new(Some(&[0, 1])).contains(0, 0));
+        assert!(regions::PpcRegionRowCache::new(None).contains(-20, 30));
+        assert!(!regions::PpcRegionRowCache::new(Some(&[0, 1])).contains(0, 0));
     }
 }
