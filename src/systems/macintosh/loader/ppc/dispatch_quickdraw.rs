@@ -1599,11 +1599,19 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPenState => {
-            ppc_get_pen_state(memory, current_gworld, cpu.gpr[3]);
+            ppc_get_pen_state(
+                memory,
+                current_gworld,
+                cpu.gpr[3],
+                toolbox_startup.quickdraw_pen_pattern,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetPenState => {
-            ppc_set_pen_state(memory, current_gworld, cpu.gpr[3]);
+            if let Some(pen) = ppc_set_pen_state(memory, current_gworld, cpu.gpr[3]) {
+                (*quickdraw_pen_h, *quickdraw_pen_v) = pen.location;
+                toolbox_startup.quickdraw_pen_pattern = pen.pattern;
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
