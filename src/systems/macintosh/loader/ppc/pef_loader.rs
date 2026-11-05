@@ -1078,9 +1078,9 @@ fn load_pef_application_with_optional_disk_fragment(
     memory.add_region(stack_base, stack);
     let mut cpu = PpcCpu::new();
     cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
-    // Opt-in PowerPC JIT: set `PPC_JIT=1` to enable; the interpreter is the default.
-    #[cfg(feature = "jit")]
-    if std::env::var("PPC_JIT").as_deref() == Ok("1") {
+    // The PowerPC JIT is on by default; set `PPC_JIT=0` to use the interpreter.
+    #[cfg(all(feature = "jit", not(target_family = "wasm")))]
+    if std::env::var("PPC_JIT").as_deref() != Ok("0") {
         if let Err(error) = cpu.enable_jit(ppc::PpcJitConfig::default()) {
             eprintln!("ppc jit unavailable: {error}");
         }

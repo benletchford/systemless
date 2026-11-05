@@ -95,8 +95,9 @@ gui = [
 # Shared wgpu QuickDraw/QD3D compute kernels without a native backend. The
 # desktop runner and browser compute worker each choose their device backend.
 wgpu-compute = ["dep:wgpu", "dep:futures-channel"]
-# Compile hot 68K traces and PowerPC code to native code. Embeddings constrained by executable-
-# memory policy can omit this feature and use m68k's portable trace executor.
+# Compile hot 68K traces and PowerPC code to native code. Embeddings constrained
+# by executable-memory policy can omit this feature and use m68k's portable trace
+# executor and ppc's interpreter.
 jit = ["m68k/jit", "ppc/jit"]
 # Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
 # Off by default so it stays out of the published public API and docs.
@@ -182,4 +183,3 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
-
