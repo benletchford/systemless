@@ -281,6 +281,18 @@ pub(crate) fn draw_round_rect_8bpp_68k(
     })
 }
 
+/// Runs the 68K `draw_arc` path on `fixture` and returns the pixel bytes.
+pub(crate) fn draw_arc_8bpp_68k(
+    fixture: &IndexedPortFixture<'_>,
+    rect: super::types::Rect,
+    (start_angle, arc_angle): (i16, i16),
+    op: super::types::ShapeOp,
+) -> Vec<u8> {
+    on_8bpp_68k_port(fixture, |d, cpu, bus| {
+        d.draw_arc(cpu, bus, &rect, start_angle, arc_angle, op)
+    })
+}
+
 /// Builds `fixture` as the current 8-bit colour port of a 68K dispatcher, runs
 /// `draw` and returns the pixel bytes afterwards.
 fn on_8bpp_68k_port(
