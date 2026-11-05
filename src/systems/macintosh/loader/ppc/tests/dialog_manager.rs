@@ -4666,6 +4666,84 @@ fn append_ditl_creates_controls_that_shorten_ditl_disposes() {
 }
 
 #[test]
+fn shorten_ditl_disposes_removed_text_and_clears_their_edit_field() {
+    let dialog_ptr = PPC_DATA_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CountDITL");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(dialog_ptr, vec![0; 256]);
+
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dialog_ptr,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 300,
+        height: 200,
+        depth: 8,
+        row_bytes: 300,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+
+    let ok = make_test_ditl_item(10, 10, 30, 80, b"OK");
+    let ditl_bytes = make_test_ditl(&[ok]);
+    let items_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &ditl_bytes,
+    );
+    loaded
+        .memory
+        .write_u32_be(dialog_ptr + PPC_DIALOG_ITEMS_OFFSET, items_handle)
+        .unwrap();
+    let text = make_test_ditl_item_typed(40, 10, 56, 160, PPC_DIALOG_ITEM_STATIC_TEXT, b"Note");
+    let append_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &make_test_ditl(&[text]),
+    );
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = append_handle;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let text_handle = loaded
+        .memory
+        .read_u32_be(items_ptr + ditl_bytes.len() as u32)
+        .unwrap();
+    assert_ne!(text_handle, 0);
+    assert!(test_handles!(loaded).iter().any(|record| record.handle == text_handle));
+    loaded
+        .memory
+        .write_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET, 1)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = dialog_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::ShortenDitl),
+    );
+
+    assert!(!test_handles!(loaded).iter().any(|record| record.handle == text_handle));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog_ptr + PPC_DIALOG_EDIT_FIELD_OFFSET),
+        Some(u16::MAX)
+    );
+}
+
+#[test]
 fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
     let dialog_ptr = PPC_DATA_BASE + 0x1000;
     let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"CountDITL");

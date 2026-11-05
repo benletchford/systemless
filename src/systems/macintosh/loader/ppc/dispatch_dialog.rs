@@ -2206,6 +2206,30 @@ fn ppc_dispatch_dialog_compatibility(
                     );
                 }
             }
+            for item in items.iter().skip(retained) {
+                if crate::dialog_manager::is_dialog_item_disposable_text(item.item_type)
+                    && item.handle != 0
+                {
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    let _ = allocator.dispose_handle(
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        item.handle,
+                    );
+                }
+            }
+            let edit_field_ptr = params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET;
+            if memory
+                .read_u16_be(edit_field_ptr)
+                .is_some_and(|field| field != u16::MAX && usize::from(field) >= retained)
+            {
+                let _ = memory.write_u16_be(edit_field_ptr, u16::MAX);
+            }
             let end = if retained == 0 {
                 2
             } else {
