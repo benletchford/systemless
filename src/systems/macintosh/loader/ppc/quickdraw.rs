@@ -1602,6 +1602,13 @@ pub(crate) fn ppc_round_rect_rows(
         .collect()
 }
 
+/// A negative pnVis hides every shape verb, as in the 68K shape path.
+fn ppc_port_pen_hidden(memory: &mut PpcSectionMem, port: u32) -> bool {
+    memory
+        .read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_PN_VIS_OFFSET))
+        .is_some_and(|visibility| (visibility as i16) < 0)
+}
+
 /// Intersects port-coordinate rows starting at `top` with visRgn and clipRgn.
 fn ppc_clip_rows_to_port(
     memory: &mut PpcSectionMem,
@@ -1634,6 +1641,9 @@ pub(crate) fn ppc_invert_rows(
     top: i16,
     mut rows: Vec<Vec<i16>>,
 ) -> bool {
+    if ppc_port_pen_hidden(memory, current_gworld) {
+        return false;
+    }
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -1679,6 +1689,9 @@ pub(crate) fn ppc_fill_color_rows(
     (fore_color, fore_index): (PpcRgbColor, Option<u8>),
     (back_color, back_index): (PpcRgbColor, Option<u8>),
 ) -> bool {
+    if ppc_port_pen_hidden(memory, current_gworld) {
+        return false;
+    }
     let Some(bottom) = i16::try_from(rows.len())
         .ok()
         .and_then(|height| top.checked_add(height))

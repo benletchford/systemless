@@ -1983,7 +1983,18 @@ fn clipped_shape_pixels(
     target: PpcImportDispatcherTarget,
     regs: [u32; 4],
     pattern: [u8; 8],
+    clips: (RegionSpec, RegionSpec),
+) -> Vec<u8> {
+    prepared_shape_pixels(target, regs, pattern, clips, |_| {})
+}
+
+/// `clipped_shape_pixels` with `prepare` run on the port before the call.
+fn prepared_shape_pixels(
+    target: PpcImportDispatcherTarget,
+    regs: [u32; 4],
+    pattern: [u8; 8],
     (vis, clip): (RegionSpec, RegionSpec),
+    prepare: impl FnOnce(&mut PpcLoadedApp),
 ) -> Vec<u8> {
     let pixels = initial_pixels();
     let fixture = fixture(&pixels, vis, clip);
@@ -2005,8 +2016,16 @@ fn clipped_shape_pixels(
     for (register, value) in regs.into_iter().enumerate() {
         loaded.cpu.gpr[3 + register] = value;
     }
+    prepare(&mut loaded);
     run_test_import(&mut loaded, target);
     read_pixels(&mut loaded, pixels.len())
+}
+
+fn hide_pen(loaded: &mut PpcLoadedApp) {
+    loaded
+        .memory
+        .write_u16_be(PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET, (-1i16) as u16)
+        .unwrap();
 }
 
 const SHAPE_CLIPS: [(RegionSpec, RegionSpec); 3] = [
@@ -2108,6 +2127,26 @@ fn fill_c_shapes_ignore_a_nil_pixel_pattern() {
     ] {
         assert_eq!(
             clipped_shape_pixels(shape_target(operation), regs, GRAY, (WHOLE_PORT, WHOLE_PORT)),
+            initial_pixels()
+        );
+    }
+}
+
+#[test]
+fn oval_and_round_rect_imports_draw_nothing_with_a_hidden_pen() {
+    for (operation, regs) in [
+        (PpcQuickDrawShapeOperation::InvertOval, [RECT, 0, 0, 0]),
+        (PpcQuickDrawShapeOperation::FillCOval, [RECT, PIXPAT_HANDLE, 0, 0]),
+        (PpcQuickDrawShapeOperation::FillCRoundRect, [RECT, 6, 4, PIXPAT_HANDLE]),
+    ] {
+        assert_eq!(
+            prepared_shape_pixels(
+                shape_target(operation),
+                regs,
+                GRAY,
+                (WHOLE_PORT, WHOLE_PORT),
+                hide_pen,
+            ),
             initial_pixels()
         );
     }
