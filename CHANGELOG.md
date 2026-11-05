@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.110.0](https://github.com/benletchford/systemless/compare/v0.109.0...v0.110.0) (2026-11-05)
+
+
+### Features
+
+* **ppc:** enable the PowerPC JIT by default ([e48b41a](https://github.com/benletchford/systemless/commit/e48b41aee33b3ab84599a911810077f99121f22a))
+
+
+### Bug Fixes
+
+* **dialog:** dim a disabled push button's title and default ring below 8 bits ([#5618](https://github.com/benletchford/systemless/issues/5618)) ([75cd336](https://github.com/benletchford/systemless/commit/75cd336ed798fbfb4209044170e1bbd682c59143))
+* **mac:** report boot volume finder information ([#5616](https://github.com/benletchford/systemless/issues/5616)) ([edad459](https://github.com/benletchford/systemless/commit/edad459c0a7141a7dc9f07eab6ee6193e4753b50))
+
 ## [0.109.0](https://github.com/benletchford/systemless/compare/v0.108.0...v0.109.0) (2026-11-03)
 
 
