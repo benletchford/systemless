@@ -249,6 +249,44 @@ pub(crate) fn fill_rect_8bpp_68k(
     (top, left, bottom, right): (i16, i16, i16, i16),
     pattern: [u8; 8],
 ) -> Vec<u8> {
+    let rect = super::types::Rect {
+        top,
+        left,
+        bottom,
+        right,
+    };
+    on_8bpp_68k_port(fixture, |d, cpu, bus| {
+        d.draw_rect(cpu, bus, &rect, super::types::ShapeOp::Fill(pattern));
+    })
+}
+
+/// Runs the 68K `draw_oval` path on `fixture` and returns the pixel bytes.
+pub(crate) fn draw_oval_8bpp_68k(
+    fixture: &IndexedPortFixture<'_>,
+    rect: super::types::Rect,
+    op: super::types::ShapeOp,
+) -> Vec<u8> {
+    on_8bpp_68k_port(fixture, |d, cpu, bus| d.draw_oval(cpu, bus, &rect, op))
+}
+
+/// Runs the 68K `draw_round_rect` path on `fixture` and returns the pixel bytes.
+pub(crate) fn draw_round_rect_8bpp_68k(
+    fixture: &IndexedPortFixture<'_>,
+    rect: super::types::Rect,
+    (oval_width, oval_height): (i16, i16),
+    op: super::types::ShapeOp,
+) -> Vec<u8> {
+    on_8bpp_68k_port(fixture, |d, cpu, bus| {
+        d.draw_round_rect(cpu, bus, &rect, oval_width, oval_height, op)
+    })
+}
+
+/// Builds `fixture` as the current 8-bit colour port of a 68K dispatcher, runs
+/// `draw` and returns the pixel bytes afterwards.
+fn on_8bpp_68k_port(
+    fixture: &IndexedPortFixture<'_>,
+    draw: impl FnOnce(&mut TrapDispatcher, &mut MockCpu, &mut MacMemoryBus),
+) -> Vec<u8> {
     let (mut d, mut cpu, mut bus) = setup();
     let base = bus.alloc(fixture.pixels.len() as u32);
     bus.write_bytes(base, fixture.pixels);
@@ -287,17 +325,6 @@ pub(crate) fn fill_rect_8bpp_68k(
     // fgColor and bkColor hold the resolved pixel values above.
     d.resolved_port_color_fields.insert(port, 0x03);
 
-    let rect = super::types::Rect {
-        top,
-        left,
-        bottom,
-        right,
-    };
-    d.draw_rect(
-        &mut cpu,
-        &mut bus,
-        &rect,
-        super::types::ShapeOp::Fill(pattern),
-    );
+    draw(&mut d, &mut cpu, &mut bus);
     bus.read_bytes(base, fixture.pixels.len())
 }

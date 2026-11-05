@@ -1576,6 +1576,135 @@ pub(crate) fn ppc_frame_region(
     wrote
 }
 
+/// The oval inscribed in `rect` as one interval list per row from `rect.0`.
+pub(crate) fn ppc_oval_rows((top, left, bottom, right): (i16, i16, i16, i16)) -> Vec<Vec<i16>> {
+    TrapDispatcher::compute_oval_spans(right.saturating_sub(left), bottom.saturating_sub(top))
+        .into_iter()
+        .map(|(l, r)| vec![left.saturating_add(l), left.saturating_add(r)])
+        .collect()
+}
+
+/// A rounded rectangle as one interval list per row from `rect.0`.
+pub(crate) fn ppc_round_rect_rows(
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+) -> Vec<Vec<i16>> {
+    let shape = Rect {
+        top,
+        left,
+        bottom,
+        right,
+    };
+    TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+        .into_iter()
+        .map(|(l, r)| vec![l, r])
+        .collect()
+}
+
+/// Intersects port-coordinate rows starting at `top` with visRgn and clipRgn.
+fn ppc_clip_rows_to_port(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+    top: i16,
+    rows: &mut [Vec<i16>],
+) -> Option<()> {
+    let bottom = top.checked_add(i16::try_from(rows.len()).ok()?)?;
+    for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
+        let Some(storage) = memory
+            .read_u32_be(current_gworld.wrapping_add(offset))
+            .and_then(|region| ppc_region_storage(memory, region))
+        else {
+            continue;
+        };
+        let clip_rows = ppc_region_rows_for_band(&storage, top, bottom)?;
+        for (row, clip) in rows.iter_mut().zip(clip_rows) {
+            *row = ppc_region_intersect_rows(row, &clip);
+        }
+    }
+    Some(())
+}
+
+/// Complements the pixels of port-coordinate rows starting at `top`, clipped
+/// to visRgn and clipRgn, independent of the pen and colours.
+pub(crate) fn ppc_invert_rows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    top: i16,
+    mut rows: Vec<Vec<i16>>,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let mask = match front_buffer.depth {
+        depth @ (1 | 2 | 4 | 8) => (1u16 << depth) - 1,
+        16 => 0x7fff,
+        _ => return false,
+    };
+    if ppc_clip_rows_to_port(memory, current_gworld, top, &mut rows).is_none() {
+        return false;
+    }
+    let mut wrote = false;
+    for (row, endpoints) in rows.iter().enumerate() {
+        let y = i32::from(top) + row as i32 - i32::from(surface.top);
+        if y < 0 || y >= front_buffer.height as i32 {
+            continue;
+        }
+        for interval in endpoints.chunks_exact(2) {
+            let left = (i32::from(interval[0]) - i32::from(surface.left)).max(0);
+            let right = (i32::from(interval[1]) - i32::from(surface.left))
+                .min(front_buffer.width as i32);
+            for x in left..right {
+                if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) {
+                    wrote |= ppc_invert_pixel_detail(memory, front_buffer, (x, y), pixel, mask);
+                }
+            }
+        }
+    }
+    wrote
+}
+
+/// Fills port-coordinate rows starting at `top` with a PixPat in patCopy mode,
+/// clipped to visRgn and clipRgn by `ppc_fill_rows_with_pixpat`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_fill_color_rows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    top: i16,
+    rows: Vec<Vec<i16>>,
+    ppat_handle: u32,
+    (fore_color, fore_index): (PpcRgbColor, Option<u8>),
+    (back_color, back_index): (PpcRgbColor, Option<u8>),
+) -> bool {
+    let Some(bottom) = i16::try_from(rows.len())
+        .ok()
+        .and_then(|height| top.checked_add(height))
+    else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let fore_pixel =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, fore_index).unwrap_or(1);
+    let back_pixel =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, back_index).unwrap_or(0);
+    let sampler = ppc_decode_pixpat_sampler(memory, surface, ppat_handle, fore_pixel, back_pixel);
+    ppc_fill_rows_with_pixpat(
+        memory,
+        gworlds,
+        current_gworld,
+        top,
+        bottom,
+        rows,
+        &sampler,
+        8,
+    )
+}
+
 pub(crate) fn ppc_invert_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
