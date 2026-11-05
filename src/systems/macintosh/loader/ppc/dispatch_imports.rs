@@ -2136,7 +2136,11 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FramePoly
         | PpcImportDispatcherTarget::PaintPoly
         | PpcImportDispatcherTarget::FillPoly
-        | PpcImportDispatcherTarget::ErasePoly => {
+        | PpcImportDispatcherTarget::ErasePoly
+        | PpcImportDispatcherTarget::InvertPoly
+        | PpcImportDispatcherTarget::FillCPoly
+        | PpcImportDispatcherTarget::OffsetPoly
+        | PpcImportDispatcherTarget::MapPoly => {
             unreachable!("Polygon Manager imports return through dispatch_polygon_import")
         }
         PpcImportDispatcherTarget::QtBeginFullScreen

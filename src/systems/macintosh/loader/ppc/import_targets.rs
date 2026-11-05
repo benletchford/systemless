@@ -308,6 +308,10 @@ pub enum PpcImportDispatcherTarget {
     FramePoly,
     FillPoly,
     ErasePoly,
+    InvertPoly,
+    FillCPoly,
+    OffsetPoly,
+    MapPoly,
     NewCWindow,
     GetNewCWindow,
     GetWRefCon,
@@ -3694,6 +3698,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FramePoly") => PpcImportDispatcherTarget::FramePoly,
         ("InterfaceLib", "FillPoly") => PpcImportDispatcherTarget::FillPoly,
         ("InterfaceLib", "ErasePoly") => PpcImportDispatcherTarget::ErasePoly,
+        ("InterfaceLib", "InvertPoly") => PpcImportDispatcherTarget::InvertPoly,
+        ("InterfaceLib", "FillCPoly") => PpcImportDispatcherTarget::FillCPoly,
+        ("InterfaceLib", "OffsetPoly") => PpcImportDispatcherTarget::OffsetPoly,
+        ("InterfaceLib", "MapPoly") => PpcImportDispatcherTarget::MapPoly,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "NewCWindow" | "newcwindow") => {
             PpcImportDispatcherTarget::NewCWindow
         }

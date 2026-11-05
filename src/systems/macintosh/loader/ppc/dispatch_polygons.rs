@@ -145,6 +145,63 @@ pub(super) fn dispatch_polygon_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::InvertPoly => {
+            // Imaging With QuickDraw (1994), p. 3-84: complements the pixels
+            // inside the polygon, ignoring the pen.
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else if let Some((top, rows)) =
+                ppc_polygon_rows(memory, gworlds, current_gworld, cpu.gpr[3])
+            {
+                let _ = ppc_invert_rows(memory, gworlds, current_gworld, top, rows);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillCPoly => {
+            // Imaging With QuickDraw (1994), p. 4-76: fills the polygon with
+            // the given pixel pattern in patCopy mode.
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else if cpu.gpr[4] != 0 {
+                if let Some((top, rows)) =
+                    ppc_polygon_rows(memory, gworlds, current_gworld, cpu.gpr[3])
+                {
+                    let _ = ppc_fill_color_rows(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        top,
+                        rows,
+                        cpu.gpr[4],
+                        (
+                            *quickdraw_fore_color,
+                            quickdraw_fore_indices.get(&current_gworld).copied(),
+                        ),
+                        (
+                            *quickdraw_back_color,
+                            toolbox_startup
+                                .quickdraw_back_indices
+                                .get(&current_gworld)
+                                .copied(),
+                        ),
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::OffsetPoly => {
+            ppc_offset_polygon(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as u16 as i16,
+                cpu.gpr[5] as u16 as i16,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MapPoly => {
+            ppc_map_polygon(memory, cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         _ => None,
     }
 }
