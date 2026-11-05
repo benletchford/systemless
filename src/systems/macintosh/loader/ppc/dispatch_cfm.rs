@@ -155,9 +155,8 @@ pub(super) fn ppc_get_shared_library(
     let err_name_ptr = cpu.gpr[8];
     if lib_name_ptr == 0
         || conn_id_ptr == 0
-        || main_addr_ptr == 0
         || !memory.preflight_writable_range(conn_id_ptr, 4)
-        || !memory.preflight_writable_range(main_addr_ptr, 4)
+        || (main_addr_ptr != 0 && !memory.preflight_writable_range(main_addr_ptr, 4))
         || (err_name_ptr != 0 && !memory.preflight_writable_range(err_name_ptr, 1))
     {
         return return_error(PPC_PARAM_ERR);
@@ -502,10 +501,9 @@ pub(super) fn ppc_get_mem_fragment(
     if mem_addr == 0
         || length < 8
         || conn_id_ptr == 0
-        || main_addr_ptr == 0
         || !ppc_memory_can_read_bytes(memory, mem_addr, length)
         || !ppc_memory_can_write_bytes(memory, conn_id_ptr, 4)
-        || !ppc_memory_can_write_bytes(memory, main_addr_ptr, 4)
+        || !ppc_optional_output_can_write(memory, main_addr_ptr, 4)
         || !ppc_optional_output_can_write(memory, err_name_ptr, 1)
     {
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));

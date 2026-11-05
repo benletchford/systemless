@@ -1758,6 +1758,45 @@ fn bundled_imports_bind_by_name_when_symbol_classes_differ() {
 }
 
 #[test]
+fn get_mem_fragment_accepts_null_main_address_and_error_name() {
+    let pef = synthetic_pef_with_import(b"GetMemFragment");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let loader = synthetic_loader_with_chunks(b"InterfaceLib", b"TickCount", &[]);
+    let fragment = synthetic_pef_with_loader_and_data(loader, &[0; 12]);
+    let fragment_addr = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        fragment.len() as u32,
+        false,
+    );
+    loaded.memory.write_bytes(fragment_addr, &fragment).unwrap();
+    let conn_id_ptr = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        4,
+        true,
+    );
+
+    loaded.cpu.gpr[3] = fragment_addr;
+    loaded.cpu.gpr[4] = fragment.len() as u32;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+    loaded.cpu.gpr[7] = conn_id_ptr;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 0;
+    let probe = loaded.run_with_hle_imports(128);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(conn_id_ptr),
+        Some(PPC_FIRST_CFM_CONNECTION_ID)
+    );
+}
+
+#[test]
 fn hle_import_runner_loads_and_runs_a_memory_fragment_with_dynamic_imports() {
     let pef = synthetic_pef_with_import(b"GetMemFragment");
     let mut loaded = load_pef_application(&pef).unwrap();

@@ -710,10 +710,12 @@ impl CfmLoadOperation {
                     let connection = operation.id.0.to_be_bytes();
                     let main_address = operation.main_address.to_be_bytes();
                     let error_name = [0];
-                    let mut writes: Vec<(u32, &[u8])> = vec![
-                        (operation.outputs.connection, &connection),
-                        (operation.outputs.main_address, &main_address),
-                    ];
+                    let mut writes: Vec<(u32, &[u8])> =
+                        vec![(operation.outputs.connection, &connection)];
+                    // mainAddr is optional; PageMaker 7's Sangam passes NULL for its readers.
+                    if operation.outputs.main_address != 0 {
+                        writes.push((operation.outputs.main_address, &main_address));
+                    }
                     if operation.outputs.error_name != 0 {
                         writes.push((operation.outputs.error_name, &error_name));
                     }
@@ -1521,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn load_output_contract_handles_optional_names_and_rejects_null_required_outputs() {
+    fn load_output_contract_handles_optional_outputs_and_rejects_null_connection() {
         for classic in [false, true] {
             for null_output in 0..3 {
                 let mut memory = GuestAddressSpace::new();
@@ -1550,19 +1552,24 @@ mod tests {
                         memory.try_write_ranges_atomic(writes)
                     }
                 });
-                assert_eq!(called, null_output == 0);
+                assert_eq!(called, null_output != 1);
                 assert_eq!(
                     result,
-                    if null_output == 0 {
-                        Ok(())
-                    } else {
+                    if null_output == 1 {
                         Err(CfmLoadError::InvalidOutputs)
+                    } else {
+                        Ok(())
                     }
                 );
                 let bytes = snapshot(&mut memory);
                 assert_eq!(bytes[16], 0xAA);
-                if null_output != 0 {
-                    assert_eq!(bytes, vec![0xAA; 20]);
+                match null_output {
+                    1 => assert_eq!(bytes, vec![0xAA; 20]),
+                    2 => {
+                        assert_eq!(bytes[..4], 7u32.to_be_bytes());
+                        assert_eq!(bytes[8..12], [0xAA; 4]);
+                    }
+                    _ => {}
                 }
             }
         }
