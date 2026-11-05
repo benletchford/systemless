@@ -68,38 +68,118 @@ pub(crate) fn ppc_set_pen_normal(memory: &mut PpcSectionMem, current_gworld: u32
     }
 }
 
-pub(crate) fn ppc_get_pen_state(memory: &mut PpcSectionMem, current_gworld: u32, state_ptr: u32) {
-    const PEN_STATE_SIZE: u32 = 18;
-    let Some(bytes) = ppc_memory_read_bytes(
-        memory,
-        current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET),
-        PEN_STATE_SIZE,
-    ) else {
+/// `pnLoc`, `pnSize` and `pnMode`, the part of PenState every port stores
+/// contiguously at the same offsets.
+const PPC_PEN_STATE_HEADER_SIZE: u32 = 10;
+const PPC_PEN_STATE_SIZE: u32 = PPC_PEN_STATE_HEADER_SIZE + 8;
+const PPC_PORT_PN_PAT_OFFSET: u32 = PPC_CGRAF_PORT_PN_MODE_OFFSET + 2;
+const PPC_PIXPAT_PAT1_DATA_OFFSET: u32 = 20;
+
+fn ppc_port_is_color(memory: &mut PpcSectionMem, port: u32) -> bool {
+    memory
+        .read_u16_be(port.wrapping_add(6))
+        .is_some_and(|version| version & 0xc000 == 0xc000)
+}
+
+/// PenState.pnPat for a colour port, whose bytes at +58 are the pnPixPat and
+/// fillPixPat handles rather than a pattern: pat1Data of the installed PixPat
+/// (Imaging With QuickDraw (1994), p. 4-58), or the bit pattern from PenPat.
+fn ppc_color_port_pen_pattern(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    bit_pattern: [u8; 8],
+) -> [u8; 8] {
+    let mut pattern = [0u8; 8];
+    let installed = memory
+        .read_u32_be(port.wrapping_add(PPC_PORT_PN_PAT_OFFSET))
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|record| *record != 0)
+        .and_then(|record| {
+            memory.read_bytes_into(
+                record.wrapping_add(PPC_PIXPAT_PAT1_DATA_OFFSET),
+                &mut pattern,
+            )
+        });
+    if installed.is_some() {
+        pattern
+    } else {
+        bit_pattern
+    }
+}
+
+pub(crate) fn ppc_get_pen_state(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+    state_ptr: u32,
+    bit_pattern: [u8; 8],
+) {
+    let pen = current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET);
+    let size = if ppc_port_is_color(memory, current_gworld) {
+        PPC_PEN_STATE_HEADER_SIZE
+    } else {
+        PPC_PEN_STATE_SIZE
+    };
+    let Some(mut bytes) = ppc_memory_read_bytes(memory, pen, size) else {
         return;
     };
-    if ppc_memory_can_write_bytes(memory, state_ptr, PEN_STATE_SIZE) {
+    if size == PPC_PEN_STATE_HEADER_SIZE {
+        bytes.extend_from_slice(&ppc_color_port_pen_pattern(
+            memory,
+            current_gworld,
+            bit_pattern,
+        ));
+    }
+    if ppc_memory_can_write_bytes(memory, state_ptr, PPC_PEN_STATE_SIZE) {
         let _ = memory.write_bytes(state_ptr, &bytes);
     }
 }
 
-pub(crate) fn ppc_set_pen_state(memory: &mut PpcSectionMem, current_gworld: u32, state_ptr: u32) {
-    const PEN_STATE_SIZE: u32 = 18;
-    let Some(bytes) = ppc_memory_read_bytes(memory, state_ptr, PEN_STATE_SIZE) else {
-        return;
-    };
-    if ppc_memory_can_write_bytes(
-        memory,
-        current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET),
-        PEN_STATE_SIZE,
-    ) {
-        // Imaging With QuickDraw (1994), pp. 3-37 and 3-43--3-44: PenState
-        // is the contiguous pnLoc, pnSize, pnMode, and 8-byte pnPat portion of
-        // the current graphics port, totaling 18 bytes.
-        let _ = memory.write_bytes(
-            current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET),
-            &bytes,
-        );
+/// The pen values SetPenState installed that the dispatcher also holds outside
+/// the port.
+pub(crate) struct PpcRestoredPen {
+    pub(crate) location: (i16, i16),
+    pub(crate) pattern: [u8; 8],
+}
+
+pub(crate) fn ppc_set_pen_state(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+    state_ptr: u32,
+) -> Option<PpcRestoredPen> {
+    if state_ptr == 0 {
+        return None;
     }
+    let bytes = ppc_memory_read_bytes(memory, state_ptr, PPC_PEN_STATE_SIZE)?;
+    let pen = current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_LOC_OFFSET);
+    // Imaging With QuickDraw (1994), pp. 3-37 and 3-43--3-44: PenState is
+    // pnLoc, pnSize, pnMode and an 8-byte pnPat, 18 bytes in all. Only a basic
+    // GrafPort stores it contiguously. A colour port has the pnPixPat and
+    // fillPixPat handles where pnPat would be, so its pattern goes through the
+    // same path as PenPat: the fill pattern is untouched, and the selected
+    // PixPat is retired without disposing a caller-owned handle.
+    let color_port = ppc_port_is_color(memory, current_gworld);
+    let size = if color_port {
+        PPC_PEN_STATE_HEADER_SIZE
+    } else {
+        PPC_PEN_STATE_SIZE
+    };
+    if !ppc_memory_can_write_bytes(memory, pen, size) {
+        return None;
+    }
+    memory.write_bytes(pen, &bytes[..size as usize])?;
+    if color_port {
+        memory.write_u32_be(current_gworld.wrapping_add(PPC_PORT_PN_PAT_OFFSET), 0)?;
+    }
+    let mut pattern = [0u8; 8];
+    pattern.copy_from_slice(&bytes[PPC_PEN_STATE_HEADER_SIZE as usize..]);
+    Some(PpcRestoredPen {
+        location: (
+            i16::from_be_bytes([bytes[2], bytes[3]]),
+            i16::from_be_bytes([bytes[0], bytes[1]]),
+        ),
+        pattern,
+    })
 }
 
 pub(crate) fn ppc_sync_gworld_text(

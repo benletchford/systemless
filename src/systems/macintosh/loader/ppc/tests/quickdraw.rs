@@ -1748,6 +1748,8 @@ fn hle_import_runner_draws_representative_quickdraw_primitives_into_2bpp_gworld(
 fn hle_import_runner_round_trips_quickdraw_pen_state() {
     let pef = synthetic_pef_with_import(b"GetPenState");
     let mut loaded = load_pef_application(&pef).unwrap();
+    // A basic GrafPort stores PenState contiguously.
+    loaded.memory.write_u16_be(PPC_MAIN_GWORLD + 6, 0).unwrap();
     let state_ptr = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(state_ptr, vec![0; 18]);
     let expected = [
@@ -1789,6 +1791,109 @@ fn hle_import_runner_round_trips_quickdraw_pen_state() {
         ),
         Some(replacement.to_vec())
     );
+}
+
+/// A colour port with live pnPixPat and fillPixPat handles, a PixPat whose
+/// pat1Data is `0x33`, and an 18-byte PenState buffer.
+fn color_port_pen_state_fixture() -> (PpcLoadedApp, u32, u32, u32) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetPenState")).unwrap();
+    let port = PPC_MAIN_GWORLD;
+    let state_ptr = PPC_DATA_BASE + 0x1000;
+    let handle = PPC_DATA_BASE + 0x1100;
+    let record = PPC_DATA_BASE + 0x1200;
+    let fill_handle = PPC_DATA_BASE + 0x1300;
+    loaded.memory.add_region(state_ptr, vec![0; 18]);
+    loaded.memory.add_region(handle, vec![0; 4]);
+    loaded.memory.add_region(record, vec![0; 28]);
+    loaded.memory.write_u32_be(handle, record).unwrap();
+    loaded.memory.write_bytes(record + 20, &[0x33; 8]).unwrap();
+    loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+    loaded
+        .memory
+        .write_bytes(
+            port + PPC_CGRAF_PORT_PN_LOC_OFFSET,
+            &[0, 0x0a, 0, 0x14, 0, 2, 0, 3, 0, 8],
+        )
+        .unwrap();
+    loaded.memory.write_u32_be(port + 58, handle).unwrap();
+    loaded.memory.write_u32_be(port + 62, fill_handle).unwrap();
+    (loaded, port, state_ptr, handle)
+}
+
+#[test]
+fn get_pen_state_reads_pat1_data_from_a_color_ports_pixpat() {
+    let (mut loaded, port, state_ptr, handle) = color_port_pen_state_fixture();
+    loaded.toolbox_startup.quickdraw_pen_pattern = [0x77; 8];
+    loaded.cpu.gpr[3] = state_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, state_ptr, 18).unwrap(),
+        [0, 0x0a, 0, 0x14, 0, 2, 0, 3, 0, 8, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33]
+    );
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(handle));
+}
+
+#[test]
+fn get_pen_state_reads_the_bit_pattern_when_a_color_port_has_no_pixpat() {
+    let (mut loaded, port, state_ptr, _) = color_port_pen_state_fixture();
+    loaded.memory.write_u32_be(port + 58, 0).unwrap();
+    loaded.toolbox_startup.quickdraw_pen_pattern = [0x77; 8];
+    loaded.cpu.gpr[3] = state_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, state_ptr + 10, 8).unwrap(),
+        [0x77; 8]
+    );
+}
+
+#[test]
+fn set_pen_state_on_a_color_port_keeps_handle_fields_and_restores_the_pen() {
+    let (mut loaded, port, state_ptr, _) = color_port_pen_state_fixture();
+    let fill_handle = loaded.memory.read_u32_be(port + 62).unwrap();
+    let pn_vis = loaded.memory.read_u16_be(port + 66).unwrap();
+    loaded
+        .memory
+        .write_bytes(
+            state_ptr,
+            &[0, 0x1e, 0, 0x28, 0, 4, 0, 5, 0, 9, 1, 2, 3, 4, 5, 6, 7, 8],
+        )
+        .unwrap();
+    loaded.cpu.gpr[3] = state_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPenState);
+
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, port + PPC_CGRAF_PORT_PN_LOC_OFFSET, 10).unwrap(),
+        [0, 0x1e, 0, 0x28, 0, 4, 0, 5, 0, 9]
+    );
+    // Same result as PenPat: no pattern bytes land in the handle fields, and
+    // the PixPat gives way to the restored bit pattern.
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(port + 62), Some(fill_handle));
+    assert_eq!(loaded.memory.read_u16_be(port + 66), Some(pn_vis));
+    assert_eq!(
+        loaded.toolbox_startup.quickdraw_pen_pattern,
+        [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    // pnLoc is vertical first; LineTo and GetPen read the dispatcher's copy.
+    assert_eq!(
+        (loaded.quickdraw_pen_h, loaded.quickdraw_pen_v),
+        (0x28, 0x1e)
+    );
+
+    let saved = ppc_memory_read_bytes(&mut loaded.memory, state_ptr, 18).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPenState);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, state_ptr, 18).unwrap(),
+        saved
+    );
+}
+
+#[test]
+fn set_pen_state_ignores_a_nil_record() {
+    let (mut loaded, port, _, handle) = color_port_pen_state_fixture();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPenState);
+    assert_eq!(loaded.memory.read_u32_be(port + 58), Some(handle));
 }
 
 #[test]
