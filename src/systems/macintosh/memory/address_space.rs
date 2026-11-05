@@ -220,6 +220,11 @@ struct GuestAddressSpaceState {
     /// data shares 4 KiB pages with guest code, so retiring per page keeps
     /// data traffic from invalidating every block in the process.
     page_tokens: Option<Box<[CodeTokenSlot]>>,
+    /// [`PpcMemory::code_epoch`]: renewed whenever any instruction token
+    /// could change (a retirement, an evicted page token, a mapping change)
+    /// and by every clone, from the same non-reusing namespace. `0` makes
+    /// every dispatch check tokens.
+    code_epoch: u64,
 }
 
 impl GuestAddressSpaceState {
@@ -236,11 +241,17 @@ impl GuestAddressSpaceState {
             self.shared_pages.mark(start, end);
         }
         // A new mapping can shadow a cached span or fall inside a cached gap.
+        self.renew_code_epoch();
         self.instruction_lookup.clear();
         self.data_lookup.clear();
         self.route_lookup.clear();
         self.instruction_token_cache.fill(CodeTokenSlot::default());
         self.shared_regions.push(mapping);
+    }
+
+    /// Invalidate every token check the JIT remembers.
+    fn renew_code_epoch(&mut self) {
+        self.code_epoch = try_allocate_instruction_cache_token().unwrap_or(0);
     }
 
     #[inline]
@@ -274,7 +285,14 @@ impl GuestAddressSpaceState {
         if slot.token != 0 && slot.page == page {
             return Some(slot.token);
         }
+        let evicted = slot.token != 0;
         let token = allocate()?;
+        if evicted {
+            // The evicted page mints a new token on its next fetch.
+            self.renew_code_epoch();
+        }
+        let slots = self.page_tokens.as_deref_mut().expect("allocated above");
+        let slot = &mut slots[(page as usize) & CODE_TOKEN_INDEX_MASK];
         *slot = CodeTokenSlot { page, token };
         Some(token)
     }
@@ -284,6 +302,7 @@ impl GuestAddressSpaceState {
     /// its previous contents can never be matched again.
     #[cold]
     fn retire_code_tokens(&mut self, start: u64, end: u64) {
+        self.renew_code_epoch();
         self.instruction_token_cache.fill(CodeTokenSlot::default());
         let Some(slots) = self.page_tokens.as_deref_mut() else {
             return;
@@ -307,6 +326,7 @@ impl GuestAddressSpaceState {
 
     /// Retire every instruction-cache token issued for writable guest code.
     fn retire_all_code_tokens(&mut self) {
+        self.renew_code_epoch();
         self.page_tokens = None;
         self.instruction_token_cache.fill(CodeTokenSlot::default());
     }
@@ -1347,6 +1367,8 @@ impl Clone for GuestAddressSpace {
             page_tokens: None,
             // Detached regions are fresh allocations; let the clone re-resolve.
             instruction_token_cache: [CodeTokenSlot::default(); INSTRUCTION_TOKEN_CACHE_SLOTS],
+            // The clone mints its own tokens (see `page_tokens` above).
+            code_epoch: try_allocate_instruction_cache_token().unwrap_or(0),
         })))
     }
 }
@@ -2202,6 +2224,12 @@ impl PpcMemory for GuestAddressSpace {
     }
 
     #[inline]
+    fn code_epoch(&self) -> Option<u64> {
+        let epoch = self.state().code_epoch;
+        (epoch != 0).then_some(epoch)
+    }
+
+    #[inline]
     fn instruction_cache_token(&mut self, addr: u32) -> Option<u64> {
         let Some(end) = range_end(addr, 4) else {
             return None;
@@ -2464,6 +2492,215 @@ mod tests {
     use crate::memory::{GuestMemoryRoute, MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
+
+    /// The code epoch must change whenever an instruction token could, and
+    /// stay put for plain data traffic, so the JIT can skip token checks.
+    #[test]
+    fn code_epoch_changes_whenever_instruction_tokens_can() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x10000, vec![0x60; 0x4000]);
+        assert!(memory.code_epoch().is_some());
+
+        // Fetching code marks its page executed and mints a token.
+        let token = memory.instruction_cache_token(0x10000).unwrap();
+        // Data writes to pages without code leave the epoch alone.
+        let after_fetch = memory.code_epoch();
+        memory.write_u32_be(0x12000, 1).unwrap();
+        assert_eq!(memory.code_epoch(), after_fetch);
+        assert_eq!(memory.instruction_cache_token(0x10000), Some(token));
+        // A write to the executed page retires its token and the epoch.
+        memory.write_u32_be(0x10040, 0).unwrap();
+        assert_ne!(memory.code_epoch(), after_fetch);
+        assert_ne!(memory.instruction_cache_token(0x10000), Some(token));
+
+        // Flushing the instruction cache, mapping, and cloning all renew it.
+        let before = memory.code_epoch();
+        memory.flush_instruction_cache();
+        assert_ne!(memory.code_epoch(), before);
+        let before = memory.code_epoch();
+        memory.add_region(0x40000, vec![0; 0x1000]);
+        assert_ne!(memory.code_epoch(), before);
+        assert_ne!(memory.clone().code_epoch(), memory.code_epoch());
+
+        // A page token evicted from its slot is re-minted later: the epoch
+        // must change when that happens.
+        let mut memory = GuestAddressSpace::new();
+        let stride = (super::CODE_TOKEN_SLOTS as u32) << CODE_PAGE_SHIFT;
+        memory.add_region(0x100000, vec![0x60; 0x1000]);
+        memory.add_region(0x100000 + stride, vec![0x60; 0x1000]);
+        memory.instruction_cache_token(0x100000).unwrap();
+        let before = memory.code_epoch();
+        memory.instruction_cache_token(0x100000 + stride).unwrap();
+        assert_ne!(memory.code_epoch(), before);
+    }
+
+    /// JIT chaining must notice guest code rewriting a block it has
+    /// already linked to: the loop below patches its callee half-way through
+    /// (on a page that also holds the loop) and must see the new code.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_chain_links_follow_self_modifying_code() {
+        let program: [(u32, u32); 15] = [
+            (0x10000, 0x3860_0000), // li r3, 0
+            (0x10004, 0x3cc0_0001), // lis r6, 1
+            (0x10008, 0x60c6_0100), // ori r6, r6, 0x100
+            (0x1000c, 0x3ca0_3863), // lis r5, 0x3863
+            (0x10010, 0x60a5_0002), // ori r5, r5, 2   (r5 = addi r3, r3, 2)
+            (0x10014, 0x38e0_0032), // li r7, 50
+            (0x10018, 0x7ce9_03a6), // mtctr r7
+            (0x1001c, 0x4800_00e5), // bl 0x10100
+            (0x10020, 0x2c03_0014), // cmpwi r3, 20
+            (0x10024, 0x4082_0008), // bne 0x1002c
+            (0x10028, 0x90a6_0000), // stw r5, 0(r6)   (patch the callee)
+            (0x1002c, 0x4200_fff0), // bdnz 0x1001c
+            (0x10030, 0x6000_0000), // nop (halt)
+            (0x10100, 0x3863_0001), // addi r3, r3, 1
+            (0x10104, 0x4e80_0020), // blr
+        ];
+        let run = |jit: bool| {
+            let mut memory = GuestAddressSpace::new();
+            let mut bytes = vec![0; 0x1000];
+            for (addr, word) in program {
+                let offset = (addr - 0x10000) as usize;
+                bytes[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+            }
+            memory.add_region(0x10000, bytes);
+            let mut cpu = PpcCpu::new();
+            cpu.pc = 0x10000;
+            if jit {
+                cpu.enable_jit(ppc::PpcJitConfig {
+                    threshold: 0,
+                    verify: true,
+                    jitdump: false,
+                    background: false,
+                    hot_threshold: 0,
+                })
+                .unwrap();
+            }
+            let result = cpu.run_with_imports(&mut memory, 100_000, 0x10030, 0, 0, |_, _, _| {
+                unreachable!()
+            });
+            (result, cpu.gpr[3], cpu.pc)
+        };
+        let expected = run(false);
+        // 20 calls add 1, the remaining 30 add 2.
+        assert_eq!(expected.1, 20 + 30 * 2);
+        assert_eq!(run(true), expected);
+    }
+
+    /// Every iteration of a hot region stores through a pointer table
+    /// indexed by r3: to data at first, then (from the 20th iteration) over a
+    /// callee the same region runs. The path never changes, so the store is
+    /// inside the region, which must leave after it rather than keep running
+    /// the old callee.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_regions_follow_stores_to_their_own_code() {
+        let program: [(u32, u32); 15] = [
+            (0x10000, 0x3860_0000), // li r3, 0
+            (0x10004, 0x3d40_0002), // lis r10, 2      (r10 = pointer table)
+            (0x10008, 0x3ca0_3863), // lis r5, 0x3863
+            (0x1000c, 0x60a5_0003), // ori r5, r5, 3   (r5 = addi r3, r3, 3)
+            (0x10010, 0x38e0_0032), // li r7, 50
+            (0x10014, 0x7ce9_03a6), // mtctr r7
+            (0x10018, 0x6000_0000), // nop
+            (0x1001c, 0x4800_00e5), // bl 0x10100
+            (0x10020, 0x5469_103a), // slwi r9, r3, 2
+            (0x10024, 0x7cca_482e), // lwzx r6, r10, r9
+            (0x10028, 0x90a6_0000), // stw r5, 0(r6)
+            (0x1002c, 0x4200_fff0), // bdnz 0x1001c
+            (0x10030, 0x6000_0000), // nop (halt)
+            (0x10100, 0x3863_0001), // addi r3, r3, 1
+            (0x10104, 0x4e80_0020), // blr
+        ];
+        let table: Vec<u8> = (0..0x400u32)
+            .flat_map(|index| if index < 20 { 0x20800u32 } else { 0x10100 }.to_be_bytes())
+            .collect();
+        let run = |jit: bool| {
+            let mut memory = GuestAddressSpace::new();
+            let mut bytes = vec![0; 0x1000];
+            for (addr, word) in program {
+                let offset = (addr - 0x10000) as usize;
+                bytes[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+            }
+            memory.add_region(0x10000, bytes);
+            memory.add_region(0x20000, table.clone());
+            let mut cpu = PpcCpu::new();
+            cpu.pc = 0x10000;
+            if jit {
+                cpu.enable_jit(ppc::PpcJitConfig {
+                    threshold: 0,
+                    verify: true,
+                    jitdump: false,
+                    background: false,
+                    hot_threshold: 0,
+                })
+                .unwrap();
+            }
+            let result = cpu.run_with_imports(&mut memory, 100_000, 0x10030, 0, 0, |_, _, _| {
+                unreachable!()
+            });
+            (result, cpu.gpr[3], cpu.pc, cpu.jit_stats().regions_compiled)
+        };
+        let expected = run(false);
+        // 20 calls add 1, the remaining 30 add 3.
+        assert_eq!(expected.1, 20 + 30 * 3);
+        let jitted = run(true);
+        assert_eq!(jitted.0, expected.0);
+        assert_eq!(jitted.1, expected.1);
+        assert_eq!(jitted.2, expected.2);
+        assert!(jitted.3 > 0, "no region formed");
+    }
+
+    /// Data writes to a page holding a hot region's code retire the page's
+    /// token without changing the code: the region must carry over (by
+    /// checking its words) instead of being formed and compiled again.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn jit_regions_survive_data_writes_to_their_code_page() {
+        let program: [(u32, u32); 10] = [
+            (0x10000, 0x3860_0000), // li r3, 0
+            (0x10004, 0x3cc0_0001), // lis r6, 1
+            (0x10008, 0x60c6_0800), // ori r6, r6, 0x800 (data in the code page)
+            (0x1000c, 0x3ce0_0001), // lis r7, 1        (ctr = 65536)
+            (0x10010, 0x7ce9_03a6), // mtctr r7
+            (0x10014, 0x4800_00ed), // bl 0x10100
+            (0x10018, 0x9066_0000), // stw r3, 0(r6)
+            (0x1001c, 0x4200_fff8), // bdnz 0x10014
+            (0x10100, 0x3863_0001), // addi r3, r3, 1
+            (0x10104, 0x4e80_0020), // blr
+        ];
+        let mut memory = GuestAddressSpace::new();
+        let mut bytes = vec![0; 0x1000];
+        for (addr, word) in program {
+            let offset = (addr - 0x10000) as usize;
+            bytes[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        memory.add_region(0x10000, bytes);
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x10000;
+        cpu.enable_jit(ppc::PpcJitConfig {
+            threshold: 0,
+            verify: false,
+            jitdump: false,
+            background: false,
+            hot_threshold: 16,
+        })
+        .unwrap();
+        // Many short runs, as a host loop would make.
+        while cpu.pc != 0x10020 {
+            cpu.run_with_imports(&mut memory, 500, 0x10020, 0, 0, |_, _, _| unreachable!());
+        }
+        assert_eq!(cpu.gpr[3], 65536);
+        let stats = cpu.jit_stats();
+        assert!(stats.regions_compiled > 0, "no region formed");
+        // At most one per block of the loop (each may become an entry), not
+        // one per iteration.
+        assert!(
+            stats.regions_compiled <= 5,
+            "regions formed again and again: {stats:?}"
+        );
+    }
 
     const M68K_TRACE_HEAD: u32 = 0x1000;
     const M68K_TRACE_WORDS: [u16; 5] = [0x5280, 0x5281, 0x5347, 0x66f8, 0xa000];
