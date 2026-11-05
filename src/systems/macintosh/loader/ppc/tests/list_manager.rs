@@ -619,3 +619,38 @@ fn llastclick_writes_the_last_clicked_cell_through_the_result_pointer() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.memory.read_u32_be(result_ptr), Some(0x0002_0000));
 }
+
+#[test]
+fn lautoscroll_pins_the_origin_when_every_row_fits() {
+    let pef = synthetic_pef_with_import(b"LNew");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let view_ptr = scratch;
+    let bounds_ptr = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 90, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 2, 1).unwrap();
+    loaded.cpu.gpr[3] = view_ptr;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = (20u32 << 16) | 200;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    loaded.run_with_hle_imports(128);
+    let list = loaded.cpu.gpr[3];
+    let list_ptr = loaded.memory.read_u32_be(list).unwrap();
+
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = 1u32 << 16;
+    loaded.cpu.gpr[5] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LSetSelect);
+    loaded.cpu.gpr[3] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LAutoScroll);
+
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_VISIBLE_OFFSET),
+        Some((0, 0, 2, 1))
+    );
+}

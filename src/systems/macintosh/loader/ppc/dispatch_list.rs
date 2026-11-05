@@ -880,28 +880,10 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::LAutoScroll => {
             list_manager.with_record_mut(cpu.gpr[3], |record| {
-                if let (Some(&(row, column)), Some(list_ptr)) = (
-                    record.selected.iter().next(),
-                    memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0),
-                ) {
-                    let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
-                        .unwrap_or(record.data_bounds);
-                    let height = visible.2.saturating_sub(visible.0);
-                    let width = visible.3.saturating_sub(visible.1);
-                    record.visible = (
-                        row,
-                        column,
-                        row.saturating_add(height).min(record.data_bounds.2),
-                        column.saturating_add(width).min(record.data_bounds.3),
-                    );
-                    let _ = ppc_write_rect(
-                        memory,
-                        list_ptr + PPC_LIST_VISIBLE_OFFSET,
-                        record.visible.0,
-                        record.visible.1,
-                        record.visible.2,
-                        record.visible.3,
-                    );
+                // Like LScroll, the new origin is pinned to the scroll bar range.
+                if let Some(&(row, column)) = record.selected.iter().next() {
+                    ppc_list_set_visible_origin(record, row, column);
+                    *last_mem_error = ppc_list_sync_guest_visible(memory, record);
                     if record.draw_enabled {
                         ppc_list_redraw(
                             memory,
