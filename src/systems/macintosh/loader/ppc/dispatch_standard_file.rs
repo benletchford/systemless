@@ -1619,6 +1619,7 @@ fn ppc_standard_file_get_service(
                 event.where_v.saturating_sub(tracking.bounds.0),
                 event.where_h.saturating_sub(tracking.bounds.1),
             );
+            let last_list_click = tracking.last_list_click.take();
             if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_CANCEL_RECT) {
                 return ppc_standard_file_finish_get(
                     memory,
@@ -1656,16 +1657,12 @@ fn ppc_standard_file_get_service(
                     .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
                     .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
                 // The first click can scroll the list, so the second opens its selection.
-                open = tracking.last_list_click.is_some_and(|(when, last_row)| {
+                open = last_list_click.is_some_and(|(when, last_row)| {
                     last_row == row && event.when.wrapping_sub(when) <= double_time
                 });
-                if open {
-                    tracking.last_list_click = None;
-                } else if index < tracking.entries.len() {
+                if !open && index < tracking.entries.len() {
                     tracking.selected = index;
                     tracking.last_list_click = Some((event.when, row));
-                } else {
-                    tracking.last_list_click = None;
                 }
             } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_SCROLL_RECT)
                 && !tracking.entries.is_empty()
@@ -1684,6 +1681,7 @@ fn ppc_standard_file_get_service(
                 };
             }
         } else if event.what != 2 {
+            tracking.last_list_click = None;
             let character = event.message as u8;
             let key_code = (event.message >> 8) as u8;
             if crate::dialog_manager::is_dialog_default_key(character, key_code) {

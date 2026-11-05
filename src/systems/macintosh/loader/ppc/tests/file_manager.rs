@@ -3004,6 +3004,27 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn standard_get_file_double_click_ignores_a_click_before_a_key_press() {
+        let (mut loaded, bounds) = standard_get_file_in_nested_folders();
+        let v = bounds.0 + PPC_STANDARD_FILE_GET_LIST_RECT.0 + 5;
+        let h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+
+        standard_get_file_mouse(&mut loaded, 1, 100, v, h);
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 0x7d << 8,
+            when: 101,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        standard_get_file_mouse(&mut loaded, 1, 102, v, h);
+        assert_eq!(standard_get_file_dir(&loaded), PPC_ROOT_DIR_ID);
+    }
+
+    #[test]
     fn standard_get_file_double_click_in_a_scrolled_list_opens_the_first_selection() {
         let (mut loaded, _) = standard_get_file_in_nested_folders();
         for n in 0..12u32 {
