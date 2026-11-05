@@ -1153,6 +1153,65 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::InvertOval) => {
+            // Imaging With QuickDraw (1994), p. 3-78: InvertOval complements
+            // the pixels of the oval and ignores the pen. Pictures record it
+            // as invertOval ($0053).
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let rows = ppc_oval_rows(rect);
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                    pict::recording_push_rect(commands, 0x0053, rect);
+                } else if toolbox_startup.open_region_port == current_gworld {
+                    ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+                } else {
+                    let _ = ppc_invert_rows(memory, gworlds, current_gworld, rect.0, rows);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::QuickDrawShape(
+            operation @ (PpcQuickDrawShapeOperation::FillCOval
+            | PpcQuickDrawShapeOperation::FillCRoundRect),
+        ) => {
+            // Imaging With QuickDraw (1994), pp. 4-75--4-76: fill the shape
+            // with the given pixel pattern in patCopy mode. Like FillCRect,
+            // this does not record into an open picture.
+            let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let (rows, pattern) = if operation == PpcQuickDrawShapeOperation::FillCOval {
+                (ppc_oval_rows(rect), cpu.gpr[4])
+            } else {
+                (
+                    ppc_round_rect_rows(rect, cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16),
+                    cpu.gpr[6],
+                )
+            };
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+            } else if pattern != 0 {
+                let _ = ppc_fill_color_rows(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    rect.0,
+                    rows,
+                    pattern,
+                    (
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(&current_gworld).copied(),
+                    ),
+                    (
+                        *quickdraw_back_color,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    ),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc) => {
             // Inside Macintosh: Imaging With QuickDraw (FrameArc): draws the
             // arc of the oval's outline with the pen; arcs are not added to
@@ -1622,6 +1681,12 @@ pub(super) fn dispatch_quickdraw_import(
 pub enum PpcQuickDrawShapeOperation {
     /// FillOval(const Rect *, const Pattern *)
     FillOval,
+    /// InvertOval(const Rect *)
+    InvertOval,
+    /// FillCOval(const Rect *, PixPatHandle)
+    FillCOval,
+    /// FillCRoundRect(const Rect *, short ovalWidth, short ovalHeight, PixPatHandle)
+    FillCRoundRect,
     /// FrameArc(const Rect *, short startAngle, short arcAngle)
     FrameArc,
     /// StdRect(GrafVerb, const Rect *)

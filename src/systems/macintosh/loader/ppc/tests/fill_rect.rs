@@ -3,7 +3,11 @@
 
 use super::*;
 use crate::memory::write_log;
-use crate::trap::test_helpers::{fill_rect_8bpp_68k, region_storage_bytes, IndexedPortFixture};
+use crate::trap::test_helpers::{
+    draw_oval_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
+    IndexedPortFixture,
+};
+use crate::trap::types::{Rect, ShapeOp};
 
 const STOP: i16 = i16::MAX;
 const GRAY: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
@@ -1961,5 +1965,189 @@ fn invert_round_rect_complements_only_the_rounded_interior() {
         if *value != original[index] {
             assert_eq!(*value, square[index], "pixel {index} is not an inversion");
         }
+    }
+}
+
+const PIXPAT_HANDLE: u32 = SCRATCH + 0x500;
+const PIXPAT: u32 = SCRATCH + 0x510;
+const SHAPE: Rect = Rect {
+    top: -2,
+    left: -3,
+    bottom: 8,
+    right: 15,
+};
+
+/// Runs `target` on an 8-bit port clipped by `vis` and `clip`, with `pattern`
+/// as both the raw pattern at `PATTERN` and pat1Data of a bit-pattern PixPat.
+fn clipped_shape_pixels(
+    target: PpcImportDispatcherTarget,
+    regs: [u32; 4],
+    pattern: [u8; 8],
+    clips: (RegionSpec, RegionSpec),
+) -> Vec<u8> {
+    prepared_shape_pixels(target, regs, pattern, clips, |_| {})
+}
+
+/// `clipped_shape_pixels` with `prepare` run on the port before the call.
+fn prepared_shape_pixels(
+    target: PpcImportDispatcherTarget,
+    regs: [u32; 4],
+    pattern: [u8; 8],
+    (vis, clip): (RegionSpec, RegionSpec),
+    prepare: impl FnOnce(&mut PpcLoadedApp),
+) -> Vec<u8> {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, vis, clip);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertOval")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(
+        &mut loaded.memory,
+        RECT,
+        SHAPE.top,
+        SHAPE.left,
+        SHAPE.bottom,
+        SHAPE.right,
+    )
+    .unwrap();
+    loaded.memory.write_bytes(PATTERN, &pattern).unwrap();
+    loaded.memory.write_u32_be(PIXPAT_HANDLE, PIXPAT).unwrap();
+    loaded.memory.write_u16_be(PIXPAT, 0).unwrap();
+    loaded.memory.write_bytes(PIXPAT + 20, &pattern).unwrap();
+    for (register, value) in regs.into_iter().enumerate() {
+        loaded.cpu.gpr[3 + register] = value;
+    }
+    prepare(&mut loaded);
+    run_test_import(&mut loaded, target);
+    read_pixels(&mut loaded, pixels.len())
+}
+
+fn hide_pen(loaded: &mut PpcLoadedApp) {
+    loaded
+        .memory
+        .write_u16_be(PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET, (-1i16) as u16)
+        .unwrap();
+}
+
+const SHAPE_CLIPS: [(RegionSpec, RegionSpec); 3] = [
+    (WHOLE_PORT, WHOLE_PORT),
+    (WHOLE_PORT, CLIP_WITH_HOLE),
+    (VIS_NOTCHED, CLIP_RECT),
+];
+
+fn shape_target(operation: PpcQuickDrawShapeOperation) -> PpcImportDispatcherTarget {
+    PpcImportDispatcherTarget::QuickDrawShape(operation)
+}
+
+#[test]
+fn oval_and_round_rect_imports_resolve_in_both_libraries() {
+    for (symbol, operation) in [
+        ("InvertOval", PpcQuickDrawShapeOperation::InvertOval),
+        ("FillCOval", PpcQuickDrawShapeOperation::FillCOval),
+        ("FillCRoundRect", PpcQuickDrawShapeOperation::FillCRoundRect),
+    ] {
+        for library in ["InterfaceLib", "CarbonLib"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                shape_target(operation),
+                "{library} {symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn invert_oval_matches_the_68k_path_with_clipping() {
+    for (vis, clip) in SHAPE_CLIPS {
+        let pixels = initial_pixels();
+        let expected = draw_oval_8bpp_68k(&fixture(&pixels, vis, clip), SHAPE, ShapeOp::Invert);
+        assert_ne!(expected, pixels);
+        assert_eq!(
+            clipped_shape_pixels(
+                shape_target(PpcQuickDrawShapeOperation::InvertOval),
+                [RECT, 0, 0, 0],
+                [0; 8],
+                (vis, clip),
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
+fn fill_c_oval_with_a_bit_pattern_matches_the_68k_path_with_clipping() {
+    for (vis, clip) in SHAPE_CLIPS {
+        for pattern in [GRAY, DIAGONAL, MIXED, [0xff; 8]] {
+            let pixels = initial_pixels();
+            let expected =
+                draw_oval_8bpp_68k(&fixture(&pixels, vis, clip), SHAPE, ShapeOp::Fill(pattern));
+            assert_ne!(expected, pixels);
+            assert_eq!(
+                clipped_shape_pixels(
+                    shape_target(PpcQuickDrawShapeOperation::FillCOval),
+                    [RECT, PIXPAT_HANDLE, 0, 0],
+                    pattern,
+                    (vis, clip),
+                ),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn fill_c_round_rect_with_a_bit_pattern_matches_the_68k_path_with_clipping() {
+    for (vis, clip) in SHAPE_CLIPS {
+        for pattern in [GRAY, DIAGONAL, MIXED, [0xff; 8]] {
+            let pixels = initial_pixels();
+            let expected = draw_round_rect_8bpp_68k(
+                &fixture(&pixels, vis, clip),
+                SHAPE,
+                (6, 4),
+                ShapeOp::Fill(pattern),
+            );
+            assert_ne!(expected, pixels);
+            assert_eq!(
+                clipped_shape_pixels(
+                    shape_target(PpcQuickDrawShapeOperation::FillCRoundRect),
+                    [RECT, 6, 4, PIXPAT_HANDLE],
+                    pattern,
+                    (vis, clip),
+                ),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn fill_c_shapes_ignore_a_nil_pixel_pattern() {
+    for (operation, regs) in [
+        (PpcQuickDrawShapeOperation::FillCOval, [RECT, 0, 0, 0]),
+        (PpcQuickDrawShapeOperation::FillCRoundRect, [RECT, 6, 4, 0]),
+    ] {
+        assert_eq!(
+            clipped_shape_pixels(shape_target(operation), regs, GRAY, (WHOLE_PORT, WHOLE_PORT)),
+            initial_pixels()
+        );
+    }
+}
+
+#[test]
+fn oval_and_round_rect_imports_draw_nothing_with_a_hidden_pen() {
+    for (operation, regs) in [
+        (PpcQuickDrawShapeOperation::InvertOval, [RECT, 0, 0, 0]),
+        (PpcQuickDrawShapeOperation::FillCOval, [RECT, PIXPAT_HANDLE, 0, 0]),
+        (PpcQuickDrawShapeOperation::FillCRoundRect, [RECT, 6, 4, PIXPAT_HANDLE]),
+    ] {
+        assert_eq!(
+            prepared_shape_pixels(
+                shape_target(operation),
+                regs,
+                GRAY,
+                (WHOLE_PORT, WHOLE_PORT),
+                hide_pen,
+            ),
+            initial_pixels()
+        );
     }
 }
