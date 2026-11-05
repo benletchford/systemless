@@ -309,6 +309,25 @@ pub(crate) fn draw_poly_8bpp_68k(
     })
 }
 
+/// Runs the 68K SeedFill on a `words`-wide image with tightly packed rows and
+/// returns the destination bytes.
+pub(crate) fn seed_fill_68k(
+    source: &[u8],
+    height: i16,
+    words: i16,
+    (seed_h, seed_v): (i16, i16),
+) -> Vec<u8> {
+    let (_, _, mut bus) = setup();
+    let (src, dst) = (bus.alloc(source.len() as u32), bus.alloc(source.len() as u32));
+    bus.write_bytes(src, source);
+    bus.write_bytes(dst, &vec![0xa5; source.len()]);
+    let row = words * 2;
+    assert!(TrapDispatcher::seed_fill_1bpp_mask(
+        &mut bus, src, dst, row, row, height, words, seed_h, seed_v,
+    ));
+    bus.read_bytes(dst, source.len())
+}
+
 /// Builds `fixture` as the current 8-bit colour port of a 68K dispatcher, runs
 /// `draw` and returns the pixel bytes afterwards.
 fn on_8bpp_68k_port(

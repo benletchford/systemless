@@ -22510,7 +22510,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn seed_fill_1bpp_mask(
+    pub(super) fn seed_fill_1bpp_mask(
         bus: &mut MacMemoryBus,
         src_ptr: u32,
         dst_ptr: u32,

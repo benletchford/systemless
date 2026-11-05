@@ -1825,6 +1825,8 @@ pub enum PpcQuickDrawCompatibilityOperation {
     Exp1To6,
     GetCPixel,
     GetPixel,
+    SeedFill,
+    CalcMask,
     GetEntryColor,
     GetEntryUsage,
     GetItemIcon,
@@ -3167,6 +3169,23 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                     }
                 }
             }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SeedFill
+        | PpcQuickDrawCompatibilityOperation::CalcMask => {
+            // Inside Macintosh Volume IV (1986), p. IV-22: raw bit images, not
+            // clipped to the port and not stored in pictures.
+            let image = PpcMaskImages {
+                source: cpu.gpr[3],
+                destination: cpu.gpr[4],
+                source_row: cpu.gpr[5] as u16 as i16,
+                destination_row: cpu.gpr[6] as u16 as i16,
+                height: cpu.gpr[7] as u16 as i16,
+                words: cpu.gpr[8] as u16 as i16,
+            };
+            let seed = matches!(operation, PpcQuickDrawCompatibilityOperation::SeedFill)
+                .then_some((cpu.gpr[9] as u16 as i16, cpu.gpr[10] as u16 as i16));
+            let _ = ppc_compute_bit_mask(memory, image, seed);
             PpcImportAction::ReturnPreserve
         }
         PpcQuickDrawCompatibilityOperation::PenPat => {

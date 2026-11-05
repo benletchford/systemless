@@ -5,7 +5,7 @@ use super::*;
 use crate::memory::write_log;
 use crate::trap::test_helpers::{
     draw_arc_8bpp_68k, draw_oval_8bpp_68k, draw_poly_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
-    IndexedPortFixture,
+    seed_fill_68k, IndexedPortFixture,
 };
 use crate::trap::types::{Rect, ShapeOp};
 
@@ -2451,4 +2451,144 @@ fn map_poly_scales_the_bounding_box_and_every_vertex() {
             &[(10, 20), (60, 420), (35, 70), (10, 20)]
         )
     );
+}
+
+const MASK_SOURCE: u32 = PPC_DATA_BASE + 0x3000;
+const MASK_DESTINATION: u32 = PPC_DATA_BASE + 0x3800;
+
+/// Runs SeedFill or CalcMask with r3..r10 on a source image and a destination
+/// of `destination_len` bytes filled with $A5, and returns the destination.
+fn mask_import(
+    operation: PpcQuickDrawCompatibilityOperation,
+    source: &[u8],
+    (source_row, destination_row): (i16, i16),
+    (height, words): (i16, i16),
+    seed: (i16, i16),
+    destination_len: usize,
+) -> Vec<u8> {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SeedFill")).unwrap();
+    loaded.memory.add_region(MASK_SOURCE, source.to_vec());
+    loaded
+        .memory
+        .add_region(MASK_DESTINATION, vec![0xa5; destination_len]);
+    let high = 0x1234_0000u32;
+    for (register, value) in [
+        MASK_SOURCE,
+        MASK_DESTINATION,
+        high | source_row as u16 as u32,
+        high | destination_row as u16 as u32,
+        high | height as u16 as u32,
+        high | words as u16 as u32,
+        high | seed.0 as u16 as u32,
+        high | seed.1 as u16 as u32,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded.cpu.gpr[3 + register] = value;
+    }
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+    );
+    ppc_memory_read_bytes(&mut loaded.memory, MASK_DESTINATION, destination_len as u32).unwrap()
+}
+
+/// 16×5 image: a closed box at columns 1..=6 around a hole, and a box at
+/// columns 9..=14 open at the top.
+const MASK_IMAGE: [u8; 10] = [
+    0b0111_1110, 0b0100_0010,
+    0b0100_0010, 0b0100_0010,
+    0b0100_0010, 0b0100_0010,
+    0b0100_0010, 0b0100_0010,
+    0b0111_1110, 0b0111_1110,
+];
+
+#[test]
+fn mask_imports_resolve_in_both_libraries() {
+    for (symbol, operation) in [
+        ("SeedFill", PpcQuickDrawCompatibilityOperation::SeedFill),
+        ("CalcMask", PpcQuickDrawCompatibilityOperation::CalcMask),
+    ] {
+        for library in ["InterfaceLib", "CarbonLib"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                PpcImportDispatcherTarget::QuickDrawCompatibility(operation.clone()),
+                "{library} {symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn seed_fill_matches_the_68k_path() {
+    // Inside each box, outside them, on an edge, and outside the image.
+    for seed in [(3, 2), (11, 2), (0, 0), (1, 0), (16, 0), (-1, 2), (0, 5)] {
+        assert_eq!(
+            mask_import(
+                PpcQuickDrawCompatibilityOperation::SeedFill,
+                &MASK_IMAGE,
+                (2, 2),
+                (5, 1),
+                seed,
+                MASK_IMAGE.len(),
+            ),
+            seed_fill_68k(&MASK_IMAGE, 5, 1, seed),
+            "{seed:?}"
+        );
+    }
+}
+
+#[test]
+fn calc_mask_sets_the_bits_paint_cannot_reach_from_an_edge() {
+    assert_eq!(
+        mask_import(
+            PpcQuickDrawCompatibilityOperation::CalcMask,
+            &MASK_IMAGE,
+            (2, 2),
+            (5, 1),
+            (0, 0),
+            MASK_IMAGE.len(),
+        ),
+        // The closed box keeps its hole; the open box keeps only its walls.
+        [
+            0b0111_1110, 0b0100_0010,
+            0b0111_1110, 0b0100_0010,
+            0b0111_1110, 0b0100_0010,
+            0b0111_1110, 0b0100_0010,
+            0b0111_1110, 0b0111_1110,
+        ]
+    );
+}
+
+#[test]
+fn mask_imports_keep_bytes_beyond_the_image_width() {
+    let source = [0xff, 0xff, 0x12, 0x34, 0xff, 0xff, 0x56, 0x78];
+    assert_eq!(
+        mask_import(
+            PpcQuickDrawCompatibilityOperation::CalcMask,
+            &source,
+            (4, 3),
+            (2, 1),
+            (0, 0),
+            6,
+        ),
+        [0xff, 0xff, 0xa5, 0xff, 0xff, 0xa5]
+    );
+}
+
+#[test]
+fn mask_imports_with_invalid_geometry_change_nothing() {
+    for (operation, rows, size) in [
+        (PpcQuickDrawCompatibilityOperation::SeedFill, (2, 2), (0, 1)),
+        (PpcQuickDrawCompatibilityOperation::SeedFill, (2, 2), (5, 0)),
+        (PpcQuickDrawCompatibilityOperation::CalcMask, (1, 2), (5, 1)),
+        (PpcQuickDrawCompatibilityOperation::CalcMask, (2, -2), (5, 1)),
+        (PpcQuickDrawCompatibilityOperation::CalcMask, (2, 2), (-5, 1)),
+    ] {
+        assert_eq!(
+            mask_import(operation, &MASK_IMAGE, rows, size, (0, 0), MASK_IMAGE.len()),
+            [0xa5; 10]
+        );
+    }
 }
