@@ -4118,7 +4118,18 @@ fn host_keyboard_event_to_mac(
     ) {
         return None;
     }
-    Some(host_key_to_mac(logical_key, physical_key, text))
+    let translated = host_key_to_mac(logical_key, physical_key, text);
+    // A named key with no Macintosh key code and no text (Menu, Print Screen,
+    // browser keys) has no classic event. Delivering (0xFF, NUL) would hand
+    // unfiltered TEKey callers a NUL to insert. Named keys that carry text are
+    // excluded so a press and its text-less release translate alike.
+    if translated == (0xFF, 0)
+        && matches!(logical_key, Key::Named(_))
+        && logical_key.to_text().is_none()
+    {
+        return None;
+    }
+    Some(translated)
 }
 
 fn host_key_to_mac(logical_key: &Key, physical_key: &PhysicalKey, text: Option<&str>) -> (u8, u8) {
@@ -4230,8 +4241,11 @@ fn keycode_to_mac(key: &PhysicalKey) -> u8 {
             KeyCode::Numpad7 => 0x59,
             KeyCode::Numpad8 => 0x5B,
             KeyCode::Numpad9 => 0x5C,
+            // PC Insert occupies the Help position on Apple extended keyboards.
+            KeyCode::Help | KeyCode::Insert => 0x72,
             KeyCode::Home => 0x73,
             KeyCode::PageUp => 0x74,
+            KeyCode::Delete => 0x75,
             KeyCode::End => 0x77,
             KeyCode::PageDown => 0x79,
             KeyCode::ArrowLeft => 0x7B,
@@ -4253,6 +4267,10 @@ fn keycode_to_mac(key: &PhysicalKey) -> u8 {
             KeyCode::F13 => 0x69,
             KeyCode::F14 => 0x6B,
             KeyCode::F15 => 0x71,
+            KeyCode::F16 => 0x6A,
+            KeyCode::F17 => 0x40,
+            KeyCode::F18 => 0x4F,
+            KeyCode::F19 => 0x50,
             _ => 0xFF,
         },
         _ => 0xFF,
@@ -4271,6 +4289,8 @@ fn keycode_to_mac_char(key: &PhysicalKey) -> u8 {
             KeyCode::Escape => 27,
             KeyCode::Home => 0x01,
             KeyCode::End => 0x04,
+            KeyCode::Help | KeyCode::Insert => 0x05,
+            KeyCode::Delete => 0x7F,
             KeyCode::PageUp => 0x0B,
             KeyCode::PageDown => 0x0C,
             KeyCode::ArrowLeft => 28,
@@ -4294,7 +4314,11 @@ fn keycode_to_mac_char(key: &PhysicalKey) -> u8 {
             | KeyCode::F12
             | KeyCode::F13
             | KeyCode::F14
-            | KeyCode::F15 => 0x10,
+            | KeyCode::F15
+            | KeyCode::F16
+            | KeyCode::F17
+            | KeyCode::F18
+            | KeyCode::F19 => 0x10,
             _ => 0,
         },
         _ => 0,
@@ -5024,6 +5048,56 @@ mod tests {
     }
 
     #[test]
+    fn help_and_forward_delete_use_mac_codes_even_when_host_text_is_missing_or_nul() {
+        // Apple Events.h: kVK_Help 0x72, kHelpCharCode 5, kVK_ForwardDelete 0x75,
+        // kDeleteCharCode 127.
+        for (physical, logical, expected) in [
+            (KeyCode::Help, NamedKey::Help, (0x72, 0x05)),
+            (KeyCode::Insert, NamedKey::Insert, (0x72, 0x05)),
+            (KeyCode::Delete, NamedKey::Delete, (0x75, 0x7F)),
+        ] {
+            for text in [None, Some("\0"), Some("x")] {
+                assert_eq!(
+                    host_keyboard_event_to_mac(
+                        &Key::Named(logical.clone()),
+                        &PhysicalKey::Code(physical),
+                        text,
+                    ),
+                    Some(expected),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unmapped_named_keys_do_not_reach_the_guest_as_nul_characters() {
+        for (physical, logical) in [
+            (KeyCode::ContextMenu, NamedKey::ContextMenu),
+            (KeyCode::PrintScreen, NamedKey::PrintScreen),
+            (KeyCode::BrowserBack, NamedKey::BrowserBack),
+        ] {
+            assert_eq!(
+                host_keyboard_event_to_mac(
+                    &Key::Named(logical),
+                    &PhysicalKey::Code(physical),
+                    None,
+                ),
+                None,
+            );
+        }
+        // An unmapped layout key's text-less release stays deliverable so the
+        // guest does not see the key held forever.
+        assert_eq!(
+            host_keyboard_event_to_mac(
+                &Key::Character("é".into()),
+                &PhysicalKey::Code(KeyCode::IntlRo),
+                None,
+            ),
+            Some((0xFF, 0)),
+        );
+    }
+
+    #[test]
     fn function_key_events_preserve_mac_virtual_keys_and_function_character() {
         for (key, mac_key) in [
             (KeyCode::F1, 0x7A),
@@ -5041,6 +5115,10 @@ mod tests {
             (KeyCode::F13, 0x69),
             (KeyCode::F14, 0x6B),
             (KeyCode::F15, 0x71),
+            (KeyCode::F16, 0x6A),
+            (KeyCode::F17, 0x40),
+            (KeyCode::F18, 0x4F),
+            (KeyCode::F19, 0x50),
         ] {
             for text in [None, Some("\0")] {
                 assert_eq!(

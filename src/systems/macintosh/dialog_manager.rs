@@ -9149,6 +9149,8 @@ mod tests {
         assert!(!is_dialog_edit_text_character(0x0D)); // CR
         assert!(!is_dialog_edit_text_character(0x1B)); // ESC
         assert!(!is_dialog_edit_text_character(0x7F)); // DEL
+        assert!(!is_dialog_edit_text_character(0x04)); // End
+        assert!(!is_dialog_edit_text_character(0x10)); // function keys
         assert!(!is_dialog_edit_text_character(0x80));
 
         // textedit_key_result tests

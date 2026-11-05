@@ -21561,6 +21561,26 @@
     }
 
     #[test]
+    fn tekey_leaves_special_key_filtering_to_its_caller() {
+        // Inside Macintosh: Text (1993), p. 2-82: "TEKey inserts every
+        // character passed in the key parameter", so End and function-key
+        // characters are the application's to filter.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        for key in [0x04u8, 0x10] {
+            bus.write_long(TEST_SP, te_handle);
+            bus.write_word(TEST_SP + 4, u16::from(key));
+            cpu.write_reg(Register::A7, TEST_SP);
+            let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+        }
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            vec![0x04, 0x10]
+        );
+    }
+
+    #[test]
     fn tekey_redraws_the_edited_text_before_returning() {
         // Inside Macintosh: Text (1993), pp. 2-81 to 2-82: TEKey redraws
         // the text as necessary. A dialog event loop may therefore call
