@@ -2482,6 +2482,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
         | PpcImportDispatcherTarget::AERemoveEventHandler
+        | PpcImportDispatcherTarget::AEGetEventHandler
         | PpcImportDispatcherTarget::AEInstallSpecialHandler
         | PpcImportDispatcherTarget::AEProcessAppleEvent => {
             unreachable!("Apple Event imports return through dispatch_apple_event_import")
