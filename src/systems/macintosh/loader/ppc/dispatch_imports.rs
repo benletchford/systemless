@@ -2508,7 +2508,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LRect
         | PpcImportDispatcherTarget::LUpdate
         | PpcImportDispatcherTarget::LAutoScroll
-        | PpcImportDispatcherTarget::LSearch => {
+        | PpcImportDispatcherTarget::LSearch
+        | PpcImportDispatcherTarget::LLastClick => {
             unreachable!("list imports return through dispatch_list_import")
         }
         PpcImportDispatcherTarget::SysEnvirons

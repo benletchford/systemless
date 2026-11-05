@@ -596,3 +596,26 @@ fn native_list_manager_lnextcell_walks_rows_then_columns() {
     assert_eq!(next(&mut loaded, 1, 0), (0, (1, 1)));
     assert_eq!(next(&mut loaded, 0, 1), (0, (1, 1)));
 }
+
+#[test]
+fn llastclick_writes_the_last_clicked_cell_through_the_result_pointer() {
+    let pef = synthetic_pef_with_import(b"LLastClick");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let handle = scratch;
+    let list_ptr = scratch + 0x10;
+    let result_ptr = scratch + 0x100;
+    loaded.memory.add_region(scratch, vec![0; 0x110]);
+    loaded.memory.write_u32_be(handle, list_ptr).unwrap();
+    loaded
+        .memory
+        .write_u32_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET, 0x0002_0000)
+        .unwrap();
+    loaded.cpu.gpr[3] = result_ptr;
+    loaded.cpu.gpr[4] = handle;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u32_be(result_ptr), Some(0x0002_0000));
+}

@@ -917,6 +917,19 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
             });
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LLastClick => {
+            // Cell LLastClick(ListHandle): the Cell result pointer arrives in r3.
+            // Inside Macintosh: More Macintosh Toolbox (1993), p. 4-71.
+            let cell = memory
+                .read_u32_be(cpu.gpr[4])
+                .filter(|ptr| *ptr != 0)
+                .and_then(|list_ptr| memory.read_u32_be(list_ptr + PPC_LIST_LAST_CLICK_OFFSET))
+                .unwrap_or(0xffff_ffff);
+            if ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
+                let _ = memory.write_u32_be(cpu.gpr[3], cell);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::LSearch => {
             let requested = ppc_memory_read_bytes(memory, cpu.gpr[3], u32::from(cpu.gpr[4] as u16))
                 .unwrap_or_default();

@@ -833,6 +833,7 @@ pub enum PpcImportDispatcherTarget {
     LUpdate,
     LAutoScroll,
     LSearch,
+    LLastClick,
     FlushEvents,
     GetMainEventQueue,
     GetMainEventLoop,
@@ -5101,6 +5102,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LUpdate") => PpcImportDispatcherTarget::LUpdate,
         ("InterfaceLib", "LAutoScroll") => PpcImportDispatcherTarget::LAutoScroll,
         ("InterfaceLib", "LSearch") => PpcImportDispatcherTarget::LSearch,
+        ("InterfaceLib", "LLastClick") => PpcImportDispatcherTarget::LLastClick,
         ("InterfaceLib", "FlushEvents") => PpcImportDispatcherTarget::FlushEvents,
         ("InterfaceLib", "GetMainEventQueue") => PpcImportDispatcherTarget::GetMainEventQueue,
         ("InterfaceLib" | "CarbonLib", "GetMainEventLoop" | "GetCurrentEventLoop") => {
