@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.110.1](https://github.com/benletchford/systemless/compare/v0.110.0...v0.110.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **input:** translate help, forward delete and high function keys without NUL characters ([#5620](https://github.com/benletchford/systemless/issues/5620)) ([116e6ec](https://github.com/benletchford/systemless/commit/116e6ec50419b4e153bc9aa4c638304231e8940a))
+* **ppc:** add EraseArc, InvertArc, FillArc and FillCArc imports ([#5623](https://github.com/benletchford/systemless/issues/5623)) ([2b7075c](https://github.com/benletchford/systemless/commit/2b7075c0464d3ae9cc7435056cecf77386b2e44d))
+* **ppc:** add InvertOval, FillCOval and FillCRoundRect imports ([#5621](https://github.com/benletchford/systemless/issues/5621)) ([c264eb5](https://github.com/benletchford/systemless/commit/c264eb5a8d6dd7fcbc73722f0c29750d392c4b3b))
+* **ppc:** add InvertPoly, FillCPoly, OffsetPoly and MapPoly imports ([#5624](https://github.com/benletchford/systemless/issues/5624)) ([79be5a5](https://github.com/benletchford/systemless/commit/79be5a56a0bfe48cf13a7cf776d4b0a40faaa7d4))
+* **ppc:** add SeedFill and CalcMask imports ([#5625](https://github.com/benletchford/systemless/issues/5625)) ([cf639b5](https://github.com/benletchford/systemless/commit/cf639b53296609b70ef7811f037ad571dfa3bcca))
+* **ppc:** keep pixel pattern handles intact in color port pen state ([#5619](https://github.com/benletchford/systemless/issues/5619)) ([4792390](https://github.com/benletchford/systemless/commit/4792390d61d028f69fff951e77128ed0184acf72))
+
 ## [0.110.0](https://github.com/benletchford/systemless/compare/v0.109.0...v0.110.0) (2026-11-05)
 
 
