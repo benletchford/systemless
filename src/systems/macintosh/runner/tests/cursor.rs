@@ -49,12 +49,24 @@ fn ppc_cursor_device_move_reaches_frontend_warp() {
     runner.init_app(&app);
     runner.set_mouse_position(100, 200);
     let native = runner.native.application_mut().expect("PPC app installed");
+    native.input_sprocket.device_mouse_h = Some(190);
     native.cpu.gpr[3] = device;
     native.cpu.gpr[4] = (-20i32) as u32;
     native.cpu.gpr[5] = 5;
     runner.run_steps(64, None);
     assert_eq!(runner.dispatcher.mouse_position(), (105, 180));
     assert_eq!(runner.take_guest_cursor_warp(), Some((105, 180)));
+    runner.acknowledge_guest_cursor_warp((105, 180));
+    let app = runner.native.application_mut().unwrap();
+    let input = app.current_input_snapshot();
+    assert_eq!(
+        crate::loader::ppc::sprockets::ppc_isp_device_element_next_event(
+            crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut app.input_sprocket,
+        ),
+        Some(10 << 16)
+    );
 }
 
 #[test]
@@ -638,4 +650,75 @@ fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
     assert_eq!(runner.m68k.cpu.read_reg(Register::A2), 0x3333_3333);
     assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x4444_4444);
     assert!(!runner.is_halted());
+}
+
+#[test]
+fn acknowledged_cursor_warp_rebases_adb_and_preserves_unread_ppc_motion() {
+    let app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    assert!(runner
+        .dispatcher
+        .adb
+        .set_device_handler(3, 0x0012_3456, 0, false));
+    runner.set_mouse_position(100, 100);
+    runner.dispatcher.adb.flush(3);
+    runner
+        .native
+        .application_mut()
+        .unwrap()
+        .input_sprocket
+        .device_mouse_h = Some(100);
+    runner.set_mouse_position(100, 120);
+    runner.dispatcher.adb.flush(3);
+    let previous_mouse = runner.bus.read_long(addr::MOUSE_LOC2);
+    runner.bus.write_long(addr::MOUSE_LOC2, (300 << 16) | 296);
+    runner.sync_guest_mouse_position(previous_mouse);
+    assert_eq!(runner.take_guest_cursor_warp(), Some((300, 296)));
+    runner.acknowledge_guest_cursor_warp((300, 296));
+    assert_eq!(runner.dispatcher.adb.pending_packet_count(), 0);
+    let input = runner
+        .native
+        .application_mut()
+        .unwrap()
+        .current_input_snapshot();
+    assert_eq!((input.mouse_v, input.mouse_h), (300, 296));
+    assert_eq!(runner.dispatcher.input_state.mouse_position(), (300, 296));
+    runner.set_mouse_position(300, 301);
+    assert_eq!(runner.dispatcher.adb.pending_packet_count(), 1);
+    assert_eq!(
+        runner.dispatcher.adb.pop_pending_packet().unwrap().packet,
+        [2, 0x80, 0x85]
+    );
+    let app = runner.native.application_mut().unwrap();
+    assert_eq!(app.input_sprocket.device_mouse_h, Some(296));
+    let input = app.current_input_snapshot();
+    assert_eq!(
+        crate::loader::ppc::sprockets::ppc_isp_device_element_next_event(
+            crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut app.input_sprocket
+        ),
+        Some(25 << 16)
+    );
+
+    runner.set_mouse_position(0, -32000);
+    runner
+        .native
+        .application_mut()
+        .unwrap()
+        .input_sprocket
+        .device_mouse_h = Some(i16::MIN);
+    runner.acknowledge_guest_cursor_warp((0, 32000));
+    runner.set_mouse_position(0, 32001);
+    let app = runner.native.application_mut().unwrap();
+    let input = app.current_input_snapshot();
+    assert_eq!(
+        crate::loader::ppc::sprockets::ppc_isp_device_element_next_event(
+            crate::loader::ppc::PPC_ISP_MOUSE_X_ELEMENT,
+            input,
+            &mut app.input_sprocket
+        ),
+        Some(769 << 16)
+    );
 }
