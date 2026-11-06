@@ -62,7 +62,7 @@ compatibility:
       bar persists; room movement, longer play, saves and audio fidelity remain
       unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/5436#issuecomment-6686455081
+    evidence: https://github.com/benletchford/systemless/issues/5436
 runtime:
   executable_path: Theatre
   show_menu_bar: true
