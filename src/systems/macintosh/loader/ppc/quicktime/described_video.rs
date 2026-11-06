@@ -14,7 +14,7 @@ pub(super) fn decode(
     samples: &PpcQuickTimeVideoSampleTableRecord,
 ) -> Option<PpcQuickTimeDecodedVideoFrame> {
     let track = quicktime
-        .movie_file_tracks
+        .movie_tracks
         .iter()
         .position(|track| track.media_type == u32::from_be_bytes(*b"vide"))?
         .checked_add(1)?;
@@ -23,7 +23,7 @@ pub(super) fn decode(
         .as_ref()
         .map_or(1, |track| track.sample_description_id);
     let bytes =
-        ppc_qt_movie_sample_description(&quicktime.movie_file_data, track, description_index)?;
+        ppc_qt_movie_sample_description(&quicktime.movie_data, track, description_index)?;
     let description = decompression::Description::parse(bytes).ok()?;
     if description.codec != samples.codec {
         return None;
@@ -63,10 +63,10 @@ pub(super) fn decode(
         )
     };
     let sample_data = quicktime
-        .movie_file_sample_fork
+        .movie_sample_fork
         .as_ref()
         .map(|fork| fork.as_slice())
-        .unwrap_or(&quicktime.movie_file_data);
+        .unwrap_or(&quicktime.movie_data);
     let mut decoded = None;
     for index in start..=target {
         let data = ppc_qt_movie_video_sample_bytes(sample_data, samples, index)?;
