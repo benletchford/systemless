@@ -50,3 +50,9 @@ reported missing QuickTime time-base and picture-file imports. An experimental
 build combining four unmerged fixes reached the full splash at frontend tick
 600 and passed a pixel assertion against the source image. This does not verify
 startup on master or gameplay; see [issue #5288](https://github.com/benletchford/systemless/issues/5288).
+
+On 31 October 2026, an experimental build combining time-base draft
+`bff9ae71` and picture-file draft `b7547a2d` on master `7cfcd9bd` again
+reached the full splash at frontend tick 600. It passed the same source-image
+pixel assertion with no exhausted frames. Gameplay and native timing behavior
+remain unverified.
