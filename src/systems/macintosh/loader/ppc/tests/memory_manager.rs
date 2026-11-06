@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn default_control_table_is_a_queryable_and_copyable_system_handle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetHandleSize")).unwrap();
+    loaded.cpu.gpr[3] = PPC_DEFAULT_CONTROL_CTABLE_HANDLE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetHandleSize);
+    assert_eq!(loaded.cpu.gpr[3], 40);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    loaded.cpu.gpr[3] = PPC_DEFAULT_CONTROL_CTABLE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RecoverHandle);
+    assert_eq!(loaded.cpu.gpr[3], PPC_DEFAULT_CONTROL_CTABLE_HANDLE);
+    let expected =
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_DEFAULT_CONTROL_CTABLE, 40).unwrap();
+    let variable = PPC_DATA_BASE + 0x2100;
+    loaded.memory.add_region(variable, vec![0; 4]);
+    loaded
+        .memory
+        .write_u32_be(variable, PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+        .unwrap();
+    loaded.cpu.gpr[3] = variable;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HandToHand);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let copy = loaded.memory.read_u32_be(variable).unwrap();
+    assert_ne!(copy, PPC_DEFAULT_CONTROL_CTABLE_HANDLE);
+    let copy_ptr = loaded.memory.read_u32_be(copy).unwrap();
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, copy_ptr, 40),
+        Some(expected)
+    );
+}
+
+#[test]
 fn new_string_copies_only_the_pascal_string_length() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewString")).unwrap();
     let source = PPC_DATA_BASE + 0x2f00;

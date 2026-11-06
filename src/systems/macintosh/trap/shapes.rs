@@ -668,6 +668,31 @@ impl super::TrapDispatcher {
         });
     }
 
+    pub(super) fn draw_control_rect<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+    ) {
+        let (pen_h, pen_w) = self.pn_size;
+        self.draw_generic_shape_with_geometry(cpu, bus, r, op, true, None, None, true, |y, x| {
+            if y < r.top || y >= r.bottom || x < r.left || x >= r.right {
+                return 0;
+            }
+            if matches!(op, ShapeOp::Frame)
+                && y >= r.top + pen_h
+                && y < r.bottom - pen_h
+                && x >= r.left + pen_w
+                && x < r.right - pen_w
+            {
+                0
+            } else {
+                255
+            }
+        });
+    }
+
     /// Read polygon vertices from a guest PolyHandle.
     /// PolyRec layout: polySize(2) + polyBBox(8) + polyPoints(4*N)
     /// Inside Macintosh Volume I, I-189
@@ -782,6 +807,7 @@ impl super::TrapDispatcher {
             false,
             None,
             polygon_edges,
+            false,
             |y, x| {
                 // Count edge crossings to the left of (or at) x using even-odd rule
                 let mut crossings = 0u32;
@@ -984,6 +1010,7 @@ impl super::TrapDispatcher {
                 false,
                 shape_rows,
                 None,
+                false,
                 |y, x| {
                     let row = i32::from(y) - top;
                     if row < 0
@@ -1037,6 +1064,7 @@ impl super::TrapDispatcher {
             false,
             shape_rows,
             None,
+            false,
             |y, x| {
                 if let Some(c) = &cache {
                     let row = (y - c.top) as usize;
@@ -1063,6 +1091,27 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         r: &Rect,
         op: ShapeOp,
+    ) {
+        self.draw_oval_with_palette(cpu, bus, r, op, false);
+    }
+
+    pub(super) fn draw_control_oval<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+    ) {
+        self.draw_oval_with_palette(cpu, bus, r, op, true);
+    }
+
+    fn draw_oval_with_palette<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+        prefer_port_palette: bool,
     ) {
         let (pen_h, pen_w) = self.pn_size;
         let width = r.right - r.left;
@@ -1092,7 +1141,7 @@ impl super::TrapDispatcher {
                 matches!(op, ShapeOp::Frame),
             )
         });
-        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, |y, x| {
+        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, prefer_port_palette, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -1135,6 +1184,31 @@ impl super::TrapDispatcher {
         oh: i16,
         op: ShapeOp,
     ) {
+        self.draw_round_rect_with_palette(cpu, bus, r, ow, oh, op, false);
+    }
+
+    pub(super) fn draw_control_round_rect<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        ow: i16,
+        oh: i16,
+        op: ShapeOp,
+    ) {
+        self.draw_round_rect_with_palette(cpu, bus, r, ow, oh, op, true);
+    }
+
+    fn draw_round_rect_with_palette<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        ow: i16,
+        oh: i16,
+        op: ShapeOp,
+        prefer_port_palette: bool,
+    ) {
         let (pen_h, pen_w) = self.pn_size;
 
         let width = r.right - r.left;
@@ -1164,7 +1238,7 @@ impl super::TrapDispatcher {
                 matches!(op, ShapeOp::Frame),
             )
         });
-        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, |y, x| {
+        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, prefer_port_palette, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -1360,6 +1434,29 @@ impl super::TrapDispatcher {
             full_rect_coverage,
             None,
             None,
+            false,
+            coverage_at,
+        );
+    }
+
+    pub(super) fn draw_control_glyph<C: CpuOps, F>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        coverage_at: F,
+    ) where
+        F: Fn(i16, i16) -> u8,
+    {
+        self.draw_generic_shape_with_geometry(
+            cpu,
+            bus,
+            r,
+            ShapeOp::Glyph(0),
+            false,
+            None,
+            None,
+            true,
             coverage_at,
         );
     }
@@ -1373,6 +1470,7 @@ impl super::TrapDispatcher {
         full_rect_coverage: bool,
         shape_rows: Option<super::quickdraw::RegionMembershipCache>,
         polygon_edges: Option<Vec<[f32; 4]>>,
+        prefer_port_palette: bool,
         coverage_at: F,
     ) where
         F: Fn(i16, i16) -> u8,
@@ -1689,7 +1787,9 @@ impl super::TrapDispatcher {
                 0
             };
             let use_raw_current_ctab =
-                current_ctab_handle != 0 && ctab_uses_noncanonical_black(bus, current_ctab_handle);
+                current_ctab_handle != 0
+                    && !(prefer_port_palette && !is_screen_port && port_ctab_handle != 0)
+                    && ctab_uses_noncanonical_black(bus, current_ctab_handle);
             let ctab_handle = if use_raw_current_ctab {
                 current_ctab_handle
             } else {
@@ -2090,6 +2190,7 @@ impl super::TrapDispatcher {
                     0
                 };
                 let use_raw_current_ctab = current_ctab_handle != 0
+                    && !(prefer_port_palette && !is_screen_port && port_ctab_handle != 0)
                     && ctab_uses_noncanonical_black(bus, current_ctab_handle);
                 let ctab_handle = if use_raw_current_ctab {
                     current_ctab_handle

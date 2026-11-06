@@ -158,6 +158,18 @@ pub(super) fn dispatch_memory_import(
                 .recover_handle_from_master_pointer(cpu.gpr[3], |handle| {
                     PpcMemory::read_u32_be(memory, handle)
                 })
+                .or_else(|| {
+                    [
+                        PPC_MAIN_CTABLE_HANDLE,
+                        PPC_DEFAULT_CONTROL_CTABLE_HANDLE,
+                        PPC_DEFAULT_AUX_CONTROL_HANDLE,
+                    ]
+                    .into_iter()
+                    .find(|handle| {
+                        ppc_system_handle_record(memory, *handle)
+                            .is_some_and(|record| record.ptr == cpu.gpr[3])
+                    })
+                })
                 .unwrap_or(0);
             if handle != 0 {
                 ppc_apply_process_native_handle(process_memory_manager, handles, handle);
@@ -290,7 +302,14 @@ pub(super) fn dispatch_memory_import(
                             ppc_apply_process_native_handle(process_memory_manager, handles, copy);
                             PPC_NO_ERR
                         }
-                        Err(error) if source_handle == PPC_MAIN_CTABLE_HANDLE => {
+                        Err(error)
+                            if matches!(
+                                source_handle,
+                                PPC_MAIN_CTABLE_HANDLE
+                                    | PPC_DEFAULT_CONTROL_CTABLE_HANDLE
+                                    | PPC_DEFAULT_AUX_CONTROL_HANDLE
+                            ) =>
+                        {
                             if let Some(source) = ppc_system_handle_record(memory, source_handle) {
                                 if let Some(bytes) =
                                     ppc_memory_read_bytes(memory, source.ptr, source.size)

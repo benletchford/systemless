@@ -463,6 +463,8 @@ pub(crate) fn ppc_system_handle_record(
     // Memory Manager routines such as HandToHand must still accept it.
     let size = match handle {
         PPC_MAIN_CTABLE_HANDLE => PPC_MAIN_CTABLE_SIZE,
+        PPC_DEFAULT_CONTROL_CTABLE_HANDLE => 40,
+        PPC_DEFAULT_AUX_CONTROL_HANDLE => 22,
         _ => return None,
     };
     let ptr = memory.read_u32_be(handle)?;
