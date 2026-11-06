@@ -197,6 +197,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         power_mq: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
+        stdc_bsearch_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
         picture_callback_stack: Vec::new(),

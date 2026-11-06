@@ -30,6 +30,7 @@ pub struct PpcLoadedApp {
     pub power_mq: u32,
     pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
+    pub(crate) stdc_bsearch_stack: Vec<PpcBsearchState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
     pub(crate) picture_callback_stack: Vec<dispatch_picture::PpcPictureCallbackState>,

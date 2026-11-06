@@ -271,6 +271,7 @@ impl PpcLoadedApp {
         let native_exception_handler = Cell::new(self.native_exception_handler);
         let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
+        let mut stdc_bsearch_stack = std::mem::take(&mut self.stdc_bsearch_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
         let mut picture_callback_stack = std::mem::take(&mut self.picture_callback_stack);
@@ -1928,6 +1929,7 @@ impl PpcLoadedApp {
                                             resource_policy: &resource_policy,
                                             native_exception_handler: &native_exception_handler,
                                             stdc_qsort_stack: &mut stdc_qsort_stack,
+                                            stdc_bsearch_stack: &mut stdc_bsearch_stack,
                                             dialog_callback_stack: &mut dialog_callback_stack,
                                             collection_callback_stack: &mut collection_callback_stack,
                                             picture_callback_stack: &mut picture_callback_stack,
@@ -2507,6 +2509,7 @@ impl PpcLoadedApp {
         self.native_exception_handler = native_exception_handler.get();
         self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
+        self.stdc_bsearch_stack = stdc_bsearch_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.collection_callback_stack = collection_callback_stack;
         self.picture_callback_stack = picture_callback_stack;

@@ -92,6 +92,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         power_mq: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
+        stdc_bsearch_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         collection_callback_stack: Vec::new(),
         picture_callback_stack: Vec::new(),
