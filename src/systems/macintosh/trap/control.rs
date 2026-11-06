@@ -1412,8 +1412,12 @@ impl super::TrapDispatcher {
         bus.write_long(data_ptr, menu_handle);
         // The CNTL minimum selects a resource, whose embedded menu ID may
         // differ. Private data describes the menu actually loaded above.
-        let menu_id = bus.read_word(bus.read_long(menu_handle));
-        bus.write_word(data_ptr + 4, menu_id);
+        let menu_id = self
+            .menus
+            .iter()
+            .find(|menu| menu.handle == menu_handle)
+            .map_or(0, |menu| menu.id);
+        bus.write_word(data_ptr + 4, menu_id as u16);
         bus.write_word(data_ptr + 6, 0);
         self.track_handle_ptr(data_ptr, data_handle);
         data_handle
