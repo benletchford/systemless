@@ -116,6 +116,10 @@ impl AdbManager {
             .retain(|packet| packet.command >> 4 != address);
     }
 
+    pub(crate) fn rebase_mouse_position(&mut self, position: (i16, i16)) -> (i16, i16) {
+        std::mem::replace(&mut self.last_mouse_position, position)
+    }
+
     pub(crate) fn note_mouse_state(&mut self, position: (i16, i16), button: bool) {
         let Some(mouse) = self.device_by_address(3) else {
             return;

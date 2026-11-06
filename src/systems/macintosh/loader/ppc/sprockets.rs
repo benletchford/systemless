@@ -250,6 +250,7 @@ pub struct PpcInputSprocketState {
     pub device_mouse_v: Option<i16>,
     pub device_mouse_h_carry: i32,
     pub device_mouse_v_carry: i32,
+    pub device_mouse_rebased_warp: Option<((i16, i16), (i16, i16))>,
     pub device_mouse_button: bool,
 }
 
@@ -271,6 +272,7 @@ impl Default for PpcInputSprocketState {
             device_mouse_v: None,
             device_mouse_h_carry: 0,
             device_mouse_v_carry: 0,
+            device_mouse_rebased_warp: None,
             device_mouse_button: false,
         }
     }
@@ -3519,6 +3521,7 @@ fn ppc_isp_clear_mouse_tracking(input_sprocket: &mut PpcInputSprocketState) {
     input_sprocket.device_mouse_v = None;
     input_sprocket.device_mouse_h_carry = 0;
     input_sprocket.device_mouse_v_carry = 0;
+    input_sprocket.device_mouse_rebased_warp = None;
     input_sprocket.device_mouse_button = false;
 }
 

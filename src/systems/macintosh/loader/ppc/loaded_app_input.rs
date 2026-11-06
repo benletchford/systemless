@@ -5,12 +5,48 @@ use super::*;
 use crate::memory::globals::addr;
 
 impl PpcLoadedApp {
+    pub(crate) fn rebase_physical_mouse_position(&mut self, position: (i16, i16)) {
+        self.input.mouse_v = position.0;
+        self.input.mouse_h = position.1;
+        self.process_input.set_mouse_position(position);
+        self.toolbox_startup
+            .input_sprocket_drivers
+            .rebase_mouse_position(position);
+    }
+
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
+        let tick = self.current_tick();
+        self.note_physical_mouse_input(input, tick);
         self.mirror_input_low_memory(input);
         self.input = input;
         self.process_input.set_key_map_snapshot(input.key_map);
         self.process_input
             .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
+    }
+
+    pub(crate) fn note_physical_mouse_input(&mut self, input: PpcInputSnapshot, tick: u32) {
+        if let Some((_, previous)) = self.input_sprocket.device_mouse_rebased_warp.as_mut() {
+            if let Some(anchor) = self.input_sprocket.device_mouse_h.as_mut() {
+                self.input_sprocket.device_mouse_h_carry = self
+                    .input_sprocket
+                    .device_mouse_h_carry
+                    .wrapping_add(i32::from(input.mouse_h) - i32::from(previous.1));
+                *anchor = input.mouse_h;
+            }
+            if let Some(anchor) = self.input_sprocket.device_mouse_v.as_mut() {
+                self.input_sprocket.device_mouse_v_carry = self
+                    .input_sprocket
+                    .device_mouse_v_carry
+                    .wrapping_add(i32::from(previous.0) - i32::from(input.mouse_v));
+                *anchor = input.mouse_v;
+            }
+            *previous = (input.mouse_v, input.mouse_h);
+        }
+        let active =
+            ppc_isp_device_is_active(&self.input_sprocket, PPC_ISP_MOUSE_DEVICE) == Some(true);
+        self.toolbox_startup
+            .input_sprocket_drivers
+            .note_mouse_sample(input, tick, active);
     }
 
     pub(crate) fn mirror_input_low_memory(&mut self, input: PpcInputSnapshot) {

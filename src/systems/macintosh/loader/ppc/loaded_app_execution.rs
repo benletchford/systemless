@@ -2087,6 +2087,11 @@ impl PpcLoadedApp {
                             // Preserve unread motion while rebasing the anchors.
                             ppc_rebase_mouse_warp(&mut input_sprocket, input, (v, h));
                         }
+                        let physical_origin = input_sprocket
+                            .device_mouse_rebased_warp
+                            .map(|(_, origin)| origin)
+                            .unwrap_or((input.mouse_v, input.mouse_h));
+                        input_sprocket.device_mouse_rebased_warp = Some(((v, h), physical_origin));
                         input.mouse_v = v;
                         input.mouse_h = h;
                         process_input.set_mouse_position((v, h));
