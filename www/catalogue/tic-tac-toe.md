@@ -35,6 +35,25 @@ compatibility:
       and 60 guest ticks per second.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3753
+  - date: "2026-11-06"
+    tester: Catalogue maintainer
+    systemless_version: 0.110.1 public production
+    architecture: 68k
+    environment: >-
+      Fresh Chrome 156.0.8078.73 on Linux/aarch64 loaded the public route with
+      worker/WebGL at the default 25 MHz, without frontend substitution or archive
+      interception. The browser-received original archive matched its pinned
+      310927-byte SHA-256 receipt; independent archive and content-only screenshot
+      downloads also matched their pins. Trusted mouse input selected File > New
+      game, placed X in the center and O in the upper-left; inspected captures show
+      the empty board and both successive turns. The unchanged 20-second post-input
+      pacing check passed with a final steady snapshot of 59.929 guest ticks/s and
+      host FPS, maximum sampled worker frame 27.8 ms, minimum audio queue 121.9 ms
+      and no captured console errors. This is bounded two-turn play and idle-board
+      pacing; complete matches, computer difficulty, saves, independent hardware
+      parity and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3753
 artifacts:
 - id: archive
   role: archive
