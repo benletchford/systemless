@@ -869,6 +869,57 @@ pub(super) fn dispatch_quicktime_compatibility(
                     cpu.gpr[3] = controller;
                     PpcImportAction::Return(ppc_i16_result(error))
                 }
+                2 => {
+                    // mcActionDraw is a window update, not a playback tick.
+                    // Render real decoded pixels without starting movie/audio.
+                    if !compatibility_valid_movie(quicktime, movie) {
+                        return PpcImportAction::Return(ppc_i16_result(-2010));
+                    }
+                    let window = cpu.gpr[5];
+                    let Some(surface) = (window != 0)
+                        .then(|| ppc_live_quickdraw_surface(memory, gworlds, window))
+                        .flatten()
+                    else {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    };
+                    let movie_port = if quicktime.movie_gworld != 0 {
+                        quicktime.movie_gworld
+                    } else {
+                        current_gworld
+                    };
+                    if window != movie_port || !quicktime.movie_active {
+                        return PpcImportAction::Return(0);
+                    }
+                    if quicktime.movie_audio_track.is_some()
+                        && quicktime.movie_video_track.is_none()
+                    {
+                        return PpcImportAction::Return(0);
+                    }
+                    let controller = quicktime
+                        .movie_controllers
+                        .iter()
+                        .find(|controller| controller.handle == cpu.gpr[3])
+                        .expect("controller was validated above");
+                    let detached = quicktime
+                        .detached_movie_controllers
+                        .contains(&controller.handle);
+                    let rect = if controller.window != window || detached {
+                        quicktime.movie_box
+                    } else {
+                        controller.rect
+                    };
+                    let error = match ppc_qt_draw_decoded_movie_frame(
+                        memory, surface, quicktime, rect,
+                    ) {
+                        Some(_) => PPC_NO_ERR, // Fully clipped updates still succeed.
+                        None => -8961, // noCodecErr; never draw a placeholder.
+                    };
+                    if qt_trace_enabled() {
+                        let codec = quicktime.movie_video_samples.as_ref().map_or(0, |s| s.codec);
+                        eprintln!("[QT-TRACE] ControllerDraw controller=${:08X} window=${window:08X} rect={rect:?} codec=${codec:08X} error={error}", cpu.gpr[3]);
+                    }
+                    PpcImportAction::Return(ppc_i16_result(error))
+                }
                 8 => {
                     // mcActionPlay carries a Fixed playback rate in the params slot.
                     if movie != PPC_QT_MOVIE || quicktime.movie_disposed {
@@ -1018,7 +1069,11 @@ pub(super) fn dispatch_quicktime_compatibility(
                     movie: cpu.gpr[3],
                     rect,
                     flags: cpu.gpr[5],
-                    window: 0,
+                    window: if quicktime.movie_gworld != 0 {
+                        quicktime.movie_gworld
+                    } else {
+                        current_gworld
+                    },
                     origin: 0,
                     action_filter: 0,
                     action_ref_con: 0,
