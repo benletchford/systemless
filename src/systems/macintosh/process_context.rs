@@ -5705,8 +5705,26 @@ impl SharedProcessAppleEventHandlers {
         event_id: u32,
         wildcard: u32,
     ) -> Option<ProcessAppleEventHandler> {
+        self.handler_for_filtered(event_class, event_id, wildcard, false, false)
+    }
+
+    pub(crate) fn handler_for_filtered(
+        &self,
+        event_class: u32,
+        event_id: u32,
+        wildcard: u32,
+        ignore_application: bool,
+        ignore_system: bool,
+    ) -> Option<ProcessAppleEventHandler> {
         let handlers = self.0.borrow();
         for is_system_handler in [false, true] {
+            if if is_system_handler {
+                ignore_system
+            } else {
+                ignore_application
+            } {
+                continue;
+            }
             for key in [
                 (is_system_handler, event_class, event_id),
                 (is_system_handler, event_class, wildcard),
