@@ -21767,3 +21767,118 @@ fn launchapplication_keeps_caller_identity_until_a_process_switch() {
         }
     }
 }
+fn classic_smc_movie_fixture() -> (TrapDispatcher, MacMemoryBus, u32, u32) {
+    use super::super::movie_media::{MediaSample, VideoTrack};
+    let (mut disp, _, mut bus) = setup();
+    let (movie, port, handle, pixmap, pixels) = (0x300000, 0x300100, 0x300200, 0x300300, 0x310000);
+    bus.write_word(port + 6, 0xC000);
+    bus.write_long(port + 2, handle);
+    bus.write_long(handle, pixmap);
+    bus.write_long(pixmap, pixels);
+    bus.write_word(pixmap + 4, 0x8000 | 32);
+    bus.write_word(pixmap + 32, 32);
+    let mut state = super::MovieState::new(0, -1, 0, (0, 0, 4, 8), 3, 60);
+    state.gworld_port = port;
+    // Two solid blocks, then preserve the left block and replace the right.
+    state.data_fork = vec![0, 0, 0, 6, 0x61, 1, 0, 0, 0, 7, 0x00, 0x60, 2];
+    state.media = Some(VideoTrack {
+        codec: *b"smc ",
+        width: 8,
+        height: 4,
+        depth: 8,
+        time_scale: 60,
+        samples: vec![
+            MediaSample {
+                offset: 0,
+                size: 6,
+                start_time: 0,
+                duration: 1,
+                sync: true,
+            },
+            MediaSample {
+                offset: 6,
+                size: 7,
+                start_time: 1,
+                duration: 1,
+                sync: false,
+            },
+        ],
+        clut: Some(vec![[0, 0, 0], [240, 16, 8], [8, 32, 224]]),
+    });
+    disp.movie_states.insert(movie, state);
+    (disp, bus, movie, pixels)
+}
+
+#[test]
+fn classic_smc_movie_renders_palette_deltas_and_backward_seek() {
+    let (mut disp, mut bus, movie, pixels) = classic_smc_movie_fixture();
+    // An uncached delta must reconstruct its reference frame first.
+    disp.render_movie_frame(&mut bus, movie, 1);
+    assert_eq!(bus.read_long(pixels), 0x00F01008);
+    assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+    assert_eq!(bus.read_long(pixels + 3 * 32 + 28), 0x000820E0);
+    assert_eq!(disp.movie_states[&movie].rendered_sample, Some(1));
+    disp.render_movie_frame(&mut bus, movie, 0);
+    assert_eq!(bus.read_long(pixels + 16), 0x00F01008);
+    disp.render_movie_frame(&mut bus, movie, 1);
+    assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+}
+
+#[test]
+fn classic_smc_movie_service_draws_without_advancing_the_clock() {
+    let (mut disp, mut bus, movie, pixels) = classic_smc_movie_fixture();
+    let now = disp.current_tick();
+    let state = disp.movie_states.get_mut(&movie).unwrap();
+    state.current_time = 1;
+    state.rate = 65536;
+    state.last_service_tick = Some(now);
+    disp.advance_and_render_active_movies(&mut bus);
+    assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+    assert_eq!(disp.movie_states[&movie].current_time, 1);
+    // The same sample is cached, so a second service does not decode again.
+    disp.movie_states.get_mut(&movie).unwrap().data_fork.clear();
+    disp.advance_and_render_active_movies(&mut bus);
+    assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+}
+
+#[test]
+fn classic_smc_movie_rejects_bad_deltas_without_publishing_partial_state() {
+    let (mut disp, mut bus, movie, pixels) = classic_smc_movie_fixture();
+    disp.render_movie_frame(&mut bus, movie, 0);
+    // Change the first block, then truncate before the second block opcode.
+    disp.movie_states.get_mut(&movie).unwrap().data_fork[10..].copy_from_slice(&[0x60, 2, 0xE0]);
+    disp.render_movie_frame(&mut bus, movie, 1);
+    assert_eq!(disp.movie_states[&movie].rendered_sample, Some(0));
+    assert_eq!(bus.read_long(pixels), 0x00F01008);
+    disp.movie_states.get_mut(&movie).unwrap().data_fork[10..].copy_from_slice(&[0x00, 0x60, 2]);
+    disp.render_movie_frame(&mut bus, movie, 1);
+    assert_eq!(bus.read_long(pixels), 0x00F01008);
+    assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+    // Unknown codecs and invalid SMC depths must not reach a decoder.
+    for (codec, depth) in [(*b"xxxx", 8), (*b"smc ", 16)] {
+        let state = disp.movie_states.get_mut(&movie).unwrap();
+        state.media.as_mut().unwrap().codec = codec;
+        state.media.as_mut().unwrap().depth = depth;
+        state.rendered_sample = None;
+        disp.render_movie_frame(&mut bus, movie, 0);
+        assert_eq!(disp.movie_states[&movie].rendered_sample, None);
+        assert_eq!(bus.read_long(pixels + 16), 0x000820E0);
+    }
+}
+
+#[test]
+fn classic_smc_movie_uses_standard_palette_when_no_inline_table_exists() {
+    let (mut disp, mut bus, movie, pixels) = classic_smc_movie_fixture();
+    disp.movie_states
+        .get_mut(&movie)
+        .unwrap()
+        .media
+        .as_mut()
+        .unwrap()
+        .clut = None;
+    disp.render_movie_frame(&mut bus, movie, 0);
+    let color = TrapDispatcher::standard_mac_8bpp_clut()[1];
+    let expected =
+        ((color[0] as u32 >> 8) << 16) | ((color[1] as u32 >> 8) << 8) | (color[2] as u32 >> 8);
+    assert_eq!(bus.read_long(pixels), expected);
+}

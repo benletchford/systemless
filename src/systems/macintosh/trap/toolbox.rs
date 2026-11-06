@@ -5346,7 +5346,7 @@ impl super::TrapDispatcher {
                 }
                 state.current_time = new_time.clamp(0, state.duration as i64) as i32;
                 let has_video = state.media.as_ref().is_some_and(|m| {
-                    (&m.codec == b"cvid" || &m.codec == b"rle ") && !m.samples.is_empty()
+                    matches!(&m.codec, b"cvid" | b"rle " | b"smc ") && !m.samples.is_empty()
                 });
                 (finished, state.current_time, has_video)
             };
@@ -5364,7 +5364,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Decode the Cinepak video sample due at `movie_time` (in the movie's
+    /// Decode the video sample due at `movie_time` (in the movie's
     /// time scale) and blit it into the movie's destination GWorld pixmap.
     /// Inter-coded frames are decoded forward from the nearest preceding sync
     /// sample so the reconstructed frame is correct after a seek.
@@ -5375,7 +5375,7 @@ impl super::TrapDispatcher {
         let Some(media) = state.media.as_ref() else {
             return;
         };
-        if media.samples.is_empty() {
+        if media.samples.is_empty() || !matches!(&media.codec, b"cvid" | b"rle " | b"smc ") {
             return;
         }
         // Map movie time to this track's media time scale.
@@ -5410,12 +5410,58 @@ impl super::TrapDispatcher {
         };
 
         let is_rle = &media.codec == b"rle ";
-        // The rle path maps indices through the track's embedded CLUT.
-        let clut = media.clut.clone();
+        // Indexed paths map through the track CLUT; SMC without an inline
+        // table uses the standard 8-bit Macintosh palette.
+        let clut = media.clut.clone().or_else(|| {
+            (&media.codec == b"smc ").then(|| {
+                Self::standard_mac_8bpp_clut()
+                    .into_iter()
+                    .map(|color| color.map(|component| (component >> 8) as u8))
+                    .collect()
+            })
+        });
 
         // Decode the reference chain; keep the final RGB frame to blit.
         let mut frame_rgb: Option<Vec<u8>> = None;
-        if is_rle {
+        if &media.codec == b"smc " {
+            if media.depth != 8 {
+                return;
+            }
+            // SMC dictionaries can outlive a sync sample. Replay from the
+            // beginning after a seek, and publish state only after every
+            // intervening delta has decoded successfully.
+            let (mut decoder, start) = match (state.rendered_sample, &state.smc_decoder) {
+                (Some(previous), Some(decoder)) if previous < target => {
+                    (decoder.clone(), previous + 1)
+                }
+                _ => (super::smc::SmcDecoder::new(width, height), 0),
+            };
+            for i in start..=target {
+                let sample = &media.samples[i];
+                let Some(end) = sample.offset.checked_add(sample.size) else {
+                    return;
+                };
+                let Some(bytes) = state.data_fork.get(sample.offset..end) else {
+                    return;
+                };
+                let Ok(indices) = decoder.decode(bytes) else {
+                    return;
+                };
+                if i == target {
+                    let mut rgb = vec![0; width * height * 3];
+                    for (pixel, &index) in indices.iter().enumerate() {
+                        let color = clut
+                            .as_ref()
+                            .and_then(|p| p.get(index as usize))
+                            .copied()
+                            .unwrap_or([0, 0, 0]);
+                        rgb[pixel * 3..pixel * 3 + 3].copy_from_slice(&color);
+                    }
+                    frame_rgb = Some(rgb);
+                }
+            }
+            state.smc_decoder = Some(decoder);
+        } else if is_rle {
             if state.rle_decoder.is_none() {
                 state.rle_decoder = Some(super::qtrle::QtRleDecoder::new(width, height));
             }
