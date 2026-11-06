@@ -7676,6 +7676,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("MathLib", "str2dec") => {
             PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Str2Dec)
         }
+        ("StdCLib", "PLstrcpy") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::PlStrcpy)
+        }
+        ("StdCLib", "PLstrcat") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::PlStrcat)
+        }
+        ("StdCLib", "PLstrcmp") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::PlStrcmp)
+        }
         ("StdCLib", "qsort") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Qsort)
         }

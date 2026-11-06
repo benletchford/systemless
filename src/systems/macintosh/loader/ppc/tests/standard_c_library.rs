@@ -1289,3 +1289,100 @@ fn stdclib_descriptors_follow_directory_aliases_and_reject_cycles() {
     assert_eq!(call(&mut loaded, Op::Open, &[base, 32 | 256]), u32::MAX);
     assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(22));
 }
+
+#[test]
+fn stdclib_pascal_strings_copy_and_append_bytes_without_c_termination() {
+    for symbol in [b"PLstrcpy".as_slice(), b"PLstrcat".as_slice()] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", symbol)).unwrap();
+        let destination = PPC_DATA_BASE + 0x3000;
+        let source = destination + 0x200;
+        loaded.memory.add_region(destination, vec![0xCC; 0x400]);
+        loaded
+            .memory
+            .write_bytes(destination, &[2, b'a', 0])
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(source, &[3, 0x80, 0, b'z'])
+            .unwrap();
+        loaded.cpu.gpr[3] = destination;
+        loaded.cpu.gpr[4] = source;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], destination);
+        let expected: &[u8] = if symbol == b"PLstrcpy" {
+            &[3, 0x80, 0, b'z']
+        } else {
+            &[5, b'a', 0, 0x80, 0, b'z']
+        };
+        for (offset, byte) in expected.iter().enumerate() {
+            assert_eq!(
+                loaded.memory.read_u8(destination + offset as u32),
+                Some(*byte)
+            );
+        }
+        assert_eq!(
+            loaded.memory.read_u8(destination + expected.len() as u32),
+            Some(0xCC)
+        );
+        assert_eq!(loaded.memory.read_u8(source), Some(3));
+    }
+}
+
+#[test]
+fn stdclib_pascal_string_append_caps_length_at_255_and_preserves_guard() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"PLstrcat")).unwrap();
+    let destination = PPC_DATA_BASE + 0x3000;
+    let source = destination + 0x200;
+    loaded.memory.add_region(destination, vec![0xCC; 0x400]);
+    let mut initial = vec![b'a'; 253];
+    initial[0] = 252;
+    loaded.memory.write_bytes(destination, &initial).unwrap();
+    loaded.memory.write_bytes(source, b"\x05bcdef").unwrap();
+    loaded.cpu.gpr[3] = destination;
+    loaded.cpu.gpr[4] = source;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], destination);
+    assert_eq!(loaded.memory.read_u8(destination), Some(255));
+    assert_eq!(loaded.memory.read_u8(destination + 252), Some(b'a'));
+    for (offset, byte) in b"bcd".iter().enumerate() {
+        assert_eq!(
+            loaded.memory.read_u8(destination + 253 + offset as u32),
+            Some(*byte)
+        );
+    }
+    assert_eq!(loaded.memory.read_u8(destination + 256), Some(0xCC));
+}
+
+#[test]
+fn stdclib_pascal_string_compare_uses_unsigned_body_and_length_for_prefixes() {
+    for (first, second, ordering) in [
+        (b"\x01\x80".as_slice(), b"\x01\x7f".as_slice(), 1),
+        (b"\x02a\0".as_slice(), b"\x02a\x01".as_slice(), -1),
+        (b"\x01a".as_slice(), b"\x02aa".as_slice(), -1),
+        (b"\x00".as_slice(), b"\x00".as_slice(), 0),
+        (b"\x03a\0b".as_slice(), b"\x03a\0b".as_slice(), 0),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(b"StdCLib", b"PLstrcmp"))
+                .unwrap();
+        let a = PPC_DATA_BASE + 0x3000;
+        let b = a + 0x100;
+        loaded.memory.add_region(a, vec![0xCC; 0x200]);
+        loaded.memory.write_bytes(a, first).unwrap();
+        loaded.memory.write_bytes(b, second).unwrap();
+        loaded.cpu.gpr[3] = a;
+        loaded.cpu.gpr[4] = b;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!((loaded.cpu.gpr[3] as i32).signum(), ordering);
+        for (offset, byte) in first.iter().enumerate() {
+            assert_eq!(loaded.memory.read_u8(a + offset as u32), Some(*byte));
+        }
+    }
+}
