@@ -208,7 +208,7 @@ fn ppc_qt_track_movie_samples(
     ordinal: usize,
     track: &PpcQuickTimeTrackRecord,
 ) -> Vec<PpcQuickTimeMovieSample> {
-    let Some(samples) = ppc_qt_track_samples(&quicktime.movie_file_data, ordinal) else {
+    let Some(samples) = ppc_qt_track_samples(&quicktime.movie_data, ordinal) else {
         return Vec::new();
     };
     let movie_scale = i128::from(ppc_qt_creation_time_scale(quicktime));
@@ -292,7 +292,7 @@ pub(crate) fn ppc_qt_user_data_range(
     if quicktime.movie_disposed {
         return None;
     }
-    let data = &quicktime.movie_file_data;
+    let data = &quicktime.movie_data;
     if user_data == PPC_QT_MOVIE_USER_DATA {
         let (moov_start, moov_end) = ppc_qt_child_atom_range(data, 0, data.len(), b"moov")?;
         return ppc_qt_child_atom_range(data, moov_start, moov_end, b"udta");
@@ -479,7 +479,7 @@ fn write_matrix(memory: &mut PpcSectionMem, address: u32, matrix: &[u32; 9]) -> 
 /// The movie's natural bounds: the union of its track rectangles before the
 /// movie matrix is applied.
 fn natural_bounds(quicktime: &PpcQuickTimeState) -> Rect {
-    quicktime.movie_file_bounds.unwrap_or(quicktime.movie_box)
+    quicktime.movie_natural_bounds.unwrap_or(quicktime.movie_box)
 }
 
 /// The movie matrix. SetMovieBox adjusts the movie matrix so the natural
@@ -531,7 +531,7 @@ pub(crate) fn ppc_qt_resize_movie_matrix(quicktime: &mut PpcQuickTimeState, rect
     // created movie has no parsed file bounds. Moving its box must not also
     // move the source pixels on the next draw or subsequent resize.
     quicktime
-        .movie_file_bounds
+        .movie_natural_bounds
         .get_or_insert(quicktime.movie_box);
     quicktime.movie_matrix = Some(result);
     true
@@ -916,7 +916,7 @@ pub(super) fn dispatch_movie_toolbox(
                 return PpcImportAction::Return(0);
             }
             let (poster, selection, selection_duration) =
-                ppc_qt_mvhd_times(&quicktime.movie_file_data).unwrap_or((0, 0, 0));
+                ppc_qt_mvhd_times(&quicktime.movie_data).unwrap_or((0, 0, 0));
             ppc_qt_record_error(quicktime, PPC_NO_ERR);
             if operation == Op::GetMoviePosterTime {
                 let poster = ppc_qt_to_movie_scale(quicktime, i64::from(poster));
@@ -1240,7 +1240,7 @@ pub(super) fn dispatch_movie_toolbox(
             let Some(range) = ppc_qt_user_data_range(quicktime, gpr[3]) else {
                 return PpcImportAction::Return(0);
             };
-            let count = ppc_qt_count_user_data_items(&quicktime.movie_file_data, range, gpr[4]);
+            let count = ppc_qt_count_user_data_items(&quicktime.movie_data, range, gpr[4]);
             PpcImportAction::Return(count.min(0x7fff))
         }
         Op::GetMediaHandler => {
@@ -1270,7 +1270,7 @@ pub(super) fn dispatch_movie_toolbox(
             };
             let media_type = quicktime.movie_tracks[ordinal].media_type;
             let (manufacturer, name) =
-                ppc_qt_media_handler_identity(&quicktime.movie_file_data, ordinal + 1)
+                ppc_qt_media_handler_identity(&quicktime.movie_data, ordinal + 1)
                     .unwrap_or((0, Vec::new()));
             if gpr[4] != 0 {
                 let _ = context.memory.write_u32_be(gpr[4], media_type);
