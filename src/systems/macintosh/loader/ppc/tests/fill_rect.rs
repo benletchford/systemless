@@ -2592,3 +2592,159 @@ fn mask_imports_with_invalid_geometry_change_nothing() {
         );
     }
 }
+
+fn line_pixels(depth: u32, to: (i16, i16), standard: bool) -> (Vec<u8>, (i16, i16)) {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_WITH_HOLE);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StdLine")).unwrap();
+    install_port(&mut loaded, &fixture, depth);
+    loaded.cpu.gpr[3] = 2;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+    if standard {
+        loaded.cpu.gpr[3] = (u32::from(to.1 as u16) << 16) | u32::from(to.0 as u16);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::StdLine);
+    } else {
+        loaded.cpu.gpr[3] = u32::from(to.0 as u16);
+        loaded.cpu.gpr[4] = u32::from(to.1 as u16);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LineTo);
+    }
+    let pen = (loaded.quickdraw_pen_h, loaded.quickdraw_pen_v);
+    (read_pixels(&mut loaded, pixels.len()), pen)
+}
+
+#[test]
+fn std_line_unpacks_its_point_and_draws_like_line_to() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "StdLine"),
+            PpcImportDispatcherTarget::StdLine,
+            "{library}"
+        );
+    }
+    for depth in [1, 8, 16] {
+        // Negative fields check the packed order and sign of both halves.
+        for to in [(14, 1), (2, 7), (-4, -2), (-4, 6), (16, -2)] {
+            let standard = line_pixels(depth, to, true);
+            assert_eq!(standard, line_pixels(depth, to, false), "{depth} {to:?}");
+            assert_ne!(standard.0, initial_pixels(), "{depth} {to:?}");
+            assert_eq!(standard.1, to);
+        }
+    }
+}
+
+/// Fills `SHAPE` through a NewPixPat handle made by MakeRGBPat, clipped by a
+/// hole, and returns the pixels and the handle's record type.
+fn rgb_pattern_fill(depth: u32, rgb: [u16; 3]) -> (Vec<u8>, u16) {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_WITH_HOLE);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MakeRGBPat")).unwrap();
+    install_port(&mut loaded, &fixture, depth);
+    ppc_write_rect(
+        &mut loaded.memory,
+        RECT,
+        SHAPE.top,
+        SHAPE.left,
+        SHAPE.bottom,
+        SHAPE.right,
+    )
+    .unwrap();
+    for (index, value) in rgb.into_iter().enumerate() {
+        loaded
+            .memory
+            .write_u16_be(PATTERN + index as u32 * 2, value)
+            .unwrap();
+    }
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::NewPixPat,
+        ),
+    );
+    let handle = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::MakeRGBPat,
+        ),
+    );
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    let pat_type = loaded.memory.read_u16_be(record).unwrap();
+    let map_handle = loaded.memory.read_u32_be(record + 2).unwrap();
+    let map = loaded.memory.read_u32_be(map_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(map + 4).unwrap() & 0x3FFF, 2);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, map + 6), Some((0, 0, 8, 8)));
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillCRect);
+    (read_pixels(&mut loaded, pixels.len()), pat_type)
+}
+
+#[test]
+fn make_rgb_pat_fills_with_the_requested_color_inside_the_clip() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "MakeRGBPat"),
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::MakeRGBPat,
+            ),
+            "{library}"
+        );
+    }
+    let original = initial_pixels();
+    let row = usize::from(ROW_BYTES);
+    let pixel = |bytes: &[u8], h: i32, v: i32| {
+        let at = (v + 3) as usize * row + (h + 5) as usize * 2;
+        u16::from_be_bytes([bytes[at], bytes[at + 1]])
+    };
+    let (red, pat_type) = rgb_pattern_fill(16, [0xFFFF, 0, 0]);
+    assert_eq!(pat_type, 2);
+    let (blue, _) = rgb_pattern_fill(16, [0, 0, 0xFFFF]);
+    // Solid across every row of the 8-by-8 tile, whatever pat1Data holds.
+    for v in -2..1 {
+        for h in -3..15 {
+            assert_eq!(pixel(&red, h, v), 0x7C00, "red {h},{v}");
+            assert_eq!(pixel(&blue, h, v), 0x001F, "blue {h},{v}");
+        }
+    }
+    // The clip's hole and everything outside the rectangle stay untouched.
+    assert_eq!(pixel(&red, 4, 2), pixel(&original, 4, 2));
+    assert_eq!(pixel(&red, 16, 0), pixel(&original, 16, 0));
+
+    // At 8 bits the colour resolves through the destination's table.
+    let (indexed_red, _) = rgb_pattern_fill(8, [0xFFFF, 0, 0]);
+    let (indexed_blue, _) = rgb_pattern_fill(8, [0, 0, 0xFFFF]);
+    let at = |h: i32, v: i32| (v + 3) as usize * row + (h + 5) as usize;
+    let solid = indexed_red[at(0, 0)];
+    assert!((-3..15).all(|h| indexed_red[at(h, 0)] == solid));
+    assert_ne!(solid, indexed_blue[at(0, 0)]);
+    assert_eq!(indexed_red[at(4, 2)], original[at(4, 2)]);
+}
+
+#[test]
+fn make_rgb_pat_rejects_a_nil_handle_or_color_without_changing_the_record() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MakeRGBPat")).unwrap();
+    install_port(&mut loaded, &fixture, 16);
+    let make = PpcImportDispatcherTarget::QuickDrawCompatibility(
+        PpcQuickDrawCompatibilityOperation::MakeRGBPat,
+    );
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(&mut loaded, make.clone());
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::NewPixPat,
+        ),
+    );
+    let handle = loaded.cpu.gpr[3];
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, make);
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(record), Some(1));
+}
