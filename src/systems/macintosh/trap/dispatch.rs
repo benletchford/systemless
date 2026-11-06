@@ -2405,6 +2405,15 @@ pub(crate) struct ClassicMovieController {
     pub creation_flags: u32,
     pub control_flags: u32,
     pub keys_enabled: bool,
+    pub palette: Option<ClassicMovieControllerPalette>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClassicMovieControllerPalette {
+    pub handle: u32,
+    pub window: u32,
+    pub movie: u32,
+    pub previous: Option<(u32, i16)>,
 }
 
 /// Movie Toolbox state for NewMovieFromFile/NewMovie handles.

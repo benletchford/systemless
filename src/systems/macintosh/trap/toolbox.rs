@@ -1,5 +1,8 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
+#[path = "toolbox/movie_controller_palette.rs"]
+mod movie_controller_palette;
+
 use crate::cpu::{CpuOps, Register};
 use crate::guest_call::{
     ClassicRetirement, CooperativeThread, ExecutionTaskId, SharedGuestCallStack, ThreadStorage,
@@ -5354,12 +5357,15 @@ impl super::TrapDispatcher {
                 creation_flags: flags,
                 control_flags: 0,
                 keys_enabled: false,
+                palette: None,
             },
         );
+        self.prepare_classic_controller_palette(bus, instance);
         (instance, 0)
     }
 
-    fn dispose_classic_movie_controller(&mut self, instance: u32) {
+    fn dispose_classic_movie_controller(&mut self, bus: &mut MacMemoryBus, instance: u32) {
+        self.release_classic_controller_palette(bus, instance);
         self.movie_controllers.remove(&instance);
         self.synthetic_component_instances.remove(&instance);
     }
@@ -5370,6 +5376,7 @@ impl super::TrapDispatcher {
         instance: u32,
         window: u32,
     ) -> i32 {
+        self.prepare_classic_controller_palette(bus, instance);
         let Some(controller) = self.movie_controllers.get(&instance).copied() else {
             return -3000;
         };
@@ -5424,6 +5431,7 @@ impl super::TrapDispatcher {
         };
         match action {
             1 => {
+                self.prepare_classic_controller_palette(bus, instance);
                 self.advance_and_render_movie(bus, movie_id, self.current_tick());
                 0
             }
@@ -5625,8 +5633,10 @@ impl super::TrapDispatcher {
                         creation_flags: previous.map_or(0, |c| c.creation_flags & !8),
                         control_flags: previous.map_or(0, |c| c.control_flags),
                         keys_enabled: previous.is_some_and(|c| c.keys_enabled),
+                        palette: previous.and_then(|c| c.palette),
                     },
                 );
+                self.prepare_classic_controller_palette(bus, instance);
                 0
             }
             (9 | 0x1A | 0x18 | 0x10 | 0x14 | 0x17, _) => -50,
@@ -16082,7 +16092,7 @@ impl super::TrapDispatcher {
                     0x018B => {
                         // Disposal releases the controller, not its movie.
                         let sp = cpu.read_reg(Register::A7);
-                        self.dispose_classic_movie_controller(bus.read_long(sp));
+                        self.dispose_classic_movie_controller(bus, bus.read_long(sp));
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
                         record_movie_error(self, 0);
@@ -17898,7 +17908,7 @@ impl super::TrapDispatcher {
                     0x0008 => {
                         // CloseComponent(ComponentInstance): OSErr
                         let instance = bus.read_long(sp);
-                        self.dispose_classic_movie_controller(instance);
+                        self.dispose_classic_movie_controller(bus, instance);
                         bus.write_word(sp + 4, 0);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
