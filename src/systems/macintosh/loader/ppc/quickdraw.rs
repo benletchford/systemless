@@ -1912,6 +1912,125 @@ pub(crate) fn ppc_arc_rows(
     Some((i16::try_from(y0).ok()?, rows))
 }
 
+/// The bit images and geometry shared by SeedFill and CalcMask.
+#[derive(Clone, Copy)]
+pub(crate) struct PpcMaskImages {
+    pub(crate) source: u32,
+    pub(crate) destination: u32,
+    pub(crate) source_row: i16,
+    pub(crate) destination_row: i16,
+    pub(crate) height: i16,
+    pub(crate) words: i16,
+}
+
+/// The largest image either call processes, the 68K SeedFill limit.
+const PPC_MASK_MAX_PIXELS: usize = 4 * 1024 * 1024;
+
+/// SeedFill when `seed` holds (seedH, seedV), otherwise CalcMask.
+///
+/// SeedFill sets the bits 4-connected to the seed with the seed's value, as
+/// the 68K `seed_fill_1bpp_mask` does, and a seed outside the image clears the
+/// destination. CalcMask sets the bits paint cannot reach through 0 bits from
+/// any edge (Inside Macintosh Volume IV (1986), p. IV-22). A call with invalid
+/// geometry or inaccessible memory changes nothing.
+pub(crate) fn ppc_compute_bit_mask(
+    memory: &mut PpcSectionMem,
+    images: PpcMaskImages,
+    seed: Option<(i16, i16)>,
+) -> Option<()> {
+    let height = usize::try_from(images.height).ok().filter(|h| *h > 0)?;
+    let width_bytes = usize::try_from(images.words).ok().filter(|w| *w > 0)? * 2;
+    let width = width_bytes * 8;
+    let source_row = usize::try_from(images.source_row).ok()?;
+    let destination_row = usize::try_from(images.destination_row).ok()?;
+    if images.source == 0
+        || images.destination == 0
+        || source_row < width_bytes
+        || destination_row < width_bytes
+        || width * height > PPC_MASK_MAX_PIXELS
+    {
+        return None;
+    }
+
+    let row_address = |base: u32, row_bytes: usize, y: usize| base.wrapping_add((y * row_bytes) as u32);
+    let mut source = Vec::with_capacity(width * height);
+    for y in 0..height {
+        let bytes = ppc_memory_read_bytes(
+            memory,
+            row_address(images.source, source_row, y),
+            width_bytes as u32,
+        )?;
+        source.extend((0..width).map(|x| bytes[x / 8] & (0x80 >> (x % 8)) != 0));
+    }
+    for y in 0..height {
+        if !ppc_memory_can_write_bytes(
+            memory,
+            row_address(images.destination, destination_row, y),
+            width_bytes as u32,
+        ) {
+            return None;
+        }
+    }
+
+    let mut stack = Vec::new();
+    let passable = match seed {
+        Some((h, v)) => {
+            let (x, y) = (usize::try_from(h).ok(), usize::try_from(v).ok());
+            match (x, y) {
+                (Some(x), Some(y)) if x < width && y < height => {
+                    stack.push((x, y));
+                    Some(source[y * width + x])
+                }
+                _ => None,
+            }
+        }
+        None => {
+            for y in 0..height {
+                stack.extend([(0, y), (width - 1, y)]);
+            }
+            for x in 0..width {
+                stack.extend([(x, 0), (x, height - 1)]);
+            }
+            Some(false)
+        }
+    };
+    let mut reached = vec![false; width * height];
+    if let Some(passable) = passable {
+        while let Some((x, y)) = stack.pop() {
+            let index = y * width + x;
+            if reached[index] || source[index] != passable {
+                continue;
+            }
+            reached[index] = true;
+            if x > 0 {
+                stack.push((x - 1, y));
+            }
+            if x + 1 < width {
+                stack.push((x + 1, y));
+            }
+            if y > 0 {
+                stack.push((x, y - 1));
+            }
+            if y + 1 < height {
+                stack.push((x, y + 1));
+            }
+        }
+    }
+
+    let mut bytes = vec![0u8; width_bytes];
+    for y in 0..height {
+        bytes.fill(0);
+        for x in 0..width {
+            // SeedFill sets what the flood reached, CalcMask what it did not.
+            if reached[y * width + x] == seed.is_some() {
+                bytes[x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+        memory.write_bytes(row_address(images.destination, destination_row, y), &bytes)?;
+    }
+    Some(())
+}
+
 pub(crate) fn ppc_invert_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],

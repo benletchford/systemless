@@ -6578,6 +6578,12 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcQuickDrawCompatibilityOperation::DisposePixPat,
             )
         }
+        ("InterfaceLib", "SeedFill") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SeedFill,
+        ),
+        ("InterfaceLib", "CalcMask") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::CalcMask,
+        ),
         ("InterfaceLib", "Exp1to3") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::Exp1To3,
         ),
