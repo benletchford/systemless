@@ -3645,6 +3645,209 @@ fn hide_window_restores_saved_under_pixels_for_non_document_window() {
 }
 
 #[test]
+fn hide_covered_window_preserves_foreground_pixels_with_and_without_save_under() {
+    for proc_id in [0, 2] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (base, stride, _, _, _) = disp.screen_mode;
+        let background = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            background,
+            base,
+            60,
+            60,
+            200,
+            260,
+            "Background",
+            proc_id,
+            true,
+            true,
+            false,
+            0,
+        );
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            base,
+            90,
+            100,
+            160,
+            220,
+            "Foreground",
+            2,
+            true,
+            true,
+            false,
+            0,
+        );
+        disp.window_list.replace(vec![front, background]);
+        disp.sync_window_list_links(&mut bus);
+        let (top, left, bottom, right) = disp.window_structure_rect(&bus, front).unwrap();
+        for y in top..bottom {
+            for x in left..right {
+                bus.write_byte(base + y as u32 * stride + x as u32, 5);
+            }
+        }
+        disp.event_queue.clear();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, background);
+        assert!(dispatch(&mut disp, 0x116, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(disp.front_window, front);
+        assert!(disp.window_visible(&bus, front));
+        assert!(!disp.window_visible(&bus, background));
+        assert!(!disp.event_queue.iter().any(|event| event.what == 8));
+        for y in top..bottom {
+            for x in left..right {
+                assert_eq!(
+                    bus.read_byte(base + y as u32 * stride + x as u32),
+                    5,
+                    "foreground pixel ({x},{y}) changed while hiding proc {proc_id}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn hide_covered_window_preserves_packed_edges_and_direct_colour_pixels() {
+    for depth in [1, 2, 4, 8, 16, 32] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let base = 0x300000;
+        let stride = 320 * u32::from(depth) / 8 + 16;
+        disp.set_screen_mode_for_test(base, stride, 320, 240, depth);
+        let background = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, background, base, 20, 20, 180, 280, "", 2, true, true, false, 0,
+        );
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, front, base, 50, 62, 130, 182, "", 2, true, true, false, 0,
+        );
+        disp.window_list.replace(vec![front, background]);
+        disp.sync_window_list_links(&mut bus);
+        let (top, left, bottom, right) = disp.window_structure_rect(&bus, front).unwrap();
+        assert_eq!(left % 8, 5); // neither packed edge is byte-aligned
+        let colour = match depth {
+            1 => 1,
+            2 => 2,
+            4 | 8 => 5,
+            16 => 0x1234,
+            _ => 0x00123456,
+        };
+        for y in top..bottom {
+            for x in left - 1..=right {
+                let value = if x == left - 1 || x == right {
+                    1
+                } else {
+                    colour
+                };
+                match depth {
+                    16 => bus.write_word(base + y as u32 * stride + x as u32 * 2, value as u16),
+                    32 => bus.write_long(base + y as u32 * stride + x as u32 * 4, value),
+                    _ => super::super::TrapDispatcher::fb_set_pixel_index(
+                        &mut bus,
+                        base,
+                        stride,
+                        depth,
+                        320,
+                        240,
+                        x,
+                        y,
+                        value as u8,
+                    ),
+                }
+            }
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, background);
+        assert!(dispatch(&mut disp, 0x116, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        for y in top..bottom {
+            for x in left - 1..=right {
+                // Packed formats additionally exercise the shared boundary
+                // bytes. Direct-colour checks concern foreground pixels.
+                if depth >= 16 && (x == left - 1 || x == right) {
+                    continue;
+                }
+                let expected = if x == left - 1 || x == right {
+                    0
+                } else {
+                    colour
+                };
+                let actual = match depth {
+                    16 => u32::from(bus.read_word(base + y as u32 * stride + x as u32 * 2)),
+                    32 => bus.read_long(base + y as u32 * stride + x as u32 * 4),
+                    _ => u32::from(
+                        super::super::TrapDispatcher::fb_get_pixel_index(
+                            &bus, base, stride, depth, 320, 240, x, y,
+                        )
+                        .unwrap(),
+                    ),
+                };
+                assert_eq!(actual, expected, "depth {depth} pixel ({x},{y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn hide_covered_window_does_not_preserve_background_inside_foreground_region_holes() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (base, stride, _, _, _) = disp.screen_mode;
+    // The background's saved-under is entirely zero. Its visible content
+    // is marked 17, including the hole in the foreground structure region.
+    let background = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, background, base, 60, 60, 200, 260, "", 2, true, true, false, 0,
+    );
+    let front = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, front, base, 90, 100, 160, 220, "", 2, true, true, false, 0,
+    );
+    let hidden = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, hidden, base, 90, 140, 160, 180, "Hidden", 2, false, false, false, 0,
+    );
+    disp.front_window = front;
+    disp.window_list.replace(vec![hidden, front, background]);
+    disp.sync_window_list_links(&mut bus);
+    let (top, left, bottom, right) = disp.window_structure_rect(&bus, front).unwrap();
+    let rows = vec![vec![left, 140, 180, right]; (bottom - top) as usize];
+    let structure = bus.read_long(front + 114);
+    assert!(super::super::TrapDispatcher::write_region_from_rows(
+        &mut bus, structure, top, &rows
+    ));
+    for y in top..bottom {
+        for x in left..right {
+            bus.write_byte(
+                base + y as u32 * stride + x as u32,
+                if (140..180).contains(&x) { 17 } else { 5 },
+            );
+        }
+    }
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, background);
+    assert!(dispatch(&mut disp, 0x116, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    for y in top..bottom {
+        for x in left..right {
+            assert_eq!(
+                bus.read_byte(base + y as u32 * stride + x as u32),
+                if (140..180).contains(&x) { 0 } else { 5 },
+                "pixel ({x},{y})"
+            );
+        }
+    }
+}
+
+#[test]
 fn hide_window_clears_visible_dialog_snapshot_before_chrome_redraw() {
     let (mut disp, mut cpu, mut bus) = setup();
     let screen_base = bus.alloc(800 * 600);
