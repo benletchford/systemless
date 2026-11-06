@@ -2,7 +2,7 @@
 //!
 //! Edit durations use the movie time scale; media starts use the media time
 //! scale. Repeated edits do not duplicate or reorder the compressed samples.
-//! https://developer.apple.com/documentation/quicktime-file-format/playing_with_edit_lists
+//! <https://developer.apple.com/documentation/quicktime-file-format/playing_with_edit_lists>
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TrackEdit {
