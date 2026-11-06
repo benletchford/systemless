@@ -862,40 +862,6 @@ fn record_movie_error(dispatcher: &mut super::TrapDispatcher, err: i16) {
     }
 }
 
-/// Read a QuickDraw ColorTable (via its CTabHandle) into a 256-entry RGB
-/// palette for nearest-colour matching. Missing/short tables fall back to the
-/// standard Macintosh 8-bit CLUT. ColorTable layout: ctSeed(4) ctFlags(2)
-/// ctSize(2) then (ctSize+1) ColorSpec entries of value(2) r(2) g(2) b(2).
-fn read_color_table(bus: &MacMemoryBus, ctab_handle: u32) -> Vec<[u8; 3]> {
-    let mut palette: Vec<[u8; 3]> = super::TrapDispatcher::standard_mac_8bpp_clut()
-        .iter()
-        .map(|c| [(c[0] >> 8) as u8, (c[1] >> 8) as u8, (c[2] >> 8) as u8])
-        .collect();
-    if ctab_handle == 0 {
-        return palette;
-    }
-    let ctab = bus.read_long(ctab_handle);
-    if ctab == 0 {
-        return palette;
-    }
-    let ct_size = bus.read_word(ctab + 6) as i16;
-    if ct_size < 0 {
-        return palette;
-    }
-    let count = (ct_size as usize + 1).min(256);
-    for i in 0..count {
-        let entry = ctab + 8 + (i as u32) * 8;
-        let value = bus.read_word(entry) as usize;
-        let r = (bus.read_word(entry + 2) >> 8) as u8;
-        let g = (bus.read_word(entry + 4) >> 8) as u8;
-        let b = (bus.read_word(entry + 6) >> 8) as u8;
-        // ColorSpec.value is the palette index for indexed device tables.
-        let idx = if value < 256 { value } else { i };
-        palette[idx] = [r, g, b];
-    }
-    palette
-}
-
 /// Nearest palette index by squared Euclidean distance in RGB.
 fn nearest_color_index(palette: &[[u8; 3]], r: u8, g: u8, b: u8) -> u8 {
     let mut best = 0usize;
@@ -5530,13 +5496,14 @@ impl super::TrapDispatcher {
             );
         }
 
-        Self::blit_rgb_into_port(bus, port, box_rect, width, height, &rgb);
+        self.blit_rgb_into_port(bus, port, box_rect, width, height, &rgb);
     }
 
     /// Blit a `width`×`height` RGB frame into a QuickDraw port's pixmap,
     /// positioned at the movie box origin. Handles 8-bit (nearest CLUT match),
     /// 16-bit (RGB555), and 32-bit destinations.
     fn blit_rgb_into_port(
+        &self,
         bus: &mut MacMemoryBus,
         port: u32,
         box_rect: (i16, i16, i16, i16),
@@ -5592,7 +5559,12 @@ impl super::TrapDispatcher {
         // Cache RGB→index results across the frame: movie palettes are small,
         // so this collapses the per-pixel 256-way nearest search to a hash hit.
         let palette: Option<Vec<[u8; 3]>> = if pixel_size == 8 {
-            Some(read_color_table(bus, ctab))
+            Some(
+                self.read_port_clut(bus, ctab)
+                    .into_iter()
+                    .map(|color| color.map(|component| (component >> 8) as u8))
+                    .collect(),
+            )
         } else {
             None
         };
