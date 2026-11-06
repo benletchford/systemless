@@ -908,6 +908,25 @@ pub(super) fn dispatch_quicktime_compatibility(
                     ppc_qt_seek_movie(quicktime, sound, time);
                     PpcImportAction::Return(0)
                 }
+                14 | 15 => {
+                    // Apple's Movies.h: SetVolume carries a short value;
+                    // GetVolume takes a short pointer. Both share movie state
+                    // with GetMovieVolume and SetMovieVolume.
+                    if !compatibility_valid_movie(quicktime, movie) {
+                        return PpcImportAction::Return(ppc_i16_result(-2010));
+                    }
+                    if cpu.gpr[4] as i16 == 14 {
+                        quicktime.movie_volume = cpu.gpr[5] as u16 as i16;
+                        ppc_qt_apply_movie_volume(quicktime, sound);
+                    } else {
+                        let out = cpu.gpr[5];
+                        if out == 0 || !ppc_memory_can_write_bytes(memory, out, 2) {
+                            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                        }
+                        let _ = memory.write_u16_be(out, quicktime.movie_volume as u16);
+                    }
+                    PpcImportAction::Return(0)
+                }
                 32 => {
                     // QuickTime Components (1993), p. 2-19: SetKeysEnabled
                     // carries a Boolean value directly in the params slot.
@@ -1196,6 +1215,7 @@ pub(super) fn dispatch_quicktime_compatibility(
         PpcQuickTimeCompatibilityOperation::SetMovieVolume => {
             if compatibility_valid_movie(quicktime, cpu.gpr[3]) {
                 quicktime.movie_volume = cpu.gpr[4] as u16 as i16;
+                ppc_qt_apply_movie_volume(quicktime, sound);
             }
             PpcImportAction::ReturnPreserve
         }
@@ -4684,6 +4704,7 @@ pub(crate) fn ppc_qt_start_movie_audio(
         summary.sample_rate_fixed,
         None,
     );
+    ppc_qt_apply_movie_volume(quicktime, sound);
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
@@ -4706,6 +4727,15 @@ pub(crate) fn ppc_qt_start_movie_audio(
         decoded_aiff: Some(summary),
     });
     true
+}
+
+fn ppc_qt_apply_movie_volume(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundState) {
+    // Signed 8.8 movie volume: negative values retain the setting but mute.
+    // Sound Manager uses unsigned 8.8 gains packed for the two channels.
+    let gain = u32::from(quicktime.movie_volume.max(0) as u16);
+    let _ = sound.manager.with_channel_mut(PPC_QT_MOVIE, |channel| {
+        channel.set_volume((gain << 16) | gain)
+    });
 }
 
 fn ppc_qt_stop_movie_audio(sound: &mut PpcSoundState) {

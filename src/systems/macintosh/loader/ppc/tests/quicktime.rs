@@ -6458,6 +6458,7 @@ fn quicktime_align_screen_rect_rejects_invalid_callback_without_changing_rectang
         Some((10, 13, 110, 113))
     );
 }
+
 #[test]
 fn quicktime_mc_do_action_keys_enabled_round_trips_per_controller() {
     for library in [
@@ -6556,6 +6557,7 @@ fn quicktime_mc_do_action_keys_enabled_rejects_invalid_controller_and_output() {
         assert!(loaded.quicktime.movie_controllers[0].keys_enabled);
     }
 }
+
 #[test]
 fn quicktime_mc_do_action_control_flags_round_trip_separately_from_creation_flags() {
     for library in [
@@ -6635,5 +6637,134 @@ fn quicktime_mc_do_action_control_flags_round_trip_separately_from_creation_flag
             assert_eq!(loaded.memory.read_u8(out + 5), Some(0x5a));
             assert_eq!(loaded.quicktime.movie_controllers[0].control_flags, 0);
         }
+    }
+}
+
+fn controller_volume_fixture(library: &[u8]) -> PpcLoadedApp {
+    let pef = synthetic_pef_with_library_import(library, b"MCDoAction");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .quicktime
+        .movie_controllers
+        .push(PpcQuickTimeControllerRecord {
+            handle: 0x4001_3010,
+            movie: PPC_QT_MOVIE,
+            rect: (0, 0, 100, 100),
+            flags: 0,
+            window: 0,
+            origin: 0,
+            action_filter: 0,
+            action_ref_con: 0,
+            action_filter_rtoc: 0,
+            keys_enabled: false,
+            control_flags: 0,
+        });
+    loaded.sound.manager.play_file_buffer(
+        PPC_QT_MOVIE,
+        vec![0xa0; 64],
+        crate::sound::OUTPUT_RATE << 16,
+        None,
+    );
+    loaded
+}
+
+#[test]
+fn quicktime_controller_volume_uses_short_value_and_changes_queued_audio() {
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let mut loaded = controller_volume_fixture(library);
+        let out = PPC_DATA_BASE + 0x1800;
+        loaded.memory.add_region(out, vec![0x5a; 4]);
+        for (volume, sample) in [
+            (256i16, 0xa0),
+            (128, 0x90),
+            (0, 0x80),
+            (-128, 0x80),
+            (256, 0xa0),
+        ] {
+            // These are immediate short values, not dereferenced addresses.
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.gpr[3] = 0x4001_3010;
+            loaded.cpu.gpr[4] = 14;
+            loaded.cpu.gpr[5] = volume as i32 as u32;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.quicktime.movie_volume, volume);
+            assert_eq!(loaded.sound.manager.mix_frame(4), vec![sample; 4]);
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.gpr[3] = 0x4001_3010;
+            loaded.cpu.gpr[4] = 15;
+            loaded.cpu.gpr[5] = out + 1;
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u16_be(out + 1), Some(volume as u16));
+            assert_eq!(loaded.memory.read_u8(out), Some(0x5a));
+            assert_eq!(loaded.memory.read_u8(out + 3), Some(0x5a));
+        }
+    }
+}
+
+#[test]
+fn quicktime_controller_volume_shares_movie_setting_and_checks_outputs() {
+    let mut loaded = controller_volume_fixture(b"QuickTimeLib");
+    let out = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(out, vec![0x5a; 4]);
+    call_movie_toolbox(&mut loaded, "SetMovieVolume", &[PPC_QT_MOVIE, 128]);
+    assert_eq!(loaded.sound.manager.mix_frame(4), vec![0x90; 4]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[0x4001_3010, 15, out + 1]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(out + 1), Some(128));
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[0x4001_3010, 14, 0xffff_ff80]),
+        0
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetMovieVolume", &[PPC_QT_MOVIE]),
+        0xff80
+    );
+    assert_eq!(loaded.sound.manager.mix_frame(4), vec![0x80; 4]);
+    let before = loaded.memory.read_u32_be(out);
+    for (handle, action, params, error) in [
+        (0, 14, 0, PPC_INVALID_COMPONENT_ID),
+        (0x4001_3011, 15, out, PPC_INVALID_COMPONENT_ID),
+        (0x4001_3010, 15, 0, PPC_PARAM_ERR),
+        (0x4001_3010, 15, u32::MAX, PPC_PARAM_ERR),
+        (0x4001_3010, 15, out + 3, PPC_PARAM_ERR),
+    ] {
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[handle, action, params]),
+            ppc_i16_result(error)
+        );
+        assert_eq!(loaded.memory.read_u32_be(out), before);
+        assert_eq!(loaded.quicktime.movie_volume, -128);
+    }
+    loaded.quicktime.movie_disposed = true;
+    for action in [14, 15] {
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[0x4001_3010, action, out]),
+            ppc_i16_result(-2010)
+        );
+        assert_eq!(loaded.memory.read_u32_be(out), before);
+    }
+}
+
+#[test]
+fn quicktime_movie_audio_start_applies_preconfigured_volume_without_altering_samples() {
+    for (volume, sample) in [(256i16, 0xc0), (128, 0xa0), (0, 0x80), (-128, 0x80)] {
+        let quicktime = PpcQuickTimeState {
+            movie_file_data: quicktime_audio_file_fixture(false),
+            movie_volume: volume,
+            ..PpcQuickTimeState::default()
+        };
+        let mut sound = PpcSoundState::default();
+        assert!(ppc_qt_start_movie_audio(&quicktime, &mut sound));
+        assert_eq!(sound.manager.mix_frame(8), vec![sample; 8]);
+        assert_eq!(sound.decoded_file_playbacks[0].samples[0], 0xc0);
     }
 }
