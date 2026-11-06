@@ -79,6 +79,34 @@ fn ppc_initialization_attaches_both_cpu_adapters_to_one_sound_manager() {
 }
 
 #[test]
+fn ppc_initialization_preserves_configured_output_volume() {
+    for volume in [0, 0x0001_0000, 0x0100_0000, 0x0000_0100] {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .sound_manager
+            .set_default_output_volume(volume);
+        runner.init_app(&app);
+
+        assert_eq!(
+            runner.dispatcher.sound_manager.default_output_volume(),
+            volume
+        );
+        assert_eq!(
+            runner
+                .native
+                .application()
+                .expect("PPC app")
+                .sound
+                .manager
+                .default_output_volume(),
+            volume
+        );
+    }
+}
+
+#[test]
 fn ppc_initialization_shares_current_resource_file_and_detaches_clones() {
     let app = halted_ppc_app_with_sound(PpcSoundState::default());
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

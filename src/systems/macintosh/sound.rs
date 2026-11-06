@@ -34,7 +34,7 @@ const STD_Q_LENGTH: usize = 128;
 /// Full volume for one speaker in volumeCmd units (Sound 1994, 2-96).
 const FULL_VOLUME: u16 = 0x0100;
 /// Packed full-volume stereo value: high word = right, low word = left.
-const FULL_STEREO_VOLUME: u32 = ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u32;
+pub(crate) const FULL_STEREO_VOLUME: u32 = ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u32;
 /// Unity playback rate in Sound Manager Fixed units (Sound 1994, 2-97).
 const UNITY_RATE_FIXED: u32 = 0x0001_0000;
 /// ampCmd's full amplitude. Sound 1994, p. 2-96.
@@ -816,10 +816,7 @@ impl SoundManager {
             && self.debug_cmd_codes_seen.is_empty()
             && self.debug_file_play_count == 0
             && self.sys_beep_volume == FULL_STEREO_VOLUME
-            // Classic construction uses packed full stereo volume, while a
-            // freshly loaded native process uses the Sound Manager's unity
-            // 16.16 device default. Both are unattached launch defaults.
-            && matches!(self.default_output_volume, FULL_STEREO_VOLUME | 0x0001_0000)
+            && self.default_output_volume == FULL_STEREO_VOLUME
     }
 
     pub(crate) fn has_playback_gated_callback(&self) -> bool {
