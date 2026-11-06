@@ -626,6 +626,7 @@ fn hle_import_runner_tracks_quicktime_movie_file_box_and_beginning_state() {
         codec: u32::from_be_bytes(*b"rle "),
     };
     let expected_video_samples = PpcQuickTimeVideoSampleTableRecord {
+        timeline: None,
         media_time_scale: 60,
         media_duration: 120,
         sample_count: 2,
@@ -1427,6 +1428,7 @@ fn quicktime_movie_frame_salt_uses_current_video_sample_payload() {
     let mut quicktime = PpcQuickTimeState {
         movie_tasks_until_done: 2,
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
+            timeline: None,
             media_time_scale: 60,
             media_duration: 2,
             sample_count: 2,
@@ -1487,6 +1489,7 @@ fn quicktime_movie_timed_sample_index_uses_media_time() {
         ..PpcQuickTimeState::default()
     };
     let samples = PpcQuickTimeVideoSampleTableRecord {
+        timeline: None,
         media_time_scale: 4,
         media_duration: 4,
         sample_count: 2,
@@ -1604,8 +1607,11 @@ fn quicktime_movie_video_decode_cache_advances_without_redecoding_prior_samples(
     movie_file_data.extend_from_slice(&second_sample);
     let mut quicktime = PpcQuickTimeState {
         movie_file_data,
+        // Two one-second media samples require a two-second movie timeline.
+        movie_file_duration: 1200,
         movie_tasks_until_done: 2,
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
+            timeline: None,
             media_time_scale: 1,
             media_duration: 2,
             sample_count: 2,
@@ -1828,6 +1834,7 @@ fn cinepak_movie_draw_fixture() -> (PpcLoadedApp, u32, u32) {
         movie_tasks_until_done: 1,
         movie_active: true,
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
+            timeline: None,
             media_time_scale: 1,
             media_duration: 1,
             sample_count: 1,
@@ -2065,6 +2072,7 @@ fn quicktime_attached_controller_bounds_position_movie_pixels() {
         movie_file_data,
         movie_box: (0, 0, 4, 4),
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
+            timeline: None,
             media_time_scale: 1,
             media_duration: 1,
             sample_count: 1,
@@ -2537,6 +2545,7 @@ fn hle_import_runner_prevalidates_quicktime_output_buffers() {
         codec: u32::from_be_bytes(*b"jpeg"),
     };
     let previous_video_samples = PpcQuickTimeVideoSampleTableRecord {
+        timeline: None,
         media_time_scale: 30,
         media_duration: 90,
         sample_count: 1,
@@ -6999,6 +7008,7 @@ fn described_movie_fixture(
         movie_video_samples: Some(video_samples),
         movie_tasks_until_done: count,
         movie_time_scale: 1,
+        movie_creation_time_scale: 1,
         movie_file_duration: u64::from(count),
         movie_box: (0, 0, 4, 8),
         ..PpcQuickTimeState::default()
@@ -7134,3 +7144,5 @@ fn quicktime_described_video_rejects_invalid_description_and_sample_bounds() {
         assert!(movie.movie_video_decode_cache.is_none());
     }
 }
+#[path = "quicktime_timeline_queries.rs"]
+mod timeline_query_tests;
