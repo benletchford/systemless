@@ -7569,3 +7569,5 @@ fn quicktime_open_file_and_failed_creation_preserve_the_playing_movie() {
 }
 #[path = "quicktime_controller_placement.rs"]
 mod controller_placement_tests;
+#[path = "quicktime_timeline_queries.rs"]
+mod timeline_query_tests;
