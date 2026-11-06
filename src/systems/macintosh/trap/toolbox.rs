@@ -18516,3 +18516,6 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod movie_palette_tests;
