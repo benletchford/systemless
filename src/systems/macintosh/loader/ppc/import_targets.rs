@@ -4137,6 +4137,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FillCRoundRect") => {
             PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillCRoundRect)
         }
+        ("InterfaceLib", "EraseArc") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::EraseArc)
+        }
+        ("InterfaceLib", "InvertArc") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::InvertArc)
+        }
+        ("InterfaceLib", "FillArc") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillArc)
+        }
+        ("InterfaceLib", "FillCArc") => {
+            PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FillCArc)
+        }
         ("InterfaceLib", "FrameArc") => {
             PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc)
         }

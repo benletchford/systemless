@@ -1212,6 +1212,106 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::QuickDrawShape(
+            operation @ (PpcQuickDrawShapeOperation::EraseArc
+            | PpcQuickDrawShapeOperation::InvertArc
+            | PpcQuickDrawShapeOperation::FillArc
+            | PpcQuickDrawShapeOperation::FillCArc),
+        ) => {
+            // Imaging With QuickDraw (1994), pp. 3-73--3-77: wedges of the
+            // oval with 0 at 12 o'clock and positive angles clockwise. Arcs
+            // never add to a region being recorded.
+            if toolbox_startup.open_region_port == current_gworld {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let angles = (cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u16 as i16);
+            let pattern = match operation {
+                PpcQuickDrawShapeOperation::EraseArc => Some(ppc_quickdraw_background_pattern(
+                    memory,
+                    current_gworld,
+                    toolbox_startup.quickdraw_back_pattern,
+                )),
+                PpcQuickDrawShapeOperation::FillArc => {
+                    let mut pattern = [0u8; 8];
+                    if memory.read_bytes_into(cpu.gpr[6], &mut pattern).is_none() {
+                        return Some(PpcImportAction::ReturnPreserve);
+                    }
+                    Some(pattern)
+                }
+                _ => None,
+            };
+            let opcode = match operation {
+                PpcQuickDrawShapeOperation::EraseArc => Some(0x0062),
+                PpcQuickDrawShapeOperation::InvertArc => Some(0x0063),
+                PpcQuickDrawShapeOperation::FillArc => Some(0x0064),
+                _ => None,
+            };
+            if let (Some(opcode), Some(commands)) = (
+                opcode,
+                ppc_open_picture_commands(toolbox_startup, current_gworld),
+            ) {
+                if operation == PpcQuickDrawShapeOperation::FillArc {
+                    pict::recording_push_word(commands, 0x000A); // FillPat
+                    commands.extend_from_slice(&pattern.unwrap_or([0; 8]));
+                }
+                pict::recording_push_rect(commands, opcode, rect);
+                pict::recording_push_word(commands, angles.0 as u16);
+                pict::recording_push_word(commands, angles.1 as u16);
+                return Some(PpcImportAction::ReturnPreserve);
+            }
+            let Some((top, rows)) =
+                ppc_arc_rows(memory, gworlds, current_gworld, rect, angles)
+            else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let fore = (
+                *quickdraw_fore_color,
+                quickdraw_fore_indices.get(&current_gworld).copied(),
+            );
+            let back = (
+                *quickdraw_back_color,
+                toolbox_startup
+                    .quickdraw_back_indices
+                    .get(&current_gworld)
+                    .copied(),
+            );
+            match (operation, pattern) {
+                (PpcQuickDrawShapeOperation::InvertArc, _) => {
+                    let _ = ppc_invert_rows(memory, gworlds, current_gworld, top, rows);
+                }
+                (PpcQuickDrawShapeOperation::FillCArc, _) => {
+                    if cpu.gpr[6] != 0 {
+                        let _ = ppc_fill_color_rows(
+                            memory,
+                            gworlds,
+                            current_gworld,
+                            top,
+                            rows,
+                            cpu.gpr[6],
+                            fore,
+                            back,
+                        );
+                    }
+                }
+                (_, Some(pattern)) => {
+                    let _ = ppc_fill_mono_rows(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        top,
+                        rows,
+                        pattern,
+                        fore,
+                        back,
+                    );
+                }
+                _ => {}
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::QuickDrawShape(PpcQuickDrawShapeOperation::FrameArc) => {
             // Inside Macintosh: Imaging With QuickDraw (FrameArc): draws the
             // arc of the oval's outline with the pen; arcs are not added to
@@ -1687,6 +1787,14 @@ pub enum PpcQuickDrawShapeOperation {
     FillCOval,
     /// FillCRoundRect(const Rect *, short ovalWidth, short ovalHeight, PixPatHandle)
     FillCRoundRect,
+    /// EraseArc(const Rect *, short startAngle, short arcAngle)
+    EraseArc,
+    /// InvertArc(const Rect *, short startAngle, short arcAngle)
+    InvertArc,
+    /// FillArc(const Rect *, short startAngle, short arcAngle, const Pattern *)
+    FillArc,
+    /// FillCArc(const Rect *, short startAngle, short arcAngle, PixPatHandle)
+    FillCArc,
     /// FrameArc(const Rect *, short startAngle, short arcAngle)
     FrameArc,
     /// StdRect(GrafVerb, const Rect *)

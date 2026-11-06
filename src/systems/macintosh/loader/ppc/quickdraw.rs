@@ -1798,6 +1798,120 @@ pub(crate) fn ppc_fill_color_rows(
     )
 }
 
+/// Fills port-coordinate rows starting at `top` with a bit pattern in patCopy
+/// mode, clipped to visRgn and clipRgn by `ppc_fill_rows_with_pixpat`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_fill_mono_rows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    top: i16,
+    rows: Vec<Vec<i16>>,
+    pat1: [u8; 8],
+    (fore_color, fore_index): (PpcRgbColor, Option<u8>),
+    (back_color, back_index): (PpcRgbColor, Option<u8>),
+) -> bool {
+    if ppc_port_pen_hidden(memory, current_gworld) {
+        return false;
+    }
+    let Some(bottom) = i16::try_from(rows.len())
+        .ok()
+        .and_then(|height| top.checked_add(height))
+    else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let sampler = PpcPixPatSampler {
+        width: 8,
+        height: 8,
+        kind: PpcPixPatKind::Mono {
+            pat1,
+            fore_pixel: ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, fore_index)
+                .unwrap_or(1),
+            back_pixel: ppc_quickdraw_surface_fore_pixel(memory, surface, back_color, back_index)
+                .unwrap_or(0),
+        },
+    };
+    ppc_fill_rows_with_pixpat(
+        memory,
+        gworlds,
+        current_gworld,
+        top,
+        bottom,
+        rows,
+        &sampler,
+        8,
+    )
+}
+
+/// The wedge of the oval in `rect` as interval lists per row, limited to the
+/// port's pixel image, with the first row's port coordinate. Uses the same
+/// pixel-centre test as PowerPC PaintArc and the 68K `draw_arc`.
+pub(crate) fn ppc_arc_rows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    (start_angle, arc_angle): (i16, i16),
+) -> Option<(i16, Vec<Vec<i16>>)> {
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)?;
+    let (width, height) = (i32::from(right) - i32::from(left), i32::from(bottom) - i32::from(top));
+    if width <= 0 || height <= 0 || arc_angle == 0 {
+        return None;
+    }
+    let mut a_start = f64::from(start_angle);
+    let mut a_extent = f64::from(arc_angle);
+    if a_extent < 0.0 {
+        a_start += a_extent;
+        a_extent = -a_extent;
+    }
+    let a_start = a_start.rem_euclid(360.0);
+    let a_end = a_start + a_extent.min(360.0);
+    let cx = (f64::from(left) + f64::from(right)) / 2.0;
+    let cy = (f64::from(top) + f64::from(bottom)) / 2.0;
+    let (rx, ry) = (f64::from(width) / 2.0, f64::from(height) / 2.0);
+    let covered = |x: i32, y: i32| {
+        let (ox, oy) = (f64::from(x) - cx + 0.5, f64::from(y) - cy + 0.5);
+        if (ox / rx).powi(2) + (oy / ry).powi(2) > 1.0 {
+            return false;
+        }
+        let mut mac_angle = 90.0 - (-oy).atan2(ox).to_degrees();
+        if mac_angle < 0.0 {
+            mac_angle += 360.0;
+        }
+        (mac_angle >= a_start && mac_angle < a_end) || (a_end > 360.0 && mac_angle + 360.0 < a_end)
+    };
+    let image_left = i32::from(surface.left);
+    let image_top = i32::from(surface.top);
+    let x0 = i32::from(left).max(image_left);
+    let x1 = i32::from(right).min(image_left + surface.front_buffer.width as i32);
+    let y0 = i32::from(top).max(image_top);
+    let y1 = i32::from(bottom).min(image_top + surface.front_buffer.height as i32);
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    let rows = (y0..y1)
+        .map(|y| {
+            let mut row = Vec::new();
+            let mut start = None;
+            for x in x0..=x1 {
+                match (x < x1 && covered(x, y), start) {
+                    (true, None) => start = Some(x),
+                    (false, Some(from)) => {
+                        row.extend([from as i16, x as i16]);
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            row
+        })
+        .collect();
+    Some((i16::try_from(y0).ok()?, rows))
+}
+
 pub(crate) fn ppc_invert_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],

@@ -4,7 +4,7 @@
 use super::*;
 use crate::memory::write_log;
 use crate::trap::test_helpers::{
-    draw_oval_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
+    draw_arc_8bpp_68k, draw_oval_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
     IndexedPortFixture,
 };
 use crate::trap::types::{Rect, ShapeOp};
@@ -2147,6 +2147,134 @@ fn oval_and_round_rect_imports_draw_nothing_with_a_hidden_pen() {
                 (WHOLE_PORT, WHOLE_PORT),
                 hide_pen,
             ),
+            initial_pixels()
+        );
+    }
+}
+
+/// Arcs including negative, wrapping and over-360 angles, as (start, arc).
+const ARCS: [(i16, i16); 5] = [(0, 90), (45, 180), (315, 90), (90, -135), (10, 400)];
+
+fn angle_regs(angles: (i16, i16), last: u32) -> [u32; 4] {
+    [RECT, angles.0 as u16 as u32, angles.1 as u16 as u32, last]
+}
+
+#[test]
+fn arc_imports_resolve_in_both_libraries() {
+    for (symbol, operation) in [
+        ("EraseArc", PpcQuickDrawShapeOperation::EraseArc),
+        ("InvertArc", PpcQuickDrawShapeOperation::InvertArc),
+        ("FillArc", PpcQuickDrawShapeOperation::FillArc),
+        ("FillCArc", PpcQuickDrawShapeOperation::FillCArc),
+    ] {
+        for library in ["InterfaceLib", "CarbonLib"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                shape_target(operation),
+                "{library} {symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn invert_arc_matches_the_68k_path_with_clipping() {
+    for (vis, clip) in SHAPE_CLIPS {
+        for angles in ARCS {
+            let pixels = initial_pixels();
+            let expected =
+                draw_arc_8bpp_68k(&fixture(&pixels, vis, clip), SHAPE, angles, ShapeOp::Invert);
+            assert_ne!(expected, pixels, "{angles:?}");
+            assert_eq!(
+                clipped_shape_pixels(
+                    shape_target(PpcQuickDrawShapeOperation::InvertArc),
+                    angle_regs(angles, 0),
+                    [0; 8],
+                    (vis, clip),
+                ),
+                expected,
+                "{angles:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fill_arc_and_fill_c_arc_match_the_68k_path_with_clipping() {
+    for (vis, clip) in SHAPE_CLIPS {
+        for angles in ARCS {
+            for pattern in [GRAY, MIXED, [0xff; 8]] {
+                let pixels = initial_pixels();
+                let expected = draw_arc_8bpp_68k(
+                    &fixture(&pixels, vis, clip),
+                    SHAPE,
+                    angles,
+                    ShapeOp::Fill(pattern),
+                );
+                assert_ne!(expected, pixels, "{angles:?}");
+                for (operation, last) in [
+                    (PpcQuickDrawShapeOperation::FillArc, PATTERN),
+                    (PpcQuickDrawShapeOperation::FillCArc, PIXPAT_HANDLE),
+                ] {
+                    assert_eq!(
+                        clipped_shape_pixels(
+                            shape_target(operation),
+                            angle_regs(angles, last),
+                            pattern,
+                            (vis, clip),
+                        ),
+                        expected,
+                        "{operation:?} {angles:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn erase_arc_paints_the_background_inside_the_wedge_only() {
+    let pixels = initial_pixels();
+    let (vis, clip) = (WHOLE_PORT, CLIP_WITH_HOLE);
+    let erased = clipped_shape_pixels(
+        shape_target(PpcQuickDrawShapeOperation::EraseArc),
+        angle_regs((45, 180), 0),
+        [0; 8],
+        (vis, clip),
+    );
+    let wedge = draw_arc_8bpp_68k(
+        &fixture(&pixels, vis, clip),
+        SHAPE,
+        (45, 180),
+        ShapeOp::Fill([0; 8]),
+    );
+    assert_ne!(erased, pixels);
+    // An all-clear pattern is the back index everywhere the wedge reaches.
+    assert_eq!(erased, wedge);
+}
+
+#[test]
+fn arc_imports_draw_nothing_with_a_hidden_pen_or_a_zero_angle() {
+    for (operation, last) in [
+        (PpcQuickDrawShapeOperation::EraseArc, 0),
+        (PpcQuickDrawShapeOperation::InvertArc, 0),
+        (PpcQuickDrawShapeOperation::FillArc, PATTERN),
+        (PpcQuickDrawShapeOperation::FillCArc, PIXPAT_HANDLE),
+    ] {
+        let target = shape_target(operation);
+        let clips = (WHOLE_PORT, WHOLE_PORT);
+        assert_eq!(
+            prepared_shape_pixels(
+                target.clone(),
+                angle_regs((0, 90), last),
+                GRAY,
+                clips,
+                hide_pen
+            ),
+            initial_pixels()
+        );
+        assert_eq!(
+            clipped_shape_pixels(target, angle_regs((0, 0), last), GRAY, clips),
             initial_pixels()
         );
     }
