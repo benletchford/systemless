@@ -9,6 +9,7 @@ use super::super::{
     ppc_write_pixmap_raw_pixel, PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET, PPC_RGB_BLACK, PPC_RGB_WHITE,
 };
 use super::*;
+use crate::systems::macintosh::trap::{qtrle::QtRleDecoder, smc::SmcDecoder};
 
 const BAD_DATA: i16 = -8969; // codecBadDataErr, Universal Interfaces MacErrors.h.
 const NO_CODEC: i16 = -8961; // noCodecErr.
@@ -133,7 +134,7 @@ impl Description {
         Ok(())
     }
 
-    fn parse(bytes: &[u8]) -> Result<Self, i16> {
+    pub(super) fn parse(bytes: &[u8]) -> Result<Self, i16> {
         let u16_at = |offset: usize| -> Result<u16, i16> {
             Ok(u16::from_be_bytes(
                 bytes
@@ -191,6 +192,8 @@ impl Description {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Decoder {
     Cinepak(PpcQuickTimeCinepakDecoder),
+    Smc(SmcDecoder),
+    Animation(QtRleDecoder),
     Still(u32),
     Raw,
 }
@@ -200,6 +203,16 @@ impl Decoder {
         if description.codec == u32::from_be_bytes(*b"raw ") {
             raw_layout(description)?;
             return Ok(Self::Raw);
+        }
+        if description.depth == 8 {
+            if description.codec == u32::from_be_bytes(*b"smc ") {
+                return Ok(Self::Smc(SmcDecoder::new(description.width, description.height)));
+            }
+            if description.codec == u32::from_be_bytes(*b"rle ") {
+                return Ok(Self::Animation(QtRleDecoder::new(
+                    description.width, description.height,
+                )));
+            }
         }
         if description.codec == u32::from_be_bytes(*b"cvid") {
             return PpcQuickTimeCinepakDecoder::new(description.width, description.height)
@@ -238,6 +251,20 @@ impl Decoder {
                 *decoder = next;
                 image
             }
+            Self::Smc(decoder) => {
+                let mut next = decoder.clone();
+                let indices = next.decode(data).map_err(|_| BAD_DATA)?;
+                let image = indexed_image(description, indices)?;
+                *decoder = next;
+                image
+            }
+            Self::Animation(decoder) => {
+                let mut next = decoder.clone();
+                let indices = next.decode(data).map_err(|_| BAD_DATA)?;
+                let image = indexed_image(description, indices)?;
+                *decoder = next;
+                image
+            }
             Self::Still(codec) => ppc_qt_decode_graphics_image(*codec, data).ok_or(BAD_DATA)?,
             Self::Raw => decode_raw(description, data)?,
         };
@@ -267,6 +294,40 @@ fn raw_layout(description: &Description) -> Result<(usize, usize), i16> {
     Ok((row, size))
 }
 
+fn indexed_palette(description: &Description) -> Result<[Option<[u8; 4]>; 256], i16> {
+    let mut palette = [None; 256];
+    let table = description.color_table_bytes(&[], 0)?;
+    let flags = u16::from_be_bytes([table[4], table[5]]);
+    for (i, entry) in table[8..].chunks_exact(8).enumerate() {
+        let index = if flags & 0x8000 != 0 {
+            i
+        } else {
+            u16::from_be_bytes([entry[0], entry[1]]) as usize
+        };
+        if index >= palette.len() {
+            return Err(BAD_DATA);
+        }
+        palette[index] = Some([entry[2], entry[4], entry[6], 255]);
+    }
+    Ok(palette)
+}
+
+fn indexed_image(description: &Description, indices: &[u8]) -> Result<PpcQtGraphicsImage, i16> {
+    if indices.len() != description.width * description.height {
+        return Err(BAD_DATA);
+    }
+    let palette = indexed_palette(description)?;
+    let mut rgba = Vec::with_capacity(indices.len() * 4);
+    for index in indices {
+        rgba.extend_from_slice(&palette[usize::from(*index)].ok_or(BAD_DATA)?);
+    }
+    Ok(PpcQtGraphicsImage {
+        width: description.width as u32,
+        height: description.height as u32,
+        rgba,
+    })
+}
+
 fn decode_raw(description: &Description, data: &[u8]) -> Result<PpcQtGraphicsImage, i16> {
     let (row, size) = raw_layout(description)?;
     if data.len() < size {
@@ -277,22 +338,11 @@ fn decode_raw(description: &Description, data: &[u8]) -> Result<PpcQtGraphicsIma
     } else {
         description.depth
     };
-    let mut palette = [None; 256];
-    if depth <= 8 {
-        let table = description.color_table_bytes(&[], 0)?;
-        let flags = u16::from_be_bytes([table[4], table[5]]);
-        for (i, entry) in table[8..].chunks_exact(8).enumerate() {
-            let index = if flags & 0x8000 != 0 {
-                i
-            } else {
-                u16::from_be_bytes([entry[0], entry[1]]) as usize
-            };
-            if index >= palette.len() {
-                return Err(BAD_DATA);
-            }
-            palette[index] = Some([entry[2], entry[4], entry[6], 255]);
-        }
-    }
+    let palette = if depth <= 8 {
+        indexed_palette(description)?
+    } else {
+        [None; 256]
+    };
     let mut rgba = Vec::with_capacity(description.width * description.height * 4);
     for y in 0..description.height {
         let row = &data[y * row..(y + 1) * row];

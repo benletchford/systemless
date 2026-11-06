@@ -1677,6 +1677,7 @@ fn quicktime_go_to_beginning_resets_video_decode_cache() {
                 PpcQuickTimeCinepakStripState::default();
                 PpcQuickTimeCinepakDecoder::MAX_STRIPS
             ],
+            described_state: None,
         }),
         ..PpcQuickTimeState::default()
     };
@@ -6905,4 +6906,231 @@ fn quicktime_controller_draw_rejects_invalid_targets_and_unsupported_media() {
         ppc_i16_result(-2010)
     );
     assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+}
+
+fn described_movie_fixture(
+    codec: &[u8; 4],
+    custom_palette: bool,
+    samples: &[Vec<u8>],
+) -> PpcQuickTimeState {
+    let mut file = Vec::new();
+    push_quicktime_atom(&mut file, b"mdat", &samples.concat());
+    let mut description = vec![0; 86];
+    description[4..8].copy_from_slice(codec);
+    description[14..16].copy_from_slice(&1u16.to_be_bytes());
+    description[32..34].copy_from_slice(&8u16.to_be_bytes());
+    description[34..36].copy_from_slice(&4u16.to_be_bytes());
+    description[82..84].copy_from_slice(&8u16.to_be_bytes());
+    description[84..86].copy_from_slice(&(if custom_palette { 0u16 } else { 8 }).to_be_bytes());
+    if custom_palette {
+        description.extend_from_slice(&(-1i32).to_be_bytes());
+        description.extend_from_slice(&0u16.to_be_bytes());
+        description.extend_from_slice(&3u16.to_be_bytes());
+        for (index, color) in [[0u16, 0, 0], [65535, 0, 0], [0, 65535, 0], [0, 0, 65535]]
+            .into_iter()
+            .enumerate()
+        {
+            description.extend_from_slice(&(index as u16).to_be_bytes());
+            for component in color {
+                description.extend_from_slice(&component.to_be_bytes());
+            }
+        }
+    }
+    let description_size = description.len() as u32;
+    description[..4].copy_from_slice(&description_size.to_be_bytes());
+    let count = samples.len() as u32;
+    let words = |values: &[u32]| {
+        values
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect::<Vec<_>>()
+    };
+    let mut stsd = words(&[0, 1]);
+    stsd.extend_from_slice(&description);
+    let mut stsz = words(&[0, 0, count]);
+    for sample in samples {
+        stsz.extend_from_slice(&(sample.len() as u32).to_be_bytes());
+    }
+    let mut stbl = Vec::new();
+    push_quicktime_atom(&mut stbl, b"stsd", &stsd);
+    push_quicktime_atom(&mut stbl, b"stts", &words(&[0, 1, count, 1]));
+    push_quicktime_atom(&mut stbl, b"stsc", &words(&[0, 1, 1, count, 1]));
+    push_quicktime_atom(&mut stbl, b"stsz", &stsz);
+    push_quicktime_atom(&mut stbl, b"stco", &words(&[0, 1, 8]));
+    let mut minf = Vec::new();
+    push_quicktime_atom(&mut minf, b"stbl", &stbl);
+    let mut mdhd = vec![0; 24];
+    mdhd[12..16].copy_from_slice(&1u32.to_be_bytes());
+    mdhd[16..20].copy_from_slice(&count.to_be_bytes());
+    let mut hdlr = vec![0; 24];
+    hdlr[4..8].copy_from_slice(b"mhlr");
+    hdlr[8..12].copy_from_slice(b"vide");
+    let mut mdia = Vec::new();
+    push_quicktime_atom(&mut mdia, b"mdhd", &mdhd);
+    push_quicktime_atom(&mut mdia, b"hdlr", &hdlr);
+    push_quicktime_atom(&mut mdia, b"minf", &minf);
+    let mut tkhd = vec![0; 84];
+    tkhd[3] = 1;
+    tkhd[12..16].copy_from_slice(&1u32.to_be_bytes());
+    tkhd[76..80].copy_from_slice(&(8u32 << 16).to_be_bytes());
+    tkhd[80..84].copy_from_slice(&(4u32 << 16).to_be_bytes());
+    let mut trak = Vec::new();
+    push_quicktime_atom(&mut trak, b"tkhd", &tkhd);
+    push_quicktime_atom(&mut trak, b"mdia", &mdia);
+    let mut mvhd = vec![0; 100];
+    mvhd[12..16].copy_from_slice(&1u32.to_be_bytes());
+    mvhd[16..20].copy_from_slice(&count.to_be_bytes());
+    mvhd[20..24].copy_from_slice(&65536u32.to_be_bytes());
+    mvhd[24..26].copy_from_slice(&256u16.to_be_bytes());
+    let mut moov = Vec::new();
+    push_quicktime_atom(&mut moov, b"mvhd", &mvhd);
+    push_quicktime_atom(&mut moov, b"trak", &trak);
+    push_quicktime_atom(&mut file, b"moov", &moov);
+    let tracks = ppc_qt_movie_tracks(&file);
+    assert_eq!(tracks.len(), 1);
+    let video = ppc_qt_movie_first_video_track(&file).unwrap();
+    let video_samples = ppc_qt_movie_video_samples(&file).unwrap();
+    assert_eq!(video_samples.samples.len(), samples.len());
+    PpcQuickTimeState {
+        movie_file_data: file,
+        movie_file_tracks: tracks.clone(),
+        movie_tracks: tracks,
+        movie_video_track: Some(video),
+        movie_video_samples: Some(video_samples),
+        movie_tasks_until_done: count,
+        movie_time_scale: 1,
+        movie_file_duration: u64::from(count),
+        movie_box: (0, 0, 4, 8),
+        ..PpcQuickTimeState::default()
+    }
+}
+
+fn described_frame_rgb(frame: &PpcQuickTimeDecodedVideoFrame, x: usize, y: usize) -> [u8; 3] {
+    let offset = (y * frame.width + x) * 3;
+    frame.rgb[offset..offset + 3].try_into().unwrap()
+}
+
+#[test]
+fn quicktime_smc_movie_frames_preserve_delta_pixels_and_seek_backwards() {
+    let samples = vec![
+        vec![0, 0, 0, 8, 0x60, 1, 0x60, 2],
+        vec![0, 0, 0, 7, 0x00, 0x60, 3],
+        vec![0, 0, 0, 7, 0x60, 2, 0x00],
+    ];
+    let mut movie = described_movie_fixture(b"smc ", true, &samples);
+    for (time, left, right) in [
+        (0, [255, 0, 0], [0, 255, 0]),
+        (1, [255, 0, 0], [0, 0, 255]),
+        (2, [0, 255, 0], [0, 0, 255]),
+        (0, [255, 0, 0], [0, 255, 0]),
+    ] {
+        movie.movie_task_count = time;
+        let frame = ppc_qt_decode_current_movie_video_frame(&mut movie).unwrap();
+        assert_eq!((frame.width, frame.height), (8, 4));
+        assert_eq!(described_frame_rgb(&frame, 0, 0), left);
+        assert_eq!(described_frame_rgb(&frame, 7, 3), right);
+        assert_eq!(
+            movie
+                .movie_video_decode_cache
+                .as_ref()
+                .unwrap()
+                .sample_index,
+            time as usize
+        );
+        let cache = movie.movie_video_decode_cache.clone();
+        assert_eq!(
+            ppc_qt_decode_current_movie_video_frame(&mut movie)
+                .unwrap()
+                .rgb,
+            frame.rgb
+        );
+        assert_eq!(movie.movie_video_decode_cache, cache);
+    }
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = PPC_QT_MOVIE;
+    let mut sound = PpcSoundState::default();
+    assert_eq!(
+        ppc_qt_go_to_beginning_of_movie(&mut cpu, &mut movie, &mut sound),
+        0
+    );
+    assert!(movie.movie_video_decode_cache.is_none());
+}
+
+#[test]
+fn quicktime_smc_standard_palette_and_bad_delta_preserve_valid_cache() {
+    let mut movie = described_movie_fixture(
+        b"smc ",
+        false,
+        &[
+            vec![0, 0, 0, 8, 0x60, 0, 0x60, 255],
+            vec![0, 0, 0, 7, 0xf0, 0, 0],
+        ],
+    );
+    let first = ppc_qt_decode_current_movie_video_frame(&mut movie).unwrap();
+    assert_eq!(described_frame_rgb(&first, 0, 0), [255; 3]);
+    assert_eq!(described_frame_rgb(&first, 7, 3), [0; 3]);
+    let cache = movie.movie_video_decode_cache.clone();
+    movie.movie_task_count = 1;
+    assert!(ppc_qt_decode_current_movie_video_frame(&mut movie).is_none());
+    assert_eq!(movie.movie_video_decode_cache, cache);
+    movie.movie_task_count = 0;
+    assert_eq!(
+        ppc_qt_decode_current_movie_video_frame(&mut movie)
+            .unwrap()
+            .rgb,
+        first.rgb
+    );
+}
+
+fn described_animation_sample(start: u16, lines: u16, body: &[u8]) -> Vec<u8> {
+    let mut bytes = ((14 + body.len()) as u32).to_be_bytes().to_vec();
+    for word in [8u16, start, 0, lines, 0] {
+        bytes.extend_from_slice(&word.to_be_bytes());
+    }
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+#[test]
+fn quicktime_animation_movie_delta_updates_only_its_scanline_band() {
+    let row = [1, 2, 1, 1, 1, 1, 2, 2, 2, 2, 255];
+    let first = described_animation_sample(0, 4, &row.repeat(4));
+    let delta = described_animation_sample(1, 1, &[2, 1, 3, 3, 3, 3, 255]);
+    let mut movie = described_movie_fixture(b"rle ", true, &[first, delta]);
+    movie.movie_task_count = 1; // Decode an uncached delta by replaying its predecessor.
+    let frame = ppc_qt_decode_current_movie_video_frame(&mut movie).unwrap();
+    assert_eq!(described_frame_rgb(&frame, 0, 1), [255, 0, 0]);
+    assert_eq!(described_frame_rgb(&frame, 4, 1), [0, 0, 255]);
+    assert_eq!(described_frame_rgb(&frame, 4, 0), [0, 255, 0]);
+    assert_eq!(described_frame_rgb(&frame, 4, 3), [0, 255, 0]);
+    movie.movie_task_count = 0;
+    let frame = ppc_qt_decode_current_movie_video_frame(&mut movie).unwrap();
+    assert_eq!(described_frame_rgb(&frame, 4, 1), [0, 255, 0]);
+}
+
+#[test]
+fn quicktime_described_video_rejects_invalid_description_and_sample_bounds() {
+    let samples = [vec![0, 0, 0, 8, 0x60, 1, 0x60, 2]];
+    for mutation in [0, 1, 2, 3] {
+        let mut movie = described_movie_fixture(b"smc ", true, &samples);
+        let entry = movie
+            .movie_file_data
+            .windows(4)
+            .position(|bytes| bytes == b"stsd")
+            .unwrap()
+            + 12;
+        match mutation {
+            0 => movie.movie_file_data[entry + 32..entry + 34].copy_from_slice(&0u16.to_be_bytes()),
+            1 => {
+                movie.movie_file_data[entry + 92..entry + 94].copy_from_slice(&255u16.to_be_bytes())
+            }
+            2 => {
+                movie.movie_file_data[entry + 82..entry + 84].copy_from_slice(&16u16.to_be_bytes())
+            }
+            3 => movie.movie_video_samples.as_mut().unwrap().samples[0].offset = u64::MAX,
+            _ => unreachable!(),
+        }
+        assert!(ppc_qt_decode_current_movie_video_frame(&mut movie).is_none());
+        assert!(movie.movie_video_decode_cache.is_none());
+    }
 }

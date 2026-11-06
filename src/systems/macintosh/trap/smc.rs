@@ -5,7 +5,7 @@
 //! 16 palette indices. The color-pair/quad/octet dictionaries persist across
 //! frames, as required for temporally compressed QuickTime sequences.
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SmcDecoder {
     width: usize,
     height: usize,

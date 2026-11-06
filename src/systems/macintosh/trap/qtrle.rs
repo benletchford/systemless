@@ -13,7 +13,7 @@
 //! Behavioural reference: FFmpeg `qtrle.c` (reimplemented from the format).
 
 /// Persistent QuickTime Animation decoder producing 8-bit palette indices.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct QtRleDecoder {
     width: usize,
     height: usize,
