@@ -1514,6 +1514,107 @@ pub(super) fn ppc_polygon_points(memory: &mut PpcSectionMem, handle: u32) -> Opt
         .collect()
 }
 
+/// The addresses of a polygon's stored Points: the topLeft and botRight of
+/// polyBBox, then each vertex. Points are vertical first.
+fn ppc_polygon_point_addresses(memory: &mut PpcSectionMem, handle: u32) -> Option<Vec<u32>> {
+    let points = ppc_polygon_points(memory, handle)?.len() as u32;
+    let ptr = memory.read_u32_be(handle)?;
+    Some(
+        [ptr + 2, ptr + 6]
+            .into_iter()
+            .chain((0..points).map(|index| ptr + 10 + index * 4))
+            .collect(),
+    )
+}
+
+/// OffsetPoly moves polyBBox and every vertex without changing the polygon's
+/// shape (Imaging With QuickDraw (1994), p. 3-86).
+pub(super) fn ppc_offset_polygon(memory: &mut PpcSectionMem, handle: u32, dh: i16, dv: i16) {
+    let Some(addresses) = ppc_polygon_point_addresses(memory, handle) else {
+        return;
+    };
+    for address in addresses {
+        if let (Some(v), Some(h)) = (
+            memory.read_u16_be(address),
+            memory.read_u16_be(address + 2),
+        ) {
+            let _ = memory.write_u16_be(address, (v as i16).wrapping_add(dv) as u16);
+            let _ = memory.write_u16_be(address + 2, (h as i16).wrapping_add(dh) as u16);
+        }
+    }
+}
+
+/// MapPoly maps every point that defines the polygon with MapPt (Inside
+/// Macintosh Volume I (1985), p. I-197). polyBBox's corners map the same way.
+pub(super) fn ppc_map_polygon(memory: &mut PpcSectionMem, handle: u32, src_ptr: u32, dst_ptr: u32) {
+    let Some(addresses) = ppc_polygon_point_addresses(memory, handle) else {
+        return;
+    };
+    for address in addresses {
+        ppc_map_pt(memory, address, src_ptr, dst_ptr);
+    }
+}
+
+/// The polygon's interior as interval lists per row, limited to the port's
+/// pixel image, with the first row's port coordinate. Uses the even-odd
+/// crossings of PowerPC PaintPoly and the 68K `draw_poly`: a pixel is inside
+/// when an odd number of edges cross at or to its left.
+pub(super) fn ppc_polygon_rows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    handle: u32,
+) -> Option<(i16, Vec<Vec<i16>>)> {
+    let points = ppc_polygon_points(memory, handle).filter(|points| points.len() >= 2)?;
+    let ptr = memory.read_u32_be(handle)?;
+    let (top, left, bottom, right) = ppc_read_rect(memory, ptr + 2)?;
+    if bottom <= top || right <= left {
+        return None;
+    }
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)?;
+    let image_top = i32::from(surface.top);
+    let image_left = i32::from(surface.left);
+    let y0 = i32::from(top).max(image_top);
+    let y1 = i32::from(bottom).min(image_top + surface.front_buffer.height as i32);
+    let x0 = i32::from(left).max(image_left);
+    let x1 = i32::from(right).min(image_left + surface.front_buffer.width as i32);
+    if y0 >= y1 || x0 >= x1 {
+        return None;
+    }
+    let rows = (y0..y1)
+        .map(|y| {
+            let mut crossings = Vec::new();
+            for index in 0..points.len() {
+                let (h0, v0) = points[index];
+                let (h1, v1) = points[(index + 1) % points.len()];
+                let (h0, v0, h1, v1) =
+                    (f64::from(h0), f64::from(v0), f64::from(h1), f64::from(v1));
+                let (y_min, y_max, x_at_min, x_at_max) = if v0 < v1 {
+                    (v0, v1, h0, h1)
+                } else {
+                    (v1, v0, h1, h0)
+                };
+                let line = f64::from(y);
+                if v0 != v1 && line >= y_min && line < y_max {
+                    let crossing =
+                        x_at_min + (line - y_min) * (x_at_max - x_at_min) / (y_max - y_min);
+                    crossings.push(crossing.ceil() as i32);
+                }
+            }
+            crossings.sort_unstable();
+            let mut row = Vec::new();
+            for pair in crossings.chunks_exact(2) {
+                let (from, to) = (pair[0].max(x0), pair[1].min(x1));
+                if from < to {
+                    row.extend([from as i16, to as i16]);
+                }
+            }
+            row
+        })
+        .collect();
+    Some((i16::try_from(y0).ok()?, rows))
+}
+
 pub(super) fn ppc_paint_polygon(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],

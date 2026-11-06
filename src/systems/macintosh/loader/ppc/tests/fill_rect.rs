@@ -4,7 +4,7 @@
 use super::*;
 use crate::memory::write_log;
 use crate::trap::test_helpers::{
-    draw_arc_8bpp_68k, draw_oval_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
+    draw_arc_8bpp_68k, draw_oval_8bpp_68k, draw_poly_8bpp_68k, draw_round_rect_8bpp_68k, fill_rect_8bpp_68k, region_storage_bytes,
     IndexedPortFixture,
 };
 use crate::trap::types::{Rect, ShapeOp};
@@ -2278,4 +2278,177 @@ fn arc_imports_draw_nothing_with_a_hidden_pen_or_a_zero_angle() {
             initial_pixels()
         );
     }
+}
+
+const POLY_HANDLE: u32 = SCRATCH + 0x5f0;
+const POLY: u32 = SCRATCH + 0x600;
+const MAP_SOURCE: u32 = SCRATCH + 0x420;
+const MAP_DESTINATION: u32 = SCRATCH + 0x430;
+
+/// polySize, polyBBox and vertices as big-endian words.
+fn polygon_record(bbox: [i16; 4], vertices: &[(i16, i16)]) -> Vec<u8> {
+    let mut words = vec![(10 + vertices.len() * 4) as i16];
+    words.extend(bbox);
+    for &(v, h) in vertices {
+        words.extend([v, h]);
+    }
+    words.iter().flat_map(|word| word.to_be_bytes()).collect()
+}
+
+/// A concave polygon, partly outside the pixel image, and a self-crossing
+/// bowtie that the even-odd rule leaves two lobes of.
+fn test_polygons() -> [Vec<u8>; 2] {
+    [
+        polygon_record(
+            [-5, -8, 8, 16],
+            &[(-5, -8), (8, 1), (0, 4), (6, 16), (-2, 9), (-5, -8)],
+        ),
+        polygon_record([-1, -2, 7, 14], &[(-1, -2), (7, 14), (-1, 14), (7, -2)]),
+    ]
+}
+
+fn write_polygon(loaded: &mut PpcLoadedApp, record: &[u8]) {
+    loaded.memory.write_u32_be(POLY_HANDLE, POLY).unwrap();
+    loaded.memory.write_bytes(POLY, record).unwrap();
+}
+
+#[test]
+fn polygon_imports_resolve_in_both_libraries() {
+    for (symbol, target) in [
+        ("InvertPoly", PpcImportDispatcherTarget::InvertPoly),
+        ("FillCPoly", PpcImportDispatcherTarget::FillCPoly),
+        ("OffsetPoly", PpcImportDispatcherTarget::OffsetPoly),
+        ("MapPoly", PpcImportDispatcherTarget::MapPoly),
+    ] {
+        for library in ["InterfaceLib", "CarbonLib"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, symbol),
+                target.clone(),
+                "{library} {symbol}"
+            );
+        }
+    }
+}
+
+#[test]
+fn invert_poly_matches_the_68k_path_with_clipping() {
+    for record in test_polygons() {
+        for (vis, clip) in SHAPE_CLIPS {
+            let pixels = initial_pixels();
+            let expected =
+                draw_poly_8bpp_68k(&fixture(&pixels, vis, clip), &record, ShapeOp::Invert);
+            assert_ne!(expected, pixels);
+            assert_eq!(
+                prepared_shape_pixels(
+                    PpcImportDispatcherTarget::InvertPoly,
+                    [POLY_HANDLE, 0, 0, 0],
+                    [0; 8],
+                    (vis, clip),
+                    |loaded| write_polygon(loaded, &record),
+                ),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn fill_c_poly_with_a_bit_pattern_matches_the_68k_path_with_clipping() {
+    for record in test_polygons() {
+        for (vis, clip) in SHAPE_CLIPS {
+            for pattern in [GRAY, MIXED, [0xff; 8]] {
+                let pixels = initial_pixels();
+                let expected = draw_poly_8bpp_68k(
+                    &fixture(&pixels, vis, clip),
+                    &record,
+                    ShapeOp::Fill(pattern),
+                );
+                assert_ne!(expected, pixels);
+                assert_eq!(
+                    prepared_shape_pixels(
+                        PpcImportDispatcherTarget::FillCPoly,
+                        [POLY_HANDLE, PIXPAT_HANDLE, 0, 0],
+                        pattern,
+                        (vis, clip),
+                        |loaded| write_polygon(loaded, &record),
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn polygon_drawing_imports_honour_a_hidden_pen_and_a_nil_pixel_pattern() {
+    let [record, _] = test_polygons();
+    let clips = (WHOLE_PORT, WHOLE_PORT);
+    for (target, regs, hide) in [
+        (PpcImportDispatcherTarget::InvertPoly, [POLY_HANDLE, 0, 0, 0], true),
+        (PpcImportDispatcherTarget::FillCPoly, [POLY_HANDLE, PIXPAT_HANDLE, 0, 0], true),
+        (PpcImportDispatcherTarget::FillCPoly, [POLY_HANDLE, 0, 0, 0], false),
+    ] {
+        assert_eq!(
+            prepared_shape_pixels(target, regs, GRAY, clips, |loaded| {
+                write_polygon(loaded, &record);
+                if hide {
+                    hide_pen(loaded);
+                }
+            }),
+            initial_pixels()
+        );
+    }
+}
+
+/// Runs a polygon-record import with `regs` and returns the polygon record.
+fn transformed_polygon(
+    target: PpcImportDispatcherTarget,
+    regs: [u32; 3],
+    record: &[u8],
+) -> Vec<u8> {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OffsetPoly")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    write_polygon(&mut loaded, record);
+    ppc_write_rect(&mut loaded.memory, MAP_SOURCE, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, MAP_DESTINATION, 10, 20, 60, 420).unwrap();
+    for (register, value) in regs.into_iter().enumerate() {
+        loaded.cpu.gpr[3 + register] = value;
+    }
+    run_test_import(&mut loaded, target);
+    let mut out = vec![0; record.len()];
+    loaded.memory.read_bytes_into(POLY, &mut out).unwrap();
+    out
+}
+
+#[test]
+fn offset_poly_moves_the_bounding_box_and_every_vertex() {
+    let record = polygon_record([1, 2, 5, 8], &[(1, 2), (5, 8), (3, 2)]);
+    assert_eq!(
+        transformed_polygon(
+            PpcImportDispatcherTarget::OffsetPoly,
+            // dh then dv, with junk in the upper halves of the registers.
+            [POLY_HANDLE, 0x1234_0003, 0x5678_fff6],
+            &record,
+        ),
+        polygon_record([-9, 5, -5, 11], &[(-9, 5), (-5, 11), (-7, 5)])
+    );
+}
+
+#[test]
+fn map_poly_scales_the_bounding_box_and_every_vertex() {
+    // v maps by 50/100 from 10, h by 400/200 from 20.
+    let record = polygon_record([0, 0, 100, 200], &[(0, 0), (100, 200), (50, 25), (0, 0)]);
+    assert_eq!(
+        transformed_polygon(
+            PpcImportDispatcherTarget::MapPoly,
+            [POLY_HANDLE, MAP_SOURCE, MAP_DESTINATION],
+            &record,
+        ),
+        polygon_record(
+            [10, 20, 60, 420],
+            &[(10, 20), (60, 420), (35, 70), (10, 20)]
+        )
+    );
 }

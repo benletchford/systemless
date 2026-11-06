@@ -293,6 +293,22 @@ pub(crate) fn draw_arc_8bpp_68k(
     })
 }
 
+/// Runs the 68K `draw_poly` path on `fixture` for a polygon stored as `record`
+/// and returns the pixel bytes.
+pub(crate) fn draw_poly_8bpp_68k(
+    fixture: &IndexedPortFixture<'_>,
+    record: &[u8],
+    op: super::types::ShapeOp,
+) -> Vec<u8> {
+    on_8bpp_68k_port(fixture, |d, cpu, bus| {
+        let handle = bus.alloc(4);
+        let ptr = bus.alloc(record.len() as u32);
+        bus.write_bytes(ptr, record);
+        bus.write_long(handle, ptr);
+        d.draw_poly(cpu, bus, handle, op);
+    })
+}
+
 /// Builds `fixture` as the current 8-bit colour port of a 68K dispatcher, runs
 /// `draw` and returns the pixel bytes afterwards.
 fn on_8bpp_68k_port(
