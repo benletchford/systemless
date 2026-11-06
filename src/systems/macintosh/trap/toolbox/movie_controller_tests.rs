@@ -1,5 +1,5 @@
 use super::super::dispatch::TrapDispatcher;
-use super::super::test_helpers::{MockCpu, TEST_SP, setup};
+use super::super::test_helpers::{setup, MockCpu, TEST_SP};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 fn classic_controller_fixture() -> (TrapDispatcher, MockCpu, MacMemoryBus, u32, u32, u32) {
@@ -468,4 +468,135 @@ fn classic_controller_movie_completion_stays_drawable_and_exit_clears_controller
     assert!(disp.movie_states.is_empty());
     assert!(disp.movie_controllers.is_empty());
     assert!(!disp.synthetic_component_instances.contains(&controller));
+}
+
+fn classic_controller_indexed_window(disp: &mut TrapDispatcher, bus: &mut MacMemoryBus, port: u32) {
+    let device = disp.ensure_main_gdevice(bus);
+    let device_ptr = bus.read_long(device);
+    let device_pixmap = bus.read_long(bus.read_long(device_ptr + 22));
+    let table = bus.read_long(device_pixmap + 42);
+    let pixmap = bus.read_long(bus.read_long(port + 2));
+    bus.write_word(pixmap + 32, 8);
+    bus.write_word(pixmap + 4, 0x8000 | 16);
+    bus.write_long(pixmap + 42, table);
+    disp.window_list.push(port);
+    disp.front_window = port;
+}
+
+#[test]
+fn classic_controller_requests_movie_colors_and_draws_through_the_live_device_table() {
+    let (mut disp, mut cpu, mut bus, movie, port, pixels) = classic_controller_fixture();
+    classic_controller_indexed_window(&mut disp, &mut bus, port);
+    let controller =
+        classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+    let palette = disp.movie_controllers[&controller].palette.unwrap();
+    assert_eq!(disp.window_palettes[&port].0, palette.handle);
+    assert!(disp.device_clut.contains(&[0xf0f0, 0x1010, 0x0808]));
+    assert!(disp.device_clut.contains(&[0x0808, 0x2020, 0xe0e0]));
+    assert_eq!(
+        classic_controller_action(&mut disp, &mut cpu, &mut bus, controller, 2, port),
+        0
+    );
+    assert_eq!(
+        disp.device_clut[bus.read_byte(pixels) as usize],
+        [0xf0f0, 0x1010, 0x0808]
+    );
+    assert_eq!(
+        disp.device_clut[bus.read_byte(pixels + 16) as usize],
+        [0x0808, 0x2020, 0xe0e0]
+    );
+    // Idle ownership checks must not recreate palettes or change the seed.
+    let pixmap = bus.read_long(bus.read_long(port + 2));
+    let table = bus.read_long(bus.read_long(pixmap + 42));
+    let seed = bus.read_long(table);
+    disp.prepare_classic_controller_palette(&mut bus, controller);
+    assert_eq!(
+        disp.movie_controllers[&controller].palette.unwrap().handle,
+        palette.handle
+    );
+    assert_eq!(bus.read_long(table), seed);
+}
+
+#[test]
+fn classic_controller_palette_opt_out_preserves_manual_window_requests() {
+    let (mut disp, mut cpu, mut bus, movie, port, _) = classic_controller_fixture();
+    classic_controller_indexed_window(&mut disp, &mut bus, port);
+    let controller =
+        classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+    let owned = disp.movie_controllers[&controller].palette.unwrap().handle;
+    assert_eq!(
+        classic_controller_action(&mut disp, &mut cpu, &mut bus, controller, 38, 8),
+        0
+    );
+    let manual = disp.create_palette_from_ctab(&mut bus, 4, 0, 2, 0);
+    disp.set_window_palette_association(port, manual, -0x2000);
+    disp.prepare_classic_controller_palette(&mut bus, controller);
+    assert_eq!(disp.window_palettes[&port].0, manual);
+    disp.dispose_classic_movie_controller(&mut bus, controller);
+    assert_eq!(disp.window_palettes[&port].0, manual);
+    assert!(bus.get_alloc_size(manual).is_some());
+    assert!(bus.get_alloc_size(owned).is_none());
+}
+
+#[test]
+fn classic_controller_palette_owners_restore_prior_associations_in_either_disposal_order() {
+    for first_before_second in [false, true] {
+        let (mut disp, mut cpu, mut bus, movie, port, _) = classic_controller_fixture();
+        classic_controller_indexed_window(&mut disp, &mut bus, port);
+        let prior = disp.create_palette_from_ctab(&mut bus, 4, 0, 2, 0);
+        disp.set_window_palette_association(port, prior, -0x4000);
+        let first =
+            classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+        let p1 = disp.movie_controllers[&first].palette.unwrap().handle;
+        let second =
+            classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+        let p2 = disp.movie_controllers[&second].palette.unwrap().handle;
+        if first_before_second {
+            disp.dispose_classic_movie_controller(&mut bus, first);
+            assert_eq!(disp.window_palettes[&port].0, p2);
+            assert_eq!(
+                disp.movie_controllers[&second].palette.unwrap().previous,
+                Some((prior, -0x4000))
+            );
+            disp.dispose_classic_movie_controller(&mut bus, second);
+        } else {
+            disp.dispose_classic_movie_controller(&mut bus, second);
+            assert_eq!(disp.window_palettes[&port].0, p1);
+            disp.dispose_classic_movie_controller(&mut bus, first);
+        }
+        assert_eq!(disp.window_palettes[&port], (prior, -0x4000));
+        assert!(bus.get_alloc_size(p1).is_none());
+        assert!(bus.get_alloc_size(p2).is_none());
+        assert!(bus.get_alloc_size(prior).is_some());
+    }
+}
+
+#[test]
+fn classic_controller_background_palette_waits_for_window_activation() {
+    let (mut disp, mut cpu, mut bus, movie, port, _) = classic_controller_fixture();
+    classic_controller_indexed_window(&mut disp, &mut bus, port);
+    disp.front_window = port + 0x1000;
+    let before = *disp.device_clut;
+    let controller =
+        classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+    assert!(disp.movie_controllers[&controller].palette.is_some());
+    assert_eq!(*disp.device_clut, before);
+    disp.front_window = port;
+    disp.activate_palette_for_window(&mut bus, port);
+    assert!(disp.device_clut.contains(&[0xf0f0, 0x1010, 0x0808]));
+}
+
+#[test]
+fn classic_controller_offscreen_and_direct_color_targets_do_not_claim_window_palettes() {
+    for window in [false, true] {
+        let (mut disp, mut cpu, mut bus, movie, port, _) = classic_controller_fixture();
+        if window {
+            disp.window_list.push(port);
+            disp.front_window = port;
+        }
+        let controller =
+            classic_controller_create(&mut disp, &mut cpu, &mut bus, movie, (0, 0, 2, 4), 11);
+        assert!(disp.movie_controllers[&controller].palette.is_none());
+        assert!(!disp.window_palettes.contains_key(&port));
+    }
 }
