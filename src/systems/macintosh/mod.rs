@@ -29,6 +29,7 @@ pub(crate) mod drag_manager;
 pub(crate) mod gestalt_manager;
 pub(crate) mod guest_call;
 pub(crate) mod guest_procedure;
+pub(crate) mod help_manager;
 pub(crate) mod list_manager;
 pub mod loader;
 pub(crate) mod mac_roman;
