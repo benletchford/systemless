@@ -19,6 +19,7 @@ pub(super) struct PpcControlDefinitionFrame {
 }
 
 pub(super) fn ppc_application_control_definition(
+    memory: &mut PpcSectionMem,
     resources: &[PpcVfsResourceRecord],
     resource_file: i16,
     proc_id: i16,
@@ -36,15 +37,28 @@ pub(super) fn ppc_application_control_definition(
         ((proc_id as u16) >> 4) as i16,
         false,
     )?;
-    ppc_control_definition_is_callable(&resources[index].data).then_some(index)
+    ppc_control_definition_is_callable(memory, &resources[index]).then_some(index)
 }
 
-fn ppc_control_definition_is_callable(bytes: &[u8]) -> bool {
-    let Some(bytes) = bytes.get(..2) else {
+fn ppc_control_definition_is_callable(
+    memory: &mut PpcSectionMem,
+    resource: &PpcVfsResourceRecord,
+) -> bool {
+    // A loaded definition's handle holds the bytes the Control Manager calls;
+    // applications may patch a stub there after GetResource.
+    let loaded = (resource.handle != 0)
+        .then(|| memory.read_u32_be(resource.handle))
+        .flatten()
+        .filter(|ptr| *ptr != 0)
+        .and_then(|ptr| memory.read_u16_be(ptr));
+    let Some(word) = loaded.or_else(|| {
+        let bytes = resource.data.get(..2)?;
+        Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+    }) else {
         return false;
     };
     matches!(
-        u16::from_be_bytes([bytes[0], bytes[1]]),
+        word,
         0x4e56 | 0x48e7 | 0x4ef9 | 0x4efa | 0x6000..=0x60ff | PPC_MIXED_MODE_TRAP
     )
 }
@@ -61,12 +75,11 @@ pub(super) fn ppc_control_definition_resource(
     let handle = memory.read_u32_be(record.pointer + 24).unwrap_or(0);
     resources
         .iter()
-        .position(|resource| {
-            handle != 0
-                && resource.handle == handle
-                && ppc_control_definition_is_callable(&resource.data)
+        .position(|resource| handle != 0 && resource.handle == handle)
+        .filter(|&index| ppc_control_definition_is_callable(memory, &resources[index]))
+        .or_else(|| {
+            ppc_application_control_definition(memory, resources, resource_file, record.proc_id)
         })
-        .or_else(|| ppc_application_control_definition(resources, resource_file, record.proc_id))
 }
 
 #[allow(clippy::too_many_arguments)]

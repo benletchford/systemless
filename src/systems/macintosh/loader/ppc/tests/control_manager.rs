@@ -4720,7 +4720,42 @@ fn native_custom_control_loads_and_enters_its_classic_definition() {
 }
 
 #[test]
+fn custom_definition_lookup_reads_a_loaded_definition_from_its_handle() {
+    // PageMaker 7 ships CDEF stubs that are a bare RTS and patches the
+    // loaded copy into a JMP to its own code. The handle's bytes are what
+    // the Control Manager calls.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let handle = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        16,
+        false,
+    );
+    let code = handle + 8;
+    loaded.memory.write_u32_be(handle, code).unwrap();
+    loaded.memory.write_bytes(code, &[0x4e, 0xf9, 0, 0, 0, 0]).unwrap();
+    let resources = vec![PpcVfsResourceRecord {
+        ref_num: 128,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"CDEF"),
+        res_id: 265,
+        name: Vec::new(),
+        data: vec![0x4e, 0x75, 0, 0, 0, 0].into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle,
+    }];
+    assert_eq!(
+        ppc_application_control_definition(&mut loaded.memory, &resources, 128, 265 * 16),
+        Some(0)
+    );
+}
+
+#[test]
 fn custom_definition_lookup_preserves_full_resource_ids_and_builtin_fallbacks() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
     let resource = |id, words: &[u16]| PpcVfsResourceRecord {
         ref_num: 128,
         path: String::new(),
@@ -4747,21 +4782,21 @@ fn custom_definition_lookup_preserves_full_resource_ids_and_builtin_fallbacks() 
         resource(63, &[0x4e56, 0]),
     ];
     assert_eq!(
-        ppc_application_control_definition(&resources, 128, 1002 * 16 + 7),
+        ppc_application_control_definition(&mut loaded.memory, &resources, 128, 1002 * 16 + 7),
         Some(0)
     );
     // Masking off the top four procID bits misidentifies this as popup 1009.
     assert_eq!(
-        ppc_application_control_definition(&resources, 128, 319 * 16 + 1),
+        ppc_application_control_definition(&mut loaded.memory, &resources, 128, 319 * 16 + 1),
         Some(1)
     );
     assert_eq!(
-        ppc_application_control_definition(&resources, 128, -1),
+        ppc_application_control_definition(&mut loaded.memory, &resources, 128, -1),
         Some(2)
     );
     for proc_id in [1000 * 16, 1001 * 16, 0, 1, 2, 16, 1008, 1023] {
         assert_eq!(
-            ppc_application_control_definition(&resources, 128, proc_id),
+            ppc_application_control_definition(&mut loaded.memory, &resources, 128, proc_id),
             None
         );
     }
