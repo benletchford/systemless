@@ -1,5 +1,6 @@
 ---
 id: mario-teaches-typing-demo
+launch_enabled: true
 kind: game
 title: Mario Teaches Typing Demo
 summary: >-
@@ -22,8 +23,31 @@ compatibility:
     environment: "The unchanged demo archive ran natively on the 68K slice and reached the lesson menu. Clicking lesson 1 opened the typing game with Mario and the letter turtles. A matched idle control was identical until the input and then differed by 160,938 pixels. An exact replay matched both checkpoints, with zero exhausted frames. Typing scoring, other lessons, and audio remain unverified. Browser pacing during the lesson was inconsistent: about 17–20 guest ticks/s at default pacing and 27–60 at 6 MHz, so launch stays disabled."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5510
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: e17408c0c native and release browser recheck
+    architecture: 68k
+    environment: >-
+      Fresh native lesson 1 accepts its displayed F, showing Typed 1 and Errors 0.
+      Six measured pixel assertions and two exact replay-image checks pass with
+      zero exhausted frames; the matched no-key control differs by 11,173 pixels
+      only after input. Chrome 156 worker/WebGL previews fetch the unchanged
+      managed archive directly with local frontend delivery at the production
+      origin. At the new 10 MHz per-entry target, typing the displayed J produces
+      results with Typed 1, Errors 0 and Accuracy 100%. Separate 20-second scored
+      lesson/results and results-idle samples pass unchanged thresholds: final
+      guest snapshots 59.302 / 60.090 ticks/sec, host 61.383 / 62.199 FPS, maximum
+      sampled worker frames 17.0 / 13.9 ms, minimum audio queues 348.7 / 422.3 ms,
+      without console errors. The former 25 MHz results-idle run failed at 31.649
+      ticks/sec; menu-only probes were excluded. Other lessons, sustained typing,
+      saves, audio fidelity, reference timing parity and unmodified production
+      remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5510
 runtime:
   show_menu_bar: true
+  runtime_pacing:
+    cpu_mhz: 10
 artifacts:
 - id: archive
   role: archive

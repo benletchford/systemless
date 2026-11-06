@@ -1,5 +1,6 @@
 ---
 id: continuum
+launch_enabled: true
 kind: game
 title: Continuum 1.03
 summary: >-
@@ -25,6 +26,25 @@ compatibility:
       without the key was identical until the input and then differed by 894 pixels. An
       exact replay matched both checkpoints, with zero exhausted frames. Combat, shields,
       later planets and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5453
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: e17408c0c native and release browser recheck
+    architecture: 68k
+    environment: >-
+      Native Planet 1 thrust passes six measured pixel assertions and three
+      exact replay-image checks, with zero exhausted frames. A matched no-thrust
+      run is identical before input and differs by 929 pixels afterwards. Chrome
+      156 worker/WebGL previews use local frontend delivery at the production
+      origin and fetch the unchanged managed original directly. Held menu input
+      starts Planet 1; slash thrust visibly moves the ship and reduces fuel,
+      while a same-duration control retains 10,000 fuel. Separate 20-second
+      thrust/control samples pass unchanged pacing thresholds at final snapshots
+      of 60.935 / 58.460 guest ticks/sec and 59.920 / 62.712 host FPS, maximum
+      sampled worker frames 11.6 / 11.7 ms and minimum audio queues 84.6 / 84.8 ms,
+      with no console errors. Combat, shields, level completion, later planets,
+      saves, audio fidelity and unmodified public deployment remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5453
 runtime:
