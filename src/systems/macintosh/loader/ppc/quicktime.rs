@@ -271,6 +271,7 @@ pub struct PpcQuickTimeControllerRecord {
     pub action_ref_con: u32,
     pub action_filter_rtoc: u32,
     pub keys_enabled: bool,
+    pub control_flags: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -933,6 +934,31 @@ pub(super) fn dispatch_quicktime_compatibility(
                     let _ = memory.write_u8(out, u8::from(enabled));
                     PpcImportAction::Return(0)
                 }
+                38 => {
+                    // QuickTime Components (1993), pp. 2-20–2-21: these
+                    // long-word control flags are not NewMovieController flags.
+                    let controller = quicktime
+                        .movie_controllers
+                        .iter_mut()
+                        .find(|controller| controller.handle == cpu.gpr[3])
+                        .expect("controller was validated above");
+                    controller.control_flags = cpu.gpr[5];
+                    PpcImportAction::Return(0)
+                }
+                39 => {
+                    let out = cpu.gpr[5];
+                    if out == 0 || !ppc_memory_can_write_bytes(memory, out, 4) {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                    let flags = quicktime
+                        .movie_controllers
+                        .iter()
+                        .find(|controller| controller.handle == cpu.gpr[3])
+                        .expect("controller was validated above")
+                        .control_flags;
+                    let _ = memory.write_u32_be(out, flags);
+                    PpcImportAction::Return(0)
+                }
                 42 => {
                     // mcActionGetPlayRate writes a Fixed to the caller's pointer.
                     if !compatibility_valid_movie(quicktime, movie) {
@@ -979,6 +1005,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                     action_ref_con: 0,
                     action_filter_rtoc: 0,
                     keys_enabled: false,
+                    control_flags: 0,
                 });
             PpcImportAction::Return(handle)
         }

@@ -2090,6 +2090,7 @@ fn quicktime_attached_controller_bounds_position_movie_pixels() {
             action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
         }],
         ..PpcQuickTimeState::default()
     };
@@ -3559,6 +3560,7 @@ fn quicktime_mc_do_action_play_starts_and_stops_controller_movie() {
                 action_ref_con: 0,
                 action_filter_rtoc: 0,
                 keys_enabled: false,
+                control_flags: 0,
             });
         loaded.cpu.gpr[3] = controller;
         loaded.cpu.gpr[4] = 8; // mcActionPlay
@@ -3601,6 +3603,7 @@ fn quicktime_mc_do_action_idle_tasks_associated_movie() {
                 action_ref_con: 0,
                 action_filter_rtoc: 0,
                 keys_enabled: false,
+                control_flags: 0,
             });
         loaded.quicktime.movie_active = true;
         loaded.quicktime.movie_started = true;
@@ -3637,6 +3640,7 @@ fn quicktime_new_movie_controller_records_movie_and_bounds() {
     assert_eq!(loaded.quicktime.movie_controllers[0].rect, (10, 20, 300, 600));
     assert_eq!(loaded.quicktime.movie_controllers[0].flags, 1);
     assert!(!loaded.quicktime.movie_controllers[0].keys_enabled);
+    assert_eq!(loaded.quicktime.movie_controllers[0].control_flags, 0);
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
@@ -3666,6 +3670,7 @@ fn quicktime_dispose_movie_controller_preserves_associated_movie() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.quicktime.movie_started = true;
     loaded.cpu.gpr[3] = controller;
@@ -3694,6 +3699,7 @@ fn quicktime_mc_set_movie_updates_controller_association() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = PPC_QT_MOVIE;
@@ -3740,6 +3746,7 @@ fn quicktime_mc_get_controller_bounds_writes_recorded_rect() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     let out = PPC_DATA_BASE + 0x1b00;
     loaded.memory.add_region(out, vec![0; 8]);
@@ -3778,6 +3785,7 @@ fn quicktime_mc_set_action_filter_records_and_removes_callback() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = 0x1234_5678;
@@ -3817,6 +3825,7 @@ fn quicktime_mc_set_controller_bounds_updates_rect() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     let rect_ptr = PPC_DATA_BASE + 0x1c00;
     loaded.memory.add_region(rect_ptr, vec![0, 10, 0, 20, 1, 44, 2, 88]);
@@ -3856,6 +3865,7 @@ fn quicktime_mc_idle_services_attached_movie() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.quicktime.movie_active = true;
     loaded.cpu.gpr[3] = controller;
@@ -3899,6 +3909,7 @@ fn quicktime_mc_get_current_time_returns_value_and_scale() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.quicktime.movie_time_scale = 600;
     loaded.quicktime.movie_file_duration = 100;
@@ -4670,6 +4681,7 @@ fn quicktime_controller_idle_delivers_due_guest_callback_once() {
                 action_ref_con: 0,
                 action_filter_rtoc: 0,
                 keys_enabled: false,
+                control_flags: 0,
             });
         let rtoc = loaded.cpu.gpr[2];
         advance_quicktime_test_clock(&mut loaded, 10_000_000);
@@ -4959,6 +4971,7 @@ fn quicktime_mc_controller_port_round_trips() {
         action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: false,
+            control_flags: 0,
     });
     loaded.cpu.gpr[3] = controller;
     loaded.cpu.gpr[4] = 0x0204_0000;
@@ -6470,6 +6483,7 @@ fn quicktime_mc_do_action_keys_enabled_round_trips_per_controller() {
                     action_ref_con: 0,
                     action_filter_rtoc: 0,
                     keys_enabled: false,
+                    control_flags: 0,
                 });
         }
         let out = PPC_DATA_BASE + 0x1800;
@@ -6521,6 +6535,7 @@ fn quicktime_mc_do_action_keys_enabled_rejects_invalid_controller_and_output() {
             action_ref_con: 0,
             action_filter_rtoc: 0,
             keys_enabled: true,
+            control_flags: 0,
         });
     let out = PPC_DATA_BASE + 0x1800;
     loaded.memory.add_region(out, vec![0x5a]);
@@ -6539,5 +6554,86 @@ fn quicktime_mc_do_action_keys_enabled_rejects_invalid_controller_and_output() {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
         assert_eq!(loaded.memory.read_u8(out), Some(0x5a));
         assert!(loaded.quicktime.movie_controllers[0].keys_enabled);
+    }
+}
+#[test]
+fn quicktime_mc_do_action_control_flags_round_trip_separately_from_creation_flags() {
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let pef = synthetic_pef_with_library_import(library, b"MCDoAction");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let first = 0x4001_3010;
+        let second = first + 0x10;
+        for handle in [first, second] {
+            loaded
+                .quicktime
+                .movie_controllers
+                .push(PpcQuickTimeControllerRecord {
+                    handle,
+                    movie: PPC_QT_MOVIE,
+                    rect: (0, 0, 100, 100),
+                    flags: 0x0b,
+                    window: 0,
+                    origin: 0,
+                    action_filter: 0,
+                    action_ref_con: 0,
+                    action_filter_rtoc: 0,
+                    keys_enabled: false,
+                    control_flags: 0,
+                });
+        }
+        let out = PPC_DATA_BASE + 0x1800;
+        loaded.memory.add_region(out, vec![0x5a; 6]);
+        for (controller, action, params, expected) in [
+            (first, 39, out + 1, 0),
+            (first, 38, 0x0d, 0x0d),
+            (first, 39, out + 1, 0x0d),
+            (second, 39, out + 1, 0),
+            (first, 38, 0, 0),
+            (first, 39, out + 1, 0),
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.gpr[3] = controller;
+            loaded.cpu.gpr[4] = action;
+            loaded.cpu.gpr[5] = params;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            if action == 39 {
+                assert_eq!(loaded.memory.read_u32_be(out + 1), Some(expected));
+                assert_eq!(loaded.memory.read_u8(out), Some(0x5a));
+                assert_eq!(loaded.memory.read_u8(out + 5), Some(0x5a));
+            } else {
+                assert_eq!(
+                    loaded.quicktime.movie_controllers[0].control_flags,
+                    expected
+                );
+            }
+            assert_eq!(loaded.quicktime.movie_controllers[1].control_flags, 0);
+            for record in &loaded.quicktime.movie_controllers {
+                assert_eq!(record.flags, 0x0b);
+                assert!(!record.keys_enabled);
+            }
+        }
+        for (controller, action, params, error) in [
+            (0, 38, 0x0d, PPC_INVALID_COMPONENT_ID),
+            (first + 1, 39, out, PPC_INVALID_COMPONENT_ID),
+            (first, 39, 0, PPC_PARAM_ERR),
+            (first, 39, u32::MAX, PPC_PARAM_ERR),
+            (first, 39, out + 3, PPC_PARAM_ERR),
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.gpr[3] = controller;
+            loaded.cpu.gpr[4] = action;
+            loaded.cpu.gpr[5] = params;
+            loaded.run_with_hle_imports(64);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+            assert_eq!(loaded.memory.read_u8(out), Some(0x5a));
+            assert_eq!(loaded.memory.read_u32_be(out + 1), Some(0));
+            assert_eq!(loaded.memory.read_u8(out + 5), Some(0x5a));
+            assert_eq!(loaded.quicktime.movie_controllers[0].control_flags, 0);
+        }
     }
 }
