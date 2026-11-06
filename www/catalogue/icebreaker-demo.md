@@ -1,5 +1,6 @@
 ---
 id: icebreaker-demo
+launch_enabled: true
 kind: game
 title: Icebreaker Demo
 summary: >-
@@ -27,6 +28,26 @@ compatibility:
       exhausted frames. The demo binds movement to the numeric keypad, not the arrow keys.
       Later levels, audio remain unverified. Browser pacing held 60 fps but every sample
       had one 66–68 ms frame, so launch stays disabled.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5504
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 32a2ba7f0 release browser preview and native play runner
+    architecture: ppc
+    environment: >-
+      Fresh native keypad movement passes five measured pixel assertions and
+      two exact replay-image checks, with zero exhausted frames. The matched
+      idle control is identical before input and differs by 275,351 pixels
+      afterwards. Chrome 156 worker/WebGL previews use local frontend assets
+      at the production origin and fetch the unchanged managed archive directly.
+      Matched short captures show arrow-to-keypad movement and board scrolling.
+      Three 20-second samples spanning startup, input, play and level failure
+      pass unchanged pacing thresholds: final guest snapshots are 60.043,
+      60.907 and 60.878 ticks/sec; host rates are 60.043, 63.044 and 59.864 FPS.
+      Maximum sampled worker frames are 21.4, 13.7 and 26.1 ms, without console
+      errors. The former outlier was not reproduced; its cause remains unknown.
+      A native retry returns to play. Level completion, other levels, saves,
+      audio fidelity and unmodified public deployment remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5504
 controls:
