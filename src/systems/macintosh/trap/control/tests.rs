@@ -943,6 +943,51 @@ fn getnewcontrol_parses_cntl_resource_and_links_at_window_head() {
 }
 
 #[test]
+fn getnewcontrol_popup_uses_loaded_menu_id_and_item_count() {
+    // The CNTL minimum is a MENU resource ID (IM:Tb 5-119), while
+    // popupPrivateData.mID is the loaded menu's ID.
+    for menu_id in [4100i16, 37] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window_ptr = bus.alloc(200);
+        let mut menu = vec![0; 14];
+        menu[..2].copy_from_slice(&menu_id.to_be_bytes());
+        menu[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        menu.extend_from_slice(b"\x04Test\x03One\0\0\0\0\x03Two\0\0\0\0\0");
+        disp.install_test_resource(&mut bus, *b"MENU", 4100, &menu);
+        let cntl = build_cntl_resource((10, 20, 30, 160), 2, false, 4100, 24, 1008, 0, b"Mode:");
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+        let sp = 0x300000;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window_ptr);
+        bus.write_word(sp + 4, 128);
+        disp.dispatch_control(true, 0x1BE, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let control = bus.read_long(sp + 6);
+        let pointer = bus.read_long(control);
+        assert_ne!(pointer, 0);
+        assert_eq!(bus.read_word(pointer + 18), 2);
+        assert_eq!(bus.read_word(pointer + 20), 1);
+        assert_eq!(
+            bus.read_word(pointer + 22),
+            2,
+            "resource ID differs from menu ID"
+        );
+        assert_eq!(disp.popup_control_title_width(pointer, -1), 24);
+        let private_ptr = bus.read_long(bus.read_long(pointer + 28));
+        let menu_handle = bus.read_long(private_ptr);
+        assert_eq!(bus.read_word(private_ptr + 4) as i16, menu_id);
+        assert_eq!(bus.read_word(bus.read_long(menu_handle)) as i16, menu_id);
+        assert_eq!(disp.popup_control_menu_id(&bus, pointer, -1), menu_id);
+        assert_eq!(
+            disp.popup_menu_item_title(&bus, menu_id, 2).as_deref(),
+            Some("Two")
+        );
+    }
+}
+
+#[test]
 fn getnewcontrol_missing_cntl_returns_nil_and_preserves_window_list() {
     // IM:I (1985) p. I-321: if the control template can't be read,
     // GetNewControl returns NIL.

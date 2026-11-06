@@ -14781,6 +14781,51 @@
     }
 
     #[test]
+    fn popup_resctrl_uses_loaded_menu_id_in_private_record() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let items_handle = bus.alloc(4);
+        let ditl_ptr = bus.alloc(18);
+        bus.write_long(items_handle, ditl_ptr);
+        bus.write_long(dialog_ptr + 156, items_handle);
+        bus.write_word(ditl_ptr, 0);
+
+        let mut menu = vec![0; 14];
+        menu[..2].copy_from_slice(&37i16.to_be_bytes());
+        menu[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        menu.extend_from_slice(b"\x04Test\x03One\0\0\0\0\x03Two\0\0\0\0\0");
+        disp.install_test_resource(&mut bus, *b"MENU", 4100, &menu);
+        let mut cntl = Vec::new();
+        for word in [0i16, 0, 20, 110, 2, -1, 24, 4100, 1008] {
+            cntl.extend_from_slice(&word.to_be_bytes());
+        }
+        cntl.extend_from_slice(&0u32.to_be_bytes());
+        cntl.push(0);
+        disp.install_test_resource(&mut bus, *b"CNTL", 128, &cntl);
+        let items = vec![DialogItem {
+            item_type: 7,
+            rect: (10, 20, 30, 140),
+            text: String::new(),
+            resource_id: 128,
+            proc_ptr: 0,
+            sel_start: 0,
+            sel_end: 0,
+        }];
+
+        disp.initialize_dialog_item_handles(&mut bus, dialog_ptr, &items);
+
+        let ctrl_ptr = bus.read_long(bus.read_long(ditl_ptr + 2));
+        let private_ptr = bus.read_long(bus.read_long(ctrl_ptr + 28));
+        assert_eq!(bus.read_word(private_ptr + 4), 37);
+        assert_eq!(disp.popup_control_menu_id(&bus, ctrl_ptr, -1), 37);
+        assert_eq!(bus.read_word(ctrl_ptr + 22), 2);
+        assert_eq!(
+            disp.popup_menu_item_title(&bus, 37, 2).as_deref(),
+            Some("Two")
+        );
+    }
+
+    #[test]
     fn popup_resctrl_initializes_contrl_data_private_menu_record() {
         let (mut disp, _cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);

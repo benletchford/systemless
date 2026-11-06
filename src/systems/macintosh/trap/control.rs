@@ -1289,12 +1289,13 @@ impl super::TrapDispatcher {
             // in contrlMax, so retain the pixel width as private CDEF state.
             // Macintosh Toolbox Essentials 1992, pp. 5-25 to 5-27.
             self.control_manager.set_popup_title_width(ctrl_ptr, max);
-            let data = self.create_popup_control_private_data(bus, min);
+            let menu_handle = self.create_popup_menu_handle(bus, min);
+            let data = self.create_popup_control_private_data(bus, menu_handle);
             let item_count = self
                 .menus
                 .iter()
                 .rev()
-                .find(|menu| menu.id == min)
+                .find(|menu| menu_handle != 0 && menu.handle == menu_handle)
                 .map_or(0, |menu| menu.items.len().min(i16::MAX as usize) as i16);
             bus.write_word(ctrl_ptr + 20, 1);
             bus.write_word(ctrl_ptr + 22, item_count as u16);
@@ -1393,8 +1394,7 @@ impl super::TrapDispatcher {
         bus.free(ctrl_handle);
     }
 
-    fn create_popup_control_private_data(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
-        let menu_handle = self.create_popup_menu_handle(bus, menu_id);
+    fn create_popup_control_private_data(&mut self, bus: &mut MacMemoryBus, menu_handle: u32) -> u32 {
         if menu_handle == 0 {
             return 0;
         }
@@ -1410,7 +1410,10 @@ impl super::TrapDispatcher {
         // mPrivate: reserved bytes }.
         bus.write_long(data_handle, data_ptr);
         bus.write_long(data_ptr, menu_handle);
-        bus.write_word(data_ptr + 4, menu_id as u16);
+        // The CNTL minimum selects a resource, whose embedded menu ID may
+        // differ. Private data describes the menu actually loaded above.
+        let menu_id = bus.read_word(bus.read_long(menu_handle));
+        bus.write_word(data_ptr + 4, menu_id);
         bus.write_word(data_ptr + 6, 0);
         self.track_handle_ptr(data_ptr, data_handle);
         data_handle
