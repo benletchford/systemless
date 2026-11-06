@@ -507,6 +507,9 @@ pub(super) fn ppc_dispatch_stdc_signal(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcStdCCompatibilityOperation {
+    PlStrcpy,
+    PlStrcat,
+    PlStrcmp,
     Qsort,
     Signal,
     Sscanf,
@@ -522,6 +525,11 @@ pub(super) fn ppc_dispatch_stdc_compatibility(
     signal_state: &mut PpcStdSignalState,
 ) -> PpcImportAction {
     match operation {
+        PpcStdCCompatibilityOperation::PlStrcpy
+        | PpcStdCCompatibilityOperation::PlStrcat
+        | PpcStdCCompatibilityOperation::PlStrcmp => {
+            ppc_dispatch_pascal_string(operation, cpu, memory)
+        }
         PpcStdCCompatibilityOperation::Signal => ppc_dispatch_stdc_signal(cpu, signal_state),
         PpcStdCCompatibilityOperation::Sscanf => {
             PpcImportAction::Return(ppc_dispatch_stdc_sscanf(cpu, memory))
@@ -534,6 +542,53 @@ pub(super) fn ppc_dispatch_stdc_compatibility(
             PpcImportAction::Return(ppc_std_vsprintf(cpu, memory))
         }
     }
+}
+
+fn ppc_dispatch_pascal_string(
+    operation: PpcStdCCompatibilityOperation,
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+) -> PpcImportAction {
+    // Apple PLStringFuncs.h: length-prefixed bytes (including embedded NULs),
+    // unsigned lexical comparison, and concatenation truncated to Str255.
+    let read = |memory: &mut PpcSectionMem, address| {
+        let length = memory.read_u8(address)?;
+        ppc_memory_read_bytes(memory, address, u32::from(length) + 1)
+    };
+    let destination = cpu.gpr[3];
+    let Some(source) = read(memory, cpu.gpr[4]) else {
+        return PpcImportAction::Halt;
+    };
+    let output = match operation {
+        PpcStdCCompatibilityOperation::PlStrcpy => source,
+        PpcStdCCompatibilityOperation::PlStrcat => {
+            let Some(mut output) = read(memory, destination) else {
+                return PpcImportAction::Halt;
+            };
+            let count = (256 - output.len()).min(source.len() - 1);
+            output.extend_from_slice(&source[1..1 + count]);
+            output[0] = (output.len() - 1) as u8;
+            output
+        }
+        PpcStdCCompatibilityOperation::PlStrcmp => {
+            let Some(first) = read(memory, destination) else {
+                return PpcImportAction::Halt;
+            };
+            let result: i16 = match first[1..].cmp(&source[1..]) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            return PpcImportAction::Return(i32::from(result) as u32);
+        }
+        _ => unreachable!("only Pascal-string operations reach this helper"),
+    };
+    if !ppc_memory_can_write_bytes(memory, destination, output.len() as u32)
+        || memory.write_bytes(destination, &output).is_none()
+    {
+        return PpcImportAction::Halt;
+    }
+    PpcImportAction::Return(destination)
 }
 
 pub(super) fn ppc_sscanf_store_integer(
