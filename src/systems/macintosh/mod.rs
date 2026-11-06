@@ -35,6 +35,7 @@ pub(crate) mod mac_roman;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
+pub(crate) mod movie_timeline;
 pub(crate) mod menu_manager;
 pub mod menu_model;
 pub(crate) mod mixed_mode;

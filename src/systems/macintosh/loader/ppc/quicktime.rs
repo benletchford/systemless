@@ -195,6 +195,7 @@ pub struct PpcQuickTimeVideoSampleRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeVideoSampleTableRecord {
+    pub(crate) timeline: Option<crate::systems::macintosh::movie_timeline::TrackTimeline>,
     pub media_time_scale: u32,
     pub media_duration: u64,
     pub sample_count: u32,
@@ -2887,7 +2888,19 @@ fn ppc_qt_parse_video_track_samples(
     if !info.is_complete() {
         return None;
     }
-    ppc_qt_build_video_sample_table(data, &info)
+    let mut samples = ppc_qt_build_video_sample_table(data, &info)?;
+    if let Some((edts_start, edts_end)) = ppc_qt_child_atom_range(data, start, end, b"edts") {
+        if let Some((elst_start, elst_end)) =
+            ppc_qt_child_atom_range(data, edts_start, edts_end, b"elst")
+        {
+            samples.timeline = Some(
+                crate::systems::macintosh::movie_timeline::TrackTimeline::parse(
+                    data.get(elst_start..elst_end)?,
+                )?,
+            );
+        }
+    }
+    Some(samples)
 }
 
 fn ppc_qt_scan_movie_audio_track(
@@ -4877,6 +4890,7 @@ fn ppc_qt_build_video_sample_table(
         return None;
     }
     Some(PpcQuickTimeVideoSampleTableRecord {
+        timeline: None,
         media_time_scale: info.media_time_scale,
         media_duration: info.media_duration,
         sample_count: u32::try_from(samples.len()).ok()?,
@@ -6140,9 +6154,15 @@ pub(crate) fn ppc_qt_movie_timed_sample_index(
     if samples.samples.is_empty() {
         return None;
     }
-    let media_duration = samples.media_duration.max(1);
-    let movie_time = ppc_qt_movie_position_in_scale(quicktime, media_duration)
-        .min(media_duration.saturating_sub(1));
+    let movie_duration = ppc_qt_movie_duration_value(quicktime).max(1);
+    let movie_time = ppc_qt_movie_position_in_scale(quicktime, movie_duration)
+        .min(movie_duration.saturating_sub(1));
+    let media_time = crate::systems::macintosh::movie_timeline::media_time(
+        samples.timeline.as_ref(),
+        i64::try_from(movie_time).ok()?,
+        quicktime.movie_time_scale,
+        samples.media_time_scale,
+    )?;
     samples
         .samples
         .iter()
@@ -6150,7 +6170,7 @@ pub(crate) fn ppc_qt_movie_timed_sample_index(
             let sample_end = sample
                 .media_start_time
                 .saturating_add(u64::from(sample.duration));
-            movie_time >= sample.media_start_time && movie_time < sample_end
+            media_time >= sample.media_start_time && media_time < sample_end
         })
         .or_else(|| samples.samples.len().checked_sub(1))
 }
@@ -6216,3 +6236,7 @@ fn ppc_qt_draw_placeholder_frame(
     }
     wrote_any
 }
+
+#[cfg(test)]
+#[path = "quicktime/timeline_tests.rs"]
+mod timeline_tests;
