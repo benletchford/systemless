@@ -2945,6 +2945,18 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CallOSTrapUniversalProc => {
             unreachable!("mixed mode imports return through dispatch_mixed_mode_import")
         }
+        PpcImportDispatcherTarget::TrapAvailable => {
+            // MPW's one-argument query infers the table from the trap word.
+            // Apple TN NW13 (GestaltAvailable), citing IM:VI 3-8; the
+            // availability test compares the logical handler with _Unimplemented.
+            // Use the same live, come-from-aware lookup as NGetTrapAddress.
+            let trap_word = cpu.gpr[3] as u16;
+            let handler = ppc_logical_trap_address(memory, trap_word, trap_word & 0x0800 != 0);
+            let unimplemented = ppc_logical_trap_address(memory, 0xA89F, true);
+            let available = matches!((handler, unimplemented), (Some(handler), Some(unimplemented))
+                if handler != 0 && unimplemented != 0 && handler != unimplemented);
+            Some(PpcImportAction::Return(u32::from(available)))
+        }
         PpcImportDispatcherTarget::NGetTrapAddress
         | PpcImportDispatcherTarget::GetToolTrapAddress
         | PpcImportDispatcherTarget::GetOSTrapAddress => {

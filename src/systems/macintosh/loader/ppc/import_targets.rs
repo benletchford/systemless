@@ -1423,6 +1423,7 @@ pub enum PpcImportDispatcherTarget {
     CallUniversalProc,
     CallOSTrapUniversalProc,
     NGetTrapAddress,
+    TrapAvailable,
     GetToolTrapAddress,
     GetOSTrapAddress,
     LMGetCurrentA5,
@@ -2741,6 +2742,7 @@ pub(crate) fn dispatcher_target_for_import(
         // point Systemless releases all guest state together.
         ("StdCLib", "atexit") => PpcImportDispatcherTarget::ReturnNoErr,
         ("StdCLib", "clock") => PpcImportDispatcherTarget::TickCount,
+        ("StdCLib", "TrapAvailable") => PpcImportDispatcherTarget::TrapAvailable,
         ("StdCLib", "memset") => PpcImportDispatcherTarget::StdMemset,
         ("StdCLib", "memcmp") => PpcImportDispatcherTarget::StdMemcmp,
         ("StdCLib", "memcpy") => PpcImportDispatcherTarget::StdMemcpy,
