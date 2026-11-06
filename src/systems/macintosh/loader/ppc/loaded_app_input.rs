@@ -6,11 +6,21 @@ use crate::memory::globals::addr;
 
 impl PpcLoadedApp {
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
+        let tick = self.current_tick();
+        self.note_physical_mouse_input(input, tick);
         self.mirror_input_low_memory(input);
         self.input = input;
         self.process_input.set_key_map_snapshot(input.key_map);
         self.process_input
             .set_mouse_state((input.mouse_v, input.mouse_h), input.mouse_button);
+    }
+
+    pub(crate) fn note_physical_mouse_input(&mut self, input: PpcInputSnapshot, tick: u32) {
+        let active =
+            ppc_isp_device_is_active(&self.input_sprocket, PPC_ISP_MOUSE_DEVICE) == Some(true);
+        self.toolbox_startup
+            .input_sprocket_drivers
+            .note_mouse_sample(input, tick, active);
     }
 
     pub(crate) fn mirror_input_low_memory(&mut self, input: PpcInputSnapshot) {
