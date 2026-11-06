@@ -3044,6 +3044,13 @@ fn start_worker_render_loop(
             let message = Object::new();
             set_js_property(&message, "type", &JsValue::from_str("frame"));
             set_js_property(&message, "forceRender", &JsValue::from_bool(force_snapshot));
+            // Asynchronous presenters can drop a submitted frame. Until the
+            // renderer acknowledges one, the owner cannot treat it as seen.
+            set_js_property(
+                &message,
+                "deduplicateRgba",
+                &JsValue::from_bool(!monitor_presenter && !direct_render),
+            );
             set_js_property(
                 &message,
                 "indexedRender",
