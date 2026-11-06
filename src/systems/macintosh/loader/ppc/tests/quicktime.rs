@@ -3627,6 +3627,9 @@ fn quicktime_mc_do_action_idle_tasks_associated_movie() {
 fn quicktime_new_movie_controller_records_movie_and_bounds() {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"NewMovieController");
     let mut loaded = load_pef_application(&pef).unwrap();
+    // This fixture checks recording/ownership, with a movie matching the
+    // requested display rectangle's dimensions (no letterboxing required).
+    loaded.quicktime.movie_box = (0, 0, 290, 580);
     let rect_ptr = PPC_DATA_BASE + 0x1a00;
     loaded.memory.add_region(rect_ptr, vec![0, 10, 0, 20, 1, 44, 2, 88]);
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
@@ -5794,11 +5797,14 @@ fn quicktime_detached_controller_bounds_do_not_resize_the_movie() {
     loaded.quicktime.movie_gworld = gworld;
     let rect = PPC_DATA_BASE + 0x4000;
     loaded.memory.add_region(rect, vec![0; 8]);
-    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 2).unwrap();
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 4, 4).unwrap();
     let controller =
         call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
     call_movie_toolbox(&mut loaded, "MCSetControllerPort", &[controller, gworld]);
     call_movie_toolbox(&mut loaded, "MCSetControllerAttached", &[controller, 0]);
+    // Changing the detached controller's bounds must leave the movie alone.
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 2, 2).unwrap();
+    call_movie_toolbox(&mut loaded, "MCSetControllerBoundsRect", &[controller, rect]);
     assert_eq!(
         call_movie_toolbox(&mut loaded, "MCDraw", &[controller, gworld]),
         1
@@ -7552,3 +7558,5 @@ fn quicktime_open_file_and_failed_creation_preserve_the_playing_movie() {
         None
     );
 }
+#[path = "quicktime_controller_placement.rs"]
+mod controller_placement_tests;
