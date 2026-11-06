@@ -2593,8 +2593,18 @@ fn mask_imports_with_invalid_geometry_change_nothing() {
     }
 }
 
+fn line_initial_pixels(depth: u32) -> Vec<u8> {
+    if depth == 1 {
+        // The foreground index is odd (one). Start clear so even a vertical
+        // line cannot already match every destination bit.
+        vec![0; usize::from(ROW_BYTES) * HEIGHT]
+    } else {
+        initial_pixels()
+    }
+}
+
 fn line_pixels(depth: u32, to: (i16, i16), standard: bool) -> (Vec<u8>, (i16, i16)) {
-    let pixels = initial_pixels();
+    let pixels = line_initial_pixels(depth);
     let fixture = fixture(&pixels, WHOLE_PORT, CLIP_WITH_HOLE);
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StdLine")).unwrap();
     install_port(&mut loaded, &fixture, depth);
@@ -2627,7 +2637,7 @@ fn std_line_unpacks_its_point_and_draws_like_line_to() {
         for to in [(14, 1), (2, 7), (-4, -2), (-4, 6), (16, -2)] {
             let standard = line_pixels(depth, to, true);
             assert_eq!(standard, line_pixels(depth, to, false), "{depth} {to:?}");
-            assert_ne!(standard.0, initial_pixels(), "{depth} {to:?}");
+            assert_ne!(standard.0, line_initial_pixels(depth), "{depth} {to:?}");
             assert_eq!(standard.1, to);
         }
     }
