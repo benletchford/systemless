@@ -7008,6 +7008,7 @@ fn described_movie_fixture(
         movie_video_samples: Some(video_samples),
         movie_tasks_until_done: count,
         movie_time_scale: 1,
+        movie_creation_time_scale: 1,
         movie_file_duration: u64::from(count),
         movie_box: (0, 0, 4, 8),
         ..PpcQuickTimeState::default()
