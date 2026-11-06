@@ -43,6 +43,80 @@ fn run(loaded: &mut PpcLoadedApp) -> i16 {
 }
 
 #[test]
+fn ppc_directory_creation_skips_existing_file_catalog_ids() {
+    let mut loaded = loaded_with(b"DirCreate");
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Existing".to_owned(),
+        data: Vec::new().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.next_vfs_dir_id.with_mut(|next| *next = 32);
+    let name = SCRATCH + 0x100;
+    let output = SCRATCH + 0x200;
+    write_ppc_pstring(&mut loaded.memory, name, b"Folder");
+    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+    loaded.cpu.gpr[5] = name;
+    loaded.cpu.gpr[6] = output;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let directory_id = loaded.memory.read_u32_be(output).unwrap();
+    let file_id = loaded.process_file_system.classic_vfs_metadata["Existing"].file_id;
+    assert_ne!(directory_id, file_id);
+}
+
+#[test]
+fn ppc_directory_creation_wraps_catalog_ids_without_reuse() {
+    let mut loaded = loaded_with(b"DirCreate");
+    loaded.push_test_vfs_file(data_file("Existing", b"", b"TEST"));
+    loaded.next_vfs_dir_id.with_mut(|next| *next = u32::MAX);
+    let name = SCRATCH + 0x100;
+    let output = SCRATCH + 0x200;
+    write_ppc_pstring(&mut loaded.memory, name, b"Wrapped");
+    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+    loaded.cpu.gpr[5] = name;
+    loaded.cpu.gpr[6] = output;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let directory_id = loaded.memory.read_u32_be(output).unwrap();
+    let file_id = loaded.process_file_system.classic_vfs_metadata["Existing"].file_id;
+    assert!(directory_id >= 16 && directory_id < u32::MAX);
+    assert_ne!(directory_id, file_id);
+    assert_eq!(
+        loaded
+            .vfs_directories
+            .iter()
+            .filter(|entry| entry.dir_id == directory_id)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn ppc_fsp_directory_creation_skips_existing_file_catalog_ids() {
+    let mut loaded = loaded_with(b"FSpDirCreate");
+    loaded.push_test_vfs_file(data_file("Existing", b"", b"TEST"));
+    loaded.next_vfs_dir_id.with_mut(|next| *next = 32);
+    let spec = SCRATCH + 0x100;
+    let output = SCRATCH + 0x200;
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Folder",
+    );
+    loaded.cpu.gpr[3] = spec;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = output;
+    assert_eq!(run(&mut loaded), PPC_NO_ERR);
+    let file_id = loaded.process_file_system.classic_vfs_metadata["Existing"].file_id;
+    assert_ne!(loaded.memory.read_u32_be(output), Some(file_id));
+}
+
+#[test]
 fn file_manager_imports_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("CloseWD", PpcFileManagerOperation::CloseWd),
