@@ -21882,3 +21882,117 @@ fn classic_smc_movie_uses_standard_palette_when_no_inline_table_exists() {
         ((color[0] as u32 >> 8) << 16) | ((color[1] as u32 >> 8) << 8) | (color[2] as u32 >> 8);
     assert_eq!(bus.read_long(pixels), expected);
 }
+
+fn lazy_movie_metadata_fixture() -> Vec<u8> {
+    let mut mvhd = vec![0; 20];
+    mvhd[12..16].copy_from_slice(&600u32.to_be_bytes());
+    mvhd[16..20].copy_from_slice(&240u32.to_be_bytes());
+    let mut tkhd = vec![0; 84];
+    tkhd[76..80].copy_from_slice(&(640u32 << 16).to_be_bytes());
+    tkhd[80..84].copy_from_slice(&(400u32 << 16).to_be_bytes());
+    let mut payload = quicktime_atom(*b"mvhd", &mvhd);
+    payload.extend(quicktime_atom(*b"trak", &quicktime_atom(*b"tkhd", &tkhd)));
+    quicktime_atom(*b"moov", &payload)
+}
+
+fn call_lazy_movie_from_file(
+    disp: &mut TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut MacMemoryBus,
+    refnum: u16,
+    requested_id: i16,
+) -> (i16, u32) {
+    bus.write_long(0x300200, 0xBAD);
+    bus.write_word(0x300204, requested_id as u16);
+    bus.write_byte(0x300208, 0xCC);
+    bus.write_byte(0x300310, 0xCC);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, 0x00F0);
+    bus.write_long(TEST_SP, 0x300310);
+    bus.write_word(TEST_SP + 4, 1);
+    bus.write_long(TEST_SP + 6, 0x300208);
+    bus.write_long(TEST_SP + 10, 0x300204);
+    bus.write_word(TEST_SP + 14, refnum);
+    bus.write_long(TEST_SP + 16, 0x300200);
+    bus.write_long(TEST_SP + 22, 0xBEEF_CAFE);
+    disp.dispatch_toolbox(true, 0x2AA, cpu, bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
+    assert_eq!(bus.read_long(TEST_SP + 22), 0xBEEF_CAFE);
+    (bus.read_word(TEST_SP + 20) as i16, bus.read_long(0x300200))
+}
+
+#[test]
+fn movie_from_file_materializes_lazy_or_released_metadata_by_identity() {
+    for requested_id in [0, 128] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let refnum = 125;
+        disp.register_empty_resource_file(refnum);
+        disp.set_resource_file_name(refnum, "Movies/Lazy");
+        disp.insert_resource_pointer_for_test(refnum, (*b"moov", 128), 0);
+        disp.with_resource_file_mut_for_test(refnum, |file| {
+            file.names_by_id.insert((*b"moov", 128), "Lazy".into());
+        });
+        disp.remember_resource_backing_data(refnum, *b"moov", 128, lazy_movie_metadata_fixture());
+        disp.vfs.insert("Movies/Lazy".into(), vec![1, 2, 3, 4]);
+        // Selecting a movie reads its resource even when automatic GetResource
+        // loading is disabled; this must not change the application's flag.
+        bus.write_byte(0x0A5E, 0);
+        let (error, movie) =
+            call_lazy_movie_from_file(&mut disp, &mut cpu, &mut bus, refnum, requested_id);
+        assert_eq!(error, 0);
+        let state = &disp.movie_states[&movie];
+        assert_eq!(state.box_rect, (0, 0, 400, 640));
+        assert_eq!((state.duration, state.time_scale), (240, 600));
+        assert_eq!(state.data_fork, [1, 2, 3, 4]);
+        assert_eq!(bus.read_word(0x300204), 128);
+        assert_eq!(bus.read_pstring(0x300208), b"Lazy");
+        assert_eq!(bus.read_byte(0x300310), 0);
+        assert_eq!(bus.read_byte(0x0A5E), 0);
+    }
+}
+
+#[test]
+fn movie_from_file_keeps_resident_edits_and_explicit_id_selection() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let refnum = 126;
+    disp.register_empty_resource_file(refnum);
+    disp.set_resource_file_name(refnum, "Movies/Resident");
+    disp.install_named_test_resource_in_file(
+        &mut bus,
+        refnum,
+        *b"moov",
+        128,
+        "Live",
+        &lazy_movie_metadata_fixture(),
+    );
+    disp.remember_resource_backing_data(refnum, *b"moov", 128, vec![0; 4]);
+    disp.insert_resource_pointer_for_test(refnum, (*b"moov", 127), 0);
+    disp.remember_resource_backing_data(refnum, *b"moov", 127, vec![0; 4]);
+    let (error, movie) = call_lazy_movie_from_file(&mut disp, &mut cpu, &mut bus, refnum, 128);
+    assert_eq!(error, 0);
+    assert_eq!(disp.movie_states[&movie].box_rect, (0, 0, 400, 640));
+    assert_eq!(bus.read_pstring(0x300208), b"Live");
+}
+
+#[test]
+fn movie_from_file_missing_lazy_payload_reports_error_without_empty_movie() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let refnum = 127;
+    disp.register_empty_resource_file(refnum);
+    disp.set_resource_file_name(refnum, "Movies/Missing");
+    disp.insert_resource_pointer_for_test(refnum, (*b"moov", 128), 0);
+    // A present map entry whose payload cannot be loaded must not silently
+    // fall back to the data fork and return a different or empty movie.
+    disp.vfs
+        .insert("Movies/Missing".into(), lazy_movie_metadata_fixture());
+    let (error, movie) = call_lazy_movie_from_file(&mut disp, &mut cpu, &mut bus, refnum, 0);
+    assert_eq!(error, -2010);
+    assert_eq!(movie, 0);
+    assert!(disp.movie_states.is_empty());
+    assert_eq!(disp.movie_error, -2010);
+    assert_eq!(bus.read_word(0x300204), 0);
+    assert_eq!(bus.read_byte(0x300208), 0xCC);
+    assert_eq!(bus.read_byte(0x300310), 0xCC);
+}
