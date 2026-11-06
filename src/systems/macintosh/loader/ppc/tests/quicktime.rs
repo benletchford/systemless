@@ -7143,3 +7143,5 @@ fn quicktime_described_video_rejects_invalid_description_and_sample_bounds() {
         assert!(movie.movie_video_decode_cache.is_none());
     }
 }
+#[path = "quicktime_timeline_queries.rs"]
+mod timeline_query_tests;

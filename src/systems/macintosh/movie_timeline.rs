@@ -60,6 +60,26 @@ impl TrackTimeline {
         Some(Self { edits })
     }
 
+    pub fn leading_empty_duration(&self) -> u64 {
+        self.edits
+            .iter()
+            .take_while(|edit| edit.media_time == -1)
+            .map(|edit| edit.duration)
+            .sum()
+    }
+
+    /// Edit boundaries in movie units, including empty edits and the end.
+    pub fn boundaries(&self) -> Vec<(u64, u64)> {
+        let mut time = 0;
+        let mut result = Vec::with_capacity(self.edits.len() + 1);
+        for edit in &self.edits {
+            result.push((time, edit.duration));
+            time += edit.duration;
+        }
+        result.push((time, 0));
+        result
+    }
+
     /// Map a movie time to media time, or None for an empty edit or a time
     /// outside the track. Half-open edit boundaries select the following edit.
     pub fn media_time(&self, time: i64, movie_scale: u32, media_scale: u32) -> Option<u64> {
@@ -102,6 +122,68 @@ pub(crate) fn media_time(
         return None;
     }
     u64::try_from(i128::from(time) * i128::from(media_scale) / i128::from(movie_scale)).ok()
+}
+
+/// Project a media sample's half-open interval into every movie edit that
+/// uses it. Integer endpoints match `media_time`, including reverse and dwell
+/// edits. A repeated use is a distinct span (GetMovieDataSize counts each use).
+pub(crate) fn sample_spans(
+    timeline: Option<&TrackTimeline>,
+    media_start: u64,
+    media_duration: u64,
+    movie_scale: u32,
+    media_scale: u32,
+) -> Vec<(u64, u64)> {
+    let Some(media_end) = media_start.checked_add(media_duration) else {
+        return Vec::new();
+    };
+    if media_duration == 0 || movie_scale == 0 || media_scale == 0 {
+        return Vec::new();
+    }
+    let natural;
+    let edits = if let Some(timeline) = timeline {
+        &timeline.edits
+    } else {
+        natural = vec![TrackEdit {
+            duration: u64::MAX,
+            media_time: 0,
+            rate: 65_536,
+        }];
+        &natural
+    };
+    let ceil_div = |value: i128, divisor: i128| -(-value).div_euclid(divisor);
+    let mut movie_start = 0u64;
+    let mut result = Vec::new();
+    for edit in edits {
+        if edit.media_time >= 0 {
+            let factor = i128::from(media_scale) * i128::from(edit.rate);
+            let divisor = i128::from(movie_scale) * 65_536;
+            let low = (i128::from(media_start) - i128::from(edit.media_time)) * divisor;
+            let high = (i128::from(media_end) - i128::from(edit.media_time)) * divisor;
+            let (start, end) = if factor > 0 {
+                (ceil_div(low, factor), ceil_div(high, factor))
+            } else if factor < 0 {
+                (
+                    (-high).div_euclid(-factor) + 1,
+                    (-low).div_euclid(-factor) + 1,
+                )
+            } else if low <= 0 && high > 0 {
+                (0, i128::from(edit.duration))
+            } else {
+                (0, 0)
+            };
+            let start = start.clamp(0, i128::from(edit.duration)) as u64;
+            let end = end.clamp(0, i128::from(edit.duration)) as u64;
+            if start < end {
+                result.push((movie_start + start, end - start));
+            }
+        }
+        let Some(next) = movie_start.checked_add(edit.duration) else {
+            break;
+        };
+        movie_start = next;
+    }
+    result
 }
 
 #[cfg(test)]
@@ -193,5 +275,50 @@ mod tests {
         row.extend_from_slice(&65_536i32.to_be_bytes());
         payload.extend_from_slice(&row);
         assert!(TrackTimeline::parse(&payload).is_none());
+    }
+    #[test]
+    fn projected_samples_match_movie_mapping_for_repeats_rates_gaps_and_dwell() {
+        let timeline = list(&[
+            (3, -1, 65_536),
+            (9, 0, 65_536),
+            (7, 2, 131_072),
+            (5, 3, 0),
+            (8, 6, -32_768),
+            (4, -1, 65_536),
+            (6, 0, 32_768),
+        ]);
+        for (movie_scale, media_scale) in [(3, 2), (2, 3), (7, 11)] {
+            for start in 0..12 {
+                for duration in 1..4 {
+                    let spans =
+                        sample_spans(Some(&timeline), start, duration, movie_scale, media_scale);
+                    for time in 0..50 {
+                        let expected = timeline
+                            .media_time(time, movie_scale, media_scale)
+                            .is_some_and(|value| value >= start && value < start + duration);
+                        let actual = spans.iter().any(|&(begin, len)| {
+                            time as u64 >= begin && (time as u64) < begin + len
+                        });
+                        assert_eq!(actual, expected, "scales {movie_scale}/{media_scale}, sample {start}+{duration}, time {time}, spans {spans:?}");
+                    }
+                }
+            }
+        }
+        assert_eq!(timeline.leading_empty_duration(), 3);
+        assert_eq!(
+            timeline.boundaries(),
+            vec![
+                (0, 3),
+                (3, 9),
+                (12, 7),
+                (19, 5),
+                (24, 8),
+                (32, 4),
+                (36, 6),
+                (42, 0)
+            ]
+        );
+        assert_eq!(sample_spans(None, 2, 3, 600, 100), vec![(12, 18)]);
+        assert!(sample_spans(None, u64::MAX, 1, 1, 1).is_empty());
     }
 }
