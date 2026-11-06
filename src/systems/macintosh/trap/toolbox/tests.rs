@@ -20599,27 +20599,27 @@ fn movie_music_controls_stop_mute_seek_and_loop() {
     bus.write_long(TEST_SP, movie);
     call(&mut disp, &mut cpu, &mut bus, 0x000B);
     let mut output = Vec::new();
-    disp.mix_movie_music(&mut output, 2205);
+    disp.mix_movie_audio(&mut output, 2205);
     assert!(output.iter().any(|&b| b != 128));
     bus.write_word(TEST_SP, 0);
     bus.write_long(TEST_SP + 2, movie);
     call(&mut disp, &mut cpu, &mut bus, 0x002F);
     output.clear();
-    disp.mix_movie_music(&mut output, 2205);
+    disp.mix_movie_audio(&mut output, 2205);
     assert!(output.iter().all(|&b| b == 128));
     bus.write_long(TEST_SP, movie);
     call(&mut disp, &mut cpu, &mut bus, 0x000D);
     assert_eq!(disp.movie_states[&movie].audio_time, 0.0);
-    disp.mix_movie_music(&mut Vec::new(), 22050 + 2205);
+    disp.mix_movie_audio(&mut Vec::new(), 22050 + 2205);
     assert!((disp.movie_states[&movie].audio_time - 0.1).abs() < 1e-9);
     bus.write_long(TEST_SP, movie);
     call(&mut disp, &mut cpu, &mut bus, 0x000E);
     assert_eq!(disp.movie_states[&movie].current_time, 600);
-    assert_eq!(disp.movie_states[&movie].audio_time, 600.0);
+    assert_eq!(disp.movie_states[&movie].audio_time, 1.0);
     bus.write_long(TEST_SP, movie);
     call(&mut disp, &mut cpu, &mut bus, 0x000C);
     output.clear();
-    disp.mix_movie_music(&mut output, 2205);
+    disp.mix_movie_audio(&mut output, 2205);
     assert!(output.is_empty());
 }
 
@@ -21999,3 +21999,105 @@ fn movie_from_file_missing_lazy_payload_reports_error_without_empty_movie() {
 }
 #[path = "movie_timeline_tests.rs"]
 mod movie_timeline_tests;
+
+#[test]
+fn movie_pcm_controls_stereo_stop_mute_seek_reverse_loop_and_dispose() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let movie = 0x300100;
+    let (moov, data) = crate::systems::macintosh::movie_pcm::tests::fixture(
+        b"raw ",
+        1,
+        8,
+        &[32, 64, 160, 224],
+        &[2, 2],
+        None,
+    );
+    let mut state = super::MovieState::new(0, -1, 1, (0, 0, 0, 0), 4, 4);
+    state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(&moov, &data, 4);
+    assert_eq!(state.pcm.len(), 1);
+    disp.movie_states.insert(movie, state);
+    let call =
+        |disp: &mut TrapDispatcher, cpu: &mut MockCpu, bus: &mut MacMemoryBus, selector: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch_toolbox(true, 0x2AA, cpu, bus)
+                .unwrap()
+                .unwrap();
+        };
+    bus.write_long(TEST_SP, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x000B);
+    let mut output = Vec::new();
+    disp.mix_movie_audio(&mut output, 1);
+    assert_eq!(output, [32, 32]);
+    bus.write_word(TEST_SP, 0);
+    bus.write_long(TEST_SP + 2, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x002F);
+    output.clear();
+    disp.mix_movie_audio(&mut output, 1);
+    assert_eq!(output, [128, 128]);
+    bus.write_word(TEST_SP, 256);
+    bus.write_long(TEST_SP + 2, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x002F);
+    bus.write_long(TEST_SP, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x000E);
+    assert_eq!(disp.movie_states[&movie].audio_time, 1.0);
+    bus.write_long(TEST_SP, (-65536i32) as u32);
+    bus.write_long(TEST_SP + 4, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x002D);
+    output.clear();
+    disp.mix_movie_audio(&mut output, crate::sound::OUTPUT_RATE as usize);
+    assert_eq!(&output[..2], &[224, 224]);
+    assert_eq!(&output[output.len() - 2..], &[32, 32]);
+    assert!(disp.movie_states[&movie].audio_time.abs() < 1e-9);
+    bus.write_long(TEST_SP, 1);
+    bus.write_long(TEST_SP + 4, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x00B2);
+    bus.write_long(TEST_SP, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x000B);
+    output.clear();
+    disp.mix_movie_audio(&mut output, crate::sound::OUTPUT_RATE as usize + 1);
+    assert_eq!(&output[..2], &[32, 32]);
+    assert_eq!(&output[output.len() - 2..], &[32, 32]);
+    bus.write_long(TEST_SP, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x000C);
+    output.clear();
+    disp.mix_movie_audio(&mut output, 1);
+    assert!(output.is_empty());
+    bus.write_long(TEST_SP, movie);
+    call(&mut disp, &mut cpu, &mut bus, 0x0023);
+    assert!(!disp.movie_states.contains_key(&movie));
+}
+
+#[test]
+fn movie_pcm_mixing_is_independent_of_host_audio_chunk_sizes() {
+    let (mut disp, _, _) = setup();
+    let movie = 0x300100;
+    let (moov, data) = crate::systems::macintosh::movie_pcm::tests::fixture(
+        b"raw ",
+        2,
+        8,
+        &[32, 224, 64, 160, 96, 144, 128, 128],
+        &[2, 2],
+        None,
+    );
+    let mut state = super::MovieState::new(0, -1, 1, (0, 0, 0, 0), 4, 4);
+    state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(&moov, &data, 4);
+    state.rate = 32768;
+    disp.movie_states.insert(movie, state.clone());
+    let count = crate::sound::OUTPUT_RATE as usize * 2;
+    let mut whole = Vec::new();
+    disp.mix_movie_audio(&mut whole, count);
+    assert_eq!(&whole[..2], &[32, 224]);
+    assert_eq!(&whole[count..count + 2], &[96, 144]);
+    disp.movie_states.insert(movie, state);
+    let mut fragmented = Vec::new();
+    let mut remaining = count;
+    while remaining > 0 {
+        let chunk = remaining.min(137);
+        let mut output = Vec::new();
+        disp.mix_movie_audio(&mut output, chunk);
+        fragmented.extend(output);
+        remaining -= chunk;
+    }
+    assert_eq!(whole, fragmented);
+}
