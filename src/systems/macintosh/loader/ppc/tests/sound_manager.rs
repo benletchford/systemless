@@ -416,6 +416,39 @@ use crate::sound::PendingSoundCallback;
     }
 
     #[test]
+    fn fresh_ppc_process_mixes_pcm_at_full_gain_on_both_channels() {
+        let pef = synthetic_pef_with_import(b"GetDefaultOutputVolume");
+        let loaded = load_pef_application(&pef).unwrap();
+        loaded.sound.manager.play_file_buffer(
+            0x0500_1000,
+            vec![0x20, 0xe0],
+            crate::sound::OUTPUT_RATE << 16,
+            None,
+        );
+        assert_eq!(
+            loaded.sound.manager.mix_frame_stereo(2),
+            vec![0x20, 0x20, 0xe0, 0xe0]
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_reports_full_stereo_output_at_launch() {
+        let pef = synthetic_pef_with_import(b"GetDefaultOutputVolume");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let volume_out_ptr = PPC_HEAP_BASE;
+        loaded.memory.add_region(volume_out_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = volume_out_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        // Sound Manager packs right and left 8.8 gains into separate words.
+        assert_eq!(loaded.memory.read_u32_be(volume_out_ptr), Some(0x0100_0100));
+    }
+
+    #[test]
     fn hle_import_runner_handles_get_default_output_volume() {
         let pef = synthetic_pef_with_import(b"GetDefaultOutputVolume");
         let mut loaded = load_pef_application(&pef).unwrap();

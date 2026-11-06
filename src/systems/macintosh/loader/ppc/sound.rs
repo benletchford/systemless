@@ -203,7 +203,7 @@ pub struct PpcVblCallbackProbe {
 // --- Sound Constants ---
 
 pub const PPC_SOUND_MANAGER_VERSION: u32 = 0x0333_8000;
-pub const PPC_DEFAULT_OUTPUT_VOLUME: u32 = 0x0001_0000;
+pub const PPC_DEFAULT_OUTPUT_VOLUME: u32 = crate::sound::FULL_STEREO_VOLUME;
 pub const PPC_GUEST_SND_CHANNEL_SIZE: u32 = 1088;
 pub const PPC_SQUARE_WAVE_SYNTH_ID: i16 = 1;
 pub const PPC_WAVE_TABLE_SYNTH_ID: i16 = 3;
