@@ -576,6 +576,10 @@ pub enum PpcImportDispatcherTarget {
     GetVInfo,
     GetVRefNum,
     PBDTGetPath,
+    PBDTAddIconSync,
+    PBDTGetIconSync,
+    PBDTGetIconInfoSync,
+    PBDTAddAPPLSync,
     PBDTGetCommentSync,
     PBGetFCBInfo,
     FSpGetFInfo,
@@ -4344,6 +4348,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetVInfo") => PpcImportDispatcherTarget::GetVInfo,
         ("InterfaceLib", "GetVRefNum") => PpcImportDispatcherTarget::GetVRefNum,
         ("InterfaceLib", "PBDTGetPath") => PpcImportDispatcherTarget::PBDTGetPath,
+        ("InterfaceLib", "PBDTAddIconSync") => PpcImportDispatcherTarget::PBDTAddIconSync,
+        ("InterfaceLib", "PBDTGetIconSync") => PpcImportDispatcherTarget::PBDTGetIconSync,
+        ("InterfaceLib", "PBDTGetIconInfoSync") => PpcImportDispatcherTarget::PBDTGetIconInfoSync,
+        ("InterfaceLib", "PBDTAddAPPLSync") => PpcImportDispatcherTarget::PBDTAddAPPLSync,
         ("InterfaceLib", "PBDTGetAPPLSync" | "PBDTGetAPPL") => {
             PpcImportDispatcherTarget::PBDTGetAPPL
         }
