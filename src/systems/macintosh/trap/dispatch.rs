@@ -2422,6 +2422,8 @@ pub(crate) struct MovieState {
     /// Lazily-created QuickTime Animation (`rle `) decoder, retained across
     /// frames for the same reason.
     pub rle_decoder: Option<super::qtrle::QtRleDecoder>,
+    /// Apple Graphics block and dictionary state, retained across samples.
+    pub smc_decoder: Option<super::smc::SmcDecoder>,
     /// Index of the sample most recently decoded and blitted, to avoid
     /// redundant re-decodes while the timeline sits on one frame.
     pub rendered_sample: Option<usize>,
@@ -2457,6 +2459,7 @@ impl MovieState {
             data_fork: Vec::new(),
             decoder: None,
             rle_decoder: None,
+            smc_decoder: None,
             rendered_sample: None,
             last_service_tick: None,
         }
