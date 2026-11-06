@@ -374,7 +374,8 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         outline::{DrawSettings, HintingInstance, Target},
         FontRef, MetadataProvider,
     };
-    let size = size.clamp(1, 96);
+    // txSize 0 selects the default size, 12 (IM:I I-153).
+    let size = if size == 0 { 12 } else { size }.clamp(1, 96);
     let mut cache = UNICODE_GLYPHS.lock().ok()?;
     if let Some(glyph) = cache.get(&(font_id, size, ch)) {
         return Some(*glyph);

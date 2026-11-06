@@ -142,6 +142,13 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
     let face = get_font_face_or_default(font_id, size);
     let glyphs = face.glyphs;
     let data = face.data;
+    // Guest bytes $11 and $12 are the System font's Command and check mark
+    // slots (IM:I I-358), drawn by MDEFs such as PageMaker's via DrawChar.
+    let ch = match ch {
+        '\u{11}' => '\u{2318}',
+        '\u{12}' => '\u{2713}',
+        ch => ch,
+    };
 
     // ASCII range: glyphs start at ' ' (32).
     if (' '..='~').contains(&ch) {
@@ -414,6 +421,21 @@ mod tests {
                     .iter()
                     .any(|pixel| *pixel != 0),
                 "{name} symbol should contain visible pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn guest_symbol_bytes_use_the_system_font_symbol_glyphs() {
+        // Guest DrawChar/DrawText bytes $11 and $12 are the Command and
+        // check mark slots of the System font (IM:I I-358).
+        // A port's txSize of 0 means the default size, 12 (IM:I I-153).
+        for (byte, symbol) in [('\u{11}', '\u{2318}'), ('\u{12}', '\u{2713}')] {
+            let (glyph, _) = get_glyph(0, 0, byte).expect("guest symbol byte glyph");
+            let (expected, _) = get_glyph(0, 12, symbol).unwrap();
+            assert_eq!(
+                (glyph.width, glyph.height, glyph.advance),
+                (expected.width, expected.height, expected.advance)
             );
         }
     }
