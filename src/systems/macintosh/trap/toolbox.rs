@@ -15233,6 +15233,8 @@ impl super::TrapDispatcher {
                             duration,
                             time_scale,
                         );
+                        (movie_state.preferred_rate, movie_state.volume) =
+                            crate::systems::macintosh::movie_pcm::playback_defaults(&movie_data);
                         movie_state.music =
                             super::movie_media::parse_music_track(&movie_data, &data_fork);
                         movie_state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(
@@ -15335,6 +15337,8 @@ impl super::TrapDispatcher {
                                 let mut state =
                                     MovieState::new(refnum, -1, flags, rect, duration, scale);
                                 state.media = super::movie_media::parse_video_track(atom);
+                                (state.preferred_rate, state.volume) =
+                                    crate::systems::macintosh::movie_pcm::playback_defaults(atom);
                                 state.music = super::movie_media::parse_music_track(atom, &data);
                                 state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(
                                     atom, &data, scale.max(1) as u32,

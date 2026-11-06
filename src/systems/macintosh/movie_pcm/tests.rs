@@ -59,7 +59,20 @@ pub(crate) fn fixture(
     let mdia = [
         atom(b"mdhd", &mdhd),
         atom(b"hdlr", &hdlr),
-        atom(b"minf", &atom(b"stbl", &stbl)),
+        atom(
+            b"minf",
+            &[
+                atom(
+                    b"dinf",
+                    &atom(
+                        b"dref",
+                        &[words(&[0, 1]), atom(b"alis", &words(&[1]))].concat(),
+                    ),
+                ),
+                atom(b"stbl", &stbl),
+            ]
+            .concat(),
+        ),
     ]
     .concat();
     let mut tkhd = vec![0; 84];
@@ -235,4 +248,41 @@ fn pcm_external_movie_matches_independent_unsigned_pcm_when_configured() {
         .collect::<Vec<_>>();
     assert_eq!(actual.len(), expected.len());
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn pcm_movie_initial_settings_preserve_rate_and_deliberate_mute() {
+    for (version, offset) in [(0, 20), (1, 32)] {
+        for volume in [0i16, -1, 128, 255] {
+            let mut mvhd = vec![0; offset + 6];
+            mvhd[0] = version;
+            mvhd[offset..offset + 4].copy_from_slice(&32768i32.to_be_bytes());
+            mvhd[offset + 4..offset + 6].copy_from_slice(&volume.to_be_bytes());
+            let moov = atom(b"moov", &atom(b"mvhd", &mvhd));
+            assert_eq!(playback_defaults(&moov), (32768, volume));
+        }
+    }
+    assert_eq!(playback_defaults(&[]), (65536, 256));
+}
+
+#[test]
+fn pcm_external_data_references_are_not_read_from_the_local_fork() {
+    let (moov, data) = fixture(b"raw ", 1, 8, &[129, 130], &[2], None);
+    assert_eq!(parse_tracks(&moov, &data, 4).len(), 1);
+    let mut external = moov.clone();
+    let flags = external
+        .windows(4)
+        .position(|kind| kind == b"alis")
+        .unwrap()
+        + 4;
+    external[flags..flags + 4].copy_from_slice(&0u32.to_be_bytes());
+    assert!(parse_tracks(&external, &data, 4).is_empty());
+    let mut truncated = moov;
+    let count = truncated
+        .windows(4)
+        .position(|kind| kind == b"dref")
+        .unwrap()
+        + 8;
+    truncated[count..count + 4].copy_from_slice(&2u32.to_be_bytes());
+    assert!(parse_tracks(&truncated, &data, 4).is_empty());
 }

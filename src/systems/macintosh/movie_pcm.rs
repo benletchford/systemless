@@ -200,7 +200,19 @@ fn parse_track(trak: &[u8], data: &[u8], movie_scale: u32) -> Option<PcmTrack> {
     } else {
         None
     };
-    let stbl = child(child(mdia, b"minf")?, b"stbl")?;
+    let minf = child(mdia, b"minf")?;
+    if let Some(dinf) = child(minf, b"dinf") {
+        let dref = child(dinf, b"dref")?;
+        let references = atoms(dref.get(8..)?)?;
+        if references.len() != u32_at(dref, 4)? as usize {
+            return None;
+        }
+        let (kind, reference) = references.first()?;
+        if ![*b"alis", *b"url "].contains(kind) || u32_at(reference, 0)? & 1 == 0 {
+            return None;
+        }
+    }
+    let stbl = child(minf, b"stbl")?;
     let stsd = child(stbl, b"stsd")?;
     let mut description_bytes = stsd.get(8..)?;
     let mut descriptions = Vec::new();
@@ -330,6 +342,25 @@ pub(crate) fn parse_tracks(moov: &[u8], data: &[u8], movie_scale: u32) -> Vec<Pc
                 .flatten()
         })
         .collect()
+}
+
+/// Initial playback settings from mvhd. A deliberate zero/negative volume
+/// remains a guest-visible setting, and must not be replaced by full gain.
+pub(crate) fn playback_defaults(moov: &[u8]) -> (i32, i16) {
+    let parsed = || {
+        let inner = child(moov, b"moov").unwrap_or(moov);
+        let mvhd = child(inner, b"mvhd")?;
+        let offset = match mvhd.first()? {
+            0 => 20,
+            1 => 32,
+            _ => return None,
+        };
+        Some((
+            u32_at(mvhd, offset)? as i32,
+            u16_at(mvhd, offset + 4)? as i16,
+        ))
+    };
+    parsed().unwrap_or((65536, 256))
 }
 
 #[cfg(test)]
