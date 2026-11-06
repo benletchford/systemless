@@ -2413,6 +2413,7 @@ pub(crate) struct MovieState {
     pub media: Option<super::movie_media::VideoTrack>,
     pub music: Option<Vec<super::movie_media::MusicNote>>,
     pub audio_time: f64,
+    pub pcm: Vec<crate::systems::macintosh::movie_pcm::PcmTrack>,
     pub time_base_flags: u32,
     /// The movie's data-fork bytes; `media` sample offsets index into this.
     pub data_fork: Vec<u8>,
@@ -2455,6 +2456,7 @@ impl MovieState {
             media: None,
             music: None,
             audio_time: 0.0,
+            pcm: Vec::new(),
             time_base_flags: 0,
             data_fork: Vec::new(),
             decoder: None,
