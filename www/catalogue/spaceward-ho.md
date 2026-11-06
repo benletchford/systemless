@@ -12,7 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
-launch_enabled: true
+launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -36,6 +36,41 @@ compatibility:
       System 8.1.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2470
+  - date: "2026-11-06"
+    tester: Catalogue maintainer
+    systemless_version: 73f1967d native ci-test
+    architecture: 68k
+    environment: >-
+      The exact original demo displays its free-distribution notice and reaches
+      the default galaxy through New Game, save-name acceptance and novice Join.
+      Command-T advances to Year 2010; reserve metal changes from 20000 to 21065,
+      ship savings from 0 to 33150 and total money from 51000 to 53612. A fresh
+      repeat passes eight measured economy pixels; a matched no-input control
+      passes four unchanged-economy pixels. Both end at 1059 frontend / 1658 guest
+      ticks with zero exhausted frames. Independent extraction matches both files,
+      all four forks and recovered application Finder metadata against production
+      packing. The application has 25 CODE resources, no cfrg and no data fork.
+      Full matches, colonisation, combat, saves, audio fidelity and independent
+      hardware parity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5636
+  - date: "2026-11-06"
+    tester: Catalogue maintainer
+    systemless_version: 0.110.1 public production
+    architecture: 68k
+    environment: >-
+      Direct public Chrome 156 worker/WebGL input creates the default galaxy,
+      joins as a novice and uses Command-T to reach the inspected Year 2010 report
+      and changed economy. No frontend or archive substitution is used; the actual
+      browser archive response matches its pinned hash and 401674-byte size.
+      However the unchanged 20-second post-turn pacing check fails at a final
+      steady snapshot of 24.612 guest ticks/s, below the 50 minimum, despite
+      60.505 host FPS, maximum sampled worker frame 31.7 ms, minimum audio queue
+      125.6 ms and no captured console errors. Launch is held pending repair and
+      successful public requalification. This run does not establish qualified-live
+      status, a complete game, save support or audio fidelity.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5637
 artifacts:
 - id: archive
   role: archive
