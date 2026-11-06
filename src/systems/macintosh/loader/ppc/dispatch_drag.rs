@@ -11,6 +11,7 @@ pub enum PpcDragOperation {
     ShowHilite,
     HideHilite,
     WaitMouseMoved,
+    ZoomRects,
     New,
     Dispose,
     AddFlavor,
@@ -45,6 +46,7 @@ pub(super) fn dispatch_drag_import(
             PpcDragOperation::Track
             | PpcDragOperation::SetImage
             | PpcDragOperation::WaitMouseMoved
+            | PpcDragOperation::ZoomRects
             | PpcDragOperation::ShowHilite
             | PpcDragOperation::HideHilite => {
                 unreachable!("TrackDrag uses the retained controller")
@@ -257,6 +259,223 @@ pub(super) fn dispatch_drag_import(
     Some(PpcImportAction::Return(ppc_i16_result(
         result.err().unwrap_or(0),
     )))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PpcZoomRectState {
+    import_pc: u32,
+    entry_sp: u32,
+    path: crate::drag_manager::ZoomRectPath,
+    surface: PpcPixMapBits,
+    saved: Vec<(i32, i32, u32)>,
+    step: u16,
+    tick: u32,
+    started_tick: u32,
+}
+
+fn zoom_rect_mask(depth: u32) -> Option<u32> {
+    match depth {
+        32 => Some(0x00ff_ffff),
+        16 => Some(0x7fff),
+        1 | 2 | 4 | 8 => Some((1 << depth) - 1),
+        _ => None,
+    }
+}
+
+fn zoom_rect_erase(memory: &mut PpcSectionMem, state: &mut PpcZoomRectState) {
+    let Some(mask) = zoom_rect_mask(state.surface.depth) else {
+        return;
+    };
+    for (x, y, pixel) in state.saved.drain(..) {
+        if ppc_read_pixmap_raw_pixel(memory, state.surface, x, y) == Some(pixel ^ mask) {
+            let _ = ppc_write_pixmap_raw_pixel(memory, state.surface, x, y, pixel);
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ZOOM_RESERVATION_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_zoom_reservation_for_test(stage: u8) {
+    TEST_ZOOM_RESERVATION_FAILURE.with(|failure| failure.set(stage));
+}
+
+fn zoom_reservation_fails(stage: u8) -> bool {
+    #[cfg(test)]
+    {
+        return TEST_ZOOM_RESERVATION_FAILURE.with(|failure| {
+            if failure.get() == stage {
+                failure.set(0);
+                true
+            } else {
+                false
+            }
+        });
+    }
+    #[cfg(not(test))]
+    {
+        let _ = stage;
+        false
+    }
+}
+
+fn zoom_rect_draw(memory: &mut PpcSectionMem, state: &mut PpcZoomRectState) -> Result<(), i16> {
+    let [top, left, bottom, right] = state.path.frame(state.step).map(i32::from);
+    if top >= bottom || left >= right {
+        return Ok(());
+    }
+    let bits = state.surface;
+    let Some(mask) = zoom_rect_mask(bits.depth) else {
+        return Ok(());
+    };
+    let left_clip = left.max(i32::from(bits.left));
+    let right_clip = right.min(i32::from(bits.right));
+    let top_clip = top.max(i32::from(bits.top));
+    let bottom_clip = bottom.min(i32::from(bits.bottom));
+    if left_clip >= right_clip || top_clip >= bottom_clip {
+        return Ok(());
+    }
+    let max_pixels = 2 * ((right_clip - left_clip) as usize + (bottom_clip - top_clip) as usize);
+    if zoom_reservation_fails(2) || state.saved.try_reserve(max_pixels).is_err() {
+        return Err(PPC_MEM_FULL_ERR);
+    }
+    let mut draw = |x, y| {
+        if let Some(pixel) = ppc_read_pixmap_raw_pixel(memory, bits, x, y) {
+            if ppc_write_pixmap_raw_pixel(memory, bits, x, y, pixel ^ mask).is_some() {
+                state.saved.push((x, y, pixel));
+            }
+        }
+    };
+    for x in left_clip..right_clip {
+        if top >= top_clip && top < bottom_clip {
+            draw(x, top);
+        }
+        if bottom - 1 != top && bottom - 1 >= top_clip && bottom - 1 < bottom_clip {
+            draw(x, bottom - 1);
+        }
+    }
+    for y in (top + 1).max(top_clip)..(bottom - 1).min(bottom_clip) {
+        if left >= left_clip && left < right_clip {
+            draw(left, y);
+        }
+        if right - 1 != left && right - 1 >= left_clip && right - 1 < right_clip {
+            draw(right - 1, y);
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn zoom_rects(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    startup: &mut PpcToolboxStartupState,
+    tick: u32,
+    cycles_per_tick: u32,
+) -> PpcImportAction {
+    if startup
+        .zoom_rect
+        .last()
+        .is_none_or(|state| state.import_pc != cpu.pc || state.entry_sp != cpu.gpr[1])
+    {
+        if cpu.gpr[3] == 0 || cpu.gpr[4] == 0 {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        }
+        let Some(from) = ppc_read_rect(memory, cpu.gpr[3]) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        let Some(to) = ppc_read_rect(memory, cpu.gpr[4]) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        let Some(path) = crate::drag_manager::ZoomRectPath::new(
+            [from.0, from.1, from.2, from.3],
+            [to.0, to.1, to.2, to.3],
+            cpu.gpr[5] as i16,
+            cpu.gpr[6] as i16,
+        ) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        };
+        let surface = PpcPixMapBits {
+            base_addr: front.base_addr,
+            row_bytes: front.row_bytes,
+            top: 0,
+            left: 0,
+            bottom: front.height.min(i16::MAX as u32) as i16,
+            right: front.width.min(i16::MAX as u32) as i16,
+            width: front.width,
+            height: front.height,
+            depth: front.depth,
+        };
+        if zoom_reservation_fails(1) || startup.zoom_rect.try_reserve(1).is_err() {
+            return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
+        }
+        let mut state = PpcZoomRectState {
+            import_pc: cpu.pc,
+            entry_sp: cpu.gpr[1],
+            path,
+            surface,
+            saved: Vec::new(),
+            step: 0,
+            tick,
+            started_tick: tick,
+        };
+        if let Err(error) = zoom_rect_draw(memory, &mut state) {
+            return PpcImportAction::Return(ppc_i16_result(error));
+        }
+        startup.zoom_rect.push(state);
+        return PpcImportAction::Yield(u64::from(cycles_per_tick.max(1)));
+    }
+    let state = startup.zoom_rect.last_mut().unwrap();
+    let elapsed = tick.wrapping_sub(state.tick);
+    if elapsed == 0 || elapsed > i32::MAX as u32 {
+        return PpcImportAction::Yield(u64::from(cycles_per_tick.max(1)));
+    }
+    zoom_rect_erase(memory, state);
+    let next = u32::from(state.step) + elapsed.min(u32::from(state.path.steps()) + 1);
+    if next > u32::from(state.path.steps()) {
+        let duration = tick.wrapping_sub(state.started_tick);
+        startup.zoom_rect.pop();
+        if let Some(parent) = startup.zoom_rect.last_mut() {
+            parent.tick = parent.tick.wrapping_add(duration);
+        }
+        return PpcImportAction::Return(ppc_i16_result(0));
+    }
+    state.step = next as u16;
+    state.tick = tick;
+    let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
+        let duration = tick.wrapping_sub(state.started_tick);
+        startup.zoom_rect.pop();
+        if let Some(parent) = startup.zoom_rect.last_mut() {
+            parent.tick = parent.tick.wrapping_add(duration);
+        }
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    state.surface = PpcPixMapBits {
+        base_addr: front.base_addr,
+        row_bytes: front.row_bytes,
+        top: 0,
+        left: 0,
+        bottom: front.height.min(i16::MAX as u32) as i16,
+        right: front.width.min(i16::MAX as u32) as i16,
+        width: front.width,
+        height: front.height,
+        depth: front.depth,
+    };
+    if let Err(error) = zoom_rect_draw(memory, state) {
+        let duration = tick.wrapping_sub(state.started_tick);
+        startup.zoom_rect.pop();
+        if let Some(parent) = startup.zoom_rect.last_mut() {
+            parent.tick = parent.tick.wrapping_add(duration);
+        }
+        return PpcImportAction::Return(ppc_i16_result(error));
+    }
+    PpcImportAction::Yield(u64::from(cycles_per_tick.max(1)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
