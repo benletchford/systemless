@@ -1089,10 +1089,17 @@ pub(super) fn dispatch_quicktime_compatibility(
             let Some(rect) = ppc_read_rect(memory, cpu.gpr[4]) else {
                 return PpcImportAction::Return(0);
             };
+            let Some(rect) = toolbox::controller_movie_rect(quicktime.movie_box, rect, cpu.gpr[5]) else {
+                return PpcImportAction::Return(0);
+            };
             let handle = quicktime.next_movie_controller_handle;
             let Some(next) = handle.checked_add(0x10) else {
                 return PpcImportAction::Return(0);
             };
+            if !toolbox::ppc_qt_resize_movie_matrix(quicktime, rect) {
+                return PpcImportAction::Return(0);
+            }
+            quicktime.movie_box = rect;
             quicktime.next_movie_controller_handle = next;
             quicktime
                 .movie_controllers

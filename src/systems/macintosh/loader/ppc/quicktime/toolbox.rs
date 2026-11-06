@@ -513,6 +513,31 @@ pub(super) fn movie_sample_point(inverse: &[f64; 9], x: f64, y: f64) -> Option<(
     (point.0.is_finite() && point.1.is_finite()).then_some(point)
 }
 
+/// Fit the movie into a controller's display rectangle. The hidden-controller
+/// case has no control strip to reserve. This does not draw controller chrome.
+/// IM: QuickTime Components (1993), pp. 2-29–2-30.
+pub(super) fn controller_movie_rect(movie: Rect, bounds: Rect, flags: u32) -> Option<Rect> {
+    let width = i64::from(movie.3) - i64::from(movie.1);
+    let height = i64::from(movie.2) - i64::from(movie.0);
+    let available_width = i64::from(bounds.3) - i64::from(bounds.1);
+    let available_height = i64::from(bounds.2) - i64::from(bounds.0);
+    if width <= 0 || height <= 0 || available_width <= 0 || available_height <= 0 {
+        return None;
+    }
+    let (width, height) = if available_width * height <= available_height * width {
+        (available_width, (height * available_width / width).max(1))
+    } else {
+        ((width * available_height / height).max(1), available_height)
+    };
+    let (top, left) = if flags & 1 != 0 {
+        (i64::from(bounds.0), i64::from(bounds.1))
+    } else {
+        (i64::from(bounds.0) + (available_height - height) / 2,
+         i64::from(bounds.1) + (available_width - width) / 2)
+    };
+    Some((top as i16, left as i16, (top + height) as i16, (left + width) as i16))
+}
+
 /// SetMovieBox composes a display-space resize with the current matrix,
 /// preserving any existing track rotation or shear.
 pub(crate) fn ppc_qt_resize_movie_matrix(quicktime: &mut PpcQuickTimeState, rect: Rect) -> bool {
