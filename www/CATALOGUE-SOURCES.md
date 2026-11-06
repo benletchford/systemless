@@ -3027,3 +3027,32 @@ zero exhausted frames; the outcome captures differ by 3,371 pixels. This is
 bounded native weapon input, not a confirmed hit, completed game or browser
 performance result. The original licence restriction remains; no hosting or
 live qualification is claimed. [Replay details](https://github.com/benletchford/systemless/issues/5535).
+
+## Alan's Solitaire 1.0.3 — early redistribution hold
+
+Primary 596's [original Info-Mac archive](https://mirrors.nic.funet.fi/pub/mac/info-mac/game/alans-solitaire-103.hqx)
+is 210,584 bytes, SHA-256 `4b170e7ad7799ce668b2758ac2a4c8ef4a8247923651a07207e8e4cd8ac59833`.
+Independent unar extraction retains the game and Read Me. The original November 29,
+1997 Read Me explicitly requires written permission from the author for
+redistribution. No such permission is established; shareware status is not treated
+as a hosting grant. It identifies this version as PowerPC-only. Executable-slice
+inspection, popularity and gameplay remain unverified. The archive stays outside
+tracked source and unhosted. [Intake #5633](https://github.com/benletchford/systemless/issues/5633).
+
+## Hexen original Macintosh demo — original intake and rights hold
+
+Primary 255's [demo discovery page](https://classicmacdemos.com/hexen-beyond-heretic)
+records circulation on 17 period cover discs. Its [unchanged original download](https://classicmacdemos.com/download/hexen-beyond-heretic/)
+is 7,230,478 bytes, SHA-256 `22039d68c475148b5a658e2e91b4cc47eb21b92f89fa2755a6e50408e2639679`.
+Independent unar extraction retains the May 10, 1996 Readme, application, demo WAD
+and both music variants. The application has classic CODE and cfrg resources;
+the PPC application fragment parses in current master's static audit, whose sole
+unsupported import is InterfaceLib PGetAppleTalkInfo. This is not a reproduced
+runtime failure, actual 68K/PPC gameplay or independent production-fork parity.
+
+No applicable full-package redistribution grant was found in the inspected Readme
+or TEXT/STR resources. Embedded SoundMusicSys terms grant rights to Presage as
+licensee; they do not establish an arbitrary redistributor's permission. Modern
+engine source licensing is not applied to this original demo data. The original
+archive remains unhosted while rights are unresolved, and no catalogue entry,
+launch approval or qualified-live count is claimed. [Intake and audit #5634](https://github.com/benletchford/systemless/issues/5634).
