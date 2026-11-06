@@ -6768,3 +6768,141 @@ fn quicktime_movie_audio_start_applies_preconfigured_volume_without_altering_sam
         assert_eq!(sound.decoded_file_playbacks[0].samples[0], 0xc0);
     }
 }
+
+fn movie_controller_draw_fixture() -> (PpcLoadedApp, u32, u32, u32, u32) {
+    let (mut loaded, window, base) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = window;
+    let rect = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 4, 4).unwrap();
+    let controller =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 8]);
+    assert_ne!(controller, 0);
+    (loaded, window, base, controller, rect)
+}
+
+#[test]
+fn quicktime_controller_draw_renders_decoded_pixels_without_playback_or_audio() {
+    let (mut loaded, window, base, controller, _) = movie_controller_draw_fixture();
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCGetControllerPort", &[controller]),
+        window
+    );
+    let before_time = loaded.quicktime.movie_task_count;
+    let before_rate = loaded.quicktime.movie_playback_rate;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, window]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0));
+    assert_eq!(
+        loaded.memory.read_u16_be(base + 4),
+        Some(ppc_qt_rgb555_from_u8(85, 85, 85))
+    );
+    assert_eq!(
+        loaded.memory.read_u16_be(base + 16),
+        Some(ppc_qt_rgb555_from_u8(170, 170, 170))
+    );
+    assert_eq!(loaded.memory.read_u16_be(base + 30), Some(0x7fff));
+    assert_eq!(loaded.quicktime.movie_task_count, before_time);
+    assert_eq!(loaded.quicktime.movie_playback_rate, before_rate);
+    assert!(!loaded.quicktime.movie_started);
+    assert!(loaded.sound.file_playbacks.is_empty());
+    loaded.quicktime.movie_active = false;
+    loaded.memory.write_bytes(base, &[0xee; 32]).unwrap();
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, window]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+}
+
+#[test]
+fn quicktime_controller_draw_uses_update_window_and_controller_bounds() {
+    let (mut loaded, window, base, controller, rect) = movie_controller_draw_fixture();
+    let other_window = window + 0x100;
+    let other_base = base + 0x100;
+    loaded.memory.add_region(other_base, vec![0xcc; 32]);
+    loaded.gworlds.push(PpcGWorldRecord {
+        port: other_window,
+        base_addr: other_base,
+        ..loaded.gworlds[0].clone()
+    });
+    // Update events for unrelated windows leave both surfaces unchanged.
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, other_window]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+    assert_eq!(loaded.memory.read_u16_be(other_base + 10), Some(0xcccc));
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetMovie",
+            &[controller, PPC_QT_MOVIE, other_window, 0]
+        ),
+        0
+    );
+    ppc_write_rect(&mut loaded.memory, rect, 1, 1, 3, 3).unwrap();
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "MCSetControllerBoundsRect",
+            &[controller, rect]
+        ),
+        0
+    );
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, other_window]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+    assert_eq!(loaded.memory.read_u16_be(other_base), Some(0xcccc));
+    assert_eq!(loaded.memory.read_u16_be(other_base + 10), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(other_base + 20), Some(0x7fff));
+    assert_eq!(loaded.memory.read_u16_be(other_base + 30), Some(0xcccc));
+    assert_eq!(loaded.quicktime.movie_gworld, other_window);
+    assert_eq!(loaded.quicktime.movie_controllers[0].window, other_window);
+    // A valid update entirely outside the port has no pixels to paint.
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 14, 14).unwrap();
+    call_movie_toolbox(
+        &mut loaded,
+        "MCSetControllerBoundsRect",
+        &[controller, rect],
+    );
+    let before = loaded.memory.read_u32_be(other_base + 10);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, other_window]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(other_base + 10), before);
+}
+
+#[test]
+fn quicktime_controller_draw_rejects_invalid_targets_and_unsupported_media() {
+    let (mut loaded, window, base, controller, _) = movie_controller_draw_fixture();
+    for (handle, target, error) in [
+        (0, window, PPC_INVALID_COMPONENT_ID),
+        (controller + 1, window, PPC_INVALID_COMPONENT_ID),
+        (controller, 0, PPC_PARAM_ERR),
+        (controller, 0xdead_beef, PPC_PARAM_ERR),
+    ] {
+        assert_eq!(
+            call_movie_toolbox(&mut loaded, "MCDoAction", &[handle, 2, target]),
+            ppc_i16_result(error)
+        );
+        assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+    }
+    loaded.quicktime.movie_video_samples.as_mut().unwrap().codec = u32::from_be_bytes(*b"xxxx");
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, window]),
+        ppc_i16_result(-8961)
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+    loaded.quicktime.movie_disposed = true;
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 2, window]),
+        ppc_i16_result(-2010)
+    );
+    assert_eq!(loaded.memory.read_u16_be(base), Some(0xeeee));
+}
