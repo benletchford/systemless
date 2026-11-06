@@ -270,3 +270,100 @@ fn native_trap_apis_share_permanent_come_from_topology() {
     loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], original);
 }
+
+#[test]
+fn stdclib_trap_available_observes_live_os_and_toolbox_handlers() {
+    let target = dispatcher_target_for_import("StdCLib", "TrapAvailable");
+    assert_ne!(target, PpcImportDispatcherTarget::Unsupported);
+    assert_eq!(
+        dispatcher_target_for_import("UnrelatedLibrary", "TrapAvailable"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+    let pef = synthetic_pef_with_import(b"TrapAvailable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    let mut dispatcher = TrapDispatcher::new();
+    dispatcher
+        .materialize_trap_tables(
+            &mut bus,
+            crate::trap::dispatch::TrapTableProfile::PowerPc604,
+        )
+        .unwrap();
+    for (base, slots) in [
+        (
+            crate::trap::dispatch::OS_TRAP_TABLE_BASE,
+            crate::trap::dispatch::OS_TRAP_TABLE_SLOTS,
+        ),
+        (
+            crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
+            crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS,
+        ),
+    ] {
+        let region = bus.shared_ram_region(base, u32::from(slots) * 4).unwrap();
+        // SAFETY: the fixture serializes both adapters' access to the bus.
+        unsafe { loaded.memory.add_shared_region(base, region) };
+    }
+    let (base, synthetic) = bus.shared_synthetic_reservation().unwrap();
+    // SAFETY: the fixture serializes both adapters' access to the bus.
+    unsafe {
+        loaded
+            .memory
+            .add_shared_readonly_region(Some(GuestIsa::M68k), base, synthetic)
+    };
+
+    // Absence is a live table value, not a static list of implemented trap
+    // words. This profile gives default slots distinct callable gateways;
+    // explicitly install the logical Unimplemented handler in both tables.
+    let unimplemented = dispatcher.trap_table_address(&bus, 0xA89F).unwrap();
+    for word in [0xAA6E, 0xA0FE] {
+        dispatcher
+            .install_trap_address(&mut bus, word, unimplemented)
+            .unwrap();
+    }
+
+    // r4 is deliberately the opposite table selector: this is the MPW
+    // one-argument API, not the two-argument sample-code helper.
+    for (word, expected) in [
+        (0xFFFF_A860, 1),
+        (0xFFFF_A1AD, 1),
+        (0xA89F, 0),
+        (0xAA6E, 0),
+        (0xA0FE, 0),
+    ] {
+        loaded.cpu.gpr[3] = word;
+        loaded.cpu.gpr[4] = u32::from(word & 0x0800 == 0);
+        let saved_r4 = loaded.cpu.gpr[4];
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], expected, "trap {word:08X}");
+        assert_eq!(loaded.cpu.gpr[4], saved_r4);
+    }
+
+    // Installing a handler for a previously absent trap changes availability;
+    // restoring the logical Unimplemented handler makes it absent again.
+    let missing = 0xAA6E;
+    let replacement = 0x0022_0000;
+    dispatcher
+        .install_trap_address(&mut bus, missing, replacement)
+        .unwrap();
+    loaded.cpu.gpr[3] = u32::from(missing);
+    run_test_import(&mut loaded, target.clone());
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    dispatcher
+        .install_trap_address(&mut bus, missing, unimplemented)
+        .unwrap();
+    loaded.cpu.gpr[3] = u32::from(missing);
+    run_test_import(&mut loaded, target);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn stdclib_trap_available_does_not_claim_availability_without_materialized_tables() {
+    let pef = synthetic_pef_with_import(b"TrapAvailable");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.cpu.gpr[3] = 0xA860;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("StdCLib", "TrapAvailable"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
