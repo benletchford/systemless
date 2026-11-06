@@ -45,6 +45,24 @@ compatibility:
       remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5436
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.110.1 public deployment (31cb5665fabc)
+    architecture: ppc
+    environment: >-
+      Two unmodified public-origin Chrome 156 headless worker/WebGL runs loaded
+      the managed original archive. Independent archive and screenshot downloads
+      match their pinned hashes and sizes. Space advanced the initial blank story
+      window, LOOK repeated the lobby description, INVENTORY reported nothing
+      carried, and NORTH produced the story-specific downstairs-pager refusal.
+      Both standard 20-second pacing checks passed unchanged thresholds, with
+      final steady snapshots of 60.056 / 59.984 guest ticks per second and
+      61.092 / 61.018 host frames per second. No console errors were captured.
+      Headless WebGL used software GPU rendering on this Mac. The black status
+      bar persists; room movement, longer play, saves and audio fidelity remain
+      unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5436#issuecomment-6686455081
 runtime:
   executable_path: Theatre
   show_menu_bar: true
