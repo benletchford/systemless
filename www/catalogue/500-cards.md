@@ -15,6 +15,25 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-06"
+    tester: Catalogue maintainer
+    systemless_version: "0.110.1 (published release, 31cb5665fabc)"
+    architecture: 68k
+    environment: >-
+      The original Info-Mac archive and its three files/six forks were rechecked
+      against independent extraction. Native input selected and submitted 7 Spades,
+      finished the kitty phase, and played King of Spades. Three computer replies
+      completed a trick and the hand fell from ten cards to nine; the matched
+      no-card-click control retained all ten. Exact native reference captures and
+      eight measured gameplay pixels passed with zero exhausted frames. Direct
+      systemless.org trusted mouse input reproduced the trick, while its control
+      stayed ready to play. Quiet 20-second post-trick/control board samples passed
+      unchanged pacing gates at 59.320/60.522 guest ticks per second, with maximum
+      frames of 26.1/23.5 ms and no captured console errors. Both actual browser
+      archive responses matched the original pin. Full hands, scoring, network
+      play, persistence and audio fidelity remain unverified; heart pips remain green.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5649
   - date: "2026-10-31"
     tester: Catalogue maintainer
     systemless_version: b6047d79 deterministic play runner
@@ -64,9 +83,17 @@ artifacts:
     permission: >-
       The bundled Read Me says 500 Cards is shareware that may be freely distributed,
       provided it is not modified and its shareware status is made clear. Inclusion in
-      a commercial package requires informing the author and obtaining consent.
+      a commercial package requires informing the author and either obtaining consent
+      or providing a free copy of the full package.
       Preserve the complete unchanged archive.
-    notes: The archive contains the 68K application, rules and Read Me.
+    notes: >-
+      The archive contains the 68K application, rules and Read Me. Fresh independent
+      extraction on 2026-11-06 matched all three paths, six forks and each file's
+      Finder metadata against the production packer, including strict end of pack.
+      The application has an empty data fork and a 132,691-byte resource fork
+      (SHA-256 dd8a5411e8cb41d5b16611aeee6eda065732fc938ca2228adf366bb54280ee34),
+      with two CODE resources and no cfrg. Read Me! is 10,980 bytes, SHA-256
+      227a69914d2044ee6bedafa61cd15e991bd2175818182b92d564af484cecc5e9.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -98,3 +125,10 @@ also play over a network with other players.
 
 Choose a suit or **No Trumps** to bid, then click **Bid**. Click a card in your hand
 to play it.
+
+A released-site check submitted a **7 Spades** bid, finished the kitty phase,
+and played **King of Spades**. The computer players completed the trick and the
+player's hand dropped from ten cards to nine. A matched control without the
+card click stayed ready to play. This verifies a bounded trick; full hands,
+scoring, network play, save persistence and audio fidelity remain unverified.
+Heart pips currently appear green.

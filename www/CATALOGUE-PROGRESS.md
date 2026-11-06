@@ -8,6 +8,24 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 ## Active intake
 
+- **6 November 2026 — 500 Cards released-site trick:** fresh original and hosted
+  downloads match the 95,455-byte Info-Mac archive and its affirmative unchanged
+  shareware distribution notice. Independent extraction matches three paths, six
+  forks and all file Finder metadata; the resource-only application has two 68K
+  CODE resources and no cfrg. Native input wins a 7 Spades bid, finishes the kitty
+  phase and plays King of Spades; three computer replies complete the trick and
+  reduce the hand to nine cards, while the no-card-click control retains ten.
+  Exact captures and measured pixels pass with zero exhausted frames. Direct
+  public v0.110.1 trusted input reproduces the trick and unchanged control, and
+  both actual archive responses match the pin. Quiet 20-second post-trick/control
+  board samples pass at **59.320/60.522 guest ticks/s**, maximum frames
+  26.1/23.5 ms, without captured console errors. The published content-only
+  screenshot also matches its receipt. [Evidence and limits](https://github.com/benletchford/systemless/issues/5649).
+  This verifies **one existing distinct game live**, without adding a source
+  record or establishing a catalogue-wide audited total. Full hands, scoring,
+  network play, persistence and audio fidelity remain unverified; heart pips
+  remain green.
+
 - **6 November 2026 — Spaceward Ho! public pacing hold:** the exact original's free-distribution notice, two files/four forks and recovered application Finder metadata are verified. Fresh native Command-T advances to Year 2010 and changes the economy; eight measured pixels pass against a four-check unchanged control, with zero exhausted frames. Direct public v0.110.1 trusted input reproduces the turn and the browser-received archive matches the pin, but the unchanged 20-second pacing gate **fails at 24.612 guest ticks/s**, with 60.505 host FPS and no captured console errors. The existing launch flag is held for [generic runtime diagnosis and requalification #5637](https://github.com/benletchford/systemless/issues/5637); this is **not a qualified-live increment**. [Original/native evidence and limitations](https://github.com/benletchford/systemless/issues/5636). Full matches, colonisation, combat, saves and audio fidelity remain unverified.
 
 - **6 November 2026 — early original-package screening:** [Alan's Solitaire 1.0.3](https://github.com/benletchford/systemless/issues/5633) explicitly forbids redistribution without written permission and remains unhosted. [Hexen's original Macintosh four-level demo](https://github.com/benletchford/systemless/issues/5634) has an exact archive receipt and independently extracted original files, but an applicable full-package redistribution grant remains unestablished; its sole unsupported PPC import in the static audit is PGetAppleTalkInfo, without a reproduced runtime failure. These are intake holds, not catalogue additions or live games.
