@@ -226,6 +226,7 @@ pub enum PpcImportDispatcherTarget {
     Move,
     LineTo,
     Line,
+    StdLine,
     DrawChar,
     DrawText,
     DrawString,
@@ -3608,6 +3609,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Move") => PpcImportDispatcherTarget::Move,
         ("InterfaceLib", "LineTo") => PpcImportDispatcherTarget::LineTo,
         ("InterfaceLib", "Line") => PpcImportDispatcherTarget::Line,
+        ("InterfaceLib", "StdLine") => PpcImportDispatcherTarget::StdLine,
         ("InterfaceLib", "DrawChar") => PpcImportDispatcherTarget::DrawChar,
         ("InterfaceLib", "DrawText") => PpcImportDispatcherTarget::DrawText,
         ("InterfaceLib", "DrawString") => PpcImportDispatcherTarget::DrawString,
@@ -6632,6 +6634,9 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcQuickDrawCompatibilityOperation::CopyPixPat,
             )
         }
+        ("InterfaceLib", "MakeRGBPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::MakeRGBPat,
+        ),
         ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPixPat,
         ),

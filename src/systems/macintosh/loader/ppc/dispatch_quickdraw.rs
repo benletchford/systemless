@@ -863,17 +863,22 @@ pub(super) fn dispatch_quickdraw_import(
             ppc_sync_gworld_pen(memory, current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::LineTo | PpcImportDispatcherTarget::Line => {
-            let relative = matches!(binding.dispatcher_target, PpcImportDispatcherTarget::Line);
-            let new_h = if relative {
-                quickdraw_pen_h.wrapping_add(cpu.gpr[3] as u16 as i16)
-            } else {
-                cpu.gpr[3] as u16 as i16
-            };
-            let new_v = if relative {
-                quickdraw_pen_v.wrapping_add(cpu.gpr[4] as u16 as i16)
-            } else {
-                cpu.gpr[4] as u16 as i16
+        PpcImportDispatcherTarget::LineTo
+        | PpcImportDispatcherTarget::Line
+        | PpcImportDispatcherTarget::StdLine => {
+            let (new_h, new_v) = match binding.dispatcher_target {
+                PpcImportDispatcherTarget::Line => (
+                    quickdraw_pen_h.wrapping_add(cpu.gpr[3] as u16 as i16),
+                    quickdraw_pen_v.wrapping_add(cpu.gpr[4] as u16 as i16),
+                ),
+                // StdLine(Point newPt): a Point is a four-byte record passed by
+                // value in one GPR with v in the high half and h in the low half.
+                // Imaging With QuickDraw (1994), p. 3-132; PowerPC runtime
+                // conventions for composite parameters.
+                PpcImportDispatcherTarget::StdLine => {
+                    (cpu.gpr[3] as u16 as i16, (cpu.gpr[3] >> 16) as u16 as i16)
+                }
+                _ => (cpu.gpr[3] as u16 as i16, cpu.gpr[4] as u16 as i16),
             };
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_point(toolbox_startup, *quickdraw_pen_h, *quickdraw_pen_v);
@@ -1833,6 +1838,7 @@ pub enum PpcQuickDrawCompatibilityOperation {
     GetItemStyle,
     GetNewPalette,
     NewGDevice,
+    MakeRGBPat,
     NewPalette,
     NewPixPat,
     OpenPicture,
@@ -2530,6 +2536,79 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                     pat,
                 );
             }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::MakeRGBPat => {
+            // Inside Macintosh Volume V, V-73: an RGB pattern has patType 2, an
+            // 8-by-8 patMap with rowBytes 2, and only the last colorSpec filled
+            // in. The other colours are computed at drawing time for the
+            // destination depth, so ppc_decode_pixpat_sampler resolves the colour.
+            let parts = (|| {
+                let record = memory.read_u32_be(cpu.gpr[3]).filter(|ptr| *ptr != 0)?;
+                let pat_map = memory.read_u32_be(record + 2).filter(|h| *h != 0)?;
+                let pat_data = memory.read_u32_be(record + 6).filter(|h| *h != 0)?;
+                let map = memory.read_u32_be(pat_map).filter(|ptr| *ptr != 0)?;
+                let table = memory.read_u32_be(map + 42).filter(|h| *h != 0)?;
+                let color = (cpu.gpr[4] != 0).then_some(cpu.gpr[4])?;
+                let rgb = [
+                    memory.read_u16_be(color)?,
+                    memory.read_u16_be(color + 2)?,
+                    memory.read_u16_be(color + 4)?,
+                ];
+                Some((record, map, pat_data, table, rgb))
+            })();
+            let Some((record, map, pat_data, table, rgb)) = parts else {
+                *last_mem_error = PPC_PARAM_ERR;
+                return PpcImportAction::ReturnPreserve;
+            };
+            for (handle, size) in [(pat_data, 16), (table, 24)] {
+                *last_mem_error = process_memory_manager
+                    .set_process_handle_size_from_native_import(memory, handle, size);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+                if *last_mem_error != PPC_NO_ERR {
+                    return PpcImportAction::ReturnPreserve;
+                }
+                if let Some(updated) = process_memory_manager.native_allocation(handle) {
+                    if let Some(record) = handles.iter_mut().find(|r| r.handle == handle) {
+                        *record = updated;
+                    }
+                }
+            }
+            let (Some(data), Some(table_ptr)) =
+                (memory.read_u32_be(pat_data), memory.read_u32_be(table))
+            else {
+                *last_mem_error = PPC_PARAM_ERR;
+                return PpcImportAction::ReturnPreserve;
+            };
+            for row in 0..8 {
+                let _ = memory.write_bytes(data + row * 2, &[0xFF, 0x00]);
+            }
+            let _ = memory.write_bytes(map, &[0; 42]);
+            let _ = memory.write_u32_be(map, data);
+            let _ = memory.write_u16_be(map + 4, 0x8002);
+            let _ = ppc_write_rect(memory, map + 6, 0, 0, 8, 8);
+            let _ = memory.write_u32_be(map + 20, 72 << 16);
+            let _ = memory.write_u32_be(map + 24, 72 << 16);
+            let _ = memory.write_u16_be(map + 32, 1);
+            let _ = memory.write_u16_be(map + 34, 1);
+            let _ = memory.write_u16_be(map + 36, 1);
+            let _ = memory.write_bytes(table_ptr, &[0; 24]);
+            let _ = memory.write_u16_be(table_ptr + 4, 0x8000);
+            let _ = memory.write_u16_be(table_ptr + 6, 1);
+            for (offset, value) in [(10, 0xFFFF), (12, 0xFFFF), (14, 0xFFFF), (16, 1)] {
+                let _ = memory.write_u16_be(table_ptr + offset, value);
+            }
+            for (index, value) in rgb.into_iter().enumerate() {
+                let _ = memory.write_u16_be(table_ptr + 18 + index as u32 * 2, value);
+            }
+            let _ = memory.write_u16_be(record, 2);
+            let _ = memory.write_u16_be(record + 14, 0);
+            *last_mem_error = PPC_NO_ERR;
             PpcImportAction::ReturnPreserve
         }
         PpcQuickDrawCompatibilityOperation::NewPixPat => {

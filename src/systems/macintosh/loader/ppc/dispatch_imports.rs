@@ -2039,7 +2039,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PortSize
         | PpcImportDispatcherTarget::Move
         | PpcImportDispatcherTarget::LineTo
-        | PpcImportDispatcherTarget::Line => {
+        | PpcImportDispatcherTarget::Line
+        | PpcImportDispatcherTarget::StdLine => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::DrawChar
