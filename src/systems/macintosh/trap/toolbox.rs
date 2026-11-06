@@ -15086,57 +15086,35 @@ impl super::TrapDispatcher {
                             0
                         };
 
-                        let mut selected_resource: Option<(i16, String, Vec<u8>)> = None;
-                        if requested_id != -1 {
-                            if let Some(resources) = self.resources.as_ref() {
-                                if let Some(file) = resources.files.get(&res_refnum) {
-                                    if requested_id != 0
-                                        && file.loaded.contains_key(&(*b"moov", requested_id))
-                                    {
-                                        let name = file
-                                            .names_by_id
-                                            .get(&(*b"moov", requested_id))
-                                            .cloned()
-                                            .unwrap_or_default();
-                                        let data_ptr = file.loaded[&(*b"moov", requested_id)];
-                                        selected_resource = Some((
-                                            requested_id,
-                                            name,
-                                            read_allocated_bytes(bus, data_ptr),
-                                        ));
-                                    } else if requested_id == 0 {
-                                        let mut ids: Vec<i16> = file
-                                            .loaded
-                                            .keys()
-                                            .filter_map(|(res_type, id)| {
-                                                (*res_type == *b"moov").then_some(*id)
-                                            })
-                                            .collect();
-                                        ids.sort_unstable();
-                                        if let Some(id) = ids.first().copied() {
-                                            let name = file
-                                                .names_by_id
-                                                .get(&(*b"moov", id))
-                                                .cloned()
-                                                .unwrap_or_default();
-                                            if let Some(&data_ptr) =
-                                                file.loaded.get(&(*b"moov", id))
-                                            {
-                                                selected_resource = Some((
-                                                    id,
-                                                    name,
-                                                    read_allocated_bytes(bus, data_ptr),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // Resource maps contain unloaded entries with a zero data
+                        // pointer. Select the identity first, then materialize it
+                        // through the Resource Manager before reading the bytes.
+                        let selected_resource = self.resources.as_ref().and_then(|resources| {
+                            let file = resources.files.get(&res_refnum)?;
+                            let id = if requested_id == 0 {
+                                file.loaded
+                                    .keys()
+                                    .filter_map(|(kind, id)| (*kind == *b"moov").then_some(*id))
+                                    .min()?
+                            } else if requested_id != -1
+                                && file.loaded.contains_key(&(*b"moov", requested_id))
+                            {
+                                requested_id
+                            } else {
+                                return None;
+                            };
+                            let name = file
+                                .names_by_id
+                                .get(&(*b"moov", id))
+                                .cloned()
+                                .unwrap_or_default();
+                            Some((id, name))
+                        });
 
                         let file_name = self.resource_file_name(res_refnum).map(str::to_owned);
-                        let selected_movie = if selected_resource.is_some() {
-                            selected_resource
+                        let selected_movie = if let Some((id, name)) = selected_resource {
+                            self.find_or_load_resource_in_file(bus, res_refnum, *b"moov", id)
+                                .map(|(_, ptr)| (id, name, read_allocated_bytes(bus, ptr)))
                         } else if requested_id == 0 || requested_id == -1 {
                             file_name.as_ref().and_then(|name| {
                                 self.vfs
