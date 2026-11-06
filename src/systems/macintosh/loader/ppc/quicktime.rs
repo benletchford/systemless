@@ -3,6 +3,7 @@
 pub(crate) mod callbacks;
 pub(crate) mod controller;
 pub(crate) mod decompression;
+pub(crate) mod described_video;
 mod toolbox;
 
 pub(crate) use toolbox::{
@@ -209,6 +210,7 @@ pub struct PpcQuickTimeVideoDecodeCacheRecord {
     pub(crate) sample_index: usize,
     pub(crate) rgb: Vec<u8>,
     pub(crate) cinepak_strips: Vec<PpcQuickTimeCinepakStripState>,
+    pub(crate) described_state: Option<described_video::State>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5624,6 +5626,7 @@ impl PpcQuickTimeCinepakDecoder {
             sample_index,
             rgb: self.frame.clone(),
             cinepak_strips: self.strips.clone(),
+            described_state: None,
         }
     }
 }
@@ -5637,8 +5640,11 @@ pub(crate) fn ppc_qt_decode_current_movie_video_frame(
     quicktime: &mut PpcQuickTimeState,
 ) -> Option<PpcQuickTimeDecodedVideoFrame> {
     let samples = quicktime.movie_video_samples.clone()?;
-    if samples.codec != u32::from_be_bytes(*b"cvid") || samples.samples.is_empty() {
+    if samples.samples.is_empty() {
         return None;
+    }
+    if samples.codec != u32::from_be_bytes(*b"cvid") {
+        return described_video::decode(quicktime, &samples);
     }
     let sample_index = ppc_qt_movie_timed_sample_index(quicktime, &samples)?;
     let sample_data = quicktime
