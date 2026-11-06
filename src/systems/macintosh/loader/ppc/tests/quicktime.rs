@@ -7134,3 +7134,265 @@ fn quicktime_described_video_rejects_invalid_description_and_sample_bounds() {
         assert!(movie.movie_video_decode_cache.is_none());
     }
 }
+
+#[test]
+fn quicktime_idle_skips_unchanged_frames_but_explicit_update_repaints_damage() {
+    let (mut loaded, window, pixels) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = window;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    let time = (
+        loaded.quicktime.movie_task_count,
+        loaded.quicktime.movie_task_fraction,
+    );
+    loaded.memory.write_bytes(pixels, &[0xee; 32]).unwrap();
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, false)
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0xeeee));
+    call_movie_toolbox(&mut loaded, "UpdateMovie", &[PPC_QT_MOVIE]);
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    assert_eq!(
+        (
+            loaded.quicktime.movie_task_count,
+            loaded.quicktime.movie_task_fraction
+        ),
+        time
+    );
+    assert!(!loaded.quicktime.movie_started);
+    assert!(loaded.sound.file_playbacks.is_empty());
+}
+
+#[test]
+fn quicktime_idle_redraws_new_samples_and_changed_geometry_without_advancing_time() {
+    let (mut loaded, window, pixels) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = window;
+    let samples = loaded.quicktime.movie_video_samples.as_mut().unwrap();
+    samples.media_duration = 2;
+    samples.sample_count = 2;
+    let mut second = samples.samples[0];
+    second.media_start_time = 1;
+    samples.samples.push(second);
+    loaded.quicktime.movie_tasks_until_done = 2;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    loaded.memory.write_bytes(pixels, &[0xee; 32]).unwrap();
+    loaded.quicktime.movie_task_count = 1;
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
+    assert_eq!(
+        loaded
+            .quicktime
+            .movie_video_decode_cache
+            .as_ref()
+            .unwrap()
+            .sample_index,
+        1
+    );
+    loaded.memory.write_bytes(pixels, &[0xee; 32]).unwrap();
+    let rect = PPC_DATA_BASE + 0x6000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 1, 3, 3).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    loaded.cpu.gpr[4] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtSetMovieBox);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0xeeee));
+    assert_eq!(loaded.memory.read_u16_be(pixels + 10), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(pixels + 20), Some(0x7fff));
+    assert_eq!(loaded.quicktime.movie_task_count, 1);
+}
+
+#[test]
+fn quicktime_idle_palette_seed_changes_and_explicit_updates_use_fresh_colour_matches() {
+    let (mut loaded, window, base) = cinepak_movie_draw_fixture();
+    let pixmap = base + 0x1000;
+    let handle = pixmap + 0x100;
+    let pixels = pixmap + 0x200;
+    let table_handle = pixmap + 0x300;
+    let table = table_handle + 4;
+    loaded.memory.add_region(window, vec![0; 64]);
+    loaded.memory.add_region(pixmap, vec![0; 0x400]);
+    loaded.memory.write_u16_be(window + 6, 0xc000).unwrap();
+    loaded.memory.write_u32_be(window + 2, handle).unwrap();
+    loaded.memory.write_u32_be(handle, pixmap).unwrap();
+    loaded.memory.write_u32_be(pixmap, pixels).unwrap();
+    loaded.memory.write_u16_be(pixmap + 4, 0x8004).unwrap();
+    loaded.memory.write_u16_be(pixmap + 32, 8).unwrap();
+    ppc_write_rect(&mut loaded.memory, pixmap + 6, 0, 0, 4, 4).unwrap();
+    loaded
+        .memory
+        .write_u32_be(pixmap + 42, table_handle)
+        .unwrap();
+    loaded.memory.write_u32_be(table_handle, table).unwrap();
+    loaded.memory.write_u16_be(table + 6, 7).unwrap();
+    for index in 0..8u32 {
+        loaded
+            .memory
+            .write_u16_be(table + 8 + index * 8, index as u16)
+            .unwrap();
+    }
+    let set_white = |loaded: &mut PpcLoadedApp, index: u32| {
+        for slot in 0..8u32 {
+            for component in [2, 4, 6] {
+                loaded
+                    .memory
+                    .write_u16_be(
+                        table + 8 + slot * 8 + component,
+                        if slot == index { 65535 } else { 0 },
+                    )
+                    .unwrap();
+            }
+        }
+    };
+    loaded.quicktime.movie_gworld = window;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    set_white(&mut loaded, 7);
+    loaded.memory.write_u32_be(table, 1).unwrap();
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    assert_eq!(loaded.memory.read_u8(pixels + 15), Some(7));
+    set_white(&mut loaded, 3);
+    loaded.memory.write_u32_be(table, 2).unwrap();
+    assert_eq!(
+        ppc_qt_movies_task(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            window,
+            &mut loaded.quicktime,
+            &mut loaded.sound
+        ),
+        (0, true)
+    );
+    assert_eq!(loaded.memory.read_u8(pixels + 15), Some(3));
+    set_white(&mut loaded, 6); // Explicit updates also handle direct table edits.
+    call_movie_toolbox(&mut loaded, "UpdateMovie", &[PPC_QT_MOVIE]);
+    assert_eq!(loaded.memory.read_u8(pixels + 15), Some(6));
+}
+
+#[test]
+fn quicktime_idle_drawing_callbacks_distinguish_changed_and_always_modes() {
+    let (mut loaded, window, _) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = window;
+    let data = PPC_DATA_BASE + 0x6000;
+    let code = PPC_CODE_BASE + 0x8000;
+    loaded.memory.add_region(data, vec![0; 64]);
+    loaded.memory.add_region(
+        code,
+        [
+            0x80a40000u32,
+            0x38a50001,
+            0x90a40000,
+            0x38600000,
+            0x4e800020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect(),
+    );
+    loaded.memory.write_u32_be(data, code).unwrap();
+    loaded
+        .memory
+        .write_u32_be(data + 4, loaded.cpu.gpr[2])
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, data + 16, 0, 0, 4, 4).unwrap();
+    let controller = call_movie_toolbox(
+        &mut loaded,
+        "NewMovieController",
+        &[PPC_QT_MOVIE, data + 16, 8],
+    );
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieDrawingCompleteProc",
+        &[PPC_QT_MOVIE, 0, data, data + 8],
+    );
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCIdle", &[controller]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(1));
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 1, 0]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(1));
+    call_movie_toolbox(
+        &mut loaded,
+        "SetMovieDrawingCompleteProc",
+        &[PPC_QT_MOVIE, 1, data, data + 8],
+    );
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCIdle", &[controller]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(2));
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "MCDoAction", &[controller, 1, 0]),
+        0
+    );
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(3));
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u32_be(data + 8), Some(4));
+}
