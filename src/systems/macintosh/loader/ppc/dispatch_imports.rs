@@ -3201,8 +3201,11 @@ pub(crate) fn dispatch_supported_import(
                     | PpcQuickTimeCompatibilityOperation::SetMovieRate
                     | PpcQuickTimeCompatibilityOperation::SetMovieTime
             );
-            let service_drawing = operation != PpcQuickTimeCompatibilityOperation::MCDoAction
-                || matches!(cpu.gpr[4] as i16, 1 | 8);
+            let service_drawing = match operation {
+                PpcQuickTimeCompatibilityOperation::MCIdle => false,
+                PpcQuickTimeCompatibilityOperation::MCDoAction => cpu.gpr[4] as i16 == 8,
+                _ => true,
+            };
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
             let action = dispatch_quicktime_compatibility(
                 operation,

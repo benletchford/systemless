@@ -304,9 +304,10 @@ pub(super) fn dispatch_quicktime_import(
             let before = quicktime_callback_time(quicktime);
             let playing = quicktime.movie_started;
             let rate_before = quicktime_callback_rate(quicktime);
-            let error = ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
+            let (error, drew) =
+                ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
             if error == PPC_NO_ERR {
-                ppc_qt_mark_drawing_complete(quicktime, quicktime.movie_active);
+                ppc_qt_mark_drawing_complete(quicktime, drew);
             }
             if error == PPC_NO_ERR && playing {
                 let after = quicktime_callback_time(quicktime);

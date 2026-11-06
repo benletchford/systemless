@@ -136,7 +136,7 @@ pub(crate) fn ppc_quickdraw_surface_color_pixel(
 /// The colour table RGB colours are matched against on an indexed surface:
 /// its own table, or the standard table for `depth`.
 #[inline(always)]
-fn ppc_quickdraw_surface_clut(
+pub(crate) fn ppc_quickdraw_surface_clut(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
     depth: u32,

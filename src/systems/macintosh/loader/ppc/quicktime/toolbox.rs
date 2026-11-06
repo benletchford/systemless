@@ -1099,7 +1099,7 @@ pub(super) fn dispatch_movie_toolbox(
             let pict = match frame {
                 Some(frame) => direct_bits_pict(&frame, quicktime.movie_box),
                 None if !has_video => Some(empty_pict(quicktime.movie_box)),
-                // Only Cinepak video is decoded by this runtime.
+                // An undecodable video cannot supply a movie picture.
                 None => None,
             };
             let Some(pict) = pict else {
