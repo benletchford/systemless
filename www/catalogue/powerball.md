@@ -78,7 +78,7 @@ compatibility:
       cleared brick and score 50 repeat with fourteen assertions and zero exhaustion.
       Chrome 156 worker/WebGL preview fetches the hosted original directly, waits for
       board pixels and verifies a 158-pixel paddle movement. Aligned visual capture
-      shows score 50. A mixed board-to-logo 20-second sample passes unchanged pacing
+      shows score 50. A mixed board-to-high-score-dialog 20-second sample passes unchanged pacing
       gates at 60.019 guest ticks/s and 62.125 host FPS, maximum worker frame 14.5 ms,
       minimum audio queue 132.0 ms and no captured console errors. Full levels,
       saves, independent hardware parity and audio fidelity remain unverified.
@@ -92,10 +92,11 @@ compatibility:
       The real PPC slice passes the same native fourteen assertions, paddle movement,
       cleared brick and score 50 checkpoint with zero exhaustion. Browser architecture
       selection, board-readiness pixels and a separate 158-pixel paddle assertion
-      pass; aligned visual capture shows score 50. The mixed board-to-logo 20-second
+      pass; aligned visual capture shows score 50. The mixed board-to-high-score-dialog 20-second
       sample passes at 59.962 guest ticks/s and host FPS, maximum worker frame 18.3 ms,
       minimum audio queue 131.8 ms and no captured console errors. Original ReadMe
-      marks native PPC unsupported by the author. This bounded qualification does not
+      marks native PPC unsupported by the author. The later high-score dialog omits
+      its score digits on PPC (issue 5641). This bounded qualification does not
       establish full parity, complete levels, saves or audio fidelity.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4681
@@ -161,5 +162,5 @@ trial and registration terms.
 
 Native and browser checks demonstrate paddle input and first-board scoring on both
 included architectures. The original author marked native PPC unsupported; its
-Systemless verification covers this bounded checkpoint. Full levels and saves
-remain unverified.
+Systemless verification covers this bounded checkpoint. On PPC, the later
+high-score dialog omits the score digits. Full levels and saves remain unverified.
