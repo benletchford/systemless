@@ -668,8 +668,40 @@ pub fn draw_picture(
                 pos += 4;
             }
             0x0C => {
-                // Origin (4 bytes)
+                // Origin shifts the picture's source coordinate plane by
+                // signed dh,dv; destination scale remains unchanged.
+                // Imaging With QuickDraw (1994), Appendix A, p. A-5;
+                // Executor qPicstuff.cpp, origin().
+                let dh = bus.read_word(pos) as i16;
+                let dv = bus.read_word(pos + 2) as i16;
                 pos += 4;
+                frame_left = frame_left.wrapping_add(dh);
+                frame_top = frame_top.wrapping_add(dv);
+
+                // An already-installed clip and cached graphics geometry
+                // retain their device positions. Rebase their stored source
+                // coordinates into the new plane. Compressed text positions
+                // stay in recorded coordinates, so the frame shift moves the
+                // following relative text just as it moves absolute text.
+                if let Some(region) = clip_region.as_mut() {
+                    region.top = region.top.wrapping_add(dv);
+                    region.bottom = region.bottom.wrapping_add(dv);
+                    region.left = region.left.wrapping_add(dh);
+                    region.right = region.right.wrapping_add(dh);
+                    for row in &mut region.rows {
+                        for edge in row {
+                            *edge = edge.wrapping_add(dh);
+                        }
+                    }
+                }
+                if let Some(rect) = last_shape_rect.as_mut() {
+                    rect.0 = rect.0.wrapping_add(dv);
+                    rect.1 = rect.1.wrapping_add(dh);
+                    rect.2 = rect.2.wrapping_add(dv);
+                    rect.3 = rect.3.wrapping_add(dh);
+                }
+                line_pen_v = line_pen_v.wrapping_add(dv);
+                line_pen_h = line_pen_h.wrapping_add(dh);
             }
             0x0D => {
                 // TxSize (2 bytes) — track for subsequent text opcodes
