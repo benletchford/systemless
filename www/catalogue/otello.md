@@ -44,6 +44,24 @@ compatibility:
       independent hardware parity and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5394
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 0.108.0 public production
+    architecture: 68k
+    environment: >-
+      Direct public Chrome 156 worker/WebGL replays used the human-published
+      v0.108.0 frontend and managed archive, without frontend substitution or
+      archive interception. Independent archive and screenshot downloads matched
+      the pinned hashes and sizes. A click at guest (416,266) produced a white
+      placement, flip and Macintosh reply; inspected input and no-click captures
+      show three discs per side versus the initial two per side. Twenty-second
+      post-setup samples passed unchanged pacing gates, with final steady snapshots
+      of 61.260 and 59.638 guest ticks/s and 59.252 and 59.638 host FPS. Neither
+      captured console errors. These are bounded interaction and sampled steady
+      metrics; full games, saves, audio fidelity and independent hardware parity
+      remain unverified. Archive response-body hashes were not captured in-browser.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5394
 runtime:
   executable_path: Otello
   screen_depth: 8

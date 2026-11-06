@@ -58,6 +58,26 @@ compatibility:
       saves, browser audio fidelity and an independent deployed replay remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2699
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 0.108.0 public production
+    architecture: 68k
+    environment: >-
+      Direct public Chrome 156 worker/WebGL replays used the human-published
+      v0.108.0 frontend and managed archive, without frontend substitution or
+      archive interception. Independent archive and screenshot downloads matched
+      the pinned hashes and sizes. Ordinary input dismissed registration, began
+      an adventure, added Kevlar and reached City of Bywater at X2/Y1. Down moved
+      to X2/Y2; further ordinary clicks dismissed the introduction and moved the
+      party to the inspected X5/Y5 map. A 20-second idle-map sample passed unchanged
+      pacing gates, with a final steady snapshot of 60.803 guest ticks/s and host
+      FPS, maximum sampled worker frame 22.1 ms, minimum audio queue 129.2 ms and
+      no captured console errors. An earlier introduction-picture sample is
+      excluded from map pacing evidence. Continuous movement, combat, full scenario,
+      saves and audio fidelity remain unverified. Archive response-body hashes
+      were not captured in-browser.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2699
 artifacts:
 - id: archive
   role: archive

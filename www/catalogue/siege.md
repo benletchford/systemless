@@ -53,6 +53,25 @@ compatibility:
       audio fidelity and an independent deployed replay remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5345
+  - date: "2026-11-03"
+    tester: Catalogue maintainer
+    systemless_version: 0.108.0 public production
+    architecture: 68k
+    environment: >-
+      Direct public Chrome 156 worker/WebGL replays used the human-published
+      v0.108.0 frontend and managed archive, without frontend substitution or
+      archive interception. Independent archive and screenshot downloads matched
+      the pinned hashes and sizes. Both runs dismissed the shareware notice and
+      selected New Game. Clicking guest (285,510) placed red 3 from the hand;
+      inspected captures show subsequent computer cards, while the matched
+      no-card-click control retains red 3 in hand and its board position is empty.
+      Twenty-second post-setup samples passed unchanged pacing gates, with final
+      steady snapshots of 59.370 and 59.465 guest ticks/s and host FPS. Neither
+      captured console errors. These are bounded gameplay and sampled steady
+      metrics; full games, audio fidelity and independent classic-Mac parity
+      remain unverified. Archive response-body hashes were not captured in-browser.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5345
 runtime:
   executable_path: Siege 1.1/Siege
   screen_depth: 8
