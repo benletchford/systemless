@@ -3,6 +3,8 @@
 //! to the screen/controller. Context creation is the only DOM-facing boundary.
 
 use js_sys::{Array, Float32Array, Reflect, Uint8Array, Uint8ClampedArray};
+use std::{cell::Cell, rc::Rc};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{
     CanvasRenderingContext2d, HtmlCanvasElement, ImageData, WebGlBuffer, WebGlProgram,
@@ -61,15 +63,44 @@ impl CanvasFrame {
     }
 
     pub(crate) fn poll_recovery(&mut self) -> Result<(), String> {
-        if let Self::Offscreen(frame) = self {
-            frame.poll_recovery()
-        } else {
-            Ok(())
+        match self {
+            Self::WebGl(frame) => frame.poll_recovery(),
+            Self::Offscreen(frame) => frame.poll_recovery(),
+            Self::Canvas2d(_) => Ok(()),
         }
     }
 
     pub(crate) fn needs_snapshot(&self) -> bool {
-        matches!(self, Self::Offscreen(frame) if frame.needs_snapshot || frame.status_flag("needsSnapshot"))
+        match self {
+            Self::WebGl(frame) => frame.needs_snapshot,
+            Self::Offscreen(frame) => frame.needs_snapshot || frame.status_flag("needsSnapshot"),
+            Self::Canvas2d(_) => false,
+        }
+    }
+
+    /// Keep monitoring WebGL after guest exit so a lost final image can be
+    /// restored without relaunching the guest.
+    pub(crate) fn monitors_recovery(&self) -> bool {
+        matches!(self, Self::WebGl(_)) || self.asynchronous()
+    }
+
+    /// Only a fresh image requested after this restoration may satisfy it.
+    pub(crate) fn snapshot_generation(&self) -> Option<u32> {
+        match self {
+            Self::WebGl(frame) if frame.needs_snapshot => Some(frame.context_generation),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn complete_snapshot(&mut self, generation: Option<u32>) {
+        if let Self::WebGl(frame) = self {
+            if generation == Some(frame.context_generation)
+                && !frame.context_lost.get()
+                && !frame.gl.is_context_lost()
+            {
+                frame.needs_snapshot = false;
+            }
+        }
     }
 
     pub(crate) fn direct(&self) -> bool {
@@ -103,7 +134,7 @@ impl CanvasFrame {
                 .flatten()
                 .and_then(|context| context.dyn_into::<WebGlRenderingContext>().ok())
             {
-                return WebGlFrame::new(gl).map(Self::WebGl);
+                return WebGlFrame::new(gl, canvas.clone(), 0).map(Self::WebGl);
             }
         }
 
@@ -407,6 +438,11 @@ impl Canvas2dFrame {
 
 pub(crate) struct WebGlFrame {
     gl: WebGlRenderingContext,
+    canvas: HtmlCanvasElement,
+    context_lost: Rc<Cell<bool>>,
+    on_context_lost: Closure<dyn FnMut(web_sys::Event)>,
+    context_generation: u32,
+    needs_snapshot: bool,
     frame_program: WebGlProgram,
     frame_vertices: WebGlBuffer,
     frame_texture: WebGlTexture,
@@ -422,7 +458,7 @@ pub(crate) struct WebGlFrame {
 }
 
 impl WebGlFrame {
-    fn new(gl: WebGlRenderingContext) -> Option<Self> {
+    fn new(gl: WebGlRenderingContext, canvas: HtmlCanvasElement, generation: u32) -> Option<Self> {
         let vertex_shader = compile_webgl_shader(
             &gl,
             WebGlRenderingContext::VERTEX_SHADER,
@@ -545,8 +581,25 @@ void main() {
             return None;
         }
 
+        let context_lost = Rc::new(Cell::new(false));
+        let lost = context_lost.clone();
+        let on_context_lost = Closure::wrap(Box::new(move |event: web_sys::Event| {
+            event.prevent_default();
+            lost.set(true);
+        }) as Box<dyn FnMut(web_sys::Event)>);
+        canvas
+            .add_event_listener_with_callback(
+                "webglcontextlost",
+                on_context_lost.as_ref().unchecked_ref(),
+            )
+            .ok()?;
         Some(Self {
             gl,
+            canvas,
+            context_lost,
+            on_context_lost,
+            context_generation: generation,
+            needs_snapshot: false,
             frame_program: program,
             frame_vertices: vertices,
             frame_texture: texture,
@@ -562,7 +615,27 @@ void main() {
         })
     }
 
+    fn poll_recovery(&mut self) -> Result<(), String> {
+        if !self.context_lost.get() || self.gl.is_context_lost() {
+            return Ok(());
+        }
+        // Restoration invalidates every WebGL object. Recreate the complete
+        // presenter and then request a fresh image from the existing guest.
+        let mut restored = Self::new(
+            self.gl.clone(),
+            self.canvas.clone(),
+            self.context_generation.wrapping_add(1),
+        )
+        .ok_or_else(|| "Unable to restore the WebGL game display".to_string())?;
+        restored.needs_snapshot = true;
+        *self = restored;
+        Ok(())
+    }
+
     fn paint(&mut self, width: u32, height: u32, rgba: &[u8]) {
+        if self.gl.is_context_lost() {
+            return;
+        }
         let width = width.max(1);
         let height = height.max(1);
         if rgba.len() != width as usize * height as usize * 4 {
@@ -630,6 +703,9 @@ void main() {
     }
 
     fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
+        if self.gl.is_context_lost() {
+            return;
+        }
         let width = width.max(1);
         let height = height.max(1);
         if rgba.length() as usize != width as usize * height as usize * 4 {
@@ -697,6 +773,9 @@ void main() {
     }
 
     fn paint_q3(&mut self, packet: &JsValue) -> Option<(u32, u32)> {
+        if self.gl.is_context_lost() {
+            return None;
+        }
         let width = js_number_property(packet, "width")? as u32;
         let height = js_number_property(packet, "height")? as u32;
         if width == 0 || height == 0 {
@@ -879,6 +958,15 @@ void main() {
         self.gl.disable(WebGlRenderingContext::SCISSOR_TEST);
         self.gl.depth_mask(true);
         Some((width, height))
+    }
+}
+
+impl Drop for WebGlFrame {
+    fn drop(&mut self) {
+        let _ = self.canvas.remove_event_listener_with_callback(
+            "webglcontextlost",
+            self.on_context_lost.as_ref().unchecked_ref(),
+        );
     }
 }
 

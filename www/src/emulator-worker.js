@@ -238,7 +238,9 @@ self.onmessage = async (event) => {
       }
       if (gpuCompute?.link) result.gpuComputeTiming = gpuCompute.link.timing();
       publishSaveFiles();
-      reply({ type: "frame", ...result, sequence: ++frameSequence }, transfer);
+      const response = { type: "frame", ...result, sequence: ++frameSequence };
+      if (Number.isInteger(message.snapshotGeneration)) response.snapshotGeneration = message.snapshotGeneration;
+      reply(response, transfer);
       return;
     }
     if (message.type === "enableGpu") machine.setGpuRendererEnabled(!!message.enabled);

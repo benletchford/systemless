@@ -305,6 +305,12 @@ test('presenter recovery requests a fresh image without recreating the guest', a
   assert.equal(w.messages.filter(message => message.type === 'frame').length, 1);
 });
 
+test('forced recovery frame echoes its snapshot generation', async () => {
+  const w = worker();
+  await w.send('frame', { forceRender: true, snapshotGeneration: 7 });
+  assert.equal(w.messages.find(message => message.type === 'frame').snapshotGeneration, 7);
+});
+
 
 test('indexed owner packets transfer indices, palette and cursor together', async () => {
   const w = worker(() => 1, 6, true);
