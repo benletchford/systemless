@@ -25,8 +25,13 @@ fn u32_at(data: &[u8], offset: usize) -> Result<u32, String> {
     Ok(u32::from_be_bytes([value[0], value[1], value[2], value[3]]))
 }
 
-fn apply(entry: &mut SitEntry, components: &[String], folder: bool) -> Result<(), String> {
-    if entry.name != components.join("/") || entry.is_folder != folder {
+fn apply(
+    entry: &mut SitEntry,
+    expected_name: &str,
+    components: &[String],
+    folder: bool,
+) -> Result<(), String> {
+    if entry.name != expected_name || entry.is_folder != folder {
         return Err("StuffIt path metadata disagrees with decoded entry".into());
     }
     entry.name = components
@@ -69,6 +74,7 @@ fn classic_paths(data: &[u8], entries: &mut [SitEntry]) -> Result<(), String> {
         let folder = methods.contains(&0x20);
         apply(
             entries.get_mut(index).ok_or("Extra StuffIt path entry")?,
+            &components.join("/"),
             &components,
             folder,
         )?;
@@ -95,7 +101,7 @@ fn sit5_paths(data: &[u8], entries: &mut [SitEntry]) -> Result<(), String> {
         0
     };
     let mut offset = (u32_at(data, 88)? ^ xor) as usize;
-    let mut directories: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut directories: HashMap<u32, (Vec<String>, Vec<String>)> = HashMap::new();
     let mut seen = HashSet::new();
     let mut index = 0;
     while index < entries.len() {
@@ -114,14 +120,27 @@ fn sit5_paths(data: &[u8], entries: &mut [SitEntry]) -> Result<(), String> {
             continue;
         }
         let name_offset = offset.checked_add(48).ok_or("StuffIt offset overflow")?;
-        let name = String::from_utf8_lossy(bytes(data, name_offset, name_length)?).into_owned();
+        let name_bytes = bytes(data, name_offset, name_length)?;
+        // Keep the dependency's lossy name solely for metadata validation.
+        // Legacy Mac Roman names must not lose bytes before HFS escaping.
+        let expected_name = String::from_utf8_lossy(name_bytes).into_owned();
+        let name = std::str::from_utf8(name_bytes)
+            .map(str::to_owned)
+            .unwrap_or_else(|_| crate::mac_roman::decode_mac_roman(name_bytes));
         let parent = u32_at(header, 26)? ^ xor;
-        let mut components = directories.get(&parent).cloned().unwrap_or_default();
+        let (mut expected_components, mut components) =
+            directories.get(&parent).cloned().unwrap_or_default();
+        expected_components.push(expected_name);
         components.push(name);
-        apply(&mut entries[index], &components, folder)?;
+        apply(
+            &mut entries[index],
+            &expected_components.join("/"),
+            &components,
+            folder,
+        )?;
         index += 1;
         if folder {
-            directories.insert(offset as u32, components);
+            directories.insert(offset as u32, (expected_components, components));
         }
         let metadata = offset
             .checked_add(usize::from(u16_at(header, 6)?))
@@ -231,6 +250,82 @@ mod tests {
             let (data, resource) = file.decompressed_forks().unwrap();
             assert_eq!(data, b"original data");
             assert_eq!(resource, b"original resources");
+        }
+    }
+
+    fn legacy_sit5_fixture() -> Vec<u8> {
+        let mut archive = SitArchive::new();
+        for (name, folder) in [
+            ("CafX!tree", true),
+            ("CafX!tree/CrXme", false),
+            ("UTF8-café", true),
+            ("UTF8-café/plain", false),
+        ] {
+            archive.add_entry(entry(name, folder));
+        }
+        let mut data = archive.serialize().unwrap();
+        for (before, after) in [
+            (b"CafX!tree".as_slice(), b"Caf\x8e/tree".as_slice()),
+            (b"CrXme".as_slice(), b"Cr\x8fme".as_slice()),
+        ] {
+            let offsets: Vec<_> = data
+                .windows(before.len())
+                .enumerate()
+                .filter_map(|(offset, value)| (value == before).then_some(offset))
+                .collect();
+            assert!(!offsets.is_empty());
+            for offset in offsets {
+                data[offset..offset + before.len()].copy_from_slice(after);
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn sit5_legacy_names_and_utf8_preserve_components_and_forks() {
+        let archive = parse(&legacy_sit5_fixture()).unwrap();
+        let names: Vec<_> = archive
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Café\u{f02f}tree",
+                "Café\u{f02f}tree/Crème",
+                "UTF8-café",
+                "UTF8-café/plain"
+            ]
+        );
+        for file in archive.entries.iter().filter(|entry| !entry.is_folder) {
+            let (data, resource) = file.decompressed_forks().unwrap();
+            assert_eq!(data, b"original data");
+            assert_eq!(resource, b"original resources");
+            assert_eq!(file.file_type, *b"TEXT");
+            assert_eq!(file.creator, *b"ttxt");
+            assert_eq!(file.finder_flags, 0);
+        }
+    }
+
+    #[test]
+    fn sit5_recovered_names_still_reject_inconsistent_decoded_metadata() {
+        let data = legacy_sit5_fixture();
+        for change_folder in [false, true] {
+            let mut archive = SitArchive::parse(&data).unwrap();
+            let file = archive
+                .entries
+                .iter_mut()
+                .find(|entry| !entry.is_folder)
+                .unwrap();
+            if change_folder {
+                file.is_folder = true;
+            } else {
+                file.name.push_str("wrong");
+            }
+            assert!(sit5_paths(&data, &mut archive.entries)
+                .unwrap_err()
+                .contains("disagrees"));
         }
     }
 
