@@ -1608,7 +1608,7 @@ fn quicktime_movie_video_decode_cache_advances_without_redecoding_prior_samples(
     let mut quicktime = PpcQuickTimeState {
         movie_data: movie_file_data,
         // Two one-second media samples require a two-second movie timeline.
-        movie_file_duration: 1200,
+        movie_duration: 1200,
         movie_tasks_until_done: 2,
         movie_video_samples: Some(PpcQuickTimeVideoSampleTableRecord {
             timeline: None,
@@ -7014,6 +7014,7 @@ fn described_movie_fixture(
         movie_video_samples: Some(video_samples),
         movie_tasks_until_done: count,
         movie_time_scale: 1,
+        movie_creation_time_scale: 1,
         movie_duration: u64::from(count),
         movie_box: (0, 0, 4, 8),
         ..PpcQuickTimeState::default()
