@@ -16887,7 +16887,7 @@ impl super::TrapDispatcher {
         bus.write_word(color_info + 14, 0);
     }
 
-    fn create_palette_from_ctab(
+    pub(super) fn create_palette_from_ctab(
         &mut self,
         bus: &mut MacMemoryBus,
         entries: u16,
@@ -17617,7 +17617,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn clear_palette_tracking(&mut self, palette: u32) {
+    pub(super) fn clear_palette_tracking(&mut self, palette: u32) {
         if palette == 0 {
             return;
         }
