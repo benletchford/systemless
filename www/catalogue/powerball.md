@@ -1,5 +1,6 @@
 ---
 id: powerball
+launch_enabled: true
 kind: game
 title: Powerball 1.3
 summary: >-
@@ -68,6 +69,36 @@ compatibility:
       remain pending.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/5383
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 32a2ba7f0 native runtime and cddcd0b36 release frontend
+    architecture: 68k
+    environment: >-
+      Exact managed original and screenshot receipts match. Native paddle movement,
+      cleared brick and score 50 repeat with fourteen assertions and zero exhaustion.
+      Chrome 156 worker/WebGL preview fetches the hosted original directly, waits for
+      board pixels and verifies a 158-pixel paddle movement. Aligned visual capture
+      shows score 50. A mixed board-to-logo 20-second sample passes unchanged pacing
+      gates at 60.019 guest ticks/s and 62.125 host FPS, maximum worker frame 14.5 ms,
+      minimum audio queue 132.0 ms and no captured console errors. Full levels,
+      saves, independent hardware parity and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4681
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 32a2ba7f0 native runtime and cddcd0b36 release frontend
+    architecture: ppc
+    environment: >-
+      The real PPC slice passes the same native fourteen assertions, paddle movement,
+      cleared brick and score 50 checkpoint with zero exhaustion. Browser architecture
+      selection, board-readiness pixels and a separate 158-pixel paddle assertion
+      pass; aligned visual capture shows score 50. The mixed board-to-logo 20-second
+      sample passes at 59.962 guest ticks/s and host FPS, maximum worker frame 18.3 ms,
+      minimum audio queue 131.8 ms and no captured console errors. Original ReadMe
+      marks native PPC unsupported by the author. This bounded qualification does not
+      establish full parity, complete levels, saves or audio fidelity.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4681
 runtime:
   executable_path: Powerball Shareware/Powerball.fat
   screen_depth: 8
@@ -113,8 +144,8 @@ artifacts:
     permission: Original gameplay content captured from the complete permitted package.
     notes: >-
       Level-one PPC board from the unchanged original archive, cropped to its
-      512-by-342 game surface without desktop or menu bar. The PPC text correction is pending
-      in PR 5381.
+      512-by-342 game surface without desktop or menu bar. The PPC text correction
+      was merged in PR 5381; the hosted screenshot receipt was rechecked on 7 November 2026.
 references:
 - https://www.vintageapplemac.com/software/games/p/
 - https://github.com/benletchford/systemless/issues/4681
@@ -128,5 +159,7 @@ Choose **Game → New** and move the paddle to keep the ball in play while clear
 bricks. This is the original shareware package; its manual describes a 30-day
 trial and registration terms.
 
-Native runs reached the first board and demonstrated paddle input on both included
-architectures. Browser qualification is pending, so launch remains disabled.
+Native and browser checks demonstrate paddle input and first-board scoring on both
+included architectures. The original author marked native PPC unsupported; its
+Systemless verification covers this bounded checkpoint. Full levels and saves
+remain unverified.
