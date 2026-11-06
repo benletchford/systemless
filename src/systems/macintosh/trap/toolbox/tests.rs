@@ -21851,6 +21851,8 @@ fn classic_smc_movie_fixture() -> (TrapDispatcher, MacMemoryBus, u32, u32) {
     bus.write_long(pixmap, pixels);
     bus.write_word(pixmap + 4, 0x8000 | 32);
     bus.write_word(pixmap + 32, 32);
+    bus.write_word(pixmap + 10, 4);
+    bus.write_word(pixmap + 12, 8);
     let mut state = super::MovieState::new(0, -1, 0, (0, 0, 4, 8), 3, 60);
     state.gworld_port = port;
     // Two solid blocks, then preserve the left block and replace the right.
