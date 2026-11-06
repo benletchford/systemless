@@ -6281,3 +6281,154 @@ fn quicktime_controller_seek_delivers_jump_without_spurious_drawing_callback() {
     assert_eq!(loaded.memory.read_u32_be(data + 220), Some(callback));
     assert_eq!(loaded.memory.read_u32_be(data + 224), Some(0));
 }
+
+#[test]
+fn quicktime_align_screen_rect_uses_documented_live_depth_alignment() {
+    for (depth, expected_at_nine, expected_at_thirteen) in [
+        (1, 16, 16),
+        (2, 16, 16),
+        (4, 8, 16),
+        (8, 8, 12),
+        (16, 10, 14),
+        (32, 8, 12),
+    ] {
+        for (left, expected) in [(9, expected_at_nine), (13, expected_at_thirteen)] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+                b"QuickTimeLib",
+                b"AlignScreenRect",
+            ))
+            .unwrap();
+            ppc_seed_main_gworld(&mut loaded.memory);
+            loaded
+                .memory
+                .write_u16_be(PPC_MAIN_PIXMAP + 32, depth)
+                .unwrap();
+            let rect = PPC_DATA_BASE + 0x3000;
+            loaded.memory.add_region(rect, vec![0; 8]);
+            ppc_write_rect(&mut loaded.memory, rect, 10, left, 110, left + 100).unwrap();
+            loaded.cpu.gpr[3] = rect;
+            loaded.cpu.gpr[4] = 0;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+            assert_eq!(loaded.cpu.gpr[3], rect); // void import, not an OSErr
+            assert_eq!(
+                ppc_read_rect(&mut loaded.memory, rect),
+                Some((10, expected, 110, expected + 100))
+            );
+        }
+    }
+}
+
+#[test]
+fn quicktime_align_screen_rect_handles_negative_aligned_and_nonintersecting_rectangles() {
+    let outside = ppc_main_screen_width() as i16 + 100;
+    for (before, after) in [
+        ((10, -7, 110, 93), (10, -8, 110, 92)),
+        ((10, 8, 110, 108), (10, 8, 110, 108)),
+        (
+            (10, outside, 110, outside + 100),
+            (10, outside, 110, outside + 100),
+        ),
+        ((10, 9, 10, 109), (10, 9, 10, 109)),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"QuickTimeLib",
+            b"AlignScreenRect",
+        ))
+        .unwrap();
+        ppc_seed_main_gworld(&mut loaded.memory);
+        let rect = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(rect, vec![0; 8]);
+        ppc_write_rect(
+            &mut loaded.memory,
+            rect,
+            before.0,
+            before.1,
+            before.2,
+            before.3,
+        )
+        .unwrap();
+        loaded.cpu.gpr[3] = rect;
+        loaded.cpu.gpr[4] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some(after));
+    }
+}
+
+#[test]
+fn quicktime_align_screen_rect_calls_native_alignment_after_default_and_restores_linkage() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"AlignScreenRect",
+    ))
+    .unwrap();
+    ppc_seed_main_gworld(&mut loaded.memory);
+    let rect = PPC_DATA_BASE + 0x3000;
+    let record = rect + 0x100;
+    let vector = record + 0x20;
+    let callback = PPC_CODE_BASE + 0x4000;
+    loaded.memory.add_region(rect, vec![0; 0x200]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 13, 110, 113).unwrap();
+    loaded.memory.write_u32_be(record, vector).unwrap();
+    loaded.memory.write_u32_be(record + 4, 5).unwrap();
+    loaded.memory.write_u32_be(vector, callback).unwrap();
+    loaded.memory.write_u32_be(vector + 4, 0x2345_6000).unwrap();
+    let mut code = Vec::new();
+    for word in [
+        d_form_u(40, 5, 3, 2),           // lhz r5, 2(r3): aligned left
+        x_form(31, 5, 5, 4, 266, false), // add r5, r5, r4: refcon
+        d_form_u(44, 5, 3, 0),           // sth r5, 0(r3): custom top
+        d_form_u(14, 3, 0, 999),         // callback's volatile return register
+        BLR,
+    ] {
+        code.extend_from_slice(&word.to_be_bytes());
+    }
+    loaded.memory.add_region(callback, code);
+    loaded.cpu.gpr[2] = 0x1234_5678;
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = record;
+    for _ in 0..128 {
+        let probe = loaded.run_with_hle_imports(5);
+        assert_eq!(probe.unsupported_import_index, None);
+        match probe.result {
+            PpcRunResult::CycleLimit { .. } => continue,
+            PpcRunResult::Halted { .. } => break,
+            result => panic!("unexpected alignment callback result: {result:?}"),
+        }
+    }
+    assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+    assert_eq!(loaded.cpu.gpr[2], 0x1234_5678);
+    assert_eq!(loaded.cpu.gpr[3], rect);
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, rect),
+        Some((17, 12, 110, 112))
+    );
+}
+
+#[test]
+fn quicktime_align_screen_rect_rejects_invalid_callback_without_changing_rectangle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"AlignScreenRect",
+    ))
+    .unwrap();
+    ppc_seed_main_gworld(&mut loaded.memory);
+    let rect = PPC_DATA_BASE + 0x3000;
+    let record = rect + 0x100;
+    loaded.memory.add_region(rect, vec![0; 0x200]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 13, 110, 113).unwrap();
+    loaded.memory.write_u32_be(record, 0).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = record;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_ne!(loaded.cpu.pc, loaded.halt_pc);
+    assert_eq!(
+        ppc_read_rect(&mut loaded.memory, rect),
+        Some((10, 13, 110, 113))
+    );
+}
