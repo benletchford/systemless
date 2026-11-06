@@ -7685,6 +7685,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "PLstrcmp") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::PlStrcmp)
         }
+        ("StdCLib", "bsearch") => {
+            PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Bsearch)
+        }
         ("StdCLib", "qsort") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Qsort)
         }

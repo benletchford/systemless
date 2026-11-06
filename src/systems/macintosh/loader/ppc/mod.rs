@@ -198,7 +198,7 @@ use dispatch_list::*;
 pub(in crate::systems::macintosh::loader::ppc) use dispatch_mixed_mode::*;
 use dispatch_standard_file::*;
 pub(super) use dispatch_stdc::*;
-pub(crate) use dispatch_stdc::{PpcQsortState, PpcStdSignalState};
+pub(crate) use dispatch_stdc::{PpcBsearchState, PpcQsortState, PpcStdSignalState};
 pub use dispatch_stdio::PpcStdIoOperation;
 pub(crate) use dispatch_stdio::*;
 #[cfg(test)]

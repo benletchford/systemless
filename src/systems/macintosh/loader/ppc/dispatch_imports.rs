@@ -24,6 +24,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) resource_policy: &'a SharedProcessResourcePolicy,
     pub(crate) native_exception_handler: &'a Cell<u32>,
     pub(crate) stdc_qsort_stack: &'a mut Vec<PpcQsortState>,
+    pub(crate) stdc_bsearch_stack: &'a mut Vec<PpcBsearchState>,
     pub(crate) dialog_callback_stack: &'a mut Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: &'a mut Vec<PpcCollectionCallbackState>,
     pub(crate) picture_callback_stack: &'a mut Vec<dispatch_picture::PpcPictureCallbackState>,
@@ -149,6 +150,7 @@ pub(crate) fn dispatch_supported_import(
         resource_policy,
         native_exception_handler,
         stdc_qsort_stack,
+        stdc_bsearch_stack,
         dialog_callback_stack,
         collection_callback_stack,
         picture_callback_stack,
@@ -539,6 +541,7 @@ pub(crate) fn dispatch_supported_import(
             heap_cursor,
             last_mem_error,
             stdc_qsort_stack,
+            stdc_bsearch_stack,
             stdc_signal_state: &mut toolbox_startup.stdc_signal_state,
             stdc_jmpbufs: &mut toolbox_startup.stdc_jmpbufs,
         })
