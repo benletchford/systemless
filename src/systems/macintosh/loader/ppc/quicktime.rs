@@ -270,6 +270,7 @@ pub struct PpcQuickTimeControllerRecord {
     pub action_filter: u32,
     pub action_ref_con: u32,
     pub action_filter_rtoc: u32,
+    pub keys_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -906,6 +907,32 @@ pub(super) fn dispatch_quicktime_compatibility(
                     ppc_qt_seek_movie(quicktime, sound, time);
                     PpcImportAction::Return(0)
                 }
+                32 => {
+                    // QuickTime Components (1993), p. 2-19: SetKeysEnabled
+                    // carries a Boolean value directly in the params slot.
+                    let controller = quicktime
+                        .movie_controllers
+                        .iter_mut()
+                        .find(|controller| controller.handle == cpu.gpr[3])
+                        .expect("controller was validated above");
+                    controller.keys_enabled = cpu.gpr[5] as u8 != 0;
+                    PpcImportAction::Return(0)
+                }
+                33 => {
+                    // GetKeysEnabled writes one Boolean byte through params.
+                    let out = cpu.gpr[5];
+                    if out == 0 || !ppc_memory_can_write_bytes(memory, out, 1) {
+                        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+                    }
+                    let enabled = quicktime
+                        .movie_controllers
+                        .iter()
+                        .find(|controller| controller.handle == cpu.gpr[3])
+                        .expect("controller was validated above")
+                        .keys_enabled;
+                    let _ = memory.write_u8(out, u8::from(enabled));
+                    PpcImportAction::Return(0)
+                }
                 42 => {
                     // mcActionGetPlayRate writes a Fixed to the caller's pointer.
                     if !compatibility_valid_movie(quicktime, movie) {
@@ -951,6 +978,7 @@ pub(super) fn dispatch_quicktime_compatibility(
                     action_filter: 0,
                     action_ref_con: 0,
                     action_filter_rtoc: 0,
+                    keys_enabled: false,
                 });
             PpcImportAction::Return(handle)
         }
