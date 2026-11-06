@@ -52,7 +52,7 @@ compatibility:
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/5643
 runtime:
-  executable_path: Star Trek JR Demo
+  executable_path: HFS+ Disk Image/Star Trek JR Demo
   screen_depth: 8
   show_menu_bar: true
 artifacts:
