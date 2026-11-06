@@ -61,6 +61,9 @@ pub(super) fn dispatch_quicktime_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::QtAlignScreenRect => {
+            Some(ppc_qt_align_screen_rect(cpu, memory))
+        }
         PpcImportDispatcherTarget::QtEnterMovies => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_qt_enter_movies(quicktime),
         ))),
@@ -560,4 +563,94 @@ fn deliver_quicktime_callbacks(
         cpu.gpr[3] = saved;
     }
     PpcImportAction::Return(frame.result)
+}
+
+fn ppc_qt_align_screen_rect(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> PpcImportAction {
+    // IM:QuickTime (1993), pp. 3-142, 3-146 and 3-155: global rectangle,
+    // depth-specific standard alignment, then an optional application callback.
+    let rect = cpu.gpr[3];
+    let record = cpu.gpr[4];
+    if rect == 0 {
+        return PpcImportAction::ReturnPreserve;
+    }
+    if !ppc_memory_can_write_bytes(memory, rect, 8) {
+        return PpcImportAction::Halt;
+    }
+    let callback = if record == 0 {
+        None
+    } else {
+        let Some(callback) = memory
+            .read_u32_be(record)
+            .and_then(|procedure| ppc_resolve_callback_target(memory, procedure, cpu.gpr[2], None))
+        else {
+            return PpcImportAction::Halt;
+        };
+        let Some(refcon) = record
+            .checked_add(4)
+            .and_then(|address| memory.read_u32_be(address))
+        else {
+            return PpcImportAction::Halt;
+        };
+        if memory.read_u32_be(callback.entry).is_none() {
+            return PpcImportAction::Halt;
+        }
+        Some((callback, refcon))
+    };
+    let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect) else {
+        return PpcImportAction::Halt;
+    };
+    // There is one display in the current machine profile. Offscreen worlds
+    // are not screens; use the main device's live PixMap, not the current port.
+    if top < bottom
+        && left < right
+        && bottom > 0
+        && right > 0
+        && i32::from(top) < ppc_main_screen_height() as i32
+        && i32::from(left) < ppc_main_screen_width() as i32
+    {
+        let step: i32 = match memory.read_u16_be(PPC_MAIN_PIXMAP + 32) {
+            Some(1 | 2) => 16,
+            Some(4) => 8,
+            Some(8 | 32) => 4, // The PowerPC profile is of 68040-or-later class.
+            Some(16) => 2,
+            _ => return PpcImportAction::Halt,
+        };
+        let aligned = (i32::from(left) + step / 2) & !(step - 1);
+        let delta = (aligned - i32::from(left)) as i16;
+        if ppc_write_rect(
+            memory,
+            rect,
+            top,
+            aligned as i16,
+            bottom,
+            right.wrapping_add(delta),
+        )
+        .is_none()
+        {
+            return PpcImportAction::Halt;
+        }
+    }
+    let Some((callback, refcon)) = callback else {
+        return PpcImportAction::ReturnPreserve;
+    };
+    let final_pc = cpu.lr;
+    let restore_rtoc = cpu.gpr[2];
+    if install_powerpc_call_arguments(cpu, memory, &[rect, refcon]).is_none() {
+        return PpcImportAction::Halt;
+    }
+    GuestCallEffect::call_guest(
+        GuestCallRequest::new(GuestCallTarget {
+            isa: GuestIsa::PowerPc,
+            entry: callback.entry,
+            rtoc: callback.rtoc,
+        }),
+        GuestCallContinuation::to_powerpc(
+            PPC_GUEST_CALL_RETURN_PC,
+            final_pc,
+            restore_rtoc,
+            PpcNativeReturnGpr3::Set(rect),
+        ),
+    )
+    .into_ppc_import_action()
+    .unwrap_or(PpcImportAction::Halt)
 }

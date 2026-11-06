@@ -1721,6 +1721,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("inputsprocket imports return through dispatch_inputsprocket_import")
         }
         PpcImportDispatcherTarget::QtEnterMovies
+        | PpcImportDispatcherTarget::QtAlignScreenRect
         | PpcImportDispatcherTarget::QtExitMovies
         | PpcImportDispatcherTarget::QtGetMoviesError
         | PpcImportDispatcherTarget::QtGetMoviesStickyError
