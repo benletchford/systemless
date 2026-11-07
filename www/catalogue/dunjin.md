@@ -34,6 +34,26 @@ compatibility:
       stays disabled pending browser qualification.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5765
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: 5157fe65bafd1076d323c4f37c4e6e56c0a93768 private browser on debae0f3 runtime
+    architecture: 68k
+    environment: >-
+      Fresh isolated Chrome worker/WebGL sessions at original/default 25 MHz,
+      800x600 and depth 8. Both main and worker Wasm HTTP 200 response bodies and
+      complete promoted archive match independently hashed build/original pins.
+      Active N, LOOK, E and LOOK with Return print responses and advance Moves to 4;
+      matched control types the same letters without Return, retaining in forest,
+      Moves zero and unsubmitted input. Actual final images inspected. Each case
+      measures 20 seconds of ordinary interaction. Active guest/host rates are
+      62.27/59.25 per second, maximum worker frame 64.9 ms and minimum audio queue
+      93.3 ms. Control rates are 60.83/57.88, maximum frame 69.5 ms and minimum audio
+      89.1 ms. Both fail the unchanged 50 ms worker-frame gate despite passing
+      the rate/audio gates, with no lifecycle or network errors. Overall status
+      remains unknown and launch disabled pending a runtime fix and fresh passing
+      browser qualification. No released public play claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5765
 runtime:
   executable_path: Dunjin44.cpt/Dunjin
   screen_depth: 8
