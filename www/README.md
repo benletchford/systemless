@@ -361,7 +361,9 @@ order, then stable ID. A–Z is also available. API failures leave the catalogue
 usable in alphabetical order. Static HTML remains alphabetical until the browser
 loads counts.
 
-Popularity uses two Pages Functions and one D1 database. `_routes.json` restricts
+Popularity uses a Rust Worker compiled to WebAssembly in Pages advanced mode
+and one D1 database. The handlers live in `www/api/src/lib.rs`; `worker-build`
+generates the JavaScript loader and Wasm module under `dist/_worker.js/`. `_routes.json` restricts
 Functions invocations to `/api/play` and `/api/popularity`; assets and HTML remain
 static. Rankings are cached at each Cloudflare location for one hour and in the
 browser for five minutes. Cache hits still invoke a Function but avoid D1 reads.
@@ -404,7 +406,7 @@ The existing GitHub secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
 are sufficient. The token needs D1 Read/Write and Pages Read/Write on that account.
 The deployment workflow finds `systemless-popularity` by name or creates it,
 configures the binding, applies migrations, and deploys Pages with the Functions
-from `www/functions`. Deployments share a concurrency group to prevent overlapping
+from `www/api`. Deployments share a concurrency group to prevent overlapping
 setup. The database UUID appears in the workflow summary. Optionally pin an
 existing UUID with the production environment variable
 `CLOUDFLARE_POPULARITY_DATABASE_ID`.
@@ -423,7 +425,21 @@ npx wrangler@4.142.0 pages deploy dist --project-name=systemless-org --branch=ma
 The configure script updates the local `www/wrangler.toml`; do not commit that
 account-specific binding. Missing credentials or failed database setup stop the
 deployment. Preview hosts return empty rankings and reject play recording even if
-a database binding is present. For a local Functions smoke test, build the site,
+a database binding is present. To test the compiled Rust handlers against local
+Cloudflare D1 and Cache implementations:
+
+```sh
+cargo test --locked -p systemless-popularity-api
+sh www/scripts/build-api.sh
+npm ci --prefix www/api
+npm test --prefix www/api
+```
+
+The build pins `worker-build` to the Rust SDK version and runs after Trunk so the
+server bundle survives Trunk's output cleanup. Browser engagement tracking still
+uses `www/src/popularity.js`. No additional Cloudflare credentials are needed.
+
+For a local Pages smoke test, build the site,
 apply migrations with `--local` and run `wrangler pages dev dist`; production host
 checks intentionally disable tracking on localhost.
 

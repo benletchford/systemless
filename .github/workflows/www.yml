@@ -46,12 +46,18 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Format website and catalogue tools
-        run: cargo fmt -p systemless-org -p systemless-catalogue-tools -- --check
+        run: cargo fmt -p systemless-org -p systemless-catalogue-tools -p systemless-popularity-api -- --check
       - name: Test promotion authorization and browser runtimes
         run: node --test .github/scripts/promote-review.test.cjs www/tests/*.test.cjs
-      - name: Build Cloudflare Functions
-        working-directory: www
-        run: npx --yes wrangler@4.142.0 pages functions build functions --outdir /tmp/systemless-functions
+      - name: Build and test Rust Cloudflare Functions
+        run: |
+          cargo test --locked -p systemless-popularity-api
+          cargo clippy --locked -p systemless-popularity-api --all-targets -- -D warnings
+          sh www/scripts/build-api.sh
+          npm ci --prefix www/api
+          npm test --prefix www/api
+          cd www
+          npx --yes wrangler@4.142.0 pages functions build --build-output-directory dist --outdir /tmp/systemless-functions
       - name: Test and lint catalogue tools
         run: |
           cargo test --locked -p systemless-catalogue-tools

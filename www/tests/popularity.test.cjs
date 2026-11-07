@@ -1,104 +1,14 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
-const { execFileSync } = require("node:child_process");
 const root = path.join(__dirname, "..");
 
 function load(relative, globals, exports) {
   const source = fs.readFileSync(path.join(root, relative), "utf8").replaceAll("export function", "function").replaceAll("export async function", "async function");
   return vm.runInNewContext(`${source}\n;({${exports.join(",")}})`, { Response, Request, URL, Date, TextDecoder, ...globals });
 }
-
-function database(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "systemless-popularity-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const db = path.join(dir, "test.sqlite");
-  const run = (sql, values = [], schema = false) => JSON.parse(execFileSync("python3", ["-c", `
-import sqlite3,json,sys
-con=sqlite3.connect(sys.argv[1])
-con.row_factory=sqlite3.Row
-q=json.load(sys.stdin)
-if q['schema']:
- con.executescript(q['sql']); result=[]
-else:
- result=[dict(r) for r in con.execute(q['sql'],q['values'])]
-con.commit()
-print(json.dumps(result))
-`, db], { input: JSON.stringify({ sql, values, schema }), encoding: "utf8" }));
-  run(fs.readFileSync(path.join(root, "migrations/0001_popularity.sql"), "utf8"), [], true);
-  return {
-    run,
-    prepare(sql) {
-      return { bind(...values) { return { sql, values, async all() { return { results: run(sql, values) }; } }; } };
-    },
-    async batch(statements) { for (const s of statements) run(s.sql, s.values); },
-  };
-}
-const visitor = "a".repeat(32);
-function request(body = { game: "doom", visitor }, headers = {}, host = "systemless.org") {
-  return new Request(`https://${host}/api/play`, { method: "POST", headers: {
-    Origin: `https://${host}`, "Content-Type": "application/json", ...headers,
-  }, body: JSON.stringify(body) });
-}
-
-test("play counting deduplicates in SQLite, aggregates browsers and expires old rows", async t => {
-  const db = database(t);
-  const { onRequest } = load("functions/api/play.js", {}, ["onRequest"]);
-  const env = { POPULARITY: db, ASSETS: { fetch: async () => Response.json(["doom"]) } };
-  for (const token of [visitor, visitor, "b".repeat(32)]) {
-    assert.equal((await onRequest({ request: request({ game: "doom", visitor: token }), env })).status, 204);
-  }
-  assert.equal(db.run("SELECT plays FROM daily_plays")[0].plays, 2);
-  db.run("INSERT INTO play_visitors VALUES ('2000-01-01', ?, 'doom')", [visitor]);
-  await onRequest({ request: request(), env });
-  assert.equal(db.run("SELECT * FROM play_visitors WHERE day = '2000-01-01'").length, 0);
-  assert.equal(db.run("SELECT * FROM daily_plays WHERE day = '2000-01-01'").length, 0);
-});
-
-test("invalid requests and previews do not write; browser contribution is bounded", async t => {
-  const db = database(t);
-  const { onRequest } = load("functions/api/play.js", {}, ["onRequest"]);
-  const env = { POPULARITY: db, ASSETS: { fetch: async () => Response.json(["doom"]) } };
-  for (const [req, status] of [
-    [request({}, {}, "preview.pages.dev"), 503],
-    [request(undefined, { Origin: "https://evil.example" }), 403],
-    [request({ game: "missing", visitor }), 400],
-    [request({ game: "doom", visitor: "bad" }), 400],
-    [request({ padding: "x".repeat(600) }), 413],
-  ]) assert.equal((await onRequest({ request: req, env })).status, status);
-  assert.equal(db.run("SELECT * FROM daily_plays").length, 0);
-  const day = new Date().toISOString().slice(0, 10);
-  for (let i = 0; i < 50; i++) db.run("INSERT INTO play_visitors VALUES (?, ?, ?)", [day, visitor, `game-${i}`]);
-  await onRequest({ request: request(), env });
-  assert.equal(db.run("SELECT * FROM daily_plays WHERE game = 'doom'").length, 0);
-});
-
-test("rankings use 30 UTC dates, cache independently of query string, and fail gracefully", async t => {
-  const db = database(t);
-  const today = new Date().toISOString().slice(0, 10);
-  const oldest = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
-  const expired = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  for (const [day, count] of [[today, 3], [oldest, 2], [expired, 100]]) db.run("INSERT INTO daily_plays VALUES (?, 'doom', ?)", [day, count]);
-  const entries = new Map();
-  const pending = [];
-  const cache = { async match(key) { return entries.get(key.url)?.clone(); }, async put(key, value) { entries.set(key.url, value); } };
-  const { onRequest } = load("functions/api/popularity.js", { caches: { default: cache } }, ["onRequest"]);
-  const context = { request: new Request("https://systemless.org/api/popularity?bust=1"), env: { POPULARITY: db }, waitUntil: promise => pending.push(promise) };
-  const response = await onRequest(context);
-  assert.deepEqual(await response.json(), { plays: { doom: 5 } });
-  await Promise.all(pending);
-  assert.equal(entries.size, 1);
-  context.env.POPULARITY = { prepare() { throw new Error("offline"); } };
-  context.request = new Request("https://systemless.org/api/popularity?bust=2");
-  assert.equal((await onRequest(context)).status, 200);
-  entries.clear();
-  const failed = await onRequest(context);
-  assert.equal(failed.status, 503);
-  assert.deepEqual(await failed.json(), { plays: {} });
-});
 
 function browser() {
   let now = 0, callback, posts = [];
