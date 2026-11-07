@@ -10042,7 +10042,9 @@ impl super::TrapDispatcher {
                         bus.read_long(pm_ptr + 42),
                     )
                 } else {
-                    let base = bus.read_long(port);
+                    // GrafPort.device occupies the first two bytes; portBits
+                    // is the embedded BitMap beginning at +2 (IM I, I-148).
+                    let base = bus.read_long(port + 2);
                     let (screen_base, _, _, _, screen_ps) = self.screen_mode;
                     let pixel_size = if base == screen_base && screen_ps > 1 {
                         u32::from(screen_ps)
@@ -10051,9 +10053,9 @@ impl super::TrapDispatcher {
                     };
                     (
                         base,
-                        (bus.read_word(port + 4) & 0x3FFF) as u32,
-                        bus.read_word(port + 6) as i16,
+                        (bus.read_word(port + 6) & 0x3FFF) as u32,
                         bus.read_word(port + 8) as i16,
+                        bus.read_word(port + 10) as i16,
                         pixel_size,
                         0,
                     )
