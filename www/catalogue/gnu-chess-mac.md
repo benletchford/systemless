@@ -6,10 +6,11 @@ summary: >-
   Play chess against the Macintosh port of GNU Chess, with an opening book,
   adjustable clocks and a move list.
 developer: Dan Oetting and contributors
+year: 1995
 architectures:
 - 68k
 default_architecture: 68k
-category: Board
+category: Strategy
 launch_enabled: false
 compatibility:
   status: unknown
@@ -34,7 +35,7 @@ compatibility:
       opens a black board and is not exposed as supported. Browser input and
       pacing, complete games, save/load and sound remain unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/2290#issuecomment-6702025370
+    evidence: https://github.com/benletchford/systemless/issues/2290
 runtime:
   executable_path: GnuChessMac40b5ƒ/GnuChessMac40b5
   screen_depth: 8
@@ -46,8 +47,6 @@ artifacts:
   source:
     type: incoming
     path: catalogue/incoming/gnu-chess-mac/gnuchessMAC40b5.hqx
-    sha256: 346158a881746632ff6ec74eefab43bc0fc1afea503725645f32a712fed5f0e7
-    size_bytes: 232547
   provenance:
     redistribution: permitted
     original: true
@@ -74,8 +73,6 @@ artifacts:
   source:
     type: incoming
     path: catalogue/incoming/gnu-chess-mac/gnuchessMAC-src-v40b5.hqx
-    sha256: 20883c771663d7c159aa764d9983371f70d3c08184e4a1839aff9a987f538fb2
-    size_bytes: 211850
   provenance:
     redistribution: permitted
     original: true
@@ -99,13 +96,11 @@ artifacts:
   source:
     type: incoming
     path: catalogue/incoming/gnu-chess-mac/gameplay.png
-    sha256: 8e3b836aae10e041cafe69e569e40a2602087a36d1c3c5d2d641487be1234972
-    size_bytes: 5275
   provenance:
     redistribution: permitted
     content_only: true
     sources:
-    - https://github.com/benletchford/systemless/issues/2290#issuecomment-6702025370
+    - https://github.com/benletchford/systemless/issues/2290
     license: GPL-2.0-only
     rights_holder: GNU Chess authors and Macintosh port contributors
     permission: Original gameplay capture of the unchanged GPL-licensed game.
