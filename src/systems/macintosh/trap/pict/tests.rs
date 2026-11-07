@@ -147,6 +147,161 @@ fn render_text_picture(picture: &[u8], width: u16, height: u16) -> Vec<u8> {
     bus.read_bytes(screen, usize::from(width) * usize::from(height))
 }
 
+fn push_origin_test_op(commands: &mut Vec<u8>, v2: bool, opcode: u16, words: &[i16]) {
+    if v2 {
+        super::recording_push_word(commands, opcode);
+    } else {
+        commands.push(opcode as u8);
+    }
+    for &word in words {
+        commands.extend_from_slice(&word.to_be_bytes());
+    }
+}
+
+fn finish_origin_test_picture(frame: (i16, i16, i16, i16), v2: bool, commands: Vec<u8>) -> Vec<u8> {
+    if v2 {
+        super::finish_recording(frame, commands)
+    } else {
+        finish_v1_picture(frame, &commands)
+    }
+}
+
+#[test]
+fn pict_origin_moves_shapes_and_preserves_existing_clip_at_multiple_scales() {
+    // Origin is signed dh,dv (IM:Imaging With QuickDraw, Appendix A, A-5).
+    // These three rectangles have explicit destination coordinates; the
+    // third crosses a clip established before the second origin change.
+    for v2 in [false, true] {
+        let mut commands = Vec::new();
+        push_origin_test_op(&mut commands, v2, 0x0C, &[10, 20]);
+        push_origin_test_op(&mut commands, v2, 0x01, &[10, 20, 10, 32, 26]);
+        push_origin_test_op(&mut commands, v2, 0x31, &[22, 13, 25, 17]);
+        push_origin_test_op(&mut commands, v2, 0x0C, &[-4, -6]);
+        push_origin_test_op(&mut commands, v2, 0x31, &[16, 8, 18, 10]);
+        push_origin_test_op(&mut commands, v2, 0x31, &[24, 18, 28, 24]);
+        let picture = finish_origin_test_picture((0, 0, 24, 32), v2, commands);
+        for scale in [1u16, 2] {
+            let width = 32 * scale;
+            let pixels = render_text_picture(&picture, width, 24 * scale);
+            for y in 0..24 * scale {
+                for x in 0..width {
+                    let (px, py) = (x / scale, y / scale);
+                    let inside = ((2..5).contains(&py) && (3..7).contains(&px))
+                        || ((2..4).contains(&py) && (2..4).contains(&px))
+                        || ((10..12).contains(&py) && (12..16).contains(&px));
+                    assert_eq!(
+                        pixels[usize::from(y * width + x)],
+                        if inside { 255 } else { 0 },
+                        "v2={v2} scale={scale} pixel=({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pict_origin_keeps_relative_text_positions_in_the_shifted_coordinate_plane() {
+    let frame = (0, 0, 48, 80);
+    let mut shifted = Vec::new();
+    push_origin_test_op(&mut shifted, true, 0x0C, &[8, 16]);
+    push_origin_test_op(&mut shifted, true, 0x01, &[10, 16, 8, 64, 88]);
+    push_v2_relative_text(&mut shifted, 0x2B, &[12, 28], b"A");
+    push_origin_test_op(&mut shifted, true, 0x0C, &[-4, 6]);
+    push_v2_relative_text(&mut shifted, 0x2A, &[12], b"B");
+    super::recording_push_long_text(&mut shifted, 46, 24, b"C");
+    let shifted = super::finish_recording(frame, shifted);
+    let mut plain = Vec::new();
+    for (v, h, text) in [(12, 4, b"A"), (18, 8, b"B"), (24, 20, b"C")] {
+        super::recording_push_long_text(&mut plain, v, h, text);
+    }
+    let plain = super::finish_recording(frame, plain);
+    for scale in [1, 2] {
+        let expected = render_text_picture(&plain, 80 * scale, 48 * scale);
+        assert!(expected.contains(&255));
+        assert_eq!(
+            render_text_picture(&shifted, 80 * scale, 48 * scale),
+            expected
+        );
+    }
+}
+
+#[test]
+fn pict_origin_preserves_reused_rectangle_and_graphics_pen_device_positions() {
+    let frame = (0, 0, 32, 48);
+    let mut shifted = Vec::new();
+    push_origin_test_op(&mut shifted, true, 0x31, &[2, 2, 6, 8]);
+    push_origin_test_op(&mut shifted, true, 0x20, &[20, 3, 20, 10]);
+    push_origin_test_op(&mut shifted, true, 0x0C, &[10, 8]);
+    push_origin_test_op(&mut shifted, true, 0x0E, &[0, 30]); // whiteColor
+    push_origin_test_op(&mut shifted, true, 0x39, &[]); // paintSameRect erases the first rect
+    push_origin_test_op(&mut shifted, true, 0x0E, &[0, 33]); // blackColor
+    push_origin_test_op(&mut shifted, true, 0x21, &[28, 30]); // lineFrom
+    let shifted = super::finish_recording(frame, shifted);
+    let mut plain = Vec::new();
+    push_origin_test_op(&mut plain, true, 0x20, &[20, 3, 20, 20]);
+    let plain = super::finish_recording(frame, plain);
+    for scale in [1, 2] {
+        let expected = render_text_picture(&plain, 48 * scale, 32 * scale);
+        assert!(expected.contains(&255));
+        assert_eq!(
+            render_text_picture(&shifted, 48 * scale, 32 * scale),
+            expected
+        );
+    }
+}
+
+#[test]
+fn pict_origin_moves_bitmap_destination_without_changing_source_coordinates() {
+    for v2 in [false, true] {
+        let mut commands = Vec::new();
+        push_origin_test_op(&mut commands, v2, 0x0C, &[8, 6]);
+        push_origin_test_op(
+            &mut commands,
+            v2,
+            0x90,
+            &[1, 0, 0, 1, 8, 0, 0, 1, 8, 8, 11, 9, 19, 0],
+        );
+        commands.push(0xAA);
+        if v2 && !commands.len().is_multiple_of(2) {
+            commands.push(0);
+        }
+        let picture = finish_origin_test_picture((0, 0, 16, 32), v2, commands);
+        let mut plain = Vec::new();
+        push_origin_test_op(
+            &mut plain,
+            v2,
+            0x90,
+            &[1, 0, 0, 1, 8, 0, 0, 1, 8, 2, 3, 3, 11, 0],
+        );
+        plain.push(0xAA);
+        if v2 && !plain.len().is_multiple_of(2) {
+            plain.push(0);
+        }
+        let plain = finish_origin_test_picture((0, 0, 16, 32), v2, plain);
+        for scale in [1u16, 2] {
+            let width = 32 * scale;
+            let pixels = render_text_picture(&picture, width, 16 * scale);
+            let expected = render_text_picture(&plain, width, 16 * scale);
+            assert_eq!(pixels, expected, "unshifted control v2={v2} scale={scale}");
+            if scale != 1 {
+                continue;
+            }
+            for y in 0..16 * scale {
+                for x in 0..width {
+                    let (px, py) = (x / scale, y / scale);
+                    let black = py == 2 && [3, 5, 7, 9].contains(&px);
+                    assert_eq!(
+                        pixels[usize::from(y * width + x)],
+                        if black { 255 } else { 0 },
+                        "v2={v2} scale={scale} pixel=({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn pict_v1_text_metadata_preserves_byte_aligned_following_text() {
     let frame = (0, 0, 48, 80);
