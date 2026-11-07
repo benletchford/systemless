@@ -689,7 +689,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 627 | 814 | Galactic Revolt | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
 | 628 | 815 | Haunted House | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 629 | 816 | Invaders! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
-| 630 | 817 | JSokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/) |
+| 630 | 817 | JSokoban | Original 1.0b13 68K; native/browser push and pacing approved; released replay pending | P | [Original complete-package grant and evidence](catalogue/jsokoban.md); [#2279](https://github.com/benletchford/systemless/issues/2279) |
 | 631 | 818 | Killer Dice | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 632 | 819 | Lazer Zone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 633 | 820 | Mac Libs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
