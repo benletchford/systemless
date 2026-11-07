@@ -11,8 +11,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Role-Playing
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-06"
     tester: Catalogue maintainer
@@ -28,9 +29,9 @@ compatibility:
       interaction or the thrust input. Seven gameplay pixel assertions and twenty-one exact
       reference captures pass in both thrust and no-thrust runs at 2412 frontend / 2985
       guest ticks with zero exhaustion. A separate bounded replay enters the next map. This
-      is private composed evidence requiring the three fixes. Browser qualification is
+      is private composed evidence covering the three subsequently merged fixes. Browser qualification is
       recorded separately below; released/live behavior remains unverified. Combat hits, progression, saving and audio
-      fidelity remain unverified. Launch stays disabled.
+      fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5656
   - date: "2026-11-06"
@@ -50,8 +51,8 @@ compatibility:
       maximum frames 22.2/28.1 ms, minimum audio queues 303.3/281.8 ms, zero captured
       lifecycle errors. Wall-time movement leaves different positions; no exact
       browser pixel parity is claimed. Bounded hosted-browser launch approved in issue
-      comment 6696366522, conditional on required runtime fixes. PICT Origin PR 5678
-      remains outstanding; launch stays disabled until it lands. Released/live replay,
+      comment 6696366522, conditional on required runtime fixes. Archive-name PR 5659, HideWindow PR 5672
+      and PICT Origin PR 5678 have now merged; bounded launch is approved. Released/live replay,
       combat hits, longer progression, saving and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5656
@@ -121,6 +122,6 @@ alternate action.
 
 Private native and hosted-browser candidates verify the opening story, sailor
 interaction, dagger equipment and thrust; the native candidate also enters the
-next map. Launch awaits the remaining runtime prerequisite and released-runtime
-qualification. Combat hits, longer progression, saving and audio fidelity remain
+next map. All three required runtime fixes are merged and bounded launch is
+approved. Released-runtime public qualification remains pending. Combat hits, longer progression, saving and audio fidelity remain
 unverified.

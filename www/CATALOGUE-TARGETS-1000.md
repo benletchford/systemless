@@ -1,6 +1,6 @@
 # Catalogue expansion targets: 1,000 entries
 
-Research snapshot: **10 October 2026**; qualification updates through **12 October 2026**. Scope: original classic Macintosh games for **68K and PowerPC**, including intact official demos, shareware distributions, and full games only where an applicable distribution grant can be established. This is an acquisition and qualification backlog, not permission to publish.
+Research snapshot: **10 October 2026**; qualification updates through **7 November 2026**. Scope: original classic Macintosh games for **68K and PowerPC**, including intact official demos, shareware distributions, and full games only where an applicable distribution grant can be established. This is an acquisition and qualification backlog, not permission to publish.
 
 ## Stocktake and arithmetic
 
@@ -125,8 +125,8 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 78 | 265 | Angband | Original 68K/PPC packages; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/angband.md) |
 | 79 | 266 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
 | 80 | 267 | Rogue | Original 68K only; pacing fix merged; private gameplay verified; public held | P | [Rights, architecture and gameplay/pacing evidence](CATALOGUE-SOURCES.md#rogue-iii-mac-release-6--primary-slot-80) |
-| 81 | 268 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 82 | 269 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
+| 81 | 268 | MacSokoban | Original 3.0.2/3.0.3 68K; retained exclusivity notices unresolved | U | [Publication hold #2303](https://github.com/benletchford/systemless/issues/2303) |
+| 82 | 269 | Sokoban | Original 2.4.2a 68K; bounded push/control verified; browser pending | P | [Online grant and exact-package evidence](catalogue/sokoban.md); [#5711](https://github.com/benletchford/systemless/issues/5711) |
 | 83 | 270 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
 | 84 | 271 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
 | 85 | 272 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
@@ -135,7 +135,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 88 | 275 | Oxyd | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
 | 89 | 276 | per-oxyd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 90 | 277 | Lode Runner 2 | PPC lead | D | [Demo index](https://classicmacdemos.com/lode-runner-2); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 91 | 278 | Mantra | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 91 | 278 | Mantra | Original 1.02 68K; private native/browser approved; released replay pending | P | [Original grant and qualification](catalogue/mantra.md); [#5656](https://github.com/benletchford/systemless/issues/5656) |
 | 92 | 279 | Mantra II | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 93 | 280 | Sapiens | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 94 | 281 | Macnopoly | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
