@@ -797,6 +797,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 vfs_resources,
                 default_dir_id,
+                working_directories,
             ),
         ))),
         PpcImportDispatcherTarget::PBSetCatInfo => Some(PpcImportAction::Return(ppc_i16_result(
