@@ -987,6 +987,8 @@ pub(crate) struct GrowWindowTrackingState {
 #[derive(Clone, Debug)]
 pub(crate) struct RegionTrackingState {
     pub stack_ptr: u32,
+    pub region_handle: u32,
+    pub applied_offset: (i16, i16),
     pub start_mouse: (i16, i16),
     pub port_bounds_origin: (i16, i16),
     pub limit_rect: Option<(i16, i16, i16, i16)>,

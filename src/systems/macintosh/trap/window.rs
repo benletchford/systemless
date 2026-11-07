@@ -200,18 +200,38 @@ impl super::TrapDispatcher {
         )
     }
 
+    fn offset_dragged_region(
+        bus: &mut MacMemoryBus,
+        tracking: &mut super::dispatch::RegionTrackingState,
+        mouse: (i16, i16),
+    ) -> (i16, i16) {
+        let offset = Self::drag_region_offset(
+            mouse,
+            tracking.start_mouse,
+            tracking.limit_rect,
+            tracking.axis,
+        );
+        if Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect) {
+            // Move the caller's complete region, not only our feedback bbox.
+            // Apply the incremental change so stationary polls and slop
+            // reentry cannot add the original drag delta a second time.
+            let dv = offset.0.wrapping_sub(tracking.applied_offset.0);
+            let dh = offset.1.wrapping_sub(tracking.applied_offset.1);
+            if dv != 0 || dh != 0 {
+                Self::offset_region(bus, tracking.region_handle, dh, dv);
+            }
+            tracking.applied_offset = offset;
+        }
+        offset
+    }
+
     fn refresh_region_drag_outline(
         &self,
         bus: &mut MacMemoryBus,
         tracking: &mut super::dispatch::RegionTrackingState,
         mouse: (i16, i16),
     ) {
-        let (delta_v, delta_h) = Self::drag_region_offset(
-            mouse,
-            tracking.start_mouse,
-            tracking.limit_rect,
-            tracking.axis,
-        );
+        let (delta_v, delta_h) = Self::offset_dragged_region(bus, tracking, mouse);
         let (top, left, bottom, right) = tracking.original_outline_rect;
         let local_rect = (
             top.wrapping_add(delta_v),
@@ -254,6 +274,7 @@ impl super::TrapDispatcher {
                 return Ok(());
             }
 
+            Self::offset_dragged_region(bus, &mut tracking, mouse);
             self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
             if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
                 self.event_queue.remove(index);
@@ -316,6 +337,8 @@ impl super::TrapDispatcher {
         };
         let mut tracking = super::dispatch::RegionTrackingState {
             stack_ptr: sp,
+            region_handle,
+            applied_offset: (0, 0),
             start_mouse,
             port_bounds_origin,
             limit_rect: (limit_rect_ptr != 0).then(|| Self::read_rect(bus, limit_rect_ptr)),

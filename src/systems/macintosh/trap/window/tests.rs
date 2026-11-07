@@ -9739,3 +9739,91 @@ fn null_event_poll_that_redraws_window_picture_is_not_batchable() {
     assert_eq!(bus.read_byte(screen_base), 0xff);
     assert!(!disp.last_null_event_poll);
 }
+
+#[test]
+fn drag_region_offsets_complete_geometry_and_final_release_position() {
+    for opcode in [0xA905u16, 0xA926, 0xAD05, 0xAD26] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        write_test_rect(&mut bus, 0x240000, (0, 0, 100, 100));
+        write_test_rect(&mut bus, 0x240008, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), 0x240000, 0x240008, 0);
+        // A rectangular region with a rectangular hole. Its differential
+        // edge coordinates must move along with the bounding rectangle.
+        let rows = [5u16, 10, 70, 0x7FFF, 15, 20, 60, 0x7FFF,
+            35, 20, 60, 0x7FFF, 45, 10, 70, 0x7FFF, 0x7FFF];
+        let region = make_region_handle(&mut bus, 0x300000, 0x300020, 44, (5, 10, 45, 70));
+        for (i, word) in rows.into_iter().enumerate() {
+            bus.write_word(0x30002A + i as u32 * 2, word);
+        }
+        bus.write_long(sp + 18, region);
+        bus.write_long(sp + 26, 0x5A5A_1234);
+        let auto_pop = opcode & 0x0400 != 0;
+        bus.write_long(sp - 4, 0x0001_2340);
+        cpu.write_reg(Register::A7, if auto_pop { sp - 4 } else { sp });
+        disp.push_mouse_down(10, 20);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        disp.set_mouse_position(30, 50);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(0x300022), 25, "{opcode:04x}: region top must follow the drag");
+        assert_eq!(bus.read_word(0x300024), 40);
+        assert!(super::super::TrapDispatcher::region_contains_point(&bus, region, 26, 41));
+        assert!(!super::super::TrapDispatcher::region_contains_point(&bus, region, 40, 70));
+        let moved = bus.read_bytes(0x300020, 44);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_bytes(0x300020, 44), moved, "stationary polling must not add the delta again");
+        assert_eq!(cpu.read_reg(Register::A7), if auto_pop { sp - 4 } else { sp });
+        assert_eq!(bus.read_long(sp + 22), 0xDEAD_BEEF);
+
+        // The mouse-up may carry the last position without a separate move.
+        disp.push_mouse_up(40, 60);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert!(disp.region_tracking.is_none());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+        assert_eq!(bus.read_long(sp + 22), 0x001E_0028);
+        assert_eq!(bus.read_long(sp + 26), 0x5A5A_1234);
+        assert_eq!(bus.read_word(0x300020), 44);
+        assert_eq!(bus.read_word(0x300022), 35);
+        assert_eq!(bus.read_word(0x300024), 50);
+        assert!(super::super::TrapDispatcher::region_contains_point(&bus, region, 36, 51));
+        assert!(!super::super::TrapDispatcher::region_contains_point(&bus, region, 50, 80));
+        for (i, word) in [35u16, 50, 110, 0x7FFF, 45, 60, 100, 0x7FFF,
+            65, 60, 100, 0x7FFF, 75, 50, 110, 0x7FFF, 0x7FFF].into_iter().enumerate()
+        {
+            assert_eq!(bus.read_word(0x30002A + i as u32 * 2), word);
+        }
+        if auto_pop { assert_eq!(cpu.read_reg(Register::PC), 0x0001_2340); }
+    }
+}
+
+#[test]
+fn drag_region_geometry_respects_axis_limits_and_slop_reentry() {
+    for opcode in [0xA905u16, 0xA926] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        write_test_rect(&mut bus, 0x240000, (0, 0, 30, 70));
+        write_test_rect(&mut bus, 0x240008, (0, 0, 100, 100));
+        write_drag_region_frame(&mut bus, sp, (10, 10), 0x240000, 0x240008, 1);
+        let region = make_region_handle(&mut bus, 0x300000, 0x300020, 10, (5, 10, 45, 70));
+        bus.write_long(sp + 18, region);
+        disp.push_mouse_down(10, 10);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        disp.set_mouse_position(40, 90);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(0x300022), 5);
+        assert_eq!(bus.read_word(0x300024), 69);
+        let bounded = bus.read_bytes(0x300020, 10);
+        disp.set_mouse_position(120, 90);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_bytes(0x300020, 10), bounded, "outside slop must not move the region");
+        disp.set_mouse_position(20, 30);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(0x300022), 5);
+        assert_eq!(bus.read_word(0x300024), 30);
+        disp.push_mouse_up(120, 30);
+        disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(sp + 22), 0x8000_8000);
+        assert_eq!(bus.read_word(0x300024), 30);
+    }
+}

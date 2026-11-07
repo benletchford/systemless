@@ -2518,6 +2518,8 @@
     fn install_region_tracking(disp: &mut TrapDispatcher) {
         disp.region_tracking = Some(RegionTrackingState {
             stack_ptr: 0,
+            region_handle: 0,
+            applied_offset: (0, 0),
             start_mouse: (0, 0),
             port_bounds_origin: (0, 0),
             limit_rect: None,
