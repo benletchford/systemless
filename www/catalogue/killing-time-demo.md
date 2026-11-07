@@ -47,6 +47,27 @@ compatibility:
       unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5730
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.111.0 public release
+    architecture: ppc
+    environment: >-
+      Actual public HTTPS release in fresh Chromium 156/Linux aarch64 profiles, isolated
+      worker/WebGL and SharedArrayBuffer, default 25 MHz/depth 8. No local hosting,
+      resolver override or request interception. Public source stamp
+      be8fb068119830d584ae5a099338c82d339bc856 verified. Original archive HTTP 200 matches
+      the catalogue integrity pin. Main and worker Wasm HTTP 200 bodies match the
+      independently downloaded deployed build: 15727694 bytes, SHA-256
+      5ca3c00c8b65d216a4b9f87401cf28ac58bd95c58a85bd641ea481b6ea0e7c6e. Arrow keys move
+      and turn; Control fires, leaving four rounds versus six in the omitted-key control.
+      Enemy combat, switches, ghost movies, complete levels, persistence and audio
+      fidelity remain unverified. Active and control each include an unchanged 20-second
+      gameplay sample. Final steady guest/host snapshots are 59.9755/59.9755 and
+      60.1504/60.1504 per second; maximum sampled worker frames 34.1/26.9 ms and minimum
+      audio queues 153.7/171.2 ms. All unchanged pacing gates pass, with no captured
+      lifecycle or network errors. These snapshots are not whole-level averages.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5730
 runtime:
   executable_path: Killing Time™ Demo/Killing Time™ Demo
   screen_depth: 8

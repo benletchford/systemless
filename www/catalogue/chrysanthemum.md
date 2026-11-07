@@ -68,6 +68,27 @@ compatibility:
       hardware parity and released public play remain unverified.'
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5725
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.111.0 public release
+    architecture: 68k
+    environment: >-
+      Actual public HTTPS release in fresh Chromium 156/Linux aarch64 profiles, isolated
+      worker/WebGL and SharedArrayBuffer, default 25 MHz/depth 8. No local hosting,
+      resolver override or request interception. Public source stamp
+      be8fb068119830d584ae5a099338c82d339bc856 verified. Original archive HTTP 200 matches
+      the catalogue integrity pin. Main and worker Wasm HTTP 200 bodies match the
+      independently downloaded deployed build: 15727694 bytes, SHA-256
+      5ca3c00c8b65d216a4b9f87401cf28ac58bd95c58a85bd641ea481b6ea0e7c6e. J moves the flower
+      left relative to the omitted-key control. Full levels, scoring-rule accuracy, other
+      controls, persistence, audio fidelity and hardware parity remain unverified. Active
+      and control each include an unchanged 20-second gameplay sample. Final steady
+      guest/host snapshots are 60.0111/62.1167 and 60.8282/64.0869 per second; maximum
+      sampled worker frames 41.3/31 ms and minimum audio queues 151.3/157 ms. All
+      unchanged pacing gates pass, with no captured lifecycle or network errors. These
+      snapshots are not whole-level averages.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5725
 runtime:
   executable_path: Chrysanthemum 1.01
   screen_depth: 8
