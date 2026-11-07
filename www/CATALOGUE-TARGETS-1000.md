@@ -596,7 +596,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 539 | 726 | Tablut | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/tablut) |
 | 540 | 727 | Ultimaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/u/) |
 | 541 | 728 | Vic Kombat | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/v/) |
-| 542 | 729 | War of Flowers | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/w/) |
+| 542 | 729 | War of Flowers | Original 1.1; native 68K card turn verified; browser/rendering pending | P | [Original-package grant and evidence](catalogue/war-of-flowers.md); [#2316](https://github.com/benletchford/systemless/issues/2316) |
 | 543 | 730 | X-Moto | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/x-moto) |
 | 544 | 731 | Yipe III | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/) |
 | 545 | 732 | Zauron | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/zauron) |
