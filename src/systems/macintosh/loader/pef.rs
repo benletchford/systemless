@@ -167,11 +167,31 @@ pub struct PefRelocHeader {
     pub first_reloc_offset: u32,
 }
 
+/// Compute CFM relocation deltas without changing the mapped section addresses.
+/// Mac OS Runtime Architectures (1997), p. 8-23: sectionC/sectionD and
+/// section-indexed relocations use loaded address minus preferred address.
+/// Subtraction is modulo 2^32, including downward moves and zero deltas.
+pub(crate) fn pef_section_relocation_bases(
+    sections: &[PefSection],
+    loaded_bases: &[Option<u32>],
+) -> Option<Vec<Option<u32>>> {
+    loaded_bases
+        .iter()
+        .enumerate()
+        .map(|(index, base)| {
+            let header = sections.get(index)?;
+            Some(base.map(|address| address.wrapping_sub(header.default_address)))
+        })
+        .collect()
+}
+
 /// Inputs for applying relocation instructions to one instantiated section.
 #[derive(Debug, Clone, Copy)]
 pub struct PefRelocContext<'a> {
+    /// Initial sectionC/sectionD deltas (sections 0 and 1), not raw addresses.
     pub code_base: u32,
     pub data_base: u32,
+    /// Per-section relocation deltas; None remains an unavailable section.
     pub section_bases: &'a [Option<u32>],
     pub import_addrs: &'a [u32],
 }
@@ -810,7 +830,10 @@ pub fn apply_pef_relocations_detailed(
             }
             PefRelocOp::SmBySection { index } => {
                 let base = try_reloc!(section_base(ctx, u32::from(index)));
-                try_reloc!(write_slot_u32(section_bytes, position, base, section_len));
+                let value = try_reloc!(read_slot_u32(section_bytes, position, section_len));
+                try_reloc!(write_slot_u32(
+                    section_bytes, position, value.wrapping_add(base), section_len
+                ));
                 position = try_reloc!(checked_position_add(position, 4, section_len));
             }
             PefRelocOp::LgByImport { index } => {
@@ -824,7 +847,10 @@ pub fn apply_pef_relocations_detailed(
             }
             PefRelocOp::LgBySection { index } => {
                 let base = try_reloc!(section_base(ctx, index));
-                try_reloc!(write_slot_u32(section_bytes, position, base, section_len));
+                let value = try_reloc!(read_slot_u32(section_bytes, position, section_len));
+                try_reloc!(write_slot_u32(
+                    section_bytes, position, value.wrapping_add(base), section_len
+                ));
                 position = try_reloc!(checked_position_add(position, 4, section_len));
             }
             PefRelocOp::LgSetSectC { index } => {
@@ -1964,10 +1990,10 @@ pub(crate) mod tests {
         apply_pef_relocations(&mut section, &reloc_stream(&chunks), &ctx).unwrap();
         let words = read_words(&section);
 
-        assert_eq!(words[0], 0x4000);
+        assert_eq!(words[0], 1 + 0x4000);
         assert_eq!(words[1], 2 + 0x3000);
         assert_eq!(words[2], 3 + 0x4000);
-        assert_eq!(words[3], 0x2000);
+        assert_eq!(words[3], 4 + 0x2000);
         assert_eq!(words[4], 5 + 0x2000);
         assert_eq!(words[5], 6 + 0x3000);
         assert_eq!(words[6], 7);
@@ -1998,6 +2024,49 @@ pub(crate) mod tests {
                 section_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn pef_preferred_addresses_preserve_sparse_section_deltas_and_indexed_relocations() {
+        let pef = synthetic_pef(
+            synthetic_loader_with_reloc_header(&[]),
+            block_copy_section(&[0; 12]),
+            12,
+            12,
+        );
+        let mut headers = parse_pef_sections(&pef).unwrap();
+        headers[0].default_address = 0x1000_0000;
+        headers[1].default_address = 0x2000_0000;
+        headers[2].default_address = 0x3000_0000;
+        let loaded = [Some(0x0100_0000), None, Some(0x0300_0000)];
+        let bases = pef_section_relocation_bases(&headers, &loaded).unwrap();
+        assert_eq!(bases, [Some(0xf100_0000), None, Some(0xd300_0000)]);
+        assert!(pef_section_relocation_bases(&headers[..2], &loaded).is_none());
+        let mut bytes: Vec<_> = [0x3000_0010u32, 0x1000_0020, 0x3000_0030, 0x3000_0040]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        let (long_first, long_second) = lg_section_reloc(0, 2);
+        let stream = reloc_stream(&[
+            sm_index_reloc(0x33, 2), // BySection2
+            sm_index_reloc(0x31, 0), // SetSectC0
+            run_reloc(0x20, 1),
+            sm_index_reloc(0x32, 2), // SetSectD2
+            run_reloc(0x21, 1),
+            long_first, long_second,
+        ]);
+        let ctx = PefRelocContext {
+            code_base: 0,
+            data_base: 0,
+            section_bases: &bases,
+            import_addrs: &[],
+        };
+        apply_pef_relocations(&mut bytes, &stream, &ctx).unwrap();
+        let words: Vec<_> = bytes
+            .chunks_exact(4)
+            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(words, [0x0300_0010, 0x0100_0020, 0x0300_0030, 0x0300_0040]);
     }
 
     #[test]

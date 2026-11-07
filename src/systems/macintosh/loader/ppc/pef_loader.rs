@@ -498,9 +498,12 @@ fn load_pef_application_with_optional_disk_fragment(
     let initial_imports = import_plan.into_initial_bindings();
     let mut mapped_sections = map_instantiated_sections(data)?;
     let section_bases = section_bases(&mapped_sections);
-    let code_base = first_base_for_kind(&mapped_sections, SECTION_KIND_CODE)
+    let relocation_bases =
+        crate::loader::pef::pef_section_relocation_bases(&raw_sections, &section_bases)
+            .ok_or(PpcLoadError::PefParse)?;
+    first_base_for_kind(&mapped_sections, SECTION_KIND_CODE)
         .ok_or(PpcLoadError::NoCodeSection)?;
-    let data_base = first_data_base(&mapped_sections).ok_or(PpcLoadError::NoDataSection)?;
+    first_data_base(&mapped_sections).ok_or(PpcLoadError::NoDataSection)?;
     let initial_cfm = ppc_plan_initial_cfm_libraries(
         library_fragments.clone(),
         resolved_imports,
@@ -523,9 +526,9 @@ fn load_pef_application_with_optional_disk_fragment(
                 section_index: reloc.section_index,
             })?;
         let ctx = PefRelocContext {
-            code_base,
-            data_base,
-            section_bases: &section_bases,
+            code_base: relocation_bases.first().copied().flatten().unwrap_or(0),
+            data_base: relocation_bases.get(1).copied().flatten().unwrap_or(0),
+            section_bases: &relocation_bases,
             import_addrs,
         };
         apply_pef_relocations_detailed(&mut mapped.bytes, stream, &ctx).map_err(|failure| {
