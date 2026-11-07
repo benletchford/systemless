@@ -121,6 +121,52 @@
     }
 
     #[test]
+    fn is_theme_in_color_uses_theme_and_pascal_device_arguments() {
+        use crate::ui_theme::UiThemeId;
+
+        let (mut d, mut cpu, mut bus) = setup();
+        for (theme, depth, color, expected) in [
+            (UiThemeId::ClassicSystem7, 8i16, 1u8, false),
+            (UiThemeId::ClassicSystem7, 32, 1, false),
+            (UiThemeId::SystemlessDefault, 8, 1, true),
+            (UiThemeId::SystemlessDefault, 2, 2, true),
+            (UiThemeId::SystemlessDefault, 16, 1, true),
+            (UiThemeId::SystemlessDefault, 32, 1, true),
+            (UiThemeId::SystemlessDefault, 1, 1, false),
+            (UiThemeId::SystemlessDefault, 0, 1, false),
+            (UiThemeId::SystemlessDefault, -1, 1, false),
+            (UiThemeId::SystemlessDefault, 8, 0, false),
+        ] {
+            d.set_ui_theme_id(theme);
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0xABCD_0024);
+            cpu.write_reg(Register::D1, 0x1234_5678);
+            cpu.write_reg(Register::A0, 0x0019_0000);
+            bus.write_word(TEST_SP - 2, 0xCAFE);
+            bus.write_byte(TEST_SP, color);
+            bus.write_byte(TEST_SP + 1, 0x6E);
+            bus.write_word(TEST_SP + 2, depth as u16);
+            bus.write_word(TEST_SP + 4, 0xA5A5);
+            bus.write_long(TEST_SP + 6, 0xDEAD_BEEF);
+
+            d.dispatch_quickdraw(true, 0x274, &mut cpu, &mut bus)
+                .expect("IsThemeInColor selector")
+                .unwrap();
+
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+            assert_eq!(bus.read_word(TEST_SP + 4), if expected { 0x0100 } else { 0 });
+            assert_eq!(bus.read_word(TEST_SP - 2), 0xCAFE);
+            assert_eq!(bus.read_byte(TEST_SP), color);
+            assert_eq!(bus.read_byte(TEST_SP + 1), 0x6E);
+            assert_eq!(bus.read_word(TEST_SP + 2), depth as u16);
+            assert_eq!(bus.read_long(TEST_SP + 6), 0xDEAD_BEEF);
+            assert_eq!(cpu.read_reg(Register::D0), 0xABCD_0024);
+            assert_eq!(cpu.read_reg(Register::D1), 0x1234_5678);
+            assert_eq!(cpu.read_reg(Register::A0), 0x0019_0000);
+        }
+    }
+
+    #[test]
     fn appearance_registration_tracks_state_and_pascal_result_slot() {
         let (mut d, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::D0, 0x15);
