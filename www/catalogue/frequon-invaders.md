@@ -11,6 +11,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Arcade
+launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -89,3 +90,7 @@ through the coloured wave field to find destructive interference and annihilate
 attacking Frequons. Pastel marks at the left show attackers; six binary lamps show
 your score. Keep Auto Gain checked while learning. The original README explains
 the waves and includes a separate unscored Training mode.
+
+Browser qualification is held: ordinary movement scores a point, but the active
+20-second sample reaches 52.41 host FPS, below the required 55. The no-move control
+passes at 58.28 FPS. Browser launch remains disabled pending a diagnosed pacing fix.
