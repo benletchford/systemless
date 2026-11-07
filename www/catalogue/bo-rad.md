@@ -9,8 +9,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-07"
     tester: Catalogue maintainer
@@ -57,6 +58,48 @@ compatibility:
       stays unknown and launch remains disabled. No lighter clock, easier preset or
       relaxed gate is used. Full rounds, mixed-puzzle mode, persistence, sound fidelity
       and released public play remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5754
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: d9255200a9a892c3de8002fd975dc02802fdbae9 native polling candidate
+    architecture: 68k
+    environment: >-
+      Fresh optimized build, complete unchanged original, exact selector, default 25
+      MHz/800x600/depth 8 and original puzzle preferences. Ordinary complete guess and
+      Return submission versus matched no-Return control each pass four measured pixel
+      assertions and five exact pre-change captures, nine checks at 492 frontend/1092
+      guest ticks with zero exhaustion. Both final images inspected. Control trap
+      dispatches fall from 11098671 to 20321 through the proven idle-cycle improvement;
+      native wall time is diagnostic, not browser pacing evidence. Binary SHA-256
+      09d53dffaf8730437e184ea004f80d4b8100d184263665ff43c7143c01916d17.
+      Full rounds, mixed-puzzle mode, persistence and sound fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/5758
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: 1b47822e0b25cd4b9457bd5a6aecbfbd5f188c2c private browser polling candidate
+    architecture: 68k
+    environment: >-
+      Fresh private HTTPS frontend with runtime/build code equal to d9255200,
+      Chromium 156.0.8078.79/Linux aarch64, worker/WebGL/SAB, default 25 MHz and
+      800x600/depth 8. Actual build stamp, architecture, clock and production isolation
+      checked. Hosted original archive HTTP 200 matches its catalogue size/hash; actual
+      main and worker Wasm responses match the independently hashed 17848166-byte
+      build, SHA-256 330cc38e3579a7b3a4bcf76d549792d91ef0549fd7aa5f311fbb3a65f5c1362c.
+      Ordinary Command-N, palette clicks and keys 1–5 fill a complete guess. Return
+      submits it with feedback and subsequent input fills the second row; matched
+      no-Return control retains grey feedback and edits the first row. Visible state
+      and final images checked. Separate unchanged 20-second samples preserve original
+      hidden puzzle and settings. Active/control steady guest rates are 60.3534/60.0432
+      ticks/sec and host rates 59.3475/59.0425 FPS. Maximum worker frames 41.0/42.1 ms
+      and minimum audio queues 113.7/109.0 ms pass all unchanged gates (guest at least
+      50/sec, host at least 55 FPS, worker at most 50 ms, audio at least 40 ms).
+      Zero captured lifecycle/network errors. Steady snapshots are not full-round
+      averages. Browser launch approved after resolving the earlier pacing failure.
+      Full rounds, clue-rule accuracy across all combinations, mixed-puzzle mode,
+      persistence, sound fidelity, hardware-oracle accuracy and actual released public
+      play remain unverified; public replay requires a human release.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5754
 runtime:
