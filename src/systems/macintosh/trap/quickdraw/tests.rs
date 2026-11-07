@@ -4447,6 +4447,153 @@
     }
 
     #[test]
+    fn maprgn_transforms_complex_membership_and_normalizes_collapsed_edges() {
+        // A 6x4 shape with a 2x2 hole. Expectations describe actual covered
+        // intervals, independently of the differential region encoding.
+        let source = vec![
+            vec![20, 26],
+            vec![20, 22, 24, 26],
+            vec![20, 22, 24, 26],
+            vec![20, 26],
+        ];
+        let cases = [
+            (
+                (110, 220, 114, 226),
+                110,
+                vec![
+                    vec![220, 226],
+                    vec![220, 222, 224, 226],
+                    vec![220, 222, 224, 226],
+                    vec![220, 226],
+                ],
+            ),
+            (
+                (100, 200, 108, 212),
+                100,
+                vec![
+                    vec![200, 212],
+                    vec![200, 212],
+                    vec![200, 204, 208, 212],
+                    vec![200, 204, 208, 212],
+                    vec![200, 204, 208, 212],
+                    vec![200, 204, 208, 212],
+                    vec![200, 212],
+                    vec![200, 212],
+                ],
+            ),
+            ((0, 0, 2, 3), 0, vec![vec![0, 1, 2, 3], vec![0, 3]]),
+            (
+                (4, 6, 0, 0),
+                0,
+                vec![vec![0, 6], vec![0, 2, 4, 6], vec![0, 2, 4, 6], vec![0, 6]],
+            ),
+        ];
+        for (dst, top, expected) in cases {
+            let (mut d, mut cpu, mut bus) = setup();
+            let handle = bus.alloc(4);
+            assert!(TrapDispatcher::write_region_from_rows(
+                &mut bus, handle, 10, &source
+            ));
+            let src_ptr = bus.alloc(8);
+            let dst_ptr = bus.alloc(8);
+            write_rect(&mut bus, src_ptr, 10, 20, 14, 26);
+            write_rect(&mut bus, dst_ptr, dst.0, dst.1, dst.2, dst.3);
+            bus.write_long(TEST_SP, dst_ptr);
+            bus.write_long(TEST_SP + 4, src_ptr);
+            bus.write_long(TEST_SP + 8, handle);
+            cpu.write_reg(Register::D1, 0x12345678);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0FB, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+            assert_eq!(cpu.read_reg(Register::D1), 0x12345678);
+            assert_eq!(
+                TrapDispatcher::region_rows_for_band(&bus, handle, top, top + expected.len() as i16),
+                expected
+            );
+            assert_eq!(bus.read_long(TEST_SP + 8), handle);
+        }
+    }
+
+    #[test]
+    fn maprgn_canonicalizes_empty_results_and_handles_extreme_products() {
+        for dst in [(5, 7, 5, 12), (5, 7, 9, 7)] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let handle = make_complex_rgn(&mut bus, (10, 20, 14, 26), &[]);
+            let src_ptr = bus.alloc(8);
+            let dst_ptr = bus.alloc(8);
+            write_rect(&mut bus, src_ptr, 10, 20, 14, 26);
+            write_rect(&mut bus, dst_ptr, dst.0, dst.1, dst.2, dst.3);
+            bus.write_long(TEST_SP, dst_ptr);
+            bus.write_long(TEST_SP + 4, src_ptr);
+            bus.write_long(TEST_SP + 8, handle);
+            assert!(d
+                .dispatch_quickdraw(true, 0x0FB, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            assert_eq!(read_rgn_bbox(&bus, handle), (0, 0, 0, 0));
+            assert_eq!(bus.read_word(bus.read_long(handle)), 10);
+        }
+        let (mut d, mut cpu, mut bus) = setup();
+        let handle = make_complex_rgn(&mut bus, (-32768, -32768, 32767, 32767), &[]);
+        let src_ptr = bus.alloc(8);
+        let dst_ptr = bus.alloc(8);
+        write_rect(&mut bus, src_ptr, -32768, -32768, 32767, 32767);
+        write_rect(&mut bus, dst_ptr, -32768, -32768, 32766, 32766);
+        bus.write_long(TEST_SP, dst_ptr);
+        bus.write_long(TEST_SP + 4, src_ptr);
+        bus.write_long(TEST_SP + 8, handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0FB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(read_rgn_bbox(&bus, handle), (-32768, -32768, 32766, 32766));
+    }
+
+    #[test]
+    fn maprgn_snapshots_aliased_rectangles_and_preserves_zero_source_axis() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let rows = vec![vec![20, 26], vec![20, 22, 24, 26], vec![20, 26]];
+        let handle = bus.alloc(4);
+        assert!(TrapDispatcher::write_region_from_rows(
+            &mut bus, handle, 10, &rows
+        ));
+        let ptr = bus.read_long(handle);
+        let dst = bus.alloc(8);
+        write_rect(&mut bus, dst, 100, 200, 106, 212);
+        bus.write_long(TEST_SP, dst);
+        bus.write_long(TEST_SP + 4, ptr + 2); // src aliases original bbox
+        bus.write_long(TEST_SP + 8, handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0FB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(read_rgn_bbox(&bus, handle), (100, 200, 106, 212));
+        assert_eq!(
+            TrapDispatcher::region_rows_for_band(&bus, handle, 102, 104),
+            vec![vec![200, 204, 208, 212]; 2]
+        );
+        assert_eq!(bus.read_long(TEST_SP + 8), handle);
+        // Retain the established MapPt zero-source-span policy for that
+        // axis; the other axis still maps normally.
+        let src = bus.alloc(8);
+        write_rect(&mut bus, src, 100, 200, 100, 212);
+        write_rect(&mut bus, dst, 0, 0, 20, 12);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP + 4, src);
+        assert!(d
+            .dispatch_quickdraw(true, 0x0FB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(read_rgn_bbox(&bus, handle), (100, 0, 106, 12));
+        assert_eq!(
+            TrapDispatcher::region_rows_for_band(&bus, handle, 102, 104),
+            vec![vec![0, 4, 8, 12]; 2]
+        );
+    }
+
+    #[test]
     fn maprgn_consumes_region_and_rect_arguments() {
         // Inside Macintosh Volume I (1985), p. I-196:
         // MapRgn(rgn, srcRect, dstRect) consumes one handle and two rects.

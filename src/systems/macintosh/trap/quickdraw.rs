@@ -11992,72 +11992,17 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // MapRgn ($A8FB)
-            // PROCEDURE MapRgn(rgn: RgnHandle; srcRect, dstRect: Rect);
-            // Inside Macintosh Volume I, I-196
-            //
-            // For Systemless's rectangular-region approximation, MapRgn
-            // applies the same proportional scaling as MapRect to the
-            // region's bbox. A general implementation would map every
-            // vertex of the region's polygon outline.
-            //
-            // Stack: SP+0=dstRect(4), SP+4=srcRect(4), SP+8=rgn(4).
-            // Pops 12.
-            //
-            // Regression coverage:
-            //   maprgn_maps_region_bbox_proportionally
-            //   maprgn_consumes_region_and_rect_arguments
-            // MapRgn ($A8FB): Maps region bbox from srcRect to dstRect proportionally; per IM:I I-196
+            // MapRgn maps every region point, not just its bounding box.
+            // Imaging With QuickDraw (1994), p. 3-107. Pascal arguments:
+            // dstRect, srcRect, rgn; consumes 12 bytes.
             (true, 0x0FB) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_rect_ptr = bus.read_long(sp);
                 let src_rect_ptr = bus.read_long(sp + 4);
                 let rgn_handle = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
-
                 if rgn_handle != 0 && src_rect_ptr != 0 && dst_rect_ptr != 0 {
-                    let rgn_ptr = bus.read_long(rgn_handle);
-                    if rgn_ptr != 0 {
-                        let r_top = bus.read_word(rgn_ptr + 2) as i16 as i32;
-                        let r_left = bus.read_word(rgn_ptr + 4) as i16 as i32;
-                        let r_bottom = bus.read_word(rgn_ptr + 6) as i16 as i32;
-                        let r_right = bus.read_word(rgn_ptr + 8) as i16 as i32;
-
-                        let s_top = bus.read_word(src_rect_ptr) as i16 as i32;
-                        let s_left = bus.read_word(src_rect_ptr + 2) as i16 as i32;
-                        let s_bottom = bus.read_word(src_rect_ptr + 4) as i16 as i32;
-                        let s_right = bus.read_word(src_rect_ptr + 6) as i16 as i32;
-
-                        let d_top = bus.read_word(dst_rect_ptr) as i16 as i32;
-                        let d_left = bus.read_word(dst_rect_ptr + 2) as i16 as i32;
-                        let d_bottom = bus.read_word(dst_rect_ptr + 4) as i16 as i32;
-                        let d_right = bus.read_word(dst_rect_ptr + 6) as i16 as i32;
-
-                        let s_w = s_right - s_left;
-                        let s_h = s_bottom - s_top;
-                        let d_w = d_right - d_left;
-                        let d_h = d_bottom - d_top;
-
-                        let mh = |h: i32| -> i32 {
-                            if s_w != 0 {
-                                d_left + (h - s_left) * d_w / s_w
-                            } else {
-                                h
-                            }
-                        };
-                        let mv = |v: i32| -> i32 {
-                            if s_h != 0 {
-                                d_top + (v - s_top) * d_h / s_h
-                            } else {
-                                v
-                            }
-                        };
-
-                        bus.write_word(rgn_ptr + 2, mv(r_top) as u16);
-                        bus.write_word(rgn_ptr + 4, mh(r_left) as u16);
-                        bus.write_word(rgn_ptr + 6, mv(r_bottom) as u16);
-                        bus.write_word(rgn_ptr + 8, mh(r_right) as u16);
-                    }
+                    self.map_region(bus, rgn_handle, src_rect_ptr, dst_rect_ptr);
                 }
                 Ok(())
             }
@@ -22914,6 +22859,71 @@ impl super::TrapDispatcher {
             );
         }
         true
+    }
+
+    fn map_region(&mut self, bus: &mut MacMemoryBus, handle: u32, src: u32, dst: u32) {
+        let Some((ptr, size)) = Self::region_ptr_and_size(bus, handle) else {
+            return;
+        };
+        // Read everything before writing: the rectangle pointers may alias
+        // the region, whose backing storage can move during normalization.
+        let rect = |address| [0, 2, 4, 6].map(|offset| bus.read_word(address + offset) as i16);
+        let from = rect(src);
+        let onto = rect(dst);
+        let bounds = rect(ptr + 2);
+        if bounds[0] >= bounds[2] || bounds[1] >= bounds[3] {
+            Self::write_region(bus, handle, None, &[]);
+            return;
+        }
+        let map = |value: i16, axis: usize| {
+            let span = i64::from(from[axis + 2]) - i64::from(from[axis]);
+            if span == 0 {
+                return value;
+            }
+            let mapped = i64::from(onto[axis])
+                + (i64::from(value) - i64::from(from[axis]))
+                    * (i64::from(onto[axis + 2]) - i64::from(onto[axis]))
+                    / span;
+            mapped.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+        };
+        let v0 = map(bounds[0], 0);
+        let v1 = map(bounds[2], 0);
+        let h0 = map(bounds[1], 1);
+        let h1 = map(bounds[3], 1);
+        let (top, bottom) = (v0.min(v1), v0.max(v1));
+        let (left, right) = (h0.min(h1), h0.max(h1));
+        if top == bottom || left == right {
+            Self::write_region(bus, handle, None, &[]);
+        } else if size <= REGION_HEADER_SIZE {
+            Self::write_region(bus, handle, Some((top, left, bottom, right)), &[]);
+        } else {
+            let source = Self::region_rows_for_band(bus, handle, bounds[0], bounds[2]);
+            let mut rows = vec![Vec::new(); Self::region_band_height(top, bottom)];
+            for (index, row) in source.iter().enumerate() {
+                let y = (i32::from(bounds[0]) + index as i32) as i16;
+                let a = map(y, 0);
+                let b = map(y + 1, 0);
+                if a == b || row.is_empty() {
+                    continue;
+                }
+                let intervals = row
+                    .chunks_exact(2)
+                    .map(|pair| {
+                        let a = map(pair[0], 1);
+                        let b = map(pair[1], 1);
+                        (a.min(b), a.max(b))
+                    })
+                    .collect();
+                let mapped = Self::intervals_to_endpoints(intervals);
+                for y in a.min(b)..a.max(b) {
+                    let index = Self::region_row_index(y, top);
+                    rows[index] = Self::union_region_rows(&rows[index], &mapped);
+                }
+            }
+            // Re-encode differential rows so coincident edges introduced by
+            // shrinking disappear and empty/rectangular results stay canonical.
+            Self::write_region_from_rows(bus, handle, top, &rows);
+        }
     }
 
     fn region_band_height(top: i16, bottom: i16) -> usize {
