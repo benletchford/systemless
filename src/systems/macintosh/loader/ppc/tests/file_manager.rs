@@ -1960,6 +1960,78 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_makes_boot_volume_root_fsspec() {
+        // Inside Macintosh: Files, table 2-10: a full pathname overrides
+        // vRefNum/dirID. The root directory's parent is fsRtParID (1).
+        let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE;
+        loaded.memory.add_region(scratch, vec![0; 256]);
+        let volume_name = crate::trap::TrapDispatcher::boot_volume_name();
+        write_ppc_pstring(
+            &mut loaded.memory,
+            scratch,
+            format!("{volume_name}:").as_bytes(),
+        );
+        let spec = scratch + 128;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = spec;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(spec), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+        assert_eq!(loaded.memory.read_u32_be(spec + 2), Some(1));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, spec + 6),
+            Some(encode_mac_roman_lossy(volume_name))
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_resolves_absolute_boot_volume_fsspec() {
+        let volume_name = crate::trap::TrapDispatcher::boot_volume_name();
+        for (suffix, expected_error, parent, leaf) in [
+            ("System Folder:Preferences:", PPC_NO_ERR, PPC_SYSTEM_FOLDER_DIR_ID, "Preferences"),
+            ("System Folder:Missing", PPC_FNF_ERR, PPC_SYSTEM_FOLDER_DIR_ID, "Missing"),
+            ("Missing:Child", PPC_DIR_NF_ERR, 0, ""),
+        ] {
+            let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE;
+            loaded.memory.add_region(scratch, vec![0; 256]);
+            write_ppc_pstring(
+                &mut loaded.memory,
+                scratch,
+                format!("{volume_name}:{suffix}").as_bytes(),
+            );
+            let spec = scratch + 128;
+            loaded.cpu.gpr[3] = 1234; // Ignored for the full pathname.
+            loaded.cpu.gpr[4] = 0xFFFF_FFFF; // Likewise not a starting directory.
+            loaded.cpu.gpr[5] = scratch;
+            loaded.cpu.gpr[6] = spec;
+
+            loaded.run_with_hle_imports(64);
+
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected_error), "{suffix}");
+            assert_eq!(loaded.memory.read_u32_be(spec + 2), Some(parent), "{suffix}");
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, spec + 6),
+                Some(leaf.as_bytes().to_vec()),
+                "{suffix}"
+            );
+            if expected_error == PPC_DIR_NF_ERR {
+                assert_eq!(loaded.memory.read_u16_be(spec), Some(0));
+            } else {
+                assert_eq!(loaded.memory.read_u16_be(spec), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_makes_existing_directory_fsspec() {
         let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
         let mut loaded = load_pef_application(&pef).unwrap();
