@@ -11,8 +11,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-07"
     tester: Catalogue maintainer
@@ -31,6 +32,28 @@ compatibility:
       unar/lsar with strict end validation. The actual resource-only game has CODE 0/1
       and no cfrg or PPC data executable. Browser input/pacing, completed puzzles,
       other levels, persistence and sound fidelity are unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2279
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: eb07694a29d12f64c7ed862393c32f39eee46bc6 private browser candidate
+    architecture: 68k
+    environment: >-
+      Optimized private HTTPS frontend on merged runtime 7981331f,
+      Chromium 156.0.8078.79/Linux aarch64, isolated 68K worker/WebGL,
+      25 MHz, 800x600/depth 8. Deployed COEP credentialless/COOP same-origin
+      and SharedArrayBuffer verified. Actual untouched hosted archive HTTP 200
+      response matches 61522 bytes and its SHA-256. Both main and worker Wasm
+      response bodies match SHA-256 235771cb89f44f833822438308b18ec81316ef161a3526bb5237a6f0c4184394,
+      17764881 bytes. Ordinary click on the starting player focuses the canvas;
+      Up and five Left moves approach a bag, and another Left pushes it one
+      square. Matched control omits only that last Left and retains the bag.
+      Both samples exercise four subsequent Right/Left movements. Each unchanged
+      20-second sample passes: active/control final steady guest 61.0215/60.0097,
+      host 60.0045/60.0097 per second, max frame 35.1/35.0 ms, minimum audio
+      queue 117.8/114.9 ms, zero captured lifecycle/network errors. These final
+      snapshots are not sample-wide means. Completed puzzles, other levels,
+      persistence, sound fidelity and released public play remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2279
 runtime:
@@ -95,6 +118,6 @@ possible in one direction. **Edit → Undo** takes back a push;
 **File → Restart Level** starts the puzzle again.
 
 The original package includes fifty Default levels and thirty-five Extra levels.
-Native movement and a push are verified against an omitted-input control.
-Browser input/pacing, completed puzzles, other levels, persistence and sound
-fidelity remain unverified.
+Native and hosted-browser movement and a push are verified against an
+omitted-input control. Browser pacing passes. Completed puzzles, other levels,
+persistence, sound fidelity and released public play remain unverified.
