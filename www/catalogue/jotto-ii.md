@@ -51,7 +51,8 @@ artifacts:
       records, strict KPK end 434449. Source contains all 95 project C files, 43 headers,
       project and resource inputs. All 121 source resources match the binary exactly; no
       separate custom compiled control/window components found. Only compiler/system SDK
-      dependencies remain.
+      dependencies remain. Independent source-archive preservation also matches all
+      148 paths, 296 forks and 148 Finder records, strict KPK end 755222.
 - id: source-code
   role: supplement
   format: hqx
@@ -76,7 +77,8 @@ artifacts:
       records, strict KPK end 434449. Source contains all 95 project C files, 43 headers,
       project and resource inputs. All 121 source resources match the binary exactly; no
       separate custom compiled control/window components found. Only compiler/system SDK
-      dependencies remain.
+      dependencies remain. Independent source-archive preservation also matches all
+      148 paths, 296 forks and 148 Finder records, strict KPK end 755222.
 - id: gameplay-screenshot
   role: screenshot
   format: png
