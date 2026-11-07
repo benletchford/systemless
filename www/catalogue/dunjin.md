@@ -1,5 +1,6 @@
 ---
 id: dunjin
+launch_enabled: true
 kind: game
 title: The Dungeons of Dunjin 4.4
 summary: Explore a mysterious forest and search for treasure in a classic text adventure.
@@ -10,7 +11,7 @@ architectures:
 default_architecture: 68k
 category: Role-Playing
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-08"
     tester: Catalogue maintainer
@@ -52,6 +53,32 @@ compatibility:
       the rate/audio gates, with no lifecycle or network errors. Overall status
       remains unknown and launch disabled pending a runtime fix and fresh passing
       browser qualification. No released public play claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5765
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: 38837e3cb40378b8109cab3359fd586cfbe944fb private browser on 12852571 runtime
+    architecture: 68k
+    environment: >-
+      Supersedes the earlier private browser pacing hold after the TextEdit caret
+      and tail-input repaint fix in issue 5767. Fresh native active/control repeats
+      on exact runtime 1285257185892f593f30d83599def53e7a005a1b each pass ten checks,
+      retain 252 frontend/852 guest ticks with zero exhaustion and exactly match
+      pre-change captures. Actual images inspected. Native binary SHA-256
+      35cf8fcada95a08951a732ff0d92f0b816c2291aeb1067c6ee84788d94b85f34.
+      Fresh isolated Chrome worker/WebGL active and omitted-Return sessions use
+      the unchanged complete original, canonical selector, original settings,
+      68K/default 25 MHz/800x600/depth 8. Each measures 20 seconds. N, LOOK, E and
+      LOOK with Return print responses and advance Moves to 4; matching unsubmitted
+      letters retain in forest and Moves zero. Both actual final images inspected.
+      Active guest/host rates are 60.91/57.96 per second, maximum worker frame
+      38.7 ms and minimum audio queue 115.1 ms. Control rates are 60.04/61.07,
+      maximum worker frame 48.0 ms and minimum audio 112.2 ms. Both pass unchanged
+      guest >=50/sec, host >=55 FPS, worker <=50 ms and audio >=40 ms gates with
+      no lifecycle/network errors. Actual original archive and both main/worker
+      Wasm HTTP 200 response bodies match independently verified byte/hash pins.
+      Full cave traversal, winning, save/load, sound fidelity and released public
+      play remain unverified. Public replay awaits a human release.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5765
 runtime:
