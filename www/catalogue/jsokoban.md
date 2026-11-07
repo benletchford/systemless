@@ -56,6 +56,28 @@ compatibility:
       persistence, sound fidelity and released public play remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2279
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.111.0 public release
+    architecture: 68k
+    environment: >-
+      Actual public v0.111.0 HTTPS site, source be8fb068119830d584ae5a099338c82d339bc856,
+      fresh Chromium 156/Linux aarch64, worker/WebGL/SAB, default 25 MHz/depth 8. No local
+      hosting, resolver override or request interception. Original archive HTTP 200
+      matches 61522 bytes and SHA-256
+      04452000ec19ec9a271f340e1ba1c936a3e56f3ea0ff70a0a30545060041ad91. Main and worker
+      Wasm HTTP 200 bodies match the independently downloaded deployment: 15727694 bytes,
+      SHA-256 5ca3c00c8b65d216a4b9f87401cf28ac58bd95c58a85bd641ea481b6ea0e7c6e. Ordinary
+      Up and five Left moves approach a bag; the final Left pushes it one square, while
+      the control omits only that key and retains the bag. Before-push captures are pixel-
+      identical. Both cases then exercise four Right/Left movements during unchanged
+      20-second gameplay samples. Final steady guest/host snapshots are 60.0014/60.0014
+      and 60.0069/60.0069 per second, maximum sampled worker frames 22.4/31.3 ms and
+      minimum audio queues 131.9/128.2 ms. All pacing gates pass with no captured
+      lifecycle or network errors. Snapshots are not whole-puzzle averages. Complete
+      puzzles, other levels, persistence and sound fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2279
 runtime:
   executable_path: JSokoban_1.0b13/JSokoban 1.0b13
   screen_depth: 8
