@@ -16,6 +16,13 @@ static TRACE_DRAGWINDOW: OnceLock<bool> = OnceLock::new();
 
 type WindowRect = (i16, i16, i16, i16);
 
+struct PreservedWindowSpan {
+    address: u32,
+    pixels: Vec<u8>,
+    first_mask: u8,
+    last_mask: u8,
+}
+
 struct WindTemplate {
     bounds: WindowRect,
     proc_id: i16,
@@ -1988,6 +1995,69 @@ impl super::TrapDispatcher {
             .copied()
             .unwrap_or(self.window_proc_id);
         self.save_window_under_pixels_for_proc(bus, window_ptr, proc_id);
+    }
+
+    /// Preserve actual structure-region spans of visible windows above a
+    /// window being hidden. Raw bytes retain direct colours, while edge masks
+    /// avoid retaining adjacent background pixels in packed indexed modes.
+    fn save_pixels_above_window(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Vec<PreservedWindowSpan> {
+        let above = self.window_list.with_ref(|windows| {
+            windows
+                .iter()
+                .position(|&window| window == window_ptr)
+                .map(|index| windows[..index].to_vec())
+                .unwrap_or_default()
+        });
+        let (base, stride, width, height, depth) = self.screen_mode;
+        let mut saved = Vec::new();
+        for window in above {
+            if !self.window_visible(bus, window) {
+                continue;
+            }
+            let Some((top, left, bottom, right)) = self.window_structure_rect(bus, window) else {
+                continue;
+            };
+            let top = top.max(0);
+            let bottom = bottom.min(height as i16);
+            if top >= bottom {
+                continue;
+            }
+            let region = bus.read_long(window + Self::WINDOW_STRUC_RGN_OFFSET);
+            let rows = Self::build_region_membership_cache(bus, region, top, bottom)
+                .map(|cache| cache.rows)
+                .unwrap_or_else(|| vec![vec![left, right]; (bottom - top) as usize]);
+            for (dy, edges) in rows.iter().enumerate() {
+                let y = top as u32 + dy as u32;
+                for span in edges.chunks_exact(2) {
+                    let left = span[0].max(0);
+                    let right = span[1].min(width as i16);
+                    if left >= right {
+                        continue;
+                    }
+                    let first_bit = left as u32 * u32::from(depth);
+                    let end_bit = right as u32 * u32::from(depth);
+                    let first_byte = first_bit / 8;
+                    let end_byte = end_bit.div_ceil(8);
+                    if first_byte >= end_byte {
+                        continue;
+                    }
+                    let address = base + y * stride + first_byte;
+                    saved.push(PreservedWindowSpan {
+                        address,
+                        pixels: bus
+                            .read_bytes(address, (end_byte - first_byte) as usize)
+                            .to_vec(),
+                        first_mask: 0xFF >> (first_bit % 8),
+                        last_mask: 0xFF << ((8 - end_bit % 8) % 8),
+                    });
+                }
+            }
+        }
+        saved
     }
 
     fn restore_window_under_pixels(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) -> bool {
@@ -4628,6 +4698,7 @@ impl super::TrapDispatcher {
                     }
                     let exposed_rect = self.window_structure_rect(bus, the_window);
                     let windows_behind = self.visible_windows_behind(bus, the_window);
+                    let foreground = self.save_pixels_above_window(bus, the_window);
                     // Erase the window's chrome area BEFORE clearing
                     // visible so the screen doesn't retain stale chrome.
                     let (wind_top, wind_left, wind_bottom, wind_right) = {
@@ -4671,6 +4742,26 @@ impl super::TrapDispatcher {
                             wind_bottom.saturating_add(2).min(screen_height),
                             wind_right.saturating_add(2).min(screen_width),
                         );
+                    }
+                    // HideWindow exposes only pixels not covered by visible
+                    // windows in front (IM:I I-286, I-296). Restore those
+                    // foreground spans before any legitimate activation draw.
+                    for span in foreground {
+                        for (offset, &pixel) in span.pixels.iter().enumerate() {
+                            let mask = if offset == 0 { span.first_mask } else { 0xFF }
+                                & if offset + 1 == span.pixels.len() {
+                                    span.last_mask
+                                } else {
+                                    0xFF
+                                };
+                            let address = span.address + offset as u32;
+                            let preserved = if mask == 0xFF {
+                                pixel
+                            } else {
+                                (bus.read_byte(address) & !mask) | (pixel & mask)
+                            };
+                            bus.write_byte(address, preserved);
+                        }
                     }
                     if self.front_window == the_window {
                         // Find first visible window in the list (other
