@@ -32,6 +32,13 @@ compatibility:
       play remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2314
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 10147fc754a7e6f7ad1e37849834b5b3b9b3819e private browser candidate
+    architecture: 68k
+    environment: "Optimized clean private frontend 10147fc754a7e6f7ad1e37849834b5b3b9b3819e on merged runtime 3cf77d7d. Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz, 800x600/depth 8, deployed COEP credentialless/COOP same-origin and SharedArrayBuffer verified. Page build stamp and actual architecture checked. Untouched hosted original HTTP 200 response matches its complete archive size and SHA-256. Actual main and worker Wasm bodies match 17782297 bytes, SHA-256 e837fde08b3e24c7099479b6bb6e8c129250f2fcc043f01e29544581c23ba580. Ordinary Not Yet, New Game and the original introduction reach Wave 1. Trusted pointer movement/button input moves and fires a blue projectile; matched control preserves pointer movement without firing. Final Score 200 versus control 0; control ends at LIVES 0 and is not a continuously surviving board. Both unchanged 20-second gates fail the guest minimum: final steady guest 41.5211/47.2968, host 59.7499/59.3726 per second, max frames 30.8/22.6 ms, min audio queue 463.0/465.9 ms, zero captured lifecycle/network errors. Snapshots are not sample-wide means. Keep launch disabled / overall unknown. Later waves, keyboard/registration features, persistence, audio fidelity and public play remain unverified."
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2314
 runtime:
   executable_path: Space Junkie 1.2/Space Junkie 1.2
   screen_depth: 8
@@ -91,8 +98,9 @@ references:
 
 Choose **Not Yet** to try the original unregistered game, then **New Game**.
 Wait for the hyperspace and wave introduction. In the original Mouse mode, move
-the mouse to steer and hold the mouse button to fire. Enemy hits/scoring, later
-waves, keyboard mode, registration features, persistence and sound fidelity are unverified.
+the mouse to steer and hold the mouse button to fire. Later waves, keyboard mode, registration features, persistence and sound fidelity
+remain unverified.
 
-Native movement/firing and matched controls are verified. Hosted-browser input
-and pacing, and released public play remain unverified.
+Native and hosted-browser movement/firing are verified; browser Score reaches
+200. Pacing misses the minimum, so launch stays disabled. Released public play
+remains unverified.

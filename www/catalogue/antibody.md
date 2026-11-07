@@ -56,6 +56,20 @@ compatibility:
       play remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2308
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 10147fc754a7e6f7ad1e37849834b5b3b9b3819e private browser candidate
+    architecture: 68k
+    environment: "Optimized clean private frontend 10147fc754a7e6f7ad1e37849834b5b3b9b3819e on merged runtime 3cf77d7d. Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz, 800x600/depth 8, deployed COEP credentialless/COOP same-origin and SharedArrayBuffer verified. Page build stamp and actual architecture checked. Untouched hosted original HTTP 200 response matches its complete archive size and SHA-256. Actual main and worker Wasm bodies match 17782297 bytes, SHA-256 e837fde08b3e24c7099479b6bb6e8c129250f2fcc043f01e29544581c23ba580. Ordinary Later, Play and first scenario reach Level 1 with original trial limits. The first active capture moves, fires and shows an explosion/Score 20. Its 20-second numeric gates pass at final steady guest 63.7022, max frame 32.5 ms; the no-fire control ends in the scenario chooser, so its 13.2164 guest snapshot is not in-game pacing. A second documented shield/alternating-steer profile still lacks a comparable pair: active ends at chooser, guest 44.8172; control ends at field, guest 60.6821. Numeric successes are not a valid same-phase qualification. Zero captured lifecycle/network errors. All captures and failures retained. Source stays disabled / unknown pending valid in-game input/pacing evidence; full games, later levels, persistence, sound fidelity and public play remain unverified."
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2308
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 10147fc754a7e6f7ad1e37849834b5b3b9b3819e private browser candidate
+    architecture: ppc
+    environment: "Optimized clean private frontend 10147fc754a7e6f7ad1e37849834b5b3b9b3819e on merged runtime 3cf77d7d. Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz, 800x600/depth 8, deployed COEP credentialless/COOP same-origin and SharedArrayBuffer verified. Page build stamp and actual architecture checked. Untouched hosted original HTTP 200 response matches its complete archive size and SHA-256. Actual main and worker Wasm bodies match 17782297 bytes, SHA-256 e837fde08b3e24c7099479b6bb6e8c129250f2fcc043f01e29544581c23ba580. Ordinary trusted Run as PowerPC selects the actual PPC runtime after initial 68K boot; all main/worker Wasm and both original archive fetches are pinned. Later, Play and first scenario reach Level 1, preserving the original trial. First active 20-second sample exceeds the frame gate at 52.8 ms. Shield/steering active numeric sample reaches 45.8 ms, but its no-fire control exceeds 50 ms at 55.9 ms; both final captures are scenario chooser, with incomplete body artwork. No clean passing in-game active/control pair; numeric menu snapshots do not establish gameplay pacing. Zero captured lifecycle/network errors. Preserve every result; no launch approval, cross-CPU parity or hardware-oracle claim. Later levels, rendering fidelity, persistence, audio fidelity and public play remain unverified."
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2308
 runtime:
   executable_path: Antibody 1.0.0/Antibody
   screen_depth: 8
@@ -114,5 +128,7 @@ to move and **Space** to shoot. The original trial provides two lives and stops
 at level 15. Later levels, limit traversal, registration features, persistence and
 sound fidelity remain unverified.
 
-Native movement/firing and matched controls are verified. Hosted-browser input
-and pacing, and released public play remain unverified.
+Native movement/firing and matched controls are verified on both CPUs. Browser
+attempts have not produced a valid passing in-game pair, so launch stays disabled.
+Some captures end at the scenario chooser; PPC also exceeds the frame limit.
+Released public play remains unverified.

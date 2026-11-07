@@ -12,8 +12,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-07"
     tester: Catalogue maintainer
@@ -31,6 +32,13 @@ compatibility:
       a5c1aefb540466866a43374b6be4e54acd51e741c9eb953827b1f895d3805eb0. Rust/Cargo runtime source matches merged 3cf77d7d. Own-run
       consistency is not hardware-oracle accuracy or cross-CPU pixel parity.
       Hosted-browser input/pacing and released public play remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2305
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 10147fc754a7e6f7ad1e37849834b5b3b9b3819e private browser candidate
+    architecture: 68k
+    environment: "Optimized clean private frontend 10147fc754a7e6f7ad1e37849834b5b3b9b3819e on merged runtime 3cf77d7d. Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz, 800x600/depth 8, deployed COEP credentialless/COOP same-origin and SharedArrayBuffer verified. Page build stamp and actual architecture checked. Untouched hosted original HTTP 200 response matches its complete archive size and SHA-256. Actual main and worker Wasm bodies match 17782297 bytes, SHA-256 e837fde08b3e24c7099479b6bb6e8c129250f2fcc043f01e29544581c23ba580. Ordinary Begin One Player and Control select Mantis. Trusted Numpad8/Numpad6/Control thrusts, turns and emits a red projectile. Matched control preserves pilot input and ship-selection Control but omits flight-stage firing; the projectile is absent. Both samples exercise four further pilot bursts and final captures retain the asteroid field. Unchanged 20-second active/control samples pass: final steady guest 62.1549/60.0853, host 61.1190/61.1212 per second, max frames 19.1/19.5 ms, min audio queue 130.8/131.4 ms, zero captured lifecycle/network errors. Final snapshots are not sample-wide means. Later waves, upgrades, two-player play, persistence, audio fidelity and public release remain unverified."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2305
 runtime:
@@ -95,5 +103,5 @@ Use **keypad 8** to thrust, **keypad 4/6** to turn and **Control** to fire.
 **Escape** returns to the menu. Later waves, purchases/upgrades, two-player play,
 persistence and sound fidelity remain unverified.
 
-Native movement/firing and matched controls are verified. Hosted-browser input
-and pacing, and released public play remain unverified.
+Native and hosted-browser movement/firing and matched controls are verified.
+Browser pacing passes. Released public play remains unverified.
