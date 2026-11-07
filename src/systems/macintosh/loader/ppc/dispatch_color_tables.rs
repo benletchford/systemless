@@ -241,6 +241,19 @@ pub(super) fn dispatch_color_table_import(
             handles,
             *current_gdevice,
         ))),
+        PpcImportDispatcherTarget::CopyPixMap => {
+            ppc_copy_pixmap(
+                cpu.gpr[3],
+                cpu.gpr[4],
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::DisposePixMap => {
             ppc_dispose_pixmap(
                 cpu.gpr[3],
