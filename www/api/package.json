@@ -1,6 +1,14 @@
 {
   "name": "systemless-popularity-api-tests",
   "private": true,
-  "scripts": { "test": "node --test tests/*.test.cjs" },
-  "devDependencies": { "miniflare": "5.20260926.0-alpha" }
+  "scripts": {
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260926.0-alpha"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici": "7.30.1"
+  }
 }
