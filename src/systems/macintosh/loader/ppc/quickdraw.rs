@@ -1419,6 +1419,51 @@ pub(crate) fn ppc_fill_color_region(
     )
 }
 
+/// EraseRect uses the background pattern in patCopy mode, independently of
+/// pen ink/mode. IM: Imaging With QuickDraw, pp. 3-9 and 4-60. Reuse the
+/// PixPat sampler and clipped rows so color tiles and mono patterns share
+/// the same port-coordinate phase, including low-depth destinations.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_erase_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    rect: (i16, i16, i16, i16),
+    pixpat: u32,
+    pattern: [u8; 8],
+    fore: (PpcRgbColor, Option<u8>),
+    back: (PpcRgbColor, Option<u8>),
+) -> bool {
+    let (top, left, bottom, right) = rect;
+    if bottom <= top || right <= left {
+        return true;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+        return false;
+    };
+    let Some(fore_pixel) = ppc_quickdraw_surface_fore_pixel(memory, surface, fore.0, fore.1) else {
+        return false;
+    };
+    let Some(back_pixel) = ppc_quickdraw_surface_fore_pixel(memory, surface, back.0, back.1) else {
+        return false;
+    };
+    let sampler = if pixpat != 0 {
+        ppc_decode_pixpat_sampler(memory, surface, pixpat, fore_pixel, back_pixel)
+    } else {
+        PpcPixPatSampler {
+            width: 8,
+            height: 8,
+            kind: PpcPixPatKind::Mono {
+                pat1: pattern,
+                fore_pixel,
+                back_pixel,
+            },
+        }
+    };
+    let rows = vec![vec![left, right]; (i32::from(bottom) - i32::from(top)) as usize];
+    ppc_fill_rows_with_pixpat(memory, gworlds, port, top, bottom, rows, &sampler, 8)
+}
+
 pub(crate) fn ppc_fill_color_rect(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
