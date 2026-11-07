@@ -61,3 +61,75 @@ test('repository owner submissions allow drafts but require the owner and an unc
   pr.head.sha='changed';
   await assert.rejects(authorizedSubmission(github,context,state),/unchanged/);
 });
+
+// Run commit fixtures in separate processes because promotion reads relative paths.
+function runCommitFixture(changed, rejectUpdate = false) {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const {spawnSync} = require('node:child_process');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'promotion-commit-'));
+  try {
+    const bytes = Buffer.from('promoted entry\n');
+    const sha = require('node:crypto').createHash('sha1')
+      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    fs.mkdirSync(path.join(directory, 'submission/www/catalogue'), {recursive: true});
+    fs.writeFileSync(path.join(directory, 'submission/www/catalogue/game.md'), bytes);
+    fs.writeFileSync(path.join(directory, 'promotion-state.json'), JSON.stringify({
+      sha:'original', branch:'dev/test', ids:['game'], number:1, reviewId:0, actor:'owner'
+    }));
+    fs.writeFileSync(path.join(directory, 'promotion-game.json'), JSON.stringify({applied:true, removed:[]}));
+    const script = `
+      const {commit} = require(${JSON.stringify(require.resolve('./promote-review.cjs'))});
+      const events = [];
+      const record = (name, data) => async args => {
+        events.push({name, args});
+        if (name === 'updateRef' && ${rejectUpdate}) throw new Error('concurrent push');
+        return {data};
+      };
+      const github = {rest:{
+        pulls:{get:async()=>({data:{state:'open', user:{login:'owner'}, base:{ref:'master'},
+          head:{ref:'dev/test', sha:'original', repo:{full_name:'owner/repo'}}}})},
+        git:{
+          getCommit:async()=>({data:{tree:{sha:'base-tree'}}}),
+          getTree:async()=>({data:{truncated:false, tree:[
+            {path:'www/catalogue/game.md', type:'blob', sha:${JSON.stringify(changed ? 'old-blob' : sha)}}
+          ]}}),
+          createBlob:record('createBlob', {sha:'new-blob'}),
+          createTree:record('createTree', {sha:'new-tree'}),
+          createCommit:record('createCommit', {sha:'promoted'}),
+          updateRef:record('updateRef', {})
+        },
+        actions:{createWorkflowDispatch:record('dispatch', {})}
+      }};
+      const context = {repo:{owner:'owner', repo:'repo'}, payload:{repository:{default_branch:'master'}}};
+      commit({github, context, core:{setOutput(){}}})
+        .then(()=>console.log(JSON.stringify({events})))
+        .catch(error=>console.log(JSON.stringify({events, error:error.message})));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script], {cwd:directory, encoding:'utf8'});
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  } finally {
+    fs.rmSync(directory, {recursive:true, force:true});
+  }
+}
+test('unchanged promotion neither writes Git objects nor dispatches duplicate CI', () => {
+  assert.deepEqual(runCommitFixture(false), {events:[]});
+});
+test('changed promotion dispatches fresh CI only after updating the promoted branch', () => {
+  const result = runCommitFixture(true);
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.events.map(event=>event.name),
+    ['createBlob', 'createTree', 'createCommit', 'updateRef', 'dispatch']);
+  assert.deepEqual(result.events[3].args,
+    {owner:'owner', repo:'repo', ref:'heads/dev/test', sha:'promoted', force:false});
+  assert.deepEqual(result.events[4].args,
+    {owner:'owner', repo:'repo', workflow_id:'www.yml', ref:'dev/test'});
+});
+test('rejected concurrent branch update does not dispatch CI', () => {
+  const result = runCommitFixture(true, true);
+  assert.equal(result.error, 'concurrent push');
+  assert.deepEqual(result.events.map(event=>event.name),
+    ['createBlob', 'createTree', 'createCommit', 'updateRef']);
+});

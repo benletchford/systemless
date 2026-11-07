@@ -114,7 +114,7 @@ async function commit({github, context, core}) {
     // A concurrent contributor push makes this non-fast-forward and is rejected.
     await github.rest.git.updateRef({...context.repo, ref: `heads/${state.branch}`, sha: created.sha, force: false});
     core.setOutput('result', `Promoted assets and committed rewrites as ${created.sha}.`);
+    await github.rest.actions.createWorkflowDispatch({...context.repo, workflow_id: CATALOGUE_WORKFLOW, ref: state.branch});
   }
-  await github.rest.actions.createWorkflowDispatch({...context.repo, workflow_id: CATALOGUE_WORKFLOW, ref: state.branch});
 }
 module.exports = {authorize, commit, entryIds, validatePr, removalAllowed, approvedReview, authorizedSubmission, CATALOGUE_WORKFLOW};
