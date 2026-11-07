@@ -2808,7 +2808,7 @@ impl super::TrapDispatcher {
             if caret_state == 0 { 1 } else { 0 },
         );
         bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-        self.draw_te_contents(cpu, bus, te_handle, true);
+        self.draw_te_contents_region(cpu, bus, te_handle, true, true);
     }
 
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
@@ -3026,6 +3026,17 @@ impl super::TrapDispatcher {
         te_handle: u32,
         erase_background: bool,
     ) {
+        self.draw_te_contents_region(cpu, bus, te_handle, erase_background, false);
+    }
+
+    fn draw_te_contents_region(
+        &mut self,
+        cpu: &mut impl CpuOps,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        erase_background: bool,
+        caret_line_only: bool,
+    ) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
             return;
@@ -3195,13 +3206,46 @@ impl super::TrapDispatcher {
         self.tx_size = size;
         self.fg_color = color;
 
-        let clip_top = view_rect.0;
+        let mut clip_top = view_rect.0;
         let clip_left = view_rect.1;
-        let clip_bottom = view_rect.2;
+        let mut clip_bottom = view_rect.2;
         let clip_right = view_rect.3;
         let box_width = (dest_rect.3 - dest_rect.1).max(0);
+        let lines = if text_bytes.is_empty() {
+            vec![(0usize, 0usize)]
+        } else if uses_styled_runs {
+            self.te_wrap_lines_styled(&styled_runs, &text_bytes, box_width)
+        } else {
+            self.te_wrap_lines(font, size, &text_bytes, box_width)
+        };
 
-        if erase_background {
+        if caret_line_only {
+            // TEIdle changes only an insertion caret. Repaint its complete
+            // line, using the same glyph/caret path as a full update, so hiding
+            // a caret restores underlying glyphs without repainting the rest
+            // of a potentially long transcript. Keep the same visible-line
+            // selection (including the final-visible-line fallback) as below.
+            let selection = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
+            let mut line_top = dest_rect.0;
+            let mut affected = None;
+            for (index, &(start, end)) in lines.iter().enumerate() {
+                let bottom = line_top.saturating_add(Self::te_height_for_line(bus, te_handle, index));
+                if bottom > view_rect.0 && line_top < view_rect.2 {
+                    affected = Some((line_top.max(view_rect.0), bottom.min(view_rect.2)));
+                    if selection >= start && selection <= end {
+                        break;
+                    }
+                }
+                line_top = bottom;
+            }
+            if let Some((top, bottom)) = affected {
+                clip_top = top;
+                clip_bottom = bottom;
+            } else {
+                clip_bottom = clip_top;
+            }
+        }
+        if erase_background && clip_top < clip_bottom {
             self.draw_rect(
                 cpu,
                 bus,
@@ -3214,14 +3258,6 @@ impl super::TrapDispatcher {
                 ShapeOp::Erase,
             );
         }
-        let lines = if text_bytes.is_empty() {
-            vec![(0usize, 0usize)]
-        } else if uses_styled_runs {
-            self.te_wrap_lines_styled(&styled_runs, &text_bytes, box_width)
-        } else {
-            self.te_wrap_lines(font, size, &text_bytes, box_width)
-        };
-
         let mut top = dest_rect.0;
         let mut visible_lines = Vec::new();
         let mut visual_lines = Vec::new();

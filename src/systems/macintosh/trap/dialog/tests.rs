@@ -19206,6 +19206,56 @@
     }
 
     #[test]
+    fn teidle_repaint_matches_full_update_and_preserves_unrelated_rows() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            for selection in [0, 6, 12, 17] {
+                let (mut disp, mut cpu, mut bus) = setup_with_port();
+                // The fixture port is monochrome; theme drawing must use
+                // that same bitmap layout rather than the default display.
+                disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+                disp.set_ui_theme_id(theme);
+                let te_handle = make_te_with_text(&mut disp, &mut bus, b"first\rsecond\rthird");
+                let te_ptr = bus.read_long(te_handle);
+                bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 0xFF);
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, selection);
+                bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, selection);
+                let (base, stride, _, _, _) = disp.screen_mode;
+                for state in [0, 1] {
+                    bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, state);
+                    disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+                    bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, 1 - state);
+                    disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+                    let expected = bus.read_bytes(base, (stride * 60) as usize).to_vec();
+                    // Restore the preceding blink phase, then make the idle
+                    // transition through the actual trap path.
+                    bus.write_word(te_ptr + TrapDispatcher::TE_CARET_STATE_OFFSET, state);
+                    disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+                    bus.write_long(te_ptr + TrapDispatcher::TE_CARET_TIME_OFFSET, 0);
+                    disp.set_tick_count_for_test(&mut bus, 32);
+                    cpu.write_reg(Register::A7, TEST_SP);
+                    bus.write_long(TEST_SP, te_handle);
+                    assert!(disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus).unwrap().is_ok());
+                    let actual = bus.read_bytes(base, (stride * 60) as usize);
+                    let differences: Vec<_> = actual.iter().zip(&expected).enumerate()
+                        .filter(|(_, (actual, expected))| actual != expected)
+                        .map(|(offset, (&actual, &expected))| (offset, actual, expected))
+                        .collect();
+                    assert!(differences.is_empty(), "theme={theme:?} selection={selection} preceding_state={state} differences={differences:?}");
+                    // A guest may have painted additional content elsewhere
+                    // in the view. A caret blink must not erase that content.
+                    let marker = base + 50 * stride + 18;
+                    bus.write_byte(marker, 0xA5);
+                    disp.set_tick_count_for_test(&mut bus, 64);
+                    cpu.write_reg(Register::A7, TEST_SP);
+                    bus.write_long(TEST_SP, te_handle);
+                    assert!(disp.dispatch_dialog(true, 0x1DA, &mut cpu, &mut bus).unwrap().is_ok());
+                    assert_eq!(bus.read_byte(marker), 0xA5, "blink repainted an unrelated row");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn teidle_preserves_active_flag_and_selection_offsets() {
         // Inside Macintosh Volume I (1985), pp. I-374 and I-385: TEIdle
         // blinks caret for an active record, while TEActivate/TEDeactivate
