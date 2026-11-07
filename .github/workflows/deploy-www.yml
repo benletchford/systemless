@@ -7,6 +7,10 @@ on:
         description: Release tag or commit to deploy
         required: true
         type: string
+      inspect_only:
+        description: Read popularity counts without deploying
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
@@ -24,6 +28,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: ${{ !inputs.inspect_only }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -60,3 +65,23 @@ jobs:
             d1 migrations apply POPULARITY --remote
             pages deploy dist --project-name=systemless-org --branch=master
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+  inspect:
+    if: ${{ inputs.inspect_only }}
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read production popularity aggregates
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_POPULARITY_DATABASE_ID: ${{ vars.CLOUDFLARE_POPULARITY_DATABASE_ID }}
+        run: node .github/scripts/inspect-popularity.cjs
