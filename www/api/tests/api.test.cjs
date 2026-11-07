@@ -6,10 +6,14 @@ const { Miniflare, convertV4MiniflareOptions } = require('miniflare');
 const visitor = 'a'.repeat(32);
 async function fixture(t, migrate = true) {
   const mf = new Miniflare(convertV4MiniflareOptions({
-    modulesRoot: path.join(__dirname, '../build'),
+    modulesRoot: path.join(__dirname, '../../dist/_worker.js'),
     modules: [
-      { type: 'ESModule', path: path.join(__dirname, '../build/index.js') },
-      { type: 'CompiledWasm', path: path.join(__dirname, '../build/index_bg.wasm') },
+      // Match Pages' object-style dispatch, which cannot call a Worker class directly.
+      { type: 'ESModule', path: path.join(__dirname, '../../dist/_worker.js/pages-test.js'),
+        contents: 'import worker from "./index.js"; export default { fetch(request, env, ctx) { return worker.fetch(request, env, ctx); } };' },
+      { type: 'ESModule', path: path.join(__dirname, '../../dist/_worker.js/index.js') },
+      { type: 'ESModule', path: path.join(__dirname, '../../dist/_worker.js/rust.js') },
+      { type: 'CompiledWasm', path: path.join(__dirname, '../../dist/_worker.js/index_bg.wasm') },
     ],
     compatibilityDate: '2026-06-04',
     d1Databases: { POPULARITY: 'popularity' },

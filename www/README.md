@@ -363,7 +363,9 @@ loads counts.
 
 Popularity uses a Rust Worker compiled to WebAssembly in Pages advanced mode
 and one D1 database. The handlers live in `www/api/src/lib.rs`; `worker-build`
-generates the JavaScript loader and Wasm module under `dist/_worker.js/`. `_routes.json` restricts
+generates the JavaScript loader and Wasm module under `dist/_worker.js/`.
+`www/api/pages.js` adapts the generated Worker class to Pages’ `fetch` interface;
+all API validation, D1 queries and caching logic remain in Rust. `_routes.json` restricts
 Functions invocations to `/api/play` and `/api/popularity`; assets and HTML remain
 static. Rankings are cached at each Cloudflare location for one hour and in the
 browser for five minutes. Cache hits still invoke a Function but avoid D1 reads.
