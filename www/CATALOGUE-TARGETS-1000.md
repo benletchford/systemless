@@ -924,7 +924,7 @@ On 2026-10-11, reserve R62 was corrected from WadTyper for Doom to NetHack 3.3.1
 | R40 | The Orbs | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | R41 | Valerie Porter and the Scarlet Scandal | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/valerie-porter-and-the-scarlet-scandal) |
 | R42 | Wadtool | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/wadtool) |
-| R43 | Antibody | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| R43 | Antibody | Original fat 1.0.0; both native CPUs verified; browser qualification held | P | [Original complete-package grant and evidence](catalogue/antibody.md); [#2308](https://github.com/benletchford/systemless/issues/2308) |
 | R44 | Bedlam | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | R45 | Catch the Bunny II | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | R46 | Desk Fighter | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
