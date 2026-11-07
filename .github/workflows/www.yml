@@ -49,6 +49,9 @@ jobs:
         run: cargo fmt -p systemless-org -p systemless-catalogue-tools -- --check
       - name: Test promotion authorization and browser runtimes
         run: node --test .github/scripts/promote-review.test.cjs www/tests/*.test.cjs
+      - name: Build Cloudflare Functions
+        working-directory: www
+        run: npx --yes wrangler@4.142.0 pages functions build functions --outdir /tmp/systemless-functions
       - name: Test and lint catalogue tools
         run: |
           cargo test --locked -p systemless-catalogue-tools

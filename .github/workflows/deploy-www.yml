@@ -1,6 +1,12 @@
 name: Deploy website
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag or commit to deploy
+        required: true
+        type: string
   workflow_call:
     inputs:
       tag:
@@ -24,6 +30,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Configure popularity database
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_POPULARITY_DATABASE_ID: ${{ vars.CLOUDFLARE_POPULARITY_DATABASE_ID }}
+        run: node www/scripts/configure-popularity.cjs
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -39,5 +54,9 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy www/dist --project-name=systemless-org --branch=master
+          workingDirectory: www
+          wranglerVersion: 4.142.0
+          command: |
+            d1 migrations apply POPULARITY --remote
+            pages deploy dist --project-name=systemless-org --branch=master
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}

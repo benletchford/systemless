@@ -170,6 +170,11 @@ fn LibraryPage(
     let query = RwSignal::new(String::new());
     let architecture = RwSignal::new(None::<GameArchitecture>);
     let category = RwSignal::new(None::<&'static str>);
+    let alphabetical = RwSignal::new(false);
+    let popularity = RwSignal::new(crate::popularity::Popularity::default());
+    leptos::task::spawn_local_scoped_with_cancellation(async move {
+        popularity.set(crate::popularity::fetch().await);
+    });
     let install_on_macos = RwSignal::new(true);
     let total = library_games(show_unapproved).count();
 
@@ -262,6 +267,13 @@ fn LibraryPage(
                             }}
                         </span>
                     </label>
+                    <label class="library-sort">
+                        "Sort"
+                        <select aria-label="Sort games" on:change=move |ev| alphabetical.set(event_target_value(&ev) == "az")>
+                            <option value="popular" selected>"Popular this month"</option>
+                            <option value="az">"A–Z"</option>
+                        </select>
+                    </label>
                     <div class="library-filters" aria-label="Filter games by tags">
                         <div class="library-filter-group" role="group" aria-label="System">
                             <span class="library-filter-group__label">"System"</span>
@@ -316,12 +328,13 @@ fn LibraryPage(
                 </div>
                 <div class="library-list">
                     {move || {
-                        let games = filtered_library_games(
+                        let mut games = filtered_library_games(
                             show_unapproved,
                             &query.get(),
                             architecture.get(),
                             category.get(),
                         );
+                        popularity.with(|counts| crate::popularity::sort(&mut games, counts, alphabetical.get()));
                         if games.is_empty() {
                             let message = if query.get().trim().is_empty() {
                                 "No titles match those tags."

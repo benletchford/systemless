@@ -2080,3 +2080,20 @@ input {
   padding: 1rem;
   border: 1px solid currentColor;
 }
+
+.library-sort {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-sort select {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  padding: 6px 8px;
+  font: inherit;
+}

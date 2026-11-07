@@ -352,3 +352,70 @@ promotion. An empty mapping preserves the existing single-archive behavior, incl
 FAT applications. The launch and download selection follow the chosen architecture;
 static pages and prefetch use the default architecture. Distinct original archives
 cannot share a single web pack. The compiled catalogue schema is version 3.
+
+## Homepage popularity
+
+The homepage defaults to **Popular this month** (the current UTC date plus the
+previous 29 dates). All missing counts are zero; ties use case-insensitive title
+order, then stable ID. A–Z is also available. API failures leave the catalogue
+usable in alphabetical order. Static HTML remains alphabetical until the browser
+loads counts.
+
+Popularity uses two Pages Functions and one D1 database. `_routes.json` restricts
+Functions invocations to `/api/play` and `/api/popularity`; assets and HTML remain
+static. Rankings are cached at each Cloudflare location for one hour and in the
+browser for five minutes. Cache hits still invoke a Function but avoid D1 reads.
+No KV, Durable Objects, analytics vendor or scheduled Worker is needed.
+
+An engaged play requires 30 seconds of visible runtime activity after the first
+paint, plus trusted keyboard or pointer input on the game or mobile controls.
+Download, prefetch, background time, local/preview hosts and browser automation
+do not count. Counts are deduplicated per browser/game/UTC date, across tabs and
+architecture/plugin restarts. A random browser identifier rotates daily; the
+application stores no IP address. Clearing browser storage can count again.
+This is an approximate popularity signal, not a fraud-proof visitor measurement.
+Each identifier can contribute at most 50 different games per day. If abuse
+emerges, apply a Cloudflare rate limiting rule to POST `/api/play`.
+
+The server accepts only approved IDs generated as `popularity-games.json` by the
+catalogue page build. D1 atomically inserts the deduplication record and increments
+the daily total with a trigger. Each accepted request also removes a bounded
+batch of expired records, so idle databases can retain older records until traffic
+resumes. Ranking queries exclude expired totals regardless of cleanup progress.
+
+### Cloudflare deployment
+
+The existing GitHub secrets `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
+are sufficient. The token needs D1 Read/Write and Pages Read/Write on that account.
+The deployment workflow finds `systemless-popularity` by name or creates it,
+configures the binding, applies migrations, and deploys Pages with the Functions
+from `www/functions`. Deployments share a concurrency group to prevent overlapping
+setup. The database UUID appears in the workflow summary. Optionally pin an
+existing UUID with the production environment variable
+`CLOUDFLARE_POPULARITY_DATABASE_ID`.
+
+Website releases deploy automatically. The **Deploy website** workflow also
+accepts a manual release tag or commit for deploying website changes independently.
+For manual CLI deployment, with the same Cloudflare environment variables set:
+
+```sh
+node www/scripts/configure-popularity.cjs
+cd www
+npx wrangler@4.142.0 d1 migrations apply POPULARITY --remote
+npx wrangler@4.142.0 pages deploy dist --project-name=systemless-org --branch=master
+```
+
+The configure script updates the local `www/wrangler.toml`; do not commit that
+account-specific binding. Missing credentials or failed database setup stop the
+deployment. Preview hosts return empty rankings and reject play recording even if
+a database binding is present. For a local Functions smoke test, build the site,
+apply migrations with `--local` and run `wrangler pages dev dist`; production host
+checks intentionally disable tracking on localhost.
+
+At modest traffic this can fit Cloudflare's free allowances. D1 currently includes
+5 million rows read/day, 100,000 rows written/day and 5 GB total storage; Workers
+Free includes 100,000 requests/day, shared with other Functions/Workers on the
+account. A play normally writes a visitor row and a daily total, plus later expiry
+writes. Usage depends on traffic, cache distribution and other account workloads.
+See [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/) and
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/).

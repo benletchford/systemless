@@ -451,6 +451,7 @@ fn GameRuntime(
             if game.settings.worker {
                 set_status(status, "Starting runtime worker\u{2026}".into());
                 match boot_catalogue_worker(
+                    &canvas,
                     &bytes,
                     &plugin_files,
                     game,
@@ -1258,6 +1259,7 @@ fn mark_canvas_runtime_ready(
     worker: bool,
     status: RwSignal<String>,
 ) {
+    crate::popularity::start_play(canvas, game.id);
     let settings = &game.settings;
     for (name, value) in [
         ("data-runtime-game-id", game.id.to_string()),
@@ -2088,6 +2090,7 @@ fn start_render_loop(
         if let Some(error) = save_error {
             set_status(status, error);
         }
+        crate::popularity::play_heartbeat(&canvas, frame_result.running);
         if frame_result.running {
             schedule_runtime_raf(&cb_cell_self, &request_for_callback);
         } else {
@@ -2503,6 +2506,7 @@ impl WorkerRuntime {
 }
 
 async fn boot_catalogue_worker(
+    canvas: &HtmlCanvasElement,
     game_bytes: &[u8],
     plugin_files: &[PluginFile],
     game: &Game,
@@ -2661,6 +2665,7 @@ async fn boot_catalogue_worker(
     let render_for_message = render_loop.clone();
     let listeners_for_message = input_listeners.clone();
     let last_sequence = Cell::new(0.0);
+    let popularity_canvas = canvas.clone();
     let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
         let data = event.data();
         if js_number_property(&data, "generation") != Some(generation as f64) {
@@ -2745,6 +2750,7 @@ async fn boot_catalogue_worker(
             state.save_error = Some(error);
         }
         state.running = js_bool_property(&data, "running").unwrap_or(false);
+        crate::popularity::play_heartbeat(&popularity_canvas, state.running);
         if let Ok(audio_bytes) = Reflect::get(&data, &JsValue::from_str("audio")) {
             if !audio_bytes.is_undefined() {
                 let samples = Uint8Array::new(&audio_bytes).to_vec();

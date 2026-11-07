@@ -14,6 +14,7 @@ mod gpu_wire;
 mod host_cursor;
 mod indexed_frame;
 mod paths;
+mod popularity;
 mod presentation;
 mod renderer_bridge;
 mod save_store;
