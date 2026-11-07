@@ -32,6 +32,28 @@ compatibility:
       levels, persistence and sound fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2318
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 39fb36d4304ee1d99332d62f6ae650ead1228ef8 private browser candidate
+    architecture: 68k
+    environment: >-
+      Optimized private HTTPS frontend on merged runtime 8dbc14c6,
+      Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz,
+      800x600/depth 8, deployed COEP credentialless/COOP same-origin and
+      SharedArrayBuffer verified. Actual hosted HTTP 200 archive response matches
+      242056 bytes and its SHA-256. Main and worker Wasm responses match
+      17769535 bytes, SHA-256 734413441ec31cb800f0091c67902960c06b4ccff9eb20414bc96b3f70316d2a.
+      Trusted input attempts two red soldier moves and receives computer
+      horse/rook movement, but the second capture does not visibly retain the
+      previously advanced central soldier where expected. Rendering needs
+      diagnosis. The unchanged 20-second gate fails at final steady guest
+      35.5324 ticks/sec, host 55.1688 replies/sec; maximum frame 45.2 ms,
+      minimum audio queue 115.0 ms, zero captured lifecycle/network errors.
+      Final snapshots are not sample-wide means. No matched browser control
+      or launch approval. Source stays disabled; full games, startup fidelity,
+      stronger levels, persistence, audio and public play remain unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2318
 runtime:
   executable_path: Chinese Chess Pro 1.0.1/Chinese Chess Pro Color
   screen_depth: 8
@@ -95,6 +117,7 @@ Game** chooses sides and timing; **Level** adjusts the computer's strength.
 **File → New** starts again. The board's history slider steps through moves.
 
 This is the complete original shareware package with its registration terms.
-Native play verifies one soldier move and the computer reply. Startup rendering
-fidelity, browser input/pacing, complete games, stronger levels, persistence and
-sound fidelity remain unverified.
+Native play verifies one soldier move and the computer reply. Browser pacing
+fails and a later redraw needs diagnosis, so launch remains disabled. Startup
+rendering fidelity, full games, stronger levels, persistence, sound fidelity and
+released public play remain unverified.
