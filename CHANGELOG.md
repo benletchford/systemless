@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.112.0](https://github.com/benletchford/systemless/compare/v0.111.0...v0.112.0) (2026-11-07)
+
+
+### Features
+
+* add Achi browser play and Bo-Rad intake ([a05fe7a](https://github.com/benletchford/systemless/commit/a05fe7a4d6939ed8c7b23578a3d20d89aace8e6e))
+* add Dunjin 4.4 intake with browser pacing hold ([3c71c82](https://github.com/benletchford/systemless/commit/3c71c82e9b3ed1c5be925ec8b200f1f5158040af))
+* add Fungus browser play and record public game checks ([3c52cb3](https://github.com/benletchford/systemless/commit/3c52cb37f4f580d0e6b332b53c9788a4a270eb04))
+* add Nubb and Bo-Rad browser play ([debae0f](https://github.com/benletchford/systemless/commit/debae0f31868f24893e36a89f80f45aee1637f3a))
+* enable Dunjin browser play ([3ec502c](https://github.com/benletchford/systemless/commit/3ec502cbf1b64035a9346ac76179c0b6c10a8dfc))
+
+
+### Bug Fixes
+
+* move dragged regions with their tracking outlines ([4a8ef30](https://github.com/benletchford/systemless/commit/4a8ef30ab35a9341ac0ecb63897736378e483f4a))
+
+
+### Performance Improvements
+
+* bound TextEdit repaint work for caret and tail input ([05e3319](https://github.com/benletchford/systemless/commit/05e33193467a716e767c313a6834e8f79cbbae7a))
+* prove idle cycles around main-device queries ([d9d1164](https://github.com/benletchford/systemless/commit/d9d1164642a0fa7f541b235412c7b0d9afaa3366))
+
 ## [0.111.0](https://github.com/benletchford/systemless/compare/v0.110.1...v0.111.0) (2026-11-07)
 
 
