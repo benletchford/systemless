@@ -4310,13 +4310,23 @@ fn window_visibility_and_activation_commands_dispatch_with_canonical_evaluation(
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3], w2);
 
-            // Blanking window takes precedence
+            // An active context's blanking window takes precedence.
+            loaded.draw_sprocket.active_context = Some(PPC_DSP_CONTEXT);
             loaded.draw_sprocket.blanking_window = Some(0x1234);
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(loaded.cpu.gpr[3], 0x1234);
+
+            // A paused context allows ordinary windows to become frontmost.
+            loaded.draw_sprocket.active_context = None;
+            loaded.draw_sprocket.context_state = PpcDspContextPlayState::Paused;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], w2);
         }
 
         // 5. SelectWindow
