@@ -632,7 +632,11 @@ impl super::TrapDispatcher {
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
-        let kind = match raw_trap_route(self.current_trap_word).os_routine_variant {
+        Self::trap_address_table_key_for(self.current_trap_word, trap_word)
+    }
+
+    pub(crate) fn trap_address_table_key_for(opcode: u16, trap_word: u16) -> u16 {
+        let kind = match raw_trap_route(opcode).os_routine_variant {
             // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
             // Inside Macintosh: Operating System Utilities (1994),
             // pp. 8-27--8-31: trapNum may be an A-line instruction or trap
@@ -647,7 +651,7 @@ impl super::TrapDispatcher {
             // 1994, pp. 8-32 to 8-33.
             OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified => {
                 debug_assert!(matches!(
-                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    raw_trap_route(opcode).os_routine_variant,
                     OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified
                 ));
                 TrapTableKind::Legacy

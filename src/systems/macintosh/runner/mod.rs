@@ -1329,7 +1329,11 @@ fn idle_cycle_trap_is_journal_complete(
         // input belongs to the parked host snapshot; a mouse-moved event
         // revokes the proof through the non-null result. The result classifier
         // rejects pending sleep and retained SystemTask continuations.
-        (true, 0x0060) => null_event,
+        (true, 0x0060) | (false, 0x0030) => null_event,
+        // Read-only Trap Manager lookup and fixed SysEnvRec query. Their
+        // handler results/output routing are guarded before dispatch; queried
+        // protected chain links are rechecked when closing or resuming a proof.
+        (false, 0x0046) | (false, 0x0090) => true,
         // Admit only the already-clear HiliteMenu(0) path: it pops its
         // argument without touching pixels, menu tracking or host caches.
         // The pre-dispatch fact must survive classification after dispatch;
@@ -6000,6 +6004,7 @@ impl FixtureRunner {
             host: IdleCycleHostSnapshot::capture(&self.dispatcher),
             slice_host: None,
             resources: Vec::new(),
+            trap_queries: Vec::new(),
             memory_guards: Vec::new(),
             menus: Vec::new(),
             arrivals: 0,
@@ -6131,6 +6136,7 @@ impl FixtureRunner {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
     }
 
@@ -6139,6 +6145,7 @@ impl FixtureRunner {
         trap_pc: u32,
         wake_tick: u32,
         resources: Vec<IdleResidentResource>,
+        trap_queries: Vec<IdleTrapAddressQuery>,
         memory_guards: Vec<IdleMemoryGuard>,
         menus: Vec<crate::trap::menu::IdleMenuProof>,
     ) {
@@ -6157,6 +6164,7 @@ impl FixtureRunner {
             cpu: CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core),
             host: IdleCycleHostSnapshot::capture(&self.dispatcher),
             resources,
+            trap_queries,
             memory_guards,
             menus,
         });
@@ -6185,6 +6193,7 @@ impl FixtureRunner {
                 && self.bus.read_long(0x016A) == sleep.tick;
         let host_unchanged = sleep.host == IdleCycleHostSnapshot::capture(&self.dispatcher)
             && self.idle_resources_unchanged(&sleep.resources)
+            && self.idle_trap_queries_unchanged(&sleep.trap_queries)
             && self.idle_memory_guards_safe(&sleep.memory_guards)
             && self.idle_menus_unchanged(&sleep.menus);
         let can_observe_events = self.active_interrupt_callback.is_none()
@@ -6227,7 +6236,7 @@ impl FixtureRunner {
                 if wait_stats_enabled() {
                     WS_RESUMED.fetch_add(1, AtomicOrdering::Relaxed);
                 }
-                self.park_proven_idle_cycle_with_dependencies(sleep.trap_pc, sleep.wake_tick, sleep.resources, sleep.memory_guards, sleep.menus);
+                self.park_proven_idle_cycle_with_dependencies(sleep.trap_pc, sleep.wake_tick, sleep.resources, sleep.trap_queries, sleep.memory_guards, sleep.menus);
                 true
             }
             AdvanceResult::Advanced => {
@@ -6284,6 +6293,24 @@ impl FixtureRunner {
             }
         }
         None
+    }
+
+    fn idle_trap_queries_unchanged(&self, queries: &[IdleTrapAddressQuery]) -> bool {
+        queries.iter().all(|query| {
+            self.dispatcher.trap_table_address(&self.bus, query.key).unwrap_or(0)
+                == query.address
+        })
+    }
+
+    fn idle_system_query_guard(&self, opcode: u16) -> Option<IdleMemoryGuard> {
+        // The standard SysEnvirons path writes a fixed sixteen-byte record.
+        // Leave its legacy A5-recovery path to ordinary execution.
+        if canonical_trap_number(opcode) == (false, 0x0090)
+            && self.m68k.cpu.read_reg(Register::A5) == 0
+        {
+            return None;
+        }
+        self.idle_memory_guard(self.m68k.cpu.read_reg(Register::A0), 16)
     }
 
     fn idle_resources_unchanged(&self, resources: &[IdleResidentResource]) -> bool {
@@ -6442,7 +6469,7 @@ impl FixtureRunner {
             (
                 true,
                 0x0000 | 0x0051 | 0x0058 | 0x013A | 0x0147 | 0x017F | 0x01A0
-            ) | (false, 0x002E)
+            ) | (false, 0x002E | 0x0030 | 0x0046 | 0x0090)
         ) && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             || (trap == (false, 0x002E)
                 && !self.bus.idle_memory_range_is_journal_safe(
@@ -6450,6 +6477,8 @@ impl FixtureRunner {
                     self.m68k.cpu.read_reg(Register::A1),
                     self.m68k.cpu.read_reg(Register::D0),
                 ))
+            || (matches!(trap, (false, 0x0030 | 0x0090))
+                && self.idle_system_query_guard(opcode).is_none())
             || (trap == (true, 0x017F) && !self.dispatcher.guest_calls.is_empty())
     }
 
@@ -6475,7 +6504,11 @@ impl FixtureRunner {
             }
             _ => false,
         };
-        let null_event = null_event_poll && self.bus.read_word(self.m68k.cpu.core.a(7)) == 0;
+        let null_event = if canonical_trap_number(opcode) == (false, 0x0030) {
+            self.m68k.cpu.read_reg(Register::D0) as u16 == 0xFFFF
+        } else {
+            null_event_poll && self.bus.read_word(self.m68k.cpu.core.a(7)) == 0
+        };
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
@@ -6549,6 +6582,7 @@ impl FixtureRunner {
                 return false;
             }
             if !self.idle_resources_unchanged(&probe.resources)
+                || !self.idle_trap_queries_unchanged(&probe.trap_queries)
                 || !self.idle_memory_guards_safe(&probe.memory_guards)
                 || !self.idle_menus_unchanged(&probe.menus)
             {
@@ -6578,12 +6612,12 @@ impl FixtureRunner {
                 if memory_unchanged {
                     self.idle_cycle_last_seen = Some((trap_pc, tick));
                     if tick_cap.is_some_and(|cap| tick >= cap) {
-                        self.park_proven_idle_cycle_with_dependencies(trap_pc, wake_tick, probe.resources, probe.memory_guards, probe.menus);
+                        self.park_proven_idle_cycle_with_dependencies(trap_pc, wake_tick, probe.resources, probe.trap_queries, probe.memory_guards, probe.menus);
                         return true;
                     }
                     match self.advance_until_tick(wake_tick, tick_cap) {
                         AdvanceResult::CapHit => {
-                            self.park_proven_idle_cycle_with_dependencies(trap_pc, wake_tick, probe.resources, probe.memory_guards, probe.menus);
+                            self.park_proven_idle_cycle_with_dependencies(trap_pc, wake_tick, probe.resources, probe.trap_queries, probe.memory_guards, probe.menus);
                             return true;
                         }
                         AdvanceResult::Advanced => {
@@ -8176,8 +8210,35 @@ impl FixtureRunner {
                         } else {
                             true
                         };
+                    let system_query_safe = if !unsafe_dispatch && self.idle_cycle_probe.is_some() {
+                        match canonical_trap_number(opcode) {
+                            (false, 0x0030 | 0x0090) => self.idle_system_query_guard(opcode)
+                                .is_some_and(|guard| self.record_idle_memory_guards(&[guard])),
+                            (false, 0x0046) => {
+                                let key = TrapDispatcher::trap_address_table_key_for(
+                                    opcode, self.m68k.cpu.read_reg(Register::D0) as u16,
+                                );
+                                let query = IdleTrapAddressQuery {
+                                    key,
+                                    address: self.dispatcher.trap_table_address(&self.bus, key).unwrap_or(0),
+                                };
+                                let probe = self.idle_cycle_probe.as_mut().unwrap();
+                                if probe.trap_queries.contains(&query) {
+                                    true
+                                } else if probe.trap_queries.len() < 16 {
+                                    probe.trap_queries.push(query);
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => true,
+                        }
+                    } else {
+                        true
+                    };
                     let mut unsafe_idle_query =
-                        !resource_safe || !cursor_safe || !menu_safe || unsafe_dispatch;
+                        !resource_safe || !cursor_safe || !menu_safe || !system_query_safe || unsafe_dispatch;
                     if !unsafe_idle_query && canonical_trap_number(opcode) == (false, 0x002E) {
                         if let Some(probe) = self.idle_cycle_probe.as_mut() {
                             let copy = IdleMemoryGuard {
@@ -8194,7 +8255,12 @@ impl FixtureRunner {
                             }
                         }
                     }
-                    if unsafe_idle_query {
+                    if unsafe_idle_query
+                        || matches!(canonical_trap_number(opcode), (false, 0x0030 | 0x0046 | 0x0090))
+                    {
+                        // These system queries are admitted only to the exact
+                        // journal proof, not virtual-pass recordings, which do
+                        // not retain the queried protected-chain dependencies.
                         // A manager return can retire during dispatch, so the
                         // virtual recorder must reject it before that happens.
                         self.cancel_pass_recording();
