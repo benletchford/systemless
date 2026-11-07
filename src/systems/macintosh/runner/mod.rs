@@ -10,7 +10,8 @@ use crate::execution_native::{NativeEngineRole, NativeExecution};
 use crate::guest_call::ExecutionTaskId;
 use crate::guest_procedure::GuestIsa;
 use crate::loader::ppc::{
-    PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
+    PpcDrawSprocketTraceEntry, PpcDspContextPlayState, PpcFrontBuffer, PpcGWorldRecord,
+    PpcHleImportTraceEntry,
     PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
     PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3SceneReplay,
     PpcQ3SoftwareRenderStats, PpcRgbColor, PpcSndCommandRecord, PpcSoundCompletionRecord,
@@ -9848,7 +9849,7 @@ impl FixtureRunner {
         };
         let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(
             front_buffer,
-            app.draw_sprocket.active_context.is_some(),
+            app.draw_sprocket.context_state != PpcDspContextPlayState::Inactive,
         );
         (
             i16::try_from(canvas_height.saturating_sub(front_buffer.height) / 2).unwrap_or(0),
@@ -10524,7 +10525,7 @@ impl FixtureRunner {
         };
         let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(
             primary_buffer,
-            ppc_app.draw_sprocket.active_context.is_some(),
+            ppc_app.draw_sprocket.context_state != PpcDspContextPlayState::Inactive,
         );
         let Some(canvas_row_bytes) = Self::ppc_host_row_bytes(canvas_width, primary_buffer.depth)
         else {

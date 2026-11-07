@@ -161,6 +161,41 @@ fn ppc_host_sync_excludes_scanline_padding_from_visible_rows() {
 }
 
 #[test]
+fn paused_draw_sprocket_pointer_coordinates_preserve_context_display() {
+    let app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    let native = runner.native.application_mut().unwrap();
+    native.gworlds.push(PpcGWorldRecord {
+        ui_theme: UiThemeId::ClassicSystem7,
+        port: PPC_MAIN_GWORLD,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: 0,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 640,
+        height: 480,
+        depth: 8,
+        row_bytes: 640,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    for state in [PpcDspContextPlayState::Active, PpcDspContextPlayState::Paused] {
+        let native = runner.native.application_mut().unwrap();
+        native.draw_sprocket.context_state = state;
+        native.draw_sprocket.active_context =
+            (state == PpcDspContextPlayState::Active).then_some(PPC_DSP_CONTEXT);
+        assert_eq!(runner.ppc_viewport_offset(), (0, 0));
+        assert_eq!(runner.canonical_mouse_position(10, 45), (10, 45));
+    }
+    let native = runner.native.application_mut().unwrap();
+    native.draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
+    native.draw_sprocket.active_context = None;
+    let (v, h) = runner.ppc_viewport_offset();
+    assert!(v > 0 && h > 0, "ordinary desktop buffers still use a matte");
+}
+
+#[test]
 fn ppc_host_canvas_presents_draw_sprocket_context_without_matte() {
     let context_buffer = PpcFrontBuffer {
         base_addr: 0x1000,

@@ -1005,7 +1005,7 @@ pub(super) fn dispatch_window_import(
         PpcImportDispatcherTarget::FrontWindow => {
             let front_visible = ppc_front_visible_process_window(memory, window_list);
             let window = crate::window_manager::evaluate_front_window(
-                draw_sprocket.blanking_window,
+                draw_sprocket.active_context.and(draw_sprocket.blanking_window),
                 front_visible,
             );
             Some(PpcImportAction::Return(window))
@@ -1287,7 +1287,10 @@ pub(super) fn dispatch_window_import(
             };
             // Apple Game Sprockets Guide, DrawSprocket (1996), p. 2-14:
             // an active context's blanking window covers the entire display.
-            let (part, window) = if in_screen && draw_sprocket.blanking_window.is_some() {
+            let (part, window) = if fullscreen_context_active
+                && in_screen
+                && draw_sprocket.blanking_window.is_some()
+            {
                 (3, draw_sprocket.blanking_window.unwrap())
             } else if fullscreen_context_active && in_screen && part == 0 {
                 (3, 0)

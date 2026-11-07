@@ -119,6 +119,62 @@ fn active_draw_sprocket_blanking_window_owns_clicks_and_is_disposed() {
 }
 
 #[test]
+fn paused_draw_sprocket_retains_display_and_window_until_inactive() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_SetState");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let desktop = loaded.presented_front_buffer().unwrap();
+    loaded.memory.write_u8(PPC_MAIN_SCREEN_BASE + 100, 0x5a).unwrap();
+    loaded.draw_sprocket.started = true;
+    loaded.draw_sprocket.reserved_context = Some(PPC_DSP_CONTEXT);
+    loaded.draw_sprocket.context_attributes.width = 640;
+    loaded.draw_sprocket.context_attributes.height = 480;
+    loaded.draw_sprocket.context_attributes.display_depth = 16;
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let window = loaded.draw_sprocket.blanking_window.unwrap();
+    let context_buffer = loaded.presented_front_buffer().unwrap();
+    loaded.memory.write_u8(PPC_MAIN_SCREEN_BASE + 100, 0x27).unwrap();
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_PAUSED;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.presented_front_buffer().unwrap(), context_buffer);
+    assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x27));
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(window));
+    assert!(loaded.window_list.contains_window(window));
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FrontWindow);
+    assert_eq!(loaded.cpu.gpr[3], window);
+    let hit = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(hit, vec![0; 4]);
+    loaded.cpu.gpr[3] = (5 << 16) | 5;
+    loaded.cpu.gpr[4] = hit;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
+    assert_eq!(loaded.cpu.gpr[3], 1, "paused context exposes the menu bar");
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSwapBuffers);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.draw_sprocket.blanking_window, Some(window));
+    assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x27));
+
+    loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+    assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 100), Some(0x5a));
+    assert_eq!(loaded.draw_sprocket.blanking_window, None);
+    assert!(!loaded.window_list.contains_window(window));
+}
+
+#[test]
 fn draw_sprocket_temporary_context_restores_desktop_mode_and_pixels() {
     let pef = synthetic_pef_with_import(b"SetPort");
     let mut loaded = load_pef_application(&pef).unwrap();
