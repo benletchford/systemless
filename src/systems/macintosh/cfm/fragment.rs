@@ -136,9 +136,12 @@ impl CfmFragmentPlan {
             .filter(|value| *value < heap_limit)
             .ok_or(CfmLoadError::NoAddressSpace)?;
         let bases = section_bases(&sections);
+        let headers = parse_pef_sections(fragment).ok_or(CfmLoadError::CorruptFragment)?;
+        let relocation_bases = crate::loader::pef::pef_section_relocation_bases(&headers, &bases)
+            .ok_or(CfmLoadError::CorruptFragment)?;
         // CFM libraries can export data without containing executable code.
-        // The relocation context still needs a code base; zero is unused when
-        // such a fragment has no code relocation instructions.
+        // Keep actual mapped addresses for layout validation, independently
+        // of the relocation deltas (which can legitimately be zero).
         let code_base = first_base_for_kind(&sections, SECTION_KIND_CODE).unwrap_or(0);
         let data_base = first_data_base(&sections).unwrap_or(code_base);
         if code_base == 0 && data_base == 0 {
@@ -153,9 +156,9 @@ impl CfmFragmentPlan {
                 .find(|section| section.index == usize::from(relocation.section_index))
                 .ok_or(CfmLoadError::CorruptFragment)?;
             let context = PefRelocContext {
-                code_base,
-                data_base,
-                section_bases: &bases,
+                code_base: relocation_bases.first().copied().flatten().unwrap_or(0),
+                data_base: relocation_bases.get(1).copied().flatten().unwrap_or(0),
+                section_bases: &relocation_bases,
                 import_addrs,
             };
             apply_pef_relocations_detailed(&mut section.bytes, stream, &context)
@@ -412,6 +415,40 @@ mod tests {
             }
             assert_eq!(outcomes[0], outcomes[1]);
         }
+    }
+
+    #[test]
+    fn pef_preferred_addresses_relocate_library_fragments_before_publication() {
+        let code_preferred = 0x1000_0000u32;
+        let data_preferred = 0x2000_0000u32;
+        let bytes: Vec<_> = [code_preferred + 4, data_preferred + 0x8000, 0]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        let mut fragment = synthetic_pef(
+            synthetic_loader_with_reloc_header(&[run_reloc(0x23, 1), run_reloc(0x25, 1)]),
+            block_copy_section(&bytes),
+            12,
+            12,
+        );
+        fragment[44..48].copy_from_slice(&code_preferred.to_be_bytes());
+        fragment[72..76].copy_from_slice(&data_preferred.to_be_bytes());
+        let plan =
+            CfmFragmentPlan::prepare(&fragment, &[IMPORT], HEAP, HEAP + 256, 16, bounds).unwrap();
+        let code = plan.sections.iter().find(|s| s.index == 0).unwrap();
+        let data = plan.sections.iter().find(|s| s.index == 1).unwrap();
+        assert_eq!(code.base, HEAP);
+        assert_eq!(data.base, HEAP + 16);
+        let words: Vec<_> = data
+            .bytes
+            .chunks_exact(4)
+            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(words, [HEAP + 4, HEAP + 16 + 0x8000, IMPORT]);
+        assert_eq!(plan.prepared_fragment().main_addr, data.base);
+        // Preparing relocation bytes does not publish or change the allocation map.
+        assert_eq!(plan.prepared_fragment().sections[0].address, code.base);
+        assert_eq!(plan.prepared_fragment().sections[1].address, data.base);
     }
 
     #[test]

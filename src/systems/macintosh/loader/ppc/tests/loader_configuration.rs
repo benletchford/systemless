@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn pef_preferred_addresses_relocate_application_transition_vectors_and_imports() {
+    // Mac OS Runtime Architectures (1997), p. 8-23. Includes downward moves,
+    // a zero relocation delta, and modular arithmetic across address zero.
+    for (code_preferred, data_preferred) in [
+        (0u32, 0u32),
+        (0x1000_0000, 0x2000_0000),
+        (PPC_CODE_BASE, PPC_DATA_BASE),
+        (0xffff_0000, 0xffff_f000),
+    ] {
+        let loader = synthetic_loader_with_chunks(
+            b"InterfaceLib",
+            b"TestImport",
+            &[run_reloc(0x23, 1), run_reloc(0x25, 1)],
+        );
+        let bytes: Vec<_> = [code_preferred, data_preferred.wrapping_add(0x8000), 0]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        let mut pef = synthetic_pef_with_loader_and_data(loader, &bytes);
+        write_u32(&mut pef, 44, code_preferred);
+        write_u32(&mut pef, 72, data_preferred);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(loaded.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(loaded.cpu.gpr[2], PPC_DATA_BASE + 0x8000);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(PPC_CODE_BASE)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE + 4),
+            Some(PPC_DATA_BASE + 0x8000)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE + 8),
+            Some(PPC_IMPORT_TVECTOR_BASE)
+        );
+    }
+}
+
+#[test]
 fn load_pef_application_honors_configured_stack_size() {
     let pef = synthetic_pef();
     let loaded = load_pef_application_with_config(
