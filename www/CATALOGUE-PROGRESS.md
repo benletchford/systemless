@@ -690,7 +690,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 539 | Tablut | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 540 | Ultimaze | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 541 | Vic Kombat | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 542 | War of Flowers | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 542 | War of Flowers | [Whole original online grant](catalogue/war-of-flowers.md) | [Original pins and five-path/fork parity](https://github.com/benletchford/systemless/issues/2316) | [Card turn/control, fourteen checks](https://github.com/benletchford/systemless/issues/2316) | N/A: CODE-only executable inspected | Pending: rendering and browser | Pending | Pending |
 | 543 | X-Moto | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 544 | Yipe III | Original complete unchanged-package grant | Author original 1.4; five files/ten forks and Finder metadata matched | Town movement with matched idle control | No cfrg; nine CODE resources, empty data fork | Public movement and pacing verified; portraits approved | Assets promoted; launch approval [#5538](https://github.com/benletchford/systemless/pull/5538) merged | [Live v0.108.0](https://systemless.org/yipe-iii/) |
 | 545 | Zauron | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
