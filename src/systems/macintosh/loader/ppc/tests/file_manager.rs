@@ -2361,6 +2361,47 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_catalog_info_resolves_working_directory_reference() {
+        // A working-directory reference plus dirID zero selects that folder,
+        // whereas a volume reference plus zero selects the volume root.
+        for (vref, dir_id, expected_dir, expected_name) in [
+            (77, 0, PPC_PREFERENCES_DIR_ID, "Preferences"),
+            (PPC_BOOT_VOLUME_REF_NUM, 0, PPC_ROOT_DIR_ID,
+                crate::trap::TrapDispatcher::boot_volume_name()),
+            (77, PPC_SYSTEM_FOLDER_DIR_ID, PPC_SYSTEM_FOLDER_DIR_ID, "System Folder"),
+        ] {
+            let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.working_directories.with_mut(|directories| {
+                directories.insert(77, ProcessWorkingDirectory {
+                    ref_num: 77,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: PPC_PREFERENCES_DIR_ID,
+                    proc_id: 0,
+                });
+            });
+            let pb = PPC_DATA_BASE + 0x1000;
+            let name = pb + 128;
+            loaded.memory.add_region(pb, vec![0; 384]);
+            loaded.memory.write_u32_be(pb + 18, name).unwrap();
+            loaded.memory.write_u16_be(pb + 22, vref as u16).unwrap();
+            loaded.memory.write_u16_be(pb + 28, (-1i16) as u16).unwrap();
+            loaded.memory.write_u32_be(pb + 48, dir_id).unwrap();
+            loaded.cpu.gpr[3] = pb;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(expected_dir));
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, name),
+                Some(encode_mac_roman_lossy(expected_name))
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_pb_get_finfo_uses_default_directory() {
         let pef = synthetic_pef_with_import(b"PBGetFInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();

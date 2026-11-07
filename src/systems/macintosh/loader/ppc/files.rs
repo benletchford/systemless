@@ -208,6 +208,7 @@ pub(super) fn ppc_pb_get_cat_info(
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
     let pb = cpu.gpr[3];
     if pb == 0 {
@@ -230,7 +231,16 @@ pub(super) fn ppc_pb_get_cat_info(
     let Some(requested_dir_id) = memory.read_u32_be(pb + 48) else {
         return PPC_PARAM_ERR;
     };
-    let effective_dir_id = ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id);
+    // Files, table 2-10: a working-directory reference with dirID zero
+    // selects that directory, rather than the containing volume's root.
+    let working_directory = working_directories.get(&vref);
+    let effective_dir_id = if requested_dir_id == 0 {
+        working_directory.map(|record| record.dir_id).unwrap_or_else(|| {
+            ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id)
+        })
+    } else {
+        requested_dir_id
+    };
     // A negative index selects the directory by ID. ioNamePtr is output-only,
     // including when its buffer does not yet contain a valid Pascal string.
     // Inside Macintosh: Files (1992), pp. 2-191 and 3-36.
@@ -253,7 +263,13 @@ pub(super) fn ppc_pb_get_cat_info(
                 .find(|volume| volume.name.eq_ignore_ascii_case(name))
         });
     let resolved_vref =
-        pathname_volume.map_or_else(|| ppc_resolve_volume_ref_num(vref), |volume| volume.ref_num);
+        pathname_volume.map_or_else(
+            || working_directory.map_or_else(
+                || ppc_resolve_volume_ref_num(vref),
+                |record| record.volume_ref_num,
+            ),
+            |volume| volume.ref_num,
+        );
     if !absolute_pathname
         && effective_dir_id > 1
         && ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none()
