@@ -2765,6 +2765,24 @@ impl super::TrapDispatcher {
 
             // ========== Appearance Manager ==========
 
+            (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 0x24 => {
+                // IsThemeInColor(SInt16 depth, Boolean colorDevice).
+                // Apple Universal Interfaces 3.2, Appearance.h: selector $0024.
+                // Pascal arguments are reversed: the Boolean occupies the
+                // high byte of a word-aligned slot; its padding is not data.
+                let sp = cpu.read_reg(Register::A7);
+                let color_device = bus.read_byte(sp) != 0;
+                let depth = bus.read_word(sp + 2) as i16;
+                let palette = self.ui_theme().palette();
+                let chromatic = [palette.window_background, palette.frame_dark,
+                    palette.frame_light, palette.selection, palette.accent]
+                    .iter().any(|color| color.r != color.g || color.g != color.b);
+                let in_color = depth > 1 && color_device && chromatic;
+                bus.write_word(sp + 4, if in_color { 0x0100 } else { 0 });
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
             (true, 0x274) if cpu.read_reg(Register::D0) as u16 == 0x15 => {
                 // RegisterAppearanceClient ($AA74, selector $0015)
                 // Registers the current application as an Appearance Manager client.
