@@ -32,6 +32,29 @@ compatibility:
       unverified. Launch stays disabled pending browser qualification.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5775
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: 6c88a005d1467dcd7875a19d81fbdb5d2a545b45 private browser on b5dfb40c runtime
+    architecture: 68k
+    environment: >-
+      Fresh isolated Chrome worker/WebGL active and omitted-button sessions retain
+      the original settings, canonical executable and 68K/default 25 MHz/800x600/
+      depth 8. Both receive the same ordinary blank-canvas audio gesture and
+      Command-N setup before readiness and measurement. Each measures 20 seconds.
+      Three legal active drags add lines/dots, reach score 3 and 22 available moves;
+      matching pointer movement without buttons retains score 0, 28 available moves
+      and the original board. Actual final images inspected. Active guest/host rates
+      are 59.99/59.99 per second, minimum audio queue 109.3 ms, but maximum worker
+      frame 51.6 ms fails the unchanged 50 ms gate. Control rates are 60.01/60.01,
+      maximum worker frame 6.6 ms and minimum audio 132.6 ms, passing all gates.
+      Game ID, worker mode, architecture, clock, isolation and shared memory are
+      checked. Original archive and both main/worker Wasm HTTP 200 response bodies
+      match independent byte/hash pins; no lifecycle/network errors. No lower clock,
+      preset change, hidden warm-up moves or relaxed gate is used. Overall status
+      remains unknown and launch disabled pending diagnosis and fresh passing
+      browser qualification. No released public play is claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5775
 runtime:
   executable_path: Morpion-100/Morpion
   screen_depth: 8
