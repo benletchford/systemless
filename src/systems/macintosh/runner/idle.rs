@@ -149,6 +149,14 @@ pub(crate) struct IdleResidentResource {
     pub(crate) handle_state: u8,
 }
 
+/// A Trap Manager lookup result, including protected chain links whose
+/// privileged updates do not pass through the ordinary RAM write journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IdleTrapAddressQuery {
+    pub(crate) key: u16,
+    pub(crate) address: u32,
+}
+
 /// Guest ranges whose routing, presentation and sound-watch conditions must stay safe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct IdleMemoryGuard {
@@ -165,6 +173,7 @@ pub(crate) struct IdleCycleProbe {
     /// Host state at a deferred slice exit, checked before guest execution resumes.
     pub(crate) slice_host: Option<IdleCycleHostSnapshot>,
     pub(crate) resources: Vec<IdleResidentResource>,
+    pub(crate) trap_queries: Vec<IdleTrapAddressQuery>,
     pub(crate) memory_guards: Vec<IdleMemoryGuard>,
     pub(crate) menus: Vec<crate::trap::menu::IdleMenuProof>,
     /// Same-site arrivals observed since the probe began without matching
@@ -334,6 +343,7 @@ pub(crate) struct IdleCycleHostSnapshot {
     /// any added, removed or changed event must revoke it.
     pub(crate) event_queue: crate::event_queue::EventQueue,
     pub(crate) task: crate::execution_kernel::ExecutionTaskId,
+    pub(crate) trap_table_profile: Option<crate::trap::dispatch::TrapTableProfile>,
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
     pub(crate) cursor: crate::process_context::ProcessCursorState,
@@ -387,6 +397,7 @@ impl IdleCycleHostSnapshot {
         Self {
             event_queue: dispatcher.event_queue.with_ref(Clone::clone),
             task: dispatcher.guest_calls.current_task(),
+            trap_table_profile: dispatcher.trap_table_profile,
             mouse_pos: dispatcher.input_state.mouse_position(),
             mouse_button: dispatcher.input_state.mouse_button_pressed(),
             cursor: dispatcher.cursor_state.snapshot(),
@@ -431,6 +442,7 @@ pub(crate) struct ProvenIdleCycleSleep {
     pub(crate) cpu: CpuArchitecturalSnapshot,
     pub(crate) host: IdleCycleHostSnapshot,
     pub(crate) resources: Vec<IdleResidentResource>,
+    pub(crate) trap_queries: Vec<IdleTrapAddressQuery>,
     pub(crate) memory_guards: Vec<IdleMemoryGuard>,
     pub(crate) menus: Vec<crate::trap::menu::IdleMenuProof>,
 }

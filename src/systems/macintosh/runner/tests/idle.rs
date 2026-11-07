@@ -5090,3 +5090,82 @@ fn deferred_eventavail_loop_ignores_unchanged_masked_queue_entry() {
     assert_eq!(runner.bus.read_word(event), 1, "new matching input must reach the guest");
     assert!(runner.idle_cycle_sleep.is_none());
 }
+
+fn query_poll_loop(get_trap_address: u16) -> FixtureRunner {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let requested = if get_trap_address == 0xA346 { 0x0030 } else { 0xA975 };
+    // A real guest loop: TickCount, trap lookup, null OSEventAvail,
+    // SysEnvirons and SystemTask. All query outputs reach ordinary RAM.
+    let mut words = vec![
+        0x594F, 0xA975, 0x588F,
+        0x303C, requested, get_trap_address,
+        0x23C8, 0x0021, 0x0200, // MOVE.L A0,$00210200
+        0x70FF, 0x207C, 0x0021, 0x0100, 0xA030,
+        0x7001, 0x207C, 0x0021, 0x0000, 0xA090,
+        0xA9B4,
+    ];
+    let back = (-(words.len() as i32 * 2 + 2)) as u16;
+    words.extend([0x6000, back]);
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.m68k.cpu.write_reg(Register::A5, 0x0024_0000);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner
+}
+
+#[test]
+fn query_poll_cycles_park_and_wake_for_table_edits_and_events() {
+    for lookup in [0xA146, 0xA346, 0xA746] {
+        let mut runner = query_poll_loop(lookup);
+        let (_, running) = runner.run_steps_internal(
+            20_000, Some(100), 0, true, false, FrameFinalization::Deferred,
+        );
+        assert!(running);
+        assert!(runner.idle_cycle_sleep.is_some(), "lookup {lookup:04x} must allow a proven idle cycle");
+        assert_eq!(runner.guest_tick(), 100, "the frontend cap must hold");
+        assert_eq!(runner.bus.read_word(0x0021_0000), 2);
+        assert_eq!(runner.bus.read_word(0x0021_0100), 0);
+        assert_eq!(runner.bus.read_long(0x0021_0106), 100);
+        let key = if lookup == 0xA346 { 0xA030 } else { 0xA975 };
+        assert_eq!(runner.bus.read_long(0x0021_0200), runner.dispatcher.trap_table_address(&runner.bus, key).unwrap());
+
+        runner.dispatcher.install_trap_address(&mut runner.bus, key, 0x0030_0000).unwrap();
+        assert!(!runner.try_resume_proven_idle_cycle(Some(101)), "a changed queried table entry must revoke the proof");
+
+        let mut event = query_poll_loop(lookup);
+        event.run_steps_internal(20_000, Some(100), 0, true, false, FrameFinalization::Deferred);
+        event.dispatcher.event_queue.push_back(crate::event_queue::QueuedEvent {
+            what: 1, message: 0, when: 100, where_v: 10, where_h: 20, modifiers: 0,
+        });
+        assert!(!event.try_resume_proven_idle_cycle(Some(101)), "new input must wake a parked query cycle");
+        event.run_steps_internal(20_000, Some(100), 0, true, false, FrameFinalization::Deferred);
+        assert!(event.idle_cycle_sleep.is_none(), "a non-null OS event must not be classified as idle");
+        assert_eq!(event.bus.read_word(0x0021_0100), 1);
+    }
+}
+
+#[test]
+fn query_poll_cycles_reject_patched_queries_and_unsafe_output_buffers() {
+    let mut runner = query_poll_loop(0xA746);
+    runner.m68k.cpu.write_reg(Register::A0, 0x0021_0000);
+    for opcode in [0xA146, 0xA346, 0xA746, 0xA030, 0xA090] {
+        assert!(!runner.idle_query_has_unsafe_dispatch(opcode));
+    }
+    for key in [0xA046, 0xA030, 0xA090] {
+        runner.dispatcher.install_trap_address(&mut runner.bus, key, 0x0030_0000).unwrap();
+    }
+    for opcode in [0xA146, 0xA346, 0xA746, 0xA030, 0xA090] {
+        assert!(runner.idle_query_has_unsafe_dispatch(opcode), "patched query {opcode:04x} must cancel");
+    }
+    let mut clean = query_poll_loop(0xA746);
+    clean.m68k.cpu.write_reg(Register::A0, 0x07FF_FFFF);
+    assert!(clean.idle_query_has_unsafe_dispatch(0xA030));
+    assert!(clean.idle_query_has_unsafe_dispatch(0xA090));
+}
