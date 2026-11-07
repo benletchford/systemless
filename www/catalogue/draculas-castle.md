@@ -2,8 +2,7 @@
 id: draculas-castle
 kind: game
 title: Dracula's Castle
-summary: >-
-  Explore Devils Island, defeat its vampire and escape with the hidden treasure
+summary: Explore Devils Island, defeat its vampire and escape with the hidden treasure
   in this text adventure.
 developer: Al Staffieri Jr.
 year: 2004
@@ -14,20 +13,40 @@ category: Role-Playing
 compatibility:
   status: unknown
   verified:
-  - date: "2026-11-08"
+  - date: '2026-11-08'
     tester: Catalogue maintainer
     systemless_version: 1285257185892f593f30d83599def53e7a005a1b native candidate
     architecture: 68k
-    environment: >-
-      Complete unchanged original and exact executable, 68K/default 25
-      MHz/800x600/depth 8. New Game then Space acknowledges introduction. N+Return moves BEACH to
-      THIN FOREST; equal-clock omitted-Return control retains BEACH with n unsubmitted.
-      Before-input images match. Fresh repeats each pass eight measured causal pixels and
-      two exact prior captures, ten checks at frontend 560/guest 1156, zero exhausted
-      frames. Captures inspected. Own-run consistency is not hardware accuracy. Native
-      binary SHA-256 35cf8fcada95a08951a732ff0d92f0b816c2291aeb1067c6ee84788d94b85f34.
+    environment: Complete unchanged original and exact executable, 68K/default 25
+      MHz/800x600/depth 8. New Game then Space acknowledges introduction. N+Return
+      moves BEACH to THIN FOREST; equal-clock omitted-Return control retains BEACH
+      with n unsubmitted. Before-input images match. Fresh repeats each pass eight
+      measured causal pixels and two exact prior captures, ten checks at frontend
+      560/guest 1156, zero exhausted frames. Captures inspected. Own-run consistency
+      is not hardware accuracy. Native binary SHA-256 35cf8fcada95a08951a732ff0d92f0b816c2291aeb1067c6ee84788d94b85f34.
       Full story, combat, inventory, save/load, audio fidelity, browser pacing and
       released public play remain unverified. Launch disabled pending browser qualification.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5783
+  - date: '2026-11-08'
+    tester: Catalogue maintainer
+    systemless_version: 664cb609fc2231e591fcc32e4dd225a8b511f053 private browser on
+      e0ff4175 runtime
+    architecture: 68k
+    environment: 'Fresh isolated Chromium worker/WebGL active and omitted-Return profiles,
+      original defaults, 68K/25 MHz/800x600/depth 8 and exact executable. Ordinary
+      New Game and Space acknowledge introduction. Each unchanged 20-second sample
+      types n; Return moves active BEACH to THIN FOREST, while control retains BEACH
+      with n unsubmitted. Captures inspected. Both FAIL unchanged minimum 50 guest
+      ticks/sec gate: active/control 31.5424/31.5329. Host rates 60.0323/60.0142 per
+      second, maximum worker frames 22.7/22.2 ms and minimum audio queues 127.4/128.0
+      ms pass their gates. No lifecycle/network errors. Game ID, architecture, clock,
+      worker, source stamp, isolation and SharedArrayBuffer checked. Actual archive
+      and main/worker Wasm HTTP 200 response bodies match independent pins; Wasm 17872734
+      bytes SHA-256 5529e949e436b0830a27a805ff97702024b705de031f49d39f2236b64c0c93d2.
+      No lower clock, altered preset, hidden warm-up commands or relaxed gates. Overall
+      compatibility remains unknown and launch disabled pending diagnosis and passing
+      browser qualification. Released public play is unverified.'
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5783
 runtime:
@@ -51,17 +70,15 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/5783
     license: Original unchanged fee-free distribution terms
     rights_holder: Al Staffieri Jr.
-    permission: >-
-      Complete original ReadMe explicitly permits any number of copies provided the
-      application remains unchanged, distribution is fee-free and the ReadMe accompanies
+    permission: Complete original ReadMe explicitly permits any number of copies provided
+      the application remains unchanged, distribution is fee-free and the ReadMe accompanies
       it. Preserve the complete original, notices and optional $5 hint request. The
       full 6581-byte ReadMe was read.
-    notes: >-
-      Independent extraction versus production packing matches both original paths,
-      four forks and two Finder records, strict KPK end 455009, pack SHA-256
-      c7103dd1d730f40e039f69a93630a66e89f63cfe911ec79ed2057e899876cc01. Published MD5 matches.
-      Original classic version 2.51 dated 13 February 2004. Compiled FutureBASIC runtime
-      is embedded; no external runtime supplied.
+    notes: Independent extraction versus production packing matches both original
+      paths, four forks and two Finder records, strict KPK end 455009, pack SHA-256
+      c7103dd1d730f40e039f69a93630a66e89f63cfe911ec79ed2057e899876cc01. Published
+      MD5 matches. Original classic version 2.51 dated 13 February 2004. Compiled
+      FutureBASIC runtime is embedded; no external runtime supplied.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -77,8 +94,7 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/5783
     rights_holder: Al Staffieri Jr.
     permission: Fresh gameplay capture from the unchanged freely distributable original.
-    notes: >-
-      Exact native crop (155,44)-(645,338), 490x294, excluding Classic menu/window
+    notes: Exact native crop (155,44)-(645,338), 490x294, excluding Classic menu/window
       chrome, no resampling. Shows normal northward movement from BEACH to THIN FOREST.
 references:
 - https://www.gryphel.com/c/sw/games/draccast/
