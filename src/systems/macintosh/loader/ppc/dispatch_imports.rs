@@ -2264,6 +2264,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::RestoreDeviceClut
         | PpcImportDispatcherTarget::DisposeCTable
         | PpcImportDispatcherTarget::NewPixMap
+        | PpcImportDispatcherTarget::CopyPixMap
         | PpcImportDispatcherTarget::DisposePixMap => {
             unreachable!("color-table imports return through dispatch_color_table_import")
         }

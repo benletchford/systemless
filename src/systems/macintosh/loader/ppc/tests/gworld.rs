@@ -2846,3 +2846,116 @@ fn new_gworld_region_allocation_failure_rolls_back_native_ownership() {
         assert_eq!(loaded.ptrs(), ptrs);
     }
 }
+
+#[test]
+fn hle_import_runner_copy_pixmap_preserves_pixels_and_owns_a_color_table() {
+    let pef = synthetic_pef_with_import(b"CopyPixMap");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let copy_target = loaded.imports[0].dispatcher_target;
+    assert_eq!(copy_target, PpcImportDispatcherTarget::CopyPixMap);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPixMap);
+    let source = loaded.cpu.gpr[3];
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPixMap);
+    let destination = loaded.cpu.gpr[3];
+    let src = loaded.memory.read_u32_be(source).unwrap();
+    let dst = loaded.memory.read_u32_be(destination).unwrap();
+    let src_table = loaded.memory.read_u32_be(src + 42).unwrap();
+    let old_table = loaded.memory.read_u32_be(dst + 42).unwrap();
+    let table = loaded.memory.read_u32_be(src_table).unwrap();
+    loaded.memory.write_u32_be(table, 0x12345678).unwrap();
+    let pixels = PPC_DATA_BASE + 0x3000;
+    loaded.memory.add_region(pixels, vec![0x5a; 32]);
+    loaded.memory.write_u32_be(src, pixels).unwrap();
+    loaded.memory.write_u16_be(src + 4, 0x8010).unwrap();
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = destination;
+    // Exercise the actual imported symbol, not only the helper/enum.
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = copy_target;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], source);
+    let copied_table = loaded.memory.read_u32_be(dst + 42).unwrap();
+    assert_ne!(copied_table, src_table);
+    assert_ne!(copied_table, old_table);
+    assert!(loaded
+        .process_memory_manager
+        .0
+        .borrow()
+        .native_allocation(old_table)
+        .is_none());
+    let copied_ptr = loaded.memory.read_u32_be(copied_table).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(copied_ptr), Some(0x12345678));
+    assert_eq!(loaded.memory.read_u32_be(dst), Some(pixels));
+    assert_eq!(loaded.memory.read_u16_be(dst + 4), Some(0x8010));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, pixels, 32),
+        Some(vec![0x5a; 32])
+    );
+    loaded.memory.write_u32_be(table, 0xabcdef01).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(copied_ptr), Some(0x12345678));
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = source;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPixMap);
+    assert_eq!(loaded.memory.read_u32_be(src + 42), Some(src_table));
+    loaded.cpu.gpr[3] = source;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposePixMap);
+    assert_eq!(loaded.memory.read_u32_be(copied_ptr), Some(0x12345678));
+    loaded.cpu.gpr[3] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposePixMap);
+    assert_eq!(loaded.memory.read_u8(pixels), Some(0x5a));
+}
+
+#[test]
+fn hle_import_runner_copy_pixmap_clones_device_table_without_leaking_or_freeing_it() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyPixMap")).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPixMap);
+    let source = loaded.cpu.gpr[3];
+    let src = loaded.memory.read_u32_be(source).unwrap();
+    let original_table = loaded.memory.read_u32_be(src + 42).unwrap();
+    loaded.cpu.gpr[3] = original_table;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeCTable);
+    loaded
+        .memory
+        .write_u32_be(src + 42, PPC_MAIN_CTABLE_HANDLE)
+        .unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPixMap);
+    let destination = loaded.cpu.gpr[3];
+    let dst = loaded.memory.read_u32_be(destination).unwrap();
+    let main_table = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+    let size = 8 + (u32::from(loaded.memory.read_u16_be(main_table + 6).unwrap()) + 1) * 8;
+    let expected = ppc_memory_read_bytes(&mut loaded.memory, main_table, size).unwrap();
+    assert!(size > 8);
+    let handle_count = test_handle_records!(loaded).len();
+    for _ in 0..3 {
+        loaded.cpu.gpr[3] = source;
+        loaded.cpu.gpr[4] = destination;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPixMap);
+        let handle = loaded.memory.read_u32_be(dst + 42).unwrap();
+        assert_ne!(handle, PPC_MAIN_CTABLE_HANDLE);
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, ptr, size),
+            Some(expected.clone())
+        );
+        assert_eq!(test_handle_records!(loaded).len(), handle_count);
+    }
+    let destination_before =
+        ppc_memory_read_bytes(&mut loaded.memory, dst, PPC_PIXMAP_SIZE).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyPixMap);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, dst, PPC_PIXMAP_SIZE),
+        Some(destination_before)
+    );
+    assert_eq!(test_handle_records!(loaded).len(), handle_count);
+    loaded.cpu.gpr[3] = destination;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposePixMap);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, main_table, size),
+        Some(expected)
+    );
+}

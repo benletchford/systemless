@@ -497,6 +497,89 @@ pub(crate) fn ppc_new_pixmap(
     pixmap_handle
 }
 
+// Imaging With QuickDraw (1994), p. 4-86: copy the record and an independent
+// color table, but only the baseAddr pointer, never the pixel image itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_copy_pixmap(
+    source: u32,
+    destination: u32,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let Some(source_ptr) = memory
+        .read_u32_be(source)
+        .filter(|p| source != 0 && *p != 0)
+    else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    };
+    let Some(destination_ptr) = memory
+        .read_u32_be(destination)
+        .filter(|p| destination != 0 && *p != 0)
+    else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    };
+    if source_ptr == destination_ptr {
+        return;
+    }
+    let Some(mut bytes) = ppc_memory_read_bytes(memory, source_ptr, PPC_PIXMAP_SIZE) else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    };
+    if !ppc_memory_can_write_bytes(memory, destination_ptr, PPC_PIXMAP_SIZE) {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    }
+    let source_table = u32::from_be_bytes(bytes[42..46].try_into().unwrap());
+    let old_table = memory.read_u32_be(destination_ptr + 42).unwrap_or(0);
+    // Tracked tables include the deliberately uninitialized eight-byte table
+    // from NewPixMap. Static device tables instead use their public ctSize.
+    let table_bytes = ppc_handle_bytes(memory, handles, source_table).or_else(|| {
+        let ptr = memory
+            .read_u32_be(source_table)
+            .filter(|p| source_table != 0 && *p != 0)?;
+        let count = i32::from(memory.read_u16_be(ptr.checked_add(6)?)? as i16) + 1;
+        let size = 8u32.checked_add(u32::try_from(count).ok()?.checked_mul(8)?)?;
+        ppc_memory_read_bytes(memory, ptr, size)
+    });
+    let Some(table_bytes) = table_bytes else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    };
+    let new_table = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        &table_bytes,
+    );
+    if new_table == 0 {
+        return;
+    }
+    bytes[42..46].copy_from_slice(&new_table.to_be_bytes());
+    memory.write_bytes(destination_ptr, &bytes);
+    if old_table != source_table && old_table != 0 {
+        // Only dispose allocator-owned storage; static/device tables are not
+        // owned by the destination and must never be freed here.
+        ppc_dispose_process_native_handle(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            old_table,
+        );
+    }
+    *last_mem_error = PPC_NO_ERR;
+}
+
 pub(crate) fn ppc_dispose_pixmap(
     pixmap_handle: u32,
     process_memory_manager: &mut ProcessNativeMemoryManager,
