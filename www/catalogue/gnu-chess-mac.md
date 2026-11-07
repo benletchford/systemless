@@ -11,8 +11,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-07"
     tester: Catalogue maintainer
@@ -32,6 +33,30 @@ compatibility:
       contains PPC code, but its tested PPC slice opens a black board and is not exposed as
       supported. Browser input and pacing, complete games, save/load and sound remain
       unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2290
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: b3c66dbcd7beaacad9e8b7496eca0964bd16ee29 private browser candidate
+    architecture: 68k
+    environment: >-
+      Optimized private HTTPS frontend on current merged runtime 3778436f,
+      Chromium 156.0.8078.79/Linux aarch64, isolated 68K worker/WebGL,
+      800x600/depth 8, 25 MHz. Deployed COEP credentialless/COOP same-origin
+      and SharedArrayBuffer verified. Actual untouched hosted archive HTTP 200
+      response matches 232547 bytes and its SHA-256. Both main and worker Wasm
+      response bodies match SHA-256 d02dea4b18c28423f23a2a65b2049525a847a2b0f8e22c8120864160490e31fd,
+      17760277 bytes. Required ordinary Options-Easy selection disables pondering
+      on the human turn. Trusted drags play e2-e4 and Ng1-f3; computer replies
+      e7-e5 and Nb8-c6. Matched Easy control omits both drags and preserves the
+      initial board and empty move list. Each unchanged 20-second pacing sample
+      passes: active/control final steady guest 57.8469/59.8970 and host
+      59.8766/59.8970 per second, max frames 18.9/19.1 ms, minimum audio queue
+      131.1/130.8 ms, zero captured lifecycle/network errors. These final steady
+      snapshots are not sample-wide means. Default pondering mode plays both
+      moves but fails pacing at 37.6242 guest ticks/sec; approval requires Easy.
+      Complete games, deeper search, persistence, sound fidelity, PPC and released
+      public play remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2290
 runtime:
@@ -116,7 +141,8 @@ references:
 
 ![GNU Chess after e2-e4 and the computer's e7-e5 reply](https://assets.systemless.org/catalogue/media/sha256/8e/8e3b836aae10e041cafe69e569e40a2602087a36d1c3c5d2d641487be1234972.png)
 
-Click the chessboard window to activate it, then drag a white piece to a legal
+Select **Options → Easy** before playing so the computer thinks only during
+its own turn. Click the chessboard window to activate it, then drag a white piece to a legal
 square. The Macintosh plays black. **File → New Game** resets the board;
 **Players** selects which side the computer plays. Castle by dragging the king
 two squares. **Edit → Undo** takes back your last move.
@@ -124,6 +150,8 @@ two squares. **Edit → Undo** takes back your last move.
 This original release is free software under GNU GPL version 2.
 [Download the complete matching original source](https://assets.systemless.org/catalogue/objects/sha256/20/20883c771663d7c159aa764d9983371f70d3c08184e4a1839aff9a987f538fb2.hqx).
 
-Native 68K play verifies one legal move and the computer reply. Browser
-qualification, full games, save/load and sound remain unverified. The original
+Native 68K play verifies one legal move and its reply. Browser play with
+**Easy** selected verifies two moves and replies against an omitted-input control.
+Default pondering mode runs below the pacing minimum. Full games, deeper search,
+save/load, sound fidelity and released public play remain unverified. The original
 also contains PPC code; that slice currently displays a black board.
