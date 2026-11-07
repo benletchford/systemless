@@ -540,6 +540,16 @@ pub fn write_pages(
     output: &Path,
     origin: &str,
 ) -> Result<()> {
+    let approved_ids: Vec<_> = c
+        .entries
+        .iter()
+        .filter(|entry| entry.launch_enabled)
+        .map(|entry| &entry.id)
+        .collect();
+    crate::catalogue_tools::catalogue::atomic_write(
+        &output.join("popularity-games.json"),
+        serde_json::to_string(&approved_ids)?.as_bytes(),
+    )?;
     let files = pages(c, &std::fs::read_to_string(template)?, origin)?;
     for (path, contents) in files {
         crate::catalogue_tools::catalogue::atomic_write(&output.join(path), contents.as_bytes())?;
