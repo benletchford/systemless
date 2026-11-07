@@ -1,0 +1,17 @@
+[package]
+name = "systemless-popularity-api"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+futures-util = { version = "0.3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+worker = { version = "=0.8.7", features = ["d1"] }

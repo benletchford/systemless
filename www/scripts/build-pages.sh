@@ -105,4 +105,5 @@ RUSTFLAGS= cargo run --locked --manifest-path "$REPOSITORY_DIR/Cargo.toml" \
   -p systemless-catalogue-tools --bin catalogue -- \
   --root "$SITE_DIR" pages --template "$DIST_DIR/index.html" \
   --output "$DIST_DIR" --origin "${SYSTEMLESS_SITE_ORIGIN:-https://systemless.org}"
+SYSTEMLESS_PAGES_DIST="$DIST_DIR" sh "$SCRIPT_DIR/build-api.sh"
 echo "Built Cloudflare Pages output at $DIST_DIR"

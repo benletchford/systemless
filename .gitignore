@@ -31,3 +31,7 @@ __pycache__/
 
 # Local structured-play artifacts
 /play-output/
+
+# Rust Pages Function build and test dependencies
+/www/api/build/
+/www/api/node_modules/
