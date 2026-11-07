@@ -10,8 +10,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-07"
     tester: Catalogue maintainer
@@ -31,6 +32,31 @@ compatibility:
       The Controls dialog has overlapping Radio Button labels; rendering fidelity needs
       review. Browser input/pacing and released public play remain unverified. Launch
       stays disabled.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2312
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 004651151d873c531132ca6608ec9eb6c60bf75f private browser candidate
+    architecture: 68k
+    environment: >-
+      Clean private frontend on merged runtime 73c9c1ce, unchanged through 7e183791.
+      Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, default 25 MHz,
+      800x600/depth 8. Deployed COEP credentialless/COOP same-origin, SharedArrayBuffer,
+      actual source stamp, architecture and clock checked. Untouched hosted original
+      HTTP 200 matches 852613 bytes/SHA-256
+      c3ff69bde46cd5147939565d4143341669b8bba6db845040711ce92c0c50070e.
+      Actual main and worker Wasm HTTP 200 bodies match 17832498 bytes/SHA-256
+      b1dd942d4adb2ed8f9b2d0c28fdfdb5694cd2161e8d0fdb9897bb14bc418efcf.
+      Trusted ordinary Not Yet/Play and default Control/Shift input moves and fires
+      a green projectile; the first thrust-only control capture lacks that projectile.
+      Later green environmental objects are not attributed to player firing.
+      Four further matched input bursts exercise the unchanged 20-second samples;
+      both final captures retain the arena. Final steady guest 59.6965/61.1222, host
+      61.7911/60.1035 per second, maximum frames 33.1/31.4 ms, minimum audio queue
+      116.9/121.8 ms, zero captured lifecycle/network errors. Snapshots, not sample-wide
+      means. Approve default 68K play with known optional Controls-dialog label overlap.
+      Full rounds, hits/scoring, turning/second-player input, customization, trial-limit
+      traversal, persistence, hardware parity, sound and released public play unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2312
 runtime:
@@ -98,7 +124,8 @@ Choose **Not Yet**, then **Play**. In the original default controls, use **Contr
 to thrust, **Option/Command** to turn and **Shift** to fire. The original thirty-day
 shareware trial and time limit remain intact.
 
-Native movement/firing and an omitted-fire control are verified. The Controls
-dialog has overlapping labels. Browser input/pacing, rendering fidelity, hits,
-scoring, full rounds, two-player controls, custom ships/backgrounds, trial-limit
-traversal, persistence and sound fidelity remain unverified. Launch stays disabled.
+Native and hosted-browser movement/firing and omitted-fire controls are verified;
+browser pacing passes. The optional Controls dialog has overlapping labels, so
+use the documented default keys. Hits, scoring, full rounds, turning, second-player
+controls, custom ships/backgrounds, trial-limit traversal, persistence, sound fidelity
+and released public play remain unverified.
