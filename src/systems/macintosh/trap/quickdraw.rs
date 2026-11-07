@@ -520,6 +520,53 @@ struct ScrollRows {
 }
 
 impl super::TrapDispatcher {
+    /// Preflight the no-allocation clip/pen paths used by virtual idle recordings.
+    /// This is checked before dispatch, while Pascal arguments are still on stack.
+    pub(crate) fn idle_quickdraw_state_call_is_safe(
+        &self, bus: &MacMemoryBus, opcode: u16, sp: u32,
+    ) -> bool {
+        let safe = |address, size| bus.idle_memory_range_is_journal_safe(address, address, size);
+        let port = *self.current_port;
+        if port == 0 || !self.known_port(port) || !safe(port, 108)
+            || !self.port_allows_draw_state_memory_sync(bus, port)
+            || !self.port_draw_states.contains_key(&port)
+        {
+            return false;
+        }
+        let trap = opcode & !0x0400;
+        if trap != 0xA89E && !safe(sp, 4) { return false; }
+        match trap {
+            0xA879 | 0xA87B => {
+                let handle = bus.read_long(port + 28);
+                if handle == 0 || !safe(handle, 4) { return false; }
+                let dst = bus.read_long(handle);
+                if dst == 0 { return false; }
+                let arg = bus.read_long(sp);
+                if trap == 0xA87B {
+                    return safe(arg, 8) && safe(dst, 10)
+                        && bus.get_alloc_size(dst).is_some_and(|capacity| capacity >= 10);
+                }
+                if arg == 0 || !safe(arg, 4) { return false; }
+                let src = bus.read_long(arg);
+                if src == 0 || !safe(src, 2) { return false; }
+                let size = u32::from(bus.read_word(src));
+                size >= 10 && safe(src, size) && safe(dst, size)
+                    && bus.get_alloc_size(dst).is_some_and(|capacity| capacity >= size)
+            }
+            0xA898 => safe(bus.read_long(sp), 18),
+            0xA899 | 0xA89E => {
+                if trap == 0xA899 && !safe(bus.read_long(sp), 18) { return false; }
+                if bus.read_word(port + 6) & 0xC000 != 0xC000 { return true; }
+                let handle = bus.read_long(port + 58);
+                self.owned_bit_pixpats.contains(&handle)
+                    && bus.get_alloc_size(handle) == Some(4) && safe(handle, 4)
+                    && bus.get_alloc_size(bus.read_long(handle)).is_some_and(|size| size >= 28)
+                    && safe(bus.read_long(handle), 28)
+            }
+            _ => false,
+        }
+    }
+
     /// Install a basic QuickDraw bit pattern in a color port without changing
     /// the caller-owned color PixPat that was previously installed there.
     fn install_port_bit_pixpat(&mut self, bus: &mut MacMemoryBus, offset: u32, pattern: [u8; 8]) {
