@@ -19256,6 +19256,42 @@
     }
 
     #[test]
+    fn tekey_tail_reflow_matches_full_redraw_and_preserves_earlier_paragraphs() {
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+            disp.set_ui_theme_id(theme);
+            let te = make_te_with_text(&mut disp, &mut bus, b"HEAD\rabc def ghi");
+            let ptr = bus.read_long(te);
+            bus.write_word(ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            TrapDispatcher::te_write_rect_words(&mut bus, ptr + TrapDispatcher::TE_DEST_RECT_OFFSET, (0, 0, 60, 80));
+            TrapDispatcher::te_write_rect_words(&mut bus, ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET, (0, 0, 60, 80));
+            disp.te_recalculate_layout(&mut bus, te);
+            let (base, stride, _, _, _) = disp.screen_mode;
+            for key in [b' ', b'j', b'k', b'\r', b'l', 8, 8, 8, 127, b'z'] {
+                disp.draw_te_contents(&mut cpu, &mut bus, te, true);
+                let marker = base + 2 * stride + 9;
+                bus.write_byte(marker, 0xA5);
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, te);
+                bus.write_word(TEST_SP + 4, u16::from(key));
+                assert!(disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus).unwrap().is_ok());
+                assert_eq!(bus.read_byte(marker), 0xA5, "tail input repainted an earlier paragraph");
+                // Remove only the intentional marker, then compare the entire
+                // transcript with an ordinary full redraw of the edited record.
+                bus.write_byte(marker, 0);
+                let actual = bus.read_bytes(base, (stride * 60) as usize).to_vec();
+                disp.draw_te_contents(&mut cpu, &mut bus, te, true);
+                let expected = bus.read_bytes(base, (stride * 60) as usize);
+                let differences: Vec<_> = actual.iter().zip(&expected).enumerate()
+                    .filter(|(_, (a, b))| a != b).map(|(i, (&a, &b))| (i, a, b)).collect();
+                assert!(differences.is_empty(), "theme={theme:?} key={key} differences={differences:?}");
+                assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+            }
+        }
+    }
+
+    #[test]
     fn teidle_preserves_active_flag_and_selection_offsets() {
         // Inside Macintosh Volume I (1985), pp. I-374 and I-385: TEIdle
         // blinks caret for an active record, while TEActivate/TEDeactivate

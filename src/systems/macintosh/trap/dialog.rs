@@ -128,6 +128,13 @@ struct TeStyleRun {
     style: TeResolvedStyle,
 }
 
+#[derive(Clone, Copy)]
+enum TeRepaint {
+    Full,
+    CaretLine,
+    FromOffset(usize),
+}
+
 fn trace_dialog_procs_enabled() -> bool {
     *TRACE_DIALOG_PROCS.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_DIALOG_PROCS").is_some())
 }
@@ -2808,7 +2815,7 @@ impl super::TrapDispatcher {
             if caret_state == 0 { 1 } else { 0 },
         );
         bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.current_tick());
-        self.draw_te_contents_region(cpu, bus, te_handle, true, true);
+        self.draw_te_contents_region(cpu, bus, te_handle, true, TeRepaint::CaretLine);
     }
 
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
@@ -3026,7 +3033,7 @@ impl super::TrapDispatcher {
         te_handle: u32,
         erase_background: bool,
     ) {
-        self.draw_te_contents_region(cpu, bus, te_handle, erase_background, false);
+        self.draw_te_contents_region(cpu, bus, te_handle, erase_background, TeRepaint::Full);
     }
 
     fn draw_te_contents_region(
@@ -3035,7 +3042,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         te_handle: u32,
         erase_background: bool,
-        caret_line_only: bool,
+        repaint: TeRepaint,
     ) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
@@ -3219,7 +3226,7 @@ impl super::TrapDispatcher {
             self.te_wrap_lines(font, size, &text_bytes, box_width)
         };
 
-        if caret_line_only {
+        if matches!(repaint, TeRepaint::CaretLine) {
             // TEIdle changes only an insertion caret. Repaint its complete
             // line, using the same glyph/caret path as a full update, so hiding
             // a caret restores underlying glyphs without repainting the rest
@@ -3244,6 +3251,23 @@ impl super::TrapDispatcher {
             } else {
                 clip_bottom = clip_top;
             }
+        }
+        if let TeRepaint::FromOffset(offset) = repaint {
+            // A tail edit can reflow its paragraph, but cannot change earlier
+            // hard paragraphs. Erase through the bottom to remove old wrapped
+            // lines when deletion shortens the paragraph.
+            let mut top = dest_rect.0;
+            for (index, &(start, end)) in lines.iter().enumerate() {
+                // At a hard paragraph boundary, the new paragraph starts
+                // at the preceding line's exclusive end offset.
+                if offset >= start
+                    && (offset < end || (offset == end && index + 1 == lines.len()))
+                {
+                    break;
+                }
+                top = top.saturating_add(Self::te_height_for_line(bus, te_handle, index));
+            }
+            clip_top = top.max(view_rect.0).min(view_rect.2);
         }
         if erase_background && clip_top < clip_bottom {
             self.draw_rect(
@@ -16296,6 +16320,24 @@ impl super::TrapDispatcher {
                     );
                 }
                 if let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) {
+                    let te_ptr = Self::te_record_ptr(bus, te_handle);
+                    let selection = buffer.selection();
+                    let repaint = if !Self::te_is_styled_record(bus, te_ptr)
+                        && selection.is_empty()
+                        && selection.start == buffer.text().len()
+                        && (matches!(key, 0x08 | 0x0D | 0x7F) || key >= 0x20)
+                    {
+                        // Include the preceding paragraph when deleting its
+                        // final separator. Repaint the complete paragraph,
+                        // since appending a word may reflow an earlier line.
+                        let prefix_len = buffer.text().len().saturating_sub(1);
+                        let start = buffer.text()[..prefix_len].iter()
+                            .rposition(|byte| matches!(*byte, b'\r' | b'\n'))
+                            .map_or(0, |offset| offset + 1);
+                        TeRepaint::FromOffset(start)
+                    } else {
+                        TeRepaint::Full
+                    };
                     buffer.apply_key(key);
                     self.te_commit_edit_buffer(bus, te_handle, &buffer);
 
@@ -16303,7 +16345,7 @@ impl super::TrapDispatcher {
                     // operation. Applications do not need to follow every
                     // key with TEUpdate; the TextEdit Manager redraws the
                     // affected text and insertion point itself.
-                    self.draw_te_contents(cpu, bus, te_handle, true);
+                    self.draw_te_contents_region(cpu, bus, te_handle, true, repaint);
                 }
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
