@@ -214,7 +214,7 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
         0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917, 0xA924,
         0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA, 0xACAD,
         0xA851, 0xAC51, 0xA858, 0xA85D, 0xA86B, 0xA873, 0xA875, 0xA9F1, 0xAC58, 0xAC5D, 0xAC6B,
-        0xAC73, 0xAC75, 0xADF1, 0xA97F, 0xAD7F,
+        0xAC73, 0xAC75, 0xADF1, 0xA97F, 0xAD7F, 0xAA2A, 0xAE2A,
     ] {
         runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
@@ -5168,4 +5168,71 @@ fn query_poll_cycles_reject_patched_queries_and_unsafe_output_buffers() {
     clean.m68k.cpu.write_reg(Register::A0, 0x07FF_FFFF);
     assert!(clean.idle_query_has_unsafe_dispatch(0xA030));
     assert!(clean.idle_query_has_unsafe_dispatch(0xA090));
+}
+
+fn main_device_poll_loop() -> FixtureRunner {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000u32;
+    let event = 0x0021_0100u32;
+    let mut words = vec![
+        0x42A7, 0xA975, 0x588F, // TickCount
+        0x42A7, 0xAA2A, 0x23DF, 0x0021, 0x0200, // GetMainDevice; save result
+        0x4267, 0xA938, // already-clear HiliteMenu(0)
+        0x4267, 0x3F3C, 0xFFFF, 0x4879,
+        (event >> 16) as u16, event as u16, 0xA970, 0x548F,
+        0xA9B4,
+    ];
+    let back = (-(words.len() as i32 * 2 + 2)) as u16;
+    words.extend([0x6000, back]);
+    for (i, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(code + i as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, code);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    runner.set_instructions_per_tick(100_000);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner
+}
+
+#[test]
+fn main_device_poll_parks_and_wakes_for_input_and_device_changes() {
+    for change in 0..4 {
+        let mut runner = main_device_poll_loop();
+        assert_eq!(runner.dispatcher.main_gdevice_handle, 0);
+        runner.run_steps_internal(20_000, Some(100), 0, true, false, FrameFinalization::Deferred);
+        let handle = runner.dispatcher.main_gdevice_handle;
+        assert_ne!(handle, 0, "cold getter must allocate the real device");
+        assert_eq!(runner.bus.read_long(0x0021_0200), handle);
+        assert!(runner.idle_cycle_sleep.is_some(), "stable getter loop should park");
+        assert_eq!(runner.guest_tick(), 100);
+        if change != 0 {
+            match change {
+                1 => runner.dispatcher.main_gdevice_handle = handle + 4,
+                2 => runner.dispatcher.screen_mode.2 += 1,
+                _ => runner.dispatcher.install_trap_address(&mut runner.bus, 0xAA2A, 0x0030_0000).unwrap(),
+            }
+            assert!(!runner.try_resume_proven_idle_cycle(Some(101)), "change {change} must wake the getter");
+        } else {
+            runner.push_mouse_down(20, 30);
+            for _ in 0..32 {
+                runner.run_steps_internal(8, Some(100), 0, true, false, FrameFinalization::Deferred);
+                if runner.bus.read_word(0x0021_0100) == 1 { break; }
+            }
+            assert_eq!(runner.bus.read_word(0x0021_0100), 1);
+            assert!(runner.idle_cycle_sleep.is_none());
+        }
+    }
+}
+
+#[test]
+fn main_device_poll_rejects_patched_dispatch_and_unsafe_result_slots() {
+    let mut runner = main_device_poll_loop();
+    assert!(!runner.idle_query_has_unsafe_dispatch(0xAA2A));
+    runner.dispatcher.install_trap_address(&mut runner.bus, 0xAA2A, 0x0030_0000).unwrap();
+    assert!(runner.idle_query_has_unsafe_dispatch(0xAA2A));
+    let mut clean = main_device_poll_loop();
+    clean.m68k.cpu.write_reg(Register::A7, 0x07FF_FFFF);
+    assert!(clean.idle_query_has_unsafe_dispatch(0xAA2A));
 }
