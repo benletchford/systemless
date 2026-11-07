@@ -2,39 +2,25 @@
 id: ya-mancala
 kind: game
 title: YA-Mancala
-summary: Sow stones around a carved board, capture opposing stones and outscore a computer opponent.
+summary: >-
+  Sow stones around a carved board, capture opposing stones and outscore a
+  computer opponent.
 developer: Keith Rose
 year: 1995
 architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
-launch_enabled: false
 compatibility:
   status: playable
   verified:
-  - date: '2026-11-08'
+  - date: "2026-11-08"
     tester: Catalogue maintainer
     systemless_version: 34787a02824af40e42578be50a166af783f5e7eb native; merged as c535e205
     architecture: 68k
+    environment: "Complete unchanged original; exact executable; original 68K/default 25 MHz, 800x600/depth8. Preserve Medium difficulty, sound on, Slower Moves off and Less Predictable off. Game Play Game starts the computer opening. After it finishes, click lower-right cup (360,220): stones are sown, one stone enters the player's right scoring cup and the computer replies. No-button control retains its settled board and empty right store. All four active/control repeats on merged34787a02 and background candidate722b0c8e pass13 checks: eight measured causal pixels and five exact own-run captures, frontend1150/ guest1726 ticks, zero exhausted frames. Actual captures viewed; initial images match, and the settled no-input board remains unchanged. Own-run consistency is not hardware accuracy. Merged-runtime binary SHA-256 a2d146414749fd6faf9f89e5546420077c4e3423ffadaf2928d0e6cfa838d0bc. An earlier click during the opening was ineffective and is retained as diagnostic evidence. Browser input/pacing, full games, save, audio fidelity and released public play remain unverified."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5815
-    environment: >-
-      Complete unchanged original; exact executable; original 68K/default 25 MHz,
-      800x600/depth8. Preserve Medium difficulty, sound on, Slower Moves off and
-      Less Predictable off. Game Play Game starts the computer opening. After it
-      finishes, click lower-right cup (360,220): stones are sown, one stone enters
-      the player's right scoring cup and the computer replies. No-button control
-      retains its settled board and empty right store. All four active/control
-      repeats on merged34787a02 and background candidate722b0c8e pass13 checks:
-      eight measured causal pixels and five exact own-run captures, frontend1150/
-      guest1726 ticks, zero exhausted frames. Actual captures viewed; initial
-      images match, and the settled no-input board remains unchanged. Own-run
-      consistency is not hardware accuracy. Merged-runtime binary SHA-256
-      a2d146414749fd6faf9f89e5546420077c4e3423ffadaf2928d0e6cfa838d0bc.
-      An earlier click during the opening was ineffective and is retained as
-      diagnostic evidence. Browser input/pacing, full games, save, audio fidelity
-      and released public play remain unverified.
 runtime:
   executable_path: YA-Mancala v1.0.1ƒ folder/YA-Mancala v1.0.1ƒ/YA-Mancala v1.0.1
   screen_depth: 8
@@ -44,10 +30,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.funet.fi/pub/mac/info-mac/game/brd/ya-mancala-101.hqx
-    expected_sha256: 3d718f78861de6d58c176960fc2e30862a9077ed4f9f0dfb9011f0351a1875f8
-    expected_size: 106332
+    type: sha256
+    sha256: 3d718f78861de6d58c176960fc2e30862a9077ed4f9f0dfb9011f0351a1875f8
+    size_bytes: 106332
   provenance:
     redistribution: permitted
     original: true
@@ -58,23 +43,23 @@ artifacts:
     rights_holder: Keith Rose
     permission: >-
       Complete unique 18547-byte README explicitly permits unchanged noncommercial
-      distribution with the document and prohibits profit from distribution.
-      Retain the original 30-day evaluation and Can$10 shareware request; copies
-      retained solely for distribution have an explicit expiry exemption.
-      No date, registration or game patch.
+      distribution with the document and prohibits profit from distribution. Retain the
+      original 30-day evaluation and Can$10 shareware request; copies retained solely
+      for distribution have an explicit expiry exemption. No date, registration or game
+      patch.
     notes: >-
-      Both duplicate original folders retained. Independent production-pack
-      parity passes four files, eight forks and four Finder records; strict
-      KPK304158 bytes, SHA-256
-      7e5bc56fdcdd9c14d30ad9a40b37a69c32a8ff9d1c5c1ea4417d570b2b29b03b.
-      Original 68K-only application; year1995 follows original October1995 app
-      timestamps. No external runtime supplied.
+      Both duplicate original folders retained. Independent production-pack parity
+      passes four files, eight forks and four Finder records; strict KPK304158 bytes,
+      SHA-256 7e5bc56fdcdd9c14d30ad9a40b37a69c32a8ff9d1c5c1ea4417d570b2b29b03b. Original
+      68K-only application; year1995 follows original October1995 app timestamps. No
+      external runtime supplied.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/ya-mancala/gameplay.png
+    type: sha256
+    sha256: d03b57a95cac05f9af82d82c7fc329f366d9a65d499308b50f1bab3693457a17
+    size_bytes: 26235
   provenance:
     redistribution: permitted
     original: true
@@ -83,13 +68,15 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/5815
     rights_holder: Keith Rose
     permission: Fresh content-only capture from the unchanged distributable original.
-    notes: Exact crop (4,40)-(504,342), no resampling; legal sowing, player point and computer reply.
+    notes: >-
+      Exact crop (4,40)-(504,342), no resampling; legal sowing, player point and
+      computer reply.
 references:
 - https://ftp.funet.fi/pub/mac/info-mac/game/brd/ya-mancala-101.hqx
 - https://github.com/benletchford/systemless/issues/5815
 ---
 
-![Mancala after sowing and a computer reply](incoming/ya-mancala/gameplay.png)
+![Mancala after sowing and a computer reply](https://assets.systemless.org/catalogue/media/sha256/d0/d03b57a95cac05f9af82d82c7fc329f366d9a65d499308b50f1bab3693457a17.png)
 
 Choose Play Game from the Game menu and let the computer finish any opening move.
 Click a cup on your side to sow its stones counterclockwise. Finish in your scoring
