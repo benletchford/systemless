@@ -374,8 +374,23 @@ do not count. Counts are deduplicated per browser/game/UTC date, across tabs and
 architecture/plugin restarts. A random browser identifier rotates daily; the
 application stores no IP address. Clearing browser storage can count again.
 This is an approximate popularity signal, not a fraud-proof visitor measurement.
-Each identifier can contribute at most 50 different games per day. If abuse
-emerges, apply a Cloudflare rate limiting rule to POST `/api/play`.
+Each identifier can contribute at most 50 different games per day.
+
+The **Configure popularity rate limit** workflow manages an additional Cloudflare
+edge rule: five requests per ten seconds per IP to the `/api/play` path, followed
+by a ten-second block. This path-only rule covers all methods and uses Free-plan
+settings. Cloudflare counters are per data center and enforcement may lag by a
+few seconds, so this is burst protection rather than an exact global quota.
+Shared-IP visitors share the limit; distributed clients can still inflate counts.
+The rule acts before Functions/D1, uses no application database for IP addresses,
+and does not affect catalogue browsing or gameplay. It does not rebuild the site.
+
+Run that workflow once with the existing token granted **Zone Read** and **Zone
+WAF Edit/Write** for **systemless.org**, in addition to its Pages and D1 permissions.
+The workflow finds the zone, creates or updates only the rule with reference
+`systemless_popularity_play`, and verifies it by reading it back. It preserves
+unrelated rules and fails if permissions or the plan's rule capacity prevent
+creation. Reruns are safe. Source: [Cloudflare rate limiting rules](https://developers.cloudflare.com/waf/rate-limiting-rules/).
 
 The server accepts only approved IDs generated as `popularity-games.json` by the
 catalogue page build. D1 atomically inserts the deduplication record and increments
