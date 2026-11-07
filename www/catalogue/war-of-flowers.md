@@ -34,6 +34,29 @@ compatibility:
       unverified. Launch stays disabled.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2316
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: 115cd7e5505917b60fb98912e1b7ba2abf0c5241 private browser candidate
+    architecture: 68k
+    environment: >-
+      Clean private frontend on merged runtime 73c9c1ce, Chromium 156.0.8078.79/Linux
+      aarch64, isolated worker/WebGL, default 25 MHz, 800x600/depth 8. Deployed
+      COEP credentialless/COOP same-origin, SharedArrayBuffer, actual source stamp
+      and architecture checked. Untouched hosted original HTTP 200 response matches
+      105469 bytes/SHA-256 785223705c65ebd6c9972a8d6d66fe5fa8397a2f7d4ea454a65fab074bd34954.
+      Actual main and worker Wasm responses match 17832368 bytes/SHA-256
+      25114199c9506a124022389ad3a1ccea49d3eee9c30975fb4a19253518d62d8e.
+      Trusted ordinary card input reduces the hand from seven to six and receives
+      computer turns; no-click control retains seven. Fresh dealt cards differ.
+      Unchanged 20-second waiting-human-turn board samples pass: final steady guest
+      60.0527/61.9730, host 63.2698/59.9411 per second, maximum frames 41.1/3.0 ms,
+      minimum audio queue 111.7/133.1 ms, zero captured lifecycle/network errors.
+      These are snapshots, not full-war animation averages. Both final captures
+      retain the board. Multicolour background bands persist; rendering fidelity
+      remains unqualified, so overall unknown and launch disabled. Original trial
+      unchanged. Scoring, complete wars, persistence, sound and public play unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/2316
 runtime:
   executable_path: War of Flowers/War of Flowers 1.1/War of Flowers
   screen_depth: 8
@@ -102,6 +125,6 @@ are collected and the computers take their turns. The original online Help
 explains scoring and calling GO or STOP.
 
 The original fifteen-day shareware trial remains intact. Native card play and
-an omitted-click control are verified. Table-background rendering, browser
-input/pacing, scoring, complete wars, options, persistence and sound fidelity
-remain unverified. Launch stays disabled.
+an omitted-click control are verified. Hosted-browser card input and waiting-turn pacing also pass. Table-background
+rendering, scoring, complete wars, options, persistence, sound fidelity and released
+public play remain unverified. Launch stays disabled.
