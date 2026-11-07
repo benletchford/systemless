@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.111.0](https://github.com/benletchford/systemless/compare/v0.110.1...v0.111.0) (2026-11-07)
+
+
+### Features
+
+* add Chrysanthemum with browser play ([0dae4ee](https://github.com/benletchford/systemless/commit/0dae4ee8d152b7a9e24b53d4450c85532e58b777))
+* add the original Killing Time demo ([ade4f70](https://github.com/benletchford/systemless/commit/ade4f707ee3c7b977d6c0f6a9f11af294d79236b))
+* **catalogue:** add Asterax, Space Junkie and Antibody ([c65bc10](https://github.com/benletchford/systemless/commit/c65bc1003b28ad7af7c10537ce271d491cdfb6d6))
+* **catalogue:** add GNU Chess Mac with matching source ([7981331](https://github.com/benletchford/systemless/commit/7981331f3e5cab289271fec5ef2e5b19c3d8b24c))
+* **catalogue:** add Mantra and Boka Battleships ([acf795b](https://github.com/benletchford/systemless/commit/acf795b2cb1af445b1c0dad4354c89200581cc1f))
+* **catalogue:** add Sokoban and enable Mantra ([fa750d1](https://github.com/benletchford/systemless/commit/fa750d1a67b12b350c4e47321091c9c473badf47))
+* **catalogue:** add the original Chinese Chess Pro package ([3cf77d7](https://github.com/benletchford/systemless/commit/3cf77d7d6851443eca2337a2ba2705785a712538))
+* **catalogue:** add the original JSokoban package ([8dbc14c](https://github.com/benletchford/systemless/commit/8dbc14c6198ac5373d3e2473fe98c611b548670f))
+* **catalogue:** capture Judgment Rites gameplay and retain both CPUs ([59433ad](https://github.com/benletchford/systemless/commit/59433ad9a0c698644eadbf45fff766104b64f833))
+* **catalogue:** enable Continuum and Mario Teaches Typing ([#5639](https://github.com/benletchford/systemless/issues/5639)) ([cddcd0b](https://github.com/benletchford/systemless/commit/cddcd0b3650b6249fff485c26bdb2a273377b647))
+* **catalogue:** enable Icebreaker demo ([#5632](https://github.com/benletchford/systemless/issues/5632)) ([e17408c](https://github.com/benletchford/systemless/commit/e17408c0c10e9db05a09e676624a4e9ee500dc2c))
+* **catalogue:** enable Powerball on both classic CPUs ([160f333](https://github.com/benletchford/systemless/commit/160f333c1086d6996c48b15aeca0fe8a9bfd98d0))
+* **catalogue:** preserve the original War of Flowers package ([7e18379](https://github.com/benletchford/systemless/commit/7e1837918b6a45af2e353bccf17882a745c85556))
+* **catalogue:** restore Space Joust with fresh native evidence ([c5d69e2](https://github.com/benletchford/systemless/commit/c5d69e268f1c32ff5443af2381fbb402978470e9))
+* **www:** rank the catalogue by engaged plays ([73c9c1c](https://github.com/benletchford/systemless/commit/73c9c1cec6475ab79b12f7b0dd9f7f2ff42bceae))
+
+
+### Bug Fixes
+
+* **archive:** preserve legacy StuffIt 5 names ([8628670](https://github.com/benletchford/systemless/commit/86286709433e66e001185b6898f7ef44b78e4630))
+* **catalogue:** hold Spaceward Ho launch after public pacing failure ([82f78cf](https://github.com/benletchford/systemless/commit/82f78cfd8ee169e66fc61771050bb43de4537fb6))
+* **catalogue:** select the full Judgment Rites executable path ([e6daf0a](https://github.com/benletchford/systemless/commit/e6daf0a7b9d41cf31d9f80450ee5b953a2bed619))
+* draw color icons in the selected graphics port ([37fdaca](https://github.com/benletchford/systemless/commit/37fdacaa25917fb1cbb549ca1662665f0996892f))
+* honor PICT origin changes during playback ([2a0e56f](https://github.com/benletchford/systemless/commit/2a0e56f619dcb2a63f516539d1a1476fc1fd6578))
+* initialize PPC output volume at full stereo gain ([18ba1c8](https://github.com/benletchford/systemless/commit/18ba1c8be4ae04bf3c77b878c2b3370d4ddff56f))
+* match classic movie colors through the logical QuickDraw table ([fb82812](https://github.com/benletchford/systemless/commit/fb82812ff1b82e1212f52f3e777c1d570e9d725a))
+* position PPC movies within controller bounds ([584f6e8](https://github.com/benletchford/systemless/commit/584f6e867b6511d1cffe4d2977f3c4521e33c4bb))
+* **ppc:** align QuickTime screen rectangles and invoke native callbacks ([b4eb0f0](https://github.com/benletchford/systemless/commit/b4eb0f062e36f0953d2932743700f4c25d233700))
+* **ppc:** query live trap handlers for StdCLib TrapAvailable ([ad12d88](https://github.com/benletchford/systemless/commit/ad12d8841dbdcb8a33bfb1fc8ef3f84007a0c9cd))
+* **ppc:** search sorted tables with guest bsearch callbacks ([57cabe2](https://github.com/benletchford/systemless/commit/57cabe20029915d4334c205ffcc28c70d5ad046a))
+* preserve foreground pixels when hiding covered windows ([e48be5d](https://github.com/benletchford/systemless/commit/e48be5da73f016f827c42761d823e124bc6f95c3))
+* **quicktime:** decode classic Apple Graphics movie frames ([93170ec](https://github.com/benletchford/systemless/commit/93170ec414865d4becaebd4b4bf3d89a559e4c1c))
+* **quicktime:** decode indexed movie frames on PowerPC ([0d8d451](https://github.com/benletchford/systemless/commit/0d8d451c834b5227645908f2fbdc09f75c0ff92a))
+* **quicktime:** handle movie controller keys flags and volume ([d1709ec](https://github.com/benletchford/systemless/commit/d1709ec02c9300c301223d5102036ed7e6468004))
+* **quicktime:** load nonresident movie metadata resources ([7da8496](https://github.com/benletchford/systemless/commit/7da8496f5b8a882827ddc4417c30a0d739bd4128))
+* **quicktime:** render controller update actions ([31f8f70](https://github.com/benletchford/systemless/commit/31f8f70b4f1c481fa2957814a39100101aee19c2))
+* read standard graphics port bitmaps at the correct offsets ([04c6ed0](https://github.com/benletchford/systemless/commit/04c6ed0a24d5e74503dc2a52ddb2ef81613f1357))
+* resolve PowerPC boot-volume FSSpec paths ([6ef8d19](https://github.com/benletchford/systemless/commit/6ef8d196bbdddc081dca32201087540c386e2688))
+* resolve PowerPC catalogue working-directory references ([065d333](https://github.com/benletchford/systemless/commit/065d3332c018f5e13b8bdbe543448128c05323c9))
+* retain DrawSprocket display while paused ([e0228e2](https://github.com/benletchford/systemless/commit/e0228e2d6ff4b8bf0cd38912a7e43502b3b76d25))
+* retain PPC movie sources independently of open files ([86e6c78](https://github.com/benletchford/systemless/commit/86e6c78f6e83ab7169e417158694b026d640f5fb))
+* support StdCLib Pascal string operations ([6f3ded8](https://github.com/benletchford/systemless/commit/6f3ded8baa8a9199864f19cdf4fe65f28257688a))
+* **www:** rate limit popularity submissions at the edge ([764180a](https://github.com/benletchford/systemless/commit/764180a787aa5708160937051650b727f242eed1))
+
+
+### Performance Improvements
+
+* prove idle polling cycles across system queries ([be9e226](https://github.com/benletchford/systemless/commit/be9e2261ebb79ed8eae2d31e858bdcf6cbf73c7a))
+* skip unchanged QuickTime movie redraw work ([079e255](https://github.com/benletchford/systemless/commit/079e255f1a30ae5d17747ffa5c8eddb3dee041e4))
+
+
+### Code Refactoring
+
+* **www:** compile popularity handlers from Rust to WebAssembly ([7e4b093](https://github.com/benletchford/systemless/commit/7e4b0938f0f37c6c93e3130c571992515f69bcd5))
+
 ## [0.110.1](https://github.com/benletchford/systemless/compare/v0.110.0...v0.110.1) (2026-11-06)
 
 
