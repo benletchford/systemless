@@ -1422,6 +1422,11 @@ fn idle_cycle_trap_is_journal_complete(
         // always paired with a pending event the parked resume sees, and
         // `IdleCycleHostSnapshot` carries both besides.
         (true, 0x0117) | (true, 0x0124) | (true, 0x012C) => true, // GetWRefCon, FrontWindow, FindWindow
+        // GetMainDevice writes its result through the stack. Cold creation
+        // changes journaled RAM and the host snapshot; only a subsequent
+        // identity cycle may park. The snapshot retains the cached handle
+        // and screen mode, and pre-dispatch guards retain the result slot.
+        (true, 0x022A) => true,
         // Input-poll family: GetMouse/StillDown/Button/TickCount/GetKeys.
         (true, 0x0172..=0x0176) => true,
         // SANE Pack4/Pack5: pure transforms of stack operands.
@@ -6303,6 +6308,9 @@ impl FixtureRunner {
     }
 
     fn idle_system_query_guard(&self, opcode: u16) -> Option<IdleMemoryGuard> {
+        if canonical_trap_number(opcode) == (true, 0x022A) {
+            return self.idle_memory_guard(self.m68k.cpu.read_reg(Register::A7), 4);
+        }
         // The standard SysEnvirons path writes a fixed sixteen-byte record.
         // Leave its legacy A5-recovery path to ordinary execution.
         if canonical_trap_number(opcode) == (false, 0x0090)
@@ -6468,7 +6476,7 @@ impl FixtureRunner {
             trap,
             (
                 true,
-                0x0000 | 0x0051 | 0x0058 | 0x013A | 0x0147 | 0x017F | 0x01A0
+                0x0000 | 0x0051 | 0x0058 | 0x013A | 0x0147 | 0x017F | 0x01A0 | 0x022A
             ) | (false, 0x002E | 0x0030 | 0x0046 | 0x0090)
         ) && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             || (trap == (false, 0x002E)
@@ -6477,7 +6485,7 @@ impl FixtureRunner {
                     self.m68k.cpu.read_reg(Register::A1),
                     self.m68k.cpu.read_reg(Register::D0),
                 ))
-            || (matches!(trap, (false, 0x0030 | 0x0090))
+            || (matches!(trap, (false, 0x0030 | 0x0090) | (true, 0x022A))
                 && self.idle_system_query_guard(opcode).is_none())
             || (trap == (true, 0x017F) && !self.dispatcher.guest_calls.is_empty())
     }
@@ -8212,7 +8220,7 @@ impl FixtureRunner {
                         };
                     let system_query_safe = if !unsafe_dispatch && self.idle_cycle_probe.is_some() {
                         match canonical_trap_number(opcode) {
-                            (false, 0x0030 | 0x0090) => self.idle_system_query_guard(opcode)
+                            (false, 0x0030 | 0x0090) | (true, 0x022A) => self.idle_system_query_guard(opcode)
                                 .is_some_and(|guard| self.record_idle_memory_guards(&[guard])),
                             (false, 0x0046) => {
                                 let key = TrapDispatcher::trap_address_table_key_for(
@@ -8256,11 +8264,12 @@ impl FixtureRunner {
                         }
                     }
                     if unsafe_idle_query
-                        || matches!(canonical_trap_number(opcode), (false, 0x0030 | 0x0046 | 0x0090))
+                        || matches!(canonical_trap_number(opcode), (false, 0x0030 | 0x0046 | 0x0090) | (true, 0x022A))
                     {
                         // These system queries are admitted only to the exact
                         // journal proof, not virtual-pass recordings, which do
-                        // not retain the queried protected-chain dependencies.
+                        // not retain the queried protected-chain dependencies
+                        // or the main-device getter's result-slot guards.
                         // A manager return can retire during dispatch, so the
                         // virtual recorder must reject it before that happens.
                         self.cancel_pass_recording();

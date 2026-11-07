@@ -7722,7 +7722,7 @@ impl TrapDispatcher {
         // still end the batch through the default-table check below.
         (matches!(
             trap,
-            0xa853 | 0xa855 | 0xa858 | 0xa8a7 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4 | 0xaa31 | 0xaa32
+            0xa853 | 0xa855 | 0xa858 | 0xa8a7 | 0xa8ad | 0xa972 | 0xa975 | 0xa97f | 0xa9b4 | 0xaa2a | 0xaa31 | 0xaa32
         )
             || (matches!(trap, 0xa860 | 0xa970) && self.last_null_event_poll)
             || (trap == 0xa800 && self.last_bounded_sound_status))
