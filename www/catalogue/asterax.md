@@ -41,6 +41,29 @@ compatibility:
     environment: "Optimized clean private frontend 10147fc754a7e6f7ad1e37849834b5b3b9b3819e on merged runtime 3cf77d7d. Chromium 156.0.8078.79/Linux aarch64, isolated worker/WebGL, 25 MHz, 800x600/depth 8, deployed COEP credentialless/COOP same-origin and SharedArrayBuffer verified. Page build stamp and actual architecture checked. Untouched hosted original HTTP 200 response matches its complete archive size and SHA-256. Actual main and worker Wasm bodies match 17782297 bytes, SHA-256 e837fde08b3e24c7099479b6bb6e8c129250f2fcc043f01e29544581c23ba580. Ordinary Begin One Player and Control select Mantis. Trusted Numpad8/Numpad6/Control thrusts, turns and emits a red projectile. Matched control preserves pilot input and ship-selection Control but omits flight-stage firing; the projectile is absent. Both samples exercise four further pilot bursts and final captures retain the asteroid field. Unchanged 20-second active/control samples pass: final steady guest 62.1549/60.0853, host 61.1190/61.1212 per second, max frames 19.1/19.5 ms, min audio queue 130.8/131.4 ms, zero captured lifecycle/network errors. Final snapshots are not sample-wide means. Later waves, upgrades, two-player play, persistence, audio fidelity and public release remain unverified."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2305
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.111.0 public release
+    architecture: 68k
+    environment: >-
+      Actual public v0.111.0 HTTPS release, source
+      be8fb068119830d584ae5a099338c82d339bc856, fresh Chromium 156/Linux aarch64,
+      worker/WebGL/SAB, default 25 MHz/depth 8. No local hosting, resolver override or
+      request interception. Original archive HTTP 200 matches 401668 bytes and SHA-256
+      78bb57247d88f731426aaaa60e501b5cb41bc8d484268c5ff78fab20b70340d8. Main and worker
+      Wasm HTTP 200 bodies match the independently downloaded deployment: 15727694 bytes,
+      SHA-256 5ca3c00c8b65d216a4b9f87401cf28ac58bd95c58a85bd641ea481b6ea0e7c6e. Ordinary
+      Begin One Player and Control select Mantis. Numpad8/Numpad6 thrust and turn; flight-
+      stage Control emits a red projectile absent from the no-fire control. Both retain
+      identical pilot and ship-selection inputs, exercise four further pilot bursts during
+      unchanged 20-second gameplay samples, and finish in the asteroid field. Final steady
+      guest/host snapshots are 61.8802/60.8489 and 61.8914/60.8599 per second; maximum
+      sampled worker frames 18.5/19.0 ms and minimum audio queues 131.3/132.5 ms. All
+      pacing gates pass with no captured lifecycle or network errors. Snapshots are not
+      whole-wave averages or exact cross-case pixel comparisons. Later waves, upgrades,
+      two-player play, persistence and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2305
 runtime:
   executable_path: Asterax/Asterax
   screen_depth: 8
