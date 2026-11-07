@@ -9991,10 +9991,21 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                // Get current port's pixmap for destination
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port = bus.read_long(global_ptr);
+                // PlotCIcon draws in the port selected by SetPort/SetGWorld.
+                // An application's A5 need not point to QuickDraw globals.
+                // Retain the legacy bootstrap lookup only before a port has
+                // been established, as the other current-port traps do.
+                let port = if *self.current_port != 0 {
+                    *self.current_port
+                } else {
+                    let a5 = cpu.read_reg(Register::A5);
+                    let globals = if a5 != 0 { bus.read_long(a5) } else { 0 };
+                    if globals != 0 {
+                        bus.read_long(globals)
+                    } else {
+                        0
+                    }
+                };
                 if port == 0 {
                     return Some(Ok(()));
                 }
