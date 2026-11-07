@@ -7718,3 +7718,164 @@ fn rectangular_boolean_imports_allow_either_source_as_destination() {
         }
     }
 }
+
+#[test]
+fn eraserect_uses_live_color_background_with_clipping_and_port_phase() {
+    for depth in [8, 16] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"EraseRect"),
+            PpcLoadConfig {
+                screen_depth: depth,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let scratch = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+        let pattern = make_test_ppc_raw_color_pixpat_handle(&mut loaded.memory, scratch);
+        let ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+        for (index, rgb) in [
+            (7u32, [0x1111u16, 0, 0]),
+            (8, [0, 0x2222, 0]),
+            (9, [0, 0, 0x3333]),
+        ] {
+            for channel in 0..3 {
+                loaded
+                    .memory
+                    .write_u16_be(
+                        ctable + 8 + index * 8 + 2 + channel as u32 * 2,
+                        rgb[channel],
+                    )
+                    .unwrap();
+            }
+        }
+        loaded.screen_clut.with_mut(|clut| {
+            clut[7] = [0x1111, 0, 0];
+            clut[8] = [0, 0x2222, 0];
+            clut[9] = [0, 0, 0x3333];
+        });
+        loaded.cpu.gpr[3] = pattern;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::BackPixPat,
+            ),
+        );
+        ppc_set_port_origin(&mut loaded.memory, PPC_MAIN_GWORLD, -1, -1).unwrap();
+        let clip = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 0, 2, 2).unwrap();
+        let front =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap()
+                .front_buffer;
+        for y in 0..4 {
+            for x in 0..4 {
+                ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+            }
+        }
+        loaded.cpu.gpr[3] = 10;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+        loaded.toolbox_startup.quickdraw_pen_pattern = [0x33; 8];
+        for (left, right) in [(-1, 1), (1, 3)] {
+            ppc_write_rect(&mut loaded.memory, scratch + 0x200, -1, left, 3, right).unwrap();
+            loaded.cpu.gpr[3] = scratch + 0x200;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+        }
+        let colors = if depth == 8 {
+            [7, 8, 9]
+        } else {
+            [0x0800, 0x0080, 0x0006]
+        };
+        for y in 0..4 {
+            for x in 0..4 {
+                let expected = match (x, y) {
+                    (1, 1) => colors[0],
+                    (2, 1) | (2, 2) => colors[1],
+                    (1, 2) => colors[2],
+                    _ => 17,
+                };
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(expected),
+                    "depth={depth} ({x},{y})"
+                );
+            }
+        }
+        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0x33; 8]);
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 56), Some(10));
+    }
+}
+
+#[test]
+fn eraserect_uses_backpat_and_mono_pixpat_at_every_supported_depth() {
+    for depth in [1, 2, 4, 8, 16] {
+        for pixpat in [false, true] {
+            let mut loaded = load_pef_application_with_config(
+                &synthetic_pef_with_import(b"EraseRect"),
+                PpcLoadConfig {
+                    screen_depth: depth,
+                    ..PpcLoadConfig::default()
+                },
+            )
+            .unwrap();
+            let scratch = PPC_DATA_BASE + 0x5000;
+            loaded.memory.add_region(scratch, vec![0; 0x400]);
+            let pattern = [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55];
+            if pixpat {
+                loaded.memory.write_u32_be(scratch, scratch + 16).unwrap();
+                loaded.memory.write_bytes(scratch + 36, &pattern).unwrap();
+            } else {
+                loaded.memory.write_bytes(scratch, &pattern).unwrap();
+            }
+            loaded.cpu.gpr[3] = scratch;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickDrawCompatibility(if pixpat {
+                    PpcQuickDrawCompatibilityOperation::BackPixPat
+                } else {
+                    PpcQuickDrawCompatibilityOperation::BackPat
+                }),
+            );
+            ppc_set_port_origin(&mut loaded.memory, PPC_MAIN_GWORLD, -1, -1).unwrap();
+            let clip = loaded
+                .memory
+                .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+                .unwrap();
+            ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 0, 2, 2).unwrap();
+            let front =
+                ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                    .unwrap()
+                    .front_buffer;
+            let sentinel = if depth == 16 { 0x1234 } else { 1 };
+            for y in 0..4 {
+                for x in 0..4 {
+                    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), sentinel);
+                }
+            }
+            ppc_write_rect(&mut loaded.memory, scratch + 0x200, -1, -1, 3, 3).unwrap();
+            loaded.cpu.gpr[3] = scratch + 0x200;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRect);
+            let black = if depth == 16 { 0 } else { (1u16 << depth) - 1 };
+            let white = if depth == 16 { 0x7fff } else { 0 };
+            for y in 0..4 {
+                for x in 0..4 {
+                    let expected = if !(1..3).contains(&x) || !(1..3).contains(&y) {
+                        sentinel
+                    } else if (x + y) % 2 == 0 {
+                        black
+                    } else {
+                        white
+                    };
+                    assert_eq!(
+                        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                        Some(expected),
+                        "depth={depth} pixpat={pixpat} ({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+}

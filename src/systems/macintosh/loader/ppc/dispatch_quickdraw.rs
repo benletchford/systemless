@@ -948,26 +948,46 @@ pub(super) fn dispatch_quickdraw_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EraseRect => {
+            let is_color = memory
+                .read_u16_be(current_gworld.wrapping_add(6))
+                .is_some_and(|version| version & 0xc000 == 0xc000);
+            let pixpat = if is_color {
+                memory
+                    .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_BK_PIXPAT_OFFSET))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let mut pattern = toolbox_startup.quickdraw_back_pattern;
+            if !is_color {
+                let _ = memory.read_bytes_into(current_gworld.wrapping_add(32), &mut pattern);
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
-                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} back=({:04X},{:04X},{:04X})",
-                    tick_count,
-                    current_gworld,
-                    cpu.gpr[3],
-                    ppc_read_rect(memory, cpu.gpr[3]),
-                    quickdraw_back_color.red,
-                    quickdraw_back_color.green,
-                    quickdraw_back_color.blue,
+                    "[PPC-TRACE] EraseRect tick={} port=${:08X} rect=${:08X} bounds={:?} bkPixPat=${:08X}",
+                    tick_count, current_gworld, cpu.gpr[3],
+                    ppc_read_rect(memory, cpu.gpr[3]), pixpat,
                 );
             }
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                let _ = ppc_paint_rect_bounds(
+                let _ = ppc_erase_rect(
                     memory,
                     gworlds,
                     current_gworld,
                     rect,
-                    *quickdraw_back_color,
-                    None,
+                    pixpat,
+                    pattern,
+                    (
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(&current_gworld).copied(),
+                    ),
+                    (
+                        *quickdraw_back_color,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    ),
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
