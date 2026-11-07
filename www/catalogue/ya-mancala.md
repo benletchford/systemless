@@ -11,6 +11,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: false
 compatibility:
   status: playable
   verified:
@@ -21,6 +22,32 @@ compatibility:
     environment: "Complete unchanged original; exact executable; original 68K/default 25 MHz, 800x600/depth8. Preserve Medium difficulty, sound on, Slower Moves off and Less Predictable off. Game Play Game starts the computer opening. After it finishes, click lower-right cup (360,220): stones are sown, one stone enters the player's right scoring cup and the computer replies. No-button control retains its settled board and empty right store. All four active/control repeats on merged34787a02 and background candidate722b0c8e pass13 checks: eight measured causal pixels and five exact own-run captures, frontend1150/ guest1726 ticks, zero exhausted frames. Actual captures viewed; initial images match, and the settled no-input board remains unchanged. Own-run consistency is not hardware accuracy. Merged-runtime binary SHA-256 a2d146414749fd6faf9f89e5546420077c4e3423ffadaf2928d0e6cfa838d0bc. An earlier click during the opening was ineffective and is retained as diagnostic evidence. Browser input/pacing, full games, save, audio fidelity and released public play remain unverified."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5815
+  - date: '2026-11-08'
+    tester: Catalogue maintainer
+    systemless_version: cfb5dd292538cc7352534650c88bd86b58de3f0c private browser on d7de5122 runtime
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5815
+    environment: >-
+      Fresh Chromium 156/Linux aarch64 profiles, isolated worker/WebGL and
+      SharedArrayBuffer; original 68K/default 25 MHz/800x600/depth8 and original
+      Medium difficulty/options. Each unchanged 20-second sample includes
+      Game Play Game and any computer opening, followed by an active lower-right
+      cup click or matched no-button pointer control. Active sowing earns a point
+      in the player's right store and the computer replies; control retains an
+      empty player store. Actual before/final captures inspected. Independent
+      coin-toss openings; no identical-opening or general determinism claim.
+      Active/control steady guest 60.9372/60.8760 ticks per second and host
+      59.9216/59.8614 FPS; maximum worker frames 29.9/25.9 ms, minimum audio
+      queues 121.7/127.0 ms. All unchanged pacing gates pass; no captured
+      lifecycle/network errors. These are steady snapshots, not whole-game
+      averages. Actual source stamp, game ID, worker, 68K, 25 MHz, isolation and
+      shared memory checked. Original archive and both main/worker Wasm HTTP 200
+      response bodies match independent integrity pins. Wasm 17,921,089 bytes,
+      SHA-256 8a49343a8742faea98f70dc8a4f6eeda13283cf7a23fdc370bded79b5531dc84.
+      Runtime d7de5122 has the same full source tree as native candidate722b0c8e.
+      Full games, save, audio fidelity and released public play remain unverified.
+      Final runtime/entry CI and integration remain pending.
 runtime:
   executable_path: YA-Mancala v1.0.1ƒ folder/YA-Mancala v1.0.1ƒ/YA-Mancala v1.0.1
   screen_depth: 8
