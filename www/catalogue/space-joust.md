@@ -59,6 +59,28 @@ compatibility:
       traversal, persistence, hardware parity, sound and released public play unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/2312
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: v0.111.0 public release
+    architecture: 68k
+    environment: >-
+      Actual public HTTPS release in fresh Chromium 156/Linux aarch64 profiles, isolated
+      worker/WebGL and SharedArrayBuffer, default 25 MHz/depth 8. No local hosting,
+      resolver override or request interception. Public source stamp
+      be8fb068119830d584ae5a099338c82d339bc856 verified. Original archive HTTP 200 matches
+      the catalogue integrity pin. Main and worker Wasm HTTP 200 bodies match the
+      independently downloaded deployed build: 15727694 bytes, SHA-256
+      5ca3c00c8b65d216a4b9f87401cf28ac58bd95c58a85bd641ea481b6ea0e7c6e. Control thrusts in
+      both cases; Shift adds a visible first projectile in the active case. Hits, scoring,
+      full rounds, turning, second-player controls, custom content, trial-limit traversal,
+      persistence and sound fidelity remain unverified. The optional Controls dialog still
+      has overlapping labels. Active and control each include an unchanged 20-second
+      gameplay sample. Final steady guest/host snapshots are 60.5364/64.9390 and
+      61.1431/62.1972 per second; maximum sampled worker frames 30.7/32.6 ms and minimum
+      audio queues 125/120.9 ms. All unchanged pacing gates pass, with no captured
+      lifecycle or network errors. These snapshots are not whole-level averages.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/2312
 runtime:
   executable_path: Space Joust 2.0/Space Joust 2.0
   screen_depth: 8
@@ -124,8 +146,8 @@ Choose **Not Yet**, then **Play**. In the original default controls, use **Contr
 to thrust, **Option/Command** to turn and **Shift** to fire. The original thirty-day
 shareware trial and time limit remain intact.
 
-Native and hosted-browser movement/firing and omitted-fire controls are verified;
+Native, private-browser and released public-browser movement/firing and omitted-fire controls are verified;
 browser pacing passes. The optional Controls dialog has overlapping labels, so
 use the documented default keys. Hits, scoring, full rounds, turning, second-player
 controls, custom ships/backgrounds, trial-limit traversal, persistence, sound fidelity
-and released public play remain unverified.
+remain unverified.
