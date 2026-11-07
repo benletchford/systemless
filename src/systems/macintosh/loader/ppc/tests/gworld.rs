@@ -2851,7 +2851,7 @@ fn new_gworld_region_allocation_failure_rolls_back_native_ownership() {
 fn hle_import_runner_copy_pixmap_preserves_pixels_and_owns_a_color_table() {
     let pef = synthetic_pef_with_import(b"CopyPixMap");
     let mut loaded = load_pef_application(&pef).unwrap();
-    let copy_target = loaded.imports[0].dispatcher_target;
+    let copy_target = loaded.imports[0].dispatcher_target.clone();
     assert_eq!(copy_target, PpcImportDispatcherTarget::CopyPixMap);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::NewPixMap);
     let source = loaded.cpu.gpr[3];
