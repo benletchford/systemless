@@ -126,7 +126,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 79 | 266 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
 | 80 | 267 | Rogue | Original 68K only; pacing fix merged; private gameplay verified; public held | P | [Rights, architecture and gameplay/pacing evidence](CATALOGUE-SOURCES.md#rogue-iii-mac-release-6--primary-slot-80) |
 | 81 | 268 | MacSokoban | Original 3.0.2/3.0.3 68K; retained exclusivity notices unresolved | U | [Publication hold #2303](https://github.com/benletchford/systemless/issues/2303) |
-| 82 | 269 | Sokoban | Original 2.4.2a 68K; bounded push/control verified; browser pending | P | [Online grant and exact-package evidence](catalogue/sokoban.md); [#5711](https://github.com/benletchford/systemless/issues/5711) |
+| 82 | 269 | Sokoban | Original 2.4.2a 68K; push/control verified; browser pacing held | P | [Online grant and exact-package evidence](catalogue/sokoban.md); [#5711](https://github.com/benletchford/systemless/issues/5711) |
 | 83 | 270 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |
 | 84 | 271 | Pac the Man | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/p/); [Garden](https://macintoshgarden.org/games/pac-the-man) |
 | 85 | 272 | PacMac Deluxe | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |

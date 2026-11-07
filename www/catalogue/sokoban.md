@@ -34,6 +34,30 @@ compatibility:
       startup-notice fidelity, persistence and audio remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5711
+  - date: "2026-11-07"
+    tester: Catalogue maintainer
+    systemless_version: ada7ad31c73e11df98de9f7e8036ccc8bf4f69c8 private browser candidate
+    architecture: 68k
+    environment: >-
+      Private frontend on merged runtime 2a0e56f6. Chromium 156.0.8078.79/Linux
+      aarch64, worker/WebGL, 25 MHz. Private HTTPS fixture matches deployed COEP
+      credentialless/COOP same-origin; isolation and SharedArrayBuffer verified.
+      Actual hosted archive request is unintercepted and its 144881-byte browser
+      response body matches the original SHA-256. Main/worker Wasm response bodies
+      both match 17755626 bytes and SHA-256
+      25b1cdd1e6e97ecd554ad0b52bc753d03ffab985cc5224ba4512b66437f72efb.
+      Trusted typing creates Player; Up/five Left reaches a chest and a final Left
+      pushes it, changing Moves 6/Pushes 0 to Moves 7/Pushes 1. Four further moves
+      occur during a 20-second sample. Final steady host/guest rates 60.014 per
+      second, maximum frame 88.2 ms, minimum audio queue 73.2 ms, zero captured
+      lifecycle/network errors. The unchanged 50 ms frame gate fails; no launch
+      approval. Original monochrome configuration in private source 1950e948 also
+      fails at 123.5 ms maximum frame and 19.9 ms minimum audio queue. Source keeps
+      the color configuration disabled. Initial idle-desktop setup samples are
+      excluded from gameplay evidence. Completed levels, notice fidelity, saves,
+      audio fidelity and released public play remain unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5711
 runtime:
   executable_path: Sokoban 2.4.2a/Sokoban 2.4.2a
   screen_depth: 8
@@ -86,11 +110,12 @@ references:
 
 ![Sokoban after a legal chest push](https://assets.systemless.org/catalogue/media/sha256/21/2180f22696ae9bf3e1606bdfa4cfb770d6e27be3381456e37efe3286b768fb12.png)
 
-Press **Return** at startup, enter a player name and accept. Use arrow keys or
-click adjacent squares to move. Push each treasure chest onto a destination;
+Enter a player name when prompted and accept. If a startup notice appears
+first, press **Return** to continue. Use arrow keys or click adjacent squares to move. Push each treasure chest onto a destination;
 chests cannot be pulled. **Escape** undoes a move; **Space** redoes it.
 
 The bounded native replay verifies movement and a chest push against an
-omitted-input control. Browser qualification, completed levels, startup-notice
-fidelity, saved progress and audio remain unverified. Launch stays disabled
-pending browser approval.
+omitted-input control. Hosted-browser input also moves and pushes, but movement
+redraws exceed the pacing limit; launch stays disabled. Completed levels,
+startup-notice fidelity, saved progress, audio fidelity and released public play
+remain unverified.
