@@ -3444,6 +3444,31 @@ pub(crate) fn ppc_rgb2hsv(memory: &mut PpcSectionMem, rgb_ptr: u32, hsv_ptr: u32
             .is_some()
 }
 
+pub(crate) fn ppc_hsl2rgb(memory: &mut PpcSectionMem, hsl_ptr: u32, rgb_ptr: u32) -> bool {
+    if hsl_ptr == 0
+        || rgb_ptr == 0
+        || hsl_ptr.checked_add(5).is_none()
+        || !ppc_memory_can_write_bytes(memory, rgb_ptr, 6)
+    {
+        return false;
+    }
+    let Some(hue) = memory.read_u16_be(hsl_ptr) else {
+        return false;
+    };
+    let Some(saturation) = memory.read_u16_be(hsl_ptr + 2) else {
+        return false;
+    };
+    let Some(lightness) = memory.read_u16_be(hsl_ptr + 4) else {
+        return false;
+    };
+    let rgb = crate::systems::macintosh::quickdraw::color::hsl_to_rgb(hue, saturation, lightness);
+    rgb.into_iter().enumerate().all(|(index, component)| {
+        memory
+            .write_u16_be(rgb_ptr + index as u32 * 2, component)
+            .is_some()
+    })
+}
+
 pub(crate) fn ppc_hsv2rgb(memory: &mut PpcSectionMem, hsv_ptr: u32, rgb_ptr: u32) -> bool {
     if hsv_ptr == 0
         || rgb_ptr == 0

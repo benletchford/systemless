@@ -14202,51 +14202,16 @@ impl super::TrapDispatcher {
                     // Inside Macintosh Volume V, V-175;
                     // Volume VI, 19-10..19-13.
                     5 => {
-                        fn hue_to_rgb(p: f64, q: f64, mut t: f64) -> f64 {
-                            if t < 0.0 {
-                                t += 1.0;
-                            } else if t > 1.0 {
-                                t -= 1.0;
-                            }
-
-                            if t < 1.0 / 6.0 {
-                                return p + (q - p) * 6.0 * t;
-                            }
-                            if t < 1.0 / 2.0 {
-                                return q;
-                            }
-                            if t < 2.0 / 3.0 {
-                                return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
-                            }
-                            p
-                        }
-
                         let src_ptr = bus.read_long(sp + 6);
                         let dst_ptr = bus.read_long(sp + 2);
-                        let hue = bus.read_word(src_ptr) as f64 / 65535.0;
-                        let saturation = bus.read_word(src_ptr + 2) as f64 / 65535.0;
-                        let lightness = bus.read_word(src_ptr + 4) as f64 / 65535.0;
-                        let (red, green, blue) = if saturation == 0.0 {
-                            (lightness, lightness, lightness)
-                        } else {
-                            let q = if lightness < 0.5 {
-                                lightness * (1.0 + saturation)
-                            } else {
-                                lightness + saturation - lightness * saturation
-                            };
-                            let p = 2.0 * lightness - q;
-                            (
-                                hue_to_rgb(p, q, hue + 1.0 / 3.0),
-                                hue_to_rgb(p, q, hue),
-                                hue_to_rgb(p, q, hue - 1.0 / 3.0),
-                            )
-                        };
-                        let to_word = |component: f64| -> u16 {
-                            (component.clamp(0.0, 1.0) * 65535.0).round() as u16
-                        };
-                        bus.write_word(dst_ptr, to_word(red));
-                        bus.write_word(dst_ptr + 2, to_word(green));
-                        bus.write_word(dst_ptr + 4, to_word(blue));
+                        let rgb = crate::systems::macintosh::quickdraw::color::hsl_to_rgb(
+                            bus.read_word(src_ptr),
+                            bus.read_word(src_ptr + 2),
+                            bus.read_word(src_ptr + 4),
+                        );
+                        for (index, component) in rgb.into_iter().enumerate() {
+                            bus.write_word(dst_ptr + index as u32 * 2, component);
+                        }
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // RGB2HSL(6), HSV2RGB(7), RGB2HSV(8)

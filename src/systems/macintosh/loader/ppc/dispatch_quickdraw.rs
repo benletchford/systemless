@@ -557,6 +557,10 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::HSL2RGB => {
+            ppc_hsl2rgb(memory, cpu.gpr[3], cpu.gpr[4]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RGB2HSL => {
             ppc_rgb2hsl(memory, cpu.gpr[3], cpu.gpr[4]);
             Some(PpcImportAction::ReturnPreserve)

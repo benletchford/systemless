@@ -1639,6 +1639,10 @@ fn marathon_runtime_imports_have_native_dispatch_targets() {
         PpcImportDispatcherTarget::QDError
     );
     assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "HSL2RGB"),
+        PpcImportDispatcherTarget::HSL2RGB
+    );
+    assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "RGB2HSL"),
         PpcImportDispatcherTarget::RGB2HSL
     );
