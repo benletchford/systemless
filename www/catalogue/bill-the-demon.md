@@ -9,8 +9,9 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Arcade
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-08"
     tester: Catalogue maintainer
@@ -27,8 +28,34 @@ compatibility:
       inspected; own-run references establish consistency, not hardware accuracy. Native binary
       SHA-256 7ca0f7195dc8910fe687bf0d470cf45a7e2de94a60a528a964fc5b7600867e03. Space
       was exercised but its effect is not yet visually established. Full levels,
-      souls/scoring, persistence, audio fidelity, browser pacing and released public play
-      remain unverified. Launch stays disabled pending browser qualification.
+      souls/scoring, persistence and audio fidelity remain unverified. Hosted-original
+      browser evidence follows below; released public play remains unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5831
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: f509740d private browser preview on merged 99cc7439 runtime
+    architecture: 68k
+    environment: >-
+      Fresh isolated Chromium/Linux profiles, worker/WebGL and SharedArrayBuffer,
+      default 25 MHz/800x600/depth 8, production COEP credentialless and COOP same-origin
+      headers. Source stamp, architecture, worker and clock checked. Both unchanged
+      20-second samples include title dismissal and Command-N New Game. Active holds
+      D for 20 guest ticks, W for 20 and Space for 12; omitted-key control uses identical
+      setup. Actual captures show rightward movement and jumping with scrolling scenery,
+      versus the control at the starting platform. Space effect remains unverified.
+      No game, seed, speed, sound, difficulty, clock or partition changes; no hidden
+      warm-up gameplay. Final steady guest/host rates are 60.1307/61.1675 and
+      60.0161/62.1219 per second; maximum sampled worker frames 35.6/34.3 ms and minimum
+      audio queues 121.7/127.0 ms. Both pass unchanged pacing gates with no captured
+      lifecycle or network errors. These snapshots are not whole-level averages.
+      Original hosted archive HTTP 200 body matches 1033479 bytes, SHA-256
+      7f10d5f30949cd60f9a6bdda5cecfea8b55454fc373dd19040bf97e7cf6d07d2. Both main and
+      worker Wasm HTTP 200 bodies match the build, 17945880 bytes, SHA-256
+      7622d64191afb19f704c61535afc758a839ba461ea14e9eb2e3863423be5f61f.
+      This establishes bounded opening movement/jump input and browser pacing. Full
+      levels, souls/scoring, persistence, audio fidelity and released public play remain
+      unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5831
 runtime:
