@@ -392,6 +392,7 @@ pub struct SndChannel {
 
 #[derive(Clone, Debug)]
 enum QueuedSoundCommand {
+    CompletionFence(u64),
     Command(SndCommand),
     /// soundCmd whose SoundHeader the CPU adapter decoded when it was
     /// queued; `None` when the header could not be decoded.
@@ -444,9 +445,13 @@ impl SndChannel {
         channel
     }
 
+    fn guest_queue_len(&self) -> usize {
+        self.queue.iter().filter(|command| !matches!(command, QueuedSoundCommand::CompletionFence(_))).count()
+    }
+
     /// Enqueue a command. Returns false if queue is full.
     pub fn enqueue(&mut self, cmd: SndCommand) -> bool {
-        if self.queue.len() < STD_Q_LENGTH {
+        if self.guest_queue_len() < STD_Q_LENGTH {
             self.queue.push(QueuedSoundCommand::Command(cmd));
             true
         } else {
@@ -460,7 +465,7 @@ impl SndChannel {
         sample_rate_fixed: u32,
         architecture: CallbackTaskArchitecture,
     ) -> bool {
-        if self.queue.len() >= STD_Q_LENGTH {
+        if self.guest_queue_len() >= STD_Q_LENGTH {
             return false;
         }
         self.queue.push(QueuedSoundCommand::Buffer {
@@ -481,7 +486,7 @@ impl SndChannel {
     }
 
     fn enqueue_instrument(&mut self, instrument: Option<SampledInstrument>) -> bool {
-        if self.queue.len() >= STD_Q_LENGTH {
+        if self.guest_queue_len() >= STD_Q_LENGTH {
             return false;
         }
         self.queue
@@ -771,6 +776,7 @@ pub struct SoundManager {
     /// VIA PA=0, which selects the hardware's minimum (nonzero) gain.
     pub(crate) legacy_speaker_muted: bool,
     next_internal_channel_ptr: u32,
+    next_completion_fence: u64,
 }
 
 impl Default for SoundManager {
@@ -798,6 +804,7 @@ impl SoundManager {
             default_output_volume: FULL_STEREO_VOLUME,
             legacy_speaker_muted: false,
             next_internal_channel_ptr: INTERNAL_CHANNEL_PTR_START,
+            next_completion_fence: 0,
         }
     }
 
@@ -1170,12 +1177,28 @@ impl SoundManager {
         self.channels
             .iter()
             .find(|channel| channel.guest_ptr == guest_ptr)
-            .is_some_and(|channel| channel.queue.len() >= STD_Q_LENGTH)
+            .is_some_and(|channel| channel.guest_queue_len() >= STD_Q_LENGTH)
     }
 
     pub(crate) fn enqueue_command(&mut self, guest_ptr: u32, command: SndCommand) -> bool {
         self.record_command(command.cmd);
         self.ensure_channel_mut(guest_ptr).enqueue(command)
+    }
+
+    /// A private FIFO boundary for a synchronous submission. It does not
+    /// consume a guest queue slot or invoke a guest callback. Flush/disposal
+    /// cancels the boundary; later submissions do not prolong this wait.
+    pub(crate) fn enqueue_completion_fence(&mut self, guest_ptr: u32) -> u64 {
+        self.next_completion_fence = self.next_completion_fence.checked_add(1)
+            .expect("sound completion fence identity exhausted");
+        let fence = self.next_completion_fence;
+        self.ensure_channel_mut(guest_ptr).queue.push(QueuedSoundCommand::CompletionFence(fence));
+        fence
+    }
+
+    pub(crate) fn completion_fence_pending(&self, fence: u64) -> bool {
+        self.channels.iter().any(|channel| channel.queue.iter().any(|command|
+            matches!(command, QueuedSoundCommand::CompletionFence(id) if *id == fence)))
     }
 
     fn allocate_internal_channel_ptr(&mut self) -> u32 {
@@ -1285,6 +1308,7 @@ impl SoundManager {
 
             while let Some(queued) = chan.dequeue() {
                 match queued {
+                    QueuedSoundCommand::CompletionFence(_) => {}
                     QueuedSoundCommand::Command(cmd) => match cmd.cmd {
                         cmd::NULL => {}
                         cmd::QUIET => chan.quiet(),
@@ -3641,5 +3665,46 @@ mod tests {
         assert_eq!(manager.mix_frame(2), vec![0x80, 0x80]);
         assert!(manager.channels[0].is_playing());
         assert!(!manager.channel_has_queued_commands(chan).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod synchronous_completion_tests {
+    use super::*;
+
+    #[test]
+    fn sound_completion_fence_stops_at_submission_boundary_and_cancels_on_flush() {
+        let mut manager = SoundManager::new();
+        let channel = 0x5001000;
+        manager.play_buffer_command_for_architecture(channel, vec![0xa0; 4], OUTPUT_RATE << 16, CallbackTaskArchitecture::PowerPc);
+        let fence = manager.enqueue_completion_fence(channel);
+        assert!(manager.enqueue_buffer_command_for_architecture(channel, vec![0xb0; 100], OUTPUT_RATE << 16, CallbackTaskArchitecture::PowerPc));
+        assert!(manager.completion_fence_pending(fence));
+        manager.mix_frame(4);
+        assert!(manager.completion_fence_pending(fence));
+        manager.mix_frame(1);
+        assert!(!manager.completion_fence_pending(fence));
+        assert_eq!(manager.channel_busy(channel), Some(true), "later playback must not prolong the earlier submission");
+        let canceled = manager.enqueue_completion_fence(channel);
+        manager.flush_channel(channel);
+        assert!(!manager.completion_fence_pending(canceled));
+        let disposed = manager.enqueue_completion_fence(channel);
+        manager.take_channel(channel);
+        assert!(!manager.completion_fence_pending(disposed));
+    }
+
+    #[test]
+    fn sound_completion_fence_does_not_consume_guest_queue_capacity() {
+        let mut manager = SoundManager::new();
+        let channel = 0x5001000;
+        let fence = manager.enqueue_completion_fence(channel);
+        for _ in 0..STD_Q_LENGTH {
+            assert!(manager.enqueue_command(channel, SndCommand {cmd: cmd::NULL, param1: 0, param2: 0}));
+        }
+        assert!(manager.channel_queue_full(channel));
+        assert!(!manager.enqueue_command(channel, SndCommand {cmd: cmd::NULL, param1: 0, param2: 0}));
+        manager.mix_frame(1);
+        assert!(!manager.completion_fence_pending(fence));
+        assert!(!manager.channel_queue_full(channel));
     }
 }

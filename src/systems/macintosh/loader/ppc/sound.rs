@@ -113,9 +113,24 @@ pub struct PpcSoundCompletionCallProbe {
     pub fetch_histogram: Option<PpcFetchHistogram>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcSynchronousSoundOwner {
+    pub task: crate::execution_kernel::ExecutionTaskId,
+    pub call: Option<crate::execution_kernel::CallId>,
+    pub stack: u32,
+    pub import_pc: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcSynchronousSoundWait {
+    pub owner: PpcSynchronousSoundOwner,
+    pub fence: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PpcSoundState {
     pub(crate) manager: SharedProcessSoundManager,
+    pub(crate) synchronous_waits: Vec<PpcSynchronousSoundWait>,
     pub queued_commands: Vec<PpcSndCommandRecord>,
     pub immediate_commands: Vec<PpcSndCommandRecord>,
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
@@ -134,7 +149,8 @@ pub struct PpcSoundState {
 
 impl PartialEq for PpcSoundState {
     fn eq(&self, other: &Self) -> bool {
-        self.queued_commands == other.queued_commands
+        self.synchronous_waits == other.synchronous_waits
+            && self.queued_commands == other.queued_commands
             && self.immediate_commands == other.immediate_commands
             && self.file_playbacks == other.file_playbacks
             && self.decoded_file_playbacks == other.decoded_file_playbacks
@@ -1105,20 +1121,20 @@ pub(crate) fn ppc_snd_play(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     sound: &mut PpcSoundState,
-) -> i16 {
+) -> Result<u32, i16> {
     const RES_PROBLEM: i16 = -204;
     const BAD_FORMAT: i16 = -206;
     let channel = cpu.gpr[3];
     let sound_handle = cpu.gpr[4];
     let async_play = cpu.gpr[5] != 0;
     if sound_handle == 0 || memory.read_u32_be(sound_handle).unwrap_or(0) == 0 {
-        return RES_PROBLEM;
+        return Err(RES_PROBLEM);
     }
     let Some(bytes) = ppc_handle_bytes(memory, handles, sound_handle) else {
-        return RES_PROBLEM;
+        return Err(RES_PROBLEM);
     };
     let Some(commands) = ppc_decode_snd_resource_commands(&bytes) else {
-        return BAD_FORMAT;
+        return Err(BAD_FORMAT);
     };
     let effective_channel = if channel == 0 {
         // Sound 1994, p. 2-122: NIL ignores async and uses an internal
@@ -1157,7 +1173,7 @@ pub(crate) fn ppc_snd_play(
                         sample_rate_fixed,
                         CallbackTaskArchitecture::PowerPc,
                     ) {
-                        return -203; // queueFull
+                        return Err(-203); // queueFull
                     }
                 } else {
                     sound.manager.play_buffer_command_for_architecture(
@@ -1176,7 +1192,7 @@ pub(crate) fn ppc_snd_play(
                     .unwrap_or(false);
                 if busy || queued || command.cmd == crate::sound::cmd::CALLBACK {
                     if !sound.manager.enqueue_command(effective_channel, command) {
-                        return -203; // queueFull
+                        return Err(-203); // queueFull
                     }
                 } else {
                     sound
@@ -1186,7 +1202,7 @@ pub(crate) fn ppc_snd_play(
             }
         }
     }
-    PPC_NO_ERR
+    Ok(effective_channel)
 }
 
 pub(crate) fn ppc_decode_buffer_command(

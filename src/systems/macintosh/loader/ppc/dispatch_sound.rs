@@ -12,6 +12,7 @@ pub(super) struct PpcSoundDispatchContext<'a> {
     pub(super) files: &'a [PpcFileRecord],
     pub(super) vfs_files: &'a ProcessVfsFileRecords,
     pub(super) vfs_resources: &'a [PpcVfsResourceRecord],
+    pub(super) toolbox_startup: &'a PpcToolboxStartupState,
     pub(super) sound: &'a mut PpcSoundState,
 }
 
@@ -31,6 +32,7 @@ pub(super) fn dispatch_sound_import(
         vfs_files,
         vfs_resources,
         sound,
+        toolbox_startup,
     } = context;
 
     match binding.dispatcher_target {
@@ -208,9 +210,18 @@ pub(super) fn dispatch_sound_import(
         PpcImportDispatcherTarget::SndDisposeChannel => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_snd_dispose_channel(cpu, sound)),
         )),
-        PpcImportDispatcherTarget::SndPlay => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_snd_play(cpu, memory, handles, sound),
-        ))),
+        PpcImportDispatcherTarget::SndPlay => {
+            let calls = toolbox_startup.execution.calls();
+            sound.synchronous_waits.retain(|wait| {
+                calls.scheduling_state(wait.owner.task).is_some()
+                    && wait.owner.call.is_none_or(|call| calls.contains_call(wait.owner.task, call))
+            });
+            let owner = sound::PpcSynchronousSoundOwner {
+                task: calls.current_task(), call: calls.top_call_id(),
+                stack: cpu.gpr[1], import_pc: cpu.pc,
+            };
+            Some(ppc_dispatch_synchronous_snd_play(cpu, memory, handles, sound, owner))
+        }
         PpcImportDispatcherTarget::SndChannelStatus => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_snd_channel_status(cpu, memory, sound)),
         )),
@@ -286,5 +297,38 @@ pub(super) fn set_legacy_sound_volume(
         if let Some(value) = memory.read_u8(port_a) {
             let _ = memory.write_u8(port_a, (value & !7) | level);
         }
+    }
+}
+
+/// Retain the import while the mixer advances, without submitting again on
+/// resumption. A callback or cooperative task owns a separate native frame.
+pub(super) fn ppc_dispatch_synchronous_snd_play(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    sound: &mut PpcSoundState,
+    owner: sound::PpcSynchronousSoundOwner,
+) -> PpcImportAction {
+    if let Some(index) = sound.synchronous_waits.iter().position(|wait| wait.owner == owner) {
+        if sound.manager.completion_fence_pending(sound.synchronous_waits[index].fence) {
+            return PpcImportAction::Yield(u64::MAX);
+        }
+        sound.synchronous_waits.remove(index);
+        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
+    }
+    // Sound (1994), pp. 2-121--2-123: NIL is synchronous regardless of async.
+    let synchronous = cpu.gpr[3] == 0 || cpu.gpr[5] == 0;
+    match ppc_snd_play(cpu, memory, handles, sound) {
+        Err(error) => PpcImportAction::Return(ppc_i16_result(error)),
+        Ok(channel) if synchronous => {
+            if !sound.manager.channel_busy(channel).unwrap_or(false)
+                && !sound.manager.channel_has_queued_commands(channel).unwrap_or(false) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
+            }
+            let fence = sound.manager.enqueue_completion_fence(channel);
+            sound.synchronous_waits.push(sound::PpcSynchronousSoundWait { owner, fence });
+            PpcImportAction::Yield(u64::MAX)
+        }
+        Ok(_) => PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)),
     }
 }

@@ -3215,6 +3215,11 @@ impl SharedGuestCallStack {
         tasks.kernel.peek(task).map(|semantic| semantic.call_id())
     }
 
+    /// Whether a retained manager operation still belongs to a live call.
+    pub(crate) fn contains_call(&self, task: ExecutionTaskId, call: CallId) -> bool {
+        self.0.borrow().kernel.task_states(task).iter().any(|state| state.call_id() == call)
+    }
+
     /// The newest continuation on `task`, whether or not it is current.
     pub(crate) fn task_top_call_id(&self, task: ExecutionTaskId) -> Option<CallId> {
         self.0

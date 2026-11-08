@@ -3421,6 +3421,10 @@ impl SharedProcessSoundManager {
         });
     }
 
+    pub(crate) fn enqueue_completion_fence(&self, channel: u32) -> u64 {
+        self.with_mut(|manager| manager.enqueue_completion_fence(channel))
+    }
+
     pub(crate) fn create_internal_channel(&self) -> u32 {
         self.with_mut(SoundManager::create_internal_channel)
     }

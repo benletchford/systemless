@@ -469,6 +469,7 @@ fn ppc_decoded_file_playback_feeds_host_audio_buffer() {
     let mut preview = [0; 16];
     preview[..samples.len()].copy_from_slice(&samples);
     let mut app = halted_ppc_app_with_sound(PpcSoundState {
+        synchronous_waits: Vec::new(),
         manager: Default::default(),
         sound_sprocket: Default::default(),
         queued_commands: Vec::new(),
@@ -609,6 +610,7 @@ fn ppc_decoded_file_playback_waits_for_process_audio_cursor() {
     let mut preview = [0; 16];
     preview[..samples.len()].copy_from_slice(&samples);
     let mut app = halted_ppc_app_with_sound(PpcSoundState {
+        synchronous_waits: Vec::new(),
         manager: Default::default(),
         sound_sprocket: Default::default(),
         queued_commands: Vec::new(),

@@ -788,6 +788,7 @@ pub(crate) fn dispatch_supported_import(
 
     if let Some(action) =
         dispatch_sound::dispatch_sound_import(dispatch_sound::PpcSoundDispatchContext {
+            toolbox_startup,
             binding,
             cpu,
             memory,
