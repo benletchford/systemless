@@ -52,10 +52,12 @@ fn directory(
         let size = take(bytes, position, 1)?[0];
         let name =
             crate::trap::types::decode_mac_roman(take(bytes, position, (size & 127) as usize)?);
-        if name.is_empty() || matches!(name.as_str(), "." | "..") || name.contains(['/', ':', '\0'])
-        {
+        if name.is_empty() || matches!(name.as_str(), "." | "..") || name.contains([':', '\0']) {
             return Err("invalid Smaller Installer path component".into());
         }
+        // HFS permits a literal slash in a basename. Encode the component before
+        // adding VFS hierarchy separators, as the StuffIt loader does.
+        let name = crate::trap::TrapDispatcher::encode_hfs_component_for_vfs(&name);
         let path = if prefix.is_empty() {
             name
         } else {
@@ -540,9 +542,46 @@ mod tests {
         assert_eq!(files[0].finder_flags, 0x4000);
     }
     #[test]
+    fn compact_pro_preserves_literal_hfs_slashes_within_components() {
+        let mut bytes = compact_fixture();
+        bytes[18] = b'/';
+        seal_directory(&mut bytes);
+        let files = expand_compact_pro(&bytes).unwrap().unwrap();
+        let expected = crate::trap::TrapDispatcher::encode_hfs_component_for_vfs("T/st");
+        assert_eq!(files[0].name, expected);
+        assert!(!files[0].name.contains('/'));
+        assert_eq!(files[0].data, b"A");
+        assert_eq!(files[0].file_type, *b"TEXT");
+        assert_eq!(files[0].creator, *b"ttxt");
+
+        // A folder containing a literal slash must remain one directory too.
+        bytes[13..15].copy_from_slice(&2u16.to_be_bytes());
+        bytes.splice(16..16, [0x84, b'D', b'/', b'c', b's', 0, 1]);
+        seal_directory(&mut bytes);
+        let files = expand_compact_pro(&bytes).unwrap().unwrap();
+        let folder = crate::trap::TrapDispatcher::encode_hfs_component_for_vfs("D/cs");
+        assert_eq!(files[0].name, format!("{folder}/{expected}"));
+        assert_eq!(files[0].name.matches('/').count(), 1);
+        assert_eq!(files[0].data, b"A");
+    }
+
+    #[test]
+    fn compact_pro_still_rejects_invalid_hfs_components() {
+        for name in ["", ".", "..", ":", "a:b", "a\0b"] {
+            let mut bytes = compact_fixture();
+            bytes.splice(
+                16..21,
+                std::iter::once(name.len() as u8).chain(name.bytes()),
+            );
+            seal_directory(&mut bytes);
+            assert!(expand_compact_pro(&bytes).is_err(), "name {name:?}");
+        }
+    }
+
+    #[test]
     fn compact_pro_rejects_authenticated_invalid_paths_flags_and_ranges() {
         for (offset, replacement) in [
-            (17, b'/'), // Path traversal component.
+            (17, b':'), // HFS path separator in a component.
             (21, 2),    // Unsupported volume.
             (49, 1),    // Encrypted fork.
         ] {
