@@ -5348,6 +5348,12 @@ pub(crate) fn ppc_copy_bits(
             Some(storage)
         };
 
+        // The mask snapshot cannot change during this transfer. Decode its
+        // scanline intervals once, rather than allocating them per pixel.
+        let mut mask_rows = regions::PpcRegionRowCache::for_band(
+            mask_storage.as_deref(), copy_top as i16, copy_bottom as i16,
+        );
+
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-112–3-116
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics
         // ports and GWorlds, including indexed-color PixMaps. The import
@@ -5537,16 +5543,17 @@ pub(crate) fn ppc_copy_bits(
                 }),
                 (mask_storage.is_some() || transparent).then(|| {
                     crate::quickdraw::gpu::QuickDrawGpuBlitClip {
-                        coverage: mask_storage.as_ref().map(|storage| {
-                            (copy_top..copy_bottom)
-                                .flat_map(|y| {
-                                    (copy_left..copy_right).map(move |x| {
-                                        u8::from(ppc_point_in_region_storage(
-                                            storage, y as i16, x as i16,
-                                        ))
-                                    })
-                                })
-                                .collect()
+                        coverage: mask_storage.as_ref().map(|_| {
+                            let mut coverage = Vec::with_capacity(
+                                (copy_bottom - copy_top) as usize
+                                    * (copy_right - copy_left) as usize,
+                            );
+                            for y in copy_top..copy_bottom {
+                                for x in copy_left..copy_right {
+                                    coverage.push(u8::from(mask_rows.contains(y as i16, x as i16)));
+                                }
+                            }
+                            coverage
                         }),
                         transparent: transparent.then_some([
                             transparent_back_pixel,
@@ -5602,9 +5609,7 @@ pub(crate) fn ppc_copy_bits(
                     else {
                         continue;
                     };
-                    if mask_storage.as_ref().is_some_and(|storage| {
-                        !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
-                    }) {
+                    if !mask_rows.contains(dst_y as i16, dst_x as i16) {
                         continue;
                     }
                     // The high byte of a classic 32-bit xRGB pixel is padding.
