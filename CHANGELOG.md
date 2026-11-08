@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.112.0](https://github.com/benletchford/systemless/compare/v0.111.0...v0.112.0) (2026-11-08)
+
+
+### Features
+
+* add Achi browser play and Bo-Rad intake ([a05fe7a](https://github.com/benletchford/systemless/commit/a05fe7a4d6939ed8c7b23578a3d20d89aace8e6e))
+* add Dunjin 4.4 intake with browser pacing hold ([3c71c82](https://github.com/benletchford/systemless/commit/3c71c82e9b3ed1c5be925ec8b200f1f5158040af))
+* add Fungus browser play and record public game checks ([3c52cb3](https://github.com/benletchford/systemless/commit/3c52cb37f4f580d0e6b332b53c9788a4a270eb04))
+* add HangMan browser play ([e0ff417](https://github.com/benletchford/systemless/commit/e0ff4175bad6787150b1a4f28a9356a51db37f1c))
+* add Jotto II browser play and GPL source ([777c619](https://github.com/benletchford/systemless/commit/777c6191bea22e7ba4305a4e1b85ed05e0f532e3))
+* add King Albert II browser play ([55657c5](https://github.com/benletchford/systemless/commit/55657c5e2848c73349ae12a7a1800453d1850c69))
+* add Nubb and Bo-Rad browser play ([debae0f](https://github.com/benletchford/systemless/commit/debae0f31868f24893e36a89f80f45aee1637f3a))
+* add Pair Picker browser play ([2fe0e5e](https://github.com/benletchford/systemless/commit/2fe0e5e59e8942bf698529c5e2922302cb92344e))
+* add Par Pyramid and YA-Mancala browser play ([ec9db61](https://github.com/benletchford/systemless/commit/ec9db61d7ed41ffd8173eb76476da2d0107c1114))
+* add Poker browser play ([0dbf056](https://github.com/benletchford/systemless/commit/0dbf056072534016759a79570a757fa3afde32c5))
+* add qualified Battalion browser play ([904275b](https://github.com/benletchford/systemless/commit/904275b336539661d4566140fccb5643c464d12b))
+* add qualified Bill the Demon browser play ([48fe090](https://github.com/benletchford/systemless/commit/48fe0906e15ba9f139a9ca12ab5f27436b1b19b9))
+* add qualified Bonk browser play ([1d64bbf](https://github.com/benletchford/systemless/commit/1d64bbf9b89b444d2e11522b027f083bee5d0fc1))
+* add qualified Brick Attack browser play ([38dd032](https://github.com/benletchford/systemless/commit/38dd032b69e7b3ca1562474d5f45a6a7e3117f9a))
+* add qualified Domain and Fractal Hearts browser play ([ddc57ac](https://github.com/benletchford/systemless/commit/ddc57acf861907cbaae8d4306eda61422204ebe8))
+* add qualified MacGnuGo browser play ([99cc743](https://github.com/benletchford/systemless/commit/99cc7439195dd2730cce82a8a010252c5527f166))
+* add qualified Morpion browser play ([8357cbe](https://github.com/benletchford/systemless/commit/8357cbe5603e2f58c592d216b90e544f6fdd6c91))
+* add qualified Vampire Chess and MaciGame browser play ([971ad59](https://github.com/benletchford/systemless/commit/971ad59d45b1f2151f7e122c085809de1eff0ab4))
+* add Seismic Duck browser play ([f243c00](https://github.com/benletchford/systemless/commit/f243c003f501aaba16603daee337bbce31c67ce3))
+* add SideMinder browser play ([b5dfb40](https://github.com/benletchford/systemless/commit/b5dfb40c64b9ba9869416d39e3c5d81cf088134b))
+* add Super Othello browser play ([531c0af](https://github.com/benletchford/systemless/commit/531c0af47bd388b611d9459a42722e21b6e9cec2))
+* enable Abbalone browser play ([b4f8865](https://github.com/benletchford/systemless/commit/b4f88657720a740d08c09eaba0c19a18b9c66eec))
+* enable Dunjin browser play ([3ec502c](https://github.com/benletchford/systemless/commit/3ec502cbf1b64035a9346ac76179c0b6c10a8dfc))
+
+
+### Bug Fixes
+
+* honor compressed resource stream terminators ([91ec581](https://github.com/benletchford/systemless/commit/91ec581d2fc7656686c633d19b9e99ce740fd92f))
+* honor PEF section preferred addresses ([79d256e](https://github.com/benletchford/systemless/commit/79d256e11c088ab671aeb487b1b5b2ab294d5084))
+* honor PowerPC background patterns in EraseRect ([e2930db](https://github.com/benletchford/systemless/commit/e2930db7f674dae3b1f467db66c92c655aa84e4b))
+* implement PowerPC HSL2RGB colour conversion ([a9b6c8d](https://github.com/benletchford/systemless/commit/a9b6c8d77892805bd65c92833644ce96b700a0fb))
+* implement PowerPC raw current resource map accessors ([5654afa](https://github.com/benletchford/systemless/commit/5654afa73f251276c7bfd9a2207d80f315b73cb2))
+* implement the 68K theme color query ([a755c9d](https://github.com/benletchford/systemless/commit/a755c9d327e29f3d538ea3a8d8dfa59e82897e97))
+* implement the PowerPC CopyPixMap import ([c535e20](https://github.com/benletchford/systemless/commit/c535e205601128fbd7509b21bd0a098f6660b9a5))
+* keep DrawSprocket device palettes coherent ([846bece](https://github.com/benletchford/systemless/commit/846bece9d5ee3bfe26e8a25007d0192b5628b3f0))
+* map complex regions in the 68K QuickDraw trap ([b912638](https://github.com/benletchford/systemless/commit/b912638f7bdd236bb2a03d9aa67e340981e427b0))
+* move dragged regions with their tracking outlines ([4a8ef30](https://github.com/benletchford/systemless/commit/4a8ef30ab35a9341ac0ecb63897736378e483f4a))
+* preserve literal HFS slashes in Compact Pro names ([c2798af](https://github.com/benletchford/systemless/commit/c2798af545969c528af02bfad7a0e8eb74f6c067))
+* share physical cursor device state across architectures ([938894e](https://github.com/benletchford/systemless/commit/938894e1db404943012dedbcab730a33230247e6))
+* wait for synchronous PowerPC sound playback ([151ba1e](https://github.com/benletchford/systemless/commit/151ba1ea36e7382709f66a75fa4173711dc77667))
+
+
+### Performance Improvements
+
+* bound TextEdit repaint work for caret and tail input ([05e3319](https://github.com/benletchford/systemless/commit/05e33193467a716e767c313a6834e8f79cbbae7a))
+* copy complete pixels into RGBA presentation buffers ([3fe927b](https://github.com/benletchford/systemless/commit/3fe927b1c9af614a64cfb32d48cbc3e1de08c700))
+* prove idle cycles around main-device queries ([d9d1164](https://github.com/benletchford/systemless/commit/d9d1164642a0fa7f541b235412c7b0d9afaa3366))
+* reuse exact color and row data during redraws ([578dcb2](https://github.com/benletchford/systemless/commit/578dcb22f39de2097f0f749c53bf19a505ce0dd3))
+
 ## [0.111.0](https://github.com/benletchford/systemless/compare/v0.110.1...v0.111.0) (2026-11-07)
 
 
