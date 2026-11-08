@@ -1,0 +1,123 @@
+---
+id: bill-the-demon
+kind: game
+title: Bill the Demon
+summary: Walk, jump and scream through the nine circles of Hell as a hungry little demon.
+developer: James Burton / John Burton / Jeffrey Loff
+year: 1996
+architectures:
+- 68k
+default_architecture: 68k
+category: Arcade
+launch_enabled: true
+compatibility:
+  status: playable
+  verified:
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: c796d054 native; runtime code identical through merged 99cc7439
+    architecture: 68k
+    environment: >-
+      Complete unchanged original colour package and exact billdemon.cpt/Bill the
+      Demon executable, explicit 68K, default 25 MHz/800x600/depth 8 without partition
+      override. Click dismisses the original title; Command-N starts Circle 1. Holding D
+      for 20 frontend ticks moves right; W for 20 ticks jumps and scrolls the scenery.
+      The equal-clock omitted-key control stays at the starting platform. Both fresh
+      repeats pass six measured causal pixels and six exact prior screenshots at
+      frontend/guest tick 540/1140, with zero exhausted frames. Actual qualified images
+      inspected; own-run references establish consistency, not hardware accuracy. Native binary
+      SHA-256 7ca0f7195dc8910fe687bf0d470cf45a7e2de94a60a528a964fc5b7600867e03. Space
+      was exercised but its effect is not yet visually established. Full levels,
+      souls/scoring, persistence and audio fidelity remain unverified. Hosted-original
+      browser evidence follows below; released public play remains unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5831
+  - date: "2026-11-08"
+    tester: Catalogue maintainer
+    systemless_version: f509740d private browser preview on merged 99cc7439 runtime
+    architecture: 68k
+    environment: >-
+      Fresh isolated Chromium/Linux profiles, worker/WebGL and SharedArrayBuffer,
+      default 25 MHz/800x600/depth 8, production COEP credentialless and COOP same-origin
+      headers. Source stamp, architecture, worker and clock checked. Both unchanged
+      20-second samples include title dismissal and Command-N New Game. Active holds
+      D for 20 guest ticks, W for 20 and Space for 12; omitted-key control uses identical
+      setup. Actual captures show rightward movement and jumping with scrolling scenery,
+      versus the control at the starting platform. Space effect remains unverified.
+      No game, seed, speed, sound, difficulty, clock or partition changes; no hidden
+      warm-up gameplay. Final steady guest/host rates are 60.1307/61.1675 and
+      60.0161/62.1219 per second; maximum sampled worker frames 35.6/34.3 ms and minimum
+      audio queues 121.7/127.0 ms. Both pass unchanged pacing gates with no captured
+      lifecycle or network errors. These snapshots are not whole-level averages.
+      Original hosted archive HTTP 200 body matches 1033479 bytes, SHA-256
+      7f10d5f30949cd60f9a6bdda5cecfea8b55454fc373dd19040bf97e7cf6d07d2. Both main and
+      worker Wasm HTTP 200 bodies match the build, 17945880 bytes, SHA-256
+      7622d64191afb19f704c61535afc758a839ba461ea14e9eb2e3863423be5f61f.
+      This establishes bounded opening movement/jump input and browser pacing. Full
+      levels, souls/scoring, persistence, audio fidelity and released public play remain
+      unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5831
+runtime:
+  executable_path: billdemon.cpt/Bill the Demon
+  screen_depth: 8
+  show_menu_bar: true
+artifacts:
+- id: archive
+  role: archive
+  format: hqx
+  source:
+    type: sha256
+    sha256: 7f10d5f30949cd60f9a6bdda5cecfea8b55454fc373dd19040bf97e7cf6d07d2
+    size_bytes: 1033479
+  provenance:
+    redistribution: permitted
+    original: true
+    sources:
+    - https://ftp.funet.fi/pub/mac/info-mac/game/arc/bill-the-demon.hqx
+    - https://github.com/benletchford/systemless/issues/5831
+    license: Original unchanged free-distribution grant; no commercial sale
+    rights_holder: James Burton; retained original contributors
+    permission: >-
+      The complete original Instructions.txt explicitly permits distribution anywhere
+      and however desired provided the game remains free, is not sold commercially and
+      is not altered. Missing instructions count as alteration. Preserve both original
+      files and all forks, resources, credits and notices. No game modifications.
+    notes: >-
+      Full 13721-byte instructions reviewed. Original title and instructions identify
+      copyright 1996 James Burton, with John Burton graphics and Jeffrey Loff music.
+      Independent extraction matches both paths, all four forks and both Finder records;
+      the production pack retains the original billdemon.cpt wrapper. Strict KPK end
+      1527299, SHA-256 fff37d6ebab7a5ccc56e849d4d955fceb21e3c1d32abea08496bdb6717f98c5f.
+      The black-and-white variant is not a separate game count.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: sha256
+    sha256: 4d08f218c5d57076466dd3f17c338e1e99f22ef1150c3334281809961080a55d
+    size_bytes: 33247
+  provenance:
+    redistribution: permitted
+    original: true
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/5831
+    permission: Original gameplay capture of the unchanged freely distributable game.
+    notes: >-
+      Circle 1 after movement and jump. Native capture cropped to
+      (149,133)-(663,504), 514x371, without resampling; excludes native window framing, menu and host
+      interface.
+references:
+- https://ftp.funet.fi/pub/mac/info-mac/game/arc/bill-the-demon.hqx
+- https://github.com/benletchford/systemless/issues/5831
+---
+
+## A little demon with a loud voice
+
+![Bill jumps above the starting platform](https://assets.systemless.org/catalogue/media/sha256/4d/4d08f218c5d57076466dd3f17c338e1e99f22ef1150c3334281809961080a55d.png)
+
+Click the title to dismiss it, then choose Game → New Game. Use A/D or Left/Right
+to walk, W or Up to jump, and Space or Return to scream or eat. Screaming consumes
+hunger; eating souls replenishes it. The complete original instructions accompany
+the game download.
