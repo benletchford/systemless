@@ -2,7 +2,9 @@
 id: macigame
 kind: game
 title: MaciGame
-summary: Remove connected groups of matching characters and clear the board for a higher score.
+summary: >-
+  Remove connected groups of matching characters and clear the board for a higher
+  score.
 developer: Takeshi Takahashi / Ayako Takahashi / Miya Takahashi
 year: 1994
 architectures:
@@ -18,17 +20,18 @@ compatibility:
     architecture: 68k
     environment: >-
       Complete unchanged original package and exact macigame1.60 /MaciGame v1.60E
-      executable, including the original folder's trailing space. Explicit 68K, default
-      25 MHz/800x600/depth 8 and original partition. First click at (624,72) selects a
+      executable, including the original folder's trailing space. Explicit 68K, default 25
+      MHz/800x600/depth 8 and original partition. First click at (624,72) selects a
       visible three-green-piece group, showing Get:3/Points:1. Second click removes it,
-      leaving Rest:237/Score:1. Equal-clock omitted-button control retains Rest:240/Score:0.
-      Each fresh repeat passes six measured causal pixels and three exact prior screenshots
-      at frontend/guest tick 308/908, with zero exhaustion. Actual qualified images inspected;
-      own-run references establish consistency, not hardware accuracy. Native binary SHA-256
-      d961445d3cbcee316a041419a75a24eaaaf6d0be22bf33ec3d8a4e1a8ac73b5e. No game, seed,
-      clock, depth, character-set or partition changes. Full games, other character sets,
-      column-collapse, persistence, audio fidelity, browser pacing and released public play
-      remain unverified. Launch stays disabled pending browser qualification.
+      leaving Rest:237/Score:1. Equal-clock omitted-button control retains
+      Rest:240/Score:0. Each fresh repeat passes six measured causal pixels and three exact prior
+      screenshots at frontend/guest tick 308/908, with zero exhaustion. Actual qualified
+      images inspected; own-run references establish consistency, not hardware
+      accuracy. Native binary SHA-256
+      d961445d3cbcee316a041419a75a24eaaaf6d0be22bf33ec3d8a4e1a8ac73b5e. No game, seed, clock, depth, character-set or partition changes. Full
+      games, other character sets, column-collapse, persistence, audio fidelity, browser
+      pacing and released public play remain unverified. Launch stays disabled pending
+      browser qualification.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5837
 runtime:
@@ -40,10 +43,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.funet.fi/pub/mac/info-mac/game/arc/maci-game-160.hqx
-    expected_sha256: 93bb0e7c9941a0682a8b429f46aac0a359c19efb3e21d89b8622c61751dee4a5
-    expected_size: 106724
+    type: sha256
+    sha256: 93bb0e7c9941a0682a8b429f46aac0a359c19efb3e21d89b8622c61751dee4a5
+    size_bytes: 106724
   provenance:
     redistribution: permitted
     original: true
@@ -58,8 +60,8 @@ artifacts:
       commercial use, and requests advance notification for printed/floppy/CD publication.
       Preserve the notice, original Score file, all character sets, forks and credits.
     notes: >-
-      Full 5388-byte ReadMe reviewed. Copyright 1994 Takeshi Takahashi; co-produced by
-      Ayako and Miya, with original game-idea and Neko Neko/Youkan character credits.
+      Full 5388-byte ReadMe reviewed. Copyright 1994 Takeshi Takahashi; co-produced
+      by Ayako and Miya, with original game-idea and Neko Neko/Youkan character credits.
       The English 1.60E executable is already present in this original package; no
       translation patch is applied. All six supplied character sets form one game intake,
       not separate variants. Independent packing matches nine files, eighteen forks and
@@ -69,8 +71,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/macigame/gameplay.png
+    type: sha256
+    sha256: df22d2a953499245d1b5e405d605ff035ebc34a7816ed545700e1a475d8447ab
+    size_bytes: 30754
   provenance:
     redistribution: permitted
     original: true
@@ -88,7 +91,7 @@ references:
 
 ## Match the characters
 
-![Three green pieces removed for one point](incoming/macigame/gameplay.png)
+![Three green pieces removed for one point](https://assets.systemless.org/catalogue/media/sha256/df/df22d2a953499245d1b5e405d605ff035ebc34a7816ed545700e1a475d8447ab.png)
 
 Click a connected group of matching characters to select it, then click again to
 remove it. Larger groups earn more points. Pieces fall into gaps, and empty
