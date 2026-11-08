@@ -17,16 +17,16 @@ compatibility:
     systemless_version: c796d054 native; runtime code identical through merged 99cc7439
     architecture: 68k
     environment: >-
-      Complete unchanged original colour package and exact billdemon.cpt/Bill the Demon
-      executable, explicit 68K, default 25 MHz/800x600/depth 8 without partition override.
-      Click dismisses the original title; Command-N starts Circle 1. Holding D for 20
-      frontend ticks moves right; W for 20 ticks jumps and scrolls the scenery. The
-      equal-clock omitted-key control stays at the starting platform. Both fresh repeats
-      pass six measured causal pixels and six exact prior screenshots at frontend/guest
-      tick 540/1140, with zero exhausted frames. Actual qualified images inspected;
-      own-run references establish consistency, not hardware accuracy. Native binary
-      SHA-256 7ca0f7195dc8910fe687bf0d470cf45a7e2de94a60a528a964fc5b7600867e03.
-      Space was exercised but its effect is not yet visually established. Full levels,
+      Complete unchanged original colour package and exact billdemon.cpt/Bill the
+      Demon executable, explicit 68K, default 25 MHz/800x600/depth 8 without partition
+      override. Click dismisses the original title; Command-N starts Circle 1. Holding D
+      for 20 frontend ticks moves right; W for 20 ticks jumps and scrolls the scenery.
+      The equal-clock omitted-key control stays at the starting platform. Both fresh
+      repeats pass six measured causal pixels and six exact prior screenshots at
+      frontend/guest tick 540/1140, with zero exhausted frames. Actual qualified images
+      inspected; own-run references establish consistency, not hardware accuracy. Native binary
+      SHA-256 7ca0f7195dc8910fe687bf0d470cf45a7e2de94a60a528a964fc5b7600867e03. Space
+      was exercised but its effect is not yet visually established. Full levels,
       souls/scoring, persistence, audio fidelity, browser pacing and released public play
       remain unverified. Launch stays disabled pending browser qualification.
     status: playable
@@ -40,10 +40,9 @@ artifacts:
   role: archive
   format: hqx
   source:
-    type: url
-    url: https://ftp.funet.fi/pub/mac/info-mac/game/arc/bill-the-demon.hqx
-    expected_sha256: 7f10d5f30949cd60f9a6bdda5cecfea8b55454fc373dd19040bf97e7cf6d07d2
-    expected_size: 1033479
+    type: sha256
+    sha256: 7f10d5f30949cd60f9a6bdda5cecfea8b55454fc373dd19040bf97e7cf6d07d2
+    size_bytes: 1033479
   provenance:
     redistribution: permitted
     original: true
@@ -68,8 +67,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/bill-the-demon/gameplay.png
+    type: sha256
+    sha256: 4d08f218c5d57076466dd3f17c338e1e99f22ef1150c3334281809961080a55d
+    size_bytes: 33247
   provenance:
     redistribution: permitted
     original: true
@@ -78,8 +78,9 @@ artifacts:
     - https://github.com/benletchford/systemless/issues/5831
     permission: Original gameplay capture of the unchanged freely distributable game.
     notes: >-
-      Circle 1 after movement and jump. Native capture cropped to (149,133)-(663,504),
-      514x371, without resampling; excludes native window framing, menu and host interface.
+      Circle 1 after movement and jump. Native capture cropped to
+      (149,133)-(663,504), 514x371, without resampling; excludes native window framing, menu and host
+      interface.
 references:
 - https://ftp.funet.fi/pub/mac/info-mac/game/arc/bill-the-demon.hqx
 - https://github.com/benletchford/systemless/issues/5831
@@ -87,7 +88,7 @@ references:
 
 ## A little demon with a loud voice
 
-![Bill jumps above the starting platform](incoming/bill-the-demon/gameplay.png)
+![Bill jumps above the starting platform](https://assets.systemless.org/catalogue/media/sha256/4d/4d08f218c5d57076466dd3f17c338e1e99f22ef1150c3334281809961080a55d.png)
 
 Click the title to dismiss it, then choose Game → New Game. Use A/D or Left/Right
 to walk, W or Up to jump, and Space or Return to scream or eat. Screaming consumes
