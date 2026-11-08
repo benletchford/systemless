@@ -3294,6 +3294,10 @@ impl FixtureRunner {
         self.bus.write_word(0x082E, h as u16);
         self.bus.write_word(0x0830, v as u16);
         self.bus.write_word(0x0832, h as u16);
+        crate::cursor_manager::sync_classic_cursor_device(
+            &mut self.bus,
+            &self.dispatcher.input_state,
+        );
     }
 
     /// Sync mouse button + position low-memory globals from internal state.
@@ -11941,6 +11945,10 @@ impl FixtureRunner {
             // mechanism works"; Inside Macintosh Volume V (1986), V-365.
             let position = ((mouse >> 16) as i16, mouse as i16);
             self.dispatcher.input_state.set_mouse_position(position);
+            crate::cursor_manager::sync_classic_cursor_device(
+                &mut self.bus,
+                &self.dispatcher.input_state,
+            );
             self.pending_guest_cursor_warp = Some(position);
         }
     }

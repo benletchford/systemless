@@ -27,6 +27,21 @@ impl PpcLoadedApp {
                 .memory
                 .write_u16_be(point_addr + 2, input.mouse_h as u16);
         }
+        if let Some(records) = self.process_input.cursor_device_records() {
+            let _ = self.memory.write_bytes(
+                records.data + 8,
+                &crate::cursor_manager::cursor_device_position_bytes((
+                    input.mouse_v,
+                    input.mouse_h,
+                )),
+            );
+            let _ = self
+                .memory
+                .write_u8(records.data + 21, u8::from(input.mouse_button));
+            let _ = self
+                .memory
+                .write_u8(records.device + 27, u8::from(input.mouse_button));
+        }
     }
 
     pub(crate) fn current_input_snapshot(&self) -> PpcInputSnapshot {

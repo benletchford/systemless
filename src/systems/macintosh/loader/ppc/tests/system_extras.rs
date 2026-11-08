@@ -480,3 +480,92 @@ fn low_memory_driver_paging_and_printing_calls_report_the_runtime_state() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DeferUserFn);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
+
+#[test]
+fn cursor_device_enumeration_and_absolute_moves_expose_live_physical_state() {
+    use crate::memory::globals::addr;
+    for name in [
+        b"CrsrDevNextDevice".as_slice(),
+        b"CursorDeviceNextDevice".as_slice(),
+    ] {
+        let mut loaded = loaded_with(name);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_v: 40,
+            mouse_h: 60,
+            mouse_button: true,
+            key_map: [0; 16],
+        });
+        loaded.cpu.gpr[3] = SCRATCH;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevNextDevice);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let device = loaded.memory.read_u32_be(SCRATCH).unwrap();
+        assert_ne!(device, 0);
+        let data = loaded.memory.read_u32_be(device + 4).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(data + 8), Some(60 << 16));
+        assert_eq!(loaded.memory.read_u32_be(data + 12), Some(40 << 16));
+        assert_eq!(loaded.memory.read_u8(data + 21), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(data + 22), Some(72));
+        loaded.memory.write_u32_be(device + 8, 0x12345678).unwrap();
+        loaded.memory.write_u16_be(data + 26, 0xabcd).unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_v: 45,
+            mouse_h: 80,
+            mouse_button: false,
+            key_map: [0; 16],
+        });
+        assert_eq!(loaded.memory.read_u32_be(data + 16), Some((45 << 16) | 80));
+        assert_eq!(loaded.memory.read_u8(data + 21), Some(0));
+        loaded.cpu.gpr[3] = device;
+        loaded.cpu.gpr[4] = 300;
+        loaded.cpu.gpr[5] = (-20i32) as u32;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevMoveTo);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.current_input_snapshot().mouse_v, -20);
+        assert_eq!(loaded.current_input_snapshot().mouse_h, 300);
+        for global in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            assert_eq!(
+                loaded.memory.read_u32_be(global),
+                Some((0xffecu32 << 16) | 300)
+            );
+        }
+        assert_eq!(loaded.memory.read_u32_be(data + 8), Some(300 << 16));
+        assert_eq!(
+            loaded.memory.read_u32_be(data + 12),
+            Some(((-20i32) << 16) as u32)
+        );
+        assert_eq!(loaded.memory.read_u32_be(device + 8), Some(0x12345678));
+        assert_eq!(loaded.memory.read_u16_be(data + 26), Some(0xabcd));
+        loaded.cpu.gpr[3] = SCRATCH;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevNextDevice);
+        assert_eq!(loaded.memory.read_u32_be(SCRATCH), Some(0));
+        loaded.memory.write_u32_be(SCRATCH, 0xbadcafe).unwrap();
+        loaded.cpu.gpr[3] = SCRATCH;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevNextDevice);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.memory.read_u32_be(SCRATCH), Some(0xbadcafe));
+    }
+    for name in ["CrsrDevMoveTo", "CursorDeviceMoveTo"] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", name),
+            PpcImportDispatcherTarget::CrsrDevMoveTo
+        );
+    }
+}
+
+#[test]
+fn cursor_device_rejects_invalid_output_or_device_without_moving_input() {
+    let mut loaded = loaded_with(b"CrsrDevNextDevice");
+    for out in [0, u32::MAX - 1, SCRATCH + 0x3fe] {
+        loaded.cpu.gpr[3] = out;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevNextDevice);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.process_input.cursor_device_records(), None);
+    }
+    let before = loaded.current_input_snapshot();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 100;
+    loaded.cpu.gpr[5] = 200;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CrsrDevMoveTo);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.current_input_snapshot(), before);
+}

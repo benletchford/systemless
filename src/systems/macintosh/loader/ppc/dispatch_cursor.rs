@@ -16,6 +16,7 @@ pub(super) struct PpcCursorDispatchContext<'a> {
     pub(super) gworlds: &'a [PpcGWorldRecord],
     pub(super) current_gworld: u32,
     pub(super) screen_clut: &'a [[u16; 3]; 256],
+    pub(super) process_input: &'a crate::process_context::SharedProcessInputState,
 }
 
 pub(super) fn dispatch_cursor_import(
@@ -37,6 +38,7 @@ pub(super) fn dispatch_cursor_import(
         gworlds,
         current_gworld,
         screen_clut,
+        process_input,
     } = context;
 
     match binding.dispatcher_target {
@@ -104,21 +106,84 @@ pub(super) fn dispatch_cursor_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CrsrDevNextDevice => {
-            // The reference machine exposes a single aggregate mouse through
-            // the Event Manager, not a Cursor Device Manager device chain.
-            let params = crate::cursor_manager::evaluate_crsr_dev_next_device_parameters(cpu.gpr[3]);
-            if params.device_ptr != 0 && ppc_memory_can_write_bytes(memory, params.device_ptr, 4) {
-                let _ = memory.write_u32_be(params.device_ptr, 0);
+            let out = cpu.gpr[3];
+            if out == 0 || !ppc_memory_can_write_bytes(memory, out, 4) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
-            Some(PpcImportAction::Return(ppc_i16_result(-1)))
+            let current = memory.read_u32_be(out).unwrap_or(0);
+            let result = if current == 0 {
+                let records = if let Some(records) = process_input.cursor_device_records() {
+                    Some(records)
+                } else {
+                    let allocation = process_memory_manager.new_native_ptr(
+                        memory,
+                        crate::cursor_manager::CURSOR_DEVICE_STORAGE_SIZE,
+                        true,
+                    );
+                    ppc_apply_process_native_allocator(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                    );
+                    crate::cursor_manager::CursorDeviceRecords::from_storage(allocation).and_then(
+                        |records| {
+                            memory.write_bytes(
+                                records.device,
+                                &records.initial_storage(
+                                    process_input.mouse_position(),
+                                    process_input.mouse_button_pressed(),
+                                ),
+                            )?;
+                            process_input.set_cursor_device_records(records);
+                            Some(records)
+                        },
+                    )
+                };
+                if let Some(records) = records {
+                    let _ = memory.write_u32_be(out, records.device);
+                    PPC_NO_ERR
+                } else {
+                    PPC_MEM_FULL_ERR
+                }
+            } else if process_input
+                .cursor_device_records()
+                .is_some_and(|records| records.device == current)
+            {
+                let _ = memory.write_u32_be(out, 0);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::CrsrDevMoveTo => {
-            let _params = crate::cursor_manager::evaluate_crsr_dev_move_to_parameters(
-                cpu.gpr[3],
-                cpu.gpr[4] as i32,
-                cpu.gpr[5] as i32,
+            let Some(records) = process_input
+                .cursor_device_records()
+                .filter(|records| records.device == cpu.gpr[3])
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            if !ppc_memory_can_write_bytes(memory, records.data + 8, 14) {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let h = (cpu.gpr[4] as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            let v = (cpu.gpr[5] as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            process_input.set_mouse_position((v, h));
+            for global in [
+                crate::memory::globals::addr::M_TEMP,
+                crate::memory::globals::addr::MOUSE_LOC,
+                crate::memory::globals::addr::MOUSE_LOC2,
+            ] {
+                let _ =
+                    memory.write_u32_be(global, (u32::from(v as u16) << 16) | u32::from(h as u16));
+            }
+            let _ = memory.write_bytes(
+                records.data + 8,
+                &crate::cursor_manager::cursor_device_position_bytes((v, h)),
             );
-            Some(PpcImportAction::Return(ppc_i16_result(-1)))
+            let _ = memory.write_u8(records.data + 20, 1);
+            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::GetCursor => {
             let params = crate::cursor_manager::evaluate_get_cursor_parameters(cpu.gpr[3] as u16 as i16);

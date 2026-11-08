@@ -409,3 +409,73 @@ mod tests {
         assert_eq!(move_to.y, 200);
     }
 }
+
+// CursorDevices.h (Universal Interfaces 3.4.1) uses mac68k two-byte
+// alignment for these guest-visible records, including the long at data +22.
+pub(crate) const CURSOR_DEVICE_SIZE: usize = 138;
+pub(crate) const CURSOR_DATA_SIZE: usize = 70;
+pub(crate) const CURSOR_DATA_STORAGE_OFFSET: u32 = ((CURSOR_DEVICE_SIZE + 3) & !3) as u32;
+pub(crate) const CURSOR_DEVICE_STORAGE_SIZE: u32 =
+    CURSOR_DATA_STORAGE_OFFSET + CURSOR_DATA_SIZE as u32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CursorDeviceRecords {
+    pub(crate) device: u32,
+    pub(crate) data: u32,
+}
+
+impl CursorDeviceRecords {
+    pub(crate) fn from_storage(device: u32) -> Option<Self> {
+        if device == 0 {
+            return None;
+        }
+        device.checked_add(CURSOR_DEVICE_STORAGE_SIZE)?;
+        Some(Self {
+            device,
+            data: device + CURSOR_DATA_STORAGE_OFFSET,
+        })
+    }
+
+    pub(crate) fn initial_storage(self, position: (i16, i16), pressed: bool) -> Vec<u8> {
+        let mut bytes = vec![0; CURSOR_DEVICE_STORAGE_SIZE as usize];
+        bytes[4..8].copy_from_slice(&self.data.to_be_bytes());
+        bytes[20..24].copy_from_slice(&(72u32 << 16).to_be_bytes());
+        bytes[24] = 1; // kDeviceClassMouse
+        bytes[25] = 1;
+        bytes[27] = u8::from(pressed);
+        bytes[100..104].copy_from_slice(&30u32.to_be_bytes());
+        bytes[104..108].copy_from_slice(&(1u32 << 16).to_be_bytes());
+        let data = &mut bytes[CURSOR_DATA_STORAGE_OFFSET as usize..];
+        data[8..20].copy_from_slice(&cursor_device_position_bytes(position));
+        data[20] = 1;
+        data[21] = u8::from(pressed);
+        data[22..26].copy_from_slice(&72u32.to_be_bytes());
+        bytes
+    }
+}
+
+pub(crate) fn cursor_device_position_bytes((v, h): (i16, i16)) -> [u8; 12] {
+    let mut bytes = [0; 12];
+    bytes[..4].copy_from_slice(&((h as i32) << 16).to_be_bytes());
+    bytes[4..8].copy_from_slice(&((v as i32) << 16).to_be_bytes());
+    bytes[8..10].copy_from_slice(&v.to_be_bytes());
+    bytes[10..12].copy_from_slice(&h.to_be_bytes());
+    bytes
+}
+
+pub(crate) fn sync_classic_cursor_device(
+    bus: &mut crate::memory::MacMemoryBus,
+    input: &crate::process_context::SharedProcessInputState,
+) {
+    use crate::memory::MemoryBus;
+    if let Some(records) = input.cursor_device_records() {
+        let (position, pressed) = input.mouse_state_snapshot();
+        if bus.is_guest_address_writable(records.data + 8, 14)
+            && bus.is_guest_address_writable(records.device + 27, 1)
+        {
+            bus.write_bytes(records.data + 8, &cursor_device_position_bytes(position));
+            bus.write_byte(records.data + 21, u8::from(pressed));
+            bus.write_byte(records.device + 27, u8::from(pressed));
+        }
+    }
+}

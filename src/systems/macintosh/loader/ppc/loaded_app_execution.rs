@@ -2024,6 +2024,7 @@ impl PpcLoadedApp {
                                             collections: &collections,
                                             drag_manager: &drag_manager,
                                             input,
+                                            process_input: &process_input,
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
                                             });
@@ -2073,8 +2074,8 @@ impl PpcLoadedApp {
                     action
                 };
 
-                let cursor_device_move = binding.dispatcher_target
-                    == PpcImportDispatcherTarget::SystemCompatibility(
+                let cursor_device_move = binding.dispatcher_target == PpcImportDispatcherTarget::CrsrDevMoveTo
+                    || binding.dispatcher_target == PpcImportDispatcherTarget::SystemCompatibility(
                         PpcSystemCompatibilityOperation::CursorDeviceMove,
                     );
                 if (cursor_device_move || binding.dispatcher_target == PpcImportDispatcherTarget::GetMouse)
@@ -2090,6 +2091,12 @@ impl PpcLoadedApp {
                         input.mouse_v = v;
                         input.mouse_h = h;
                         process_input.set_mouse_position((v, h));
+                        if let Some(records) = process_input.cursor_device_records() {
+                            let _ = memory.write_bytes(
+                                records.data + 8,
+                                &crate::cursor_manager::cursor_device_position_bytes((v, h)),
+                            );
+                        }
                     }
                 }
                 ppc_sync_process_window_list(memory, &window_list);
@@ -2500,6 +2507,12 @@ impl PpcLoadedApp {
             if position != (input.mouse_v, input.mouse_h) {
                 ppc_rebase_mouse_warp(&mut input_sprocket, input, position);
                 self.process_input.set_mouse_position(position);
+                if let Some(records) = self.process_input.cursor_device_records() {
+                    let _ = self.memory.write_bytes(
+                        records.data + 8,
+                        &crate::cursor_manager::cursor_device_position_bytes(position),
+                    );
+                }
             }
         }
 

@@ -2791,6 +2791,7 @@ impl ProcessMixedModeM68kState {
 /// I (1985), pp. I-259--I-263 and I-273--I-275.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProcessInputState {
+    cursor_device_records: Option<crate::cursor_manager::CursorDeviceRecords>,
     mouse_pos: (i16, i16),
     mouse_button: bool,
     key_map: [u8; 16],
@@ -3005,6 +3006,19 @@ impl std::fmt::Debug for SharedProcessMixedModeM68kState {
 }
 
 impl SharedProcessInputState {
+    pub(crate) fn cursor_device_records(
+        &self,
+    ) -> Option<crate::cursor_manager::CursorDeviceRecords> {
+        self.with_ref(|state| state.cursor_device_records)
+    }
+
+    pub(crate) fn set_cursor_device_records(
+        &self,
+        records: crate::cursor_manager::CursorDeviceRecords,
+    ) {
+        self.with_mut(|state| state.cursor_device_records = Some(records));
+    }
+
     pub(crate) fn shared_handle(&self) -> Self {
         Self(self.0.shared_handle())
     }
