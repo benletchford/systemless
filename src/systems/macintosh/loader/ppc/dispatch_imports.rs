@@ -968,6 +968,8 @@ pub(crate) fn dispatch_supported_import(
             draw_sprocket,
             input,
             screen_clut,
+            color_manager_clut,
+            next_ct_seed: &mut toolbox_startup.next_ct_seed,
             screen_bits,
         },
     ) {

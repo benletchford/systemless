@@ -21,6 +21,8 @@ pub(super) struct PpcDrawSprocketDispatchContext<'a> {
     pub(super) draw_sprocket: &'a mut PpcDrawSprocketState,
     pub(super) input: PpcInputSnapshot,
     pub(super) screen_clut: &'a mut [[u16; 3]; 256],
+    pub(super) color_manager_clut: &'a mut [[u16; 3]; 256],
+    pub(super) next_ct_seed: &'a mut u32,
     /// QDGlobals.screenBits, when InitGraf has run.
     pub(super) screen_bits: Option<u32>,
 }
@@ -47,6 +49,8 @@ pub(super) fn dispatch_drawsprocket_import(
         draw_sprocket,
         input,
         screen_clut,
+        color_manager_clut,
+        next_ct_seed,
         screen_bits,
     } = context;
 
@@ -71,7 +75,13 @@ pub(super) fn dispatch_drawsprocket_import(
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         PpcImportDispatcherTarget::DSpShutdown => {
-            if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
+            if !ppc_dsp_restore_desktop(
+                memory,
+                gworlds,
+                screen_clut,
+                color_manager_clut,
+                draw_sprocket,
+            ) {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
             ppc_dsp_dispose_blanking_window(
@@ -163,7 +173,14 @@ pub(super) fn dispatch_drawsprocket_import(
             ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
         )),
         PpcImportDispatcherTarget::DSpContextRelease => {
-            let result = ppc_dsp_context_release(cpu, memory, gworlds, screen_clut, draw_sprocket);
+            let result = ppc_dsp_context_release(
+                cpu,
+                memory,
+                gworlds,
+                screen_clut,
+                color_manager_clut,
+                draw_sprocket,
+            );
             if result == PPC_NO_ERR {
                 ppc_dsp_dispose_blanking_window(
                     process_memory_manager,
@@ -189,6 +206,8 @@ pub(super) fn dispatch_drawsprocket_import(
                 memory,
                 gworlds,
                 screen_clut,
+                color_manager_clut,
+                next_ct_seed,
                 screen_bits,
                 draw_sprocket,
             );
@@ -232,6 +251,8 @@ pub(super) fn dispatch_drawsprocket_import(
                             memory,
                             gworlds,
                             screen_clut,
+                            color_manager_clut,
+                            next_ct_seed,
                             screen_bits,
                             draw_sprocket,
                         );
@@ -338,11 +359,20 @@ pub(super) fn dispatch_drawsprocket_import(
             )))
         }
         PpcImportDispatcherTarget::DSpContextSetClutEntries => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_set_clut_entries(cpu, memory, screen_clut)),
+            ppc_i16_result(ppc_dsp_context_set_clut_entries(
+                cpu,
+                memory,
+                screen_clut,
+                color_manager_clut,
+                next_ct_seed,
+                draw_sprocket,
+            )),
         )),
-        PpcImportDispatcherTarget::DSpContextGetClutEntries => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_get_clut_entries(cpu, memory, screen_clut)),
-        )),
+        PpcImportDispatcherTarget::DSpContextGetClutEntries => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_get_clut_entries(cpu, memory, screen_clut, draw_sprocket),
+            )))
+        }
         PpcImportDispatcherTarget::DSpContextGetDisplayID => {
             let display_id_out_ptr = cpu.gpr[4];
             if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
@@ -433,9 +463,11 @@ pub(super) fn dispatch_drawsprocket_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }
-        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_inval_back_rect(cpu, memory, draw_sprocket, gworlds)),
-        )),
+        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_dsp_context_inval_back_rect(cpu, memory, draw_sprocket, gworlds),
+            )))
+        }
         PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_set_underlay(cpu, draw_sprocket, gworlds)),
         )),
