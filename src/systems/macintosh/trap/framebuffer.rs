@@ -1115,23 +1115,25 @@ impl super::TrapDispatcher {
         let right = right.max(0).min(screen_width);
         if pixel_size == 8 {
             // Chrome restores the desktop around retained overlays every
-            // frame, so most rows already hold the pattern. Build each row
-            // once, leave rows that already hold it as plain pixels, and
+            // frame, so most rows already hold the pattern. Build the eight
+            // pattern phases once per call, retain already-plain rows, and
             // store the rest as one span.
-            let mut row = vec![0u8; (right - left).max(0) as usize];
-            if row.is_empty() {
+            if left >= right || top >= bottom {
                 return;
             }
+            let rows = crate::window_manager::STANDARD_DESKTOP_PATTERN.map(|pattern| {
+                (left..right)
+                    .map(|x| {
+                        let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
+                        if bit == 0 { light } else { dark }
+                    })
+                    .collect::<Vec<u8>>()
+            });
             for y in top..bottom {
-                let pattern =
-                    crate::window_manager::STANDARD_DESKTOP_PATTERN[y.rem_euclid(8) as usize];
-                for (x, pixel) in (left..right).zip(row.iter_mut()) {
-                    let bit = (pattern >> (7 - x.rem_euclid(8))) & 1;
-                    *pixel = if bit == 0 { light } else { dark };
-                }
+                let row = &rows[y.rem_euclid(8) as usize];
                 let address = screen_base + y as u32 * row_bytes + left as u32;
-                if !bus.span_holds_plain_bytes(address, &row) {
-                    bus.write_bytes(address, &row);
+                if !bus.span_holds_plain_bytes(address, row) {
+                    bus.write_bytes(address, row);
                 }
             }
             return;

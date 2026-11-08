@@ -1437,7 +1437,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
     }
 
     #[test]
-    fn hle_import_runner_copybits_converts_16bpp_to_8bpp() {
+    fn hle_import_runner_copybits_converts_16bpp_to_8bpp_without_stale_palette_indices() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();
         let scratch = PPC_HEAP_BASE + 0x12600;
@@ -1451,15 +1451,15 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
             &mut loaded.memory,
             src_pixmap,
             src_pixels,
-            4,
+            8,
             0,
             0,
             1,
-            2,
+            4,
             16,
         )
         .unwrap();
-        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 2, 0, 0, 1, 2, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 4, 0, 0, 1, 4, 8).unwrap();
         for index in 0..256u32 {
             let spec = PPC_MAIN_CTABLE + 8 + index * 8;
             loaded.memory.write_u16_be(spec, index as u16).unwrap();
@@ -1475,9 +1475,12 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
             .memory
             .write_u16_be(PPC_MAIN_CTABLE + 8 + 17 * 8 + 6, 0xffff)
             .unwrap();
-        loaded.memory.write_u16_be(src_pixels, 0x7c00).unwrap();
-        loaded.memory.write_u16_be(src_pixels + 2, 0x001f).unwrap();
-        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 2).unwrap();
+        // Repeated colors include RGB555's unused high bit. Every copy must
+        // still resolve against its own current palette snapshot.
+        for (index, pixel) in [0x7c00u16, 0xfc00, 0x001f, 0x801f].into_iter().enumerate() {
+            loaded.memory.write_u16_be(src_pixels + index as u32 * 2, pixel).unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 4).unwrap();
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -1489,7 +1492,21 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u8(dst_pixels), Some(42));
-        assert_eq!(loaded.memory.read_u8(dst_pixels + 1), Some(17));
+        assert_eq!(loaded.memory.read_u8(dst_pixels + 1), Some(42));
+        assert_eq!(loaded.memory.read_u8(dst_pixels + 2), Some(17));
+        assert_eq!(loaded.memory.read_u8(dst_pixels + 3), Some(17));
+
+        for (index, component, value) in [(42, 2, 0), (17, 6, 0), (71, 2, 0xffff), (99, 6, 0xffff)] {
+            loaded.memory.write_u16_be(PPC_MAIN_CTABLE + 8 + index * 8 + component, value).unwrap();
+        }
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        for (offset, expected) in [71u8, 71, 99, 99].into_iter().enumerate() {
+            assert_eq!(loaded.memory.read_u8(dst_pixels + offset as u32), Some(expected));
+        }
     }
 
     #[test]

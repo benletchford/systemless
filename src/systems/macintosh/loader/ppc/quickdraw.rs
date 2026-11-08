@@ -5348,6 +5348,12 @@ pub(crate) fn ppc_copy_bits(
             Some(storage)
         };
 
+        // The mask snapshot cannot change during this transfer. Decode its
+        // scanline intervals once, rather than allocating them per pixel.
+        let mut mask_rows = regions::PpcRegionRowCache::for_band(
+            mask_storage.as_deref(), copy_top as i16, copy_bottom as i16,
+        );
+
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-112–3-116
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics
         // ports and GWorlds, including indexed-color PixMaps. The import
@@ -5537,16 +5543,17 @@ pub(crate) fn ppc_copy_bits(
                 }),
                 (mask_storage.is_some() || transparent).then(|| {
                     crate::quickdraw::gpu::QuickDrawGpuBlitClip {
-                        coverage: mask_storage.as_ref().map(|storage| {
-                            (copy_top..copy_bottom)
-                                .flat_map(|y| {
-                                    (copy_left..copy_right).map(move |x| {
-                                        u8::from(ppc_point_in_region_storage(
-                                            storage, y as i16, x as i16,
-                                        ))
-                                    })
-                                })
-                                .collect()
+                        coverage: mask_storage.as_ref().map(|_| {
+                            let mut coverage = Vec::with_capacity(
+                                (copy_bottom - copy_top) as usize
+                                    * (copy_right - copy_left) as usize,
+                            );
+                            for y in copy_top..copy_bottom {
+                                for x in copy_left..copy_right {
+                                    coverage.push(u8::from(mask_rows.contains(y as i16, x as i16)));
+                                }
+                            }
+                            coverage
                         }),
                         transparent: transparent.then_some([
                             transparent_back_pixel,
@@ -5586,6 +5593,9 @@ pub(crate) fn ppc_copy_bits(
         let gpu_handled = gpu_writes.is_some();
         let mut writes = gpu_writes.unwrap_or_default();
         if !gpu_handled {
+            // This transfer owns one destination palette snapshot. Cache exact
+            // RGB555 conversions locally, with an out-of-range index sentinel.
+            let mut direct_index_cache: Option<Vec<u16>> = None;
             for dst_y in copy_top..copy_bottom {
                 let rel_y = i64::from(dst_y) - i64::from(dst_top);
                 let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
@@ -5602,9 +5612,7 @@ pub(crate) fn ppc_copy_bits(
                     else {
                         continue;
                     };
-                    if mask_storage.as_ref().is_some_and(|storage| {
-                        !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
-                    }) {
+                    if !mask_rows.contains(dst_y as i16, dst_x as i16) {
                         continue;
                     }
                     // The high byte of a classic 32-bit xRGB pixel is padding.
@@ -5682,12 +5690,19 @@ pub(crate) fn ppc_copy_bits(
                     } else if src_bits.depth == 16
                         && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
                     {
-                        let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
-                        u32::from(ppc_rgb_color_to_index_in_clut(
-                            PpcRgbColor { red, green, blue },
-                            dst_clut.as_ref()?,
-                            ppc_indexed_depth_entry_count(dst_bits.depth)?,
-                        ))
+                        let clut = dst_clut.as_ref()?;
+                        let indices = direct_index_cache
+                            .get_or_insert_with(|| vec![u16::MAX; 1 << 15]);
+                        let slot = &mut indices[(src_pixel & 0x7fff) as usize];
+                        if *slot == u16::MAX {
+                            let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
+                            *slot = u16::from(ppc_rgb_color_to_index_in_clut(
+                                PpcRgbColor { red, green, blue },
+                                clut,
+                                ppc_indexed_depth_entry_count(dst_bits.depth)?,
+                            ));
+                        }
+                        u32::from(*slot)
                     } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
                         && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
                     {
