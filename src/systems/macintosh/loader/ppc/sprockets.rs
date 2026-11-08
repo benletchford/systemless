@@ -103,6 +103,7 @@ pub struct PpcDrawSprocketState {
     pub vbl_proc: Option<u32>,
     pub vbl_refcon: Option<u32>,
     pub(crate) desktop_snapshot: Option<PpcDspDesktopSnapshot>,
+    pub(crate) context_clut: Option<[[u16; 3]; 256]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +111,8 @@ pub(crate) struct PpcDspDesktopSnapshot {
     screen_bytes: Vec<u8>,
     gdevice_bytes: Vec<u8>,
     screen_clut: [[u16; 3]; 256],
+    color_manager_clut: [[u16; 3]; 256],
+    color_table_storage: Vec<(u32, Vec<u8>)>,
     records: Vec<PpcGWorldRecord>,
     pixmaps: Vec<(u32, Vec<u8>)>,
     /// Screen geometry the game reads (main portRect, visRgn, GrayRgn and
@@ -148,6 +151,7 @@ impl Default for PpcDrawSprocketState {
             vbl_proc: None,
             vbl_refcon: None,
             desktop_snapshot: None,
+            context_clut: None,
         }
     }
 }
@@ -1729,6 +1733,7 @@ fn ppc_dsp_capture_desktop(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
+    color_manager_clut: &[[u16; 3]; 256],
     screen_bits: Option<u32>,
 ) -> Option<PpcDspDesktopSnapshot> {
     let screen_bytes =
@@ -1766,6 +1771,17 @@ fn ppc_dsp_capture_desktop(
         screen_bytes,
         gdevice_bytes,
         screen_clut: *screen_clut,
+        color_manager_clut: *color_manager_clut,
+        color_table_storage: vec![
+            (
+                PPC_MAIN_CTABLE_HANDLE,
+                ppc_memory_read_bytes(memory, PPC_MAIN_CTABLE_HANDLE, 4)?,
+            ),
+            (
+                PPC_MAIN_CTABLE,
+                ppc_memory_read_bytes(memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE)?,
+            ),
+        ],
         records,
         pixmaps,
         screen_geometry,
@@ -1776,6 +1792,7 @@ pub(crate) fn ppc_dsp_restore_desktop(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
     screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> bool {
     let Some(snapshot) = draw_sprocket.desktop_snapshot.as_ref() else {
@@ -1813,7 +1830,16 @@ pub(crate) fn ppc_dsp_restore_desktop(
             }
         }
     }
+    for (address, bytes) in &snapshot.color_table_storage {
+        if memory.write_bytes(*address, bytes).is_none() {
+            return false;
+        }
+    }
+    if draw_sprocket.context_attributes.display_depth == 8 {
+        draw_sprocket.context_clut = Some(*screen_clut);
+    }
     *screen_clut = snapshot.screen_clut;
+    *color_manager_clut = snapshot.color_manager_clut;
     draw_sprocket.desktop_snapshot = None;
     true
 }
@@ -1823,6 +1849,7 @@ pub(crate) fn ppc_dsp_context_release(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
     screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> i16 {
     let context = cpu.gpr[3];
@@ -1832,7 +1859,13 @@ pub(crate) fn ppc_dsp_context_release(
     if draw_sprocket.reserved_context != Some(context) {
         return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
     }
-    if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
+    if !ppc_dsp_restore_desktop(
+        memory,
+        gworlds,
+        screen_clut,
+        color_manager_clut,
+        draw_sprocket,
+    ) {
         return PPC_PARAM_ERR;
     }
     draw_sprocket.underlay_alt_buffer = 0;
@@ -1850,6 +1883,8 @@ pub(crate) fn ppc_dsp_context_set_state(
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
     screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    next_ct_seed: &mut u32,
     screen_bits: Option<u32>,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> i16 {
@@ -1868,12 +1903,27 @@ pub(crate) fn ppc_dsp_context_set_state(
         // adornments return and page flipping stops. Game Sprockets, 2-43.
         PpcDspContextPlayState::Active | PpcDspContextPlayState::Paused => {
             if draw_sprocket.desktop_snapshot.is_none() {
-                let Some(snapshot) =
-                    ppc_dsp_capture_desktop(memory, gworlds, screen_clut, screen_bits)
-                else {
+                let Some(snapshot) = ppc_dsp_capture_desktop(
+                    memory,
+                    gworlds,
+                    screen_clut,
+                    color_manager_clut,
+                    screen_bits,
+                ) else {
                     return PPC_PARAM_ERR;
                 };
                 draw_sprocket.desktop_snapshot = Some(snapshot);
+                if draw_sprocket.context_attributes.display_depth == 8
+                    && (!ppc_memory_can_write_bytes(memory, PPC_MAIN_CTABLE_HANDLE, 4)
+                        || !ppc_memory_can_write_bytes(
+                            memory,
+                            PPC_MAIN_CTABLE,
+                            PPC_MAIN_CTABLE_SIZE,
+                        ))
+                {
+                    draw_sprocket.desktop_snapshot = None;
+                    return PPC_PARAM_ERR;
+                }
                 if ppc_configure_dsp_framebuffers(
                     memory,
                     gworlds,
@@ -1889,8 +1939,37 @@ pub(crate) fn ppc_dsp_context_set_state(
                     )
                     .is_none()
                 {
-                    let _ = ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket);
+                    let _ = ppc_dsp_restore_desktop(
+                        memory,
+                        gworlds,
+                        screen_clut,
+                        color_manager_clut,
+                        draw_sprocket,
+                    );
                     return PPC_PARAM_ERR;
+                }
+                if draw_sprocket.context_attributes.display_depth == 8 {
+                    let colors = draw_sprocket.context_clut.unwrap_or(*screen_clut);
+                    if ppc_seed_main_color_table(memory).is_none()
+                        || !ppc_dsp_publish_clut(
+                            memory,
+                            screen_clut,
+                            color_manager_clut,
+                            next_ct_seed,
+                            0,
+                            &colors,
+                        )
+                    {
+                        let _ = ppc_dsp_restore_desktop(
+                            memory,
+                            gworlds,
+                            screen_clut,
+                            color_manager_clut,
+                            draw_sprocket,
+                        );
+                        return PPC_PARAM_ERR;
+                    }
+                    draw_sprocket.context_clut = Some(colors);
                 }
             }
             draw_sprocket.started = true;
@@ -1899,7 +1978,13 @@ pub(crate) fn ppc_dsp_context_set_state(
             draw_sprocket.context_state = state;
         }
         PpcDspContextPlayState::Inactive => {
-            if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
+            if !ppc_dsp_restore_desktop(
+                memory,
+                gworlds,
+                screen_clut,
+                color_manager_clut,
+                draw_sprocket,
+            ) {
                 return PPC_PARAM_ERR;
             }
             draw_sprocket.started = true;
@@ -2077,48 +2162,115 @@ pub(crate) fn ppc_dsp_present_back_buffer(
     true
 }
 
+/// Publish only the requested RGB components and a fresh seed. Device value
+/// flags and unrelated entries survive; all writes are preflighted atomically.
+fn ppc_dsp_publish_clut(
+    memory: &mut PpcSectionMem,
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    next_ct_seed: &mut u32,
+    start: usize,
+    colors: &[[u16; 3]],
+) -> bool {
+    if colors.is_empty() {
+        return true;
+    }
+    let Some(handle) = ppc_gdevice_ctable_handle(memory, PPC_MAIN_GDEVICE) else {
+        return false;
+    };
+    let Some(table) = memory.read_u32_be(handle).filter(|p| *p != 0) else {
+        return false;
+    };
+    let Some(last) = table.checked_add(6).and_then(|p| memory.read_u16_be(p)) else {
+        return false;
+    };
+    if start + colors.len() > usize::from(last) + 1 {
+        return false;
+    }
+    let seed = (*next_ct_seed).max(1024);
+    let mut writes = vec![(table, seed.to_be_bytes().to_vec())];
+    for (offset, color) in colors.iter().enumerate() {
+        let Some(address) = table.checked_add(10 + (start + offset) as u32 * 8) else {
+            return false;
+        };
+        writes.push((
+            address,
+            color.iter().flat_map(|v| v.to_be_bytes()).collect(),
+        ));
+    }
+    let ranges: Vec<_> = writes
+        .iter()
+        .map(|(address, bytes)| (*address, bytes.as_slice()))
+        .collect();
+    if !memory.try_write_ranges_atomic(&ranges) {
+        return false;
+    }
+    for (offset, color) in colors.iter().copied().enumerate() {
+        screen_clut[start + offset] = color;
+        color_manager_clut[start + offset] = color;
+    }
+    *next_ct_seed = seed.wrapping_add(1).max(1024);
+    true
+}
+
 pub(crate) fn ppc_dsp_context_set_clut_entries(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    next_ct_seed: &mut u32,
+    draw_sprocket: &mut PpcDrawSprocketState,
 ) -> i16 {
     if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
         return error;
     }
     let entries_ptr = cpu.gpr[4];
-    let starting_entry = usize::from(cpu.gpr[5] as u16);
-    let entry_count = usize::from(cpu.gpr[6] as u16);
-    let Some(end_entry) = starting_entry.checked_add(entry_count) else {
-        return PPC_PARAM_ERR;
-    };
-    if end_entry > screen_clut.len() {
+    let start = usize::from(cpu.gpr[5] as u16);
+    let count = usize::from(cpu.gpr[6] as u16);
+    if start + count > 256 {
         return PPC_PARAM_ERR;
     }
-    let Some(byte_count) = entry_count.checked_mul(8) else {
+    if count == 0 {
+        return PPC_NO_ERR;
+    }
+    if entries_ptr == 0 || !ppc_memory_can_read_bytes(memory, entries_ptr, count as u32 * 8) {
         return PPC_PARAM_ERR;
+    }
+    // Apple Game Sprockets Guide (1996), 2-70: a starting index plus an
+    // entry count. Stage the entire ColorSpec array before any aliased write.
+    let mut colors = Vec::with_capacity(count);
+    for offset in 0..count {
+        let entry = entries_ptr + offset as u32 * 8;
+        let (Some(red), Some(green), Some(blue)) = (
+            memory.read_u16_be(entry + 2),
+            memory.read_u16_be(entry + 4),
+            memory.read_u16_be(entry + 6),
+        ) else {
+            return PPC_PARAM_ERR;
+        };
+        colors.push([red, green, blue]);
+    }
+    let owns_display = draw_sprocket.desktop_snapshot.is_some()
+        && draw_sprocket.context_attributes.display_depth == 8;
+    let mut context_clut = if owns_display {
+        *screen_clut
+    } else {
+        draw_sprocket.context_clut.unwrap_or(*screen_clut)
     };
-    if byte_count != 0
-        && (entries_ptr == 0 || !ppc_memory_can_read_bytes(memory, entries_ptr, byte_count as u32))
+    if owns_display
+        && !ppc_dsp_publish_clut(
+            memory,
+            screen_clut,
+            color_manager_clut,
+            next_ct_seed,
+            start,
+            &colors,
+        )
     {
         return PPC_PARAM_ERR;
     }
-
-    // Inside Macintosh: Apple Game Sprockets Guide (1996),
-    // DSpContext_SetCLUTEntries, p. 2-70: inEntries is an array of ColorSpec
-    // records replacing a zero-based contiguous range of the context's CLUT.
-    for offset in 0..entry_count {
-        let entry_ptr = entries_ptr + (offset as u32) * 8;
-        let Some(red) = memory.read_u16_be(entry_ptr + 2) else {
-            return PPC_PARAM_ERR;
-        };
-        let Some(green) = memory.read_u16_be(entry_ptr + 4) else {
-            return PPC_PARAM_ERR;
-        };
-        let Some(blue) = memory.read_u16_be(entry_ptr + 6) else {
-            return PPC_PARAM_ERR;
-        };
-        screen_clut[starting_entry + offset] = [red, green, blue];
-    }
+    context_clut[start..start + count].copy_from_slice(&colors);
+    draw_sprocket.context_clut = Some(context_clut);
     PPC_NO_ERR
 }
 
@@ -2126,41 +2278,39 @@ pub(crate) fn ppc_dsp_context_get_clut_entries(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     screen_clut: &[[u16; 3]; 256],
+    draw_sprocket: &PpcDrawSprocketState,
 ) -> i16 {
-    // Apple Game Sprockets Guide (1996), Summary of DrawSprocket:
-    // OSStatus DSpContext_GetCLUTEntries(DSpContextReference, ColorSpec *, UInt16, UInt16).
     if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
         return error;
     }
     let entries_ptr = cpu.gpr[4];
-    let starting_entry = usize::from(cpu.gpr[5] as u16);
-    let entry_count = usize::from(cpu.gpr[6] as u16);
-    let Some(end_entry) = starting_entry.checked_add(entry_count) else {
-        return PPC_PARAM_ERR;
-    };
-    if end_entry > screen_clut.len() {
+    let start = usize::from(cpu.gpr[5] as u16);
+    let count = usize::from(cpu.gpr[6] as u16);
+    if start + count > 256 {
         return PPC_PARAM_ERR;
     }
-    let Some(byte_count) = entry_count.checked_mul(8) else {
+    if count == 0 {
+        return PPC_NO_ERR;
+    }
+    if entries_ptr == 0 || !ppc_memory_can_write_bytes(memory, entries_ptr, count as u32 * 8) {
         return PPC_PARAM_ERR;
-    };
-    if byte_count != 0
-        && (entries_ptr == 0 || !ppc_memory_can_write_bytes(memory, entries_ptr, byte_count as u32))
+    }
+    let colors = if draw_sprocket.desktop_snapshot.is_some()
+        && draw_sprocket.context_attributes.display_depth == 8
     {
-        return PPC_PARAM_ERR;
-    }
-    for offset in 0..entry_count {
-        let entry_ptr = entries_ptr + (offset as u32) * 8;
-        let [red, green, blue] = screen_clut[starting_entry + offset];
-        if memory
-            .write_u16_be(entry_ptr, (starting_entry + offset) as u16)
-            .is_none()
-            || memory.write_u16_be(entry_ptr + 2, red).is_none()
-            || memory.write_u16_be(entry_ptr + 4, green).is_none()
-            || memory.write_u16_be(entry_ptr + 6, blue).is_none()
-        {
-            return PPC_PARAM_ERR;
+        screen_clut
+    } else {
+        draw_sprocket.context_clut.as_ref().unwrap_or(screen_clut)
+    };
+    let mut bytes = Vec::with_capacity(count * 8);
+    for (offset, color) in colors[start..start + count].iter().enumerate() {
+        bytes.extend_from_slice(&((start + offset) as u16).to_be_bytes());
+        for component in color {
+            bytes.extend_from_slice(&component.to_be_bytes());
         }
+    }
+    if memory.write_bytes(entries_ptr, &bytes).is_none() {
+        return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
 }
