@@ -619,7 +619,7 @@ use crate::sound::PendingSoundCallback;
                 &test_handle_records!(loaded),
                 &mut loaded.sound,
             ),
-            PPC_NO_ERR
+            Ok(channel)
         );
         assert!(loaded.sound.file_playbacks.is_empty());
         assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
@@ -740,7 +740,7 @@ use crate::sound::PendingSoundCallback;
                 &test_handle_records!(loaded),
                 &mut loaded.sound,
             ),
-            PPC_NO_ERR
+            Ok(channel)
         );
         assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 2);
         assert_eq!(loaded.sound.manager.channel_has_queued_commands(channel), Some(true));
@@ -2504,4 +2504,74 @@ fn parse_aiff_header_rejects_malformed_forms_and_chunk_offsets() {
     let mut trailing = valid;
     trailing.extend_from_slice(b"ignored bytes outside FORM");
     assert!(ppc_parse_aiff_header_fields(&trailing).is_some());
+}
+
+#[test]
+fn synchronous_snd_play_waits_once_and_preserves_async_and_nil_contracts() {
+    use super::super::sound::PpcSynchronousSoundOwner;
+    use super::super::dispatch_sound::ppc_dispatch_synchronous_snd_play;
+    use crate::execution_kernel::ExecutionTaskId;
+    for (channel, asynchronous, should_wait) in [(0, 0, true), (0, 1, true), (0x05001000, 0, true), (0x05001000, 1, false)] {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let handle = PPC_DATA_BASE + 0x1100;
+        let ptr = PPC_DATA_BASE + 0x1200;
+        let mut resource = vec![0; 40];
+        write_u16(&mut resource, 0, 2);
+        write_u16(&mut resource, 4, 1);
+        write_u16(&mut resource, 6, 0x8050);
+        write_u32(&mut resource, 10, 14);
+        write_u32(&mut resource, 18, 4);
+        write_u32(&mut resource, 22, crate::sound::OUTPUT_RATE << 16);
+        resource[35] = 60;
+        resource[36..].copy_from_slice(&[0xa0; 4]);
+        loaded.memory.add_region(handle, ptr.to_be_bytes().to_vec());
+        loaded.memory.add_region(ptr, resource.clone());
+        test_handles!(loaded).push(PpcHandleRecord {handle, ptr, size: 40, capacity: 40});
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = handle;
+        loaded.cpu.gpr[5] = asynchronous;
+        let owner = PpcSynchronousSoundOwner {task: ExecutionTaskId::APPLICATION, call: None, stack: 0x1000, import_pc: 0x2000};
+        let dispatch = |loaded: &mut PpcLoadedApp| ppc_dispatch_synchronous_snd_play(
+            &loaded.cpu, &mut loaded.memory, &test_handle_records!(loaded), &mut loaded.sound, owner);
+        let first = dispatch(&mut loaded);
+        assert_eq!(matches!(first, PpcImportAction::Yield(_)), should_wait);
+        assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
+        if should_wait {
+            for _ in 0..3 {
+                assert!(matches!(dispatch(&mut loaded), PpcImportAction::Yield(_)));
+                assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
+            }
+            let nested_owner = PpcSynchronousSoundOwner {stack: owner.stack - 32, ..owner};
+            let other_task = PpcSynchronousSoundOwner {task: ExecutionTaskId::from_thread_id(42), ..owner};
+            if channel != 0 {
+                for nested in [nested_owner, other_task] {
+                    let result = ppc_dispatch_synchronous_snd_play(&loaded.cpu, &mut loaded.memory,
+                        &test_handle_records!(loaded), &mut loaded.sound, nested);
+                    assert!(matches!(result, PpcImportAction::Yield(_)));
+                }
+                assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 3);
+            }
+            loaded.sound.manager.mix_frame(4);
+            loaded.sound.manager.mix_frame(1);
+            assert!(matches!(dispatch(&mut loaded), PpcImportAction::Return(0)));
+            if channel != 0 {
+                assert_eq!(loaded.sound.manager.channel_busy(channel), Some(true));
+                for nested in [nested_owner, other_task] {
+                    assert!(matches!(ppc_dispatch_synchronous_snd_play(&loaded.cpu, &mut loaded.memory,
+                        &test_handle_records!(loaded), &mut loaded.sound, nested), PpcImportAction::Yield(_)));
+                    loaded.sound.manager.mix_frame(4);
+                    loaded.sound.manager.mix_frame(1);
+                    assert!(matches!(ppc_dispatch_synchronous_snd_play(&loaded.cpu, &mut loaded.memory,
+                        &test_handle_records!(loaded), &mut loaded.sound, nested), PpcImportAction::Return(0)));
+                }
+            }
+            assert!(loaded.sound.synchronous_waits.is_empty());
+            assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, if channel == 0 {1} else {3});
+        } else {
+            assert!(loaded.sound.synchronous_waits.is_empty());
+        }
+        loaded.cpu.gpr[4] = 0;
+        assert!(matches!(dispatch(&mut loaded), PpcImportAction::Return(result) if result == ppc_i16_result(-204)));
+        assert!(loaded.sound.synchronous_waits.is_empty());
+    }
 }
