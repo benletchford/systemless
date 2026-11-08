@@ -1240,9 +1240,10 @@ impl Presentation {
             pixels.clear();
             pixels.reserve((self.logical_width() * self.height * scale * scale * 4) as usize);
             self.render_scaled(scale, |rgb, count| {
-                pixels.extend(
-                    std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], count as usize).flatten(),
-                );
+                let pixel = [rgb[0], rgb[1], rgb[2], 255];
+                for _ in 0..count {
+                    pixels.extend_from_slice(&pixel);
+                }
             });
             *cache = Some(ResolvedOutputCache {
                 source: self.visible_image.clone(),
