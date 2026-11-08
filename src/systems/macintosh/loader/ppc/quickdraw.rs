@@ -5593,6 +5593,9 @@ pub(crate) fn ppc_copy_bits(
         let gpu_handled = gpu_writes.is_some();
         let mut writes = gpu_writes.unwrap_or_default();
         if !gpu_handled {
+            // This transfer owns one destination palette snapshot. Cache exact
+            // RGB555 conversions locally, with an out-of-range index sentinel.
+            let mut direct_index_cache: Option<Vec<u16>> = None;
             for dst_y in copy_top..copy_bottom {
                 let rel_y = i64::from(dst_y) - i64::from(dst_top);
                 let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
@@ -5687,12 +5690,19 @@ pub(crate) fn ppc_copy_bits(
                     } else if src_bits.depth == 16
                         && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
                     {
-                        let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
-                        u32::from(ppc_rgb_color_to_index_in_clut(
-                            PpcRgbColor { red, green, blue },
-                            dst_clut.as_ref()?,
-                            ppc_indexed_depth_entry_count(dst_bits.depth)?,
-                        ))
+                        let clut = dst_clut.as_ref()?;
+                        let indices = direct_index_cache
+                            .get_or_insert_with(|| vec![u16::MAX; 1 << 15]);
+                        let slot = &mut indices[(src_pixel & 0x7fff) as usize];
+                        if *slot == u16::MAX {
+                            let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
+                            *slot = u16::from(ppc_rgb_color_to_index_in_clut(
+                                PpcRgbColor { red, green, blue },
+                                clut,
+                                ppc_indexed_depth_entry_count(dst_bits.depth)?,
+                            ));
+                        }
+                        u32::from(*slot)
                     } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
                         && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
                     {

@@ -3038,9 +3038,10 @@ impl MacMemoryBus {
         {
             return false;
         }
-        let changed = !self
-            .untraced_ram_slice(address, data.len())
-            .is_some_and(|previous| previous == data);
+        // The gates above already prove a readable local RAM span and no
+        // read observer. Reuse that proof instead of routing the same row
+        // again; the store and presentation update below are unchanged.
+        let changed = self.ram_slice(translated, data.len() as u32) != data;
         self.note_bulk_store(translated, data.len() as u32);
         self.ram.write_bytes_in_bounds(translated as usize, data);
         if changed {
