@@ -208,7 +208,15 @@ pub(crate) fn ppc_peek_event(
             true,
         );
     }
-    (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
+    (
+        0,
+        0,
+        tick_count,
+        input.mouse_v,
+        input.mouse_h,
+        ppc_current_event_modifiers(input),
+        false,
+    )
 }
 
 pub(crate) fn ppc_dequeue_event(
@@ -230,7 +238,15 @@ pub(crate) fn ppc_dequeue_event(
             true,
         );
     }
-    (0, 0, tick_count, input.mouse_v, input.mouse_h, 0, false)
+    (
+        0,
+        0,
+        tick_count,
+        input.mouse_v,
+        input.mouse_h,
+        ppc_current_event_modifiers(input),
+        false,
+    )
 }
 
 pub(crate) fn ppc_enqueue_window_update_event(

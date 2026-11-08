@@ -799,7 +799,7 @@ fn os_event_accessors_skip_toolbox_and_high_level_events() {
     assert_eq!(queue[1].what, 23);
     assert_eq!(
         ppc_peek_event(&queue, u16::MAX, PpcInputSnapshot::default(), true, 7),
-        (0, 0, 7, 0, 0, 0, false)
+        (0, 0, 7, 0, 0, 0x0080, false)
     );
 }
 
@@ -1001,6 +1001,73 @@ fn hle_import_runner_posts_events_through_sys_evt_mask_low_memory() {
 }
 
 #[test]
+fn null_event_polls_track_current_button_and_modifier_state() {
+    // Apple's Carbon Porting Guide (2002), Appendix B, p. 102:
+    // OSEventAvail returns current modifiers even when it returns a null event.
+    for symbol in [
+        "GetOSEvent",
+        "OSEventAvail",
+        "GetNextEvent",
+        "EventAvail",
+        "WaitNextEvent",
+    ] {
+        let pef = synthetic_pef_with_import(symbol.as_bytes());
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let event_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(event_ptr, vec![0xaa; 16]);
+        let queued = PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 11,
+            where_v: 12,
+            where_h: 13,
+            modifiers: 0x0200,
+        };
+        loaded.set_event_queue([queued.clone()]);
+        let target = dispatcher_target_for_import("InterfaceLib", symbol);
+        // Include mouse-down/up and keyboard transitions without posting a
+        // matching event. The pending mouse event must survive keyboard polls.
+        for (pressed, keys, expected) in [
+            (false, &[][..], 0x0080),
+            (true, &[][..], 0),
+            (true, &[0x37_u8, 0x38, 0x39, 0x3a, 0x3b][..], 0x1f00),
+            (false, &[0x3c, 0x3d, 0x3e][..], 0x1a80),
+            (false, &[][..], 0x0080),
+        ] {
+            let mut input = PpcInputSnapshot {
+                mouse_button: pressed,
+                mouse_v: 123,
+                mouse_h: 456,
+                ..PpcInputSnapshot::default()
+            };
+            for &key in keys {
+                input.key_map[usize::from(key >> 3)] |= 1 << (key & 7);
+            }
+            loaded.set_input_snapshot(input);
+            for mask in [0, 0x0038] {
+                loaded.cpu.gpr[3] = mask;
+                loaded.cpu.gpr[4] = event_ptr;
+                loaded.cpu.gpr[5] = 0;
+                loaded.cpu.gpr[6] = 0;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(loaded.cpu.gpr[3], 0, "{symbol}");
+                assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(0));
+                assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(0));
+                assert_eq!(loaded.memory.read_u16_be(event_ptr + 10), Some(123));
+                assert_eq!(loaded.memory.read_u16_be(event_ptr + 12), Some(456));
+                assert_eq!(
+                    loaded.memory.read_u16_be(event_ptr + 14),
+                    Some(expected),
+                    "{symbol}"
+                );
+                assert_eq!(loaded.event_queue().front(), Some(queued.clone()));
+                assert_eq!(loaded.event_queue().len(), 1);
+            }
+        }
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_event_button_and_exit_utilities() {
     let pef = synthetic_pef_with_import(b"GetNextEvent");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1026,7 +1093,7 @@ fn hle_import_runner_handles_event_button_and_exit_utilities() {
     assert_eq!(loaded.memory.read_u32_be(event_ptr + 6), Some(0));
     assert_eq!(loaded.memory.read_u16_be(event_ptr + 10), Some(123));
     assert_eq!(loaded.memory.read_u16_be(event_ptr + 12), Some(456));
-    assert_eq!(loaded.memory.read_u16_be(event_ptr + 14), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(event_ptr + 14), Some(0x0080));
 
     let pef = synthetic_pef_with_import(b"GetNextEvent");
     let mut loaded = load_pef_application(&pef).unwrap();
