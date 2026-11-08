@@ -13,6 +13,7 @@
 //! - `raster` — region-row algebra, shape spans and pattern rectangle
 //!   fills shared by the 68K trap path and the PowerPC import path.
 
+pub(crate) mod color;
 pub mod fonts;
 pub mod gpu;
 pub(crate) mod raster;

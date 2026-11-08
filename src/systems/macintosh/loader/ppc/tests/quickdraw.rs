@@ -7879,3 +7879,67 @@ fn eraserect_uses_backpat_and_mono_pixpat_at_every_supported_depth() {
         }
     }
 }
+
+#[test]
+fn ppc_hsl2rgb_supports_overlapping_buffers_and_preserves_neighbors() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x2000, vec![0x5a; 16]);
+    for destination in [0x2002, 0x2004, 0x2008] {
+        memory.write_u16_be(0x2002, 0x5555).unwrap();
+        memory.write_u16_be(0x2004, 0xffff).unwrap();
+        memory.write_u16_be(0x2006, 0x7fff).unwrap();
+        assert!(ppc_hsl2rgb(&mut memory, 0x2002, destination));
+        for (offset, value) in [(0, 0), (2, 0xfffe), (4, 0)] {
+            assert_eq!(memory.read_u16_be(destination + offset), Some(value));
+        }
+        assert_eq!(memory.read_u16_be(0x2000), Some(0x5a5a));
+        assert_eq!(memory.read_u16_be(0x200e), Some(0x5a5a));
+    }
+}
+
+#[test]
+fn ppc_hsl2rgb_rejects_invalid_buffers_without_partial_writes() {
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x2000, vec![0x5a; 16]);
+    for (source, destination) in [
+        (0, 0x2008),
+        (0x2000, 0),
+        (u32::MAX - 2, 0x2008),
+        (0x2000, u32::MAX - 2),
+        (0x200c, 0x2008),
+        (0x2000, 0x200c),
+    ] {
+        assert!(!ppc_hsl2rgb(&mut memory, source, destination));
+        for offset in (0..16).step_by(2) {
+            assert_eq!(memory.read_u16_be(0x2000 + offset), Some(0x5a5a));
+        }
+    }
+}
+
+#[test]
+fn ppc_hsl2rgb_import_dispatches_and_preserves_argument_registers() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"HSL2RGB")).unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::HSL2RGB
+    );
+    let color = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(color, vec![0x5a; 10]);
+    loaded.memory.write_u16_be(color + 2, 0xaaaa).unwrap();
+    loaded.memory.write_u16_be(color + 4, 0xffff).unwrap();
+    loaded.memory.write_u16_be(color + 6, 0x7fff).unwrap();
+    loaded.cpu.gpr[3] = color + 2;
+    loaded.cpu.gpr[4] = color + 2;
+    loaded.cpu.gpr[5] = 0x12345678;
+    let stack = loaded.cpu.gpr[1];
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HSL2RGB);
+    assert_eq!(loaded.cpu.gpr[1], stack);
+    assert_eq!(loaded.cpu.gpr[3], color + 2);
+    assert_eq!(loaded.cpu.gpr[4], color + 2);
+    assert_eq!(loaded.cpu.gpr[5], 0x12345678);
+    assert_eq!(loaded.memory.read_u16_be(color), Some(0x5a5a));
+    assert_eq!(loaded.memory.read_u16_be(color + 2), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(color + 4), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(color + 6), Some(0xfffe));
+    assert_eq!(loaded.memory.read_u16_be(color + 8), Some(0x5a5a));
+}

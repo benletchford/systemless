@@ -1964,6 +1964,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PmBackColor
         | PpcImportDispatcherTarget::Color2Index
         | PpcImportDispatcherTarget::Index2Color
+        | PpcImportDispatcherTarget::HSL2RGB
         | PpcImportDispatcherTarget::RGB2HSL
         | PpcImportDispatcherTarget::RGB2HSV
         | PpcImportDispatcherTarget::HSV2RGB
