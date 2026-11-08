@@ -369,6 +369,17 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::CurResFile => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_guest_resource_refnum(memory, *current_resource_refnum),
         ))),
+        PpcImportDispatcherTarget::LMGetCurMap => Some(PpcImportAction::Return(ppc_i16_result(
+            memory.read_u16_be(PPC_CUR_RES_FILE_ADDR).unwrap_or(0) as i16,
+        ))),
+        PpcImportDispatcherTarget::LMSetCurMap => {
+            let guest_refnum = cpu.gpr[3] as u16 as i16;
+            *current_resource_refnum = ppc_internal_resource_refnum(memory, guest_refnum);
+            // Raw low-memory accessors preserve the caller's word, including
+            // zero, rather than expanding the internal application alias.
+            let _ = memory.write_u16_be(PPC_CUR_RES_FILE_ADDR, guest_refnum as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::UseResFile => {
             let refnum = ppc_internal_resource_refnum(memory, cpu.gpr[3] as u16 as i16);
             ppc_set_current_resource_refnum(
