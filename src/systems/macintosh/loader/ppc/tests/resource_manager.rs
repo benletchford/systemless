@@ -433,9 +433,9 @@ fn launched_application_resource_reference_is_usable_by_file_manager() {
 #[test]
 fn hle_import_runner_lm_get_cur_map_reads_shared_signed_reference_without_error_changes() {
     assert_eq!(dispatcher_target_for_import("InterfaceLib", "LMGetCurMap"),
-        PpcImportDispatcherTarget::CurResFile);
+        PpcImportDispatcherTarget::LMGetCurMap);
     assert_eq!(dispatcher_target_for_import("CarbonLib", "LMGetCurMap"),
-        PpcImportDispatcherTarget::CurResFile);
+        PpcImportDispatcherTarget::LMGetCurMap);
     assert_eq!(dispatcher_target_for_import("OtherLibrary", "LMGetCurMap"),
         PpcImportDispatcherTarget::Unsupported);
     for reference in [7i16, -1, i16::MIN] {
@@ -650,4 +650,66 @@ fn resource_materialization_applies_changed_attributes_only_when_loading_data() 
         assert_eq!(mem_error, PPC_NO_ERR);
         assert_eq!(res_error, PPC_NO_ERR);
     });
+}
+
+#[test]
+fn lm_set_cur_map_preserves_raw_signed_word_and_resource_error() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMSetCurMap"),
+        PpcImportDispatcherTarget::LMSetCurMap
+    );
+    for library in ["CarbonLib", "OtherLibrary"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "LMSetCurMap"),
+            PpcImportDispatcherTarget::Unsupported
+        );
+    }
+    for reference in [0i16, 7, -1, i16::MIN, i16::MAX, 42] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMSetCurMap")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::LMSetCurMap
+        );
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::CUR_APREF_NUM, 42)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(PPC_CUR_RES_FILE_ADDR - 2, 0x1357)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(PPC_CUR_RES_FILE_ADDR + 2, 0x2468)
+            .unwrap();
+        loaded.set_test_resource_error(-192);
+        let argument = 0xabcd0000 | u32::from(reference as u16);
+        loaded.cpu.gpr[3] = argument;
+        loaded.cpu.gpr[4] = 0x12345678;
+        let stack = loaded.cpu.gpr[1];
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetCurMap);
+        assert_eq!(loaded.cpu.gpr[3], argument);
+        assert_eq!(loaded.cpu.gpr[4], 0x12345678);
+        assert_eq!(loaded.cpu.gpr[1], stack);
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_CUR_RES_FILE_ADDR),
+            Some(reference as u16)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_CUR_RES_FILE_ADDR - 2),
+            Some(0x1357)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_CUR_RES_FILE_ADDR + 2),
+            Some(0x2468)
+        );
+        assert_eq!(
+            *loaded.process_file_system.current_resource_file,
+            if reference == 42 { 0 } else { reference }
+        );
+        assert_eq!(loaded.test_resource_error(), -192);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetCurMap);
+        assert_eq!(loaded.cpu.gpr[3], reference as i32 as u32);
+        assert_eq!(loaded.test_resource_error(), -192);
+    }
 }

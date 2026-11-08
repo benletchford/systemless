@@ -1832,6 +1832,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PBOpen
         | PpcImportDispatcherTarget::PBHOpenDF
         | PpcImportDispatcherTarget::PBHOpenDeny
+        | PpcImportDispatcherTarget::LMGetCurMap
+        | PpcImportDispatcherTarget::LMSetCurMap
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile

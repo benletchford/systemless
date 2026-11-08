@@ -80,6 +80,8 @@ pub enum PpcImportDispatcherTarget {
     PurgeMemSys,
     MemError,
     CurResFile,
+    LMGetCurMap,
+    LMSetCurMap,
     UseResFile,
     CloseResFile,
     OpenResFile,
@@ -1600,6 +1602,10 @@ pub(crate) fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
+    if library_name == "CarbonLib" && symbol_name == "LMSetCurMap" {
+        // LowMem.h declares this accessor only for non-Carbon CFM.
+        return PpcImportDispatcherTarget::Unsupported;
+    }
     // CarbonLib also exports the MathLib (fp.h) entry points with the same
     // PowerPC floating-point ABI. A CarbonLib symbol that InterfaceLib does
     // not implement resolves through MathLib when MathLib implements it.
@@ -3165,7 +3171,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TempMaxMem") => PpcImportDispatcherTarget::TempMaxMem,
         ("InterfaceLib", "TempTopMem") => PpcImportDispatcherTarget::TempTopMem,
         ("InterfaceLib", "MemError" | "LMGetMemErr") => PpcImportDispatcherTarget::MemError,
-        ("InterfaceLib", "CurResFile" | "LMGetCurMap") => PpcImportDispatcherTarget::CurResFile,
+        ("InterfaceLib", "CurResFile") => PpcImportDispatcherTarget::CurResFile,
+        ("InterfaceLib", "LMGetCurMap") => PpcImportDispatcherTarget::LMGetCurMap,
+        ("InterfaceLib", "LMSetCurMap") => PpcImportDispatcherTarget::LMSetCurMap,
         ("InterfaceLib", "UseResFile") => PpcImportDispatcherTarget::UseResFile,
         ("InterfaceLib", "CloseResFile") => PpcImportDispatcherTarget::CloseResFile,
         ("InterfaceLib", "OpenResFile") => PpcImportDispatcherTarget::OpenResFile,
