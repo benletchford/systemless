@@ -563,6 +563,32 @@ pub(super) fn dispatch_time_import(context: PpcTimeDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetTimeBaseInfo => {
+            // DriverServices.h (PowerSurge 1.0.2 / QuickTime 6.0.2): void,
+            // five UInt32 output pointers in r3-r7, not a returned structure.
+            // AbsoluteTime uses microseconds, as UpTime and the conversions
+            // do. Processor cycles use the same scale as ppc_virtual_microseconds.
+            let outputs = [cpu.gpr[3], cpu.gpr[4], cpu.gpr[5], cpu.gpr[6], cpu.gpr[7]];
+            if outputs
+                .iter()
+                .all(|&p| p != 0 && ppc_memory_can_write_bytes(memory, p, 4))
+            {
+                let numerator = PPC_MICROSECONDS_PER_TICK as u32;
+                let denominator = cycles_per_tick.max(1);
+                let (mut a, mut b) = (numerator, denominator);
+                while b != 0 {
+                    (a, b) = (b, a % b);
+                }
+                for (output, value) in
+                    outputs
+                        .into_iter()
+                        .zip([1, 1_000, 1, numerator / a, denominator / a])
+                {
+                    let _ = memory.write_u32_be(output, value);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::Microseconds => {
             ppc_write_microseconds(cpu, memory, tick_count);
             Some(PpcImportAction::ReturnPreserve)

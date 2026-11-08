@@ -873,6 +873,7 @@ pub enum PpcImportDispatcherTarget {
     LMGetUTableBase,
     SecondsToDate,
     Microseconds,
+    GetTimeBaseInfo,
     AbsoluteToNanoseconds,
     NanosecondsToAbsolute,
     AddAbsoluteToAbsolute,
@@ -5175,6 +5176,7 @@ pub(crate) fn dispatcher_target_for_import(
         // AbsoluteTime is hardware-relative. Use the virtual microsecond
         // clock as its unit so this struct-returning call stays deterministic.
         ("InterfaceLib" | "DriverServicesLib", "UpTime") => PpcImportDispatcherTarget::Microseconds,
+        ("DriverServicesLib", "GetTimeBaseInfo") => PpcImportDispatcherTarget::GetTimeBaseInfo,
         ("InterfaceLib" | "DriverServicesLib", "AbsoluteToNanoseconds") => {
             PpcImportDispatcherTarget::AbsoluteToNanoseconds
         }

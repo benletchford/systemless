@@ -2190,3 +2190,86 @@ fn cfm_private_connection_query_enumerates_connections() {
         assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(selected));
     }
 }
+
+#[test]
+fn driver_services_time_base_info_is_dynamically_callable_and_coherent() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindSymbol")).unwrap();
+    let scratch = PPC_HEAP_BASE + 0x100;
+    loaded.memory.add_region(scratch, vec![0xa5; 256]);
+    write_ppc_pstring(&mut loaded.memory, scratch + 32, b"GetTimeBaseInfo");
+    loaded
+        .cfm
+        .as_mut()
+        .unwrap()
+        .connections
+        .push(PpcCfmConnection {
+            references: 1,
+            container: None,
+            sections: Vec::new(),
+            id: 7,
+            library_name: "DriverServicesLib".into(),
+            main_addr: 0,
+            init_addr: 0,
+            term_addr: 0,
+            exports: Vec::new(),
+        });
+    loaded.cpu.gpr[3] = 7;
+    loaded.cpu.gpr[4] = scratch + 32;
+    loaded.cpu.gpr[5] = scratch;
+    loaded.cpu.gpr[6] = scratch + 8;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let vector = loaded.memory.read_u32_be(scratch).unwrap();
+    assert_ne!(vector, 0);
+    assert_eq!(loaded.memory.read_u8(scratch + 8), Some(2));
+
+    loaded.cpu.pc = loaded.memory.read_u32_be(vector).unwrap();
+    loaded.cpu.gpr[2] = loaded.memory.read_u32_be(vector + 4).unwrap();
+    loaded.cpu.lr = PPC_HALT_PC;
+    let outputs = [64, 72, 80, 88, 96].map(|offset| scratch + offset);
+    for (register, output) in (3..8).zip(outputs) {
+        loaded.cpu.gpr[register] = output;
+    }
+    loaded.set_clock_cycle_timing(25 * PPC_MICROSECONDS_PER_TICK as u32, 0);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], outputs[0], "void ABI must preserve r3");
+    let values = outputs.map(|p| loaded.memory.read_u32_be(p).unwrap());
+    assert_eq!(values, [1, 1_000, 1, 1, 25]);
+    for p in outputs {
+        assert_eq!(loaded.memory.read_u32_be(p + 4), Some(0xa5a5_a5a5));
+    }
+    let absolute_delta = ppc_virtual_microseconds(0, 415_625, 0, 415_625);
+    assert_eq!(
+        absolute_delta,
+        415_625 * u64::from(values[3]) / u64::from(values[4])
+    );
+    assert_eq!(
+        absolute_delta * u64::from(values[1]) / u64::from(values[2]),
+        16_625_000
+    );
+}
+
+#[test]
+fn driver_services_time_base_info_does_not_partially_write_invalid_outputs() {
+    for invalid in 0..5 {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"DriverServicesLib",
+            b"GetTimeBaseInfo",
+        ))
+        .unwrap();
+        let scratch = PPC_HEAP_BASE + 0x100;
+        loaded.memory.add_region(scratch, vec![0xa5; 64]);
+        for i in 0..5 {
+            loaded.cpu.gpr[3 + i] = scratch + i as u32 * 8;
+        }
+        loaded.cpu.gpr[3 + invalid] = u32::MAX - 1;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        for i in 0..64 {
+            assert_eq!(loaded.memory.read_u8(scratch + i), Some(0xa5));
+        }
+    }
+}

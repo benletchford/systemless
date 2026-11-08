@@ -3432,6 +3432,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DateToSeconds
         | PpcImportDispatcherTarget::Microseconds
         | PpcImportDispatcherTarget::OtElapsed { .. }
+        | PpcImportDispatcherTarget::GetTimeBaseInfo
         | PpcImportDispatcherTarget::AbsoluteToNanoseconds
         | PpcImportDispatcherTarget::NanosecondsToAbsolute
         | PpcImportDispatcherTarget::AddAbsoluteToAbsolute
