@@ -3294,8 +3294,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
-        ("InterfaceLib", "CrsrDevNextDevice") => PpcImportDispatcherTarget::CrsrDevNextDevice,
-        ("InterfaceLib", "CrsrDevMoveTo") => PpcImportDispatcherTarget::CrsrDevMoveTo,
+        ("InterfaceLib", "CrsrDevNextDevice" | "CursorDeviceNextDevice") => {
+            PpcImportDispatcherTarget::CrsrDevNextDevice
+        }
+        ("InterfaceLib", "CrsrDevMoveTo" | "CursorDeviceMoveTo") => {
+            PpcImportDispatcherTarget::CrsrDevMoveTo
+        }
         ("InterfaceLib", "GetCursor") => PpcImportDispatcherTarget::GetCursor,
         ("InterfaceLib", "SetCursor") => PpcImportDispatcherTarget::SetCursor,
         ("InterfaceLib", "GetCCursor") => PpcImportDispatcherTarget::GetCCursor,

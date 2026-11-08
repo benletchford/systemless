@@ -14723,7 +14723,8 @@ impl super::TrapDispatcher {
             // functions selected by MOVEQ #selector,D0; _CursorDeviceDispatch.
             // Stack cleanup still depends on the selected routine's argument
             // byte count.
-            // CursorDeviceDispatch ($AADB): Returns noErr and consumes selector-specific args
+            // The aggregate mouse is shared with native Cursor Device calls.
+            // Movement and enumeration keep the selector-specific Pascal ABI.
             (true, 0x2DB) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
@@ -14736,16 +14737,112 @@ impl super::TrapDispatcher {
                     _ => 0,
                 };
 
-                if matches!(selector, 11 | 12) {
-                    let device_ptr_ptr = bus.read_long(sp);
-                    if device_ptr_ptr != 0 {
-                        bus.write_long(device_ptr_ptr, 0);
+                let result: i16 = match selector {
+                    11 => {
+                        let out = bus.read_long(sp);
+                        if out == 0 || !bus.is_guest_address_writable(out, 4) {
+                            -50
+                        } else {
+                            let current = bus.read_long(out);
+                            if current == 0 {
+                                let records = if let Some(records) =
+                                    self.input_state.cursor_device_records()
+                                {
+                                    Some(records)
+                                } else {
+                                    let allocation = bus
+                                        .alloc(crate::cursor_manager::CURSOR_DEVICE_STORAGE_SIZE);
+                                    crate::cursor_manager::CursorDeviceRecords::from_storage(
+                                        allocation,
+                                    )
+                                    .map(|records| {
+                                        bus.write_bytes(
+                                            records.device,
+                                            &records.initial_storage(
+                                                self.input_state.mouse_position(),
+                                                self.input_state.mouse_button_pressed(),
+                                            ),
+                                        );
+                                        self.input_state.set_cursor_device_records(records);
+                                        records
+                                    })
+                                };
+                                if let Some(records) = records {
+                                    crate::cursor_manager::sync_classic_cursor_device(
+                                        bus,
+                                        &self.input_state,
+                                    );
+                                    bus.write_long(out, records.device);
+                                    0
+                                } else {
+                                    -108
+                                }
+                            } else if self
+                                .input_state
+                                .cursor_device_records()
+                                .is_some_and(|records| records.device == current)
+                            {
+                                bus.write_long(out, 0);
+                                0
+                            } else {
+                                -50
+                            }
+                        }
                     }
-                }
+                    0 | 1 => {
+                        // Pascal pushes device, x, y in that order.
+                        let device = bus.read_long(sp + 8);
+                        if let Some(records) = self
+                            .input_state
+                            .cursor_device_records()
+                            .filter(|records| records.device == device)
+                        {
+                            if bus.is_guest_address_writable(records.data + 8, 14)
+                                && bus.is_guest_address_writable(records.device + 27, 1)
+                            {
+                                let (old_v, old_h) = self.input_state.mouse_position();
+                                let x = bus.read_long(sp + 4) as i32 as i64;
+                                let y = bus.read_long(sp) as i32 as i64;
+                                let h = (x + if selector == 0 { i64::from(old_h) } else { 0 })
+                                    .clamp(i16::MIN as i64, i16::MAX as i64)
+                                    as i16;
+                                let v = (y + if selector == 0 { i64::from(old_v) } else { 0 })
+                                    .clamp(i16::MIN as i64, i16::MAX as i64)
+                                    as i16;
+                                self.input_state.set_mouse_position((v, h));
+                                for global in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+                                    bus.write_long(
+                                        global,
+                                        (u32::from(v as u16) << 16) | u32::from(h as u16),
+                                    );
+                                }
+                                crate::cursor_manager::sync_classic_cursor_device(
+                                    bus,
+                                    &self.input_state,
+                                );
+                                bus.write_byte(records.data + 20, u8::from(selector == 1));
+                                0
+                            } else {
+                                -50
+                            }
+                        } else {
+                            -50
+                        }
+                    }
+                    _ => {
+                        if selector == 12 {
+                            let out = bus.read_long(sp);
+                            if out != 0 {
+                                bus.write_long(out, 0);
+                            }
+                        }
+                        0
+                    }
+                };
 
-                bus.write_word(sp + arg_bytes, 0);
+                bus.write_word(sp + arg_bytes, result as u16);
                 cpu.write_reg(Register::A7, sp + arg_bytes);
-                cpu.write_reg(Register::D0, 0);
+                cpu.write_reg(Register::D0, result as i32 as u32);
                 Ok(())
             }
 

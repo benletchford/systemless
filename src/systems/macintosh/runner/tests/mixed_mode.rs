@@ -2664,3 +2664,90 @@ fn native_control_executes_original_classic_definition_and_returns_to_caller() {
     assert_eq!(*native.current_gdevice, original_device);
     assert!(native.guest_calls().is_empty());
 }
+
+#[test]
+fn cursor_device_enumeration_and_warps_share_records_across_mixed_mode() {
+    use crate::loader::ppc::tests::synthetic_pef_with_import;
+    const NEXT: u32 = PPC_HEAP_BASE + 0x2000;
+    const MOVE: u32 = NEXT + 8;
+    const OUT: u32 = PPC_DATA_BASE + 0x1000;
+    let mut native =
+        load_pef_application(&synthetic_pef_with_import(b"CallUniversalProc")).unwrap();
+    native.memory.add_region(OUT, vec![0; 16]);
+    native.memory.add_region(
+        NEXT,
+        [0x700bu16, 0xaedb, 0x4e71, 0x4e71, 0x7001, 0xaedb]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect(),
+    );
+    native.set_heap_cursor(native.heap_cursor().max(MOVE + 4));
+    native.cpu.gpr[3] = NEXT;
+    native.cpu.gpr[4] = 0xe0; // Pascal OSErr (two bytes), one pointer argument.
+    native.cpu.gpr[5] = OUT;
+    let mut runner = FixtureRunner::new(64 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&LoadedApp::from_ppc(native));
+    runner.set_mouse_position(40, 60);
+    let (_, running) = runner.run_steps(256, None);
+    assert!(!running);
+    let app = runner.native.application_mut().unwrap();
+    assert_eq!(app.cpu.gpr[3], 0);
+    let device = app.memory.read_u32_be(OUT).unwrap();
+    assert_ne!(device, 0);
+    let data = app.memory.read_u32_be(device + 4).unwrap();
+    assert_eq!(runner.bus.read_long(device + 4), data);
+
+    fn import(runner: &mut FixtureRunner, name: &str, args: &[u32]) {
+        // Each synthetic call returns to halt_pc; explicitly start the next call.
+        runner.halted = false;
+        let app = runner.native.application_mut().unwrap();
+        app.imports[0] = test_ppc_import_binding(0, "InterfaceLib", name);
+        app.imports[0].trap_pc = app.import_trap_base;
+        app.imports[0].dispatcher_target = match name {
+            "CrsrDevNextDevice" => PpcImportDispatcherTarget::CrsrDevNextDevice,
+            "CrsrDevMoveTo" => PpcImportDispatcherTarget::CrsrDevMoveTo,
+            "CallUniversalProc" => PpcImportDispatcherTarget::CallUniversalProc,
+            _ => panic!("unexpected fixture import {name}"),
+        };
+        app.cpu.pc = app.import_trap_base;
+        app.cpu.lr = app.halt_pc;
+        for (i, value) in args.iter().enumerate() {
+            app.cpu.gpr[3 + i] = *value;
+        }
+    }
+    import(&mut runner, "CrsrDevNextDevice", &[OUT + 4]);
+    let (_, running) = runner.run_steps(256, None);
+    assert!(!running);
+    assert_eq!(
+        runner
+            .native
+            .application_mut()
+            .unwrap()
+            .memory
+            .read_u32_be(OUT + 4),
+        Some(device)
+    );
+
+    import(&mut runner, "CrsrDevMoveTo", &[device, 321, 123]);
+    let (_, running) = runner.run_steps(256, None);
+    assert!(!running);
+    assert_eq!(runner.dispatcher.input_state.mouse_position(), (123, 321));
+    assert_eq!(runner.bus.read_long(data + 16), (123 << 16) | 321);
+
+    import(
+        &mut runner,
+        "CallUniversalProc",
+        &[MOVE, 0xfe0, device, 17, (-5i32) as u32],
+    );
+    let (_, running) = runner.run_steps(256, None);
+    assert!(!running);
+    assert_eq!(runner.dispatcher.input_state.mouse_position(), (-5, 17));
+    let app = runner.native.application_mut().unwrap();
+    assert_eq!(app.cpu.gpr[3], 0);
+    assert_eq!(app.current_input_snapshot().mouse_h, 17);
+    assert_eq!(app.memory.read_u32_be(data + 8), Some(17 << 16));
+    assert_eq!(
+        app.memory.read_u32_be(data + 12),
+        Some(((-5i32) << 16) as u32)
+    );
+}

@@ -20070,25 +20070,99 @@ fn controlstripdispatch_unknown_selector_returns_paramerr_and_consumes_encoded_a
 
 // CursorDeviceDispatch ($AADB) — selector in D0, Pascal args on stack.
 #[test]
-fn cursordevicenextdevice_consumes_pointer_arg_and_clears_result() {
+fn cursordevicenextdevice_enumerates_the_physical_mouse_and_ends_the_chain() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
-    let device_slot = sp + 0x40;
+    let slot = sp + 0x40;
+    disp.input_state.set_mouse_state((100, 200), true);
+    bus.write_long(slot, 0);
+    for first in [true, false] {
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 11);
+        bus.write_long(sp, slot);
+        bus.write_word(sp + 4, 0xBEEF);
+        assert!(disp
+            .dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        if first {
+            let device = bus.read_long(slot);
+            assert_ne!(device, 0);
+            assert_eq!(bus.read_long(device), 0);
+            assert_eq!(bus.read_byte(device + 24), 1);
+            assert_eq!(bus.read_byte(device + 25), 1);
+            let data = bus.read_long(device + 4);
+            assert_eq!(bus.read_long(data + 8), 200 << 16);
+            assert_eq!(bus.read_long(data + 12), 100 << 16);
+            assert_eq!(bus.read_long(data + 16), (100 << 16) | 200);
+            assert_eq!(bus.read_byte(data + 21), 1);
+            assert_eq!(bus.read_long(data + 22), 72);
+        } else {
+            assert_eq!(bus.read_long(slot), 0);
+        }
+    }
+}
 
+#[test]
+fn cursordevice_moves_decode_pascal_arguments_and_preserve_other_record_fields() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let slot = sp + 0x40;
+    bus.write_long(slot, 0);
+    bus.write_long(sp, slot);
     cpu.write_reg(Register::A7, sp);
-    cpu.write_reg(Register::D0, 0x0000_000B);
-    bus.write_long(sp, device_slot);
-    bus.write_word(sp + 4, 0xBEEF);
-    bus.write_long(device_slot, 0x1111_2222);
-
-    let result = disp.dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus);
-    assert!(result.is_some());
-    assert!(result.unwrap().is_ok());
-
-    assert_eq!(cpu.read_reg(Register::D0), 0);
-    assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-    assert_eq!(bus.read_word(sp + 4), 0);
-    assert_eq!(bus.read_long(device_slot), 0);
+    cpu.write_reg(Register::D0, 11);
+    assert!(disp
+        .dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    let device = bus.read_long(slot);
+    let data = bus.read_long(device + 4);
+    bus.write_long(device + 8, 0x12345678);
+    bus.write_word(data + 26, 0xABCD);
+    for (selector, x, y, expected) in [
+        (1, 300i32, -20i32, (-20i16, 300i16)),
+        (0, -40, 5, (-15, 260)),
+    ] {
+        bus.write_long(sp, y as u32);
+        bus.write_long(sp + 4, x as u32);
+        bus.write_long(sp + 8, device);
+        bus.write_word(sp + 12, 0xBEEF);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, selector);
+        assert!(disp
+            .dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0);
+        let (v, h) = expected;
+        assert_eq!(disp.input_state.mouse_position(), expected);
+        for global in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            assert_eq!(
+                bus.read_long(global),
+                (u32::from(v as u16) << 16) | u32::from(h as u16)
+            );
+        }
+        assert_eq!(bus.read_long(data + 8), ((h as i32) << 16) as u32);
+        assert_eq!(bus.read_long(data + 12), ((v as i32) << 16) as u32);
+        assert_eq!(bus.read_byte(data + 20), u8::from(selector == 1));
+        assert_eq!(bus.read_long(device + 8), 0x12345678);
+        assert_eq!(bus.read_word(data + 26), 0xABCD);
+    }
+    let before = bus.read_long(addr::MOUSE_LOC2);
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 1);
+    bus.write_long(sp + 8, 0);
+    assert!(disp
+        .dispatch_toolbox(true, 0x2DB, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(sp + 12), (-50i16) as u16);
+    assert_eq!(bus.read_long(addr::MOUSE_LOC2), before);
 }
 
 #[test]

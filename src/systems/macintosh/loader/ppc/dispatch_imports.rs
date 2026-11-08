@@ -118,6 +118,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) collections: &'a SharedProcessCollectionManager,
     pub(crate) drag_manager: &'a SharedProcessDragManager,
     pub(crate) input: PpcInputSnapshot,
+    pub(crate) process_input: &'a crate::process_context::SharedProcessInputState,
     pub(crate) event_queue: &'a mut EventQueue,
     pub(crate) draw_sprocket: &'a mut PpcDrawSprocketState,
 }
@@ -243,6 +244,7 @@ pub(crate) fn dispatch_supported_import(
         collections,
         drag_manager,
         input,
+        process_input,
         event_queue,
         draw_sprocket,
     } = context;
@@ -1352,6 +1354,7 @@ pub(crate) fn dispatch_supported_import(
             gworlds,
             current_gworld: *current_gworld,
             screen_clut,
+            process_input,
         })
     {
         return Some(action);
