@@ -47,7 +47,6 @@ pub(crate) enum DecompressError {
     BadChunk(u8),
     BadBackReference(usize),
     LengthMismatch { expected: usize, actual: usize },
-    ExtraData,
     ValueOutOfRange,
 }
 
@@ -301,9 +300,9 @@ fn decompress_dcmp0(data: &[u8], decompressed_len: usize) -> Result<Vec<u8>, Dec
             }
             0xFE => decode_extended_dcmp0(&mut r, &mut out, decompressed_len)?,
             0xFF => {
-                if !r.is_eof() {
-                    return Err(DecompressError::ExtraData);
-                }
+                // dcmp 0 terminates at this command, not at the end of the
+                // resource's storage. Word-aligned resources can retain a
+                // second 0xFF; no bytes after the terminator are commands.
                 if out.len() != decompressed_len {
                     return Err(DecompressError::LengthMismatch {
                         expected: decompressed_len,
@@ -471,10 +470,6 @@ impl<'a> Reader<'a> {
         Self { data, pos: 0 }
     }
 
-    fn is_eof(&self) -> bool {
-        self.pos == self.data.len()
-    }
-
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], DecompressError> {
         let end = self
             .pos
@@ -561,6 +556,33 @@ mod tests {
         let decompressed = decompress_if_needed(0x01, &data).unwrap().unwrap();
 
         assert_eq!(decompressed, b"ABCD");
+    }
+
+    #[test]
+    fn dcmp0_stops_at_terminator_before_storage_end() {
+        for tail in [&[0xFF][..], &[0x01, 0x41, 0x42, 0xFF][..]] {
+            let mut body = vec![0x02, b'A', b'B', b'C', b'D', 0xFF];
+            body.extend_from_slice(tail);
+            let data = compressed_resource(4, &body);
+            assert_eq!(decompress_if_needed(0x01, &data).unwrap().unwrap(), b"ABCD");
+        }
+    }
+
+    #[test]
+    fn dcmp0_terminator_still_requires_declared_output_length() {
+        let data = compressed_resource(6, &[0x02, b'A', b'B', b'C', b'D', 0xFF, 0xFF]);
+        assert_eq!(
+            decompress_if_needed(0x01, &data),
+            Err(DecompressError::LengthMismatch {
+                expected: 6,
+                actual: 4
+            })
+        );
+        let unterminated = compressed_resource(4, &[0x02, b'A', b'B', b'C', b'D']);
+        assert_eq!(
+            decompress_if_needed(0x01, &unterminated),
+            Err(DecompressError::Truncated)
+        );
     }
 
     #[test]
