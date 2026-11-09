@@ -133,7 +133,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 86 | 273 | MacSnake | PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 87 | 274 | Tetris Max | 68K + PPC verified slices | U | [Archive index](https://www.vintageapplemac.com/software/games/t/) |
 | 88 | 275 | [Oxyd](catalogue/oxyd.md) | 68K: thirteen CODE resources, no PPC fragment | P | [Original 3.8 copying permission, native input and four private browser windows; released route pending](https://github.com/benletchford/systemless/issues/5900) |
-| 89 | 276 | per-oxyd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 89 | 276 | [Per.Oxyd](catalogue/per-oxyd.md) | 68K: thirteen CODE resources, no PPC fragment | P | [Original 4.6 copying permission and native mouse/control evidence; browser pending](https://github.com/benletchford/systemless/issues/5902) |
 | 90 | 277 | Lode Runner 2 | PPC lead | D | [Demo index](https://classicmacdemos.com/lode-runner-2); [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 91 | 278 | Mantra | Original 1.02 68K; private native/browser approved; released replay pending | P | [Original grant and qualification](catalogue/mantra.md); [#5656](https://github.com/benletchford/systemless/issues/5656) |
 | 92 | 279 | Mantra II | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
