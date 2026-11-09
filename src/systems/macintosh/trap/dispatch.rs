@@ -1393,9 +1393,8 @@ pub struct TrapDispatcher {
     standalone_memory_manager: SharedProcessMemoryManager,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: FastHashMap<u32, MovieState>,
-    /// Maps a movie-controller component instance to the Movie it drives, set
-    /// by MCNewAttachedController so MCDoAction can start the right movie.
-    pub(crate) movie_by_controller: FastHashMap<u32, u32>,
+    /// Classic movie-controller state, shared by Toolbox and component calls.
+    pub(crate) movie_controllers: FastHashMap<u32, ClassicMovieController>,
     /// Movie Toolbox current error value for GetMoviesError.
     pub(crate) movie_error: i16,
     /// Movie Toolbox sticky error value for GetMoviesStickyError.
@@ -2397,8 +2396,18 @@ pub struct TrapDispatcher {
 
 pub(crate) type ResourceFileMap = ProcessResourceFileMap;
 
-/// Synthetic Movie Toolbox state for Movie handles returned by
-/// NewMovieFromFile/NewMovie-style traps.
+/// State owned by a classic movie-controller component instance.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClassicMovieController {
+    pub movie: u32,
+    pub bounds: (i16, i16, i16, i16),
+    pub port: u32,
+    pub creation_flags: u32,
+    pub control_flags: u32,
+    pub keys_enabled: bool,
+}
+
+/// Movie Toolbox state for NewMovieFromFile/NewMovie handles.
 #[derive(Clone, Debug)]
 pub(crate) struct MovieState {
     pub box_rect: (i16, i16, i16, i16),
@@ -3849,7 +3858,7 @@ impl TrapDispatcher {
             process_memory_manager: None,
             standalone_memory_manager: SharedProcessMemoryManager::default(),
             movie_states: HashMap::default(),
-            movie_by_controller: HashMap::default(),
+            movie_controllers: HashMap::default(),
             movie_error: 0,
             movie_sticky_error: 0,
             dialogs_drawn_by_app: std::collections::HashSet::default(),

@@ -5274,6 +5274,366 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn new_classic_movie_controller(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        movie: u32,
+        rect: u32,
+        flags: u32,
+    ) -> (u32, i16) {
+        if rect == 0 || rect.checked_add(8).is_none_or(|end| end > bus.ram_size()) {
+            return (0, -50);
+        }
+        let Some(state) = self.movie_states.get(&movie) else {
+            return (0, -2010);
+        };
+        let bounds = read_movie_box(bus, rect).unwrap();
+        let (width, height) = (
+            i32::from(state.box_rect.3) - i32::from(state.box_rect.1),
+            i32::from(state.box_rect.2) - i32::from(state.box_rect.0),
+        );
+        let (available_width, available_height) = (
+            i32::from(bounds.3) - i32::from(bounds.1),
+            i32::from(bounds.2) - i32::from(bounds.0),
+        );
+        if width <= 0 || height <= 0 || available_width <= 0 || available_height <= 0 {
+            return (0, -50);
+        }
+        // Preserve aspect ratio; mcScaleMovieToFit permits enlargement.
+        let (mut numerator, mut denominator) = if i64::from(available_width) * i64::from(height)
+            <= i64::from(available_height) * i64::from(width)
+        {
+            (i64::from(available_width), i64::from(width))
+        } else {
+            (i64::from(available_height), i64::from(height))
+        };
+        if flags & 2 == 0 && numerator > denominator {
+            numerator = 1;
+            denominator = 1;
+        }
+        let (w, h) = (
+            (i64::from(width) * numerator / denominator).max(1) as i32,
+            (i64::from(height) * numerator / denominator).max(1) as i32,
+        );
+        let left = i32::from(bounds.1)
+            + if flags & 1 != 0 {
+                0
+            } else {
+                (available_width - w) / 2
+            };
+        let top = i32::from(bounds.0)
+            + if flags & 1 != 0 {
+                0
+            } else {
+                (available_height - h) / 2
+            };
+        let instance = self.next_synthetic_component_instance;
+        let Some(next) = instance.checked_add(1) else {
+            return (0, -108);
+        };
+        self.next_synthetic_component_instance = next;
+        self.synthetic_component_instances.insert(instance);
+        let current_port = *self.current_port;
+        let state = self.movie_states.get_mut(&movie).unwrap();
+        if state.gworld_port == 0 {
+            state.gworld_port = current_port;
+        }
+        state.box_rect = (top as i16, left as i16, (top + h) as i16, (left + w) as i16);
+        state.rendered_sample = None;
+        if super::dispatch::trace_quicktime_enabled() {
+            eprintln!(
+                "[QUICKTIME] NewMovieController movie=${movie:08X} controller=${instance:08X} bounds={bounds:?} flags=${flags:08X}"
+            );
+        }
+        self.movie_controllers.insert(
+            instance,
+            super::dispatch::ClassicMovieController {
+                movie,
+                bounds,
+                port: state.gworld_port,
+                creation_flags: flags,
+                control_flags: 0,
+                keys_enabled: false,
+            },
+        );
+        (instance, 0)
+    }
+
+    fn dispose_classic_movie_controller(&mut self, instance: u32) {
+        self.movie_controllers.remove(&instance);
+        self.synthetic_component_instances.remove(&instance);
+    }
+
+    fn draw_classic_movie_controller(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        instance: u32,
+        window: u32,
+    ) -> i32 {
+        let Some(controller) = self.movie_controllers.get(&instance).copied() else {
+            return -3000;
+        };
+        let Some(movie) = self.movie_states.get_mut(&controller.movie) else {
+            return -2010;
+        };
+        if window == 0
+            || window
+                .checked_add(18)
+                .is_none_or(|end| end > bus.ram_size())
+        {
+            return -50;
+        }
+        if window != movie.gworld_port || !movie.active {
+            return 0;
+        }
+        let time = movie.current_time;
+        if movie.media.is_none() {
+            return 0;
+        } // Audio-only movies have no video to repaint.
+        movie.rendered_sample = None; // Explicit damage repair must bypass the sample cache.
+        self.render_movie_frame(bus, controller.movie, time);
+        if self.movie_states[&controller.movie]
+            .rendered_sample
+            .is_some()
+        {
+            0
+        } else {
+            -8961
+        }
+    }
+
+    fn classic_movie_controller_action(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        instance: u32,
+        action: u16,
+        param: u32,
+    ) -> i32 {
+        let Some(controller) = self.movie_controllers.get(&instance).copied() else {
+            return -3000;
+        };
+        if !self.movie_states.contains_key(&controller.movie) {
+            return -2010;
+        }
+        let movie_id = controller.movie;
+        let writable = |size: u32| {
+            param != 0
+                && param
+                    .checked_add(size)
+                    .is_some_and(|end| end <= bus.ram_size())
+        };
+        match action {
+            1 => {
+                self.advance_and_render_movie(bus, movie_id, self.current_tick());
+                0
+            }
+            2 => self.draw_classic_movie_controller(bus, instance, param),
+            8 => {
+                let now = self.current_tick();
+                let movie = self.movie_states.get_mut(&movie_id).unwrap();
+                movie.rate = param as i32; // A zero rate stops playback.
+                movie.last_service_tick = Some(now);
+                0
+            }
+            12 => {
+                if !writable(16) {
+                    return -50;
+                }
+                let value = ((u64::from(bus.read_long(param)) << 32)
+                    | u64::from(bus.read_long(param + 4))) as i64;
+                let scale = bus.read_long(param + 8) as i32;
+                let base = bus.read_long(param + 12);
+                if scale <= 0 || (base != 0 && base != movie_id) {
+                    return -50;
+                }
+                let movie = self.movie_states.get_mut(&movie_id).unwrap();
+                movie.current_time = (i128::from(value.max(0)) * i128::from(movie.time_scale)
+                    / i128::from(scale))
+                .min(i128::from(movie.duration)) as i32;
+                movie.audio_time = f64::from(movie.current_time) / f64::from(movie.time_scale);
+                movie.rendered_sample = None;
+                0
+            }
+            14 => {
+                self.movie_states.get_mut(&movie_id).unwrap().volume = param as i16;
+                0
+            }
+            15 => {
+                if !writable(2) {
+                    return -50;
+                }
+                bus.write_word(param, self.movie_states[&movie_id].volume as u16);
+                0
+            }
+            32 => {
+                self.movie_controllers
+                    .get_mut(&instance)
+                    .unwrap()
+                    .keys_enabled = param as u8 != 0;
+                0
+            }
+            33 => {
+                if !writable(1) {
+                    return -50;
+                }
+                bus.write_byte(param, u8::from(controller.keys_enabled));
+                0
+            }
+            38 => {
+                self.movie_controllers
+                    .get_mut(&instance)
+                    .unwrap()
+                    .control_flags = param;
+                0
+            }
+            39 => {
+                if !writable(4) {
+                    return -50;
+                }
+                bus.write_long(param, controller.control_flags);
+                0
+            }
+            42 => {
+                if !writable(4) {
+                    return -50;
+                }
+                bus.write_long(param, self.movie_states[&movie_id].rate as u32);
+                0
+            }
+            _ => -3000,
+        }
+    }
+
+    fn classic_movie_controller_call(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        instance: u32,
+        selector: u16,
+        size: u32,
+        sp: u32,
+    ) -> i32 {
+        match (selector, size) {
+            (9, 6) => {
+                let action = bus.read_word(sp + 8);
+                let param = bus.read_long(sp + 4);
+                let result = self.classic_movie_controller_action(bus, instance, action, param);
+                if super::dispatch::trace_quicktime_enabled() && action != 1 {
+                    eprintln!(
+                        "[QUICKTIME] ControllerAction instance=${instance:08X} action={action} param=${param:08X} result={result}"
+                    );
+                }
+                result
+            }
+            (0x1A, 0) => {
+                let result = self.classic_movie_controller_action(bus, instance, 1, 0);
+                if result == 0 { 1 } else { result }
+            }
+            (0x18, 4) => {
+                let window = bus.read_long(sp + 4);
+                let result = self.draw_classic_movie_controller(bus, instance, window);
+                if result != 0 {
+                    return result;
+                }
+                i32::from(
+                    self.movie_controllers
+                        .get(&instance)
+                        .and_then(|c| self.movie_states.get(&c.movie))
+                        .is_some_and(|m| m.active && m.gworld_port == window),
+                )
+            }
+            (0x0D, 0) => self
+                .movie_controllers
+                .get(&instance)
+                .map_or(-3000, |c| c.port as i32),
+            (0x0E, 0) => self
+                .movie_controllers
+                .get(&instance)
+                .map_or(-3000, |c| i32::from(c.creation_flags & 8 == 0)),
+            (0x0F, 2) => {
+                let Some(controller) = self.movie_controllers.get_mut(&instance) else {
+                    return -3000;
+                };
+                if bus.read_word(sp + 4) != 0 {
+                    controller.creation_flags &= !8;
+                } else {
+                    controller.creation_flags |= 8;
+                }
+                0
+            }
+            (0x10, 4) => {
+                let out = bus.read_long(sp + 4);
+                let Some(controller) = self.movie_controllers.get(&instance) else {
+                    return -3000;
+                };
+                if out == 0 || out.checked_add(8).is_none_or(|end| end > bus.ram_size()) {
+                    return -50;
+                }
+                write_movie_box(bus, out, controller.bounds);
+                0
+            }
+            (0x14, 4) => {
+                let Some(controller) = self.movie_controllers.get(&instance) else {
+                    return -3000;
+                };
+                if bus.read_long(sp + 4) != controller.movie {
+                    return -2010;
+                }
+                let Some(movie) = self.movie_states.get_mut(&controller.movie) else {
+                    return -2010;
+                };
+                movie.rendered_sample = None;
+                0
+            }
+            (0x17, 12) => {
+                // QuickTime Components (1993), pp. 2-30--2-31.
+                if !self.synthetic_component_instances.contains(&instance) {
+                    return -3000;
+                }
+                let movie_id = bus.read_long(sp + 12);
+                let window = bus.read_long(sp + 8);
+                let port = if window == 0 {
+                    *self.current_port
+                } else {
+                    window
+                };
+                let top = bus.read_word(sp + 4) as i16;
+                let left = bus.read_word(sp + 6) as i16;
+                let Some(movie) = self.movie_states.get_mut(&movie_id) else {
+                    return -2010;
+                };
+                let width = i32::from(movie.box_rect.3) - i32::from(movie.box_rect.1);
+                let height = i32::from(movie.box_rect.2) - i32::from(movie.box_rect.0);
+                let (Ok(right), Ok(bottom)) = (
+                    i16::try_from(i32::from(left) + width),
+                    i16::try_from(i32::from(top) + height),
+                ) else {
+                    return -50;
+                };
+                if width <= 0 || height <= 0 {
+                    return -50;
+                }
+                movie.box_rect = (top, left, bottom, right);
+                movie.gworld_port = port;
+                movie.rendered_sample = None;
+                let previous = self.movie_controllers.get(&instance).copied();
+                self.movie_controllers.insert(
+                    instance,
+                    super::dispatch::ClassicMovieController {
+                        movie: movie_id,
+                        bounds: movie.box_rect,
+                        port,
+                        creation_flags: previous.map_or(0, |c| c.creation_flags & !8),
+                        control_flags: previous.map_or(0, |c| c.control_flags),
+                        keys_enabled: previous.is_some_and(|c| c.keys_enabled),
+                    },
+                );
+                0
+            }
+            (9 | 0x1A | 0x18 | 0x10 | 0x14 | 0x17, _) => -50,
+            _ => 0, // Other Component Manager protocols retain their existing dispatch.
+        }
+    }
+
     /// Advance the clock of every active, playing movie by the real guest
     /// time elapsed since it was last serviced, then decode and blit the frame
     /// due at the new movie time. Called from MoviesTask and the movie
@@ -5281,51 +5641,54 @@ impl super::TrapDispatcher {
     /// straight to the movie's end.
     fn advance_and_render_active_movies(&mut self, bus: &mut MacMemoryBus) {
         let now = self.current_tick();
-        let movie_ptrs: Vec<u32> = self.movie_states.keys().copied().collect();
-        for movie in movie_ptrs {
-            let (finished, target_time, has_video) = {
-                let Some(state) = self.movie_states.get_mut(&movie) else {
-                    continue;
-                };
-                if !state.active || state.rate == 0 {
-                    // Not playing: reset the service clock so the next Start
-                    // measures elapsed time from resume, not from load.
-                    state.last_service_tick = Some(now);
-                    continue;
-                }
-                let last = state.last_service_tick.unwrap_or(now);
-                let elapsed_ticks = now.saturating_sub(last);
-                state.last_service_tick = Some(now);
-                // Guest ticks run at 60 Hz; the movie time scale is units per
-                // second. rate is a Fixed (16.16) multiplier on real time.
-                let units_per_tick = (state.time_scale as i64 * state.rate as i64) / (60 * 65536);
-                let advance = units_per_tick.saturating_mul(elapsed_ticks as i64);
-                let mut new_time = state.current_time as i64 + advance;
-                let mut finished = false;
-                if new_time >= state.duration as i64 {
-                    if state.time_base_flags & 1 != 0 {
-                        new_time %= state.duration.max(1) as i64;
-                    } else {
-                        new_time = state.duration as i64;
-                        finished = true;
-                    }
-                }
-                state.current_time = new_time.clamp(0, state.duration as i64) as i32;
-                let has_video = state.media.as_ref().is_some_and(|m| {
-                    matches!(&m.codec, b"cvid" | b"rle " | b"smc ") && !m.samples.is_empty()
-                });
-                (finished, state.current_time, has_video)
+        let movies: Vec<_> = self.movie_states.keys().copied().collect();
+        for movie in movies {
+            self.advance_and_render_movie(bus, movie, now);
+        }
+    }
+
+    fn advance_and_render_movie(&mut self, bus: &mut MacMemoryBus, movie: u32, now: u32) {
+        let (finished, target_time, has_video) = {
+            let Some(state) = self.movie_states.get_mut(&movie) else {
+                return;
             };
-
-            if has_video {
-                self.render_movie_frame(bus, movie, target_time);
+            if !state.active || state.rate == 0 {
+                // Not playing: reset the service clock so the next Start
+                // measures elapsed time from resume, not from load.
+                state.last_service_tick = Some(now);
+                return;
             }
-
-            if finished {
-                if let Some(state) = self.movie_states.get_mut(&movie) {
-                    state.rate = 0;
-                    state.active = false;
+            let last = state.last_service_tick.unwrap_or(now);
+            let elapsed_ticks = now.saturating_sub(last);
+            state.last_service_tick = Some(now);
+            // Guest ticks run at 60 Hz; the movie time scale is units per
+            // second. rate is a Fixed (16.16) multiplier on real time.
+            let units_per_tick = (state.time_scale as i64 * state.rate as i64) / (60 * 65536);
+            let advance = units_per_tick.saturating_mul(elapsed_ticks as i64);
+            let mut new_time = state.current_time as i64 + advance;
+            let mut finished = false;
+            if new_time >= state.duration as i64 {
+                if state.time_base_flags & 1 != 0 {
+                    new_time %= state.duration.max(1) as i64;
+                } else {
+                    new_time = state.duration as i64;
+                    finished = true;
                 }
+            }
+            state.current_time = new_time.clamp(0, state.duration as i64) as i32;
+            let has_video = state.media.as_ref().is_some_and(|m| {
+                matches!(&m.codec, b"cvid" | b"rle " | b"smc ") && !m.samples.is_empty()
+            });
+            (finished, state.current_time, has_video)
+        };
+
+        if has_video {
+            self.render_movie_frame(bus, movie, target_time);
+        }
+
+        if finished {
+            if let Some(state) = self.movie_states.get_mut(&movie) {
+                state.rate = 0;
             }
         }
     }
@@ -5516,7 +5879,16 @@ impl super::TrapDispatcher {
         }
         let port_version = bus.read_word(port + 6);
         let is_cgraf = (port_version & 0xC000) == 0xC000;
-        let (base, rowbytes, pixel_size, bounds_top, bounds_left, ctab) = if is_cgraf {
+        let (
+            base,
+            rowbytes,
+            pixel_size,
+            bounds_top,
+            bounds_left,
+            bounds_bottom,
+            bounds_right,
+            ctab,
+        ) = if is_cgraf {
             let pm_handle = bus.read_long(port + 2);
             if pm_handle == 0 {
                 return;
@@ -5531,13 +5903,31 @@ impl super::TrapDispatcher {
             let bleft = bus.read_word(pm + 8) as i16;
             let ps = bus.read_word(pm + 32) as u32;
             let ctab = bus.read_long(pm + 42);
-            (base, rb, ps, btop, bleft, ctab)
+            (
+                base,
+                rb,
+                ps,
+                btop,
+                bleft,
+                bus.read_word(pm + 10) as i16,
+                bus.read_word(pm + 12) as i16,
+                ctab,
+            )
         } else {
             let base = bus.read_long(port + 2);
             let rb = (bus.read_word(port + 6) & 0x3FFF) as u32;
             let btop = bus.read_word(port + 8) as i16;
             let bleft = bus.read_word(port + 10) as i16;
-            (base, rb, 1u32, btop, bleft, 0)
+            (
+                base,
+                rb,
+                1u32,
+                btop,
+                bleft,
+                bus.read_word(port + 12) as i16,
+                bus.read_word(port + 14) as i16,
+                0,
+            )
         };
         if base == 0 || rowbytes == 0 {
             return;
@@ -5550,11 +5940,26 @@ impl super::TrapDispatcher {
             );
         }
 
-        // Destination origin within the pixmap: box top-left minus the pixmap
-        // bounds origin (QuickDraw local → pixmap-relative).
-        let dst_x0 = (box_rect.1 - bounds_left).max(0) as u32;
-        let dst_y0 = (box_rect.0 - bounds_top).max(0) as u32;
-
+        let (target_width, target_height) = (
+            i32::from(box_rect.3) - i32::from(box_rect.1),
+            i32::from(box_rect.2) - i32::from(box_rect.0),
+        );
+        let bytes_per_pixel = match pixel_size {
+            8 => 1,
+            16 => 2,
+            32 => 4,
+            _ => return,
+        };
+        if width == 0 || height == 0 || target_width <= 0 || target_height <= 0 {
+            return;
+        }
+        // Scale into the movie box, clipping in local coordinates before
+        // translating to pixmap offsets. A negative origin skips source pixels
+        // rather than moving the entire frame to (0, 0).
+        let top = i32::from(box_rect.0.max(bounds_top));
+        let left = i32::from(box_rect.1.max(bounds_left));
+        let bottom = i32::from(box_rect.2.min(bounds_bottom));
+        let right = i32::from(box_rect.3.min(bounds_right));
         // For 8-bit destinations, load the pixmap's colour table for matching.
         // Cache RGB→index results across the frame: movie palettes are small,
         // so this collapses the per-pixel 256-way nearest search to a hash hit.
@@ -5570,11 +5975,25 @@ impl super::TrapDispatcher {
         };
         let mut color_cache: std::collections::HashMap<u32, u8> = std::collections::HashMap::new();
 
-        for y in 0..height {
-            let dy = dst_y0 + y as u32;
-            for x in 0..width {
-                let dx = dst_x0 + x as u32;
-                let si = (y * width + x) * 3;
+        for local_y in top..bottom {
+            let dy = (local_y - i32::from(bounds_top)) as u32;
+            let source_y = ((local_y - i32::from(box_rect.0)) as u64 * height as u64
+                / target_height as u64) as usize;
+            for local_x in left..right {
+                let dx = (local_x - i32::from(bounds_left)) as u32;
+                if u64::from(dx + 1) * bytes_per_pixel > u64::from(rowbytes) {
+                    continue;
+                }
+                let address = u64::from(base)
+                    + u64::from(dy) * u64::from(rowbytes)
+                    + u64::from(dx) * bytes_per_pixel;
+                if address + bytes_per_pixel > u64::from(bus.ram_size()) {
+                    continue;
+                }
+                let address = address as u32;
+                let source_x = ((local_x - i32::from(box_rect.1)) as u64 * width as u64
+                    / target_width as u64) as usize;
+                let si = (source_y * width + source_x) * 3;
                 let (r, g, b) = (rgb[si], rgb[si + 1], rgb[si + 2]);
                 match pixel_size {
                     8 => {
@@ -5587,18 +6006,18 @@ impl super::TrapDispatcher {
                             }
                             None => 0,
                         };
-                        let addr = base + dy * rowbytes + dx;
+                        let addr = address;
                         bus.write_byte(addr, idx);
                     }
                     16 => {
                         let v: u16 = (((r as u16) >> 3) << 10)
                             | (((g as u16) >> 3) << 5)
                             | ((b as u16) >> 3);
-                        let addr = base + dy * rowbytes + dx * 2;
+                        let addr = address;
                         bus.write_word(addr, v);
                     }
                     32 => {
-                        let addr = base + dy * rowbytes + dx * 4;
+                        let addr = address;
                         bus.write_byte(addr, 0);
                         bus.write_byte(addr + 1, r);
                         bus.write_byte(addr + 2, g);
@@ -15007,6 +15426,10 @@ impl super::TrapDispatcher {
                         // pascal void ExitMovies(void);
                         // Inside Macintosh: QuickTime 1993, pp. 2-83 to 2-84.
                         self.movie_states.clear();
+                        for controller in self.movie_controllers.keys() {
+                            self.synthetic_component_instances.remove(controller);
+                        }
+                        self.movie_controllers.clear();
                         self.movie_error = 0;
                         self.movie_sticky_error = 0;
                         return_noerr(cpu)
@@ -15628,6 +16051,9 @@ impl super::TrapDispatcher {
                         let sp = cpu.read_reg(Register::A7);
                         let movie = bus.read_long(sp);
                         let err = if self.movie_states.remove(&movie).is_some() {
+                            for controller in self.movie_controllers.values_mut() {
+                                if controller.movie == movie { controller.movie = 0; }
+                            }
                             bus.free(movie);
                             0
                         } else {
@@ -15638,17 +16064,25 @@ impl super::TrapDispatcher {
                         record_movie_error(self, err);
                         Ok(())
                     }
-                    0x018B => {
-                        // DisposeMovieController ($AAAA selector $018B)
-                        // Disposes a movie controller component instance.
-                        // pascal void DisposeMovieController(MovieController mc);
-                        // Inside Macintosh: QuickTime Components 1993, p. 2-32.
-                        //
-                        // Systemless does not allocate controller component
-                        // state, but the Pascal procedure still consumes its
-                        // four-byte ComponentInstance argument. MPW Movies.h
-                        // publishes selector $018B for this glue.
+                    0x018A => {
+                        // NewMovieController(Movie, const Rect*, long): MovieController.
+                        // QuickTime Components (1993), p. 2-29; MPW Movies.h.
                         let sp = cpu.read_reg(Register::A7);
+                        let flags = bus.read_long(sp);
+                        let rect = bus.read_long(sp + 4);
+                        let movie = bus.read_long(sp + 8);
+                        let (instance, error) =
+                            self.new_classic_movie_controller(bus, movie, rect, flags);
+                        bus.write_long(sp + 12, instance);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        cpu.write_reg(Register::D0, instance);
+                        record_movie_error(self, error);
+                        Ok(())
+                    }
+                    0x018B => {
+                        // Disposal releases the controller, not its movie.
+                        let sp = cpu.read_reg(Register::A7);
+                        self.dispose_classic_movie_controller(bus.read_long(sp));
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
                         record_movie_error(self, 0);
@@ -16013,6 +16447,7 @@ impl super::TrapDispatcher {
                             self.movie_states.get_mut(&movie),
                         ) {
                             state.box_rect = rect;
+                            state.rendered_sample = None;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
@@ -17374,63 +17809,11 @@ impl super::TrapDispatcher {
                         );
                     }
                     let instance = bus.read_long(sp + 4 + param_size);
-                    match call_num {
-                        // MCNewAttachedController(mc, theMovie, window, where):
-                        // associate the controller instance with its movie so
-                        // MCDoAction can drive the right one. The parameter
-                        // block holds theMovie among its longs; find it by
-                        // matching a known movie handle.
-                        0x0017 => {
-                            let tick = self.current_tick();
-                            for off in (4..4 + param_size).step_by(4) {
-                                let candidate = bus.read_long(sp + off);
-                                if self.movie_states.contains_key(&candidate) {
-                                    self.movie_by_controller.insert(instance, candidate);
-                                    if let Some(state) = self.movie_states.get_mut(&candidate) {
-                                        state.active = true;
-                                        state.last_service_tick = Some(tick);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        // MCDoAction(mc, action, params). Pascal push order puts
-                        // params(long) at sp+4 and action(word) at sp+8.
-                        0x0009 => {
-                            let tick = self.current_tick();
-                            let action = bus.read_word(sp + 8);
-                            let param = bus.read_long(sp + 4);
-                            if let Some(&movie) = self.movie_by_controller.get(&instance) {
-                                if let Some(state) = self.movie_states.get_mut(&movie) {
-                                    match action {
-                                        // mcActionPlay(8): param is a Fixed rate.
-                                        8 => {
-                                            let rate = param as i32;
-                                            state.rate = if rate != 0 { rate } else { 0x0001_0000 };
-                                            state.active = true;
-                                            state.last_service_tick = Some(tick);
-                                        }
-                                        // mcActionStop(2)/mcActionSetPlayRate not
-                                        // separately tracked; stop clears the rate.
-                                        2 => {
-                                            state.rate = 0;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    // MCIdle ($1A): service the movie controller — advance
-                    // playback clocks and render the frames now due.
-                    if call_num == 0x001A {
-                        self.advance_and_render_active_movies(bus);
-                    }
+                    let result = self.classic_movie_controller_call(bus, instance, call_num, param_size, sp);
                     let result_sp = sp + 8 + param_size;
-                    bus.write_long(result_sp, 0);
+                    bus.write_long(result_sp, result as u32);
                     cpu.write_reg(Register::A7, result_sp);
-                    cpu.write_reg(Register::D0, 0);
+                    cpu.write_reg(Register::D0, result as u32);
                     return Some(Ok(()));
                 }
 
@@ -17515,7 +17898,7 @@ impl super::TrapDispatcher {
                     0x0008 => {
                         // CloseComponent(ComponentInstance): OSErr
                         let instance = bus.read_long(sp);
-                        self.synthetic_component_instances.remove(&instance);
+                        self.dispose_classic_movie_controller(instance);
                         bus.write_word(sp + 4, 0);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
@@ -18559,3 +18942,6 @@ mod tests;
 
 #[cfg(test)]
 mod movie_palette_tests;
+
+#[cfg(test)]
+mod movie_controller_tests;
