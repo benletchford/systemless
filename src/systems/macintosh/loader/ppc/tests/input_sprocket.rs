@@ -1,5 +1,64 @@
 use super::*;
 
+#[test]
+fn inputsprocket_time_conversion_preserves_the_full_clock_and_supports_aliasing() {
+    let target = dispatcher_target_for_import("InputSprocketLib", "ISpTimeToMicroseconds");
+    assert_ne!(target, PpcImportDispatcherTarget::Unsupported);
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTimeToMicroseconds",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0xaa; 32]);
+    for value in [0, 1, 0x1234_5678_9abc_def0, u64::MAX] {
+        for output in [scratch, scratch + 4, scratch + 16] {
+            loaded.memory.write_u64_be(scratch, value).unwrap();
+            loaded.cpu.gpr[3] = scratch;
+            loaded.cpu.gpr[4] = output;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u64_be(output), Some(value));
+            assert_eq!(
+                loaded.memory.read_u64_be(scratch + 24),
+                Some(0xaaaa_aaaa_aaaa_aaaa)
+            );
+        }
+    }
+}
+
+#[test]
+fn inputsprocket_time_conversion_rejects_invalid_buffers_without_partial_writes() {
+    let target = dispatcher_target_for_import("InputSprocketLib", "ISpTimeToMicroseconds");
+    assert_ne!(target, PpcImportDispatcherTarget::Unsupported);
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTimeToMicroseconds",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0xaa; 32]);
+    for (input, output) in [
+        (0, scratch + 16),
+        (0xdead_0000, scratch + 16),
+        (scratch + 28, scratch + 16),
+        (scratch, 0),
+        (scratch, 0xdead_0000),
+        (scratch, scratch + 28),
+    ] {
+        loaded.cpu.gpr[3] = input;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        for offset in [0, 8, 16, 24] {
+            assert_eq!(
+                loaded.memory.read_u64_be(scratch + offset),
+                Some(0xaaaa_aaaa_aaaa_aaaa)
+            );
+        }
+    }
+}
+
 fn create_test_input_sprocket_list(loaded: &mut PpcLoadedApp, elements: &[u32]) -> u32 {
     let scratch = PPC_DATA_BASE + 0x5000;
     loaded
