@@ -6,6 +6,7 @@ pub(super) struct PpcControlDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
+    pub(super) window_list: &'a SharedProcessWindowList,
     pub(super) process_memory_manager: &'a mut ProcessNativeMemoryManager,
     pub(super) heap_cursor: &'a mut u32,
     pub(super) heap_limit: u32,
@@ -29,6 +30,7 @@ pub(super) fn dispatch_control_import(
         binding,
         cpu,
         memory,
+        window_list,
         process_memory_manager,
         heap_cursor,
         heap_limit,
@@ -52,6 +54,7 @@ pub(super) fn dispatch_control_import(
                 // Dialog controls are represented by the live DITL, whose
                 // renderer also translates dialog-local item coordinates.
                 let _ = ppc_draw_dialog(
+                    window_list,
                     memory,
                     handles,
                     controls,
@@ -158,6 +161,7 @@ pub(super) fn dispatch_control_import(
                     control_handle,
                 ) {
                     let _ = ppc_draw_dialog(
+                        window_list,
                         memory,
                         handles,
                         controls,

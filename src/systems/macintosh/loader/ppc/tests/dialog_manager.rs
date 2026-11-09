@@ -1201,6 +1201,134 @@ fn hle_import_runner_handles_get_new_dialog_allocation() {
 }
 
 #[test]
+fn get_new_dialog_respects_caller_record_bounds_and_private_state() {
+    // Apple Dialogs.h: packed WindowRecord (156 bytes), two handles and
+    // three SInt16 fields. Caller storage ends after aDefItem at byte 170.
+    const PUBLIC_SIZE: u32 = 170;
+    for guarded in [true, false] {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let storage = PPC_DATA_BASE + 0x2000;
+        let out_item = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(out_item, vec![0; 2]);
+        if guarded {
+            loaded
+                .memory
+                .add_region(storage - 16, vec![0xa5; (16 + PUBLIC_SIZE + 128) as usize]);
+        } else {
+            loaded
+                .memory
+                .add_region(storage, vec![0xa5; PUBLIC_SIZE as usize]);
+        }
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100_i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&200_i16.to_be_bytes());
+        dlog[18..20].copy_from_slice(&128_i16.to_be_bytes());
+        dlog[20] = 1;
+        dlog[21] = b'T';
+        let mut ditl = vec![0; 22];
+        ditl[6..8].copy_from_slice(&10_i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10_i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&26_i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&90_i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+        ditl[15] = 6;
+        ditl[16..22].copy_from_slice(b"Cancel");
+        for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            let ref_num = *loaded.process_file_system.current_resource_file;
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(res_type),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        // Reuse the caller record through repeated creation and close.
+        for _ in 0..2 {
+            loaded.cpu.gpr[3] = 128;
+            loaded.cpu.gpr[4] = storage;
+            loaded.cpu.gpr[5] = u32::MAX;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+            assert_eq!(loaded.cpu.gpr[3], storage, "guarded={guarded}");
+            assert_eq!(loaded.memory.read_u16_be(storage + 168), Some(1));
+            let private_storage = loaded
+                .window_list
+                .dialog_private_address(storage, PUBLIC_SIZE);
+            assert_ne!(private_storage, storage + PUBLIC_SIZE);
+            assert!(loaded
+                .process_memory_manager
+                .0
+                .borrow()
+                .native_ptr_records()
+                .iter()
+                .any(|r| r.ptr == private_storage));
+            for (operation, argument, expected) in [
+                ("GetModalDialogEventMask", out_item, Some(0xffff)),
+                ("SetModalDialogEventMask", 0x0008, None),
+                ("GetModalDialogEventMask", out_item, Some(0x0008)),
+            ] {
+                loaded.cpu.gpr[3] = storage;
+                loaded.cpu.gpr[4] = argument;
+                run_test_import(
+                    &mut loaded,
+                    dispatcher_target_for_import("InterfaceLib", operation),
+                );
+                assert_eq!(loaded.cpu.gpr[3], 0);
+                if let Some(expected) = expected {
+                    assert_eq!(loaded.memory.read_u16_be(out_item), Some(expected));
+                }
+            }
+
+            loaded.cpu.gpr[3] = storage;
+            loaded.cpu.gpr[4] = 1;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogCancelItem);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            // CloseWindow removes visibility, not the dialog's private state.
+            loaded.cpu.gpr[3] = storage;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
+            loaded.cpu.gpr[3] = storage;
+            loaded.cpu.gpr[4] = out_item;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogCancelItem);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u16_be(out_item), Some(1));
+            loaded.cpu.gpr[3] = storage;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseDialog);
+            assert!(!loaded
+                .window_list
+                .has_caller_dialog_private_storage(storage));
+            assert!(!loaded
+                .process_memory_manager
+                .0
+                .borrow()
+                .native_ptr_records()
+                .iter()
+                .any(|r| r.ptr == private_storage));
+
+            if guarded {
+                for address in (storage - 16..storage)
+                    .chain(storage + PUBLIC_SIZE..storage + PUBLIC_SIZE + 128)
+                {
+                    assert_eq!(
+                        loaded.memory.read_u8(address),
+                        Some(0xa5),
+                        "guard at {address:#x}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+
+#[test]
 fn hle_import_runner_constructs_new_dialog_from_native_arguments() {
     let pef = synthetic_pef_with_import(b"NewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1563,6 +1691,7 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
     ));
 
     assert!(ppc_draw_dialog(
+        &loaded.window_list,
         &mut loaded.memory,
         &test_handle_records!(loaded),
         &loaded.controls.records(),
@@ -7182,108 +7311,138 @@ fn dialog_sheet_window_filter_and_item_insertion_dispatch_with_canonical_evaluat
 }
 #[test]
 fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose() {
-    let mut loaded = load_pef_application_with_config(
-        &synthetic_pef_with_import(b"GetNewDialog"),
-        PpcLoadConfig {
-            screen_depth: 16,
-            ..PpcLoadConfig::default()
-        },
-    )
-    .unwrap();
-    let mut dlog = vec![0; 22];
-    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
-    dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
-    dlog[10] = 1;
-    // The item table follows DITL ID 129, not DLOG ID 128.
-    dlog[18..20].copy_from_slice(&129i16.to_be_bytes());
-    let mut ditl = vec![0; 20];
-    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
-    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
-    ditl[10..12].copy_from_slice(&22i16.to_be_bytes());
-    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
-    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
-    ditl[15] = 4;
-    ditl[16..20].copy_from_slice(b"Font");
-    let mut styles = vec![0; 31];
-    styles[0..2].copy_from_slice(&0xa00fu16.to_be_bytes());
-    styles[2..4].copy_from_slice(&4u16.to_be_bytes());
-    styles[4..6].copy_from_slice(&24u16.to_be_bytes());
-    styles[7] = 1; // low byte of the resource font-style word
-    styles[8..10].copy_from_slice(&9u16.to_be_bytes());
-    styles[10..12].copy_from_slice(&0xffffu16.to_be_bytes()); // red text
-    styles[16..22].fill(0xff); // white background
-    styles[24..31].copy_from_slice(b"\x06Geneva");
-    for (kind, id, data) in [
-        (*b"DLOG", 128, dlog),
-        (*b"dctb", 128, vec![0, 0, 0, 0, 0, 0, 0xff, 0xff]),
-        (*b"DITL", 129, ditl),
-        (*b"ictb", 129, styles.clone()),
-    ] {
+    for caller_owned in [false, true] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"GetNewDialog"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+        dlog[10] = 1;
+        // The item table follows DITL ID 129, not DLOG ID 128.
+        dlog[18..20].copy_from_slice(&129i16.to_be_bytes());
+        let mut ditl = vec![0; 20];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&22i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+        ditl[15] = 4;
+        ditl[16..20].copy_from_slice(b"Font");
+        let mut styles = vec![0; 31];
+        styles[0..2].copy_from_slice(&0xa00fu16.to_be_bytes());
+        styles[2..4].copy_from_slice(&4u16.to_be_bytes());
+        styles[4..6].copy_from_slice(&24u16.to_be_bytes());
+        styles[7] = 1; // low byte of the resource font-style word
+        styles[8..10].copy_from_slice(&9u16.to_be_bytes());
+        styles[10..12].copy_from_slice(&0xffffu16.to_be_bytes()); // red text
+        styles[16..22].fill(0xff); // white background
+        styles[24..31].copy_from_slice(b"\x06Geneva");
+        for (kind, id, data) in [
+            (*b"DLOG", 128, dlog),
+            (*b"dctb", 128, vec![0, 0, 0, 0, 0, 0, 0xff, 0xff]),
+            (*b"DITL", 129, ditl),
+            (*b"ictb", 129, styles.clone()),
+        ] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: *loaded.process_file_system.current_resource_file,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: id,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        let storage = if caller_owned {
+            let storage = PPC_DATA_BASE + 0x4000;
+            loaded.memory.add_region(storage, vec![0xa5; 170 + 64]);
+            storage
+        } else {
+            0
+        };
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = storage;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        let dialog = loaded.cpu.gpr[3];
+        assert_ne!(dialog, 0);
+        let owned = loaded
+            .memory
+            .read_u32_be(loaded.window_list.dialog_private_address(
+                dialog,
+                crate::dialog_manager::DIALOG_ITEM_STYLE_HANDLE_OFFSET,
+            ))
+            .unwrap();
+        assert_ne!(owned, 0);
+        assert_eq!(
+            ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), owned),
+            Some(styles)
+        );
+        // A later resource-file change and original resource removal must not
+        // alter the dialog-owned style table.
         loaded
             .process_file_system
-            .push_vfs_resource(PpcVfsResourceRecord {
-                ref_num: *loaded.process_file_system.current_resource_file,
-                path: String::new(),
-                res_type: u32::from_be_bytes(kind),
-                res_id: id,
-                name: Vec::new(),
-                data: data.into(),
-                raw_data: None,
-                raw_attrs: None,
-                attrs: 0,
-                handle: 0,
+            .with_resource_manager_mut(|manager| {
+                manager
+                    .vfs_resources
+                    .retain(|r| r.res_type != u32::from_be_bytes(*b"ictb"));
+                manager
+                    .current_resource_file
+                    .with_mut(|current| *current = 999);
             });
-    }
-    loaded.cpu.gpr[3] = 128;
-    loaded.cpu.gpr[4] = 0;
-    loaded.cpu.gpr[5] = 0;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
-    let dialog = loaded.cpu.gpr[3];
-    assert_ne!(dialog, 0);
-    let owned = loaded.memory.read_u32_be(dialog + 216).unwrap();
-    assert_ne!(owned, 0);
-    assert_eq!(
-        ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), owned),
-        Some(styles)
-    );
-    // A later resource-file change and original resource removal must not
-    // alter the dialog-owned style table.
-    loaded.process_file_system.with_resource_manager_mut(|manager| {
-        manager.vfs_resources.retain(|r| r.res_type != u32::from_be_bytes(*b"ictb"));
-        manager.current_resource_file.with_mut(|current| *current = 999);
-    });
-    loaded.cpu.gpr[3] = dialog;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
-    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
-    let red = 0x7c00;
-    let mut red_pixels = 0;
-    for y in 0..40 {
-        for x in 0..120 {
-            if ppc_quickdraw_read_pixel(
-                &mut loaded.memory,
-                front,
-                (i32::from(bounds.1) + x, i32::from(bounds.0) + y),
-            ) == Some(red)
-            {
-                assert!(
-                    (10..22).contains(&y) && (10..100).contains(&x),
-                    "styled text must remain clipped to its item"
-                );
-                red_pixels += 1;
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let red = 0x7c00;
+        let mut red_pixels = 0;
+        for y in 0..40 {
+            for x in 0..120 {
+                if ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (i32::from(bounds.1) + x, i32::from(bounds.0) + y),
+                ) == Some(red)
+                {
+                    assert!(
+                        (10..22).contains(&y) && (10..100).contains(&x),
+                        "styled text must remain clipped to its item"
+                    );
+                    red_pixels += 1;
+                }
+            }
+        }
+        assert!(
+            red_pixels > 10,
+            "9-point styled text must fit a 12-pixel-high item"
+        );
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+        assert!(!test_handle_records!(loaded)
+            .iter()
+            .any(|record| record.handle == owned));
+
+        if caller_owned {
+            assert_eq!(dialog, storage);
+            assert!(!loaded.window_list.has_caller_dialog_private_storage(dialog));
+            for offset in 170..234 {
+                assert_eq!(loaded.memory.read_u8(storage + offset), Some(0xa5));
             }
         }
     }
-    assert!(
-        red_pixels > 10,
-        "9-point styled text must fit a 12-pixel-high item"
-    );
-    loaded.cpu.gpr[3] = dialog;
-    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
-    assert!(!test_handle_records!(loaded)
-        .iter()
-        .any(|record| record.handle == owned));
 }
+
 
 #[test]
 fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() {

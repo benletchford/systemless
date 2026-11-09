@@ -7,7 +7,13 @@ use std::borrow::Cow;
 use crate::mac_roman::encode_mac_roman_lossy;
 use crate::trap::types::decode_mac_roman;
 
-/// Canonical guest DialogRecord byte size.
+/// Public classic DialogRecord size, including aDefItem and no private tail.
+/// Apple Dialogs.h uses mac68k packing: WindowRecord (156), two handles,
+/// and three SInt16 fields.
+pub const DIALOG_PUBLIC_RECORD_SIZE: u32 = 170;
+
+/// HLE-owned allocation size, including Dialog Manager private state.
+/// Caller-supplied records provide only DIALOG_PUBLIC_RECORD_SIZE bytes.
 pub const DIALOG_RECORD_SIZE: u32 = 256;
 
 /// Canonical DialogRecord guest field offsets.
@@ -18,7 +24,6 @@ pub const DIALOG_TEXT_HANDLE_OFFSET: u32 = 160;
 pub const DIALOG_EDIT_FIELD_OFFSET: u32 = 164;
 pub const DIALOG_EDIT_OPEN_OFFSET: u32 = 166;
 pub const DIALOG_DEFAULT_ITEM_OFFSET: u32 = 168;
-pub const DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 
 /// Canonical DialogRecord GrafPort text font offset (`txFont`).
 /// Inside Macintosh Volume I, pp. I-148, I-412.
@@ -41,6 +46,7 @@ pub const DIALOG_INITIAL_EDIT_OPEN: i16 = 0;
 pub const DIALOG_INITIAL_DEFAULT_ITEM: i16 = 1;
 
 /// Host-private Dialog Manager state offsets following the documented DialogRecord.
+pub const DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 pub const DIALOG_CANCEL_ITEM_OFFSET: u32 = 172;
 pub const DIALOG_ALERT_HIT_OFFSET: u32 = 174;
 pub const DIALOG_STANDARD_ALERT_OUTPUT_OFFSET: u32 = 176;
@@ -58,6 +64,7 @@ pub const DIALOG_TRACKS_CURSOR_OFFSET: u32 = 204;
 pub const DIALOG_FILTER_PROC_OFFSET: u32 = 208;
 #[allow(dead_code)]
 pub const DIALOG_SHEET_PARENT_OFFSET: u32 = 212;
+pub const DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = 216;
 
 /// Default cursor tracking state (false = off per Macintosh Toolbox Essentials, p. 6-166).
 #[allow(dead_code)]
