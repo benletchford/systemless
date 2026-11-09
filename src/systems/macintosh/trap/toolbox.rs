@@ -5345,10 +5345,8 @@ impl super::TrapDispatcher {
             return;
         }
         // Map movie time to this track's media time scale.
-        let media_time = if state.time_scale > 0 {
-            ((movie_time as i64 * media.time_scale as i64) / state.time_scale as i64) as u32
-        } else {
-            movie_time.max(0) as u32
+        let Some(media_time) = media.media_time(i64::from(movie_time), state.time_scale as u32) else {
+            return;
         };
         let Some(target) = media.sample_for_time(media_time) else {
             return;

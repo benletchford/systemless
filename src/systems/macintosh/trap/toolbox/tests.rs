@@ -21856,6 +21856,7 @@ fn classic_smc_movie_fixture() -> (TrapDispatcher, MacMemoryBus, u32, u32) {
     // Two solid blocks, then preserve the left block and replace the right.
     state.data_fork = vec![0, 0, 0, 6, 0x61, 1, 0, 0, 0, 7, 0x00, 0x60, 2];
     state.media = Some(VideoTrack {
+        timeline: None,
         codec: *b"smc ",
         width: 8,
         height: 4,
@@ -22070,3 +22071,5 @@ fn movie_from_file_missing_lazy_payload_reports_error_without_empty_movie() {
     assert_eq!(bus.read_byte(0x300208), 0xCC);
     assert_eq!(bus.read_byte(0x300310), 0xCC);
 }
+#[path = "movie_timeline_tests.rs"]
+mod movie_timeline_tests;

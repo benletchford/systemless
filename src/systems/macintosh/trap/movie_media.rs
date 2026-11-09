@@ -35,11 +35,22 @@ pub(crate) struct VideoTrack {
     /// Media time scale (units per second).
     pub time_scale: u32,
     pub samples: Vec<MediaSample>,
+    pub timeline: Option<crate::systems::macintosh::movie_timeline::TrackTimeline>,
     /// Optional CLUT for indexed codecs (e.g. 8-bit QuickTime Animation).
     pub clut: Option<Vec<[u8; 3]>>,
 }
 
 impl VideoTrack {
+    pub(crate) fn media_time(&self, movie_time: i64, movie_scale: u32) -> Option<u32> {
+        crate::systems::macintosh::movie_timeline::media_time(
+            self.timeline.as_ref(),
+            movie_time,
+            movie_scale,
+            self.time_scale,
+        )
+        .and_then(|time| u32::try_from(time).ok())
+    }
+
     /// Index of the sample that should be displayed at `media_time` (in this
     /// track's media time scale). Returns the last sample whose `start_time`
     /// is `<= media_time`, or 0.
@@ -345,12 +356,25 @@ pub(crate) fn parse_video_track(moov: &[u8]) -> Option<VideoTrack> {
             None
         };
 
+        let timeline = if let Some(payload) =
+            find_atom(trak_payload, b"edts").and_then(|edts| find_atom(edts, b"elst"))
+        {
+            let Some(timeline) =
+                crate::systems::macintosh::movie_timeline::TrackTimeline::parse(payload)
+            else {
+                return;
+            };
+            Some(timeline)
+        } else {
+            None
+        };
         result = Some(VideoTrack {
             codec,
             width,
             height,
             depth,
             time_scale: media_time_scale.max(1),
+            timeline,
             samples,
             clut,
         });
@@ -822,5 +846,27 @@ mod tests {
         assert_eq!(vt.samples.len(), 1);
         assert_eq!(vt.samples[0].offset, 20037);
         assert_eq!(vt.samples[0].size, 9224);
+        assert!(vt.timeline.is_none());
+
+        let mut elst = vec![0, 0, 0, 0, 0, 0, 0, 2];
+        for (duration, media_time) in [(600u32, -1i32), (1200, 20)] {
+            elst.extend(duration.to_be_bytes());
+            elst.extend(media_time.to_be_bytes());
+            elst.extend(65_536i32.to_be_bytes());
+        }
+        let mut edited_track = mdia.clone();
+        edited_track.extend(atom(b"edts", &atom(b"elst", &elst)));
+        let edited = atom(b"moov", &atom(b"trak", &edited_track));
+        let vt = parse_video_track(&edited).expect("edited video track");
+        assert_eq!(vt.media_time(599, 600), None);
+        assert_eq!(vt.media_time(600, 600), Some(20));
+        assert_eq!(vt.media_time(1200, 600), Some(620));
+        assert_eq!(vt.media_time(1800, 600), None);
+
+        // A truncated row must not become an implicit unedited track.
+        elst.pop();
+        let mut invalid_track = mdia;
+        invalid_track.extend(atom(b"edts", &atom(b"elst", &elst)));
+        assert!(parse_video_track(&atom(b"moov", &atom(b"trak", &invalid_track))).is_none());
     }
 }

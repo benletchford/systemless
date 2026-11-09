@@ -12,6 +12,7 @@ use super::super::{
     PpcRegionBooleanOp, PPC_MAIN_GDEVICE,
 };
 use super::*;
+use crate::systems::macintosh::movie_timeline::{sample_spans, TrackTimeline};
 
 /// invalidTrack (MacErrors.h).
 const INVALID_TRACK: i16 = -2009;
@@ -102,39 +103,29 @@ pub(crate) fn ppc_qt_track_details(
         details.width = read_u32(base + 44).unwrap_or(0);
         details.height = read_u32(base + 48).unwrap_or(0);
     }
-    if let Some((offset, _)) = ppc_qt_track_edit_start(data, start, end) {
-        details.offset = offset;
+    if let Some(Some(timeline)) = ppc_qt_track_timeline(data, start, end) {
+        details.offset = timeline.leading_empty_duration();
     }
     details
 }
 
-/// Returns the leading empty-edit time (movie scale) and the media time the
-/// first real edit begins at.
-fn ppc_qt_track_edit_start(data: &[u8], start: usize, end: usize) -> Option<(u64, u64)> {
-    let (edts_start, edts_end) = ppc_qt_child_atom_range(data, start, end, b"edts")?;
-    let (elst_start, elst_end) = ppc_qt_child_atom_range(data, edts_start, edts_end, b"elst")?;
-    let count = u32::from_be_bytes(data.get(elst_start + 4..elst_start + 8)?.try_into().ok()?);
-    let mut offset = 0u64;
-    let mut entry = elst_start.checked_add(8)?;
-    for _ in 0..count.min(4096) {
-        if entry.checked_add(12)? > elst_end {
-            break;
-        }
-        let duration = u32::from_be_bytes(data.get(entry..entry + 4)?.try_into().ok()?);
-        let media_time = i32::from_be_bytes(data.get(entry + 4..entry + 8)?.try_into().ok()?);
-        if media_time != -1 {
-            return Some((offset, u64::from(media_time.max(0) as u32)));
-        }
-        offset = offset.saturating_add(u64::from(duration));
-        entry += 12;
-    }
-    Some((offset, 0))
+/// Distinguish a missing list from a malformed list: missing edits use the
+/// media at its natural rate, whereas invalid rows must not fabricate samples.
+fn ppc_qt_track_timeline(data: &[u8], start: usize, end: usize) -> Option<Option<TrackTimeline>> {
+    let Some((edts_start, edts_end)) = ppc_qt_child_atom_range(data, start, end, b"edts") else {
+        return Some(None);
+    };
+    let Some((elst_start, elst_end)) = ppc_qt_child_atom_range(data, edts_start, edts_end, b"elst")
+    else {
+        return Some(None);
+    };
+    Some(Some(TrackTimeline::parse(data.get(elst_start..elst_end)?)?))
 }
 
 /// Sample timing and sizes of one track's media.
 struct PpcQuickTimeTrackSamples {
     media_time_scale: u32,
-    media_start: u64,
+    timeline: Option<TrackTimeline>,
     durations: Vec<u32>,
     sizes: Vec<u32>,
     sync: Option<Vec<u32>>,
@@ -184,11 +175,10 @@ fn ppc_qt_track_samples(data: &[u8], ordinal: usize) -> Option<PpcQuickTimeTrack
                 })
                 .collect::<Option<Vec<u32>>>()
         });
-    let media_start = ppc_qt_track_edit_start(data, track_start, track_end)
-        .map_or(0, |(_, media_start)| media_start);
+    let timeline = ppc_qt_track_timeline(data, track_start, track_end)?;
     Some(PpcQuickTimeTrackSamples {
         media_time_scale,
-        media_start,
+        timeline,
         durations,
         sizes,
         sync,
@@ -211,33 +201,38 @@ fn ppc_qt_track_movie_samples(
     let Some(samples) = ppc_qt_track_samples(&quicktime.movie_data, ordinal) else {
         return Vec::new();
     };
-    let movie_scale = i128::from(ppc_qt_creation_time_scale(quicktime));
-    let media_scale = i128::from(samples.media_time_scale.max(1));
-    let to_movie = |media: i128| -> i64 {
-        let movie = i128::from(track.offset) + (media * movie_scale) / media_scale;
-        movie.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
-    };
-    let mut media_time = 0i128;
-    let mut result = Vec::with_capacity(samples.durations.len());
+    let original_offset = samples
+        .timeline
+        .as_ref()
+        .map_or(0, TrackTimeline::leading_empty_duration);
+    let shift = i128::from(track.offset) - i128::from(original_offset);
+    let mut media_time = 0u64;
+    let mut result = Vec::new();
     for (index, duration) in samples.durations.iter().enumerate() {
-        let relative = media_time - i128::from(samples.media_start);
-        let end = relative + i128::from(*duration);
-        media_time += i128::from(*duration);
-        if end <= 0 {
-            continue;
-        }
-        let start = to_movie(relative.max(0));
+        let spans = sample_spans(
+            samples.timeline.as_ref(),
+            media_time,
+            u64::from(*duration),
+            ppc_qt_creation_time_scale(quicktime),
+            samples.media_time_scale,
+        );
         let number = index as u32 + 1;
-        result.push(PpcQuickTimeMovieSample {
-            start,
-            duration: to_movie(end) - start,
-            size: samples.sizes.get(index).copied().unwrap_or(0),
-            sync: samples
-                .sync
-                .as_ref()
-                .map_or(true, |sync| sync.contains(&number)),
-        });
+        for (start, length) in spans {
+            let start = (i128::from(start) + shift).clamp(0, i128::from(i64::MAX)) as i64;
+            let duration = i64::try_from(length).unwrap_or(i64::MAX);
+            result.push(PpcQuickTimeMovieSample {
+                start,
+                duration,
+                size: samples.sizes.get(index).copied().unwrap_or(0),
+                sync: samples
+                    .sync
+                    .as_ref()
+                    .map_or(true, |sync| sync.contains(&number)),
+            });
+        }
+        media_time = media_time.saturating_add(u64::from(*duration));
     }
+    result.sort_by_key(|sample| sample.start);
     result
 }
 
@@ -973,7 +968,7 @@ pub(super) fn dispatch_movie_toolbox(
                     continue;
                 }
                 for sample in ppc_qt_track_movie_samples(quicktime, ordinal + 1, track) {
-                    if sample.start < end && sample.start + sample.duration > start {
+                    if sample.start < end && sample.start.saturating_add(sample.duration) > start {
                         total = total.saturating_add(u64::from(sample.size));
                     }
                 }
@@ -1685,6 +1680,25 @@ fn ppc_qt_next_interesting_time(
             );
         }
         if flags & (NEXT_TIME_MEDIA_EDIT | NEXT_TIME_TRACK_EDIT) != 0 {
+            let timeline = ppc_qt_track_atom(&quicktime.movie_data, ordinal + 1)
+                .and_then(|(start, end)| {
+                    ppc_qt_track_timeline(&quicktime.movie_data, start, end)
+                })
+                .flatten();
+            if let Some(timeline) = timeline {
+                let shift =
+                    i128::from(track.offset) - i128::from(timeline.leading_empty_duration());
+                for (start, duration) in timeline.boundaries() {
+                    let end = i128::from(start) + i128::from(duration) + shift;
+                    let start = i128::from(start) + shift;
+                    if end >= 0 {
+                        let start = start.clamp(0, i128::from(i64::MAX)) as i64;
+                        let end = end.clamp(0, i128::from(i64::MAX)) as i64;
+                        candidates.push((start, end - start));
+                    }
+                }
+                continue;
+            }
             let offset = track.offset as i64;
             let end = track.duration as i64;
             candidates.push((offset, end - offset));
