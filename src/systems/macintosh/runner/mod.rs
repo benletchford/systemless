@@ -5296,7 +5296,7 @@ impl FixtureRunner {
                 .unwrap_or(remaining_samples);
 
             let mut samples = self.dispatcher.sound_manager.mix_frame_stereo(chunk);
-            self.dispatcher.mix_movie_music(&mut samples, chunk);
+            self.dispatcher.mix_movie_audio(&mut samples, chunk);
             self.legacy_sound.mix_stereo(
                 &self.bus,
                 &mut samples,

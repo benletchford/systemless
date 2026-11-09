@@ -5228,7 +5228,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    pub(crate) fn mix_movie_music(&mut self, output: &mut Vec<u8>, frames: usize) {
+    pub(crate) fn mix_movie_audio(&mut self, output: &mut Vec<u8>, frames: usize) {
         for state in self.movie_states.values_mut() {
             if super::dispatch::trace_quicktime_enabled() {
                 static MIX_TRACE: std::sync::atomic::AtomicU32 =
@@ -5237,39 +5237,60 @@ impl super::TrapDispatcher {
                     eprintln!("[QUICKTIME] music mix active={} rate={} time={} audio={} duration={} notes={}", state.active, state.rate, state.current_time, state.audio_time, state.duration, state.music.as_ref().map_or(0, Vec::len));
                 }
             }
-            if !state.active || state.rate <= 0 {
+            if !state.active || state.rate == 0 {
                 continue;
             }
-            let Some(notes) = state.music.as_ref() else {
+            if state.music.is_none() && state.pcm.is_empty() {
                 continue;
-            };
+            }
             output.resize(frames * 2, 128);
             let rate = state.rate as f64 / 65536.0;
             let duration = state.duration as f64 / state.time_scale as f64;
             let mut rendered = 0;
             while rendered < frames {
-                if state.audio_time >= duration {
-                    if state.time_base_flags & 1 == 0 {
-                        break;
+                if state.time_base_flags & 1 != 0 {
+                    state.audio_time = state.audio_time.rem_euclid(duration);
+                    if rate < 0.0 && state.audio_time == 0.0 {
+                        state.audio_time = duration;
                     }
-                    state.audio_time %= duration;
+                } else if (rate > 0.0 && state.audio_time >= duration)
+                    || (rate < 0.0 && state.audio_time <= 0.0)
+                {
+                    break;
                 }
-                let until_end = ((duration - state.audio_time) * crate::sound::OUTPUT_RATE as f64
-                    / rate)
-                    .ceil() as usize;
+                let distance = if rate > 0.0 {
+                    duration - state.audio_time
+                } else {
+                    state.audio_time
+                };
+                let until_end =
+                    (distance * crate::sound::OUTPUT_RATE as f64 / rate.abs()).ceil() as usize;
                 let count = until_end.max(1).min(frames - rendered);
-                super::movie_media::mix_music_notes(
-                    notes,
-                    state.audio_time,
-                    rate,
-                    state.volume.max(0) as f64 / 256.0,
-                    &mut output[rendered * 2..(rendered + count) * 2],
-                );
+                // Reverse playback consumes the sample immediately before its
+                // current boundary; the movie end itself is outside the media.
+                let start = state.audio_time + rate.min(0.0) / crate::sound::OUTPUT_RATE as f64;
+                if let Some(notes) = state.music.as_ref() {
+                    super::movie_media::mix_music_notes(
+                        notes,
+                        start,
+                        rate,
+                        state.volume.max(0) as f64 / 256.0,
+                        &mut output[rendered * 2..(rendered + count) * 2],
+                    );
+                }
+                for track in &state.pcm {
+                    track.mix(
+                        start,
+                        rate,
+                        state.volume,
+                        &mut output[rendered * 2..(rendered + count) * 2],
+                    );
+                }
                 state.audio_time += count as f64 * rate / crate::sound::OUTPUT_RATE as f64;
                 rendered += count;
             }
             if state.time_base_flags & 1 != 0 {
-                state.audio_time %= duration;
+                state.audio_time = state.audio_time.rem_euclid(duration);
             }
         }
     }
@@ -15212,8 +15233,13 @@ impl super::TrapDispatcher {
                             duration,
                             time_scale,
                         );
+                        (movie_state.preferred_rate, movie_state.volume) =
+                            crate::systems::macintosh::movie_pcm::playback_defaults(&movie_data);
                         movie_state.music =
                             super::movie_media::parse_music_track(&movie_data, &data_fork);
+                        movie_state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(
+                            &movie_data, &data_fork, time_scale.max(1) as u32,
+                        );
                         movie_state.media = media;
                         movie_state.data_fork = data_fork;
                         self.movie_states.insert(movie, movie_state);
@@ -15311,7 +15337,12 @@ impl super::TrapDispatcher {
                                 let mut state =
                                     MovieState::new(refnum, -1, flags, rect, duration, scale);
                                 state.media = super::movie_media::parse_video_track(atom);
+                                (state.preferred_rate, state.volume) =
+                                    crate::systems::macintosh::movie_pcm::playback_defaults(atom);
                                 state.music = super::movie_media::parse_music_track(atom, &data);
+                                state.pcm = crate::systems::macintosh::movie_pcm::parse_tracks(
+                                    atom, &data, scale.max(1) as u32,
+                                );
                                 state.active = flags & 1 != 0;
                                 if super::dispatch::trace_quicktime_enabled() {
                                     eprintln!("[QUICKTIME] NewMovieFromDataFork offset={} duration={} scale={} notes={}",
@@ -15550,7 +15581,7 @@ impl super::TrapDispatcher {
                         let movie = bus.read_long(sp);
                         let err = if let Some(state) = self.movie_states.get_mut(&movie) {
                             state.current_time = state.duration;
-                            state.audio_time = state.duration as f64;
+                            state.audio_time = state.duration as f64 / state.time_scale as f64;
                             0
                         } else {
                             QUICKTIME_INVALID_MOVIE
