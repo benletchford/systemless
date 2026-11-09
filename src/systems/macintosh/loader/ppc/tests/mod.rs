@@ -952,3 +952,5 @@ mod highlight_preferences;
 mod usb;
 
 mod theme_button;
+
+mod outline_glyph_spans;

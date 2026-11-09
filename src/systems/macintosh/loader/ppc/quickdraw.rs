@@ -2348,19 +2348,66 @@ pub(crate) fn ppc_begin_outline_text_glyph(
         .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
     let mut vis_rows = regions::PpcRegionRowCache::for_band(vis, band_top, band_bottom);
     let mut clip_rows = regions::PpcRegionRowCache::for_band(clip, band_top, band_bottom);
+    let foreground = if lanes == 1 {
+        [color as u8, 0]
+    } else {
+        color.to_be_bytes()
+    };
+    let mut backgrounds = Vec::new();
+    let mut stored = Vec::new();
+    let left = left.max(0);
+    let right = right.min(fb.width as i32);
     for y in top.max(0)..bottom.min(fb.height as i32) {
-        for x in left.max(0)..right.min(fb.width as i32) {
+        let mut x = left;
+        while x < right {
             if !ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows) {
+                x += 1;
                 continue;
             }
-            let address = fb.base_addr + y as u32 * fb.row_bytes + x as u32 * lanes;
-            for lane in 0..lanes {
-                let foreground = (color >> ((lanes - 1 - lane) * 8)) as u8;
-                let Some(background) = memory.read_u8(address + lane) else {
-                    continue;
-                };
+            let start = x;
+            x += 1;
+            while x < right
+                && ppc_cached_point_in_port_regions(surface, (x, y), &mut vis_rows, &mut clip_rows)
+            {
+                x += 1;
+            }
+            let count = (x - start) as usize;
+            let address = fb.base_addr + y as u32 * fb.row_bytes + start as u32 * lanes;
+            backgrounds.resize(count * lanes as usize, 0);
+            if memory.read_bytes_into(address, &mut backgrounds).is_some() {
+                // Keep blank cells too: the later bitmap stores may hit any
+                // byte in this interval. The span API preserves the scalar
+                // coverage and repeated-ink rules while grouping offscreen work.
+                stored.resize(count, 255);
                 if let Some(mut p) = slot.as_mut() {
-                    p.glyph_pixel(address + lane, x as i16, y as i16, foreground, background);
+                    p.glyph_span(
+                        address,
+                        (start as i16, y as i16),
+                        lanes as usize,
+                        &foreground[..lanes as usize],
+                        &backgrounds,
+                        &stored,
+                    );
+                }
+                continue;
+            }
+            // A partially mapped row still registers each readable byte, as
+            // before. Never manufacture a background for an inaccessible lane.
+            for x in start..x {
+                let address = fb.base_addr + y as u32 * fb.row_bytes + x as u32 * lanes;
+                for lane in 0..lanes {
+                    let Some(background) = memory.read_u8(address + lane) else {
+                        continue;
+                    };
+                    if let Some(mut p) = slot.as_mut() {
+                        p.glyph_pixel(
+                            address + lane,
+                            x as i16,
+                            y as i16,
+                            foreground[lane as usize],
+                            background,
+                        );
+                    }
                 }
             }
         }
