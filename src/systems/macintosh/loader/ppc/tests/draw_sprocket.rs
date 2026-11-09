@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn draw_sprocket_reservation_page_fallback_preserves_dimensions_and_depth() {
+    for (width, height, depth) in [(640, 480, 8u32), (800, 600, 16u32)] {
+        for pages in [3, 4, u32::MAX] {
+            let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let attributes = PPC_DATA_BASE + 0x1000;
+            let output = attributes + 128;
+            loaded.memory.add_region(attributes, vec![0; 132]);
+            let mut requested = PpcDspContextAttributes {
+                width,
+                height,
+                display_depth: depth,
+                back_buffer_depth: depth,
+                display_best_depth_mask: 1 << depth.trailing_zeros(),
+                back_buffer_best_depth_mask: 1 << depth.trailing_zeros(),
+                page_count: 0,
+                ..PpcDspContextAttributes::default()
+            };
+            write_test_dsp_context_attributes(&mut loaded.memory, attributes, requested);
+            loaded.cpu.gpr[3] = attributes;
+            loaded.cpu.gpr[4] = output;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let selected = loaded.draw_sprocket.context_attributes;
+            let desktop = loaded.presented_front_buffer().unwrap();
+
+            requested.page_count = pages;
+            write_test_dsp_context_attributes(&mut loaded.memory, attributes, requested);
+            loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+            loaded.cpu.gpr[4] = attributes;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.draw_sprocket.context_attributes, selected);
+            assert_eq!(
+                loaded.draw_sprocket.context_state,
+                PpcDspContextPlayState::Inactive
+            );
+            assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+            assert_eq!(loaded.memory.read_u32_be(attributes + 48), Some(pages));
+        }
+    }
+}
+
+#[test]
 fn draw_sprocket_blit_fastest_copies_plain_pixels_and_marks_completion() {
     let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpBlit_Fastest");
     let mut loaded = load_pef_application(&pef).unwrap();
