@@ -219,7 +219,7 @@ pub(crate) fn ppc_read_pstring(memory: &mut PpcSectionMem, addr: u32) -> Option<
 
 /// Read a NUL-terminated string of at most 255 bytes, the Str255 bound used by
 /// the lowercase C-string glue. Unreadable or unterminated strings fail.
-fn ppc_read_bounded_c_string(memory: &mut PpcSectionMem, address: u32) -> Option<Vec<u8>> {
+pub(crate) fn ppc_read_bounded_c_string(memory: &mut PpcSectionMem, address: u32) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     for offset in 0..=u32::from(u8::MAX) {
         match memory.read_u8(address.checked_add(offset)?)? {

@@ -256,6 +256,7 @@ fn font_swap_returns_reusable_output_and_real_outline_resource_metadata() {
         &mut loaded.memory,
         &resource_records,
         &mut resource_error,
+        false,
     );
     assert_eq!(resource_error, PPC_NO_ERR);
     assert_eq!(loaded.memory.read_u16_be(info), Some(20));

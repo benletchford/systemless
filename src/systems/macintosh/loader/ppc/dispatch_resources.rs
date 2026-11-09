@@ -169,10 +169,18 @@ pub(super) fn dispatch_resource_import(
             )))
         }
         PpcImportDispatcherTarget::GetNamedResource
-        | PpcImportDispatcherTarget::Get1NamedResource => {
+        | PpcImportDispatcherTarget::Get1NamedResource
+        | PpcImportDispatcherTarget::GetNamedResourceCString
+        | PpcImportDispatcherTarget::Get1NamedResourceCString => {
             let current_only = matches!(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::Get1NamedResource
+                    | PpcImportDispatcherTarget::Get1NamedResourceCString
+            );
+            let c_string = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::GetNamedResourceCString
+                    | PpcImportDispatcherTarget::Get1NamedResourceCString
             );
             Some(PpcImportAction::Return(ppc_get_named_resource(
                 cpu,
@@ -185,6 +193,7 @@ pub(super) fn dispatch_resource_import(
                 vfs_resources,
                 *current_resource_refnum,
                 current_only,
+                c_string,
                 resource_policy.res_load(),
                 last_resource_error,
             )))
@@ -342,8 +351,12 @@ pub(super) fn dispatch_resource_import(
             ppc_set_res_attrs(cpu, vfs_resource_files, vfs_resources, last_resource_error);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetResInfo => {
-            ppc_get_res_info(cpu, memory, vfs_resources, last_resource_error);
+        PpcImportDispatcherTarget::GetResInfo | PpcImportDispatcherTarget::GetResInfoCString => {
+            let c_string = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::GetResInfoCString
+            );
+            ppc_get_res_info(cpu, memory, vfs_resources, last_resource_error, c_string);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetResourceSizeOnDisk => {

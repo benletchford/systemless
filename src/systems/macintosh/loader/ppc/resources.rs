@@ -249,11 +249,19 @@ pub(crate) fn ppc_get_named_resource(
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     current_only: bool,
+    c_string: bool,
     load_data: bool,
     last_resource_error: &mut i16,
 ) -> u32 {
     let res_type = cpu.gpr[3];
-    let Some(name) = ppc_read_pstring_bytes(memory, cpu.gpr[4]) else {
+    // Resources.h declares lowercase named-resource glue with const char*;
+    // the uppercase entry points retain their Pascal-string contract.
+    let name = if c_string {
+        ppc_read_bounded_c_string(memory, cpu.gpr[4])
+    } else {
+        ppc_read_pstring_bytes(memory, cpu.gpr[4])
+    };
+    let Some(name) = name else {
         *last_resource_error = PPC_PARAM_ERR;
         return 0;
     };
@@ -567,6 +575,7 @@ pub(crate) fn ppc_get_res_info(
     memory: &mut PpcSectionMem,
     vfs_resources: &[PpcVfsResourceRecord],
     last_resource_error: &mut i16,
+    c_string: bool,
 ) {
     let handle = cpu.gpr[3];
     let id_ptr = cpu.gpr[4];
@@ -590,7 +599,15 @@ pub(crate) fn ppc_get_res_info(
         let _ = memory.write_u32_be(type_ptr, record.res_type);
     }
     if name_ptr != 0 {
-        let _ = ppc_write_pstring_bytes(memory, name_ptr, &record.name);
+        if c_string {
+            // C and Pascal outputs both need name.len().min(255) + 1 bytes.
+            // All outputs have been validated before the first write above.
+            let name = &record.name[..record.name.len().min(255)];
+            let _ = memory.write_bytes(name_ptr, name);
+            let _ = memory.write_u8(name_ptr + name.len() as u32, 0);
+        } else {
+            let _ = ppc_write_pstring_bytes(memory, name_ptr, &record.name);
+        }
     }
     *last_resource_error = PPC_NO_ERR;
 }
