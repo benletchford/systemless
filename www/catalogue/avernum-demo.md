@@ -36,6 +36,35 @@ compatibility:
       registration, date, game-byte or partition changes.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5875
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: 4cee18e7 private browser preview on merged runtime 52b75be6
+    architecture: ppc
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5877
+    environment: >-
+      Hosted unchanged original archive and exact main/worker Wasm response bodies
+      verified by HTTP 200, size and SHA-256. Private source differs from promoted
+      ef7295dd only by a test launch flag; runtime Rust matches merged 52b75be6.
+      Worker/WebGL, isolation and SharedArrayBuffer, default PPC 25 MHz, original
+      800x600/16-bit display, preferred partition, default party and sound retained.
+      Each unchanged 20-second sample begins at the final story before Fort Avernum
+      initialization, includes help dismissal, then sends keypad 6 or omits it.
+      Both runs pass six measured scene checks; actual captures inspected. The
+      native 800x600 framebuffer renders at CSS 798x598, and exact RGB samples use
+      native-coordinate projection with a one-CSS-pixel neighborhood. The active
+      party/map moves while the control retains its position. Both fail pacing:
+      final steady guest rates 25.7923/24.3471 ticks per second and host rates
+      50.7248/49.5338 FPS, maximum worker frames 166.8/304.0 ms and minimum audio
+      queues 11.8/13.5 ms. Gates remain guest >=50, host >=55, frame <=50 ms and
+      audio >=40 ms. No concurrent build or captured lifecycle/network errors.
+      Actual archive is 7,385,878 bytes with SHA-256
+      1b9009fab8364fb952cab13ebb6aeabf94702d619c77bd6872ba347fd1c7f89e.
+      Both Wasm bodies are 17,970,823 bytes with SHA-256
+      5591909f2f28a138ea5a6070a431cd4e575224dc50131dc9ce7810d769678b1d.
+      Earlier attempts stopped during harness setup before any pacing sample.
+      A small dismissed-help-button remnant remains visible. Browser launch is
+      unapproved; full quests, combat, saves and audio fidelity remain unverified.
 runtime:
   executable_path: Avernum v1.0.2 Demo Installer/Avernum ƒ/Avernum v1.0.2
 artifacts:
@@ -104,4 +133,4 @@ caves. This is Spiderweb Software's complete original unregistered Macintosh
 v1.0.2 demo, including its instructions, map and licence.
 
 The default party reaches Fort Avernum in native testing. Use the numeric keypad
-or click terrain to move. Browser play is still being verified.
+or click terrain to move. Browser launch is unavailable while performance is being improved.
