@@ -46,6 +46,42 @@ pub(super) fn dispatch_graphics_device_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GDeviceChanged => {
+            // Apple QuickDraw Reference (2007), p. 223: a changed pmTable
+            // requires GDeviceChanged; edited table contents additionally
+            // require CTabChanged. Preserve the table's seed and hardware CLUT.
+            let device = cpu.gpr[3];
+            if let Some(record) = ppc_current_gdevice_record(memory, device) {
+                ppc_register_gdevice(toolbox_startup, device);
+                if let Some(table) = ppc_gdevice_ctable_handle(memory, device) {
+                    if device == PPC_MAIN_GDEVICE {
+                        // Main-screen Color2Index uses this logical snapshot;
+                        // other devices read their current table directly.
+                        if let Some(updated) =
+                            ppc_read_ctable_clut(memory, table, color_manager_clut)
+                        {
+                            *color_manager_clut = updated;
+                        }
+                    }
+                    let table_seed = memory
+                        .read_u32_be(table)
+                        .filter(|&ptr| ptr != 0)
+                        .and_then(|ptr| memory.read_u32_be(ptr));
+                    let inverse = record
+                        .checked_add(6)
+                        .and_then(|field| memory.read_u32_be(field))
+                        .filter(|&handle| handle != 0)
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .filter(|&ptr| ptr != 0);
+                    if let (Some(seed), Some(inverse)) = (table_seed, inverse) {
+                        // A mismatched seed marks an existing inverse table stale.
+                        // Rebuilding remains the normal MakeITable operation.
+                        let _ = memory.write_u32_be(inverse, !seed);
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetDeviceList | PpcImportDispatcherTarget::GetMainDevice => {
             Some(PpcImportAction::Return(PPC_MAIN_GDEVICE))
         }
