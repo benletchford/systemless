@@ -794,7 +794,12 @@ pub(crate) fn ppc_record_requested_dsp_context_attributes(
     attributes: u32,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<()> {
-    let requested = ppc_read_optional_dsp_context_attributes(memory, attributes)?;
+    let mut requested = ppc_read_optional_dsp_context_attributes(memory, attributes)?;
+    // Apple Game Sprockets Guide, "Choosing a Context": search attributes
+    // are requirements, but reservation features are requests. Fall back
+    // to our supported software buffering without resetting the requested
+    // display dimensions or pixel depths when more pages are desired.
+    requested.page_count = requested.page_count.min(PPC_DSP_MAX_REQUESTED_PAGE_COUNT);
     draw_sprocket.context_attributes = ppc_selected_dsp_context_attributes(requested);
     Some(())
 }
