@@ -23,7 +23,7 @@ compatibility:
     systemless_version: "0.112.0 (120dffb1)"
     architecture: 68k
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/5302#issuecomment-6740264170
+    evidence: https://github.com/benletchford/systemless/issues/5302
     environment: >-
       Actual released route, original Trilogy Release archive, default 25 MHz,
       original display, partition, preferences and sound; no overrides or game
@@ -59,7 +59,7 @@ compatibility:
     systemless_version: "0.112.0 (120dffb1)"
     architecture: ppc
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/5302#issuecomment-6740264170
+    evidence: https://github.com/benletchford/systemless/issues/5302
     environment: >-
       Actual released route, original Trilogy Release archive, default 25 MHz,
       original display, partition, preferences and sound; no overrides or game
