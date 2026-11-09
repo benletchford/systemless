@@ -123,6 +123,34 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) draw_sprocket: &'a mut PpcDrawSprocketState,
 }
 
+// These operations use movie/controller state and guest pointers directly, not
+// the ABI handle-record view. Keep the full dispatch and callback paths intact.
+fn movie_poll_uses_no_handle_snapshot(target: &PpcImportDispatcherTarget, cpu: &PpcCpu) -> bool {
+    match target {
+        PpcImportDispatcherTarget::QtMoviesTask | PpcImportDispatcherTarget::QtIsMovieDone => true,
+        PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => match operation {
+            PpcQuickTimeCompatibilityOperation::GetMovieTime
+            | PpcQuickTimeCompatibilityOperation::GetMovieTimeBase
+            | PpcQuickTimeCompatibilityOperation::GetMovieTimeScale
+            | PpcQuickTimeCompatibilityOperation::GetMovieRate
+            | PpcQuickTimeCompatibilityOperation::MCIdle => true,
+            PpcQuickTimeCompatibilityOperation::MCDoAction => cpu.gpr[4] as i16 == 1,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static HANDLE_SNAPSHOTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn handle_snapshot_count() -> u64 {
+    HANDLE_SNAPSHOTS.with(std::cell::Cell::get)
+}
+
 pub(crate) fn dispatch_supported_import(
     mut context: PpcDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
@@ -275,7 +303,13 @@ pub(crate) fn dispatch_supported_import(
     // Toolbox helpers use an import-scoped read view for guest ABI decoding.
     // Allocation ownership remains in the process Memory Manager, and the
     // next import observes its canonical records immediately.
-    let handles = &mut process_memory_manager.native_handle_records().to_vec();
+    let handles = &mut if movie_poll_uses_no_handle_snapshot(&binding.dispatcher_target, cpu) {
+        Vec::new()
+    } else {
+        #[cfg(test)]
+        HANDLE_SNAPSHOTS.with(|count| count.set(count.get() + 1));
+        process_memory_manager.native_handle_records().to_vec()
+    };
     if is_quickdraw_3d_library(&binding.library_name)
         && !matches!(
             binding.dispatcher_target,

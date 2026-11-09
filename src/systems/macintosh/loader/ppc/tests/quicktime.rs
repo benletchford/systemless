@@ -7560,3 +7560,52 @@ fn quicktime_open_file_and_failed_creation_preserve_the_playing_movie() {
 }
 #[path = "quicktime_controller_placement.rs"]
 mod controller_placement_tests;
+
+#[test]
+fn quicktime_idle_polling_preserves_pixels_without_copying_native_handles() {
+    let (mut loaded, window, pixels) = cinepak_movie_draw_fixture();
+    loaded.quicktime.movie_gworld = window;
+    for _ in 0..64 {
+        assert_ne!(loaded.process_memory_manager.0.borrow_mut()
+            .new_native_handle(&mut loaded.memory, 32, true), 0);
+    }
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    let before = snapshots();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    loaded.memory.write_bytes(pixels, &[0xee; 32]).unwrap();
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0xeeee));
+    assert_eq!(snapshots(), before);
+    // An explicit repaint keeps its full path and repairs the damaged pixels.
+    assert_eq!(call_movie_toolbox(&mut loaded, "UpdateMovie", &[PPC_QT_MOVIE]), PPC_QT_MOVIE);
+    assert_eq!(loaded.memory.read_u16_be(pixels), Some(0));
+    assert_eq!(snapshots(), before + 1);
+}
+
+#[test]
+fn quicktime_polling_keeps_controller_errors_and_full_path_for_other_actions() {
+    let mut loaded = movie_toolbox_fixture();
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    let rect = PPC_DATA_BASE + 0x4000;
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 240, 320).unwrap();
+    let controller = call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 0]);
+    assert_ne!(controller, 0);
+    let before = snapshots();
+    assert_eq!(call_movie_toolbox(&mut loaded, "MCIdle", &[controller]), 0);
+    assert_eq!(call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 1, 0]), 0);
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetMovieTimeScale", &[PPC_QT_MOVIE]), 60);
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetMovieTime", &[PPC_QT_MOVIE, 0]), 0);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtIsMovieDone);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.quicktime.movie_error, PPC_PARAM_ERR);
+    assert_eq!(call_movie_toolbox(&mut loaded, "MCIdle", &[0]), ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+    assert_eq!(snapshots(), before);
+    // A non-idle action remains on the full path, including invalid actions.
+    assert_eq!(call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 0, 0]), ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+    assert_eq!(snapshots(), before + 1);
+}
