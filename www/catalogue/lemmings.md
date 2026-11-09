@@ -13,6 +13,34 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: v0.112.0 public release
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5893
+    environment: >-
+      Human-published v0.112.0, source 120dffb14a2ce302e2fbdce7a72e1b56254687c4.
+      Normal public HTTPS route; actual original archive and page/dedicated-worker
+      Wasm HTTP 200 bodies match pinned sizes and SHA-256. Every observed target is
+      resumed, with zero lifecycle or observer errors. Default 68K 25 MHz, 800x600
+      colour display, partition and audio settings retained. Normal introduction,
+      level 1 initialization and builder input occur inside the first 20-second
+      measurement. Both cases select builder and settle the pointer over a visibly
+      identified walker; only the assignment button edges are omitted in control.
+      Active builders decrease 20 to 19 and staircase terrain appears; control
+      retains 20 and produces no staircase. Both continue in the running first
+      level for a separate full 20-second sample, ending with 18 lemmings visible.
+      All four unchanged pacing gates pass. Final steady snapshots, not whole-run
+      averages: active initialization/sustained guest ticks/sec 60.184/60.151 and
+      host FPS 63.408/59.148; control 61.095/59.560 and 60.077/60.587. Maximum worker
+      frames 37.5/39.5 and 38.6/44.2 ms; minimum audio queues 115.7/123.6 and
+      123.4/125.0 ms. Independent extraction matches all seven original files,
+      fourteen forks and seven Finder records. Native repeats on private committed
+      source 9903e995 separately pass thirteen checks each; own reference images
+      establish consistency, not a fresh hardware-oracle comparison. Earlier
+      BasiliskII evidence remains historical. Level completion, the other three
+      demo levels, persistence and audio fidelity remain unverified in this replay.
   - date: 2026-09-22
     tester: Catalogue maintainer
     systemless_version: 0.48.0
