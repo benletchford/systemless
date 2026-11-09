@@ -1331,6 +1331,7 @@ fn ppc_fill_rows_with_pixpat(
         }
     }
     let mut wrote = false;
+    let mut copy_row = Vec::new();
     for (row_idx, endpoints) in rows.iter().enumerate() {
         let y = top.saturating_add(row_idx as i16);
         if y < surf_top || y >= surf_bottom {
@@ -1342,6 +1343,42 @@ fn ppc_fill_rows_with_pixpat(
             let seg_right = interval[1].min(surf_right);
             if seg_right <= seg_left {
                 continue;
+            }
+            // The sampler is already detached from guest memory. In copy mode,
+            // publish one contiguous interval instead of notifying memory and
+            // presentation once per pixel. Keep the scalar path for packed
+            // pixels, Boolean modes, invalid strides and partially mapped rows.
+            if mode & 7 == 0 && matches!(front_buffer.depth, 8 | 16) {
+                let lanes = front_buffer.depth / 8;
+                let pixel_addr = |x: i16| {
+                    let point = (i32::from(x) - i32::from(surf_left), buf_y);
+                    if lanes == 1 {
+                        ppc_front_buffer_8bpp_pixel_addr(front_buffer, point)
+                    } else {
+                        ppc_q3_front_buffer_pixel_addr(front_buffer, point)
+                    }
+                };
+                let count = (i32::from(seg_right) - i32::from(seg_left)) as u32;
+                if let Some(start) = pixel_addr(seg_left) {
+                    if start
+                        .checked_add((count - 1) * lanes)
+                        .is_some_and(|last| pixel_addr(seg_right - 1) == Some(last))
+                    {
+                        copy_row.clear();
+                        for x in seg_left..seg_right {
+                            let pixel = sampler.sample(x, y);
+                            if lanes == 1 {
+                                copy_row.push(pixel as u8);
+                            } else {
+                                copy_row.extend_from_slice(&pixel.to_be_bytes());
+                            }
+                        }
+                        if memory.write_bytes(start, &copy_row).is_some() {
+                            wrote = true;
+                            continue;
+                        }
+                    }
+                }
             }
             for x in seg_left..seg_right {
                 let buf_x = i32::from(x) - i32::from(surf_left);

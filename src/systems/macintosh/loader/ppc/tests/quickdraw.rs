@@ -7943,3 +7943,171 @@ fn ppc_hsl2rgb_import_dispatches_and_preserves_argument_registers() {
     assert_eq!(loaded.memory.read_u16_be(color + 6), Some(0xfffe));
     assert_eq!(loaded.memory.read_u16_be(color + 8), Some(0x5a5a));
 }
+
+#[test]
+fn color_pixpat_fill_batches_clipped_intervals_without_touching_neighbors() {
+    use crate::memory::write_log;
+
+    for depth in [8, 16] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"FillCRgn"),
+            PpcLoadConfig {
+                screen_depth: depth,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let colors = [[0x1111, 0, 0], [0, 0x2222, 0], [0, 0, 0x3333]];
+        let ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+        for (i, color) in colors.iter().enumerate() {
+            let index = 7 + i as u32;
+            for (component, value) in color.iter().enumerate() {
+                loaded
+                    .memory
+                    .write_u16_be(ctable + 8 + index * 8 + 2 + component as u32 * 2, *value)
+                    .unwrap();
+            }
+            loaded
+                .screen_clut
+                .with_mut(|clut| clut[index as usize] = *color);
+        }
+        let scratch = PPC_DATA_BASE + 0x5000;
+        loaded.memory.add_region(scratch, vec![0; 0x1000]);
+        let pattern = make_test_ppc_raw_color_pixpat_handle(&mut loaded.memory, scratch);
+        for (offset, rows) in [
+            (0x300, vec![vec![0, 8], vec![1, 7]]),
+            (0x500, vec![vec![1, 3, 5, 8], vec![0, 6]]),
+        ] {
+            let handle = scratch + offset;
+            loaded.memory.write_u32_be(handle, handle + 16).unwrap();
+            loaded
+                .memory
+                .write_bytes(
+                    handle + 16,
+                    &ppc_region_storage_from_rows(0, &rows).unwrap(),
+                )
+                .unwrap();
+        }
+        loaded
+            .memory
+            .write_u32_be(
+                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
+                scratch + 0x500,
+            )
+            .unwrap();
+        let front =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap()
+                .front_buffer;
+        for y in 0..3 {
+            for x in 0..10 {
+                assert!(ppc_quickdraw_write_raw_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (x, y),
+                    42
+                ));
+            }
+        }
+        loaded.cpu.gpr[3] = scratch + 0x300;
+        loaded.cpu.gpr[4] = pattern;
+        write_log::start();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FillCRgn);
+        let writes = write_log::take();
+        let pixel_values = if depth == 8 {
+            [7, 8, 9]
+        } else {
+            [0x0800, 0x0080, 0x0006]
+        };
+        for y in 0..3 {
+            for x in 0..10 {
+                let filled = (y == 0 && ((1..3).contains(&x) || (5..8).contains(&x)))
+                    || (y == 1 && (1..6).contains(&x));
+                let tile = if y % 2 == 0 {
+                    [0, 1, 2, 1]
+                } else {
+                    [2, 1, 0, 1]
+                };
+                let expected = if filled {
+                    pixel_values[tile[x as usize % 4]]
+                } else {
+                    42
+                };
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(expected),
+                    "depth={depth} x={x} y={y}"
+                );
+            }
+        }
+        let bytes = depth as usize / 8;
+        let framebuffer_writes: Vec<_> = writes
+            .into_iter()
+            .filter(|(a, _)| {
+                *a >= front.base_addr && *a < front.base_addr + front.row_bytes * front.height
+            })
+            .collect();
+        assert_eq!(
+            framebuffer_writes,
+            vec![
+                (front.base_addr + bytes as u32, 2 * bytes),
+                (front.base_addr + 5 * bytes as u32, 3 * bytes),
+                (front.base_addr + front.row_bytes + bytes as u32, 5 * bytes),
+            ],
+            "one presentation-aware store per clipped interval, depth={depth}"
+        );
+    }
+}
+
+#[test]
+fn color_pixpat_fill_preserves_valid_pixels_around_an_unmapped_gap() {
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"FillCRect"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0; 0x1000]);
+    let pattern = make_test_ppc_raw_color_pixpat_handle(&mut loaded.memory, scratch);
+    let base = loaded.memory.mapping_holes(0x4000_0000, 0x7000_0000)
+        .into_iter().find(|(start, end)| end - start >= 16)
+        .expect("fixture needs an unmapped span").0;
+    loaded.memory.add_region(base, vec![0; 10]);
+    loaded.memory.add_region(base + 12, vec![0; 4]);
+    loaded.memory.write_u32_be(PPC_MAIN_PIXMAP, base).unwrap();
+    assert_eq!(
+        loaded.memory.read_u16_be(base + 10),
+        None,
+        "fixture gap must be unmapped before drawing"
+    );
+    assert!(ppc_fill_color_rect(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 1, 8),
+        pattern,
+        PPC_RGB_BLACK,
+        None,
+        PPC_RGB_WHITE,
+        None,
+    ));
+    let front = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+        .unwrap()
+        .front_buffer;
+    assert_eq!(front.base_addr, base);
+    let values = [0x0800, 0x0080, 0x0006, 0x0080];
+    for x in 0..8 {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 0)),
+            if x == 5 {
+                None
+            } else {
+                Some(values[x as usize % 4])
+            },
+            "x={x}"
+        );
+    }
+}
