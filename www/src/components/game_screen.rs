@@ -4775,6 +4775,27 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
     // Returns (mac_adb_keycode, char_code) for the common keys a player needs.
     // Mac keycodes from Inside Macintosh Vol V — Appendix C (ADB keyboard).
     match code {
+        // Match the native frontend's ADB codes and kFunctionKeyCharCode.
+        "F1" => return Some((0x7A, 0x10)),
+        "F2" => return Some((0x78, 0x10)),
+        // F3 remains the host-only performance toggle.
+        "F3" => return None,
+        "F4" => return Some((0x76, 0x10)),
+        "F5" => return Some((0x60, 0x10)),
+        "F6" => return Some((0x61, 0x10)),
+        "F7" => return Some((0x62, 0x10)),
+        "F8" => return Some((0x64, 0x10)),
+        "F9" => return Some((0x65, 0x10)),
+        "F10" => return Some((0x6D, 0x10)),
+        "F11" => return Some((0x67, 0x10)),
+        "F12" => return Some((0x6F, 0x10)),
+        "F13" => return Some((0x69, 0x10)),
+        "F14" => return Some((0x6B, 0x10)),
+        "F15" => return Some((0x71, 0x10)),
+        "F16" => return Some((0x6A, 0x10)),
+        "F17" => return Some((0x40, 0x10)),
+        "F18" => return Some((0x4F, 0x10)),
+        "F19" => return Some((0x50, 0x10)),
         "NumpadDecimal" => return Some((0x41, 0)),
         "NumpadMultiply" => return Some((0x43, 0)),
         "NumpadAdd" => return Some((0x45, 0)),
