@@ -1,6 +1,8 @@
 //! Typed Window Manager dispatch for PowerPC imports.
 
 use super::*;
+#[path = "dispatch_window_alignment.rs"]
+pub(super) mod alignment;
 use std::collections::VecDeque;
 
 pub(crate) const PPC_CWINDOW_PORT_RECT_OFFSET: u32 = 16;
@@ -157,7 +159,20 @@ pub(super) fn dispatch_window_import(
         last_resource_error,
     } = context;
 
-    match binding.dispatcher_target {
+    let move_target = PpcImportDispatcherTarget::MoveWindow;
+    let target = if binding.dispatcher_target == PpcImportDispatcherTarget::QtAlignWindow {
+        match alignment::prepare_align_window(
+            cpu, memory, process_memory_manager, heap_cursor, last_mem_error, gworlds,
+            window_list, toolbox_startup,
+        ) {
+            Ok(Some(action)) => return Some(action),
+            Err(()) => return Some(PpcImportAction::Halt),
+            Ok(None) => &move_target,
+        }
+    } else {
+        &binding.dispatcher_target
+    };
+    match *target {
         PpcImportDispatcherTarget::QtBeginFullScreen => {
             // QuickTime 2.5 Developer's Guide, Movie Toolbox, BeginFullScreen.
             // The guest has one fixed display mode; choose that mode only when

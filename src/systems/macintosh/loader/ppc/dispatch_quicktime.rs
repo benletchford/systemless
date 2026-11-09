@@ -600,36 +600,11 @@ fn ppc_qt_align_screen_rect(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Ppc
     let Some((top, left, bottom, right)) = ppc_read_rect(memory, rect) else {
         return PpcImportAction::Halt;
     };
-    // There is one display in the current machine profile. Offscreen worlds
-    // are not screens; use the main device's live PixMap, not the current port.
-    if top < bottom
-        && left < right
-        && bottom > 0
-        && right > 0
-        && i32::from(top) < ppc_main_screen_height() as i32
-        && i32::from(left) < ppc_main_screen_width() as i32
-    {
-        let step: i32 = match memory.read_u16_be(PPC_MAIN_PIXMAP + 32) {
-            Some(1 | 2) => 16,
-            Some(4) => 8,
-            Some(8 | 32) => 4, // The PowerPC profile is of 68040-or-later class.
-            Some(16) => 2,
-            _ => return PpcImportAction::Halt,
-        };
-        let aligned = (i32::from(left) + step / 2) & !(step - 1);
-        let delta = (aligned - i32::from(left)) as i16;
-        if ppc_write_rect(
-            memory,
-            rect,
-            top,
-            aligned as i16,
-            bottom,
-            right.wrapping_add(delta),
-        )
-        .is_none()
-        {
-            return PpcImportAction::Halt;
-        }
+    let Some((top, left, bottom, right)) = standard_screen_alignment(memory, (top, left, bottom, right)) else {
+        return PpcImportAction::Halt;
+    };
+    if ppc_write_rect(memory, rect, top, left, bottom, right).is_none() {
+        return PpcImportAction::Halt;
     }
     let Some((callback, refcon)) = callback else {
         return PpcImportAction::ReturnPreserve;
@@ -654,4 +629,31 @@ fn ppc_qt_align_screen_rect(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> Ppc
     )
     .into_ppc_import_action()
     .unwrap_or(PpcImportAction::Halt)
+}
+
+pub(super) fn standard_screen_alignment(
+    memory: &mut PpcSectionMem,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    // There is one display in the current machine profile. Offscreen worlds
+    // are not screens; use the main device's live PixMap, not the current port.
+    if top < bottom
+        && left < right
+        && bottom > 0
+        && right > 0
+        && i32::from(top) < ppc_main_screen_height() as i32
+        && i32::from(left) < ppc_main_screen_width() as i32
+    {
+        let step: i32 = match memory.read_u16_be(PPC_MAIN_PIXMAP + 32) {
+            Some(1 | 2) => 16,
+            Some(4) => 8,
+            Some(8 | 32) => 4, // The PowerPC profile is of 68040-or-later class.
+            Some(16) => 2,
+            _ => return None,
+        };
+        let aligned = (i32::from(left) + step / 2) & !(step - 1);
+        let delta = (aligned - i32::from(left)) as i16;
+        return Some((top, aligned as i16, bottom, right.wrapping_add(delta)));
+    }
+    Some((top, left, bottom, right))
 }
