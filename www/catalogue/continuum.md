@@ -15,6 +15,13 @@ category: Arcade
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: v0.112.0 public release
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5453
+    environment: "Public qualification receipt: issue comment 6733359398. Human-published v0.112.0, source 120dffb14a2ce302e2fbdce7a72e1b56254687c4. Normal public HTTPS route; actual original archive and page/dedicated-worker Wasm HTTP 200 bodies match their pinned sizes and SHA-256. All attached targets resumed before gameplay, zero captured observer/lifecycle errors. Original 68K 25 MHz, display and partition settings retained. Each case includes separate 20-second initialization/input and sustained-gameplay samples; unchanged pacing gates pass. Rates below are final steady snapshots, not whole-run averages. Planet 1 slash thrust reduces fuel 10000 to 9680; omitted-thrust control retains 10000. Both remain on Planet 1 during sustained play. Active initialization/sustained guest rates 62.106/61.117 and host FPS 62.106/63.261; control 59.582/62.344 and 60.609/62.344. Maximum worker frames 31/25 and 26.2/28.8 ms; minimum audio queues 88.9/88.4 and 82.8/83.3 ms. Ordinary initial life loss/respawn retained. Earlier v0.111.0 failures remain historical evidence; both observer and release changed, so no precise causal fix is claimed. Combat, shields, later planets, saves and audio fidelity remain unverified."
   - date: "2026-10-31"
     tester: Catalogue maintainer
     systemless_version: 0fdb3961 deterministic play runner

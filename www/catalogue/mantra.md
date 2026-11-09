@@ -15,6 +15,13 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: v0.112.0 public release
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5656
+    environment: "Public qualification receipt: issue comment 6734052620. Human-published v0.112.0, source 120dffb14a2ce302e2fbdce7a72e1b56254687c4. Normal public HTTPS route; actual original archive and page/dedicated-worker Wasm HTTP 200 bodies match their pinned sizes and SHA-256. All attached targets resumed before gameplay, zero captured observer/lifecycle errors. Original 68K 25 MHz, display and partition settings retained. Each case includes separate 20-second initialization/input and sustained-gameplay samples; unchanged pacing gates pass. Rates below are final steady snapshots, not whole-run averages. New Game, story, sailor gift and Dagger 1 selection/equipment occur inside the first measurement. Held Space visibly extends the dagger; omitted Space leaves it retracted. Both cases share ordinary walking and remain on the beach in sustained play. Active initialization/sustained guest rates 61.422/59.954 and host FPS 62.481/59.954; control 59.036/58.875 and 60.054/60.941. Maximum worker frames 35.8/33.5 and 30.7/22.5 ms; minimum audio queues 466.7/469.6 and 471.8/479.7 ms. Native repeats on later source 6513c6a4 separately pass thirteen checks each; they are not relabelled as the public runtime. Combat hits, longer progression, saves and audio fidelity remain unverified."
   - date: "2026-11-06"
     tester: Catalogue maintainer
     systemless_version: afd924752115b3ebbb16da4f06228f07e37e9856 private composed candidate
@@ -123,5 +130,6 @@ alternate action.
 Private native and hosted-browser candidates verify the opening story, sailor
 interaction, dagger equipment and thrust; the native candidate also enters the
 next map. All three required runtime fixes are merged and bounded launch is
-approved. Released-runtime public qualification remains pending. Combat hits, longer progression, saving and audio fidelity remain
-unverified.
+approved. Public v0.112.0 verification now confirms the opening interaction and dagger thrust
+in sustained beach play. Combat hits, longer progression, saving and audio fidelity
+remain unverified.
