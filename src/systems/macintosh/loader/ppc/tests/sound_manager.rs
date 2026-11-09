@@ -258,11 +258,26 @@ use crate::sound::PendingSoundCallback;
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
+        assert_eq!(loaded.cpu.gpr[3], PPC_SOUND_MANAGER_VERSION);
         assert_eq!(
             loaded.memory.read_u32_be(PPC_HEAP_BASE),
             Some(PPC_SOUND_MANAGER_VERSION)
         );
+    }
+
+    #[test]
+    fn hle_sound_manager_version_supports_legacy_scalar_header() {
+        // Apple TN1048 records older headers declaring a long result.
+        // Such a caller supplies no structure-result pointer.
+        let pef = synthetic_pef_with_import(b"SndSoundManagerVersion");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 1;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], PPC_SOUND_MANAGER_VERSION);
     }
 
     #[test]
@@ -1151,7 +1166,7 @@ use crate::sound::PendingSoundCallback;
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], version_ptr);
+        assert_eq!(loaded.cpu.gpr[3], PPC_SOUND_MANAGER_VERSION);
         for offset in 0..3 {
             assert_eq!(loaded.memory.read_u8(version_ptr + offset), Some(0xa1));
         }
