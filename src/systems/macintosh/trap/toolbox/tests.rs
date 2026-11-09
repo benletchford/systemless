@@ -22072,3 +22072,172 @@ fn movie_from_file_missing_lazy_payload_reports_error_without_empty_movie() {
     assert_eq!(bus.read_byte(0x300208), 0xCC);
     assert_eq!(bus.read_byte(0x300310), 0xCC);
 }
+
+#[test]
+fn classic_file_graphics_importer_pascal_lifecycle_draws_original_pixels() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (spec, out, rect, port, handle, pixmap, pixels) = (
+        0x300000, 0x300080, 0x300090, 0x300100, 0x300200, 0x300300, 0x310000,
+    );
+    let image = image::RgbImage::from_raw(2, 1, vec![240, 16, 8, 8, 32, 224]).unwrap();
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    disp.vfs.insert("test.png".into(), encoded.into_inner());
+    write_test_fsspec(&mut bus, spec, 0, 2, b"test.png");
+    bus.write_word(port + 6, 0xC000);
+    bus.write_long(port + 2, handle);
+    bus.write_long(handle, pixmap);
+    bus.write_long(pixmap, pixels);
+    bus.write_word(pixmap + 4, 0x8000 | 16);
+    bus.write_word(pixmap + 10, 2);
+    bus.write_word(pixmap + 12, 4);
+    bus.write_word(pixmap + 32, 32);
+    disp.set_current_port_state(&mut bus, &mut cpu, port, None);
+    bus.write_long(TEST_SP, out);
+    bus.write_long(TEST_SP + 4, spec);
+    bus.write_word(TEST_SP + 8, 0xBAD);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, 0x0008_006E);
+    disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    assert_eq!(bus.read_word(TEST_SP + 8), 0);
+    let instance = bus.read_long(out);
+    assert_ne!(instance, 0);
+    for (selector, size) in [(0x000E, 4), (0x000F, 0)] {
+        bus.write_long(TEST_SP, (size << 16) | selector);
+        bus.write_long(TEST_SP + 4, rect);
+        bus.write_long(TEST_SP + 4 + size, instance);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0);
+        disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8 + size);
+        assert_eq!(bus.read_long(TEST_SP + 8 + size), 0);
+    }
+    assert_eq!(bus.read_long(rect), 0);
+    assert_eq!(bus.read_word(rect + 4), 1);
+    assert_eq!(bus.read_word(rect + 6), 2);
+    assert_eq!(bus.read_long(pixels), 0x00F01008);
+    assert_eq!(bus.read_long(pixels + 4), 0x000820E0);
+    assert_eq!(bus.read_long(pixels + 8), 0); // no adjacent-pixel write
+    bus.write_long(TEST_SP, instance);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, 8);
+    disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(!disp.classic_graphics_importers.contains_key(&instance));
+}
+
+#[test]
+fn classic_file_graphics_importer_missing_and_corrupt_files_leave_no_instance() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (spec, out) = (0x300000, 0x300080);
+    write_test_fsspec(&mut bus, spec, 0, 2, b"test.jpg");
+    for (data, expected) in [(None, -43i16), (Some(vec![0xff, 0xd8, 0xff, 0xe0]), -8969)] {
+        if let Some(data) = data {
+            disp.vfs.insert("test.jpg".into(), data);
+        }
+        bus.write_long(out, 0xDEADBEEF);
+        bus.write_long(TEST_SP, out);
+        bus.write_long(TEST_SP + 4, spec);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0008_006E);
+        disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 8) as i16, expected);
+        assert_eq!(bus.read_long(out), 0);
+        assert!(disp.classic_graphics_importers.is_empty());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+}
+
+#[test]
+fn classic_file_graphics_importer_bounds_and_gworld_are_instance_local() {
+    let (mut disp, _, mut bus) = setup();
+    let (spec, out, rect, port) = (0x300000, 0x300080, 0x300090, 0x300100);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 1))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    disp.vfs.insert("test.png".into(), encoded.into_inner());
+    write_test_fsspec(&mut bus, spec, 0, 2, b"test.png");
+    assert_eq!(disp.classic_open_graphics_importer(&mut bus, spec, out), 0);
+    let first = bus.read_long(out);
+    assert_eq!(disp.classic_open_graphics_importer(&mut bus, spec, out), 0);
+    let second = bus.read_long(out);
+    assert_ne!(first, second);
+    for (index, value) in [1, 2, 3, 6].into_iter().enumerate() {
+        bus.write_word(rect + index as u32 * 2, value);
+    }
+    bus.write_long(TEST_SP + 4, rect);
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x14, 4, TEST_SP),
+        0
+    );
+    for (instance, expected) in [(first, [1, 2, 3, 6]), (second, [0, 0, 1, 2])] {
+        assert_eq!(
+            disp.classic_graphics_importer_call(&mut bus, instance, 0x15, 4, TEST_SP),
+            0
+        );
+        assert_eq!(
+            (0..4)
+                .map(|i| bus.read_word(rect + i * 2))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+    // Natural dimensions remain unchanged by a destination bounds change.
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x0E, 4, TEST_SP),
+        0
+    );
+    assert_eq!(bus.read_long(rect + 4), 0x00010002);
+    bus.write_long(TEST_SP + 4, 0x1234); // device may be NIL or a device handle
+    bus.write_long(TEST_SP + 8, port);
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x10, 8, TEST_SP),
+        0
+    );
+    bus.write_long(TEST_SP + 4, out);
+    bus.write_long(TEST_SP + 8, out + 4);
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x11, 8, TEST_SP),
+        0
+    );
+    assert_eq!(bus.read_long(out), 0x1234);
+    assert_eq!(bus.read_long(out + 4), port);
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x19, 4, TEST_SP),
+        -3000
+    );
+    assert_eq!(
+        disp.classic_graphics_importer_call(&mut bus, first, 0x0F, 4, TEST_SP),
+        -3000
+    );
+}
+
+#[test]
+fn classic_file_graphics_importer_rejects_transparency_instead_of_flattening_it() {
+    let (mut disp, _, mut bus) = setup();
+    let (spec, out) = (0x300000, 0x300080);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(1, 1, vec![255, 0, 0, 0]).unwrap())
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    disp.vfs.insert("test.png".into(), encoded.into_inner());
+    write_test_fsspec(&mut bus, spec, 0, 2, b"test.png");
+    bus.write_long(out, 0xBAD);
+    assert_eq!(
+        disp.classic_open_graphics_importer(&mut bus, spec, out),
+        -8961
+    );
+    assert_eq!(bus.read_long(out), 0);
+    assert!(disp.classic_graphics_importers.is_empty());
+}

@@ -1523,6 +1523,8 @@ pub struct TrapDispatcher {
     pub(crate) synthetic_component_instances: FastHashSet<u32>,
     /// Next opaque ComponentInstance value returned by OpenComponent.
     pub(crate) next_synthetic_component_instance: u32,
+    pub(crate) classic_graphics_importers:
+        FastHashMap<u32, super::toolbox::graphics_importer::ClassicGraphicsImporter>,
     /// Saved old structure/content regions keyed by window pointer.
     /// SaveOld snapshots this state and DrawNew consumes it.
     pub(crate) saved_draw_old_regions: FastHashMap<u32, DrawOldState>,
@@ -3906,6 +3908,7 @@ impl TrapDispatcher {
             cooperative_thread_scheduler: 0,
             synthetic_component_instances: HashSet::default(),
             next_synthetic_component_instance: 0x00C1_0001,
+            classic_graphics_importers: HashMap::default(),
             saved_draw_old_regions: HashMap::default(),
             fired_oapp_handler: false,
             system_str_cache: HashMap::default(),

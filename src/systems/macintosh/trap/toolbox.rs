@@ -1,5 +1,6 @@
 //! Toolbox Utility trap handlers (events, Random, Sound, misc).
 
+pub(crate) mod graphics_importer;
 #[path = "toolbox/movie_controller_palette.rs"]
 mod movie_controller_palette;
 
@@ -15323,6 +15324,17 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 54);
                         cpu.write_reg(Register::D0, result as u16 as u32);
                     }
+                    // Universal Interfaces ImageCompression.h: two pointer arguments.
+                    0x006E if arg_bytes == 8 => {
+                        let result = self.classic_open_graphics_importer(
+                            bus,
+                            bus.read_long(sp + 4),
+                            bus.read_long(sp),
+                        );
+                        bus.write_word(sp + 8, result as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
+                    }
                     // AlignScreenRect ($AAA3, selector $004C)
                     // Aligns a global rectangle to the strictest intersecting screen.
                     // pascal void AlignScreenRect(Rect *rp, AlignmentProcRecordPtr alignmentProc);
@@ -17819,7 +17831,11 @@ impl super::TrapDispatcher {
                         );
                     }
                     let instance = bus.read_long(sp + 4 + param_size);
-                    let result = self.classic_movie_controller_call(bus, instance, call_num, param_size, sp);
+                    let result = if self.classic_graphics_importers.contains_key(&instance) {
+                        self.classic_graphics_importer_call(bus, instance, call_num, param_size, sp)
+                    } else {
+                        self.classic_movie_controller_call(bus, instance, call_num, param_size, sp)
+                    };
                     let result_sp = sp + 8 + param_size;
                     bus.write_long(result_sp, result as u32);
                     cpu.write_reg(Register::A7, result_sp);
@@ -17908,6 +17924,7 @@ impl super::TrapDispatcher {
                     0x0008 => {
                         // CloseComponent(ComponentInstance): OSErr
                         let instance = bus.read_long(sp);
+                        self.classic_graphics_importers.remove(&instance);
                         self.dispose_classic_movie_controller(bus, instance);
                         bus.write_word(sp + 4, 0);
                         cpu.write_reg(Register::A7, sp + 4);
