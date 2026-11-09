@@ -12,6 +12,13 @@ category: Arcade
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: v0.112.0 public release
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5862
+    environment: "Public qualification receipt: issue comment 6733715710. Human-published v0.112.0, source 120dffb14a2ce302e2fbdce7a72e1b56254687c4. Normal public HTTPS route; actual original archive and page/dedicated-worker Wasm HTTP 200 bodies match their pinned sizes and SHA-256. All attached targets resumed before gameplay, zero captured observer/lifecycle errors. Original 68K 25 MHz, display and partition settings retained. Each case includes separate 20-second initialization/input and sustained-gameplay samples; unchanged pacing gates pass. Rates below are final steady snapshots, not whole-run averages. Begin and two visible target clicks produce score 2; omission of only those target button edges retains score 0 at the causal checkpoint. Both cases then use the same visible-target hit policy to remain in actual gameplay; the later control is not passive. Final scores 31 and 29, Level 2, zero escapes. Active initialization/sustained guest rates 59.992/58.967 and host FPS 61.026/62.126; control 58.529/59.987 and 69.064/63.201. Maximum worker frames 33.4/31.7 and 37.3/33.8 ms; minimum audio queues 126.1/125.1 and 112.6/116.8 ms. Colour executable only; monochrome edition, all levels, bombs, persistence and audio fidelity remain unverified."
   - date: '2026-11-08'
     tester: Catalogue maintainer
     systemless_version: d6633529 native candidate; browser qualification pending
