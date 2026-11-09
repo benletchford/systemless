@@ -50,18 +50,19 @@ compatibility:
       800x600/16-bit display, preferred partition, default party and sound retained.
       Each unchanged 20-second sample begins at the final story before Fort Avernum
       initialization, includes help dismissal, then sends keypad 6 or omits it.
+      Production-equivalent release profile (fat LTO, one codegen unit, SIMD).
       Both runs pass six measured scene checks; actual captures inspected. The
       native 800x600 framebuffer renders at CSS 798x598, and exact RGB samples use
       native-coordinate projection with a one-CSS-pixel neighborhood. The active
       party/map moves while the control retains its position. Both fail pacing:
-      final steady guest rates 25.7923/24.3471 ticks per second and host rates
-      50.7248/49.5338 FPS, maximum worker frames 166.8/304.0 ms and minimum audio
-      queues 11.8/13.5 ms. Gates remain guest >=50, host >=55, frame <=50 ms and
+      final steady guest rates 13.2049/22.9027 ticks per second and host rates
+      38.9544/48.2592 FPS, maximum worker frames 328.6/317.8 ms and minimum audio
+      queues 23.1/31.9 ms. Gates remain guest >=50, host >=55, frame <=50 ms and
       audio >=40 ms. No concurrent build or captured lifecycle/network errors.
       Actual archive is 7,385,878 bytes with SHA-256
       1b9009fab8364fb952cab13ebb6aeabf94702d619c77bd6872ba347fd1c7f89e.
-      Both Wasm bodies are 17,970,823 bytes with SHA-256
-      5591909f2f28a138ea5a6070a431cd4e575224dc50131dc9ce7810d769678b1d.
+      Both Wasm bodies are 15,868,399 bytes with SHA-256
+      60ab97eff87f7b63b7694267f3a94c746ec14f642479178d6a1bd84218755a2a.
       Earlier attempts stopped during harness setup before any pacing sample.
       A small dismissed-help-button remnant remains visible. Browser launch is
       unapproved; full quests, combat, saves and audio fidelity remain unverified.
