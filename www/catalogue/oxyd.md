@@ -1,5 +1,6 @@
 ---
 id: oxyd
+launch_enabled: true
 kind: game
 title: Oxyd
 summary: >-
@@ -13,8 +14,42 @@ architectures:
 default_architecture: 68k
 category: Puzzle
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: e8846aed private production-equivalent browser; runtime e8e979b3
+    architecture: 68k
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5900
+    environment: >-
+      Original Systemless-hosted 3.8 archive; private frontend only, not released
+      public-route qualification. Release profile with fat LTO, one codegen unit,
+      SIMD and 4 MiB stack. Actual page and current dedicated-worker Wasm HTTP
+      bodies match 15887649 bytes / SHA-256
+      eafd085df42eb4872e55e592a693406969123a793272efd2ae42b41a5eb08c1a;
+      original archive HTTP body matches 979758 bytes / SHA-256
+      485cb9aca4ac03d75dd47730c9330db71ad83d0cff88271d3bf2a0fcd9c064ef.
+      Worker/WebGL, isolation, SharedArrayBuffer and original 68K 25 MHz, display,
+      partition, sound and code-book limits retained. Each case measures twenty
+      seconds starting before Command-3, including first-landscape initialization,
+      120-tick settle, two mouse movements or equal-clock omissions. A populated
+      marble component moves 120.09 native pixels from its own baseline, while
+      omission retains position with zero displacement. Native final coordinates
+      and stone-opening are not transferred to browser expectations. Separate
+      twenty-second sustained samples stay in the running first landscape;
+      ordinary active life loss and respawn remain intact. All four unchanged
+      pacing gates pass. Active initialization/sustained final steady guest rates
+      are 60.007/61.315 ticks/sec and host rates 60.007/60.293 FPS; control rates
+      are 59.983/58.649 and 59.983/59.660. Maximum worker frame is 17.9 ms and
+      minimum audio queue 130.1 ms. These are final steady scheduling snapshots,
+      not whole-run averages or game-rendered FPS. All observed targets resumed;
+      zero lifecycle or observer errors and no concurrent local build. Actual
+      input/control and all sustained captures inspected. An earlier case passed
+      timing but stopped on exact native-coordinate/stone expectations; it has
+      no sustained or qualification claim. Full landscapes, code-book stones,
+      two-player links, saves, independent visual parity, audio fidelity and
+      released public delivery remain unverified.
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: 9903e995 supplementary native source; browser qualification pending
