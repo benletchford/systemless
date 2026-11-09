@@ -1953,6 +1953,9 @@ pub(crate) struct SharedProcessWindowList(SharedProcessValue<ProcessWindowListSt
 struct ProcessWindowListState {
     windows: Vec<u32>,
     classes: HashMap<u32, u32>,
+    // Caller-owned DialogRecords end at byte 170. Their manager-private
+    // tail lives in separately owned scratch, shared across CPU adapters.
+    caller_dialog_private_storage: HashMap<u32, u32>,
 }
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
@@ -4589,6 +4592,7 @@ impl SharedProcessWindowList {
         Self(SharedProcessValue::from_value(ProcessWindowListState {
             windows,
             classes: HashMap::new(),
+            caller_dialog_private_storage: HashMap::new(),
         }))
     }
 
@@ -4613,6 +4617,35 @@ impl SharedProcessWindowList {
             let result = operation(&mut state.windows);
             state.classes.retain(|window, _| state.windows.contains(window));
             result
+        })
+    }
+
+    pub(crate) fn set_caller_dialog_private_storage(&self, dialog: u32, storage: u32) -> Option<u32> {
+        self.0
+            .with_mut(|state| state.caller_dialog_private_storage.insert(dialog, storage))
+    }
+
+    pub(crate) fn take_caller_dialog_private_storage(&self, dialog: u32) -> Option<u32> {
+        self.0
+            .with_mut(|state| state.caller_dialog_private_storage.remove(&dialog))
+    }
+
+    pub(crate) fn has_caller_dialog_private_storage(&self, dialog: u32) -> bool {
+        self.0
+            .with_ref(|state| state.caller_dialog_private_storage.contains_key(&dialog))
+    }
+
+    pub(crate) fn dialog_private_address(&self, dialog: u32, offset: u32) -> u32 {
+        let public_size = crate::dialog_manager::DIALOG_PUBLIC_RECORD_SIZE;
+        debug_assert!(offset >= public_size);
+        self.0.with_ref(|state| {
+            state
+                .caller_dialog_private_storage
+                .get(&dialog)
+                .map_or_else(
+                    || dialog.wrapping_add(offset),
+                    |storage| storage.wrapping_add(offset - public_size),
+                )
         })
     }
 
@@ -14307,6 +14340,32 @@ mod tests {
         assert_eq!(classic.window_class(0x1000), None);
         native.clear();
         assert_eq!(classic.window_class(0x2000), None);
+    }
+
+    #[test]
+    fn caller_dialog_private_storage_is_shared_but_snapshots_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::from_value(vec![0x1000]);
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+        assert_eq!(
+            classic.set_caller_dialog_private_storage(0x1000, 0x3000),
+            None
+        );
+        assert_eq!(native.dialog_private_address(0x1000, 172), 0x3002);
+        assert_eq!(native.dialog_private_address(0x2000, 172), 0x20ac);
+        let detached = native.clone();
+        native.remove_window(0x1000);
+        // CloseWindow is distinct from disposing the dialog record.
+        assert!(classic.has_caller_dialog_private_storage(0x1000));
+        assert_eq!(
+            native.take_caller_dialog_private_storage(0x1000),
+            Some(0x3000)
+        );
+        assert!(!classic.has_caller_dialog_private_storage(0x1000));
+        assert_eq!(detached.dialog_private_address(0x1000, 216), 0x302e);
+        assert_eq!(classic.dialog_private_address(0x1000, 216), 0x10d8);
     }
 
     #[test]

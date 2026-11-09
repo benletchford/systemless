@@ -6435,6 +6435,9 @@ pub(super) fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
+    if let Some(private_storage) = window_list.take_caller_dialog_private_storage(window) {
+        allocator.memory_manager.release_native_scratch(private_storage);
+    }
     window_list.with_mut(|windows| windows.retain(|candidate| *candidate != window));
     if *current_gworld == window {
         *current_gworld =

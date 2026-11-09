@@ -1080,6 +1080,7 @@ pub(crate) fn dispatch_supported_import(
             binding,
             cpu,
             memory,
+            window_list,
             process_memory_manager,
             heap_cursor,
             heap_limit,

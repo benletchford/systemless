@@ -199,6 +199,28 @@ fn input_trace_text_bytes(value: &str) -> String {
 }
 
 impl super::TrapDispatcher {
+    fn dialog_cancel_item_configuration(&self, bus: &mut MacMemoryBus, dialog: u32) -> Option<i16> {
+        let private = self.window_list.has_caller_dialog_private_storage(dialog);
+        if private
+            || bus.get_alloc_size(dialog).unwrap_or(0)
+                >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
+        {
+            let item = bus.read_word(
+                self.window_list
+                    .dialog_private_address(dialog, crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+            ) as i16;
+            if private {
+                return (item != 0).then_some(item);
+            }
+            return self
+                .dialog_cancel_items
+                .get(&dialog)
+                .copied()
+                .or((item != 0).then_some(item));
+        }
+        self.dialog_cancel_items.get(&dialog).copied()
+    }
+
     fn record_dialog_input_trace(
         &mut self,
         trap: &str,
@@ -4134,19 +4156,19 @@ impl super::TrapDispatcher {
             dialog_ptr + crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET,
             init.default_item() as u16,
         );
-        if bus.get_alloc_size(dialog_ptr).unwrap_or(0)
+        if self.window_list.has_caller_dialog_private_storage(dialog_ptr) || bus.get_alloc_size(dialog_ptr).unwrap_or(0)
             >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
         {
             bus.write_word(
-                dialog_ptr + crate::dialog_manager::DIALOG_RESOURCE_ID_OFFSET,
+                self.window_list.dialog_private_address(dialog_ptr, crate::dialog_manager::DIALOG_RESOURCE_ID_OFFSET),
                 init.alert_id() as u16,
             );
             bus.write_word(
-                dialog_ptr + crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET,
+                self.window_list.dialog_private_address(dialog_ptr, crate::dialog_manager::DIALOG_ALERT_HIT_OFFSET),
                 init.alert_hit() as u16,
             );
             bus.write_word(
-                dialog_ptr + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                self.window_list.dialog_private_address(dialog_ptr, crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
                 init.cancel_item() as u16,
             );
         }
@@ -4675,6 +4697,15 @@ impl super::TrapDispatcher {
     }
 
     fn dispose_dialog_owned_items(&mut self, bus: &mut MacMemoryBus, dialog_ptr: u32) {
+        if self.window_list.has_caller_dialog_private_storage(dialog_ptr) {
+            let style = bus.read_long(self.window_list.dialog_private_address(dialog_ptr, crate::dialog_manager::DIALOG_ITEM_STYLE_HANDLE_OFFSET));
+            if style != 0 {
+                self.dispose_dialog_handle_storage(bus, style);
+            }
+            if let Some(private_storage) = self.window_list.take_caller_dialog_private_storage(dialog_ptr) {
+                self.process_memory_manager().borrow_mut().native_mut().release_native_scratch(private_storage);
+            }
+        }
         let can_read_dialog_record =
             self.dialog_items.contains_key(&dialog_ptr) || self.window_list.contains(&dialog_ptr);
         let mut text_handles = Vec::new();
@@ -13549,23 +13580,7 @@ impl super::TrapDispatcher {
                             Self::dialog_edit_state(bus, dialog_ptr, &items);
                         let cancel_item =
                             crate::dialog_manager::evaluate_modal_dialog_cancel_item(
-                                self.dialog_cancel_items.get(&dialog_ptr).copied().or_else(|| {
-                                    if bus.get_alloc_size(dialog_ptr).unwrap_or(0)
-                                        >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
-                                    {
-                                        let raw = bus.read_word(
-                                            dialog_ptr
-                                                + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
-                                        ) as i16;
-                                        if raw != 0 {
-                                            Some(raw)
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                }),
+                                self.dialog_cancel_item_configuration(bus, dialog_ptr),
                                 items.iter().map(|item| (item.item_type, &item.text)),
                             )
                             .item_number();
@@ -17400,12 +17415,11 @@ impl super::TrapDispatcher {
                                         tracking.cancel_item = params.item_no();
                                     }
                                 }
-                                if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
+                                if self.window_list.has_caller_dialog_private_storage(params.dialog_ptr()) || bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
                                     >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
                                 {
                                     bus.write_word(
-                                        params.dialog_ptr()
-                                            + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
+                                        self.window_list.dialog_private_address(params.dialog_ptr(), crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
                                         params.item_no() as u16,
                                     );
                                 }
@@ -17435,8 +17449,8 @@ impl super::TrapDispatcher {
                         let dialog_ptr = bus.read_long(sp + 2);
                         let os_err = match evaluate_set_dialog_tracks_cursor_parameters(dialog_ptr, tracks) {
                             Ok(_params) => {
-                                if dialog_ptr != 0 && bus.get_alloc_size(dialog_ptr).unwrap_or(0) >= crate::dialog_manager::DIALOG_RECORD_SIZE {
-                                    bus.write_byte(dialog_ptr + crate::dialog_manager::DIALOG_TRACKS_CURSOR_OFFSET, if tracks { 1 } else { 0 });
+                                if dialog_ptr != 0 && (self.window_list.has_caller_dialog_private_storage(dialog_ptr) || bus.get_alloc_size(dialog_ptr).unwrap_or(0) >= crate::dialog_manager::DIALOG_RECORD_SIZE) {
+                                    bus.write_byte(self.window_list.dialog_private_address(dialog_ptr, crate::dialog_manager::DIALOG_TRACKS_CURSOR_OFFSET), if tracks { 1 } else { 0 });
                                 }
                                 crate::dialog_manager::DIALOG_NO_ERR
                             }
@@ -17806,27 +17820,7 @@ impl super::TrapDispatcher {
                         );
                         let os_err = match result {
                             Ok(params) => {
-                                let configured_cancel = self
-                                    .dialog_cancel_items
-                                    .get(&params.dialog_ptr())
-                                    .copied()
-                                    .or_else(|| {
-                                        if bus.get_alloc_size(params.dialog_ptr()).unwrap_or(0)
-                                            >= crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET + 2
-                                        {
-                                            let raw = bus.read_word(
-                                                params.dialog_ptr()
-                                                    + crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET,
-                                            ) as i16;
-                                            if raw != 0 {
-                                                Some(raw)
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    });
+                                let configured_cancel = self.dialog_cancel_item_configuration(bus, params.dialog_ptr());
                                 let cancel_item = match self.dialog_items.get(&params.dialog_ptr()) {
                                     Some(items) => {
                                         crate::dialog_manager::evaluate_dialog_cancel_item(

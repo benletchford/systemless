@@ -13,6 +13,50 @@
     use std::collections::VecDeque;
 
     #[test]
+    fn classic_dialog_selectors_use_shared_caller_private_storage() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let private = bus.alloc(86);
+        let dialog = bus.alloc(256);
+        for offset in 170..256 {
+            bus.write_byte(dialog + offset, 0xa5);
+        }
+        dispatcher
+            .window_list
+            .set_caller_dialog_private_storage(dialog, private);
+        for (selector, value) in [(0x0305, 7), (0x0306, 1)] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+            bus.write_word(TEST_SP, value);
+            if selector == 0x0306 {
+                bus.write_byte(TEST_SP, value as u8);
+            }
+            bus.write_long(TEST_SP + 2, dialog);
+            bus.write_word(TEST_SP + 6, 0xbeef);
+            dispatcher
+                .dispatch_dialog(true, 0x268, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        }
+        assert_eq!(bus.read_word(private + 2), 7);
+        assert_eq!(bus.read_byte(private + 34), 1);
+        for offset in 170..256 {
+            assert_eq!(bus.read_byte(dialog + offset), 0xa5);
+        }
+        // A subsequent native update wins over the classic adapter's cache.
+        bus.write_word(private + 2, 4);
+        assert_eq!(
+            dispatcher.dialog_cancel_item_configuration(&mut bus, dialog),
+            Some(4)
+        );
+        bus.write_word(private + 2, 0);
+        assert_eq!(
+            dispatcher.dialog_cancel_item_configuration(&mut bus, dialog),
+            None
+        );
+    }
+
+    #[test]
     fn styled_text_layout_uses_run_faces_independently_of_port_face() {
         let (mut disp, _, _) = setup();
         let text = b"A condensed heading\rPlain text should wrap using its own font metrics and remain inside the view.";
