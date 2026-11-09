@@ -3119,3 +3119,33 @@ cropped only to its 640x400 content surface. This is bounded native interaction
 evidence, not independent hardware fidelity, full gameplay or browser approval.
 [Source intake #5924](https://github.com/benletchford/systemless/issues/5924)
 keeps launch disabled and leaves [startup investigation #3213](https://github.com/benletchford/systemless/issues/3213) open.
+
+
+## Prime Target beta demo — original promotional intake
+
+[Issue #5927](https://github.com/benletchford/systemless/issues/5927) records the
+complete unchanged 3,964,205-byte original beta demo. Its SHA1
+`a6765e5b74006c76a8c7293a96cb6afc02861e36` matches the independent archive
+listing; all eight files, sixteen forks and eight Finder records match unar.
+The full Readme, 77 selected text/UI/version resources and retained notice
+matches were reviewed without finding an explicit redistribution restriction
+in the inspected notices. Acceptance follows the maintainer-authorized
+promotional-demo policy, not an affirmative publisher licence grant.
+
+The preserved [1997 MacAddict Special Games disc](https://archive.org/details/mac-addict-s-games)
+contains `Games/Game Demos/Prime Target Demo`. Original HFS catalogue and seven
+files were inspected through HTTP 206 ranges with exact Content-Range, length
+and hash receipts. Readme, Shapes and Sounds data match; executable, map and
+resources differ. No exact disc-byte/version parity or whole-disc checksum is
+claimed. The received beta archive retains its three levels and all notices;
+no modern Marathon licence, serial number, unlock or modified package is used.
+
+Fresh default PowerPC runs on runtime code matching master `8ae270f0` reach the
+rendered first level. The documented number 2 key equips a pistol and updates
+the HUD against an equal-duration no-input control with byte-identical
+pre-input captures. Both finish at 1326 frontend/guest ticks, zero automatic
+assertions and zero exhausted frames. A separate Up-arrow movement case is
+identical to its no-input control and is retained as unverified movement.
+Actual captures were inspected; the screenshot is cropped only to the 640x480
+game surface. Overall compatibility stays unknown, and launch remains disabled
+pending controls and browser qualification. Source intake adds no live game.
