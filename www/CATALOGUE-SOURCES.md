@@ -3091,3 +3091,31 @@ licensee; they do not establish an arbitrary redistributor's permission. Modern
 engine source licensing is not applied to this original demo data. The original
 archive remains unhosted while rights are unresolved, and no catalogue entry,
 launch approval or qualified-live count is claimed. [Intake and audit #5634](https://github.com/benletchford/systemless/issues/5634).
+
+
+## Quake preview — promotional-demo policy acceptance
+
+The historical affirmative-grant hold above is superseded for the unchanged
+1.08.2 promotional preview by the maintainer-authorized demo policy. The
+[December 1997 MacAddict #16 sleeve](https://archive.org/download/macaddict-cd-016/MacAddict%20CD-ROM%20December%201997%2000.jpg)
+explicitly lists Quake. This establishes period cover-disc distribution, not
+exact publisher-media byte parity or an affirmative publisher licence grant.
+
+The complete original 6,853,937-byte SIT retains SHA-256
+`742f2b2b51e81281e04cc17967480ba85c8cd65f8cfa2570382f899be7466535`.
+All seven files, fourteen forks and seven Finder records independently match
+unar extraction. Full Read Me, Online Manual and Troubleshooting documents,
+63 selected text/UI/version resources and retained notice matches were reviewed;
+no explicit redistribution restriction was identified in those notices. All
+original copyrights remain intact. No modern engine licence is substituted.
+
+Fresh native PowerPC runs on runtime code matching master `9d234abd` reach a
+rendered map through ordinary Escape, Return, Return. The startup console
+file-open message persists. A 30-tick right-arrow hold rotates the view relative
+to an equal-duration no-input control; pre-input captures are byte-identical.
+Both runs finish at 768 frontend/guest ticks, zero automatic assertions and zero
+exhausted frames. Actual captures were inspected, and the gameplay image is
+cropped only to its 640x400 content surface. This is bounded native interaction
+evidence, not independent hardware fidelity, full gameplay or browser approval.
+[Source intake #5924](https://github.com/benletchford/systemless/issues/5924)
+keeps launch disabled and leaves [startup investigation #3213](https://github.com/benletchford/systemless/issues/3213) open.
