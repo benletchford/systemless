@@ -8,6 +8,7 @@ summary: >-
 developer: Jeff Vogel
 publisher: Spiderweb Software
 year: 2002
+launch_enabled: false
 architectures:
 - ppc
 default_architecture: ppc
@@ -35,6 +36,38 @@ compatibility:
       its own hosted-browser replay remains required.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5895
+  - date: "2026-11-09"
+    tester: Catalogue maintainer
+    systemless_version: 31c20357 private browser preview; merged runtime e063ff19
+    architecture: ppc
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/5895
+    environment: >-
+      Production-equivalent release build with fat LTO, one codegen unit and SIMD.
+      Original hosted archive and actual page and dedicated-worker Wasm response
+      bodies verified by HTTP 200, byte count and SHA-256. Private source changes
+      only the test launch flag from promoted e7ee4c2e; runtime matches merged
+      e063ff19. Worker/WebGL, isolation, SharedArrayBuffer, default PPC 25 MHz,
+      original 800x600 display choice, preferred partition, Normal difficulty,
+      default party and sound retained. Each 20-second sample begins before
+      accepting the default party and includes world initialization, Instant Help
+      dismissal, shared keypad 4 setup, then terrain click or its omission.
+      Both runs pass nine scene checks within the sample, at 18462/19537 ms.
+      Actual captures inspected: the clicked party moves while the control
+      retains its position. Native coordinates project to CSS 798x598 with an
+      exact-RGB one-pixel neighborhood; own references are not a hardware oracle.
+      Both fail initialization pacing: active/control final steady guest rates
+      40.6658/44.2438 ticks per second, host rates 54.5292/55.5401 FPS, maximum
+      worker frames 161.3/325.5 ms and minimum audio queues 16.6/16.6 ms. Gates
+      remain guest >=50, host >=55, frame <=50 ms and audio >=40 ms. Sustained
+      gameplay was not sampled after initialization failed. No concurrent build
+      or lifecycle/observer errors; all observed targets resumed. Two earlier
+      attempts stopped at intro checkpoints before measurement. Both actual
+      Wasm bodies are 15887812 bytes with SHA-256
+      6989ddf20cd3dcff79f853131ec52572942bfe453f3a8ce4d162fc6692264f1c.
+      Browser launch remains disabled; combat, complete quests, persistence,
+      independent visual parity and audio fidelity remain unverified.
+
 runtime:
   executable_path: Avernum 3 v1.0.1 Demo Installer/Avernum 3 ƒ v1.0.1/Avernum 3 v1.0.1
 artifacts:
@@ -108,5 +141,6 @@ towns. The unregistered demo contains the first quarter of the adventure and
 retains its original shareware conditions.
 
 This classic Macintosh v1.0.1 package has bounded native party-movement evidence.
-Launch remains disabled while hosted-browser input, rendering and pacing are
-qualified.
+Hosted-browser terrain input is verified in a private production-equivalent
+preview. Launch remains disabled because initialization pacing fails; sustained
+gameplay and public release qualification remain pending.
