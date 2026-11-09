@@ -97,5 +97,10 @@ references:
 Skate around a bowl-shaped arena and try to send the ball past your opponent.
 This original promotional demo offers a match against Simple George.
 
-Native mouse steering is verified. Browser play and performance remain unverified,
-so launch stays disabled.
+Native mouse steering is verified. A private browser build reaches the arena, but
+input and omitted-input cases fail the unchanged guest pacing gate at 16.28 and
+13.22 ticks/s (required 50). Host pacing and audio queue checks pass in those
+initialization windows. The separate sustained gameplay window was not reached.
+This is a private-build result, not public-release qualification. See
+[browser pacing hold #5919](https://github.com/benletchford/systemless/issues/5919).
+Launch stays disabled.
