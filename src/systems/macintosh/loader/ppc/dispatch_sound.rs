@@ -47,7 +47,11 @@ pub(super) fn dispatch_sound_import(
             if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
                 let _ = memory.write_u32_be(cpu.gpr[3], PPC_SOUND_MANAGER_VERSION);
             }
-            Some(PpcImportAction::ReturnPreserve)
+            // Apple TN1048 records older headers declaring a long result.
+            // Also return the version in r3 for those scalar callers. CFM's
+            // structure-return ABI leaves r3 unspecified on return, so this
+            // retains the documented NumVersion output-buffer contract.
+            Some(PpcImportAction::Return(PPC_SOUND_MANAGER_VERSION))
         }
         PpcImportDispatcherTarget::UnsignedFixedMulDiv => {
             // Inside Macintosh: Sound (1994), pp. 2-151--2-152. Unsigned
