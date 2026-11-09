@@ -2274,6 +2274,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetGDevice
         | PpcImportDispatcherTarget::SetGDevice
+        | PpcImportDispatcherTarget::GDeviceChanged
         | PpcImportDispatcherTarget::GetDeviceList
         | PpcImportDispatcherTarget::GetMainDevice
         | PpcImportDispatcherTarget::GetMaxDevice
