@@ -1345,6 +1345,7 @@ pub enum PpcImportDispatcherTarget {
     ISpElementGetConfigurationInfo,
     ISpElementGetSimpleState,
     ISpGetVersion,
+    ISpTimeToMicroseconds,
     ISpStartup,
     ISpShutdown,
     ISpInit,
@@ -3041,6 +3042,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InputSprocketLib", "ISpGetVersion") => PpcImportDispatcherTarget::ISpGetVersion,
         ("InputSprocketLib", "ISpStartup") => PpcImportDispatcherTarget::ISpStartup,
         ("InputSprocketLib", "ISpUptime") => PpcImportDispatcherTarget::Microseconds,
+        ("InputSprocketLib", "ISpTimeToMicroseconds") => {
+            PpcImportDispatcherTarget::ISpTimeToMicroseconds
+        }
         ("InputSprocketLib", "ISpShutdown") => PpcImportDispatcherTarget::ISpShutdown,
         ("InputSprocketLib", "ISpInit") => PpcImportDispatcherTarget::ISpInit,
         ("InputSprocketLib", "ISpStop") => PpcImportDispatcherTarget::ISpStop,

@@ -1750,6 +1750,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
         | PpcImportDispatcherTarget::ISpElementGetSimpleState
         | PpcImportDispatcherTarget::ISpGetVersion
+        | PpcImportDispatcherTarget::ISpTimeToMicroseconds
         | PpcImportDispatcherTarget::ISpStartup
         | PpcImportDispatcherTarget::ISpShutdown
         | PpcImportDispatcherTarget::ISpInit

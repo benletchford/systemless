@@ -143,6 +143,24 @@ pub(super) fn dispatch_inputsprocket_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ISpTimeToMicroseconds => {
+            // Apple Game Sprockets Legacy Reference: both arguments point
+            // to eight-byte values. Our ISpUptime and event timestamps use
+            // the virtual microsecond clock, so its conversion is 1:1.
+            let input = cpu.gpr[3];
+            let output = cpu.gpr[4];
+            let value = (input != 0).then(|| memory.read_u64_be(input)).flatten();
+            let result = if let Some(value) =
+                value.filter(|_| output != 0 && ppc_memory_can_write_bytes(memory, output, 8))
+            {
+                // Read before writing so aliased buffers are supported.
+                let _ = memory.write_u64_be(output, value);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::ISpStartup => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_isp_init(input_sprocket, PpcInputSprocketKeyboardDefaults::default()),
         ))),
