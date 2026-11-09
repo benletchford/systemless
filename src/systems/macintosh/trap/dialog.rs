@@ -10201,7 +10201,7 @@ impl super::TrapDispatcher {
             self.dispose_dialog_record_and_item_list(bus, dialog_ptr);
         }
 
-        self.untrack_window(bus, dialog_ptr);
+        self.untrack_window(bus, cpu, dialog_ptr);
         let mut repaint_exposure = restored_saved_under_rect
             .map(|restored| Self::rect_difference_parts(exposed_rect, restored))
             .unwrap_or_else(|| vec![exposed_rect]);
