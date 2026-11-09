@@ -3058,3 +3058,14 @@ licensee; they do not establish an arbitrary redistributor's permission. Modern
 engine source licensing is not applied to this original demo data. The original
 archive remains unhosted while rights are unresolved, and no catalogue entry,
 launch approval or qualified-live count is claimed. [Intake and audit #5634](https://github.com/benletchford/systemless/issues/5634).
+
+
+## Avernum v1.0.2 original demo — 9 November 2026
+
+[Qualification issue #5875](https://github.com/benletchford/systemless/issues/5875) records the complete 7,385,878-byte [original Classic demo installer](https://www.vintageapplemac.com/files/games/Avernum%20v1.0.2%20Demo%20Insta%E2%80%A6.sit), SHA-256 `1b9009fab8364fb952cab13ebb6aeabf94702d619c77bd6872ba347fd1c7f89e`. Its complete 7,737-byte bundled licence permits non-profit distribution of the complete unmodified works. The unregistered state, original thirty-day condition, full documentation, data and bundled DrawSprocketLib remain intact. A separately listed MacintoshRepository archive has a different hash; no independent byte identity is claimed. Production extraction retains fourteen paths. Independent outer extraction sees the original installer, not its expanded payload; expanded-payload comparison remains pending.
+
+The API-only diagnosis in [#5873](https://github.com/benletchford/systemless/issues/5873) found that `HOpenResFile` rejected the known working-directory reference returned by `HGetVol`. [Fix #5874](https://github.com/benletchford/systemless/pull/5874), exact runtime `505571c3db27a53d743e09cbad4feeef95c87ef0`, passes 7,762 library tests with six ignored and opens all four original art/sound resource files. No game instructions were inspected.
+
+The original PPC/default-25-MHz/preferred-12,288,000-byte-partition demo reaches the unregistered menu, accepts the unchanged default four-character party and enters Fort Avernum. One ordinary keypad-6 press moves the party and scrolls the map, while an equal-clock run omitting that input retains its position. Fresh active/control replays each pass six measured scene checks at 2,173 frontend/guest ticks with zero exhausted frames; actual captures were inspected. These are own-capture checks, not an independent rendering oracle. A small dismissed-help-button remnant is retained in the unedited 800x600 content screenshot.
+
+The entry remains launch-disabled and unknown overall. Managed-asset promotion, browser input/rendering/pacing, combat, complete quests, saves, audio fidelity and released-route qualification remain pending. No newly live game or release is claimed.
