@@ -7208,6 +7208,8 @@ fn quicktime_idle_redraws_new_samples_and_changed_geometry_without_advancing_tim
     let mut second = samples.samples[0];
     second.media_start_time = 1;
     samples.samples.push(second);
+    // Two one-second samples span 1200 units at the default 600-unit scale.
+    loaded.quicktime.movie_duration = 1200;
     loaded.quicktime.movie_tasks_until_done = 2;
     loaded.cpu.gpr[3] = PPC_QT_MOVIE;
     assert_eq!(

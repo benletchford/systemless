@@ -1680,9 +1680,9 @@ fn ppc_qt_next_interesting_time(
             );
         }
         if flags & (NEXT_TIME_MEDIA_EDIT | NEXT_TIME_TRACK_EDIT) != 0 {
-            let timeline = ppc_qt_track_atom(&quicktime.movie_file_data, ordinal + 1)
+            let timeline = ppc_qt_track_atom(&quicktime.movie_data, ordinal + 1)
                 .and_then(|(start, end)| {
-                    ppc_qt_track_timeline(&quicktime.movie_file_data, start, end)
+                    ppc_qt_track_timeline(&quicktime.movie_data, start, end)
                 })
                 .flatten();
             if let Some(timeline) = timeline {

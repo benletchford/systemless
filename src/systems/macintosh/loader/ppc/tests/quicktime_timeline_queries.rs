@@ -2,7 +2,7 @@ use super::*;
 
 fn repeated_movie() -> PpcLoadedApp {
     let mut loaded = movie_toolbox_fixture();
-    let mut bytes = loaded.quicktime.movie_file_data.clone();
+    let mut bytes = loaded.quicktime.movie_data.clone();
     let payload =
         |data: &[u8], kind: &[u8]| data.windows(4).position(|part| part == kind).unwrap() + 4;
     let stts = payload(&bytes, b"stts");
@@ -37,8 +37,8 @@ fn repeated_movie() -> PpcLoadedApp {
     loaded.quicktime.movie_tracks =
         crate::systems::macintosh::loader::ppc::quicktime::ppc_qt_movie_tracks(&bytes);
     loaded.quicktime.movie_tracks[1].enabled = false;
-    loaded.quicktime.movie_file_data = bytes;
-    loaded.quicktime.movie_file_duration = 360;
+    loaded.quicktime.movie_data = bytes;
+    loaded.quicktime.movie_duration = 360;
     loaded
 }
 

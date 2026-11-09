@@ -63,7 +63,7 @@ fn powerpc_movie_timeline_parses_repeats_and_selects_at_original_logo_hold_bound
     let mut samples = ppc_qt_scan_movie_video_samples(&bytes, 0, bytes.len(), 0).unwrap();
     assert_eq!(samples.timeline.as_ref().unwrap().edits.len(), 11);
     let mut movie = PpcQuickTimeState {
-        movie_file_duration: 3600,
+        movie_duration: 3600,
         movie_time_scale: 600,
         movie_creation_time_scale: 600,
         movie_tasks_until_done: 3600,
