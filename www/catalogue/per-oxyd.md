@@ -12,9 +12,37 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: 2de32158 private browser; candidate WWW runtime 046859c9
+    architecture: 68k
+    environment: >-
+      Production-equivalent private browser using the complete original archive and
+      candidate function-key mapper, with core runtime 0d1c10f7. Actual archive and both
+      page/current-worker Wasm response bodies match their recorded pins. F1 reaches
+      the original single-player prompt; two ordinary mouse confirmations enter
+      landscape 1. No landscape code is entered. Each sixty-tick mouse interval moves
+      the marble from its preceding checkpoint (13.03 and 6.47 pixels); the equal-clock
+      omitted-input control moves zero pixels. Actual original prompts, gameplay and
+      control captures inspected. All four unchanged twenty-second initialization/input
+      and separate sustained-first-landscape windows pass: final steady guest and host
+      rates 59.741-60.063, maximum worker frame 16.7 ms, minimum audio queue 131.7 ms,
+      zero lifecycle/observer errors. Rates are final steady snapshots, not averages
+      or rendered game FPS. Measurement starts before F1 and world initialization;
+      bounded visible-screen readiness replaces arbitrary caption waits. Earlier
+      capture and scene-assertion failures are retained, including a second input
+      returning near its initial position. Each movement is measured against its
+      preceding frame without lowering the five-pixel threshold. No game bytes,
+      original settings, shareware restrictions or pacing gates change. Exact native
+      trajectories, stone pairing, completion, later landscapes, links, saves,
+      independent visual parity and audio fidelity remain unverified. Serial-reference
+      errors persist. Released public-route qualification remains pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5902
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: 9903e995 supplementary native source; browser qualification pending
