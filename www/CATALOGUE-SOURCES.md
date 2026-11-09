@@ -1,5 +1,38 @@
 # Candidate source inspection
 
+## Promotional-demo policy review, 10 November 2026
+
+The maintainer explicitly authorized applying the existing promotional-demo
+acceptance policy to qualifying new demos after period publisher/cover-disc
+distribution, complete unmodified packages and absence of an explicit
+redistribution restriction have been checked. Record this as project-policy
+acceptance, not an affirmative publisher licence grant. Explicit restrictions
+and full commercial-game packages remain outside this acceptance.
+
+[Myth II](https://github.com/benletchford/systemless/issues/5920) and
+[Heroes III Complete](https://github.com/benletchford/systemless/issues/5921) now
+meet that policy review. Independent extraction matches every file, fork and
+Finder record (Myth II: 8/16/8; Heroes III: 20/40/20); original notices and bundled
+components are retained. Period distribution sources and archive/version caveats
+are recorded in the entries. The older affirmative-grant holds below are
+historical observations, superseded for these two exact packages by this policy
+acceptance. No publisher-media byte parity or publisher licence grant is claimed.
+
+Their launches remain disabled. Myth II documents only its demo splash and keeps
+[tutorial-loading hold #4132](https://github.com/benletchford/systemless/issues/4132).
+Heroes III's native reward/omitted-confirmation repeats each pass three measured
+checks: 31,500 gold versus 30,000, with no exhausted frames at 2,144 frontend/guest
+ticks. This does not qualify sustained play, battles, save/load, audio fidelity
+or browser pacing.
+
+Reckless Drivin' uses a separate explicit complete-package redistribution grant,
+not this promotional-demo policy; its original unregistered trial remains intact.
+Its native throttle evidence and remaining rendering/browser limitations are in
+[intake #5916](https://github.com/benletchford/systemless/issues/5916).
+No newly live game is claimed by these source intakes.
+
+## Historical source inspections
+
 Inspected on 9 October 2026 using the public demo source linked by earlier Systemless catalogue work. These are research sources, not downloads offered by Systemless. The linked document may omit terms elsewhere in its archive; it is not proof of permission or archive identity.
 
 | Source candidate | Original documentation | Current evidence |
