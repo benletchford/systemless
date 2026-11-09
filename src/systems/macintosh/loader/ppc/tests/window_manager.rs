@@ -10690,3 +10690,6 @@ fn resource_window_creation_preserves_port_for_hidden_and_backmost_windows() {
         }
     }
 }
+
+#[path = "quicktime_align_window.rs"]
+mod align_window_tests;

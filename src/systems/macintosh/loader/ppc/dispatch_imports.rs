@@ -1808,7 +1808,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::SlotVRemove => {
             unreachable!("time and vbl imports return through dispatch_time_import")
         }
-        PpcImportDispatcherTarget::DrawGrowIcon => {
+        PpcImportDispatcherTarget::QtAlignWindow | PpcImportDispatcherTarget::DrawGrowIcon => {
             unreachable!("window imports return through dispatch_window_import")
         }
         PpcImportDispatcherTarget::GetPictInfo
