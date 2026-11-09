@@ -11500,3 +11500,103 @@ fn ppc_pb_get_fcb_info_reports_file_manager_resource_fork_under_its_own_folder()
     assert_eq!(memory.read_u32_be(pb + 40), Some(4));
     assert_eq!(memory.read_u32_be(pb + 58), Some(PPC_PREFERENCES_DIR_ID));
 }
+
+#[test]
+fn h_open_res_file_accepts_hgetvol_working_directory_and_explicit_directory_override() {
+    for (requested_vref, requested_dir, expected_path) in [
+        (32, 0, "Game Folder/Data/Sounds"),
+        (32, PPC_FIRST_DYNAMIC_DIR_ID, "Game Folder/Data/Sounds"),
+        (32, PPC_ROOT_DIR_ID, "Data/Sounds"),
+        (0, 0, "Game Folder/Data/Sounds"),
+        (PPC_BOOT_VOLUME_REF_NUM, 0, "Data/Sounds"),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"HGetVol")).unwrap();
+        let app_dir = PPC_FIRST_DYNAMIC_DIR_ID;
+        let mut directories = initial_ppc_vfs_directories();
+        for (dir_id, parent_dir_id, path) in [
+            (app_dir, PPC_ROOT_DIR_ID, "Game Folder"),
+            (app_dir + 1, app_dir, "Game Folder/Data"),
+            (app_dir + 2, PPC_ROOT_DIR_ID, "Data"),
+        ] {
+            directories.push(PpcVfsDirectory {
+                dir_id,
+                parent_dir_id,
+                path: path.into(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        loaded.seed_vfs_directories(directories, app_dir, app_dir + 3);
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                32,
+                ProcessWorkingDirectory {
+                    ref_num: 32,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: app_dir,
+                    proc_id: 0,
+                },
+            );
+        });
+        loaded
+            .application_working_directory_ref_num
+            .with_mut(|reference| *reference = 32);
+        for path in ["Game Folder/Data/Sounds", "Data/Sounds"] {
+            loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+                path: path.into(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                resource_len: 0,
+                raw_data: None,
+                map_attrs: 0,
+                dirty: false,
+            });
+        }
+        let scratch = PPC_DATA_BASE + 0x6000;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 4;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HGetVol);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(scratch), Some(32));
+        assert_eq!(loaded.memory.read_u32_be(scratch + 4), Some(app_dir));
+        write_ppc_pstring(&mut loaded.memory, scratch + 16, b":Data:Sounds");
+        loaded.cpu.gpr[3] = requested_vref as u16 as u32;
+        loaded.cpu.gpr[4] = requested_dir;
+        loaded.cpu.gpr[5] = scratch + 16;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HOpenResFile);
+        assert_eq!(
+            loaded.test_resource_error(),
+            PPC_NO_ERR,
+            "vref={requested_vref}, dir={requested_dir}"
+        );
+        let reference = loaded.cpu.gpr[3] as u16 as i16;
+        assert_ne!(reference, -1);
+        assert_eq!(loaded.resource_files.len(), 1);
+        assert_eq!(loaded.resource_files[0].path, expected_path);
+        assert_eq!(*loaded.process_file_system.current_resource_file, reference);
+
+        for (vref, dir, name, error) in [
+            (33, 0, b":Data:Sounds".as_slice(), PPC_NSV_ERR),
+            (32, 0x7fff_ffff, b":Data:Sounds".as_slice(), PPC_DIR_NF_ERR),
+            (32, app_dir, b":Data:Missing".as_slice(), PPC_FNF_ERR),
+        ] {
+            write_ppc_pstring(&mut loaded.memory, scratch + 16, name);
+            loaded.cpu.gpr[3] = vref;
+            loaded.cpu.gpr[4] = dir;
+            loaded.cpu.gpr[5] = scratch + 16;
+            loaded.cpu.gpr[6] = 1;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::HOpenResFile);
+            assert_eq!(loaded.cpu.gpr[3] as u16 as i16, -1);
+            assert_eq!(loaded.test_resource_error(), error);
+            assert_eq!(loaded.resource_files.len(), 1);
+            assert_eq!(*loaded.process_file_system.current_resource_file, reference);
+            assert_eq!(loaded.vfs_resource_files.len(), 2);
+        }
+    }
+}

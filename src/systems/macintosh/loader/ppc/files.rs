@@ -4339,15 +4339,24 @@ pub(super) fn ppc_h_open_res_file(
     current_resource_refnum: &mut i16,
     last_resource_error: &mut i16,
     default_dir_id: u32,
+    application_working_directory_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
     // Inside Macintosh: More Macintosh Toolbox (1993), pp. 1-62--1-64:
     // HOpenResFile identifies the resource fork by volume, directory ID, and
     // Pascal file name, returning -1 with the error available via ResError.
     let vref = cpu.gpr[3] as u16 as i16;
-    if !matches!(vref, 0 | PPC_BOOT_VOLUME_REF_NUM) {
+    let Some(directory) = dispatch_files::ppc_working_directory_info(
+        vref,
+        application_working_directory_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
         *last_resource_error = PPC_NSV_ERR;
         return -1;
-    }
+    };
     let Some(name_bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[5]) else {
         *last_resource_error = PPC_PARAM_ERR;
         return -1;
@@ -4357,7 +4366,13 @@ pub(super) fn ppc_h_open_res_file(
         *last_resource_error = PPC_PARAM_ERR;
         return -1;
     }
-    let dir_id = ppc_resolve_directory_id(vref, cpu.gpr[4], default_dir_id);
+    // Inside Macintosh: Files (1992), p. 2-26: an explicit directory ID
+    // overrides the directory encoded by a working-directory reference.
+    let dir_id = if cpu.gpr[4] == 0 {
+        directory.dir_id
+    } else {
+        cpu.gpr[4]
+    };
     let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, dir_id) else {
         *last_resource_error = PPC_DIR_NF_ERR;
         return -1;

@@ -453,6 +453,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 current_resource_refnum,
                 last_resource_error,
                 default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
             ) as u16 as u32))
         }
         PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
