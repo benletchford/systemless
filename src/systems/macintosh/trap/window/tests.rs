@@ -7303,7 +7303,7 @@ fn windows_created_wholly_off_screen_get_no_synthesised_chrome() {
     );
     assert!(!disp.windows_placed_offscreen.contains(&on_screen));
 
-    disp.untrack_window(&mut bus, parked);
+    disp.untrack_window(&mut bus, &mut cpu, parked);
     assert!(!disp.windows_placed_offscreen.contains(&parked));
 }
 
@@ -9825,5 +9825,93 @@ fn drag_region_geometry_respects_axis_limits_and_slop_reentry() {
         disp.dispatch(opcode, &mut cpu, &mut bus).unwrap();
         assert_eq!(bus.read_long(sp + 22), 0x8000_8000);
         assert_eq!(bus.read_word(0x300024), 30);
+    }
+}
+
+#[test]
+fn window_removal_keeps_cached_and_guest_current_port_coherent() {
+    for trap in [0x12D, 0x114] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (front, next, out) = (0x200040, 0x200140, 0x200300);
+        disp.window_list.replace(vec![front, next]);
+        disp.front_window = front;
+        for base in [front, next] {
+            bus.write_word(base + 16, 10);
+            bus.write_word(base + 18, 10);
+            bus.write_word(base + 20, 50);
+            bus.write_word(base + 22, 100);
+            bus.write_byte(base + 110, 0xFF);
+        }
+        disp.set_current_port_state(&mut bus, &mut cpu, front, None);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, front);
+        dispatch(&mut disp, trap, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(*disp.current_port, next); // existing front-promotion behavior
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, out);
+        disp.dispatch_quickdraw(true, 0x074, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(out),
+            next,
+            "GetPort after removal trap {trap:#x}"
+        );
+        assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), next);
+        let a5 = cpu.read_reg(Register::A5);
+        assert_eq!(bus.read_long(bus.read_long(a5)), next);
+    }
+}
+
+#[test]
+fn window_removal_preserves_a_different_current_port() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (front, other) = (0x200040, 0x200140);
+    disp.window_list.replace(vec![front, other]);
+    disp.front_window = front;
+    for base in [front, other] {
+        bus.write_word(base + 16, 10);
+        bus.write_word(base + 18, 10);
+        bus.write_word(base + 20, 50);
+        bus.write_word(base + 22, 100);
+        bus.write_byte(base + 110, 0xFF);
+    }
+    disp.set_current_port_state(&mut bus, &mut cpu, other, None);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, front);
+    dispatch(&mut disp, 0x114, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(*disp.current_port, other);
+    assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), other);
+    assert_eq!(
+        disp.effective_the_port(&bus, cpu.read_reg(Register::A5)),
+        other
+    );
+}
+
+#[test]
+fn window_removal_clears_current_port_aliases_when_no_windows_remain() {
+    for trap in [0x12D, 0x114] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = 0x200040;
+        disp.window_list.replace(vec![window]);
+        disp.front_window = window;
+        bus.write_word(window + 16, 10);
+        bus.write_word(window + 18, 10);
+        bus.write_word(window + 20, 50);
+        bus.write_word(window + 22, 100);
+        bus.write_byte(window + 110, 0xFF);
+        disp.set_current_port_state(&mut bus, &mut cpu, window, None);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, window);
+        dispatch(&mut disp, trap, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(*disp.current_port, 0);
+        assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), 0);
+        assert_eq!(disp.effective_the_port(&bus, cpu.read_reg(Register::A5)), 0);
     }
 }
