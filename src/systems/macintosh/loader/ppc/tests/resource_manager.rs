@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn system_wctb_lookup_preserves_open_map_precedence_and_get1_scope() {
+    use PpcImportDispatcherTarget::{Get1Resource, GetResource};
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetResource")).unwrap();
+    let res_type = u32::from_be_bytes(*b"wctb");
+    let lookup = |loaded: &mut PpcLoadedApp, target, id: u16| {
+        loaded.cpu.gpr[3] = res_type;
+        loaded.cpu.gpr[4] = u32::from(id);
+        run_test_import(loaded, target);
+        loaded.cpu.gpr[3]
+    };
+
+    assert_eq!(lookup(&mut loaded, Get1Resource, 0), 0);
+    assert_eq!(lookup(&mut loaded, GetResource, 1), 0);
+    let fallback = lookup(&mut loaded, GetResource, 0);
+    assert_ne!(fallback, 0);
+    let bytes = ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), fallback)
+        .expect("materialized WinCTab");
+    assert_eq!(bytes.len(), 112);
+    assert_eq!(&bytes[..16], &[0, 0, 0, 0, 0, 0, 0, 12, 0, 0, 255, 255, 255, 255, 255, 255]);
+    assert_eq!(lookup(&mut loaded, GetResource, 0), fallback);
+    assert_eq!(lookup(&mut loaded, Get1Resource, 0), 0);
+
+    let mut actual = bytes;
+    actual[10..12].copy_from_slice(&0x1234u16.to_be_bytes());
+    loaded.process_file_system.extend_vfs_resources([PpcVfsResourceRecord {
+        ref_num: 7,
+        path: "OpenFile".to_string(),
+        res_type,
+        res_id: 0,
+        name: Vec::new(),
+        data: actual.clone().into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    }]);
+    let real = lookup(&mut loaded, GetResource, 0);
+    assert_ne!(real, 0);
+    assert_ne!(real, fallback);
+    assert_eq!(
+        ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), real),
+        Some(actual)
+    );
+    assert_eq!(lookup(&mut loaded, Get1Resource, 0), 0);
+    loaded.set_current_resource_refnum(7);
+    assert_eq!(lookup(&mut loaded, Get1Resource, 0), real);
+}
+
+#[test]
 fn get_intl_resource_supplies_roman_numeric_format_from_system_file() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetIntlResource")).unwrap();
     loaded.cpu.gpr[3] = 0;
