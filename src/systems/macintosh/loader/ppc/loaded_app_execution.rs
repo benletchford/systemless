@@ -7,7 +7,15 @@ fn ppc_rebase_mouse_warp(
     sprocket: &mut PpcInputSprocketState,
     input: PpcInputSnapshot,
     position: (i16, i16),
+    virtual_elements: &[PpcInputSprocketVirtualElementRecord],
 ) {
+    for record in virtual_elements {
+        let (h, v) = record.mouse_position.get();
+        record.mouse_position.set((
+            h.saturating_add(i32::from(position.1) - i32::from(input.mouse_h)),
+            v.saturating_add(i32::from(position.0) - i32::from(input.mouse_v)),
+        ));
+    }
     if let Some(anchor) = sprocket.device_mouse_v.as_mut() {
         sprocket.device_mouse_v_carry = sprocket
             .device_mouse_v_carry
@@ -2088,7 +2096,7 @@ impl PpcLoadedApp {
                         if cursor_device_move || (v, h) != (input.mouse_v, input.mouse_h) {
                             // A programmatic warp is not physical mouse movement.
                             // Preserve unread motion while rebasing the anchors.
-                            ppc_rebase_mouse_warp(&mut input_sprocket, input, (v, h));
+                            ppc_rebase_mouse_warp(&mut input_sprocket, input, (v, h), &input_sprocket_virtual_elements);
                         }
                         input.mouse_v = v;
                         input.mouse_h = h;
@@ -2507,7 +2515,7 @@ impl PpcLoadedApp {
         if let Some(point) = self.memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2) {
             let position = ((point >> 16) as i16, point as i16);
             if position != (input.mouse_v, input.mouse_h) {
-                ppc_rebase_mouse_warp(&mut input_sprocket, input, position);
+                ppc_rebase_mouse_warp(&mut input_sprocket, input, position, &input_sprocket_virtual_elements);
                 self.process_input.set_mouse_position(position);
                 if let Some(records) = self.process_input.cursor_device_records() {
                     let _ = self.memory.write_bytes(

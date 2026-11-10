@@ -37,7 +37,10 @@ pub(super) fn dispatch_inputsprocket_import(
         current_resource_refnum,
     } = context;
 
-    match binding.dispatcher_target {
+    let previous_mouse_state = (
+        input_sprocket.initialized, input_sprocket.suspended, input_sprocket.mouse_active,
+    );
+    let action = match binding.dispatcher_target {
         PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_new_virtual_from_needs(
                 cpu,
@@ -47,6 +50,7 @@ pub(super) fn dispatch_inputsprocket_import(
                 heap_limit,
                 input_sprocket,
                 input_sprocket_virtual_elements,
+                input,
             )),
         )),
         PpcImportDispatcherTarget::ISpElementListNew => Some(PpcImportAction::Return(
@@ -217,7 +221,13 @@ pub(super) fn dispatch_inputsprocket_import(
             ))
         }
         _ => None,
+    };
+    if previous_mouse_state != (
+        input_sprocket.initialized, input_sprocket.suspended, input_sprocket.mouse_active,
+    ) {
+        ppc_isp_reset_virtual_mouse_positions(input_sprocket_virtual_elements, input);
     }
+    action
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,7 +294,16 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
             }
             let event = (buffer_size >= PPC_ISP_ELEMENT_EVENT_SIZE
                 && ppc_memory_can_write_bytes(memory, event_ptr, PPC_ISP_ELEMENT_EVENT_SIZE))
-            .then(|| ppc_isp_device_element_next_event(element, input, input_sprocket))
+            .then(|| {
+                if let Some(record) = virtual_elements.iter().find(|record| {
+                    record.element == element && record.kind == PPC_ISP_ELEMENT_KIND_DELTA
+                }) {
+                    let delta = ppc_isp_virtual_mouse_delta(record, input, *input_sprocket);
+                    (delta != 0).then_some(delta)
+                } else {
+                    ppc_isp_device_element_next_event(element, input, input_sprocket)
+                }
+            })
             .flatten();
             let Some(data) = event else {
                 let _ = memory.write_u8(was_event_ptr, 0);
@@ -299,8 +318,13 @@ pub(super) fn ppc_dispatch_input_sprocket_compatibility(
             let _ = memory.write_u8(was_event_ptr, 1);
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
-        PpcInputSprocketCompatibilityOperation::ElementFlush
-        | PpcInputSprocketCompatibilityOperation::Tickle => {
+        PpcInputSprocketCompatibilityOperation::ElementFlush => {
+            if let Some(record) = virtual_elements.iter().find(|record| record.element == cpu.gpr[3]) {
+                record.mouse_position.set((i32::from(input.mouse_h), i32::from(input.mouse_v)));
+            }
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        }
+        PpcInputSprocketCompatibilityOperation::Tickle => {
             PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
         }
     }

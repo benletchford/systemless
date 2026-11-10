@@ -290,6 +290,7 @@ fn input_sprocket_element_list_delivers_button_press_and_release_once() {
             keyboard_binding: None,
             need_name: "Fire".to_string(),
             need_record: Vec::new(),
+            mouse_position: std::cell::Cell::new((0, 0)),
         });
     loaded.cpu.gpr[3] = list;
     loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
@@ -1069,9 +1070,16 @@ fn hle_import_runner_maps_named_input_sprocket_delta_needs() {
         .memory
         .write_u32_be(
             needs_ptr + PPC_ISP_NEED_KIND_OFFSET,
-            PPC_ISP_ELEMENT_KIND_DELTA,
+            // InputSprocket.h defines kISpElementKind_Delta as dlta.
+            // Keep the SDK literal independent of the runtime constant.
+            u32::from_be_bytes(*b"dlta"),
         )
         .unwrap();
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: (ppc_main_screen_height() / 2) as i16,
+        mouse_h: (ppc_main_screen_width() / 2) as i16,
+        ..PpcInputSnapshot::default()
+    });
     loaded.cpu.gpr[3] = 1;
     loaded.cpu.gpr[4] = needs_ptr;
     loaded.cpu.gpr[5] = elements_out_ptr;
@@ -1100,6 +1108,12 @@ fn hle_import_runner_maps_named_input_sprocket_delta_needs() {
         loaded.memory.read_u32_be(state_ptr),
         Some((12i32 * 0x0001_0000) as u32)
     );
+    // Reading again without physical movement consumes no additional delta.
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = state_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementGetSimpleState);
+    assert_eq!(loaded.memory.read_u32_be(state_ptr), Some(0));
+
 }
 
 #[test]
@@ -1605,6 +1619,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
             keyboard_binding: None,
             need_name: "Fire".to_string(),
             need_record: Vec::new(),
+            mouse_position: std::cell::Cell::new((0, 0)),
         },
         PpcInputSprocketVirtualElementRecord {
             element: 0x0300_0100,
@@ -1616,6 +1631,7 @@ fn sprocket_trace_formatter_includes_input_sprocket_virtual_bindings_on_creation
             keyboard_binding: None,
             need_name: "Yaw (Mouse)".to_string(),
             need_record: Vec::new(),
+            mouse_position: std::cell::Cell::new((0, 0)),
         },
     ];
     let entry = PpcHleImportTraceEntry {
@@ -3259,4 +3275,183 @@ fn input_sprocket_driver_callbacks_can_activate_another_driver_reentrantly() {
             );
         }
     }
+}
+fn virtual_mouse_delta_fixture(
+    element: u32,
+    binding: PpcInputSprocketActionBinding,
+) -> PpcInputSprocketVirtualElementRecord {
+    PpcInputSprocketVirtualElementRecord {
+        element,
+        need_index: 0,
+        need_source: 0,
+        kind: u32::from_be_bytes(*b"dlta"),
+        default_state: 0,
+        action_binding: binding,
+        keyboard_binding: None,
+        need_name: "Mouse".into(),
+        need_record: Vec::new(),
+        mouse_position: std::cell::Cell::new((100, 100)),
+    }
+}
+
+fn read_virtual_delta_fixture(loaded: &mut PpcLoadedApp, element: u32, output: u32) -> u32 {
+    loaded.cpu.gpr[3] = element;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(loaded, PpcImportDispatcherTarget::ISpElementGetSimpleState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.memory.read_u32_be(output).unwrap()
+}
+
+#[test]
+fn virtual_mouse_deltas_consume_motion_independently_and_reset_on_resume() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTickle",
+    ))
+    .unwrap();
+    let yaw = 0x0300_0000;
+    let pitch = 0x0300_0100;
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.input_sprocket.initialized = true;
+    loaded.input_sprocket_virtual_elements = vec![
+        virtual_mouse_delta_fixture(yaw, PpcInputSprocketActionBinding::DeltaYaw),
+        virtual_mouse_delta_fixture(pitch, PpcInputSprocketActionBinding::DeltaPitch),
+    ];
+    let mut input = PpcInputSnapshot {
+        mouse_h: 112,
+        mouse_v: 93,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(input);
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, yaw, output),
+        12 << 16
+    );
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, yaw, output), 0);
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, pitch, output),
+        7 << 16
+    );
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, pitch, output), 0);
+    input.mouse_h = 107;
+    input.mouse_v = 96;
+    loaded.set_input_snapshot(input);
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, yaw, output),
+        (-5i32 << 16) as u32
+    );
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, pitch, output),
+        (-3i32 << 16) as u32
+    );
+
+    // A rejected output must not consume real motion.
+    input.mouse_h = 120;
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = yaw;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ISpElementGetSimpleState,
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, yaw, output),
+        13 << 16
+    );
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpSuspend);
+    input.mouse_h = 180;
+    input.mouse_v = 150;
+    loaded.set_input_snapshot(input);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpResume);
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, yaw, output), 0);
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, pitch, output), 0);
+    input.mouse_h = 183;
+    input.mouse_v = 149;
+    loaded.set_input_snapshot(input);
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, yaw, output),
+        3 << 16
+    );
+    assert_eq!(
+        read_virtual_delta_fixture(&mut loaded, pitch, output),
+        1 << 16
+    );
+}
+
+#[test]
+fn virtual_delta_events_report_equal_successive_moves_without_zero_events() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"InputSprocketLib",
+        b"ISpTickle",
+    ))
+    .unwrap();
+    let yaw = 0x0300_0000;
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let event = scratch + 16;
+    let was_event = scratch + 48;
+    loaded.memory.add_region(scratch, vec![0xa5; 64]);
+    loaded.memory.write_u32_be(scratch, yaw).unwrap();
+    loaded.input_sprocket.initialized = true;
+    loaded.input_sprocket_virtual_elements = vec![virtual_mouse_delta_fixture(
+        yaw,
+        PpcInputSprocketActionBinding::DeltaYaw,
+    )];
+    let mut input = PpcInputSnapshot {
+        mouse_h: 100,
+        mouse_v: 100,
+        ..PpcInputSnapshot::default()
+    };
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ISpElementListNew);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let list = loaded.memory.read_u32_be(scratch + 4).unwrap();
+    for (h, expected_event) in [(105, true), (105, false), (110, true)] {
+        input.mouse_h = h;
+        loaded.set_input_snapshot(input);
+        let before =
+            ppc_memory_read_bytes(&mut loaded.memory, event, PPC_ISP_ELEMENT_EVENT_SIZE).unwrap();
+        loaded.cpu.gpr[3] = list;
+        loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+        loaded.cpu.gpr[5] = event;
+        loaded.cpu.gpr[6] = was_event;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            loaded.memory.read_u8(was_event),
+            Some(u8::from(expected_event))
+        );
+        if expected_event {
+            assert_eq!(loaded.memory.read_u32_be(event + 16), Some(5 << 16));
+        } else {
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, event, PPC_ISP_ELEMENT_EVENT_SIZE),
+                Some(before)
+            );
+        }
+    }
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, yaw, scratch + 8), 0);
+    input.mouse_h = 113;
+    loaded.set_input_snapshot(input);
+    loaded.cpu.gpr[3] = yaw;
+    loaded.cpu.gpr[4] = PPC_ISP_ELEMENT_EVENT_SIZE;
+    loaded.cpu.gpr[5] = event;
+    loaded.cpu.gpr[6] = was_event;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::InputSprocketCompatibility(
+            PpcInputSprocketCompatibilityOperation::ElementGetNextEvent,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u8(was_event), Some(1));
+    assert_eq!(loaded.memory.read_u32_be(event + 16), Some(3 << 16));
+    assert_eq!(read_virtual_delta_fixture(&mut loaded, yaw, scratch + 8), 0);
 }

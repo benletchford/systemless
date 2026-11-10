@@ -1,5 +1,6 @@
 //! DrawSprocket and InputSprocket emulation and trace records.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -341,6 +342,9 @@ pub struct PpcInputSprocketVirtualElementRecord {
     pub keyboard_binding: Option<PpcInputSprocketKeyboardBinding>,
     pub need_name: String,
     pub need_record: Vec<u8>,
+    /// Horizontal and vertical pointer positions at the last delta read.
+    /// Widened coordinates retain unread movement across a cursor warp.
+    pub mouse_position: Cell<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -429,7 +433,7 @@ pub const PPC_ISP_ELEMENT_EVENT_SIZE: u32 = 20;
 pub const PPC_ISP_ELEMENT_KIND_BUTTON: u32 = 0x6275_746e;
 pub const PPC_ISP_ELEMENT_KIND_DPAD: u32 = 0x6470_6164;
 pub const PPC_ISP_ELEMENT_KIND_AXIS: u32 = 0x6178_6973;
-pub const PPC_ISP_ELEMENT_KIND_DELTA: u32 = 0x6465_6c74;
+pub const PPC_ISP_ELEMENT_KIND_DELTA: u32 = u32::from_be_bytes(*b"dlta");
 pub const PPC_ISP_AXIS_MIDDLE: u32 = 0x7fff_ffff;
 pub const PPC_ISP_AXIS_LOW: u32 = 0;
 pub const PPC_ISP_AXIS_HIGH: u32 = 0xffff_ffff;
@@ -2490,6 +2494,7 @@ pub(crate) fn ppc_isp_element_new_virtual_from_needs(
     heap_limit: u32,
     input_sprocket: &mut PpcInputSprocketState,
     virtual_elements: &mut Vec<PpcInputSprocketVirtualElementRecord>,
+    input: PpcInputSnapshot,
 ) -> i16 {
     let count = cpu.gpr[3];
     let needs_ptr = cpu.gpr[4];
@@ -2593,6 +2598,7 @@ pub(crate) fn ppc_isp_element_new_virtual_from_needs(
             keyboard_binding: draft.keyboard_binding,
             need_name: draft.need_name,
             need_record: draft.need_record,
+            mouse_position: Cell::new((i32::from(input.mouse_h), i32::from(input.mouse_v))),
         });
     }
 
@@ -2804,7 +2810,10 @@ pub(crate) fn ppc_isp_element_list_get_next_event(
         else {
             continue;
         };
-        if current_state == previous_state {
+        let is_delta = virtual_elements.iter().any(|record| {
+            record.element == element && record.kind == PPC_ISP_ELEMENT_KIND_DELTA
+        });
+        if if is_delta { current_state == 0 } else { current_state == previous_state } {
             continue;
         }
 
@@ -2970,6 +2979,9 @@ pub(crate) fn ppc_isp_virtual_element_simple_state(
     let record = virtual_elements
         .iter()
         .find(|record| record.element == element)?;
+    if record.kind == PPC_ISP_ELEMENT_KIND_DELTA {
+        return Some(ppc_isp_virtual_mouse_delta(record, input, input_sprocket));
+    }
     Some(ppc_isp_input_simple_state_with_binding(
         record.kind,
         record.default_state,
@@ -3242,28 +3254,38 @@ pub(crate) fn ppc_isp_input_simple_state_with_binding(
                 state
             }
         }
-        PPC_ISP_ELEMENT_KIND_DELTA => {
-            if !input_sprocket.mouse_active {
-                return fallback_state;
-            }
-            ppc_isp_mouse_delta_fixed(input, action_binding) as u32
-        }
+        // Stateful virtual delta elements are read through their owned record.
+        PPC_ISP_ELEMENT_KIND_DELTA => fallback_state,
         _ => fallback_state,
     }
 }
 
-pub(crate) fn ppc_isp_mouse_delta_fixed(
+pub(crate) fn ppc_isp_virtual_mouse_delta(
+    record: &PpcInputSprocketVirtualElementRecord,
     input: PpcInputSnapshot,
-    action_binding: PpcInputSprocketActionBinding,
-) -> i32 {
-    let center_h = (ppc_main_screen_width() / 2) as i32;
-    let center_v = (ppc_main_screen_height() / 2) as i32;
-    let pixel_delta = if action_binding == PpcInputSprocketActionBinding::DeltaPitch {
-        center_v.saturating_sub(i32::from(input.mouse_v))
+    input_sprocket: PpcInputSprocketState,
+) -> u32 {
+    let h = i32::from(input.mouse_h);
+    let v = i32::from(input.mouse_v);
+    let previous = record.mouse_position.replace((h, v));
+    if !input_sprocket.initialized || input_sprocket.suspended || !input_sprocket.mouse_active {
+        return record.default_state;
+    }
+    let pixels = if record.action_binding == PpcInputSprocketActionBinding::DeltaPitch {
+        previous.1.saturating_sub(v)
     } else {
-        i32::from(input.mouse_h).saturating_sub(center_h)
+        h.saturating_sub(previous.0)
     };
-    pixel_delta.saturating_mul(0x0001_0000)
+    pixels.saturating_mul(0x0001_0000) as u32
+}
+
+pub(crate) fn ppc_isp_reset_virtual_mouse_positions(
+    records: &[PpcInputSprocketVirtualElementRecord],
+    input: PpcInputSnapshot,
+) {
+    for record in records {
+        record.mouse_position.set((i32::from(input.mouse_h), i32::from(input.mouse_v)));
+    }
 }
 
 pub(crate) fn ppc_isp_button_pressed(
@@ -4045,6 +4067,11 @@ pub(crate) fn ppc_isp_element_state_value(
     };
     if let Some(state) = device_state {
         return Some(state);
+    }
+    if let Some(record) = virtual_elements.iter().find(|record| {
+        record.element == element && record.kind == PPC_ISP_ELEMENT_KIND_DELTA
+    }) {
+        return Some(ppc_isp_virtual_mouse_delta(record, input, *input_sprocket));
     }
     let (Some(kind), Some(fallback_state)) = (
         memory.read_u32_be(element),
