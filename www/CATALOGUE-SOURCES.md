@@ -3269,3 +3269,31 @@ for released public qualification. This enables source launch for the next human
 release, with no release/deploy or newly live count. Translation, combat, full
 levels, persistence, audio fidelity and independent hardware rendering remain
 unverified; no publisher licence grant is inferred.
+
+
+### Tristan original demo — source intake
+
+[Issue #5999](https://github.com/benletchford/systemless/issues/5999) records the
+complete original 657,581-byte SIT, independent three-file/six-fork/Finder packing
+parity, and period Macintosh Demo Games CD item23554 proof: all 229 app and 29 sound
+resource payloads match; map metadata differs. The third received PICT screenshot
+is preserved unchanged and was decoded/inspected. All 36 selected uncompressed UI
+notice records and the original 60-second/scoring-disabled notice were reviewed.
+Accepted under the authorized promotional-demo project policy, not a publisher
+licence grant. Original archive SHA-256:
+`278d01a636388a888b76285ebcf27d2a8dcb7e6548e486e7393993eb9704b602`.
+
+Generic runtime [PR #5998](https://github.com/benletchford/systemless/pull/5998)
+removes a false application-damaged alert. Candidate default 68K native paired
+Z-/ tests have identical before/released frames and held-only flipper differences;
+both 1464 frontend/2064 guest ticks, no exhausted frames, actual captures inspected.
+The earlier CmdN-only probe remained at the start prompt and is excluded.
+
+Private browser approval at runtime2d6b4539 plus promoted entry/launch flag passes
+all four20-second windows: active worker maxima36.1/21.4ms, control24.7/29.8ms;
+all unchanged frame/RAF/audio/clock gates pass. Ten held/released flipper state
+checks per case pass. Hosted original archive, both Wasm responses and executing
+worker bytecode pinned; debugger off during pacing, no concurrent builds/native
+runs. Actual active/control/released/final captures inspected. Browser launch is
+approved for the next human release; merge waits for the generic runtime fix.
+Public verification remains pending. No release/deploy operations.
