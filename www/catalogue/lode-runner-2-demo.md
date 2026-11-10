@@ -12,9 +12,29 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Puzzle
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: '2026-11-10'
+    tester: Catalogue maintainer
+    systemless_version: e0b55663 runtime code, private browser build 1351bbc4
+    architecture: ppc
+    status: playable
+    environment: Private full-site worker/WebGL browser, original default PowerPC, 25 MHz and
+      unchanged CPU/display/partition/sound settings. Normal Single Player, New and Start Game
+      plus default Pad 3 movement verified against a fresh no-input control. All four 20-second
+      windows pass unchanged pacing gates, including New Game/input and separate sustained play
+      for each case. Steady guest ticks/sec 59.81–60.76; host frames/sec 60.74–64.16; maximum
+      frame work 40.3 ms; minimum audio queue 114.1 ms. Archive and both main/worker WebAssembly
+      response bodies integrity-verified; all targets resumed, Debugger disabled, no lifecycle/network
+      errors and no concurrent heavy build. Actual active/control and sustained captures inspected.
+      Original framebuffer 800x600 rendered at 798x598 CSS pixels; checks project into recorded
+      presentation geometry. Wasm 16049705 bytes, SHA-256 0d9626bde05cab1a08d14f04ef131a30056e9d2c55dde78c6558db38cb4e1fbf.
+      This qualifies bounded first-level movement and browser pacing on the tested host; collection,
+      full levels, persistence, audio fidelity, independent hardware rendering and released
+      public qualification remain unverified.
+    evidence: https://github.com/benletchford/systemless/issues/5934
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: 202c39f6 runtime code
@@ -109,5 +129,5 @@ movement by default.
 ![Lode Runner 2 demo gameplay](https://assets.systemless.org/catalogue/media/sha256/69/69268aa61ff3ce6bbc0eb22671c8b5572fa7a71355d1d7d85f7c394100afdd38.png)
 
 The complete promotional demo is preserved unchanged, including its original
-score table. Native startup and bounded Pad 3 movement have been checked.
-Browser launch remains disabled pending browser controls and pacing approval.
+score table. Startup and bounded Pad 3 movement are verified in the browser.
+Collection, full levels, persistence and audio fidelity remain unverified.
