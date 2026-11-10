@@ -1440,6 +1440,122 @@ fn reject_filter_suite_without_host(
     contents.reject_without_host(runner)
 }
 
+#[derive(Default)]
+struct ZipAppleDouble {
+    resource_fork: Vec<u8>,
+    finder_info: Option<([u8; 4], [u8; 4], u16)>,
+}
+
+// AppleDouble v2 (RFC 1740, Appendix B): resource fork entry 2 and
+// Finder information entry 9 accompany, rather than replace, the data file.
+fn parse_zip_appledouble(bytes: &[u8]) -> Result<ZipAppleDouble, String> {
+    if bytes.len() < 26 || bytes[..4] != [0, 5, 22, 7] {
+        return Err("Invalid AppleDouble header".to_string());
+    }
+    if bytes[4..8] != [0, 2, 0, 0] {
+        return Err("Unsupported AppleDouble version".to_string());
+    }
+    let count = u16::from_be_bytes(bytes[24..26].try_into().unwrap()) as usize;
+    let table_end = 26 + count * 12;
+    if table_end > bytes.len() {
+        return Err("Truncated AppleDouble entry table".to_string());
+    }
+    let mut metadata = ZipAppleDouble::default();
+    let mut resource_seen = false;
+    let mut spans = Vec::new();
+    for descriptor in bytes[26..table_end].chunks_exact(12) {
+        let id = u32::from_be_bytes(descriptor[..4].try_into().unwrap());
+        let offset = u32::from_be_bytes(descriptor[4..8].try_into().unwrap()) as usize;
+        let size = u32::from_be_bytes(descriptor[8..12].try_into().unwrap()) as usize;
+        let end = offset
+            .checked_add(size)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| "AppleDouble entry outside header file".to_string())?;
+        if size != 0 {
+            if offset < table_end {
+                return Err("AppleDouble entry overlaps its table".to_string());
+            }
+            spans.push((offset, end));
+        }
+        let value = &bytes[offset..end];
+        match id {
+            1 => return Err("AppleDouble header contains a data fork".to_string()),
+            2 => {
+                if resource_seen {
+                    return Err("Duplicate AppleDouble resource fork".to_string());
+                }
+                resource_seen = true;
+                metadata.resource_fork = value.to_vec();
+            }
+            9 => {
+                if metadata.finder_info.is_some() || value.len() < 32 {
+                    return Err("Invalid AppleDouble Finder information".to_string());
+                }
+                metadata.finder_info = Some((
+                    value[..4].try_into().unwrap(),
+                    value[4..8].try_into().unwrap(),
+                    u16::from_be_bytes(value[8..10].try_into().unwrap()),
+                ));
+            }
+            _ => {}
+        }
+    }
+    spans.sort_unstable();
+    if spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err("Overlapping AppleDouble entries".to_string());
+    }
+    Ok(metadata)
+}
+
+fn zip_appledouble_target(path: &str) -> Option<String> {
+    let path = path.strip_prefix("__MACOSX/").unwrap_or(path);
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let name = name.strip_prefix("._")?;
+    if matches!(name, "" | "." | "..") {
+        return None;
+    }
+    Some(if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    })
+}
+
+fn zip_path_parents(path: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(path.rsplit_once('/').map(|(parent, _)| parent), |parent| {
+        parent.rsplit_once('/').map(|(parent, _)| parent)
+    })
+}
+
+fn read_zip_member<R: Read>(
+    entry: &mut zip::read::ZipFile<'_, R>,
+    path: &str,
+    prefix: &[u8],
+) -> Result<Vec<u8>, String> {
+    let declared_size = entry.size();
+    let entry_size = usize::try_from(declared_size)
+        .map_err(|_| format!("ZIP entry is too large for this platform: {path}"))?;
+    let mut data = Vec::new();
+    data.try_reserve_exact(entry_size)
+        .map_err(|err| format!("Failed to allocate memory for ZIP entry {path}: {err}"))?;
+    data.extend_from_slice(prefix);
+    entry
+        .take(
+            declared_size
+                .saturating_sub(prefix.len() as u64)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut data)
+        .map_err(|err| format!("Failed to decompress ZIP entry {path}: {err}"))?;
+    if data.len() as u64 != declared_size {
+        return Err(format!(
+            "ZIP entry size mismatch for {path}: declared {declared_size}, decoded {}",
+            data.len()
+        ));
+    }
+    Ok(data)
+}
+
 fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
     let reader = Cursor::new(file_data);
     let mut archive = zip::ZipArchive::new(reader)
@@ -1449,17 +1565,13 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
             "ZIP archive exceeds the {MAX_ZIP_ENTRIES} entry limit"
         ));
     }
-    let mut payload = Payload {
-        dirs: Vec::new(),
-        files: Vec::new(),
-        volumes: Vec::new(),
-        installer_roots: Vec::new(),
-        skipped_disk_image_errors: Vec::new(),
-    };
+    let mut members = Vec::new();
+    let mut targets = std::collections::HashSet::new();
+    let mut file_targets = std::collections::HashSet::new();
     let mut total_uncompressed_bytes = 0u64;
-
+    // Validate every name and the complete size budget before reading metadata.
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
             .map_err(|err| format!("Failed to read ZIP entry {index}: {err}"))?;
         if entry.encrypted() {
@@ -1472,62 +1584,121 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
         if path.is_empty() {
             continue;
         }
-        if entry.is_dir() {
-            payload.dirs.push(path.trim_end_matches('/').to_string());
+        let directory = entry.is_dir();
+        if !directory {
+            if entry.size() > MAX_ZIP_ENTRY_BYTES {
+                return Err(format!(
+                    "ZIP entry exceeds the {MAX_ZIP_ENTRY_BYTES} byte extraction limit: {path}"
+                ));
+            }
+            total_uncompressed_bytes = total_uncompressed_bytes
+                .checked_add(entry.size())
+                .ok_or_else(|| "ZIP uncompressed size overflow".to_string())?;
+            if total_uncompressed_bytes > MAX_ZIP_TOTAL_BYTES {
+                return Err(format!(
+                    "ZIP archive exceeds the {MAX_ZIP_TOTAL_BYTES} byte extraction limit"
+                ));
+            }
+            file_targets.insert(path.clone());
+        }
+        targets.insert(path.clone());
+        targets.extend(zip_path_parents(&path).map(str::to_string));
+        members.push((index, path, directory));
+    }
+    let mut metadata = std::collections::HashMap::new();
+    let mut consumed = std::collections::HashSet::new();
+    let mut metadata_dirs = std::collections::HashSet::new();
+    // Separate pass makes both adjacent and __MACOSX headers order-independent.
+    // Orphan headers and ordinary similarly named files remain ordinary members.
+    for (index, path, directory) in &members {
+        if *directory {
             continue;
         }
-
-        if entry.size() > MAX_ZIP_ENTRY_BYTES {
+        let Some(target) = zip_appledouble_target(path).filter(|target| targets.contains(target))
+        else {
+            continue;
+        };
+        let mut entry = archive
+            .by_index(*index)
+            .map_err(|err| format!("ZIP entry {path}: {err}"))?;
+        if entry.size() < 4 {
+            continue;
+        }
+        let mut magic = [0; 4];
+        entry
+            .read_exact(&mut magic)
+            .map_err(|err| format!("ZIP entry {path}: {err}"))?;
+        if magic != [0, 5, 22, 7] {
+            continue;
+        }
+        let bytes = read_zip_member(&mut entry, path, &magic)?;
+        let header = parse_zip_appledouble(&bytes).map_err(|err| format!("{path}: {err}"))?;
+        if !file_targets.contains(&target) && !header.resource_fork.is_empty() {
             return Err(format!(
-                "ZIP entry exceeds the {} byte extraction limit: {path}",
-                MAX_ZIP_ENTRY_BYTES
+                "Unsupported AppleDouble directory resource fork: {path}"
             ));
         }
-        total_uncompressed_bytes = total_uncompressed_bytes
-            .checked_add(entry.size())
-            .ok_or_else(|| "ZIP uncompressed size overflow".to_string())?;
-        if total_uncompressed_bytes > MAX_ZIP_TOTAL_BYTES {
-            return Err(format!(
-                "ZIP archive exceeds the {} byte extraction limit",
-                MAX_ZIP_TOTAL_BYTES
-            ));
+        if metadata.insert(target.clone(), header).is_some() {
+            return Err(format!("Duplicate AppleDouble metadata for {target}"));
         }
-
-        let declared_size = entry.size();
-        let entry_size = usize::try_from(declared_size)
-            .map_err(|_| format!("ZIP entry is too large for this platform: {path}"))?;
-        let mut data = Vec::new();
-        data.try_reserve_exact(entry_size)
-            .map_err(|_| format!("Failed to allocate memory for ZIP entry: {path}"))?;
-        (&mut entry)
-            .take(declared_size.saturating_add(1))
-            .read_to_end(&mut data)
-            .map_err(|err| format!("Failed to decompress ZIP entry {path}: {err}"))?;
-        if data.len() as u64 != declared_size {
-            return Err(format!(
-                "ZIP entry size mismatch for {path}: declared {declared_size}, decoded {}",
-                data.len()
-            ));
+        consumed.insert(*index);
+        metadata_dirs.extend(zip_path_parents(path).map(str::to_string));
+    }
+    if members
+        .iter()
+        .any(|(index, path, _)| consumed.contains(index) && metadata.contains_key(path))
+    {
+        return Err("AppleDouble metadata targets another metadata header".to_string());
+    }
+    let mut retained_dirs = std::collections::HashSet::new();
+    for (index, path, directory) in &members {
+        if !consumed.contains(index) && (!directory || !metadata_dirs.contains(path)) {
+            retained_dirs.extend(zip_path_parents(path).map(str::to_string));
         }
-
-        if looks_like_macbinary(&data) {
+    }
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        installer_roots: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    for (index, path, directory) in members {
+        if consumed.contains(&index) {
+            continue;
+        }
+        if directory {
+            if !metadata_dirs.contains(&path) || retained_dirs.contains(&path) {
+                payload.dirs.push(path);
+            }
+            continue;
+        }
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("ZIP entry {path}: {err}"))?;
+        let data = read_zip_member(&mut entry, &path, &[])?;
+        if let Some(header) = metadata.remove(&path) {
+            let (file_type, creator, flags) = header.finder_info.unwrap_or((*b"????", *b"????", 0));
+            let nested = payload_from_forks(
+                &path,
+                data,
+                header.resource_fork,
+                file_type,
+                creator,
+                flags,
+                1,
+            )?;
+            merge_payload(&mut payload, nested);
+        } else if looks_like_macbinary(&data) {
             let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
             payload
                 .files
                 .push(parse_macbinary_payload(&data, parent, 1)?);
-            continue;
+        } else {
+            let nested = payload_from_forks(&path, data, Vec::new(), *b"????", *b"????", 0, 1)?;
+            merge_payload(&mut payload, nested);
         }
-
-        let nested = payload_from_forks(&path, data, Vec::new(), *b"????", *b"????", 0, 1)?;
-        payload.installer_roots.extend(nested.installer_roots);
-        payload.dirs.extend(nested.dirs);
-        payload.files.extend(nested.files);
-        payload.volumes.extend(nested.volumes);
-        payload
-            .skipped_disk_image_errors
-            .extend(nested.skipped_disk_image_errors);
     }
-
     expand_split_vise_payloads(payload)
 }
 
@@ -6099,6 +6270,189 @@ mod tests {
             .expect("application metadata");
         assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+    }
+
+    fn make_zip_appledouble(rsrc: &[u8], file_type: &[u8; 4], creator: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = vec![0; 82];
+        bytes[..4].copy_from_slice(&0x0005_1607u32.to_be_bytes());
+        bytes[4..8].copy_from_slice(&0x0002_0000u32.to_be_bytes());
+        bytes[24..26].copy_from_slice(&2u16.to_be_bytes());
+        bytes[26..30].copy_from_slice(&9u32.to_be_bytes());
+        bytes[30..34].copy_from_slice(&50u32.to_be_bytes());
+        bytes[34..38].copy_from_slice(&32u32.to_be_bytes());
+        bytes[38..42].copy_from_slice(&2u32.to_be_bytes());
+        bytes[42..46].copy_from_slice(&82u32.to_be_bytes());
+        bytes[46..50].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+        bytes[50..54].copy_from_slice(file_type);
+        bytes[54..58].copy_from_slice(creator);
+        bytes[58..60].copy_from_slice(&0x2100u16.to_be_bytes());
+        bytes.extend_from_slice(rsrc);
+        bytes
+    }
+
+    #[test]
+    fn zip_archive_restores_appledouble_forks_and_finder_metadata() {
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let resource_only = make_single_resource_fork_bytes(*b"TEXT", 128, b"document");
+        let app_metadata = make_zip_appledouble(&app_rsrc, b"APPL", b"TEST");
+        let doc_metadata = make_zip_appledouble(&resource_only, b"TEXT", b"DOCS");
+        let folder_metadata = make_zip_appledouble(&[], b"\0\0\0\0", b"\0\0\0\0");
+        for prefix in ["", "__MACOSX/"] {
+            for metadata_first in [false, true] {
+                let app_path = format!("{prefix}Demo/._Game App");
+                let doc_path = format!("{prefix}Demo/._ResourceOnly");
+                let folder_path = format!("{prefix}._Demo");
+                let mut entries = vec![
+                    ("Demo/Game App", b"application data".as_slice()),
+                    ("Demo/ResourceOnly", b"".as_slice()),
+                    ("Demo/Notes", b"notes".as_slice()),
+                    (app_path.as_str(), app_metadata.as_slice()),
+                    (doc_path.as_str(), doc_metadata.as_slice()),
+                    (folder_path.as_str(), folder_metadata.as_slice()),
+                ];
+                if metadata_first {
+                    entries.reverse();
+                }
+                let archive = make_zip(&entries);
+                let payload = collect_zip_payload(&archive).unwrap();
+                assert_eq!(payload.files.len(), 3);
+                let app = payload
+                    .files
+                    .iter()
+                    .find(|f| f.name == "Demo/Game App")
+                    .unwrap();
+                assert_eq!(app.data, b"application data");
+                assert_eq!(app.rsrc, app_rsrc);
+                assert_eq!(app.file_type, *b"APPL");
+                assert_eq!(app.creator, *b"TEST");
+                assert_eq!(app.finder_flags, 0x2100);
+                let doc = payload
+                    .files
+                    .iter()
+                    .find(|f| f.name == "Demo/ResourceOnly")
+                    .unwrap();
+                assert!(doc.data.is_empty());
+                assert_eq!(doc.rsrc, resource_only);
+                assert_eq!(doc.file_type, *b"TEXT");
+                let mut runner = new_runner();
+                let packed = pack_game_sources_for_web(&[&archive], &[]).unwrap();
+                load_web_pack(&mut runner, &packed).unwrap();
+                assert_eq!(
+                    runner.dispatcher().vfs_rsrc.get("Demo/Game App"),
+                    Some(&app_rsrc)
+                );
+                assert_eq!(
+                    runner.dispatcher().launched_app_path(),
+                    Some("Demo/Game App")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zip_archive_preserves_ordinary_and_orphan_sidecar_names() {
+        let orphan = make_zip_appledouble(b"resource", b"TEXT", b"TEST");
+        let archive = make_zip(&[
+            ("Demo/File", b"content"),
+            ("Demo/._File", b"ordinary similarly named file"),
+            ("__MACOSX/Demo/._Missing", &orphan),
+            ("Demo/._..", &orphan),
+        ]);
+        let payload = collect_zip_payload(&archive).unwrap();
+        assert_eq!(payload.files.len(), 4);
+        for (name, expected) in [
+            ("Demo/._File", b"ordinary similarly named file".as_slice()),
+            ("__MACOSX/Demo/._Missing", orphan.as_slice()),
+            ("Demo/._..", orphan.as_slice()),
+        ] {
+            let file = payload.files.iter().find(|file| file.name == name).unwrap();
+            assert_eq!(file.data, expected);
+            assert!(file.rsrc.is_empty());
+        }
+    }
+
+    #[test]
+    fn zip_archive_hides_only_consumed_metadata_directories() {
+        let metadata = make_zip_appledouble(b"resource", b"TEXT", b"TEST");
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for directory in ["Demo/", "__MACOSX/", "__MACOSX/Demo/", "__MACOSX/Kept/"] {
+            writer.add_directory(directory, options).unwrap();
+        }
+        for (name, data) in [
+            ("Demo/File", b"data".as_slice()),
+            ("__MACOSX/Demo/._File", metadata.as_slice()),
+            ("__MACOSX/Kept/ordinary", b"keep this".as_slice()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        let payload = collect_zip_payload(&writer.finish().unwrap().into_inner()).unwrap();
+        assert_eq!(payload.files.len(), 2);
+        assert!(payload.dirs.iter().any(|name| name == "Demo"));
+        assert!(payload.dirs.iter().any(|name| name == "__MACOSX"));
+        assert!(payload.dirs.iter().any(|name| name == "__MACOSX/Kept"));
+        assert!(!payload.dirs.iter().any(|name| name == "__MACOSX/Demo"));
+    }
+
+    #[test]
+    fn zip_archive_rejects_malformed_appledouble_metadata() {
+        let good = make_zip_appledouble(b"resource", b"TEXT", b"TEST");
+        let mut bad_offset = good.clone();
+        bad_offset[30..34].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut short_finder = good.clone();
+        short_finder[34..38].copy_from_slice(&9u32.to_be_bytes());
+        let mut overlap = good.clone();
+        overlap[42..46].copy_from_slice(&50u32.to_be_bytes());
+        let mut duplicate_resource = good.clone();
+        duplicate_resource[26..30].copy_from_slice(&2u32.to_be_bytes());
+        let mut embedded_data = good.clone();
+        embedded_data[26..30].copy_from_slice(&1u32.to_be_bytes());
+        let mut unsupported_version = good.clone();
+        unsupported_version[4..8].copy_from_slice(&0x0003_0000u32.to_be_bytes());
+        for malformed in [
+            good[..25].to_vec(),
+            good[..30].to_vec(),
+            bad_offset,
+            short_finder,
+            overlap,
+            duplicate_resource,
+            embedded_data,
+            unsupported_version,
+        ] {
+            let archive = make_zip(&[("Demo/File", b"data"), ("Demo/._File", &malformed)]);
+            let error = collect_zip_payload(&archive).unwrap_err();
+            assert!(error.contains("AppleDouble"), "{error}");
+        }
+        let archive = make_zip(&[
+            ("Demo/File", b"data"),
+            ("Demo/._File", &good),
+            ("__MACOSX/Demo/._File", &good),
+        ]);
+        let error = collect_zip_payload(&archive).unwrap_err();
+        assert!(error.contains("Duplicate AppleDouble metadata"), "{error}");
+    }
+
+    #[test]
+    fn zip_archive_validates_crc_for_data_and_appledouble_members() {
+        let metadata = make_zip_appledouble(b"resource", b"TEXT", b"TEST");
+        for name in ["Demo/File", "__MACOSX/Demo/._File"] {
+            let mut archive =
+                make_zip(&[("Demo/File", b"data"), ("__MACOSX/Demo/._File", &metadata)]);
+            let offset = archive
+                .windows(4)
+                .enumerate()
+                .find_map(|(offset, magic)| {
+                    (magic == b"PK\x01\x02"
+                        && archive.get(offset + 46..offset + 46 + name.len())
+                            == Some(name.as_bytes()))
+                    .then_some(offset)
+                })
+                .unwrap();
+            archive[offset + 16] ^= 1;
+            let error = collect_zip_payload(&archive).unwrap_err();
+            assert!(error.to_lowercase().contains("checksum"), "{error}");
+        }
     }
 
     #[test]
