@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.115.0](https://github.com/benletchford/systemless/compare/v0.114.0...v0.115.0) (2026-11-10)
+
+
+### Features
+
+* add original Air Combat and Afterlife demos ([7c318f4](https://github.com/benletchford/systemless/commit/7c318f4aea2ad9e2090893b7abb9dfddaa7307b9))
+* add the original Crystal Caliburn demo ([9eac354](https://github.com/benletchford/systemless/commit/9eac354bc624c396a5cdcd1d074d1dc03d84410d))
+* **catalogue:** add Geneforge demo intake ([9e21215](https://github.com/benletchford/systemless/commit/9e21215fabb5ef37f4203ead4d95e053c3cb78c5))
+* **catalogue:** add the original Ares demo ([0eaa887](https://github.com/benletchford/systemless/commit/0eaa887623417249c80b89c7f128dc6b7e308906))
+* **catalogue:** enable Ares browser play ([e078464](https://github.com/benletchford/systemless/commit/e0784645064bdfee3cb7f1c5d5de8177e310e02b))
+* enable Crystal Caliburn demo browser play ([3751790](https://github.com/benletchford/systemless/commit/37517900e3398b5be398ac45b3d8b22271014e94))
+
+
+### Bug Fixes
+
+* decode expanded VISE packed catalog records ([5b5df15](https://github.com/benletchford/systemless/commit/5b5df152e00ac016c71bab323682340e2a7824e7))
+* decode unflagged UTF-8 ZIP filenames ([aa42fa6](https://github.com/benletchford/systemless/commit/aa42fa695ffa4cd782c166673c00466e5562c2d8))
+* initialize alternate dialog backgrounds ([07f5045](https://github.com/benletchford/systemless/commit/07f5045d751eb3d201944b3cc1535a7bbb9fbd24))
+* **input:** recognize and consume InputSprocket mouse deltas ([d09fc36](https://github.com/benletchford/systemless/commit/d09fc36f0c345a3ea7a284eb3c330796e87eb492))
+* preserve AppleDouble forks in ZIP archives ([37b24bd](https://github.com/benletchford/systemless/commit/37b24bdca8f5642b8f756408c8f6d08ca53a59b3))
+* **quickdraw:** publish opened PowerPC ports to application globals ([57ea183](https://github.com/benletchford/systemless/commit/57ea1838399c6c6cd6aebba927feaf432266b2da))
+
 ## [0.114.0](https://github.com/benletchford/systemless/compare/v0.113.0...v0.114.0) (2026-11-10)
 
 
