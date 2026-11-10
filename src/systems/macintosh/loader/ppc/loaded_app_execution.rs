@@ -2036,13 +2036,15 @@ impl PpcLoadedApp {
                                             ))
                                             };
                                             // QDGlobals.thePort is guest-visible state. Keep it
-                                            // consistent with every explicit port selection,
+                                            // consistent with port opening and explicit selection,
                                             // including reselection after a window operation
                                             // already changed the host's current port.
                                             if toolbox_startup.init_graf_global_ptr != 0
                                                 && matches!(
                                                     binding.dispatcher_target,
                                                     PpcImportDispatcherTarget::SetPort
+                                                        | PpcImportDispatcherTarget::OpenPort
+                                                        | PpcImportDispatcherTarget::OpenCPort
                                                         | PpcImportDispatcherTarget::SetPortWindowPort
                                                         | PpcImportDispatcherTarget::SetPortDialogPort
                                                         | PpcImportDispatcherTarget::SetGWorld
