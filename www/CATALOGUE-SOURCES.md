@@ -3181,3 +3181,37 @@ the screenshot is cropped only to the 640x480 game content surface. Collection,
 completion, audio fidelity, independent hardware rendering and browser controls/
 pacing remain pending. Overall compatibility stays unknown and launch disabled.
 This source intake adds no qualified-live game.
+
+
+## Shadow Warrior demo — original promotional intake
+
+[Issue #5936](https://github.com/benletchford/systemless/issues/5936) records the
+complete unchanged 11,881,524-byte original Macintosh demo, SHA-256
+`dd81d19709ea8c6c94b0a1f7b5aa6cfaa3c5bf628486618db96ac774dff7a10a`.
+All 17 files, 34 forks and 17 Finder records match independent unar extraction.
+The complete four-level demo retains both Readmes, network launcher, taunts and
+received configuration; no settings or performance suggestions are applied.
+
+The preserved [January 1998 MacAddict 17 disc](https://archive.org/details/macaddict-cd-017)
+contains the original Commercial Demos/Shadow Warrior Demo folder. Original
+HFS catalogue and all 17 selected files were inspected through HTTP 206 ranges
+with exact Content-Range, size and SHA-256 receipts. Sixteen data forks and all
+207 non-folder-icon resource payloads match; raw resource metadata and the
+folder icon differ. Config differs only in PlayerName (WADE ALBRIGH on disc,
+KATO in archive) and Chickens (2 on disc, 0 in archive); neither is rewritten.
+No whole-disc or exact package-byte identity is claimed. Both Readmes
+(3,631/7,445 bytes), 108 selected text/UI/version resources, all retained notice
+matches and 483-file group inventory were reviewed without finding an explicit
+redistribution restriction in inspected notices. Acceptance uses the authorized
+promotional-demo policy, not an affirmative publisher licence grant.
+
+Fresh original/default PowerPC runs use runtime code matching merged e0b55663.
+Normal 256-colour Switch, Space through logos, and Return accept the original
+shareware episode/default skill and reach the first level. Documented Up held
+for 60 ticks then released for 12 changes the view against an equal-duration
+no-input control with byte-identical pre-input captures. Both finish at 1860
+frontend/guest ticks with three measured pixel assertions and zero exhausted
+frames. Actual captures were inspected; the gameplay capture is cropped only
+to the 640x480 game surface. Combat, collection, completion, networking, audio
+fidelity, independent hardware rendering and browser controls/pacing remain
+pending. Compatibility stays unknown and launch disabled; no live increment.
