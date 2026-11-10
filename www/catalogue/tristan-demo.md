@@ -8,6 +8,7 @@ summary: >-
 developer: LittleWing
 publisher: LittleWing
 year: 1992
+launch_enabled: true
 architectures:
 - 68k
 default_architecture: 68k
@@ -20,6 +21,36 @@ compatibility:
     systemless_version: 2d6b4539 candidate resource-reopen runtime
     architecture: 68k
     environment: "Complete unchanged original 1.04/LC StuffIt demo, default CPU, initial display, partition, sound and preferences. Requires the generic Resource Manager correction in PR #5998. Space at the original table prompt opens the original demo notice; OK starts the table. In a matched pair, pre-input frames are RGB pixel-identical. Holding documented Z and / for six frontend ticks raises both flippers while omission leaves them lowered. After release and six ticks the active and control frames are RGB pixel-identical again. Difference while held is confined to (265,403)-(328,432). Both 1464 frontend/2064 guest ticks, zero exhausted frames; actual active, control and released captures inspected. Frozen binary SHA-256 68cf09215630362cd9bde7f765265efad13479f190e0650b56910267c1bbbff5 has the same runtime source as the rebased candidate; rebase changes release/package metadata only. Earlier CmdN-only probe remained at the start prompt and is excluded. No overrides, preference rewrites, patches, cheats or unlocks. Bounded native startup and flipper response only; full physics, nudge, completion, persistence, audio fidelity, browser pacing and independent hardware accuracy unverified."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5999
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: 2d6b4539 private browser-equivalent runtime
+    architecture: 68k
+    environment: >-
+      Fresh owned Chromium Linux ARM64 active/control profiles, original800x600
+      guest and default25MHz CPU, worker/SAB/WebGL. Complete original archive;
+      no overrides, preference rewrites, game patches, cheats or unlocks.
+      Space opens the original60-second/scoring-disabled notice; OK starts play.
+      Initial held/released Z and / pair plus four sustained rounds show both
+      flippers raised only with input and lowered after release; ten state checks
+      per case pass. Actual active/control/released/final captures inspected.
+      All four mandatory20-second windows pass unchanged pacing gates:
+      active first/sustained max worker frames36.1/21.4ms, omission24.7/29.8ms;
+      minimum audio queues118.1/126.9/118.0/124.5ms. Final steady host rates
+      61.06/61.10/60.83/60.79fps and guest rates62.10/62.14/61.86/61.82ticks/s
+      are snapshots, not whole-game averages. Worker frame<=50ms, runtime RAF
+      gap<=250ms, loading gap<=500ms, callback<=50ms, audio>=40ms,
+      steady host>=55fps and guest>=50ticks/s. Actual hosted archive and main/worker
+      Wasm HTTP bodies pinned; executing current worker bytecode matched and
+      debugger disabled before pacing. Wasm16112760 bytes, SHA-256
+      13666538bd371075b7ecfe121ebf9a3f271fe89a7b8fd3a8dc61b9a5764fc048.
+      Production build configuration; no concurrent build/native work during pacing.
+      Runtime2d6b4539 plus the exact promoted entry and private launch flag;
+      source merge requires the generic fix5998. Bounded original-demo startup and
+      flipper response, not released public qualification, full physics, nudge,
+      completion, persistence, audio fidelity or independent hardware accuracy.
+      Final table captures do not assert an exact flipper rest state.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5999
 runtime:

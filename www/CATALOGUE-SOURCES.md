@@ -3287,6 +3287,13 @@ Generic runtime [PR #5998](https://github.com/benletchford/systemless/pull/5998)
 removes a false application-damaged alert. Candidate default 68K native paired
 Z-/ tests have identical before/released frames and held-only flipper differences;
 both 1464 frontend/2064 guest ticks, no exhausted frames, actual captures inspected.
-The earlier CmdN-only probe remained at the start prompt and is excluded. Browser
-launch remains disabled. Source merge waits for the generic fix; browser and public
-qualification remain separate. No release/deploy operations.
+The earlier CmdN-only probe remained at the start prompt and is excluded.
+
+Private browser approval at runtime2d6b4539 plus promoted entry/launch flag passes
+all four20-second windows: active worker maxima36.1/21.4ms, control24.7/29.8ms;
+all unchanged frame/RAF/audio/clock gates pass. Ten held/released flipper state
+checks per case pass. Hosted original archive, both Wasm responses and executing
+worker bytecode pinned; debugger off during pacing, no concurrent builds/native
+runs. Actual active/control/released/final captures inspected. Browser launch is
+approved for the next human release; merge waits for the generic runtime fix.
+Public verification remains pending. No release/deploy operations.
