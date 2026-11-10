@@ -8,14 +8,37 @@ summary: >-
 developer: Totally Games
 publisher: LucasArts
 year: 1996
+launch_enabled: true
 architectures:
 - 68k
 - ppc
 default_architecture: ppc
 category: Simulation
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: fb4b5071 runtime / ac28c51c browser source
+    architecture: ppc
+    environment: >-
+      Private production-equivalent Chrome Worker browser with only launch enabled;
+      original hosted archive and both actual main/worker Wasm response bodies match
+      their pins. Default 25 MHz CPU, display, partition, sound and preferences remain
+      intact. Normal left-door click enters training; recentered mouse and Right held
+      for 60 guest ticks shift upper-view maze geometry 35.47 CSS pixels left, versus
+      0.35 right in a fresh omitted-input control, each from its own preceding frame.
+      Four unchanged twenty-second entry/input and separate sustained-flight windows
+      pass: endpoint guest 57.527-60.004 ticks/sec, host 58.518-61.724 FPS, maximum
+      worker frame 28.9 ms, minimum audio queue 404.9 ms, zero lifecycle or observer
+      errors. These are scheduling metrics, not game render FPS or audio fidelity.
+      Actual before/after and intermediate sustained captures inspected. Control
+      naturally passes one gate and scores 100; active remains in flight after steering
+      away. All targets resumed and debugger disabled before measurement. Combat,
+      mission completion, saves, independent hardware fidelity and released public-route
+      replay remain unverified. No public/live qualification or release action claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5953
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: e0b55663 runtime code
@@ -125,7 +148,6 @@ historical mission. The original Read Me explains both missions and controls.
 The default flight control uses the mouse; the cursor keys also steer.
 Click to fire, **F** toggles the X-Wing’s S-foils, and **+ / -** adjust throttle.
 
-Native PowerPC testing verifies entry into training and bounded steering.
-The 68K slice has incomplete cockpit/world rendering. Browser input, pacing,
-combat, mission completion, persistence and audio fidelity remain unverified,
-so browser launch is disabled.
+PowerPC testing verifies training entry, steering and sustained flight in the
+browser. The 68K slice has incomplete cockpit/world rendering. Combat, mission
+completion, persistence and audio fidelity remain unverified.
