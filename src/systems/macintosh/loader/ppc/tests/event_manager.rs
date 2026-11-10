@@ -1298,6 +1298,24 @@ fn get_mouse_honors_guest_low_memory_warp_across_slices() {
     });
     loaded.input_sprocket.device_mouse_v = Some(400);
     loaded.input_sprocket.device_mouse_h = Some(520);
+    loaded.input_sprocket.initialized = true;
+    for (element, binding) in [
+        (0x0300_0000, PpcInputSprocketActionBinding::DeltaYaw),
+        (0x0300_0100, PpcInputSprocketActionBinding::DeltaPitch),
+    ] {
+        loaded.input_sprocket_virtual_elements.push(PpcInputSprocketVirtualElementRecord {
+            element,
+            need_index: 0,
+            need_source: 0,
+            kind: u32::from_be_bytes(*b"dlta"),
+            default_state: 0,
+            action_binding: binding,
+            keyboard_binding: None,
+            need_name: "Mouse".into(),
+            need_record: Vec::new(),
+            mouse_position: std::cell::Cell::new((520, 400)),
+        });
+    }
     loaded.cpu.gpr[3] = point;
     let first = loaded.run_with_hle_imports(64);
     assert_eq!(first.handled_import_count, 1);
@@ -1308,6 +1326,17 @@ fn get_mouse_honors_guest_low_memory_warp_across_slices() {
     assert_eq!(loaded.input_sprocket.device_mouse_h, Some(400));
     assert_eq!(loaded.input_sprocket.device_mouse_v_carry, -4);
     assert_eq!(loaded.input_sprocket.device_mouse_h_carry, 6);
+
+    // Real unread motion survives the warp, but the warp itself is not input.
+    let warped_input = PpcInputSnapshot {
+        mouse_v: 300,
+        mouse_h: 400,
+        ..PpcInputSnapshot::default()
+    };
+    for (record, expected) in loaded.input_sprocket_virtual_elements.iter().zip([6 << 16, (-4i32 << 16) as u32]) {
+        assert_eq!(ppc_isp_virtual_mouse_delta(record, warped_input, loaded.input_sprocket), expected);
+        assert_eq!(ppc_isp_virtual_mouse_delta(record, warped_input, loaded.input_sprocket), 0);
+    }
 
     // A new slice without another host input must retain the guest warp.
     loaded.cpu.pc = loaded.entry_pc + 12;
