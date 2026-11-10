@@ -3242,3 +3242,30 @@ released public qualification open. Launch may be enabled in source for the
 next human release. No release, deployment or qualified-live increment follows
 from this private approval. Collection, full levels, persistence, audio fidelity
 and independent hardware rendering remain unverified.
+
+
+### Quake — bounded browser approval
+
+The unchanged Macintosh 1.08.2 preview passes fresh active and no-input private
+PowerPC worker/WebGL browser cases, all four 20-second windows. Normal Single
+Player/New Game and default right-arrow turning, followed by separate sustained
+play, pass unchanged pacing gates: steady guest ticks/sec 59.87–61.37, host
+frames/sec 59.87–63.52, maximum frame work 31.9 ms, minimum audio queue 469.3 ms.
+The stone-ceiling region changes 10,851 pixels with input and zero without it.
+Actual active/control and sustained captures were inspected. Archive and both
+main/worker Wasm response bodies are pinned; all targets resumed and Debugger
+disabled, with no lifecycle/network errors or concurrent heavy build.
+
+The first control exposed an evidence-checker error: its broad world region
+included animated torches, which also change in the native no-input control.
+That failure is retained. The corrected stone-ceiling region is static in both
+native and browser controls and changes with turning; fresh active/control tests
+pass without changing input, game defaults or pacing thresholds.
+
+Private build 1351bbc4 uses runtime code e0b55663. Wasm is 16,049,705 bytes,
+SHA-256 `0d9626bde05cab1a08d14f04ef131a30056e9d2c55dde78c6558db38cb4e1fbf`.
+[Issue #5924](https://github.com/benletchford/systemless/issues/5924) remains open
+for released public qualification. This enables source launch for the next human
+release, with no release/deploy or newly live count. Translation, combat, full
+levels, persistence, audio fidelity and independent hardware rendering remain
+unverified; no publisher licence grant is inferred.
