@@ -353,6 +353,8 @@ pub enum PpcImportDispatcherTarget {
     ActivatePalette,
     NSetPalette,
     GetPalette,
+    SetPaletteUpdates,
+    GetPaletteUpdates,
     GetPort,
     GetQDGlobalsThePort,
     GetPortPixMap,
@@ -3821,6 +3823,8 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::NSetPalette
         }
         ("InterfaceLib", "GetPalette") => PpcImportDispatcherTarget::GetPalette,
+        ("InterfaceLib", "SetPaletteUpdates") => PpcImportDispatcherTarget::SetPaletteUpdates,
+        ("InterfaceLib", "GetPaletteUpdates") => PpcImportDispatcherTarget::GetPaletteUpdates,
         ("InterfaceLib", "GetPort") => PpcImportDispatcherTarget::GetPort,
         ("InterfaceLib", "GetPortPixMap") => PpcImportDispatcherTarget::GetPortPixMap,
         ("InterfaceLib", "GetQDGlobalsThePort") => PpcImportDispatcherTarget::GetQDGlobalsThePort,

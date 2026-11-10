@@ -2709,6 +2709,7 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 screen_clut,
                 color_manager_clut,
             );
+            toolbox_startup.palette_update_modes.remove(&cpu.gpr[3]);
             if toolbox_startup.application_palette == cpu.gpr[3] {
                 toolbox_startup.application_palette = 0;
                 toolbox_startup.application_palette_updates = 0;
