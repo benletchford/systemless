@@ -8553,50 +8553,64 @@ fn bringtofront_consumes_windowptr_argument() {
 }
 
 #[test]
-fn bringtofront_repaints_exposed_content_and_preserves_visible_pixels() {
-    let (mut disp, mut cpu, mut bus) = setup();
-    let screen = bus.alloc(800 * 600);
-    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
-    disp.set_screen_mode_for_test(screen, 800, 800, 600, 8);
-    let target = bus.alloc(256);
-    let front = bus.alloc(256);
-    for (window, top, left, bottom, right) in
-        [(target, 100, 100, 300, 400), (front, 150, 200, 350, 500)]
-    {
-        disp.init_cgraf_window(
-            &mut bus, &mut cpu, window, screen, top, left, bottom, right, "Window", 4, true, false,
-            true, 0,
+fn window_fronting_repaints_exposed_content_and_preserves_visible_pixels() {
+    for trap in [0x120, 0x11F] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+        disp.set_screen_mode_for_test(screen, 800, 800, 600, 8);
+        let target = bus.alloc(256);
+        let front = bus.alloc(256);
+        for (window, top, left, bottom, right) in
+            [(target, 100, 100, 300, 400), (front, 150, 200, 350, 500)]
+        {
+            disp.init_cgraf_window(
+                &mut bus, &mut cpu, window, screen, top, left, bottom, right, "Window", 4, true,
+                false, true, 0,
+            );
+        }
+        disp.window_list.replace(vec![front, target]);
+        disp.front_window = front;
+        disp.recalculate_window_vis_regions(&mut bus);
+        disp.set_current_port_state(&mut bus, &mut cpu, front, None);
+        let saved_device = *disp.current_gdevice;
+        let saved_clip = bus.read_long(target + 28);
+        // Window Manager repainting must not inherit the application's clip.
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, saved_clip, None);
+        let exposed = screen + 200 * 800 + 220;
+        let already_visible = screen + 120 * 800 + 120;
+        let outside_target = screen + 250 * 800 + 450;
+        for pixel in [exposed, already_visible, outside_target] {
+            bus.write_byte(pixel, 0x7B);
+        }
+        cpu.write_reg(Register::A7, TEST_SP - 4);
+        bus.write_long(TEST_SP - 4, target);
+        dispatch(&mut disp, trap, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(exposed), 0, "erase newly exposed content");
+        assert_eq!(bus.read_byte(already_visible), 0x7B);
+        assert_eq!(bus.read_byte(outside_target), 0x7B);
+        assert_eq!(bus.read_long(target + 28), saved_clip);
+        assert_eq!(*disp.current_port, front);
+        assert_eq!(*disp.current_gdevice, saved_device);
+        assert_eq!(
+            disp.front_window,
+            if trap == 0x120 { front } else { target }
         );
+        assert_eq!(disp.window_list.first(), Some(target));
+        assert!(disp.window_has_pending_update(&bus, target));
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+        // Repeating either operation must preserve already exposed application pixels.
+        bus.write_byte(exposed, 0x6C);
+        cpu.write_reg(Register::A7, TEST_SP - 4);
+        bus.write_long(TEST_SP - 4, target);
+        dispatch(&mut disp, trap, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(exposed), 0x6C);
     }
-    disp.window_list.replace(vec![front, target]);
-    disp.front_window = front;
-    disp.recalculate_window_vis_regions(&mut bus);
-    disp.set_current_port_state(&mut bus, &mut cpu, front, None);
-    let saved_device = *disp.current_gdevice;
-    let saved_clip = bus.read_long(target + 28);
-    // Window Manager repainting must not inherit the application's clip.
-    super::super::TrapDispatcher::write_region_handle_rect(&mut bus, saved_clip, None);
-    let exposed = screen + 200 * 800 + 220;
-    let already_visible = screen + 120 * 800 + 120;
-    let outside_target = screen + 250 * 800 + 450;
-    for pixel in [exposed, already_visible, outside_target] {
-        bus.write_byte(pixel, 0x7B);
-    }
-    cpu.write_reg(Register::A7, TEST_SP - 4);
-    bus.write_long(TEST_SP - 4, target);
-    dispatch(&mut disp, 0x120, &mut cpu, &mut bus)
-        .unwrap()
-        .unwrap();
-    assert_eq!(bus.read_byte(exposed), 0, "erase newly exposed content");
-    assert_eq!(bus.read_byte(already_visible), 0x7B);
-    assert_eq!(bus.read_byte(outside_target), 0x7B);
-    assert_eq!(bus.read_long(target + 28), saved_clip);
-    assert_eq!(*disp.current_port, front);
-    assert_eq!(*disp.current_gdevice, saved_device);
-    assert_eq!(disp.front_window, front, "preserve activation");
-    assert_eq!(disp.window_list.first(), Some(target));
-    assert!(disp.window_has_pending_update(&bus, target));
-    assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
 }
 
 #[test]

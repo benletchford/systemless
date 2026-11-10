@@ -4548,8 +4548,16 @@ impl super::TrapDispatcher {
             (true, 0x11F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
+                // Dialog activation redraws its own contents. Ordinary windows
+                // need PaintOne for newly exposed areas, just like BringToFront
+                // (Inside Macintosh I-284, I-286, I-296).
+                let old_visible = (the_window != 0 && !self.dialog_items.contains_key(&the_window))
+                    .then(|| self.snapshot_window_visibility(bus, the_window));
                 cpu.write_reg(Register::A7, sp + 4);
                 self.activate_as_front_window(bus, the_window);
+                if let Some(old_visible) = old_visible {
+                    self.paint_newly_exposed_window(bus, cpu, the_window, old_visible, true, true);
+                }
                 Ok(())
             }
 
