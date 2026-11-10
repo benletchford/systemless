@@ -8111,3 +8111,29 @@ fn color_pixpat_fill_preserves_valid_pixels_around_an_unmapped_gap() {
         );
     }
 }
+
+#[test]
+fn opening_ports_publishes_current_port_to_qd_globals() {
+    for target in [
+        PpcImportDispatcherTarget::OpenPort,
+        PpcImportDispatcherTarget::OpenCPort,
+    ] {
+        let pef = synthetic_pef_with_import(b"InitGraf");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let globals = PPC_DATA_BASE + 0x2000;
+        let port = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(globals - 126, vec![0; 130]);
+        loaded
+            .memory
+            .add_region(port, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        loaded.cpu.gpr[3] = globals;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+        loaded.cpu.gpr[3] = port;
+        run_test_import(&mut loaded, target);
+        // Both the accessor and the direct application global must agree.
+        loaded.cpu.gpr[3] = globals - 126;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPort);
+        assert_eq!(loaded.memory.read_u32_be(globals - 126), Some(port));
+        assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
+    }
+}
