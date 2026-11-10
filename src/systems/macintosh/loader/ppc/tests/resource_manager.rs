@@ -473,6 +473,40 @@ fn hle_import_runner_classic_resource_and_print_error_accessors_preserve_signed_
 }
 
 #[test]
+fn lm_set_res_err_updates_the_shared_signed_word() {
+    use crate::memory::globals::addr::RES_ERR;
+
+    for library in ["InterfaceLib", "CarbonLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "LMSetResErr"),
+            PpcImportDispatcherTarget::LMSetResErr
+        );
+    }
+    assert_eq!(
+        dispatcher_target_for_import("OtherLibrary", "LMSetResErr"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+
+    for error in [0i16, -192, i16::MIN, i16::MAX] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMSetResErr")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::LMSetResErr
+        );
+        loaded.set_test_resource_error(-1);
+        loaded.memory.write_u16_be(RES_ERR + 2, 0x2468).unwrap();
+        let argument = 0xabcd0000 | u32::from(error as u16);
+        loaded.cpu.gpr[3] = argument;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LMSetResErr);
+        assert_eq!(loaded.cpu.gpr[3], argument);
+        assert_eq!(loaded.memory.read_u16_be(RES_ERR), Some(error as u16));
+        assert_eq!(loaded.memory.read_u16_be(RES_ERR + 2), Some(0x2468));
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ResError);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(error));
+    }
+}
+
+#[test]
 fn hle_import_runner_lm_get_boot_drive_reads_signed_low_memory_word() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "LMGetBootDrive"),
