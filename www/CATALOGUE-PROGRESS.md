@@ -197,7 +197,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 26 | SimFarm | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 27 | The Playroom | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 28 | Uninvited | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 29 | Star Wars: X-Wing | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 29 | Star Wars: X-Wing | [Project promotional-demo policy acceptance](catalogue/star-wars-x-wing-demo.md) | Unchanged 5376955-byte SIT; 66 files/132 forks/66 Finder exact; all downloaded forks match period MacAddict 1 | Partial cockpit/world rendering; unqualified | [Default training entry and Right steering/control, three checks each](https://github.com/benletchford/systemless/issues/5953) | Pending; launch disabled | Managed archive and screenshot promoted; source CI pending | Pending |
 | 30 | Star Wars: Rebel Assault | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 31 | Star Wars Episode I: Racer | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 32 | Star Wars: Galactic Battlegrounds | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
