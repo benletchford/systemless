@@ -1942,6 +1942,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::Get1Resource
         | PpcImportDispatcherTarget::GetNamedResource
         | PpcImportDispatcherTarget::Get1NamedResource
+        | PpcImportDispatcherTarget::GetNamedResourceCString
+        | PpcImportDispatcherTarget::Get1NamedResourceCString
         | PpcImportDispatcherTarget::GetIndResource
         | PpcImportDispatcherTarget::Get1IndResource
         | PpcImportDispatcherTarget::CountResources
@@ -1959,6 +1961,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetResAttrs
         | PpcImportDispatcherTarget::SetResAttrs
         | PpcImportDispatcherTarget::GetResInfo
+        | PpcImportDispatcherTarget::GetResInfoCString
         | PpcImportDispatcherTarget::GetResourceSizeOnDisk
         | PpcImportDispatcherTarget::SetResInfo
         | PpcImportDispatcherTarget::HomeResFile

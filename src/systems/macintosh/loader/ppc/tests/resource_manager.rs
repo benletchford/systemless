@@ -713,3 +713,116 @@ fn lm_set_cur_map_preserves_raw_signed_word_and_resource_error() {
         assert_eq!(loaded.test_resource_error(), -192);
     }
 }
+
+#[test]
+fn lowercase_named_resource_imports_decode_c_names_and_preserve_scope() {
+    for (symbol, current_only) in [("getnamedresource", false), ("get1namedresource", true)] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol.as_bytes())).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, b"sPLASH\0untouched".to_vec());
+        let res_type = u32::from_be_bytes(*b"DATA");
+        loaded.process_file_system.extend_vfs_resources([7, 9].map(|ref_num| {
+            PpcVfsResourceRecord {
+                ref_num,
+                path: format!("Map{ref_num}"),
+                res_type,
+                res_id: ref_num,
+                name: b"Splash".to_vec(),
+                data: vec![ref_num as u8].into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            }
+        }));
+        for (current, expected) in [(9, Some(9)), (11, (!current_only).then_some(7))] {
+            loaded.set_current_resource_refnum(current);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = res_type;
+            loaded.cpu.gpr[4] = name_ptr;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None, "{symbol}");
+            let handle = loaded.cpu.gpr[3];
+            if let Some(byte) = expected {
+                assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+                assert_eq!(
+                    ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle),
+                    Some(vec![byte])
+                );
+            } else {
+                assert_eq!(handle, 0);
+                assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+            }
+            for (offset, byte) in b"sPLASH\0untouched".iter().enumerate() {
+                assert_eq!(loaded.memory.read_u8(name_ptr + offset as u32), Some(*byte));
+            }
+        }
+    }
+}
+
+#[test]
+fn lowercase_named_resource_imports_reject_unreadable_or_unterminated_names() {
+    for symbol in [b"getnamedresource".as_slice(), b"get1namedresource"] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(symbol)).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, vec![b'A'; 256]);
+        for address in [u32::MAX, name_ptr] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = u32::from_be_bytes(*b"DATA");
+            loaded.cpu.gpr[4] = address;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.test_resource_error(), PPC_PARAM_ERR);
+        }
+    }
+}
+
+#[test]
+fn lowercase_getresinfo_writes_a_c_name_and_prevalidates_outputs() {
+    for capacity in [256, 4] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"getresinfo")).unwrap();
+        let id_ptr = PPC_DATA_BASE + 0x1000;
+        let type_ptr = id_ptr + 0x100;
+        let name_ptr = id_ptr + 0x200;
+        loaded.memory.add_region(id_ptr, vec![0xa1; 2]);
+        loaded.memory.add_region(type_ptr, vec![0xa2; 4]);
+        loaded.memory.add_region(name_ptr, vec![0xa3; capacity]);
+        let handle = PPC_HEAP_BASE;
+        let res_type = u32::from_be_bytes(*b"DATA");
+        loaded.process_file_system.extend_vfs_resources([PpcVfsResourceRecord {
+            ref_num: 7,
+            path: "Current".to_string(),
+            res_type,
+            res_id: 123,
+            name: b"caf\x8e".to_vec(),
+            data: vec![1].into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle,
+        }]);
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = id_ptr;
+        loaded.cpu.gpr[5] = type_ptr;
+        loaded.cpu.gpr[6] = name_ptr;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        if capacity == 256 {
+            assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+            assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(123));
+            assert_eq!(loaded.memory.read_u32_be(type_ptr), Some(res_type));
+            for (offset, byte) in b"caf\x8e\0".iter().enumerate() {
+                assert_eq!(loaded.memory.read_u8(name_ptr + offset as u32), Some(*byte));
+            }
+            assert_eq!(loaded.memory.read_u8(name_ptr + 5), Some(0xa3));
+        } else {
+            assert_eq!(loaded.test_resource_error(), PPC_PARAM_ERR);
+            assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(0xa1a1));
+            assert_eq!(loaded.memory.read_u32_be(type_ptr), Some(0xa2a2a2a2));
+            assert_eq!(loaded.memory.read_u32_be(name_ptr), Some(0xa3a3a3a3));
+        }
+    }
+}
