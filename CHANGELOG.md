@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.113.0](https://github.com/benletchford/systemless/compare/v0.112.0...v0.113.0) (2026-11-10)
+
+
+### Features
+
+* add original Lode Runner 2 demo intake ([f0a48f4](https://github.com/benletchford/systemless/commit/f0a48f4d99d15b8a32bf46c3ab024d80b7cf1387))
+* add original Shadow Warrior demo intake ([e05855d](https://github.com/benletchford/systemless/commit/e05855d9d7c428bbe46ab7dee985c6c092f9fe10))
+* add Pararena promotional demo intake ([5758737](https://github.com/benletchford/systemless/commit/57587375255ca06ea853ecde51f5d48615482c7b))
+* add Prime Target beta demo intake ([99fcfd1](https://github.com/benletchford/systemless/commit/99fcfd1661217622173cea9b7869bf939c271149))
+* add Quake promotional preview intake ([8ae270f](https://github.com/benletchford/systemless/commit/8ae270f0134fa283a6af8a1da421ed5c4f8d0fdf))
+* add Reckless Drivin', Myth II and Heroes III intakes ([9d234ab](https://github.com/benletchford/systemless/commit/9d234abd8b61500588e316235a1c5b8ac9a7f4cd))
+* **catalogue:** add the original Oxyd distribution ([0d1c10f](https://github.com/benletchford/systemless/commit/0d1c10f7789b08acbfb9e3c7db9d6bef6bab42f9))
+* **catalogue:** add the original Per.Oxyd distribution ([9833ec9](https://github.com/benletchford/systemless/commit/9833ec9b51c927a2fd1352e7c75fc9e92e28c963))
+* enable Lode Runner 2 browser play ([af94426](https://github.com/benletchford/systemless/commit/af944264d6244bf17ce498f43b302c9bdc92152c))
+* enable Quake browser play ([870d3b2](https://github.com/benletchford/systemless/commit/870d3b22b352d4e587fc86cb17c867266d9b9749))
+
+
+### Bug Fixes
+
+* convert InputSprocket absolute timestamps to microseconds ([e577768](https://github.com/benletchford/systemless/commit/e5777685189d3f1f2160c915b559dfef250128e1))
+* expose Driver Services time base information ([c7c0fe8](https://github.com/benletchford/systemless/commit/c7c0fe82c3b5e75e0668a018f82e88e17c3d1356))
+* initialize empty forks in HCreateResFile ([66793fd](https://github.com/benletchford/systemless/commit/66793fd9444b6573600743acd97e2f5e0cbd5bee))
+* preserve caller dialog record boundaries ([c960f3b](https://github.com/benletchford/systemless/commit/c960f3b13eb41fbf4366280c2bf9171d54d4d826))
+* preserve DrawSprocket mode during buffering fallback ([7b019ad](https://github.com/benletchford/systemless/commit/7b019ada408f55bf3818932bb7354bf13aa46ebd))
+* publish coherent graphics ports after window removal ([c670f53](https://github.com/benletchford/systemless/commit/c670f53bfe34ab5c1ffd23fa02a8f9e71835c517))
+* **quickdraw:** refresh changed native graphics devices ([00eb78b](https://github.com/benletchford/systemless/commit/00eb78bacb3ef2b65649bb3e0af7fcfa28a89a44))
+* **quicktime:** align native PowerPC windows ([8d1e1d0](https://github.com/benletchford/systemless/commit/8d1e1d0e9e42fdbd847455bac9adf676a6df1a78))
+* **quicktime:** create and drive classic movie controllers ([c532bf6](https://github.com/benletchford/systemless/commit/c532bf6c1dc47d56358e73fc9a22e39ee50fd687))
+* report current input modifiers in PPC null events ([a6bc298](https://github.com/benletchford/systemless/commit/a6bc298708b132691c3f6027f41261a953347203))
+* request window palettes for classic movie controllers ([4b909b3](https://github.com/benletchford/systemless/commit/4b909b3db8a3ef6734cfdfc73f706b24ca53639f))
+* resolve working directories in PPC resource opens ([52b75be](https://github.com/benletchford/systemless/commit/52b75be67cdcd3249fb2228cb5235eb58aa82734))
+* support 68k QuickTime file graphics importers ([cd32463](https://github.com/benletchford/systemless/commit/cd32463bacdf2d63cf6f9bf3abd16590c72d6f90))
+* support C-string Resource Manager reads ([e0b5566](https://github.com/benletchford/systemless/commit/e0b55663dfcba2611f8e7544a674c0d8d2ccb372))
+* support legacy scalar Sound Manager version queries ([202c39f](https://github.com/benletchford/systemless/commit/202c39f631444dd8a5326f76383da592e023a45f))
+
+
+### Performance Improvements
+
+* avoid native handle snapshots during movie polling ([a5d415d](https://github.com/benletchford/systemless/commit/a5d415d4eeb5fd14b2d90c720e34b8ad8f562e0c))
+* batch PowerPC color pattern fills by row ([dfd0e6b](https://github.com/benletchford/systemless/commit/dfd0e6bde6419a68d51343aef68b27175045ce96))
+* batch PowerPC outline glyph registration ([2e0dec5](https://github.com/benletchford/systemless/commit/2e0dec5de72285ffbbe2c6740ca633d4f9d86956))
+
 ## [0.112.0](https://github.com/benletchford/systemless/compare/v0.111.0...v0.112.0) (2026-11-08)
 
 
