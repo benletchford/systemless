@@ -461,6 +461,12 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::ResError => Some(PpcImportAction::Return(ppc_i16_result(
             *last_resource_error,
         ))),
+        PpcImportDispatcherTarget::LMSetResErr => {
+            // LowMem.h declares a signed word setter. The import boundary
+            // publishes this value to the shared process ResErr word.
+            *last_resource_error = cpu.gpr[3] as i16;
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetVol => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_get_vol(
                 cpu,

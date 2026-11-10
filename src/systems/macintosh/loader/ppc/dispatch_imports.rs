@@ -1875,6 +1875,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::PBHOpenDeny
         | PpcImportDispatcherTarget::LMGetCurMap
         | PpcImportDispatcherTarget::LMSetCurMap
+        | PpcImportDispatcherTarget::LMSetResErr
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
