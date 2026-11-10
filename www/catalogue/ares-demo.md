@@ -8,6 +8,7 @@ summary: >-
 developer: Nathan Lamont
 publisher: Changeling Software
 year: 1997
+launch_enabled: true
 architectures:
 - ppc
 default_architecture: ppc
@@ -30,7 +31,8 @@ compatibility:
       matched omission. Both cases reach 2358 frontend/guest ticks with zero exhausted
       frames. Shared pre-input closeups are RGB pixel-identical; active turning changes ship
       orientation, the combined turn/thrust sequence changes the camera/background, and
-      firing produces two visible projectiles and reduces ammunition from 158 to 146.
+      firing produces two visible projectiles and changes the red weapon readout from
+      158 to 146.
       Omission retains 158 and produces no projectiles. Actual captures inspected. The
       control has natural background motion; zero absolute scene motion is not
       asserted. An earlier thrust-only pair at the initial distant view is pixel-identical and
@@ -47,6 +49,46 @@ compatibility:
       10d5f86ffab27594352fafb4a43b78ad3a7f8c2b1b276645e8e3752d3eda4a3f. Runtime code from 6be32c91 matches the tested tree
       merged as aa42fa69 in ZIP loader fix 5979. No emulator overrides, original-file
       edits, cheats, unlocks, preference rewrites or host extension installation.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5980
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: f2636f13 private browser preview on aa42fa69 runtime
+    architecture: ppc
+    environment: >-
+      Fresh Chromium 156.0.8078.79/Linux aarch64 profiles, isolated worker/WebGL
+      and SharedArrayBuffer, default 25 MHz, initial 800x600 display, partition,
+      sound and preferences. Exact promoted source f2636f13 has the tree merged
+      as 0eaa8876; the only private source change enables this game's launch.
+      The actual hosted original ZIP is HTTP 200, 2481511 bytes, SHA-256
+      643e53a7ba0a21e78eef76de5ab2389fa44f9761117c48cfca76719e63fcc95c.
+      Main and worker Wasm HTTP bodies and the actual executing PowerPC worker
+      bytecode match the production build: 16088820 bytes, SHA-256
+      7c23e16db695f17da5789328207e12dc977758de8a0ea2f24f79b0783b46c605.
+      Debugger observers are disabled before measurement. Normal focused keyboard
+      input starts chapter one, uses the original F9 1:1 view and brakes with
+      keypad 5 in both cases. Active keypad 6, keypad 8 and Option/Alt turn,
+      accelerate and fire; matched action-key omissions retain ship orientation,
+      camera grid and weapon readout. Four mandatory 20-second windows cover
+      final mission-analysis transition/scene initialization and sustained play
+      in both active and control cases, including four further control rounds.
+      Every active firing capture shows projectiles; control shows none. The
+      red weapon readout changes from 158 to 146 initially and 138 after the
+      four further rounds; control retains 158. Actual captures inspected.
+      All 25 sustained screenshot checks remain required and run after the
+      measured window and its final capture, avoiding delays to input sampling.
+      Active initial/sustained maximum worker frames are 18.1/20.4 ms; control
+      24.2/25.6 ms. Final steady host/guest snapshots are 59.9911/59.9911 and
+      59.7205/59.7205 active, 59.9517/59.9517 and 60.1167/60.1167 control.
+      Minimum audio queues are 132.5/122.4 ms active and 132.7/124.4 ms control.
+      All unchanged pacing gates pass, with no captured lifecycle/network errors.
+      These are final steady snapshots, not whole-level averages. Earlier cases
+      aborted on test-image detection of blue/green grid lines remain retained
+      as nonqualifying; their recorded pacing metrics pass. This approves bounded
+      private browser controls and pacing, not full combat, mission completion,
+      fleet commands, persistence, multiplayer, audio fidelity, independent
+      hardware accuracy or released public play. No emulator overrides,
+      original-file changes, cheats, unlocks or preference rewrites.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5980
 runtime:
@@ -127,9 +169,10 @@ references:
 Continue past the optional networking notice to play alone. Let the title
 finish, press Space, choose Begin and follow the original mission screens.
 Press F9 for the normal 1:1 view. Use keypad 8 to accelerate, keypad 5 to slow
-down, keypad 4 and 6 to turn, and Option to fire. F1 shows the original controls.
+down, keypad 4 and 6 to turn, and Option (Alt) to fire. F1 shows the original
+controls.
 Tab engages warp and Delete clears messages.
 
 This is the original limited 1997 demo, with its original chapter and time
-limits intact. Native PowerPC testing verifies bounded turning, thrust and
-firing. Browser launch and public qualification are pending.
+limits intact. Native and private browser PowerPC testing verify bounded
+turning, acceleration and firing. Public release verification remains pending.
