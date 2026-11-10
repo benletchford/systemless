@@ -2235,7 +2235,9 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::InitPalettes
         | PpcImportDispatcherTarget::ActivatePalette
         | PpcImportDispatcherTarget::NSetPalette
-        | PpcImportDispatcherTarget::GetPalette => {
+        | PpcImportDispatcherTarget::GetPalette
+        | PpcImportDispatcherTarget::SetPaletteUpdates
+        | PpcImportDispatcherTarget::GetPaletteUpdates => {
             unreachable!("palette imports return through dispatch_palette_import")
         }
         PpcImportDispatcherTarget::GetPort

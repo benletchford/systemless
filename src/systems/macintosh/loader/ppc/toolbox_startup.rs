@@ -105,6 +105,7 @@ pub struct PpcToolboxStartupState {
     pub(crate) open_picture: Option<(u32, u32, (i16, i16, i16, i16), Vec<u8>)>,
     pub(crate) application_palette: u32,
     pub(crate) application_palette_updates: u16,
+    pub(crate) palette_update_modes: HashMap<u32, u16>,
     /// A DialogRecord uses offset 156 for its DITL handle, so palette
     /// associations for dialogs must stay outside the guest window record.
     pub(crate) dialog_palettes: HashMap<u32, (u32, u16)>,
@@ -226,6 +227,7 @@ impl Default for PpcToolboxStartupState {
             open_picture: None,
             application_palette: 0,
             application_palette_updates: 0,
+            palette_update_modes: HashMap::new(),
             dialog_palettes: HashMap::new(),
             palette_allocations: Vec::new(),
             active_device_palettes: HashMap::new(),

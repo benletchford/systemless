@@ -2,6 +2,60 @@
 
 use super::*;
 
+const PM_NO_UPDATES: u16 = 0x8000;
+const PM_BACKGROUND_UPDATES: u16 = 0xa000;
+const PM_FOREGROUND_UPDATES: u16 = 0xc000;
+const PM_ALL_UPDATES: u16 = 0xe000;
+
+fn palette_requests_update(mode: u16, foreground: bool) -> bool {
+    match mode {
+        PM_ALL_UPDATES | 1 => true,
+        PM_FOREGROUND_UPDATES => foreground,
+        PM_BACKGROUND_UPDATES => !foreground,
+        _ => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enqueue_palette_updates(
+    memory: &mut PpcSectionMem,
+    startup: &PpcToolboxStartupState,
+    window_list: &SharedProcessWindowList,
+    gworlds: &[PpcGWorldRecord],
+    front: u32,
+    gdevice: u32,
+    fallback_front_update: bool,
+    event_queue: &mut EventQueue,
+    tick_count: u32,
+    input: PpcInputSnapshot,
+) {
+    window_list.with_ref(|windows| {
+        for &window in windows {
+            if !ppc_window_is_visible(memory, window)
+                || ppc_gworld_device(gworlds, window).is_some_and(|device| device != gdevice)
+            {
+                continue;
+            }
+            let associated = ppc_window_palette_handle(memory, startup, window);
+            let palette = if associated == 0 {
+                startup.application_palette
+            } else {
+                associated
+            };
+            let foreground = window == front;
+            let requests_update = startup
+                .palette_update_modes
+                .get(&palette)
+                .map_or(foreground && fallback_front_update, |&mode| {
+                    palette_requests_update(mode, foreground)
+                });
+            if requests_update {
+                ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
+            }
+        }
+    });
+}
+
 pub(super) struct PpcPaletteDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -74,9 +128,9 @@ pub(super) fn dispatch_palette_import(
             // Inside Macintosh Volume VI (1991), p. 20-19: an explicit
             // ActivatePalette affects only the visible frontmost window;
             // calling it for an offscreen port has no effect.
-            let applied = ppc_front_visible_process_window(memory, window_list) == Some(window_ptr)
-                && ppc_gworld_device(gworlds, window_ptr).is_some_and(|gdevice| {
-                    ppc_activate_window_palette(
+            if ppc_front_visible_process_window(memory, window_list) == Some(window_ptr) {
+                if let Some(gdevice) = ppc_gworld_device(gworlds, window_ptr) {
+                    let applied = ppc_activate_window_palette(
                         memory,
                         window_ptr,
                         gdevice,
@@ -84,20 +138,70 @@ pub(super) fn dispatch_palette_import(
                         screen_clut,
                         color_manager_clut,
                         toolbox_startup,
-                    )
-                });
-            if applied {
-                // Inside Macintosh Volume VI 1991, p. 20-20: changing the
-                // active color environment generates update events for
-                // windows that need to redraw under the new palette.
-                ppc_enqueue_window_update_event(event_queue, window_ptr, tick_count, input);
+                    );
+                    if applied {
+                        enqueue_palette_updates(
+                            memory,
+                            toolbox_startup,
+                            window_list,
+                            gworlds,
+                            window_ptr,
+                            gdevice,
+                            true,
+                            event_queue,
+                            tick_count,
+                            input,
+                        );
+                    }
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SetPaletteUpdates => {
+            let palette = cpu.gpr[3];
+            if palette != 0 {
+                // Inside Macintosh: Advanced Color Imaging, Palette Manager.
+                // The update policy belongs to the palette, independent of
+                // how many windows currently use it.
+                toolbox_startup
+                    .palette_update_modes
+                    .insert(palette, cpu.gpr[4] as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::GetPaletteUpdates => {
+            let palette = cpu.gpr[3];
+            let updates = toolbox_startup
+                .palette_update_modes
+                .get(&palette)
+                .copied()
+                .unwrap_or_else(|| {
+                    if palette != 0 && memory.read_u32_be(palette).is_some_and(|ptr| ptr != 0) {
+                        PM_ALL_UPDATES
+                    } else {
+                        0
+                    }
+                });
+            Some(PpcImportAction::Return(ppc_i16_result(updates as i16)))
         }
         PpcImportDispatcherTarget::NSetPalette => {
             let window_ptr = cpu.gpr[3];
             let palette_handle = cpu.gpr[4];
             let updates = cpu.gpr[5] as u16;
+            if palette_handle != 0 && window_ptr != 0 {
+                let mode = if binding.symbol_name == "SetPalette" {
+                    if updates as u8 == 0 {
+                        PM_NO_UPDATES
+                    } else {
+                        PM_ALL_UPDATES
+                    }
+                } else {
+                    updates
+                };
+                toolbox_startup
+                    .palette_update_modes
+                    .insert(palette_handle, mode);
+            }
             let previous_palette_handle = if window_ptr == u32::MAX {
                 toolbox_startup.application_palette
             } else {
@@ -181,13 +285,29 @@ pub(super) fn dispatch_palette_import(
                 && *screen_clut != previous_device_colors
                 && previous_palette_handle != 0
                 && previous_palette_handle != palette_handle
-                && updates != 0
                 && window_ptr != u32::MAX
             {
                 // Inside Macintosh Volume VI (1991), pp. 20-20--20-21:
                 // activating a changed color environment invalidates windows
                 // whose SetPalette/NSetPalette update policy requests it.
-                ppc_enqueue_window_update_event(event_queue, window_ptr, tick_count, input);
+                if window_ptr == PPC_MAIN_GWORLD {
+                    if palette_requests_update(updates, true) {
+                        ppc_enqueue_window_update_event(event_queue, window_ptr, tick_count, input);
+                    }
+                } else {
+                    enqueue_palette_updates(
+                        memory,
+                        toolbox_startup,
+                        window_list,
+                        gworlds,
+                        window_ptr,
+                        gdevice,
+                        updates != 0,
+                        event_queue,
+                        tick_count,
+                        input,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
