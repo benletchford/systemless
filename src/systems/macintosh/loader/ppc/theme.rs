@@ -225,12 +225,45 @@ pub(super) fn ppc_draw_retained_dialog_frame(
     frame: (i16, i16, i16, i16),
     proc_id: i16,
 ) -> bool {
+    ppc_draw_retained_dialog_frame_with_content(memory, gworlds, content, frame, proc_id, true)
+}
+
+pub(super) fn ppc_draw_retained_dialog_frame_chrome(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    content: (i16, i16, i16, i16),
+    frame: (i16, i16, i16, i16),
+    proc_id: i16,
+) -> bool {
+    ppc_draw_retained_dialog_frame_with_content(memory, gworlds, content, frame, proc_id, false)
+}
+
+fn ppc_draw_retained_dialog_frame_with_content(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    content: (i16, i16, i16, i16),
+    frame: (i16, i16, i16, i16),
+    proc_id: i16,
+    fill_content: bool,
+) -> bool {
     let theme = ppc_ui_theme(gworlds);
     let width = frame.3.saturating_sub(frame.1);
     let height = frame.2.saturating_sub(frame.0);
     if width <= 0 || height <= 0 {
         return true;
     }
+    // WDEF frame pixels belong outside the content region. Keep the inner
+    // stroke outside that region when repainting chrome alone.
+    let frame_content = if fill_content {
+        content
+    } else {
+        (
+            content.0.saturating_sub(1),
+            content.1.saturating_sub(1),
+            content.2.saturating_add(1),
+            content.3.saturating_add(1),
+        )
+    };
     let provider = theme.provider();
     let mut bitmap = ThemeBitmap::new(
         width as u32,
@@ -247,17 +280,26 @@ pub(super) fn ppc_draw_retained_dialog_frame(
                 right: width,
             },
             content_rect: ThemeRect {
-                top: content.0 - frame.0,
-                left: content.1 - frame.1,
-                bottom: content.2 - frame.0,
-                right: content.3 - frame.1,
+                top: frame_content.0 - frame.0,
+                left: frame_content.1 - frame.1,
+                bottom: frame_content.2 - frame.0,
+                right: frame_content.3 - frame.1,
             },
             kind: crate::ui_theme::DialogFrameKind::from_window_proc_id(proc_id),
             active: true,
-            fill_content: true,
+            fill_content,
         },
     );
-    ppc_blit_theme_bitmap(memory, gworlds, PPC_MAIN_GWORLD, frame.0, frame.1, &bitmap);
+    ppc_blit_theme_bitmap_excluding_rect(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        frame.0,
+        frame.1,
+        &bitmap,
+        None,
+        (!fill_content).then_some(content),
+    );
     true
 }
 
