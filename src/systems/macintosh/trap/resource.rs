@@ -292,7 +292,7 @@ impl super::TrapDispatcher {
     }
 
     /// Minimal serialized resource fork containing an empty resource map.
-    fn empty_resource_fork_bytes() -> Vec<u8> {
+    pub(super) fn empty_resource_fork_bytes() -> Vec<u8> {
         let mut bytes = vec![0u8; 46];
         let mut header = [0u8; 16];
         header[0..4].copy_from_slice(&16u32.to_be_bytes());

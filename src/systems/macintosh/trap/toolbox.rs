@@ -10879,10 +10879,16 @@ impl super::TrapDispatcher {
                     } else {
                         self.find_vfs_rsrc_file(&name)
                     };
-                    if existing_resource.is_some() {
+                    let has_resource_map = existing_resource
+                        .as_ref()
+                        .and_then(|key| self.vfs_rsrc.get(key))
+                        .is_some_and(|fork| !fork.is_empty());
+                    if has_resource_map {
                         bus.write_word(0x0A60, (-48i16) as u16); // dupFNErr
                     } else {
-                        let vfs_key = if scoped_lookup {
+                        let vfs_key = if let Some(existing_key) = existing_resource {
+                            existing_key
+                        } else if scoped_lookup {
                             let Some(vfs_key) = self.vfs_key_for_fsspec(v_ref, dir_id, &name)
                             else {
                                 bus.write_word(0x0A60, (-120i16) as u16); // dirNFErr
@@ -10898,7 +10904,8 @@ impl super::TrapDispatcher {
                             bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
                         } else {
                             self.vfs.ensure_empty(vfs_key.clone());
-                            self.vfs_rsrc.ensure_empty(vfs_key.clone());
+                            self.vfs_rsrc
+                                .insert(vfs_key.clone(), Self::empty_resource_fork_bytes());
                             self.touch_vfs_entry(&vfs_key);
                             if let Some(ref dir) = self.output_dir {
                                 let host_path = dir.join(&vfs_key);

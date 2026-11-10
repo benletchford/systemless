@@ -7481,6 +7481,10 @@ fn test_hcreate_res_file_creates_missing_file_and_resource_fork() {
     assert_eq!(bus.read_word(0x0A60), 0);
     assert!(disp.vfs.contains_key("Prefs.RSRC"));
     assert!(disp.vfs_rsrc.contains_key("Prefs.RSRC"));
+    let fork =
+        crate::managers::resource::ResourceFork::parse(disp.vfs_rsrc.get("Prefs.RSRC").unwrap())
+            .expect("HCreateResFile must initialize a resource map");
+    assert!(fork.resources().is_empty());
 
     let pb = 0x300000u32;
     cpu.write_reg(Register::A0, pb);
@@ -7496,6 +7500,62 @@ fn test_hcreate_res_file_creates_missing_file_and_resource_fork() {
     assert_eq!(bus.read_word(pb + 16), 0);
     assert!(bus.read_word(pb + 24) > 0);
     assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn test_hcreate_res_file_initializes_pbh_created_empty_fork_in_place() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let directory = disp.ensure_vfs_directory("System Folder/Preferences");
+    let key = "System Folder/Preferences/Prefs.RSRC";
+    let pb = 0x300000;
+    let name_ptr = 0x310000;
+    bus.write_pstring(name_ptr, b"Prefs.RSRC");
+    bus.write_long(pb + 18, name_ptr);
+    bus.write_word(pb + 22, 0);
+    bus.write_long(pb + 48, directory);
+    cpu.write_reg(Register::A0, pb);
+    disp.current_trap_word = 0xA208; // PBHCreate
+    disp.dispatch_resource(false, 0x08, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(pb + 16), 0);
+    assert!(disp.vfs_rsrc.get(key).unwrap().is_empty());
+
+    // A caller may populate the data fork before initializing its resource map.
+    disp.vfs.insert(key.to_string(), vec![0x11, 0x22, 0x33]);
+    disp.set_vfs_entry_finfo(
+        key,
+        u32::from_be_bytes(*b"DATA"),
+        u32::from_be_bytes(*b"TEST"),
+        0,
+    );
+    let metadata = disp.vfs_file_metadata(key).unwrap();
+    bus.write_pstring(name_ptr, b"prefs.rsrc");
+    bus.write_long(TEST_SP, name_ptr);
+    bus.write_long(TEST_SP + 4, directory);
+    bus.write_word(TEST_SP + 8, 0);
+    cpu.write_reg(Register::A7, TEST_SP);
+    disp.current_trap_word = 0xA81B;
+    disp.dispatch_toolbox(true, 0x01B, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+    assert_eq!(bus.read_word(0x0A60), 0);
+    assert_eq!(disp.vfs.get(key).unwrap(), &[0x11, 0x22, 0x33]);
+    let fork = crate::managers::resource::ResourceFork::parse(disp.vfs_rsrc.get(key).unwrap())
+        .expect("the existing empty fork must become an openable resource map");
+    assert!(fork.resources().is_empty());
+    let after = disp.vfs_file_metadata(key).unwrap();
+    assert_eq!(after.file_type, metadata.file_type);
+    assert_eq!(after.creator, metadata.creator);
+    assert_eq!(after.finder_flags, metadata.finder_flags);
+    assert_eq!(after.file_id, metadata.file_id);
+    assert_eq!(after.parent_dir_id, metadata.parent_dir_id);
+    assert_eq!(after.created_date, metadata.created_date);
+    assert!(!disp
+        .vfs_rsrc
+        .contains_key("System Folder/Preferences/prefs.rsrc"));
 }
 
 #[test]
