@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.114.0](https://github.com/benletchford/systemless/compare/v0.113.0...v0.114.0) (2026-11-10)
+
+
+### Features
+
+* add the original The Dig demo to the catalogue ([84ceec6](https://github.com/benletchford/systemless/commit/84ceec6222c8b40afa9b125cf176209fcba8c783))
+* add the original X-Wing demo to the catalogue ([248849a](https://github.com/benletchford/systemless/commit/248849a0174db42fdcfe3f0ec4977b6e2cce7902))
+* enable The Dig demo browser play ([8edb9cc](https://github.com/benletchford/systemless/commit/8edb9cc818d8a13076e9421e31cbf1fd8c2306d5))
+* enable X-Wing demo browser play ([b585fdd](https://github.com/benletchford/systemless/commit/b585fdd41d6c93017f4b6bfb3f5f17d69412810f))
+
+
+### Bug Fixes
+
+* repaint exposed content when selecting windows ([fb4b507](https://github.com/benletchford/systemless/commit/fb4b50710d0eb49fa6ca41dd8a4549c0bd146bdd))
+
 ## [0.113.0](https://github.com/benletchford/systemless/compare/v0.112.0...v0.113.0) (2026-11-10)
 
 
