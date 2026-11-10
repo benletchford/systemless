@@ -3215,3 +3215,30 @@ frames. Actual captures were inspected; the gameplay capture is cropped only
 to the 640x480 game surface. Combat, collection, completion, networking, audio
 fidelity, independent hardware rendering and browser controls/pacing remain
 pending. Compatibility stays unknown and launch disabled; no live increment.
+
+
+### Lode Runner 2 — bounded browser approval
+
+Original/default PowerPC private full-site worker/WebGL tests pass all four
+20-second pacing windows: normal New Game plus Pad 3 movement and separate
+sustained play, with a fresh no-input control. Steady guest ticks/sec range
+59.81–60.76, host frames/sec 60.74–64.16, maximum frame work 40.3 ms and minimum
+audio queue 114.1 ms. Existing thresholds remain unchanged. Archive and both
+main/worker WebAssembly response bodies are pinned, all targets resumed and
+Debugger disabled, with no lifecycle/network errors or concurrent heavy build.
+Actual active/control and sustained captures were inspected.
+
+The 800x600 framebuffer renders at 798x598 CSS pixels; the initial capture-size
+checker failure is retained, and fresh active/control case21 projects checks
+into recorded geometry without changing the game or pacing gates. Private Wasm
+is 16,049,705 bytes, SHA-256
+`0d9626bde05cab1a08d14f04ef131a30056e9d2c55dde78c6558db38cb4e1fbf`.
+Only private local launch flags differed from the promoted1351bbc4 source tree,
+which matches source merge e05855d9 before that private patch. Runtime code
+matches e0b55663. No publisher licence or full-game outcome is inferred.
+
+[Issue #5934](https://github.com/benletchford/systemless/issues/5934) keeps
+released public qualification open. Launch may be enabled in source for the
+next human release. No release, deployment or qualified-live increment follows
+from this private approval. Collection, full levels, persistence, audio fidelity
+and independent hardware rendering remain unverified.
