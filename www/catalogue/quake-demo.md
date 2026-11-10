@@ -18,6 +18,32 @@ compatibility:
   verified:
   - date: "2026-11-10"
     tester: Catalogue maintainer
+    systemless_version: "0.114.0"
+    architecture: ppc
+    status: playable
+    environment: >-
+      Released public route on human-published v0.114.0 (472a68a5). Fresh default-PPC
+      active and omitted-key runs pin the original archive, both main/worker Wasm
+      response bodies and executing current PPC worker wire bytes (SHA-256
+      83ee6b0ca0fd4bc12bfbe133852008b6846b29943d70508506d5d55510035cfb).
+      All targets resumed and debugger disabled before timing; original settings
+      retained, with no preview server or concurrent heavy job. Normal Escape,
+      Single Player and New Game enter the skill-selection map. Default Right held
+      for 30 guest ticks changes 10865 stone-ceiling pixels, excluding animated
+      torches, weapon and HUD; omission changes zero. All four unchanged twenty-second
+      entry/input and separate sustained-level windows pass: endpoint guest
+      58.370-60.123 ticks/sec, host 60.418-62.098 FPS, maximum worker frame 35.2 ms,
+      minimum audio queue 465.7 ms, zero lifecycle/observer errors. Actual
+      before/after/final and all eight intermediate sustained captures inspected;
+      active rotates to a side wall, control retains the central doorway, and the
+      map/HUD remain intact. These are scheduling metrics, not game render FPS or
+      audio-fidelity proof. Translation, combat, completion, persistence, independent
+      hardware rendering and audio fidelity remain unqualified. The separate
+      startup-console issue 3213 remains open. This establishes one newly verified
+      distinct live game without a release action.
+    evidence: https://github.com/benletchford/systemless/issues/5924
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
     systemless_version: e0b55663 runtime code, private browser build 1351bbc4
     architecture: ppc
     status: playable

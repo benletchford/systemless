@@ -19,6 +19,31 @@ compatibility:
   verified:
   - date: "2026-11-10"
     tester: Catalogue maintainer
+    systemless_version: "0.114.0"
+    architecture: ppc
+    environment: >-
+      Released public route on human-published v0.114.0 (472a68a5). Fresh independent
+      default-PPC steering and omitted-key runs verify the original hosted archive,
+      both main/worker Wasm response bodies and executing current PPC worker wire
+      bytes (SHA-256 83ee6b0ca0fd4bc12bfbe133852008b6846b29943d70508506d5d55510035cfb).
+      Debugger disabled before timing; original CPU, display, partition, sound and
+      preferences retained. Normal left-door click enters training; recentered mouse
+      and Right held for 60 guest ticks shift upper-view maze geometry 47.838 CSS
+      pixels left, versus 0.352 left in the omitted-key control. Each uses its own
+      preceding frame and the same mask/thresholds as private approval. All four
+      unchanged twenty-second entry/input and separate sustained-flight windows pass:
+      endpoint guest 60.115-61.818 ticks/sec, host 61.569-63.335 FPS, maximum worker
+      frame 30.1 ms, minimum audio queue 403 ms, zero observer/lifecycle errors.
+      Before/after/final and all eight intermediate sustained captures inspected;
+      control passes one gate and scores 100, while active steers away and remains
+      in flight. Scheduling metrics do not establish game render FPS or audio fidelity.
+      Combat, full missions, save/load, audio fidelity and independent hardware
+      equivalence remain unqualified. This establishes one newly verified distinct
+      live game without a release action.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5953
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
     systemless_version: fb4b5071 runtime / ac28c51c browser source
     architecture: ppc
     environment: >-

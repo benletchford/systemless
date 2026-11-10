@@ -19,6 +19,29 @@ compatibility:
   verified:
   - date: "2026-11-10"
     tester: Catalogue maintainer
+    systemless_version: "0.114.0"
+    architecture: ppc
+    environment: >-
+      Released public route on human-published v0.114.0 (472a68a5). Fresh independent
+      default-PPC click and omitted-click runs verify the original hosted archive,
+      both main/worker Wasm response bodies and executing current PPC worker wire
+      bytes (SHA-256 83ee6b0ca0fd4bc12bfbe133852008b6846b29943d70508506d5d55510035cfb).
+      Debugger disabled before timing; original CPU, display, partition, sound and
+      preferences retained. Normal Skip Scene commands reach the populated puzzle
+      scene. A ground click moves the player 49.293 normalized guest pixels right;
+      omission moves zero. All four unchanged twenty-second entry/input and separate
+      sustained-scene windows pass: endpoint guest 59.919-61.621 ticks/sec, host
+      60.005-60.952 FPS, maximum worker frame 31.5 ms, minimum audio queue 469.4 ms,
+      zero observer/lifecycle errors. Before/after/final and all eight intermediate
+      sustained captures inspected; active walks to the destination and control stays
+      still. Scheduling metrics do not establish game render FPS or audio fidelity.
+      Bounded scene entry and walking only; puzzle completion, inventory, save/load,
+      audio fidelity and independent hardware equivalence remain unqualified.
+      This establishes one newly verified distinct live game without a release action.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5962
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
     systemless_version: fb4b5071 runtime / 3d4ead7d browser source
     architecture: ppc
     environment: >-
