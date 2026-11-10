@@ -3149,3 +3149,35 @@ identical to its no-input control and is retained as unverified movement.
 Actual captures were inspected; the screenshot is cropped only to the 640x480
 game surface. Overall compatibility stays unknown, and launch remains disabled
 pending controls and browser qualification. Source intake adds no live game.
+
+
+## Lode Runner 2 demo — original promotional intake
+
+[Issue #5934](https://github.com/benletchford/systemless/issues/5934) records the
+complete unchanged 11,032,735-byte original Macintosh demo, SHA-256
+`45276cabeac9e3c4610096ac97e96a4d0f2eccde5f6134161ce1f5ab11a2a2f7`.
+All 22 files, 44 forks and 22 Finder records match independent unar extraction.
+The original HiScores is retained. An independent mirror matches every data
+fork and all 106 application resource payloads, but differs in raw resource-fork
+metadata and adds Config; its current archive hash differs from its listing.
+No whole-archive identity or substituted configuration is claimed.
+
+[Macworld March 1999](https://www.vintageapplemac.com/files/misc/9903.pdf),
+printed page 60 / PDF index 27, explicitly advertises the title’s cover-CD demo;
+the actual scan was inspected. The separately inspected disc catalogue has no
+matching LR2 path, so exact disc/version parity is not claimed. Thirty selected
+text/UI/version resources, retained notice matches and the normal About panel
+were reviewed without finding an explicit redistribution restriction. Acceptance
+follows the maintainer-authorized promotional-demo policy, not an affirmative
+publisher licence grant. No ReadMe/licence file is included in the package.
+
+Fresh native default PowerPC runs using runtime code matching master202c39f6
+reach a rendered level through Single Player → New → Start Game. The read-only
+control panel shows numeric keypad bindings. Pad 3 held for60 ticks then released
+for12 moves the runner against an equal-duration control, with byte-identical
+pre-input captures. Both finish at1608 frontend/guest ticks with two measured
+pixel assertions each and zero exhausted frames. Actual captures inspected;
+the screenshot is cropped only to the 640x480 game content surface. Collection,
+completion, audio fidelity, independent hardware rendering and browser controls/
+pacing remain pending. Overall compatibility stays unknown and launch disabled.
+This source intake adds no qualified-live game.
