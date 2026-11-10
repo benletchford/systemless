@@ -25,6 +25,7 @@ const VISE_VERSION_EARLY_EXTENDED_CATALOG: u32 = 0x8001_0306;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_VERSION_PACKED_CATALOG: u32 = 0x8001_0308;
 const VISE_VERSION_LATE_PACKED_CATALOG: u32 = 0x8001_030B;
+const VISE_VERSION_EXPANDED_PACKED_CATALOG: u32 = 0x8001_030D;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
 const VISE_FILE_RECORD_LEN: usize = 120;
 const VISE_EXTENDED_CATALOG_PREFIX_LEN: usize = 80;
@@ -48,6 +49,7 @@ fn depth_catalog(version: u32) -> bool {
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
             | VISE_VERSION_LATE_PACKED_CATALOG
+            | VISE_VERSION_EXPANDED_PACKED_CATALOG
     )
 }
 
@@ -61,8 +63,30 @@ fn uncompressed_extended_catalog(version: u32) -> bool {
 fn packed_catalog(version: u32) -> bool {
     matches!(
         version,
-        VISE_VERSION_PACKED_CATALOG | VISE_VERSION_LATE_PACKED_CATALOG
+        VISE_VERSION_PACKED_CATALOG
+            | VISE_VERSION_LATE_PACKED_CATALOG
+            | VISE_VERSION_EXPANDED_PACKED_CATALOG
     )
+}
+
+// The 0x8001030D generation retains the packed catalog and fixed record
+// fields, but adds eight extension bytes before both kinds of Pascal name.
+fn packed_catalog_directory_suffix_len(version: u32) -> usize {
+    VISE_PACKED_DIRECTORY_SUFFIX_LEN
+        + if version == VISE_VERSION_EXPANDED_PACKED_CATALOG {
+            8
+        } else {
+            0
+        }
+}
+
+fn packed_catalog_file_suffix_len(version: u32) -> usize {
+    VISE_PACKED_FILE_SUFFIX_LEN
+        + if version == VISE_VERSION_EXPANDED_PACKED_CATALOG {
+            8
+        } else {
+            0
+        }
 }
 
 // Installer VISE 3 archive layout and transform reference:
@@ -282,6 +306,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
             | VISE_VERSION_LATE_PACKED_CATALOG
+            | VISE_VERSION_EXPANDED_PACKED_CATALOG
     ) {
         return Err(format!("unsupported archive version 0x{version:08X}"));
     }
@@ -324,7 +349,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
         // extended layout in a word-swapped, raw DEFLATE stream. Bound output
         // by the largest possible record and Pascal name for each entry.
         let max_len = entry_count
-            .checked_mul(4 + VISE_FILE_RECORD_LEN + VISE_PACKED_FILE_SUFFIX_LEN + 255)
+            .checked_mul(4 + VISE_FILE_RECORD_LEN + packed_catalog_file_suffix_len(version) + 255)
             .ok_or_else(|| "packed catalog size overflow".to_string())?;
         let mut decoded = vec![0; max_len + 1];
         let mut decompressor = Decompress::new(false);
@@ -395,7 +420,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     cursor += suffix_len;
                 } else if extended_catalog {
                     let suffix_len = if packed_catalog(version) {
-                        VISE_PACKED_DIRECTORY_SUFFIX_LEN
+                        packed_catalog_directory_suffix_len(version)
                     } else {
                         VISE_EXTENDED_DIRECTORY_SUFFIX_LEN
                     };
@@ -458,7 +483,7 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     cursor += VISE_36_FULL_FILE_SUFFIX_LEN;
                 } else if extended_catalog {
                     let suffix_len = if packed_catalog(version) {
-                        VISE_PACKED_FILE_SUFFIX_LEN
+                        packed_catalog_file_suffix_len(version)
                     } else {
                         VISE_EXTENDED_FILE_SUFFIX_LEN
                     };
@@ -1688,6 +1713,127 @@ pub(crate) mod tests {
         truncated[catalog_offset + 4..catalog_offset + 8]
             .copy_from_slice(&((packed_records.len() - 2) as u32).to_be_bytes());
         assert!(parse_vise(&truncated).unwrap().is_err());
+    }
+
+    fn padded_packed_fixture(records: &[u8], count: u16, payload: &[u8]) -> Vec<u8> {
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(records).unwrap();
+        let mut packed = encoder.finish().unwrap();
+        for pair in packed.chunks_exact_mut(2) {
+            pair.swap(0, 1);
+        }
+        let mut archive = vec![0; 44];
+        archive[..4].copy_from_slice(b"SVCT");
+        archive[16..20].copy_from_slice(&0x8001_030Du32.to_be_bytes());
+        archive[36..40].copy_from_slice(&((44 + payload.len()) as u32).to_be_bytes());
+        archive.extend_from_slice(payload);
+        let mut catalog = [0; 100];
+        catalog[..4].copy_from_slice(b"CVCT");
+        catalog[4..8].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        catalog[16..18].copy_from_slice(&count.to_be_bytes());
+        catalog[20..24].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&catalog);
+        archive.extend_from_slice(&packed);
+        archive
+    }
+
+    fn padded_packed_records(packed_len: usize) -> Vec<u8> {
+        let mut records = Vec::new();
+        for (directory, depth, name) in [
+            (true, 0u16, "Root"),
+            (true, 1, "Data"),
+            (false, 2, "Runtime"),
+            (true, 1, "Docs"),
+            (false, 2, "Notice"),
+        ] {
+            records.extend_from_slice(if directory { b"DVCT" } else { b"FVCT" });
+            if directory {
+                let mut record = [0; 78];
+                record[68..70].copy_from_slice(&depth.to_be_bytes());
+                record[76] = name.len() as u8;
+                records.extend_from_slice(&record);
+                records.extend_from_slice(&[0xAB; 78]);
+            } else {
+                let mut record = [0; 120];
+                record[8] = 0x10;
+                record[40..44].copy_from_slice(b"APPL");
+                record[44..48].copy_from_slice(b"TEST");
+                record[64..68].copy_from_slice(&(packed_len as u32).to_be_bytes());
+                record[68..72].copy_from_slice(&4u32.to_be_bytes());
+                record[76..80].copy_from_slice(&8u32.to_be_bytes());
+                record[92..94].copy_from_slice(&depth.to_be_bytes());
+                record[96..100].copy_from_slice(&44u32.to_be_bytes());
+                record[100..104].copy_from_slice(&6u32.to_be_bytes());
+                record[118] = name.len() as u8;
+                records.extend_from_slice(&record);
+                records.extend_from_slice(&[0xCD; 74]);
+            }
+            records.extend_from_slice(name.as_bytes());
+        }
+        records.extend_from_slice(b"PACK");
+        records
+    }
+
+    #[test]
+    fn padded_packed_catalog_retains_grouped_forks_and_sibling_paths() {
+        let packed = encode_vise_fork(b"prefixDATARESOURCE");
+        let records = padded_packed_records(packed.len());
+        let archive = padded_packed_fixture(&records, 5, &packed);
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.dirs, ["Root", "Root/Data", "Root/Docs"]);
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].path, "Root/Data/Runtime");
+        assert_eq!(parsed.entries[1].path, "Root/Docs/Notice");
+        for entry in parsed.entries {
+            assert_eq!(entry.file_type, *b"APPL");
+            assert_eq!(entry.creator, *b"TEST");
+            assert_eq!(entry.data_unpacked_offset, 6);
+            assert_eq!(entry.rsrc_unpacked_offset, 10);
+            let decoded = decode_vise_fork(entry.data_packed, 18).unwrap();
+            assert_eq!(&decoded[6..10], b"DATA");
+            assert_eq!(&decoded[10..18], b"RESOURCE");
+            assert_eq!(entry.data_packed, entry.rsrc_packed);
+        }
+    }
+
+    #[test]
+    fn padded_packed_catalog_bounds_records_and_depth() {
+        let packed = encode_vise_fork(b"prefixDATARESOURCE");
+        let records = padded_packed_records(packed.len());
+        let mut invalid_depth = records.clone();
+        let file = invalid_depth.windows(4).position(|v| v == b"FVCT").unwrap();
+        invalid_depth[file + 4 + 92..file + 4 + 94].copy_from_slice(&3u16.to_be_bytes());
+        assert!(
+            parse_vise(&padded_packed_fixture(&invalid_depth, 5, &packed))
+                .unwrap()
+                .is_err()
+        );
+        let mut short_suffix = records.clone();
+        short_suffix.remove(4 + 78 + 77);
+        assert!(
+            parse_vise(&padded_packed_fixture(&short_suffix, 5, &packed))
+                .unwrap()
+                .is_err()
+        );
+        let mut old_version = padded_packed_fixture(&records, 5, &packed);
+        old_version[16..20].copy_from_slice(&0x8001_030Bu32.to_be_bytes());
+        assert!(parse_vise(&old_version).unwrap().is_err());
+        assert!(parse_vise(&padded_packed_fixture(&records, 0, &packed))
+            .unwrap()
+            .is_err());
+        let mut truncated = padded_packed_fixture(&records, 5, &packed);
+        truncated.truncate(truncated.len() - 4);
+        assert!(parse_vise(&truncated).unwrap().is_err());
+
+        let mut longest = b"FVCT".to_vec();
+        let mut record = [0; 120];
+        record[118] = 255;
+        longest.extend_from_slice(&record);
+        longest.extend_from_slice(&[0; 74]);
+        longest.extend_from_slice(&[b'A'; 255]);
+        let archive = padded_packed_fixture(&longest, 1, &[]);
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.entries[0].path.len(), 255);
     }
 
     #[test]
