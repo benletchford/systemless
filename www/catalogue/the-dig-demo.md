@@ -8,14 +8,40 @@ summary: >-
 developer: LucasArts
 publisher: LucasArts
 year: 1995
+launch_enabled: true
 architectures:
 - 68k
 - ppc
 default_architecture: ppc
 category: Puzzle
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: fb4b5071 runtime / 3d4ead7d browser source
+    architecture: ppc
+    environment: >-
+      Private production-equivalent Chrome Worker browser using the unchanged
+      hosted archive. Actual archive and both main/worker Wasm response bodies
+      match their pins. Default 25 MHz CPU, display, partition, sound and preferences
+      preserved. Normal Command-period Skip Scene sequence enters the puzzle scene;
+      moving to (600,365) and clicking for 12 guest ticks starts a walk. Isolated
+      player-pants centroid shifts 40.43 normalized guest pixels right versus zero
+      in a fresh omitted-click control, each compared with its own preceding frame.
+      Four unchanged twenty-second intro-to-scene/input and separate sustained-scene
+      windows pass: endpoint guest 59.986-61.545 ticks/sec, host 59.986-60.519 FPS,
+      maximum worker frame 23.2 ms, minimum audio queue 477.6 ms, zero lifecycle or
+      observer errors. These are scheduling metrics, not game render FPS or audio
+      fidelity. Actual before/after and all intermediate sustained images inspected;
+      active reaches the destination while control stays at the starting position.
+      Targets resumed and debugger disabled before measurement. The initial exact-pixel
+      Earth readiness failure is retained; a blue-limb scene classifier accommodates
+      rotating clouds and rejects logo/puzzle scenes without changing pacing limits.
+      Puzzles, inventory, saves, independent hardware/audio fidelity and released
+      public-route replay remain unverified. No public/live qualification claimed.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5962
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: fb4b5071-equivalent native runtime
@@ -121,6 +147,6 @@ click objects to interact, and use the **i** icon to open the inventory.
 The original Read Me explains the controls and demo scope.
 
 The Game menu’s **Skip Scene** command skips introductory scenes normally.
-Native PowerPC testing verifies scene entry and a walk click. Browser play,
-puzzle completion, inventory, persistence and audio fidelity remain unverified,
-so browser launch is disabled.
+PowerPC browser testing verifies scene entry, walking and sustained scene play.
+The 68K slice reaches a scene, but its walking remains unqualified. Puzzle
+completion, inventory, persistence and audio fidelity remain unverified.
