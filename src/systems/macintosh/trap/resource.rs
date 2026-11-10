@@ -7179,7 +7179,6 @@ impl super::TrapDispatcher {
                         // Stack (rightmost on top): [permission(2)] [spec_ptr(4)] [result(2)]
                         let sp = cpu.read_reg(Register::A7);
                         let permission = signed_byte_from_stack_word(bus.read_word(sp));
-                        let wants_write = permission == 2 || permission == 3;
                         let spec_ptr = bus.read_long(sp + 2);
                         let filename = read_fsspec_name(bus, spec_ptr);
                         if super::dispatch::trace_resfile_enabled() {
@@ -7199,36 +7198,10 @@ impl super::TrapDispatcher {
                         }
 
                         if let Some(vfs_key) = rsrc_key {
-                            if wants_write && self.vfs_path_is_read_only(&vfs_key) {
-                                bus.write_word(sp + 6, (-44i16) as u16); // wPrErr
-                                cpu.write_reg(Register::D0, (-44i32) as u32);
-                                cpu.write_reg(Register::A7, sp + 6);
-                                return Some(Ok(()));
-                            }
-                            // Dedupe: re-opening the same fork must reuse
-                            // the existing refnum, not re-allocate every
-                            // resource, and must not change CurResFile.
-                            // (See OpenRFPerm in toolbox.rs.)
-                            if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
-                                if wants_write {
-                                    self.write_refnums.insert(existing);
-                                }
-                                if super::dispatch::trace_resfile_enabled() {
-                                    eprintln!(
-                                        "[TRAP] FSpOpenResFile: \"{}\" already open as refnum {}, dedup",
-                                        filename, existing
-                                    );
-                                }
-                                bus.write_word(sp + 6, existing);
-                                cpu.write_reg(Register::D0, existing as u32);
-                                bus.write_word(0x0A60, 0); // ResErr = noErr
-                                cpu.write_reg(Register::A7, sp + 6);
-                                return Some(Ok(()));
-                            }
                             let refnum =
-                                self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
+                                self.open_resource_file_with_permission(bus, &vfs_key, permission);
                             bus.write_word(sp + 6, refnum);
-                            cpu.write_reg(Register::D0, refnum as u32);
+                            cpu.write_reg(Register::D0, refnum as i16 as i32 as u32);
                         } else {
                             // FSpOpenResFile failure semantics:
                             // - If the file exists but has no resource fork, return

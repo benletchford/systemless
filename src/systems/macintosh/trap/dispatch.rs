@@ -6805,13 +6805,48 @@ impl TrapDispatcher {
         wants_write: bool,
     ) -> u16 {
         let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().clone();
+        let fork = ResourceFork::parse(&rsrc_data);
+        let mut map = fork
+            .as_ref()
+            .map(|fork| fork.map().to_vec())
+            .unwrap_or_else(|| {
+                // Empty resource forks are supported by the archive-backed VFS.
+                let mut map = vec![0; 30];
+                map[24..26].copy_from_slice(&28u16.to_be_bytes());
+                map[26..28].copy_from_slice(&30u16.to_be_bytes());
+                map[28..30].copy_from_slice(&u16::MAX.to_be_bytes());
+                map
+            });
+        if let Some(fork) = &fork {
+            for resource in fork.resources().values() {
+                let at = resource.reference_offset as usize + 8;
+                map[at..at + 4].fill(0);
+            }
+        }
+        let map_ptr = bus.alloc(map.len() as u32);
+        if map_ptr == 0 {
+            bus.write_word(0x0A60, (-108i16) as u16);
+            return u16::MAX;
+        }
+        let map_handle = bus.alloc(4);
+        if map_handle == 0 {
+            bus.free(map_ptr);
+            bus.write_word(0x0A60, (-108i16) as u16);
+            return u16::MAX;
+        }
         let refnum = match self.allocate_resource_file_fcb(bus, vfs_key, wants_write) {
             Ok(refnum) => refnum,
             Err(error) => {
+                bus.free(map_ptr);
+                bus.free(map_handle);
                 bus.write_word(0x0A60, error as u16);
                 return u16::MAX;
             }
         };
+        bus.write_bytes(map_ptr, &map);
+        bus.write_long(map_ptr + 16, bus.read_long(0x0A50));
+        bus.write_word(map_ptr + 20, refnum);
+        bus.write_long(map_handle, map_ptr);
         // Resource Manager returns the File Manager's access-path reference.
         // Keep raw fork reads, marks and closure on the same path as PBOpenRF.
         // Inside Macintosh: More Macintosh Toolbox (1993), p. 1-58.
@@ -6821,8 +6856,8 @@ impl TrapDispatcher {
         self.vfs.insert(backing_key.clone(), rsrc_data.clone());
         self.open_files.insert(refnum, backing_key);
         self.file_positions.insert(refnum, 0);
-        if let Some(fork) = ResourceFork::parse(&rsrc_data) {
-            self.merge_resources_from_fork(&fork, bus, refnum);
+        if let Some(fork) = &fork {
+            self.merge_resources_from_fork(fork, bus, refnum);
         } else {
             self.register_empty_resource_file(refnum);
         }
@@ -6831,8 +6866,96 @@ impl TrapDispatcher {
             self.write_refnums.insert(refnum);
         }
         self.set_current_resource_refnum(bus, refnum);
+        // TN1120 uses a changed TopMapHndl to distinguish complete success
+        // (a new map) from partial success (reusing an existing map).
+        bus.write_long(0x0A50, map_handle);
+        if let Some(fork) = &fork {
+            for resource in fork.resources().values() {
+                let ptr = self
+                    .resources
+                    .as_ref()
+                    .and_then(|resources| resources.files.get(&refnum))
+                    .and_then(|file| file.loaded.get(&(resource.res_type, resource.id)))
+                    .copied()
+                    .unwrap_or(0);
+                if ptr != 0 {
+                    let handle = self.get_or_create_resource_handle_in_file(
+                        bus,
+                        resource.res_type,
+                        resource.id,
+                        ptr,
+                        refnum,
+                    );
+                    bus.write_long(map_ptr + resource.reference_offset as u32 + 8, handle);
+                }
+            }
+        }
         bus.write_word(0x0A60, 0);
         refnum
+    }
+
+    fn unlink_resource_file_map(bus: &mut MacMemoryBus, refnum: u16) {
+        let mut link = 0x0A50;
+        let mut handle = bus.read_long(link);
+        let mut seen: HashSet<u32> = HashSet::default();
+        while handle != 0 && seen.insert(handle) {
+            let map = bus.read_long(handle);
+            if map == 0 {
+                break;
+            }
+            let next = bus.read_long(map + 16);
+            if bus.read_word(map + 20) == refnum {
+                bus.write_long(link, next);
+                bus.free(map);
+                bus.free(handle);
+                break;
+            }
+            link = map + 16;
+            handle = next;
+        }
+    }
+
+    /// Apply the single-process reopen rules corrected by Apple TN1120 (1998).
+    /// Read requests create a separate map. Write requests can reuse a map,
+    /// retaining its existing permissions. Both outcomes make the map current.
+    pub(crate) fn open_resource_file_with_permission(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        vfs_key: &str,
+        permission: i16,
+    ) -> u16 {
+        let existing = self.resources.as_ref().and_then(|resources| {
+            resources
+                .names
+                .iter()
+                .filter_map(|(&refnum, name)| (name == vfs_key).then_some(refnum))
+                .min_by_key(|refnum| (!self.write_refnums.contains(refnum), *refnum))
+        });
+        let requested_write = matches!(permission, 2 | 3);
+        if requested_write {
+            if let Some(refnum) = existing {
+                // Partial success must not upgrade a read-only access path.
+                self.set_current_resource_refnum(bus, refnum);
+                bus.write_word(0x0A60, 0);
+                return refnum;
+            }
+            if self.vfs_path_is_read_only(vfs_key) {
+                bus.write_word(0x0A60, (-44i16) as u16);
+                return u16::MAX;
+            }
+            if self.locked_files.contains(vfs_key) {
+                bus.write_word(0x0A60, (-45i16) as u16);
+                return u16::MAX;
+            }
+        }
+        // fsCurPerm grants read/write only on the first open when available.
+        // A subsequent fsCurPerm open has the same fresh-map behavior as fsRdPerm.
+        let writable = requested_write
+            || (permission == 0
+                && existing.is_none()
+                && !self.vfs_path_is_read_only(vfs_key)
+                && !self.locked_files.contains(vfs_key));
+        self.open_resource_file_from_vfs_key(bus, vfs_key, writable)
     }
 
     /// Keep the boot System file below the application in resource searches.
@@ -6935,6 +7058,7 @@ impl TrapDispatcher {
                     *current_file = surviving_classic_current as i16;
                 });
         }
+        Self::unlink_resource_file_map(bus, refnum);
         self.clear_resource_file_backing_data(refnum);
         self.clear_resource_file_handle_index(refnum);
         self.with_resource_manager_mut(|resource_manager| {

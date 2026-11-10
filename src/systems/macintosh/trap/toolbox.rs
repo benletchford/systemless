@@ -7518,14 +7518,12 @@ impl super::TrapDispatcher {
             // ========== Resource Manager (extended) ==========
 
             // OpenRFPerm ($A9C4): name, vRefNum, permission → refnum
-            // Opens a resource fork and returns its refnum. A newly opened
-            // file becomes current; if already open, returns existing refnum
-            // without switching current file (IM:IV IV-17; MTb 1993 1-64..1-66).
+            // Apple TN1120 corrects the older Inside Macintosh reopen rules:
+            // a fresh read map or reused write map becomes current.
             // Mirror the FUNCTION return value in D0 as well as the result slot.
             (true, 0x1C4) => {
                 let sp = cpu.read_reg(Register::A7);
                 let perm = bus.read_byte(sp) as i8 as i16;
-                let wants_write = perm == 2 || perm == 3;
                 let vref = bus.read_word(sp + 2) as i16;
                 let name_ptr = bus.read_long(sp + 4);
                 let name_len = bus.read_byte(name_ptr) as usize;
@@ -7557,85 +7555,9 @@ impl super::TrapDispatcher {
 
                 // Try to find and load the resource fork from the selected volume.
                 if let Some(vfs_key) = vfs_key {
-                    if wants_write && self.vfs_path_is_read_only(&vfs_key) {
-                        bus.write_word(sp + 8, (-1i16) as u16);
-                        cpu.write_reg(Register::D0, (-1i32) as u32);
-                        bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
-                        cpu.write_reg(Register::A7, sp + 8);
-                        return Some(Ok(()));
-                    }
-                    // Dedupe: if this file is already open, return the
-                    // existing refnum and skip the merge. Without this,
-                    // games that re-open their own fork (Bonkheads opens
-                    // it 16+ times during boot) re-allocate every
-                    // resource on every open and exhaust the heap before
-                    // the title even renders.
-                    if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
-                        if wants_write {
-                            self.write_refnums.insert(existing);
-                        }
-                        if !wants_write && self.write_refnums.contains(&existing) {
-                            let existing_read_only =
-                                self.resources.as_ref().and_then(|resources| {
-                                    let mut refnums: Vec<u16> = resources
-                                        .names
-                                        .iter()
-                                        .filter_map(|(&refnum, resource_name)| {
-                                            (resource_name == &vfs_key
-                                                && !self.write_refnums.contains(&refnum))
-                                            .then_some(refnum)
-                                        })
-                                        .collect();
-                                    refnums.sort_unstable();
-                                    refnums.into_iter().next()
-                                });
-                            if let Some(read_refnum) = existing_read_only {
-                                if super::dispatch::trace_resfile_enabled() {
-                                    eprintln!(
-                                        "[TRAP] OpenRFPerm: \"{}\" already read-open as refnum {}, dedup",
-                                        name, read_refnum
-                                    );
-                                }
-                                bus.write_word(sp + 8, read_refnum);
-                                cpu.write_reg(Register::D0, read_refnum as u32);
-                                bus.write_word(0x0A60, 0); // ResErr = noErr
-                                cpu.write_reg(Register::A7, sp + 8);
-                                return Some(Ok(()));
-                            }
-                            if super::dispatch::trace_resfile_enabled() {
-                                eprintln!(
-                                    "[TRAP] OpenRFPerm: \"{}\" write-opened refnum {}, forcing new read-only access path",
-                                    name, existing
-                                );
-                            }
-                            let refnum =
-                                self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
-                            bus.write_word(sp + 8, refnum);
-                            cpu.write_reg(Register::D0, refnum as u32);
-                            cpu.write_reg(Register::A7, sp + 8);
-                            return Some(Ok(()));
-                        }
-                        if super::dispatch::trace_resfile_enabled() {
-                            eprintln!(
-                                "[TRAP] OpenRFPerm: \"{}\" already open as refnum {}, dedup",
-                                name, existing
-                            );
-                        }
-                        bus.write_word(sp + 8, existing);
-                        cpu.write_reg(Register::D0, existing as u32);
-                        bus.write_word(0x0A60, 0); // ResErr = noErr
-                        cpu.write_reg(Register::A7, sp + 8);
-                        return Some(Ok(()));
-                    }
-                    let rsrc_data = self.vfs_rsrc.get(&vfs_key).unwrap().clone();
-                    eprintln!(
-                        "[TRAP] OpenRFPerm: found rsrc fork for \"{}\" ({} bytes)",
-                        vfs_key,
-                        rsrc_data.len()
-                    );
-                    let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
+                    let refnum = self.open_resource_file_with_permission(bus, &vfs_key, perm);
                     bus.write_word(sp + 8, refnum);
-                    cpu.write_reg(Register::D0, refnum as u32);
+                    cpu.write_reg(Register::D0, refnum as i16 as i32 as u32);
                 } else {
                     eprintln!("[TRAP] OpenRFPerm: \"{}\" not found in vfs_rsrc", name);
                     bus.write_word(sp + 8, (-1i16) as u16);
@@ -10754,18 +10676,14 @@ impl super::TrapDispatcher {
             // Pop 12 bytes; result lands at the new SP.
             //
             // Explicit directory IDs select the requested directory, also
-            // for archive-backed volumes. Behaviour otherwise mirrors
-            // OpenRFPerm: dedup re-opens against `loaded_files`,
-            // return the existing refnum, and leave current file unchanged
-            // on already-open paths per MTb 1993 1-63. ResErr is noErr on
-            // hit and fnfErr (-43) on miss (MTb 1993 1-64 result table).
+            // for archive-backed volumes. Reopen behavior mirrors OpenRFPerm
+            // under Apple TN1120's correction to the older manual.
             // HOpenResFile ($A81A): HFS variant of OpenRFPerm. New open sets
-            // current file; already-open path returns the existing refnum
-            // without switching current.
+            // current file; reopens follow Apple TN1120, not the superseded
+            // Inside Macintosh claim that current remains unchanged.
             (true, 0x01A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let perm = signed_byte_from_stack_word(bus.read_word(sp));
-                let wants_write = perm == 2 || perm == 3;
                 let name_ptr = bus.read_long(sp + 2);
                 let dir_id = bus.read_long(sp + 6);
                 let v_ref = bus.read_word(sp + 10) as i16;
@@ -10797,28 +10715,7 @@ impl super::TrapDispatcher {
                     self.find_vfs_rsrc_file(&name)
                 };
                 if let Some(vfs_key) = vfs_key {
-                    if wants_write && self.vfs_path_is_read_only(&vfs_key) {
-                        bus.write_word(sp + 12, (-1i16) as u16);
-                        bus.write_word(0x0A60, (-44i16) as u16); // wPrErr
-                        cpu.write_reg(Register::A7, sp + 12);
-                        return Some(Ok(()));
-                    }
-                    if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
-                        if wants_write {
-                            self.write_refnums.insert(existing);
-                        }
-                        if super::dispatch::trace_resfile_enabled() {
-                            eprintln!(
-                                "[TRAP] HOpenResFile: \"{}\" already open as refnum {}, dedup",
-                                name, existing
-                            );
-                        }
-                        bus.write_word(sp + 12, existing);
-                        bus.write_word(0x0A60, 0); // ResErr = noErr
-                        cpu.write_reg(Register::A7, sp + 12);
-                        return Some(Ok(()));
-                    }
-                    let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, wants_write);
+                    let refnum = self.open_resource_file_with_permission(bus, &vfs_key, perm);
                     bus.write_word(sp + 12, refnum);
                 } else {
                     bus.write_word(sp + 12, (-1i16) as u16);
@@ -10925,7 +10822,7 @@ impl super::TrapDispatcher {
             // OpenResFile ($A997)
             // FUNCTION OpenResFile(fileName: Str255): INTEGER;
             // Params: 4, returns 2
-            // OpenResFile ($A997): Opens VFS resource fork by name; dedup'd refnum on re-open (logged via SYSTEMLESS_TRACE_RESFILE) per IM:I I-115
+            // OpenResFile ($A997): implicit fsCurPerm; Apple TN1120 reopen semantics.
             (true, 0x197) => {
                 let sp = cpu.read_reg(Register::A7);
                 let name_ptr = bus.read_long(sp);
@@ -10938,26 +10835,9 @@ impl super::TrapDispatcher {
 
                     // Try to load resource fork
                     if let Some(vfs_key) = self.find_vfs_rsrc_file(&name) {
-                        // Dedupe (see OpenRFPerm above for rationale).
-                        if let Some(existing) = self.refnum_for_resource_file_name(&vfs_key) {
-                            if super::dispatch::trace_resfile_enabled() {
-                                eprintln!(
-                                    "[TRAP] OpenResFile: \"{}\" already open as refnum {}, dedup",
-                                    name, existing
-                                );
-                            }
-                            bus.write_word(sp + 4, existing);
-                            cpu.write_reg(Register::D0, existing as u32);
-                            bus.write_word(0x0A60, 0); // ResErr = noErr
-                                                       // IM:I p. I-115: already-open OpenResFile returns
-                                                       // the existing refnum but does not make that file
-                                                       // the current resource file.
-                            cpu.write_reg(Register::A7, sp + 4);
-                            return Some(Ok(()));
-                        }
-                        let refnum = self.open_resource_file_from_vfs_key(bus, &vfs_key, false);
+                        let refnum = self.open_resource_file_with_permission(bus, &vfs_key, 0);
                         bus.write_word(sp + 4, refnum);
-                        cpu.write_reg(Register::D0, refnum as u32);
+                        cpu.write_reg(Register::D0, refnum as i16 as i32 as u32);
                         cpu.write_reg(Register::A7, sp + 4);
                         return Some(Ok(()));
                     }
