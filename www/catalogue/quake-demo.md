@@ -12,9 +12,31 @@ architectures:
 - ppc
 default_architecture: ppc
 category: FPS
+launch_enabled: true
 compatibility:
-  status: unknown
+  status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: e0b55663 runtime code, private browser build 1351bbc4
+    architecture: ppc
+    status: playable
+    environment: >-
+      Private full-site worker/WebGL browser, original PowerPC at default 25 MHz,
+      unchanged CPU/display/partition/sound settings. Normal Escape, Single Player,
+      New Game enters the starting map; default Right held for 30 guest ticks rotates
+      the view against a fresh no-input control. Measured stone-ceiling region changes
+      10851 pixels with input and zero without input, excluding animated torches.
+      All four 20-second windows pass unchanged gates: normal New Game/input and
+      separate sustained play for each case. Steady guest ticks/sec 59.87-61.37,
+      host frames/sec 59.87-63.52, maximum frame work 31.9 ms and minimum audio queue
+      469.3 ms. Original archive and both main/worker Wasm response bodies pinned;
+      all targets resumed, Debugger disabled, no lifecycle/network errors or concurrent
+      heavy build. Actual active/control and sustained captures inspected. Private Wasm
+      SHA-256 0d9626bde05cab1a08d14f04ef131a30056e9d2c55dde78c6558db38cb4e1fbf.
+      Translation, combat, completion, persistence, audio fidelity, independent hardware
+      rendering and released public qualification remain unverified.
+    evidence: https://github.com/benletchford/systemless/issues/5924
   - date: "2026-11-10"
     tester: Catalogue maintainer
     systemless_version: 9d234abd runtime code
@@ -96,6 +118,7 @@ Enter Gothic corridors, face monsters and search for the slipgates in this origi
 Macintosh preview of Quake. The complete 1.08.2 package retains its original
 documents and limited preview levels.
 
-Native map entry and turning input are verified. A startup console file-open
-message remains before normal menu navigation. Browser input and performance,
-combat, level completion and audio fidelity remain unverified. Launch stays disabled.
+Press **Escape**, then choose **Single Player → New Game** to enter the
+starting map. Arrow keys turn and move; bounded right-arrow turning is verified
+in the browser. A startup console file-open message remains before normal menu
+navigation. Combat, level completion, persistence and audio fidelity remain unverified.
