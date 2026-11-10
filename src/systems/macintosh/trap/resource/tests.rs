@@ -5878,10 +5878,8 @@ fn hlfs_dispatch_fspcreateresfile_honors_parent_dir_id() {
 }
 
 #[test]
-fn hlfs_dispatch_fspopenresfile_dedup_keeps_current_resource_file() {
-    // More Macintosh Toolbox 1993, p. 1-63: reopening an already-open
-    // resource fork returns the existing refnum without making that file
-    // current. This regression catches the dedup path mutating CurResFile.
+fn hlfs_dispatch_fspopenresfile_read_reopen_selects_new_current_resource_file() {
+    // TN1120 supersedes the old manual: read reopens create a current map.
     let (mut disp, mut cpu, mut bus) = setup();
 
     disp.vfs_rsrc.insert("First".to_string(), vec![]);
@@ -5920,15 +5918,15 @@ fn hlfs_dispatch_fspopenresfile_dedup_keeps_current_resource_file() {
     cpu.write_reg(Register::A7, sp);
     cpu.write_reg(Register::D0, 13);
     call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
-    assert_eq!(bus.read_word(TEST_SP + 6), first_ref);
+    let reopened = bus.read_word(TEST_SP + 6);
+    assert_ne!(reopened, first_ref);
     assert_eq!(bus.read_word(0x0A60), 0);
-    assert_eq!(bus.read_word(0x0A5A), second_ref);
+    assert_eq!(bus.read_word(0x0A5A), reopened);
 }
 
 #[test]
-fn openresfile_dedup_keeps_current_resource_file() {
-    // IM:Volume I p. I-115: OpenResFile reuses an already-open resource
-    // fork without switching the current resource file.
+fn openresfile_read_reopen_selects_new_current_resource_file() {
+    // TN1120: OpenResFile uses fsCurPerm and creates a new current read map.
     let (mut disp, mut cpu, mut bus) = setup();
 
     disp.vfs_rsrc.insert("First".to_string(), vec![]);
@@ -5964,10 +5962,11 @@ fn openresfile_dedup_keeps_current_resource_file() {
     bus.write_word(sp + 4, 0xBEEF);
     cpu.write_reg(Register::A7, sp);
     call_trap_word(&mut disp, 0xA997, &mut cpu, &mut bus).unwrap();
-    assert_eq!(bus.read_word(TEST_SP + 4), first_ref);
+    let reopened = bus.read_word(TEST_SP + 4);
+    assert_ne!(reopened, first_ref);
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     assert_eq!(bus.read_word(0x0A60), 0);
-    assert_eq!(bus.read_word(0x0A5A), second_ref);
+    assert_eq!(bus.read_word(0x0A5A), reopened);
 }
 
 #[test]
@@ -12010,4 +12009,185 @@ fn classic_resource_materialization_applies_changed_attributes_when_loading() {
     );
     assert_ne!(bus.read_long(handle), 0);
     assert_eq!(disp.handle_state_bits(handle), Some(0x60));
+}
+
+// Apple TN1120 (1998) explicitly corrects Inside Macintosh's reopen contract.
+// Exercise the public Pascal frames rather than calling the policy helper.
+fn tn1120_open(
+    disp: &mut super::super::TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut crate::memory::MacMemoryBus,
+    api: u8,
+    permission: u8,
+    name: &[u8],
+) -> u16 {
+    let name_ptr = 0x3000C0;
+    let spec_ptr = 0x300080;
+    write_pstring(bus, name_ptr, name);
+    write_fsspec(bus, spec_ptr, 0, 2, name);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_word(TEST_SP, u16::from(permission) << 8);
+    let (trap, result_offset) = match api {
+        0 => {
+            bus.write_long(TEST_SP, name_ptr);
+            (0xA997, 4)
+        }
+        1 => {
+            bus.write_word(TEST_SP + 2, 0);
+            bus.write_long(TEST_SP + 4, name_ptr);
+            (0xA9C4, 8)
+        }
+        2 => {
+            bus.write_long(TEST_SP + 2, name_ptr);
+            bus.write_long(TEST_SP + 6, 2);
+            bus.write_word(TEST_SP + 10, 0);
+            (0xA81A, 12)
+        }
+        3 => {
+            bus.write_long(TEST_SP + 2, spec_ptr);
+            cpu.write_reg(Register::D0, 13);
+            (0xAA52, 6)
+        }
+        _ => unreachable!(),
+    };
+    bus.write_word(TEST_SP + result_offset, 0xBEEF);
+    call_trap_word(disp, trap, cpu, bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + result_offset);
+    bus.read_word(TEST_SP + result_offset)
+}
+
+fn tn1120_named_fork() -> Vec<u8> {
+    let mut bytes = make_single_resource_fork_bytes(*b"TEST", 7, b"sound bytes");
+    let map = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let length = (bytes.len() - map + 8) as u32;
+    bytes[12..16].copy_from_slice(&length.to_be_bytes());
+    bytes[map + 12..map + 16].copy_from_slice(&length.to_be_bytes());
+    bytes[map + 26..map + 28].copy_from_slice(&52u16.to_be_bytes());
+    bytes[map + 42..map + 44].copy_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(b"\x07Opening");
+    bytes
+}
+
+#[test]
+fn resource_open_tn1120_permission_matrix_and_named_lookup() {
+    for api in 0..4 {
+        for first_permission in 0..4 {
+            for second_permission in 0..4 {
+                if api == 0 && (first_permission != 0 || second_permission != 0) {
+                    continue;
+                }
+                let (mut disp, mut cpu, mut bus) = setup();
+                disp.vfs_rsrc.insert("Sounds".into(), tn1120_named_fork());
+                disp.vfs_rsrc.insert("Other".into(), vec![]);
+                let first = tn1120_open(
+                    &mut disp,
+                    &mut cpu,
+                    &mut bus,
+                    api,
+                    first_permission,
+                    b"Sounds",
+                );
+                assert_ne!(first, u16::MAX);
+                let first_writable = first_permission != 1;
+                assert_eq!(disp.write_refnums.contains(&first), first_writable);
+                let other = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 1, b"Other");
+                assert_eq!(disp.current_resource_refnum(), other);
+                let previous_top = bus.read_long(0x0A50);
+                let reopened = tn1120_open(
+                    &mut disp,
+                    &mut cpu,
+                    &mut bus,
+                    api,
+                    second_permission,
+                    b"Sounds",
+                );
+                assert_ne!(reopened, u16::MAX);
+                let reused = matches!(second_permission, 2 | 3);
+                assert_eq!(
+                    reopened == first,
+                    reused,
+                    "API {api}, {first_permission}->{second_permission}"
+                );
+                assert_eq!(bus.read_long(0x0A50) == previous_top, reused);
+                assert_eq!(disp.current_resource_refnum(), reopened);
+                assert_eq!(bus.read_word(0x0A5A), reopened);
+                assert_eq!(bus.read_word(0x0A60), 0);
+                assert_eq!(
+                    disp.write_refnums.contains(&reopened),
+                    reused && first_writable
+                );
+                // Reopening after another map was current must restore lookup,
+                // including a fresh lazy-loaded copy for read-only requests.
+                let name_ptr = 0x300100;
+                write_pstring(&mut bus, name_ptr, b"Opening");
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, name_ptr);
+                bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"TEST"));
+                call_trap_word(&mut disp, 0xA9A1, &mut cpu, &mut bus).unwrap();
+                let handle = bus.read_long(TEST_SP + 8);
+                assert_ne!(
+                    handle, 0,
+                    "API {api}, {first_permission}->{second_permission}"
+                );
+                assert_eq!(bus.read_bytes(bus.read_long(handle), 11), b"sound bytes");
+            }
+        }
+    }
+}
+
+#[test]
+fn resource_open_tn1120_top_map_distinguishes_new_map_and_reuse() {
+    for api in 1..4 {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc.insert("Sounds".into(), tn1120_named_fork());
+        let first = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 3, b"Sounds");
+        let first_top = bus.read_long(0x0A50);
+        assert_ne!(first_top, 0);
+        let reused = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 3, b"Sounds");
+        assert_eq!(reused, first);
+        assert_eq!(bus.read_long(0x0A50), first_top);
+        let fresh = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 1, b"Sounds");
+        let fresh_top = bus.read_long(0x0A50);
+        assert_ne!(fresh, first);
+        assert_ne!(fresh_top, first_top);
+        assert_eq!(bus.read_long(bus.read_long(fresh_top) + 16), first_top);
+        assert_eq!(bus.read_word(bus.read_long(fresh_top) + 20), fresh);
+        assert!(disp.close_resource_file_refnum(&mut bus, fresh));
+        assert_eq!(bus.read_long(0x0A50), first_top);
+        assert!(disp.close_resource_file_refnum(&mut bus, first));
+        assert_eq!(bus.read_long(0x0A50), 0);
+    }
+}
+
+#[test]
+fn resource_open_tn1120_failures_preserve_current_map_and_permissions() {
+    for api in 0..4 {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs_rsrc.insert("Other".into(), tn1120_named_fork());
+        disp.vfs_rsrc.insert("Locked".into(), tn1120_named_fork());
+        disp.locked_files.insert("Locked".into());
+        let other = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 0, b"Other");
+        let old_top = bus.read_long(0x0A50);
+        let missing = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 0, b"Missing");
+        assert_eq!(missing, u16::MAX);
+        assert_eq!(bus.read_word(0x0A60) as i16, -43);
+        assert_eq!(disp.current_resource_refnum(), other);
+        assert_eq!(bus.read_long(0x0A50), old_top);
+        if api != 0 {
+            let failed = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 3, b"Locked");
+            assert_eq!(failed, u16::MAX);
+            assert_eq!(bus.read_word(0x0A60) as i16, -45);
+            assert_eq!(disp.current_resource_refnum(), other);
+            assert_eq!(bus.read_long(0x0A50), old_top);
+        }
+        let read = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 0, b"Locked");
+        assert_ne!(read, u16::MAX);
+        assert!(!disp.write_refnums.contains(&read));
+        assert_eq!(disp.current_resource_refnum(), read);
+        if api != 0 {
+            let reused = tn1120_open(&mut disp, &mut cpu, &mut bus, api, 3, b"Locked");
+            assert_eq!(reused, read);
+            assert!(!disp.write_refnums.contains(&reused));
+        }
+    }
 }

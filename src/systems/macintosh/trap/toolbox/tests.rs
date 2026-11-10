@@ -5290,10 +5290,9 @@ fn open_rf_perm_present_file_returns_refnum_and_sets_current_file() {
     assert_eq!(cpu.read_reg(Register::A7), sp + 8);
 }
 
-// MTb 1993 p. 1-65: if already open, OpenRFPerm returns the same refnum
-// and does not make that file current.
+// Apple TN1120 corrects the older manual: read reopens create current maps.
 #[test]
-fn open_rf_perm_reopen_returns_existing_refnum_without_switching_current_file() {
+fn open_rf_perm_reopen_creates_a_new_current_map() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200200u32;
@@ -5302,7 +5301,7 @@ fn open_rf_perm_reopen_returns_existing_refnum_without_switching_current_file() 
     disp.vfs_rsrc.insert("Sounds".to_string(), vec![]);
 
     // First open: Shapes.
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5316,7 +5315,7 @@ fn open_rf_perm_reopen_returns_existing_refnum_without_switching_current_file() 
 
     // Second open: Sounds.
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5330,9 +5329,9 @@ fn open_rf_perm_reopen_returns_existing_refnum_without_switching_current_file() 
     assert_eq!(disp.current_resource_refnum(), sounds_ref);
     assert_eq!(cpu.read_reg(Register::D0), sounds_ref as u32);
 
-    // Re-open Shapes: refnum re-used, current file unchanged.
+    // TN1120: a read reopen creates a separate current map.
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5340,15 +5339,16 @@ fn open_rf_perm_reopen_returns_existing_refnum_without_switching_current_file() 
     let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 8), shapes_ref);
-    assert_eq!(cpu.read_reg(Register::D0), shapes_ref as u32);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 8);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(cpu.read_reg(Register::D0), reopened as u32);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 8);
 }
 
 #[test]
-fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
+fn open_rf_perm_read_after_write_creates_distinct_read_only_maps() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200240u32;
@@ -5368,7 +5368,7 @@ fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
     assert!(disp.write_refnums.contains(&write_ref));
 
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1); // fsRdPerm
+    bus.write_word(sp, 0x0100); // fsRdPerm
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5381,7 +5381,7 @@ fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
     assert!(!disp.write_refnums.contains(&read_ref));
 
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1); // fsRdPerm
+    bus.write_word(sp, 0x0100); // fsRdPerm
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5390,8 +5390,9 @@ fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
 
-    assert_eq!(bus.read_word(sp + 8), read_ref);
-    assert_eq!(cpu.read_reg(Register::D0), read_ref as u32);
+    let reopened = bus.read_word(sp + 8);
+    assert_ne!(reopened, read_ref);
+    assert_eq!(cpu.read_reg(Register::D0), reopened as u32);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(
         disp.resources
@@ -5401,13 +5402,12 @@ fn open_rf_perm_read_after_write_reuses_existing_read_only_refnum() {
             .values()
             .filter(|name| name.as_str() == "Shapes")
             .count(),
-        2,
-        "one write and one read-only access path should be enough"
+        3,
+        "each read-only request creates a distinct access path"
     );
 }
 
-// OpenRFPerm should mirror the current refnum in D0 for both the first
-// open and the already-open reuse path.
+// OpenRFPerm mirrors the returned refnum in D0 on initial and read reopens.
 #[test]
 fn open_rf_perm_mirrors_refnum_in_d0_on_success_and_reopen() {
     let (mut disp, mut cpu, mut bus) = setup();
@@ -5417,7 +5417,7 @@ fn open_rf_perm_mirrors_refnum_in_d0_on_success_and_reopen() {
     disp.vfs_rsrc.insert("Shapes".to_string(), vec![]);
     disp.vfs_rsrc.insert("Sounds".to_string(), vec![]);
 
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5431,7 +5431,7 @@ fn open_rf_perm_mirrors_refnum_in_d0_on_success_and_reopen() {
     assert_eq!(disp.current_resource_refnum(), shapes_ref);
 
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5445,7 +5445,7 @@ fn open_rf_perm_mirrors_refnum_in_d0_on_success_and_reopen() {
     assert_eq!(disp.current_resource_refnum(), sounds_ref);
 
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5453,18 +5453,18 @@ fn open_rf_perm_mirrors_refnum_in_d0_on_success_and_reopen() {
     let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 8), shapes_ref);
-    assert_eq!(cpu.read_reg(Register::D0), shapes_ref as u32);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 8);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(cpu.read_reg(Register::D0), reopened as u32);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 8);
 }
 
 // MTb 1993 p. 1-65: if already open, OpenRFPerm returns the same refnum
-// and does not make that file current, even when a different file is
-// current at the time of the reopen.
+// Read reopens select their new map even when another file was current.
 #[test]
-fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
+fn open_rf_perm_reopen_selects_new_map_after_a_different_file_was_current() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200280u32;
@@ -5473,7 +5473,7 @@ fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
     disp.vfs_rsrc.insert("Sounds".to_string(), vec![]);
 
     // Open Shapes.
-    bus.write_word(sp, 1); // fsRdPerm
+    bus.write_word(sp, 0x0100); // fsRdPerm
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5487,7 +5487,7 @@ fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
 
     // Open Sounds so we can later make Shapes current again.
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5500,8 +5500,7 @@ fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
     assert_ne!(sounds_ref, shapes_ref);
     assert_eq!(disp.current_resource_refnum(), sounds_ref);
 
-    // Make Shapes current again, then reopen Sounds. The reopen must
-    // return the original refnum and leave Shapes current.
+    // Make Shapes current again, then reopen Sounds into a new current map.
     cpu.write_reg(Register::A7, sp);
     bus.write_word(sp, shapes_ref);
     let result = disp.dispatch_toolbox(true, 0x198, &mut cpu, &mut bus);
@@ -5510,7 +5509,7 @@ fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
     assert_eq!(disp.current_resource_refnum(), shapes_ref);
 
     cpu.write_reg(Register::A7, sp);
-    bus.write_word(sp, 1);
+    bus.write_word(sp, 0x0100);
     bus.write_word(sp + 2, 0);
     bus.write_long(sp + 4, name_ptr);
     bus.write_word(sp + 8, 0xBEEF);
@@ -5518,8 +5517,9 @@ fn open_rf_perm_reopen_keeps_current_file_when_a_different_file_is_current() {
     let result = disp.dispatch_toolbox(true, 0x1C4, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 8), sounds_ref);
-    assert_eq!(disp.current_resource_refnum(), shapes_ref);
+    let reopened = bus.read_word(sp + 8);
+    assert_ne!(reopened, sounds_ref);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 8);
 }
@@ -5566,7 +5566,8 @@ fn open_res_file_publishes_a_valid_fcb_and_preserves_other_access_paths() {
     disp.vfs_rsrc.insert("Profiles/Player".to_string(), vec![]);
     disp.set_vfs_entry_metadata("Profiles/Player", *b"SAVE", *b"TEST", 0);
     let metadata = disp.vfs_file_metadata("Profiles/Player").unwrap();
-    let name_ptr = 0x200250;
+    // Keep the Pascal filename outside allocations made by the Resource Manager.
+    let name_ptr = bus.alloc(256);
     bus.write_pstring(name_ptr, b"Profiles:Player");
     bus.write_long(TEST_SP, name_ptr);
 
@@ -5583,7 +5584,8 @@ fn open_res_file_publishes_a_valid_fcb_and_preserves_other_access_paths() {
     assert_eq!(bus.read_long(buffer + 2), 1234);
     let fcb = buffer + refnum as u32;
     assert_eq!(bus.read_long(fcb), metadata.file_id);
-    assert_eq!(bus.read_word(fcb + 4), 0x0200);
+    // TN1120: the initial fsCurPerm open grants read/write when available.
+    assert_eq!(bus.read_word(fcb + 4), 0x0300);
     assert_eq!(bus.read_long(fcb + 50), u32::from_be_bytes(*b"SAVE"));
     assert_eq!(bus.read_long(fcb + 58), metadata.parent_dir_id);
     assert_eq!(bus.read_pstring(fcb + 62), b"Player");
@@ -5626,10 +5628,9 @@ fn open_res_file_reports_exhausted_fcb_table_without_changing_current_file() {
     assert_eq!(disp.refnum_for_resource_file_name("Player"), None);
 }
 
-// Inside Macintosh Volume I (1985), p. I-115: reopening an already-open
-// resource file returns its refnum but does not make it current.
+// Apple TN1120: a read reopen creates a new current resource map.
 #[test]
-fn open_res_file_reopen_returns_existing_refnum_without_switching_current_file() {
+fn open_res_file_reopen_creates_a_new_current_map() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200260u32;
@@ -5668,19 +5669,17 @@ fn open_res_file_reopen_returns_existing_refnum_without_switching_current_file()
     let result = disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 4), shapes_ref);
-    assert_eq!(cpu.read_reg(Register::D0), shapes_ref as u32);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 4);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(cpu.read_reg(Register::D0), reopened as u32);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 }
 
 #[test]
-fn open_res_file_canonical_reopen_reuses_existing_refnum_without_switching_current_file() {
-    // IM:I I-115: already-open OpenResFile returns the existing refnum
-    // and does not make that file current. This holds even when the
-    // second open spells the same file via a more explicit path that
-    // resolves to the same VFS resource fork.
+fn open_res_file_canonical_read_reopen_creates_a_new_current_map() {
+    // Apple TN1120 applies the corrected read-reopen rules to canonical paths.
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200265u32;
@@ -5718,8 +5717,9 @@ fn open_res_file_canonical_reopen_reuses_existing_refnum_without_switching_curre
     let result = disp.dispatch_toolbox(true, 0x197, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 4), shapes_ref);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 4);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 }
@@ -5799,10 +5799,9 @@ fn hopenresfile_missing_file_returns_minus_one_and_fnferr() {
     assert_eq!(cpu.read_reg(Register::A7), sp + 12);
 }
 
-// MTb 1993 p. 1-63: already-open HOpenResFile returns the existing refnum
-// and does not make that file current.
+// Apple TN1120: a read reopen creates a new current resource map.
 #[test]
-fn hopenresfile_already_open_returns_same_refnum_without_switching_current_file() {
+fn hopenresfile_read_reopen_creates_a_new_current_map() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200400u32;
@@ -5841,7 +5840,7 @@ fn hopenresfile_already_open_returns_same_refnum_without_switching_current_file(
     assert_ne!(sounds_ref, shapes_ref);
     assert_eq!(disp.current_resource_refnum(), sounds_ref);
 
-    // Re-open Shapes: refnum re-used, current file unchanged.
+    // TN1120: a read reopen creates a separate current map.
     cpu.write_reg(Register::A7, sp);
     bus.write_word(sp, 1);
     bus.write_long(sp + 2, name_ptr);
@@ -5852,17 +5851,16 @@ fn hopenresfile_already_open_returns_same_refnum_without_switching_current_file(
     let result = disp.dispatch_toolbox(true, 0x01A, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 12), shapes_ref);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 12);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 12);
 }
 
 #[test]
-fn hopenresfile_canonical_reopen_reuses_existing_refnum_without_switching_current_file() {
-    // MTb 1993 p. 1-63: already-open HOpenResFile returns the existing
-    // refnum and does not make that file current, even when the reopen
-    // uses a canonicalized path spelling for the same fork.
+fn hopenresfile_canonical_read_reopen_creates_a_new_current_map() {
+    // Apple TN1120 applies the corrected read-reopen rules to canonical paths.
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = TEST_SP;
     let name_ptr = 0x200410u32;
@@ -5909,8 +5907,9 @@ fn hopenresfile_canonical_reopen_reuses_existing_refnum_without_switching_curren
     let result = disp.dispatch_toolbox(true, 0x01A, &mut cpu, &mut bus);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
-    assert_eq!(bus.read_word(sp + 12), shapes_ref);
-    assert_eq!(disp.current_resource_refnum(), sounds_ref);
+    let reopened = bus.read_word(sp + 12);
+    assert_ne!(reopened, shapes_ref);
+    assert_eq!(disp.current_resource_refnum(), reopened);
     assert_eq!(bus.read_word(0x0A60), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 12);
 }
