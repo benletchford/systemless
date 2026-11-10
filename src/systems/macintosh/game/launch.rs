@@ -1705,13 +1705,17 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
 fn safe_zip_entry_path<R: std::io::Read>(
     entry: &zip::read::ZipFile<'_, R>,
 ) -> Result<String, String> {
-    let original = entry.name();
-    if original.contains('\\') {
+    // Legacy Mac ZIP writers sometimes omitted the UTF-8 flag. The ZIP
+    // reader also exposes validated Unicode Path extra fields through name_raw,
+    // so decoding these bytes preserves explicit Unicode metadata as well.
+    let original = std::str::from_utf8(entry.name_raw()).unwrap_or(entry.name());
+    if original.contains(['\\', '\0']) {
         return Err(format!("Unsafe ZIP entry path: {original}"));
     }
-    let enclosed = entry
+    entry
         .enclosed_name()
         .ok_or_else(|| format!("Unsafe ZIP entry path: {original}"))?;
+    let enclosed = std::path::Path::new(original);
     if enclosed.components().any(|component| {
         matches!(
             component,
@@ -6237,6 +6241,63 @@ mod tests {
             runner.dispatcher().launched_app_path(),
             Some("Original Installer/Installed Game")
         );
+    }
+
+    // Some older Mac ZIP writers stored UTF-8 names without setting bit 11.
+    fn zip_without_utf8_flags(mut bytes: Vec<u8>) -> Vec<u8> {
+        for offset in 0..bytes.len().saturating_sub(10) {
+            let flag_offset = match &bytes[offset..offset + 4] {
+                b"PK\x03\x04" => offset + 6,
+                b"PK\x01\x02" => offset + 8,
+                _ => continue,
+            };
+            bytes[flag_offset + 1] &= !8;
+        }
+        bytes
+    }
+
+    #[test]
+    fn zip_archive_decodes_unflagged_utf8_names_before_matching_appledouble() {
+        let rsrc = make_single_resource_fork_bytes(*b"DATA", 128, b"resource contents");
+        let metadata = make_zip_appledouble(&rsrc, b"rsrc", b"TEST");
+        let bytes = zip_without_utf8_flags(make_zip(&[
+            ("Demo ƒ/Data ƒ/Contents", b"data contents"),
+            ("__MACOSX/Demo ƒ/Data ƒ/._Contents", &metadata),
+        ]));
+        let payload = collect_zip_payload(&bytes).unwrap();
+        assert_eq!(payload.files.len(), 1);
+        let file = &payload.files[0];
+        assert_eq!(file.name, "Demo ƒ/Data ƒ/Contents");
+        assert_eq!(file.data, b"data contents");
+        assert_eq!(file.rsrc, rsrc);
+        assert_eq!(file.file_type, *b"rsrc");
+        assert_eq!(file.creator, *b"TEST");
+    }
+
+    #[test]
+    fn zip_archive_rejects_unsafe_unflagged_utf8_paths() {
+        for path in [
+            "../Demo ƒ/File",
+            "/Demo ƒ/File",
+            "Demo ƒ/../File",
+            "Demo ƒ\\File",
+        ] {
+            let bytes = zip_without_utf8_flags(make_zip(&[(path, b"contents")]));
+            let error = collect_zip_payload(&bytes).expect_err("unsafe UTF-8 path");
+            assert!(error.contains("Unsafe ZIP entry path"), "{path}: {error}");
+        }
+    }
+
+    #[test]
+    fn zip_archive_keeps_non_utf8_cp437_names() {
+        let mut bytes = zip_without_utf8_flags(make_zip(&[("Demo ƒ/File", b"contents")]));
+        for offset in 0..bytes.len() - 1 {
+            if bytes[offset..offset + 2] == [0xc6, 0x92] {
+                bytes[offset..offset + 2].copy_from_slice(&[0x82, 0xa0]);
+            }
+        }
+        let payload = collect_zip_payload(&bytes).unwrap();
+        assert_eq!(payload.files[0].name, "Demo éá/File");
     }
 
     #[test]
