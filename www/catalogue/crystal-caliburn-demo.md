@@ -8,6 +8,7 @@ summary: >-
 developer: LittleWing
 publisher: StarPlay Productions
 year: 1993
+launch_enabled: true
 architectures:
 - 68k
 default_architecture: 68k
@@ -20,6 +21,39 @@ compatibility:
     systemless_version: d09fc36f native-equivalent runtime
     architecture: 68k
     environment: "Complete unchanged original 1.02 US StuffIt demo. Default CPU, initial display, partition, sound and preferences; ordinary clicks dismiss the original promotional, instructions and publisher screens. Documented Command-I and Command-N insert a coin and start a game. Dismiss the original new-game notices and wait for the ball to arrive in the chute. In a matched plunger pair, pre-input frames are RGB pixel-identical. Holding documented Shift for 60 ticks moves the plunger; release launches the ball into the playfield while omission leaves it in the chute. Both reach 2304 frontend / 2904 guest ticks with zero exhausted frames. A second matched pair holds documented Z and / for six ticks: both flippers visibly rise, while omission leaves them lowered; pre-input frames are RGB pixel-identical. Both reach 2316 frontend / 2916 guest ticks with zero exhausted frames. Actual captures inspected. No overrides, preference rewrites, patches, cheats or unlocks. These checks establish bounded native startup, ball launch and flipper response, not complete physics, nudge response, full-game behavior, persistence, audio fidelity, browser pacing or independent hardware accuracy. Frozen binary SHA-256 5821047ecb681850d77ae359361e3921a65bb10608ef50a402dbe1da6a7d9d5c has the same runtime tree as merged d09fc36f."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5994
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: 9eac354b private browser-equivalent source
+    architecture: 68k
+    environment: >-
+      Fresh owned Chromium Linux ARM64 profiles, original 800x600 guest and default
+      25MHz CPU, worker/SAB/WebGL. Complete original archive with no overrides,
+      preference rewrites, patches, cheats or unlocks. Shared original introductory
+      screens and documented Command-I/Command-N start a game. Active Shift launches
+      the ball while omission retains it in the chute; four documented Z and /
+      held/released rounds raise/lower both flippers while omission stays lowered.
+      Actual captures inspected. All four mandatory 20-second windows pass unchanged
+      pacing gates: active scene/launch and sustained controls max worker frames
+      48.3/16.5ms, omission 28.6/24.9ms; minimum audio queues
+      123.4/109.9/130.6/186.7ms. Final steady host rates
+      60.77/60.12/61.14/63.29fps and guest rates
+      61.80/59.10/62.18/61.15ticks/s are snapshots, not whole-game averages.
+      Worker frame <=50ms, runtime RAF gap <=250ms, loading gap <=500ms, RAF
+      callback <=50ms, audio >=40ms, steady host >=55fps and guest >=50ticks/s.
+      No lifecycle/network errors. Archive HTTP body, both main/worker Wasm HTTP
+      bodies and executing current worker wire bytes match recorded pins; debugger
+      disabled before measurement. Wasm SHA-256
+      e53515a0674cfc07b713b7e18fbf9c0e0294dbf01fe2e27cb652d68ab08575ed,
+      16107272 bytes. Private source a421f975 has the same tree as merged 9eac354b,
+      plus one uncommitted launch flag. Production build script, SIMD128 and 4MB
+      worker stack; no concurrent build/native jobs during pacing. Earlier menu
+      setup and publisher-readiness harness failures are retained and excluded;
+      only the documented setup and readiness transition changed, not runtime or
+      gates. Bounded scene initialization, ball launch and flipper qualification;
+      full physics, nudge, completion, persistence, audio fidelity and independent
+      hardware accuracy remain unqualified. Original demo restrictions preserved.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/5994
 runtime:
@@ -95,5 +129,4 @@ references:
 Click through the original introduction, then use **Command-I** to insert a coin
 and **Command-N** to start. Dismiss the demo notices and wait for the ball.
 Hold and release **Shift** to launch; **Z** and **/** operate the flippers.
-The original demo limits play to 90 seconds and disables scoring. Browser launch
-remains disabled pending qualification.
+The original demo limits play to 90 seconds and disables scoring.
