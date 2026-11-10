@@ -28,6 +28,7 @@ impl IndexedFrame {
         bus: &MacMemoryBus,
         mode: ScreenMode,
         clut: &[[u16; 3]; 256],
+        gamma: &display::DisplayGamma,
         cursor: Option<&CursorImage>,
         mouse: (i16, i16),
     ) -> bool {
@@ -41,9 +42,8 @@ impl IndexedFrame {
         {
             return false;
         }
-        // Match the browser's existing render_rgba palette/gamma policy.
-        self.screen
-            .capture(bus, mode, clut, &display::default_display_gamma());
+        // Own the same active display transfer as the scalar renderer.
+        self.screen.capture(bus, mode, clut, gamma);
         self.prepare(cursor, mouse)
     }
 
@@ -125,6 +125,46 @@ impl IndexedFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_uses_active_gamma_and_replaces_gamma_only_frames() {
+        use systemless::systems::macintosh::memory::MemoryBus;
+
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let base = bus.alloc(2);
+        bus.write_bytes(base, &[1, 2]);
+        let mode = (base, 2, 2, 1, 8);
+        let mut clut = [[0; 3]; 256];
+        clut[1] = [0xB4B4, 0xA5A5, 0xC5C5];
+        clut[2] = [0x3535, 0x5A5A, 0x8080];
+        let mut frame = IndexedFrame::default();
+        let linear = display::linear_display_gamma();
+        assert!(frame.capture(&bus, mode, &clut, &linear, None, (0, 0)));
+        assert_eq!(&frame.palette[4..8], &[180, 165, 197, 255]);
+        let original = frame.palette.clone();
+
+        // No framebuffer or CLUT write: the device transfer alone changes.
+        let custom = [
+            std::array::from_fn(|i| 255 - i as u8),
+            std::array::from_fn(|i| (i / 2) as u8),
+            [42; 256],
+        ];
+        assert!(frame.capture(&bus, mode, &clut, &custom, None, (0, 0)));
+        assert_eq!(&frame.palette[4..8], &[75, 82, 42, 255]);
+        assert_eq!(&original[4..8], &[180, 165, 197, 255]);
+        let expected = display::render_screen_with_gamma(&bus, mode, &clut, &custom);
+        let actual: Vec<u8> = frame
+            .screen
+            .pixels
+            .iter()
+            .flat_map(|&index| frame.palette[index as usize * 4..index as usize * 4 + 4].to_vec())
+            .collect();
+        assert_eq!(actual, expected);
+
+        let default = display::default_display_gamma();
+        assert!(frame.capture(&bus, mode, &clut, &default, None, (0, 0)));
+        assert_eq!(&frame.palette[4..8], &[200, 188, 213, 255]);
+    }
 
     fn frame() -> IndexedFrame {
         let mut frame = IndexedFrame::default();
