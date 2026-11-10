@@ -3269,3 +3269,24 @@ for released public qualification. This enables source launch for the next human
 release, with no release/deploy or newly live count. Translation, combat, full
 levels, persistence, audio fidelity and independent hardware rendering remain
 unverified; no publisher licence grant is inferred.
+
+
+### Tristan original demo — source intake
+
+[Issue #5999](https://github.com/benletchford/systemless/issues/5999) records the
+complete original 657,581-byte SIT, independent three-file/six-fork/Finder packing
+parity, and period Macintosh Demo Games CD item23554 proof: all 229 app and 29 sound
+resource payloads match; map metadata differs. The third received PICT screenshot
+is preserved unchanged and was decoded/inspected. All 36 selected uncompressed UI
+notice records and the original 60-second/scoring-disabled notice were reviewed.
+Accepted under the authorized promotional-demo project policy, not a publisher
+licence grant. Original archive SHA-256:
+`278d01a636388a888b76285ebcf27d2a8dcb7e6548e486e7393993eb9704b602`.
+
+Generic runtime [PR #5998](https://github.com/benletchford/systemless/pull/5998)
+removes a false application-damaged alert. Candidate default 68K native paired
+Z-/ tests have identical before/released frames and held-only flipper differences;
+both 1464 frontend/2064 guest ticks, no exhausted frames, actual captures inspected.
+The earlier CmdN-only probe remained at the start prompt and is excluded. Browser
+launch remains disabled. Source merge waits for the generic fix; browser and public
+qualification remain separate. No release/deploy operations.
