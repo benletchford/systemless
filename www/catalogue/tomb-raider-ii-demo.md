@@ -16,6 +16,48 @@ launch_enabled: true
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: 0.112.0 public production, 120dffb14a
+    architecture: ppc
+    status: playable
+    environment: >-
+      Direct public route, unchanged original archive and existing published 60 MHz /
+      adaptive-minimum 25 MHz pacing. Normal first-run hardware notice and automatic
+      display setup, then Up for 120 observed guest ticks. No frontend,
+      archive, CPU, partition, sound or preference substitution. Fresh active/no-input
+      cases pass all four unchanged 20-second startup/input and separate sustained-world
+      gates: reported steady endpoints 57.015-61.115 guest ticks/sec, 59.876-60.096 host
+      FPS, maximum worker frame 22.5 ms, minimum audio queue 117.9 ms. The 2.027-second
+      key hold encloses at least 120 observed guest ticks (59.20 ticks/sec); its rock
+      region changes 72485 CSS pixels, versus zero without input. Separate sustained
+      active play has rolling 2-second guest rates of at least 51.285 ticks/sec. A
+      42.908 ticks/sec startup transient before input is disclosed in the evidence;
+      uniform instantaneous startup throughput is not claimed. Archive and both
+      main/worker responses plus executed current-worker Wasm bytes verified; targets
+      resumed and Debugger disabled before timing. Actual captures inspected. Combat,
+      jumping, completion, persistence, audio fidelity, game render FPS and independent
+      hardware fidelity remain unverified.
+    evidence: https://github.com/benletchford/systemless/issues/5479
+  - date: "2026-11-10"
+    tester: Catalogue maintainer
+    systemless_version: e0b55663 native ci-test runtime
+    architecture: ppc
+    status: playable
+    environment: >-
+      Fresh unchanged original/default PowerPC active and omitted-input cases each
+      finish at 1464 frontend/guest ticks with zero exhausted frames. Pre-input images
+      match byte for byte; the observed rock region changes 46841 native pixels after
+      Up for 120 ticks and zero without input. Actual captures inspected; no automatic
+      in-run assertions or independent hardware oracle. The game is a pwpc PEF with
+      one cfrg and no CODE resources, and the Read Me requires Power Macintosh. The
+      source archive retains all 10 files, including both installers; normal runtime
+      preparation expands Sprockets Installer into 17 libraries. Nine other original
+      files plus those libraries match independent extraction: 26 prepared files,
+      52 forks and 26 Finder records. The diagnostic Compact Pro wrapper used only for
+      independent nested decoding preserves original compressed streams/offsets; it
+      never replaces the original SIT in execution or hosting.
+    evidence: https://github.com/benletchford/systemless/issues/5479
   - date: "2026-11-01"
     tester: Catalogue maintainer
     systemless_version: 12dda612 deterministic play runner
@@ -104,3 +146,6 @@ references:
 Guide Lara Croft through caves and ruins along the Great Wall of China.
 
 Click **OK** on the first-run notice. Use the arrow keys to run and turn, Command to jump, Control for actions and Shift to walk. Press Escape for the inventory ring.
+
+Startup and bounded running in the Great Wall are verified on the public site.
+Combat, jumping, full levels, saves and audio fidelity remain unverified.
