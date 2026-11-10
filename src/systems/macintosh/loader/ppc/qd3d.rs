@@ -2075,13 +2075,19 @@ pub fn ppc_q3_software_geometric_normal(
     ppc_q3_vector3d_normalized_value(normal)
 }
 
-pub fn ppc_q3_software_transform_normal(
-    normal: (f32, f32, f32),
-    local_to_world: [[f32; 4]; 4],
-) -> Option<(f32, f32, f32)> {
-    let normal_matrix = ppc_q3_matrix4x4_invert_values(local_to_world)
+/// The matrix that carries normals from local to world space: the inverse
+/// transpose, or the matrix itself when it has no inverse. Callers with many
+/// normals under one transform compute it once.
+pub fn ppc_q3_software_normal_matrix(local_to_world: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    ppc_q3_matrix4x4_invert_values(local_to_world)
         .map(ppc_q3_matrix4x4_transpose_values)
-        .unwrap_or(local_to_world);
+        .unwrap_or(local_to_world)
+}
+
+pub fn ppc_q3_software_transform_normal_by(
+    normal: (f32, f32, f32),
+    normal_matrix: [[f32; 4]; 4],
+) -> Option<(f32, f32, f32)> {
     ppc_q3_vector3d_normalized_value(ppc_q3_vector3d_transform_values(normal, normal_matrix))
 }
 
@@ -4471,12 +4477,12 @@ pub fn ppc_q3_software_is_backfacing(
 pub fn ppc_q3_software_triangle_is_backfacing(
     orientation_style: u32,
     camera: Option<PpcQ3CameraRecord>,
-    local_to_world: [[f32; 4]; 4],
+    normal_matrix: [[f32; 4]; 4],
     face_normal: Option<(f32, f32, f32)>,
     vertices: &[PpcQ3SoftwareProjectedPoint],
 ) -> bool {
     if let (Some(camera), Some(normal), Some(vertex)) = (camera, face_normal, vertices.first()) {
-        if let Some(normal) = ppc_q3_software_transform_normal(normal, local_to_world) {
+        if let Some(normal) = ppc_q3_software_transform_normal_by(normal, normal_matrix) {
             let toward_eye = if matches!(camera.projection, PpcQ3CameraProjection::Orthographic { .. }) {
                 ppc_q3_vector3d_sub(camera.placement.camera_location, camera.placement.point_of_interest)
             } else {
