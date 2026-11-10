@@ -10693,3 +10693,102 @@ fn resource_window_creation_preserves_port_for_hidden_and_backmost_windows() {
 
 #[path = "quicktime_align_window.rs"]
 mod align_window_tests;
+
+#[test]
+fn alternate_dialog_initializes_opaque_content_on_kiosk_stage() {
+    for (depth, visible) in [(8, true), (16, true), (8, false), (16, false)] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+        loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[4] = depth;
+        loaded.cpu.gpr[5] = 1;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+        loaded.toolbox_startup.host_menu_bar_hidden = true;
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let black =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+        let white =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (150, 150), black);
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (100, 99), white);
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let window = create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (100, 100, 220, 320),
+            3,
+            visible,
+            u32::MAX,
+        );
+        if !visible {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+                Some(black)
+            );
+            loaded.cpu.gpr[3] = window;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+        }
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 99)),
+            Some(black),
+            "alternate dialog frame must remain visible in kiosk mode"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+            Some(white),
+            "{depth}bpp alternate dialog must erase its content independently of desktop colors"
+        );
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (150, 150), black);
+        ppc_draw_existing_window_frame(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.window_list,
+            window,
+            true,
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+            Some(black),
+            "redrawing the frame must retain application content"
+        );
+    }
+}
+
+#[test]
+fn alternate_dialog_initialization_preserves_windows_above_it() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    loaded.toolbox_startup.host_menu_bar_hidden = true;
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let front_window = create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (120, 130, 180, 230),
+        0,
+        true,
+        u32::MAX,
+    );
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+    let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (150, 150), black);
+    create_test_cwindow(
+        &mut loaded,
+        scratch,
+        (100, 100, 220, 320),
+        3,
+        true,
+        front_window,
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (110, 110)),
+        Some(white),
+        "exposed alternate-dialog content must initialize"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (150, 150)),
+        Some(black),
+        "initialization must not erase the window above the dialog"
+    );
+}

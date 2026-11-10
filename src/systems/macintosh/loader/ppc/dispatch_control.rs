@@ -3026,6 +3026,29 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
     bitmap: &ThemeBitmap,
     transparent: Option<Rgb8>,
 ) -> bool {
+    ppc_blit_theme_bitmap_excluding_rect(
+        memory,
+        gworlds,
+        port,
+        top,
+        left,
+        bitmap,
+        transparent,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_blit_theme_bitmap_excluding_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    top: i16,
+    left: i16,
+    bitmap: &ThemeBitmap,
+    transparent: Option<Rgb8>,
+    excluded: Option<(i16, i16, i16, i16)>,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
         return false;
     };
@@ -3058,6 +3081,14 @@ pub(super) fn ppc_blit_theme_bitmap_masked(
             }
             let port_h = i32::from(left) + x as i32;
             let port_v = i32::from(top) + y as i32;
+            if excluded.is_some_and(|(t, l, b, r)| {
+                i32::from(t) <= port_v
+                    && port_v < i32::from(b)
+                    && i32::from(l) <= port_h
+                    && port_h < i32::from(r)
+            }) {
+                continue;
+            }
             let point = surface.local_point((port_h, port_v));
             let port_h = point.0 + i32::from(surface.left);
             let port_v = point.1 + i32::from(surface.top);

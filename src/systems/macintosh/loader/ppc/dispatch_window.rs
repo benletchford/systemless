@@ -808,7 +808,14 @@ pub(super) fn dispatch_window_import(
                     // Macintosh Toolbox Essentials (1992), Window Manager,
                     // PaintOne: newly exposed content uses its window color table.
                     let content_color = ppc_window_color_table_handle(memory, window)
-                        .and_then(|handle| ppc_window_content_color(memory, handle));
+                        .and_then(|handle| ppc_window_content_color(memory, handle))
+                        .or_else(|| {
+                            (ppc_window_proc_id(memory, window) == 3).then(|| {
+                                ppc_theme_rgb(
+                                    ppc_ui_theme(gworlds).provider().palette().window_background,
+                                )
+                            })
+                        });
                     if let (Some(rect), Some(color)) = (
                         ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
                         content_color,
@@ -2036,8 +2043,39 @@ pub(super) fn ppc_new_cwindow_with_storage(
         pixels_no_purge: true,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
-    window_list.set_window_class(port, crate::window_manager::window_class_for_legacy_proc(proc_id));
-    if visible && proc_id == 1 {
+    window_list.set_window_class(
+        port,
+        crate::window_manager::window_class_for_legacy_proc(proc_id),
+    );
+    if visible && matches!(proc_id, 1 | 3) {
+        if proc_id == 3 {
+            // Alternate dialogs own an opaque content surface, even when the
+            // surrounding desktop is the black kiosk stage. Initialize it once;
+            // subsequent WDEF redraws must preserve application pixels.
+            // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26.
+            let preserved = ppc_front_window_occlusion_pixels(memory, gworlds, window_list, port);
+            let color = ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background);
+            let _ = ppc_paint_window_background_bounds(
+                memory,
+                gworlds,
+                port,
+                (0, 0, local_bottom, local_right),
+                color,
+            );
+            if let Some(saved) = preserved {
+                for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
+                    let _ =
+                        ppc_quickdraw_write_raw_pixel(memory, saved.front_buffer, (x, y), pixel);
+                    ppc_restore_saved_detail(
+                        memory,
+                        saved.front_buffer,
+                        (x, y),
+                        &saved.pixels,
+                        index,
+                    );
+                }
+            }
+        }
         ppc_draw_existing_window_frame(memory, gworlds, window_list, port, false);
     }
     if ppc_gworld_trace_enabled() {
@@ -2241,6 +2279,16 @@ pub(super) fn ppc_draw_existing_window_frame(
         ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
+    } else if proc_id == 3 {
+        if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
+            ppc_draw_retained_dialog_frame_chrome(
+                memory,
+                gworlds,
+                content,
+                ppc_window_structure_bounds(proc_id, content),
+                proc_id,
+            );
+        }
     }
     if let Some(saved) = preserved_front_pixels {
         for (index, (x, y, pixel)) in saved.pixels.iter().copied().enumerate() {
