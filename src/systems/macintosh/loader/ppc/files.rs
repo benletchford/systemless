@@ -46,6 +46,7 @@ pub(super) fn ppc_fs_make_fsspec(
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
 ) -> i16 {
     let requested_vref = cpu.gpr[3] as u16 as i16;
     let requested_dir_id = cpu.gpr[4];
@@ -65,13 +66,19 @@ pub(super) fn ppc_fs_make_fsspec(
     };
     // Files, table 2-10: a full pathname overrides both input identifiers.
     let absolute_boot_name = ppc_absolute_boot_volume_name(&name_bytes);
+    let working_directory = working_directories.get(&requested_vref);
     let effective_vref = if absolute_boot_name.is_some() {
         PPC_BOOT_VOLUME_REF_NUM
     } else {
-        ppc_resolve_volume_ref_num(requested_vref)
+        working_directory.map_or_else(
+            || ppc_resolve_volume_ref_num(requested_vref),
+            |record| record.volume_ref_num,
+        )
     };
     let effective_dir_id = if absolute_boot_name.is_some() {
         PPC_ROOT_DIR_ID
+    } else if requested_dir_id == 0 && working_directory.is_some() {
+        working_directory.unwrap().dir_id
     } else {
         ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id)
     };
@@ -89,17 +96,17 @@ pub(super) fn ppc_fs_make_fsspec(
         effective_dir_id,
         &name_bytes,
     ) {
-        if !name_bytes.is_empty() {
-            if target_path.is_empty() {
-                // The root directory is named by its volume inside fsRtParID.
-                output_dir_id = 1;
-                output_name_bytes = encode_mac_roman_lossy(
-                    crate::trap::TrapDispatcher::boot_volume_name(),
-                );
-            } else {
-                output_dir_id = ppc_parent_dir_id_for_path(vfs_directories, &target_path);
-                output_name_bytes = ppc_vfs_basename_bytes(&target_path);
-            }
+        // Empty/NIL input names identify the directory itself (Files,
+        // table 2-10), but the returned FSSpec still names its parent/leaf.
+        if target_path.is_empty() {
+            // The root directory is named by its volume inside fsRtParID.
+            output_dir_id = 1;
+            output_name_bytes = encode_mac_roman_lossy(
+                crate::trap::TrapDispatcher::boot_volume_name(),
+            );
+        } else {
+            output_dir_id = ppc_parent_dir_id_for_path(vfs_directories, &target_path);
+            output_name_bytes = ppc_vfs_basename_bytes(&target_path);
         }
         PPC_NO_ERR
     } else {
