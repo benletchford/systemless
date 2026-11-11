@@ -569,3 +569,22 @@ fn cursor_device_rejects_invalid_output_or_device_without_moving_input() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
     assert_eq!(loaded.current_input_snapshot(), before);
 }
+
+
+#[test]
+fn classic_fcb_pointer_accessor_reads_current_low_memory_without_dereferencing() {
+    use crate::memory::globals::addr;
+    let target = dispatcher_target_for_import("InterfaceLib", "LMGetFCBSPtr");
+    assert_ne!(target, PpcImportDispatcherTarget::Unsupported);
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "LMGetFCBSPtr"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+    let mut loaded = loaded_with(b"LMGetFCBSPtr");
+    for pointer in [0, 0xfedc_ba98, 0x1234_5678, 0] {
+        loaded.memory.write_u32_be(addr::FCB_S_PTR, pointer).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], pointer);
+        assert_eq!(loaded.memory.read_u32_be(addr::FCB_S_PTR), Some(pointer));
+    }
+}
