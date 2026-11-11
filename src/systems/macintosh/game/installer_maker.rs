@@ -67,12 +67,131 @@ pub fn parse_installer_maker(data: &[u8]) -> Option<InstallerMakerContainer<'_>>
     if data.starts_with(STI2_MAGIC) {
         parse_installer_maker_short_result(data, STI2_MAGIC, "STi2").ok()
     } else if data.starts_with(STI3_MAGIC) {
-        parse_installer_maker_short_result(data, STI3_MAGIC, "STi3").ok()
+        parse_installer_maker_short_result(data, STI3_MAGIC, "STi3")
+            .or_else(|_| parse_sti3_marked_result(data))
+            .ok()
     } else if data.starts_with(ST65_MAGIC) {
         parse_installer_maker_st65_result(data).ok()
     } else {
         parse_installer_maker_st46(data)
     }
+}
+
+// Some STi3 installers retain stale aggregate folder lengths. Their folder
+// markers still delimit a complete, checksummed sequence, and the archive
+// count records root files rather than folders. Keep this stricter fallback
+// separate from the extent-based ST46/ST65 parser.
+fn parse_sti3_marked_result(data: &[u8]) -> Result<InstallerMakerContainer<'_>, String> {
+    let header = get_range(data, 0, ST65_HEADER_LEN, "STi3 header")?;
+    if !header.starts_with(STI3_MAGIC) || &header[10..14] != b"rLau" {
+        return Err("missing STi3 archive signature".to_string());
+    }
+    let expected_roots = usize::from(read_u16_be(header, 4, "STi3 root file count")?);
+    let end = read_u32_be(header, 6, "STi3 archive length")? as usize;
+    if end < ST65_HEADER_LEN || end > data.len() || expected_roots == 0 {
+        return Err("invalid STi3 archive bounds or file count".to_string());
+    }
+    let mut offset = ST65_HEADER_LEN;
+    let mut folders: Vec<String> = Vec::new();
+    let mut entries = Vec::new();
+    let mut roots = 0usize;
+    while offset < end {
+        if offset
+            .checked_add(ST46_ENTRY_HEADER_LEN)
+            .is_none_or(|next| next > end)
+        {
+            return Err("STi3 header exceeds archive bounds".to_string());
+        }
+        let record = get_range(data, offset, ST46_ENTRY_HEADER_LEN, "STi3 entry")?;
+        if installer_crc16(&record[..110]) != read_u16_be(record, 110, "STi3 header CRC")? {
+            return Err("invalid STi3 entry header CRC".to_string());
+        }
+        let name_len = usize::from(record[ST46_NAME_LEN_OFFSET]);
+        if name_len == 0 || name_len > 31 {
+            return Err("invalid STi3 entry name length".to_string());
+        }
+        let local_name = decode_mac_roman(&record[3..3 + name_len]);
+        let rsrc_method = record[ST46_RSRC_METHOD_OFFSET];
+        let data_method = record[ST46_DATA_METHOD_OFFSET];
+        offset += ST46_ENTRY_HEADER_LEN;
+        if rsrc_method == ST46_FOLDER_START && data_method == ST46_FOLDER_START {
+            if folders.len() >= ST46_MAX_FOLDER_DEPTH {
+                return Err("STi3 folder depth exceeded".to_string());
+            }
+            folders.push(local_name);
+            continue;
+        }
+        if rsrc_method == ST46_FOLDER_END && data_method == ST46_FOLDER_END {
+            if folders.pop().as_deref() != Some(local_name.as_str()) {
+                return Err("unmatched STi3 folder end marker".to_string());
+            }
+            continue;
+        }
+        if [rsrc_method, data_method]
+            .iter()
+            .any(|method| *method == ST46_FOLDER_START || *method == ST46_FOLDER_END)
+        {
+            return Err("inconsistent STi3 folder methods".to_string());
+        }
+        if entries.len() >= ST46_MAX_FILES {
+            return Err("STi3 file count limit exceeded".to_string());
+        }
+        let rsrc_packed_len = read_u32_be(
+            record,
+            ST46_RSRC_PACKED_LEN_OFFSET,
+            "resource packed length",
+        )? as usize;
+        let data_packed_len =
+            read_u32_be(record, ST46_DATA_PACKED_LEN_OFFSET, "data packed length")? as usize;
+        let data_offset = offset
+            .checked_add(rsrc_packed_len)
+            .ok_or_else(|| "STi3 fork offset overflow".to_string())?;
+        let next = data_offset
+            .checked_add(data_packed_len)
+            .ok_or_else(|| "STi3 fork offset overflow".to_string())?;
+        if next > end {
+            return Err("STi3 file exceeds archive bounds".to_string());
+        }
+        let name = if folders.is_empty() {
+            roots += 1;
+            local_name
+        } else {
+            format!("{}/{}", folders.join("/"), local_name)
+        };
+        let mut file_type = [0u8; 4];
+        file_type.copy_from_slice(&record[66..70]);
+        let mut creator = [0u8; 4];
+        creator.copy_from_slice(&record[70..74]);
+        entries.push(InstallerMakerEntry {
+            name,
+            header_offset: offset - ST46_ENTRY_HEADER_LEN,
+            file_type,
+            creator,
+            finder_flags: read_u16_be(record, ST46_FINDER_FLAGS_OFFSET, "finder flags")?,
+            rsrc_crc16: read_u16_be(record, 100, "resource CRC")?,
+            data_crc16: read_u16_be(record, 102, "data CRC")?,
+            rsrc_method,
+            data_method,
+            rsrc_packed_offset: offset,
+            data_packed_offset: data_offset,
+            rsrc_packed_len,
+            data_packed_len,
+            rsrc_unpacked_len: read_u32_be(
+                record,
+                ST46_RSRC_UNPACKED_LEN_OFFSET,
+                "resource length",
+            )? as usize,
+            data_unpacked_len: read_u32_be(record, ST46_DATA_UNPACKED_LEN_OFFSET, "data length")?
+                as usize,
+            rsrc_packed: &data[offset..data_offset],
+            data_packed: &data[data_offset..next],
+        });
+        offset = next;
+    }
+    if !folders.is_empty() || roots != expected_roots {
+        return Err("STi3 folder balance or root file count mismatch".to_string());
+    }
+    Ok(InstallerMakerContainer { entries })
 }
 
 pub fn parse_installer_maker_st65_result(
@@ -932,6 +1051,89 @@ mod tests {
             bad[4..6].copy_from_slice(&count.to_be_bytes());
             assert!(parse_installer_maker(&bad).is_none());
         }
+    }
+
+    fn marked_sti3_archive() -> Vec<u8> {
+        fn record(name: &[u8], method: u8, payload: &[u8]) -> Vec<u8> {
+            let mut h = vec![0u8; ST46_ENTRY_HEADER_LEN];
+            h[0] = method;
+            h[1] = method;
+            h[2] = name.len() as u8;
+            h[3..3 + name.len()].copy_from_slice(name);
+            h[66..70].copy_from_slice(b"APPL");
+            h[70..74].copy_from_slice(b"TEST");
+            let size = if method == 0 {
+                payload.len() as u32
+            } else {
+                u32::MAX
+            };
+            h[88..92].copy_from_slice(&size.to_be_bytes());
+            h[96..100].copy_from_slice(&size.to_be_bytes());
+            let crc = installer_crc16(&h[..110]);
+            h[110..112].copy_from_slice(&crc.to_be_bytes());
+            h.extend_from_slice(payload);
+            h
+        }
+        let mut data = vec![0u8; ST65_HEADER_LEN];
+        data[..4].copy_from_slice(STI3_MAGIC);
+        data[4..6].copy_from_slice(&2u16.to_be_bytes());
+        data[10..14].copy_from_slice(b"rLau");
+        data.extend(record(b"Folder", ST46_FOLDER_START, b""));
+        data.extend(record(b"Game", 0, b"abc"));
+        data.extend(record(b"Folder", ST46_FOLDER_END, b""));
+        data.extend(record(b"Prefs", 0, b"first"));
+        data.extend(record(b"Prefs", 0, b"second"));
+        let len = data.len() as u32;
+        data[6..10].copy_from_slice(&len.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn parses_checksummed_sti3_markers_with_stale_folder_lengths() {
+        let data = marked_sti3_archive();
+        let parsed = parse_installer_maker(&data).expect("valid marked STi3 archive");
+        assert_eq!(parsed.entries.len(), 3);
+        assert_eq!(parsed.entries[0].name, "Folder/Game");
+        assert_eq!(parsed.entries[0].data_packed, b"abc");
+        assert_eq!(parsed.entries[0].file_type, *b"APPL");
+        assert_eq!(parsed.entries[0].creator, *b"TEST");
+        assert_eq!(parsed.entries[1].name, "Prefs");
+        assert_eq!(parsed.entries[2].name, "Prefs");
+        assert_eq!(parsed.entries[1].data_packed, b"first");
+        assert_eq!(parsed.entries[2].data_packed, b"second");
+        let mut other_format = data;
+        other_format[..4].copy_from_slice(ST65_MAGIC);
+        assert!(parse_installer_maker(&other_format).is_none());
+    }
+
+    #[test]
+    fn rejects_marked_sti3_corruption_truncation_and_wrong_root_counts() {
+        let original = marked_sti3_archive();
+        for len in 0..original.len() {
+            assert!(parse_installer_maker(&original[..len]).is_none());
+        }
+        for count in [0u16, 1, 3] {
+            let mut bad = original.clone();
+            bad[4..6].copy_from_slice(&count.to_be_bytes());
+            assert!(parse_installer_maker(&bad).is_none());
+        }
+        let mut bad = original.clone();
+        bad[ST65_HEADER_LEN + 3] ^= 1;
+        assert!(parse_installer_maker(&bad).is_none());
+        // A valid checksum cannot make a mismatched end marker acceptable.
+        let mut bad = original.clone();
+        let end = ST65_HEADER_LEN + ST46_ENTRY_HEADER_LEN * 2 + 3;
+        bad[end + 3] = b'X';
+        let crc = installer_crc16(&bad[end..end + 110]);
+        bad[end + 110..end + 112].copy_from_slice(&crc.to_be_bytes());
+        assert!(parse_installer_maker(&bad).is_none());
+        // Nor can it make a file's packed stream extend past archive EOF.
+        let mut bad = original;
+        let file = ST65_HEADER_LEN + ST46_ENTRY_HEADER_LEN;
+        bad[file + 96..file + 100].copy_from_slice(&u32::MAX.to_be_bytes());
+        let crc = installer_crc16(&bad[file..file + 110]);
+        bad[file + 110..file + 112].copy_from_slice(&crc.to_be_bytes());
+        assert!(parse_installer_maker(&bad).is_none());
     }
 
     #[test]
