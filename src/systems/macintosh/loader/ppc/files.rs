@@ -277,6 +277,19 @@ pub(super) fn ppc_pb_get_cat_info(
             ),
             |volume| volume.ref_num,
         );
+    // fsRtDirID is scoped to the selected volume. Mounted volumes have
+    // distinct process-wide catalogue IDs, rather than sharing the boot root.
+    let effective_dir_id = if !absolute_pathname
+        && effective_dir_id == PPC_ROOT_DIR_ID
+        && resolved_vref != PPC_BOOT_VOLUME_REF_NUM
+    {
+        let Some(volume) = vfs_volumes.iter().find(|volume| volume.ref_num == resolved_vref) else {
+            return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+        };
+        volume.root_dir_id
+    } else {
+        effective_dir_id
+    };
     if !absolute_pathname
         && effective_dir_id > 1
         && ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none()

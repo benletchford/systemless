@@ -3521,6 +3521,107 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn pb_get_cat_info_scopes_root_directory_to_selected_volume() {
+        for (vref, dir_id, index, name, expected_dir, expected_error) in [
+            (-2i16, 2u32, 0i16, "Data", 43, PPC_NO_ERR),
+            (-2, 0, 0, "Data", 43, PPC_NO_ERR),
+            (-2, 2, 1, "", 43, PPC_NO_ERR),
+            (-2, 2, -1, "", 42, PPC_NO_ERR),
+            (-2, 42, 0, "Data", 43, PPC_NO_ERR),
+            (PPC_BOOT_VOLUME_REF_NUM, 2, 0, "Data", 50, PPC_NO_ERR),
+            (0, 2, 0, "Data", 50, PPC_NO_ERR),
+            (77, 0, 0, "Data", 43, PPC_NO_ERR),
+            (77, 2, 0, "Data", 43, PPC_NO_ERR),
+            (-99, 2, 0, "Data", 2, PPC_NSV_ERR),
+        ] {
+            let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+                ref_num: -2,
+                name: "Archive CD".into(),
+                root_dir_id: 42,
+                attributes: 0x8080,
+                file_count: 1,
+                allocation_block_count: 100,
+                allocation_block_size: 2048,
+                clump_size: 2048,
+                free_blocks: 0,
+                bitmap_start: 3,
+                allocation_pointer: 4,
+                allocation_start: 5,
+                next_catalog_id: 44,
+                created_date: 0,
+                modified_date: 0,
+            }]);
+            for (id, parent, path) in [
+                (42, 2, "Archive CD"),
+                (43, 42, "Archive CD/Data"),
+                (50, 2, "Data"),
+            ] {
+                loaded.vfs_directories.push(PpcVfsDirectory {
+                    dir_id: id,
+                    parent_dir_id: parent,
+                    path: path.into(),
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    dirty: false,
+                });
+            }
+            loaded.working_directories.with_mut(|directories| {
+                directories.insert(
+                    77,
+                    ProcessWorkingDirectory {
+                        ref_num: 77,
+                        volume_ref_num: -2,
+                        dir_id: 42,
+                        proc_id: 0,
+                    },
+                );
+            });
+            let pb = PPC_DATA_BASE + 0x1000;
+            let name_ptr = pb + 128;
+            loaded.memory.add_region(pb, vec![0; 384]);
+            write_ppc_pstring(&mut loaded.memory, name_ptr, name.as_bytes());
+            loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+            loaded.memory.write_u16_be(pb + 22, vref as u16).unwrap();
+            loaded.memory.write_u16_be(pb + 28, index as u16).unwrap();
+            loaded.memory.write_u32_be(pb + 48, dir_id).unwrap();
+            loaded.cpu.gpr[3] = pb;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                ppc_i16_result(expected_error),
+                "vref={vref} dir={dir_id} index={index}"
+            );
+            assert_eq!(
+                loaded.memory.read_u16_be(pb + 16),
+                Some(expected_error as u16)
+            );
+            assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(expected_dir));
+            if expected_error == PPC_NO_ERR {
+                let expected_vref = if matches!(vref, 0 | -1) { -1i16 } else { -2 };
+                assert_eq!(
+                    loaded.memory.read_u16_be(pb + 22),
+                    Some(expected_vref as u16)
+                );
+                assert_eq!(loaded.memory.read_u8(pb + 30).unwrap() & 0x10, 0x10);
+                let output = if expected_dir == 42 {
+                    b"Archive CD".as_slice()
+                } else {
+                    b"Data".as_slice()
+                };
+                assert_eq!(
+                    ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
+                    Some(output.to_vec())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_handles_get_vol() {
         let pef = synthetic_pef_with_import(b"GetVol");
         let mut loaded = load_pef_application(&pef).unwrap();
