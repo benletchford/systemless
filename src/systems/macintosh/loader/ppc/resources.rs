@@ -133,6 +133,8 @@ fn ppc_resource_name_eq(left: &[u8], right: &[u8]) -> bool {
         })
 }
 
+const SYSTEM_WCTB_PATH: &str = "__system__/wctb";
+
 pub(crate) fn ppc_get_resource(
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
@@ -158,27 +160,30 @@ pub(crate) fn ppc_get_resource(
     ) {
         Some(index) => index,
         None => {
-            let system_resource = if !current_only && res_type == u32::from_be_bytes(*b"STR ") {
-                crate::trap::TrapDispatcher::system_str_default_body(res_id).map(|body| body.to_vec())
-            } else if !current_only && res_type == u32::from_be_bytes(*b"itl0") && res_id == 0 {
-                // The Roman system script supplies numeric-format resource 0.
-                // Intl0Rec layout: Inside Macintosh: Text (1993), B-22–B-24.
-                Some(vec![
-                    b'.', b',', b';', b'$', 0, 0, 0xF0, 0, 0, b'/', 0xFF,
-                    0x60, b' ', b'A', b'M', 0, b' ', b'P', b'M', 0, b':',
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                ])
-            } else {
+            let system_resource = if current_only {
                 None
+            } else {
+                match (res_type.to_be_bytes(), res_id) {
+                    ([b'S', b'T', b'R', b' '], _) => TrapDispatcher::system_str_default_body(res_id)
+                        .map(|body| ("__system__/STR ", body.to_vec())),
+                    ([b'i', b't', b'l', b'0'], 0) => {
+                        // Roman numeric format, Inside Macintosh: Text (1993), B-22–B-24.
+                        Some(("__system__/itl0", vec![
+                            b'.', b',', b';', b'$', 0, 0, 0xF0, 0, 0, b'/', 0xFF,
+                            0x60, b' ', b'A', b'M', 0, b' ', b'P', b'M', 0, b':',
+                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        ]))
+                    }
+                    ([b'w', b'c', b't', b'b'], 0) => {
+                        Some((SYSTEM_WCTB_PATH, TrapDispatcher::system_wctb_default_body()))
+                    }
+                    _ => None,
+                }
             };
-            if let Some(data) = system_resource {
+            if let Some((path, data)) = system_resource {
                 vfs_resources.push(PpcVfsResourceRecord {
                     ref_num: 0,
-                    path: if res_type == u32::from_be_bytes(*b"STR ") {
-                        "__system__/STR ".to_string()
-                    } else {
-                        "__system__/itl0".to_string()
-                    },
+                    path: path.to_string(),
                     res_type,
                     res_id,
                     name: Vec::new(),
@@ -829,18 +834,27 @@ pub(crate) fn ppc_vfs_resource_index(
     res_id: i16,
     current_only: bool,
 ) -> Option<usize> {
+    let matches_id = |record: &PpcVfsResourceRecord| {
+        record.res_type == res_type && record.res_id == res_id
+    };
     let current_match = vfs_resources.iter().position(|record| {
         record.ref_num == current_resource_refnum
-            && record.res_type == res_type
-            && record.res_id == res_id
+            && record.path != SYSTEM_WCTB_PATH
+            && matches_id(record)
     });
     if current_only || current_match.is_some() {
         return current_match;
     }
     vfs_resources.iter().position(|record| {
         record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
-            && record.res_type == res_type
-            && record.res_id == res_id
+            && record.path != SYSTEM_WCTB_PATH
+            && matches_id(record)
+    }).or_else(|| {
+        // A cached System fallback cannot shadow an actual open resource or
+        // become visible to Get1Resource through the application refnum alias.
+        vfs_resources.iter().position(|record| {
+            record.path == SYSTEM_WCTB_PATH && matches_id(record)
+        })
     })
 }
 

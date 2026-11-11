@@ -7405,6 +7405,18 @@ impl TrapDispatcher {
             return Some(ptr);
         }
 
+        let body = Self::system_wctb_default_body();
+        let ptr = bus.alloc(body.len() as u32);
+        if ptr == 0 {
+            return None;
+        }
+        bus.write_bytes(ptr, &body);
+        self.system_wctb_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// The standard WinCTab body shared by the classic and native loaders.
+    pub(crate) fn system_wctb_default_body() -> Vec<u8> {
         const COLORS: [(u16, u16, u16, u16); 13] = [
             (0, 0xFFFF, 0xFFFF, 0xFFFF),  // wContentColor
             (1, 0x0000, 0x0000, 0x0000),  // wFrameColor
@@ -7421,19 +7433,15 @@ impl TrapDispatcher {
             (12, 0x3333, 0x3333, 0x6666), // wTingeDark
         ];
 
-        let ptr = bus.alloc(8 + COLORS.len() as u32 * 8);
-        bus.write_long(ptr, 0); // wCSeed is reserved.
-        bus.write_word(ptr + 4, 0); // wCReserved is reserved.
-        bus.write_word(ptr + 6, COLORS.len() as u16 - 1);
-        for (index, &(part, red, green, blue)) in COLORS.iter().enumerate() {
-            let entry = ptr + 8 + index as u32 * 8;
-            bus.write_word(entry, part);
-            bus.write_word(entry + 2, red);
-            bus.write_word(entry + 4, green);
-            bus.write_word(entry + 6, blue);
+        // WinCTab seed and reserved fields are both zero.
+        let mut body = vec![0; 6];
+        body.extend_from_slice(&(COLORS.len() as u16 - 1).to_be_bytes());
+        for (part, red, green, blue) in COLORS {
+            for word in [part, red, green, blue] {
+                body.extend_from_slice(&word.to_be_bytes());
+            }
         }
-        self.system_wctb_cache.insert(res_id, ptr);
-        Some(ptr)
+        body
     }
 
     /// Allocate (and cache) a callable resource shim for the standard ROM
