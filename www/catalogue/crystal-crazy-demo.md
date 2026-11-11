@@ -2,14 +2,16 @@
 id: crystal-crazy-demo
 kind: game
 title: Crystal Crazy Demo
-summary: Collect crystals and dodge strange creatures in the original Crystal Quest sequel demo.
+summary: >-
+  Collect crystals and dodge strange creatures in the original Crystal Quest
+  sequel demo.
 developer: Patrick Buckland and Alasdair Klyne
 publisher: Casady & Greene, Inc.
 year: 1993
-architectures: [68k]
+architectures:
+- 68k
 default_architecture: 68k
 category: Arcade
-launch_enabled: false
 compatibility:
   status: unknown
 runtime:
@@ -19,10 +21,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://download.classicmacdemos.com/Crystal%20Crazy%20Demo.sit
-    expected_sha256: 0b9106bed154e91b79a6e3358676c7518e1b8509a909a3808e15549f2c2e6f45
-    expected_size: 1300059
+    type: sha256
+    sha256: 0b9106bed154e91b79a6e3358676c7518e1b8509a909a3808e15549f2c2e6f45
+    size_bytes: 1300059
   provenance:
     redistribution: permitted
     original: true
@@ -41,16 +42,15 @@ artifacts:
       sounds and original demo limits.
     notes: >-
       All 61 file paths and data forks, all 2245 resource payloads, names, IDs and
-      attributes, and all 61 Finder type, creator and flag records match the Inside
-      Mac Games October 1994 copy on MacFormat 19, December 1994. All 61 raw resource
-      forks differ in resource-map serialization. The received SIT remains unchanged;
-      period-wrapper and whole-disc byte identity are not claimed. Independent unar
-      extraction matches production packing on 61 files, 122 forks and 61 Finder
-      records. Notice-term screening covered 174 selected included UI, text and version
-      resources, with no standard compressed attributes. No selected TEXT resources
-      were present. The original title credits and demo label were visually inspected;
-      this is a scoped notice review, not a claim that every artwork resource was
-      text-extracted.
+      attributes, and all 61 Finder type, creator and flag records match the Inside Mac
+      Games October 1994 copy on MacFormat 19, December 1994. All 61 raw resource forks
+      differ in resource-map serialization. The received SIT remains unchanged;
+      period-wrapper and whole-disc byte identity are not claimed. Independent unar extraction
+      matches production packing on 61 files, 122 forks and 61 Finder records.
+      Notice-term screening covered 174 selected included UI, text and version resources, with
+      no standard compressed attributes. No selected TEXT resources were present. The
+      original title credits and demo label were visually inspected; this is a scoped
+      notice review, not a claim that every artwork resource was text-extracted.
 references:
 - https://classicmacdemos.com/crystal-crazy
 - https://coverdiscs.com/disc/macformat-disc-19/
