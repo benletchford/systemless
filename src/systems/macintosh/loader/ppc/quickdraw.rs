@@ -1364,14 +1364,23 @@ fn ppc_fill_rows_with_pixpat(
                         .checked_add((count - 1) * lanes)
                         .is_some_and(|last| pixel_addr(seg_right - 1) == Some(last))
                     {
+                        let byte_count = (count * lanes) as usize;
                         copy_row.clear();
-                        for x in seg_left..seg_right {
-                            let pixel = sampler.sample(x, y);
+                        copy_row.reserve(byte_count);
+                        let tile_end = i32::from(seg_left) + (count as i32).min(sampler.width);
+                        for x in i32::from(seg_left)..tile_end {
+                            let pixel = sampler.sample(x as i16, y);
                             if lanes == 1 {
                                 copy_row.push(pixel as u8);
                             } else {
                                 copy_row.extend_from_slice(&pixel.to_be_bytes());
                             }
+                        }
+                        // The first tile starts at the clipped interval's phase.
+                        // Repeat its encoded bytes without sampling later tiles.
+                        while copy_row.len() < byte_count {
+                            let repeat = copy_row.len().min(byte_count - copy_row.len());
+                            copy_row.extend_from_within(..repeat);
                         }
                         if memory.write_bytes(start, &copy_row).is_some() {
                             wrote = true;
