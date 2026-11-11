@@ -104,4 +104,5 @@ In the file chooser, choose Desktop, open King of Dragon Pass, then open
 King of Dragon Pass demo. Choose Demo on the title screen and Proceed from
 the village overview to allocate your clan's magic.
 
-The original demo lets you play one game year. Browser testing is pending.
+The original demo lets you play one game year. A private browser test reaches the village, but starting the demo exceeds the
+frame-time and audio-buffer limits. Browser launch remains disabled.
