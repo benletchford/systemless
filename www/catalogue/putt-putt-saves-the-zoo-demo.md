@@ -11,9 +11,10 @@ year: 1995
 architectures:
 - ppc
 default_architecture: ppc
+launch_enabled: true
 category: Puzzle
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-11"
     tester: Catalogue maintainer
@@ -31,6 +32,33 @@ compatibility:
       startup and palette fixes in PRs 6035 and 6037.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6038
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: 4dd4f9e1 private browser equivalent
+    architecture: ppc
+    status: playable
+    environment: >-
+      Chromium worker and WebGL at the default PowerPC clock, display, memory
+      and sound settings. The complete unchanged archive and both main/worker
+      Wasm response bodies are pinned by size and SHA-256. The private preview
+      uses original archive bytes at loopback-only URLs. Independent fetches
+      from the real production origin verify all promoted archives and images
+      through browser CORS. Choose the original Set to 256 Colors button,
+      dismiss the publisher screen with OK, and allow the original CD-ROM test,
+      introduction and room entrance to finish. Select the inventory log and
+      apply it to the raft. The log leaves inventory and fills the raft gap. The
+      omitted-click control keeps the inventory log and incomplete raft. Both
+      active and idle runs pass separate 20-second interaction and sustained-
+      scene windows. Maximum worker frames are 29.3, 28.2, 28.1, 28.4 ms and
+      minimum audio queues are 471.1, 472, 472.2, 467.3 ms. Actual input and
+      control captures were inspected. Pre-input world state matches, with minor
+      ambient animation differences. The opening display prompt has a black
+      background and missing explanatory text; its original labeled buttons
+      remain readable and usable. Later puzzles, persistence, audio fidelity,
+      independent hardware accuracy and released public play remain unverified.
+      Private preview source 0030d99f uses runtime source 469a0fd8, whose
+      runtime tree matches merged 4dd4f9e1.
+    evidence: https://github.com/benletchford/systemless/issues/6040
 runtime:
   executable_path: Puttzoo Demo/Puttzoo Demo
 artifacts:
@@ -89,11 +117,14 @@ artifacts:
       231197 bytes.
 references:
 - https://github.com/benletchford/systemless/issues/6038
+- https://github.com/benletchford/systemless/issues/6040
 ---
 
 ![Putt-Putt beside the raft after placing the inventory log](https://assets.systemless.org/catalogue/media/sha256/0e/0ee2ee8bfd3f8ec873fb2f031498ecaffd9b02c91c72a595b1e4626165e897ce.png)
 
 Explore a small part of the zoo with Putt-Putt and Pep. Point at characters and scenery, collect useful objects, and use inventory items to solve the demo’s puzzles.
 
-The complete original publisher demo and its readme are preserved. Native
-interaction has been verified. Browser play is still being checked.
+The complete original publisher demo and its readme are preserved. Choose
+**Set to 256 Colors** in the opening dialog, then **OK** on the publisher
+screen. Allow the CD-ROM test and introduction to finish. The opening dialog
+can have missing explanatory text, while its buttons remain readable.
