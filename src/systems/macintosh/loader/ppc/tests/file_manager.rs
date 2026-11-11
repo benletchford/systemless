@@ -2032,6 +2032,59 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_canonicalizes_empty_name_directory_fsspecs() {
+        // Inside Macintosh: Files, table 2-10: empty/NIL names identify
+        // the directory itself. FSSpec still stores its parent and leaf.
+        let volume = crate::trap::TrapDispatcher::boot_volume_name();
+        for null_name in [false, true] {
+            for (vref, dir_id, parent, leaf) in [
+                (PPC_BOOT_VOLUME_REF_NUM, PPC_PREFERENCES_DIR_ID,
+                    PPC_SYSTEM_FOLDER_DIR_ID, "Preferences"),
+                (0, PPC_PREFERENCES_DIR_ID, PPC_SYSTEM_FOLDER_DIR_ID, "Preferences"),
+                (0, 0, PPC_SYSTEM_FOLDER_DIR_ID, "Preferences"),
+                (PPC_BOOT_VOLUME_REF_NUM, 0, 1, volume),
+                (PPC_BOOT_VOLUME_REF_NUM, PPC_ROOT_DIR_ID, 1, volume),
+                (77, 0, PPC_SYSTEM_FOLDER_DIR_ID, "Preferences"),
+                (77, PPC_SYSTEM_FOLDER_DIR_ID, PPC_ROOT_DIR_ID, "System Folder"),
+            ] {
+                let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
+                let mut loaded = load_pef_application(&pef).unwrap();
+                loaded.seed_vfs_directories(
+                    initial_ppc_vfs_directories(),
+                    PPC_PREFERENCES_DIR_ID,
+                    PPC_FIRST_DYNAMIC_DIR_ID,
+                );
+                loaded.working_directories.with_mut(|directories| {
+                    directories.insert(77, ProcessWorkingDirectory {
+                        ref_num: 77,
+                        volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                        dir_id: PPC_PREFERENCES_DIR_ID,
+                        proc_id: 0,
+                    });
+                });
+                let scratch = PPC_HEAP_BASE;
+                loaded.memory.add_region(scratch, vec![0; 256]);
+                let spec = scratch + 128;
+                loaded.cpu.gpr[3] = vref as u16 as u32;
+                loaded.cpu.gpr[4] = dir_id;
+                loaded.cpu.gpr[5] = if null_name { 0 } else { scratch };
+                loaded.cpu.gpr[6] = spec;
+
+                let probe = loaded.run_with_hle_imports(64);
+
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+                assert_eq!(loaded.memory.read_u16_be(spec),
+                    Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+                assert_eq!(loaded.memory.read_u32_be(spec + 2), Some(parent),
+                    "vref={vref} dir={dir_id} null={null_name}");
+                assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, spec + 6),
+                    Some(encode_mac_roman_lossy(leaf)));
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_makes_existing_directory_fsspec() {
         let pef = synthetic_pef_with_import(b"FSMakeFSSpec");
         let mut loaded = load_pef_application(&pef).unwrap();

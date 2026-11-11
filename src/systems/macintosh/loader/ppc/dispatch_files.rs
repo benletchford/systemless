@@ -856,6 +856,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                working_directories,
             ))))
         }
         PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
