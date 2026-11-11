@@ -2365,7 +2365,33 @@ fn expand_installer_maker_payload(
         installer_roots: vec![name.to_string()],
         skipped_disk_image_errors: Vec::new(),
     };
-    for entry in container.entries {
+    // Installer component variants can have the same HFS path. Retain each
+    // original fork under a separate parent instead of overwriting one in VFS.
+    // This preserves alternatives; it does not guess installer conditions.
+    let key = |path: &str| {
+        crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path).to_ascii_lowercase()
+    };
+    let mut counts = std::collections::HashMap::new();
+    for entry in &container.entries {
+        *counts.entry(key(&entry.name)).or_insert(0usize) += 1;
+    }
+    let roots: std::collections::HashSet<_> = counts
+        .keys()
+        .filter_map(|path| path.split('/').next())
+        .collect();
+    let mut variants = "Installer Variants".to_string();
+    let mut suffix = 2;
+    while roots.contains(key(&variants).as_str()) {
+        variants = format!("Installer Variants ({suffix})");
+        suffix += 1;
+    }
+    let check_crc = data.starts_with(b"STi2");
+    for (index, entry) in container.entries.into_iter().enumerate() {
+        let relative_name = if counts[&key(&entry.name)] > 1 {
+            format!("{variants}/{}/{name}", index + 1, name = entry.name)
+        } else {
+            entry.name.clone()
+        };
         let rsrc = decode_installer_fork(
             name,
             &entry.name,
@@ -2382,7 +2408,18 @@ fn expand_installer_maker_payload(
             entry.data_packed,
             entry.data_unpacked_len,
         )?;
-        let embedded_name = format!("{}/{}", name, entry.name);
+        if check_crc {
+            for (fork, bytes, expected) in [
+                ("resource", rsrc.as_slice(), entry.rsrc_crc16),
+                ("data", data.as_slice(), entry.data_crc16),
+            ] {
+                crate::game::installer_maker::validate_installer_fork_crc(bytes, expected)
+                    .map_err(|error| {
+                        format!("InstallerMaker {name}/{} {fork} fork: {error}", entry.name)
+                    })?;
+            }
+        }
+        let embedded_name = format!("{name}/{relative_name}");
         if crate::runner::trace_load_enabled() {
             eprintln!(
                 "[LOAD] Expanded InstallerMaker \"{}\" data={} rsrc={}",
@@ -2758,6 +2795,12 @@ fn decode_installer_fork(
             }
             Ok(packed.to_vec())
         }
+        13 => crate::game::installer_maker::decode_installer_method13(packed, unpacked_len)
+            .map_err(|error| {
+                format!(
+                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: {error}"
+                )
+            }),
         14 => crate::game::installer_maker::decode_installer_method14(packed, unpacked_len)
             .map_err(|error| {
                 format!(
@@ -6625,6 +6668,95 @@ mod tests {
         assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
         assert_eq!(metadata.finder_flags, 0x20);
+    }
+
+    #[test]
+    fn web_pack_sti2_retains_component_variants_and_unique_game_paths() {
+        let mut installer = vec![0u8; 22];
+        installer[..4].copy_from_slice(b"STi2");
+        installer[4..6].copy_from_slice(&3u16.to_be_bytes());
+        installer[10..14].copy_from_slice(b"rLau");
+        for (name, data, rsrc, flags) in [
+            ("Component", b"first".as_slice(), b"rs1".as_slice(), 0x20u16),
+            (
+                "component",
+                b"second".as_slice(),
+                b"rs2".as_slice(),
+                0x40u16,
+            ),
+            (
+                "Game",
+                b"game".as_slice(),
+                b"original resources".as_slice(),
+                0x100u16,
+            ),
+        ] {
+            let mut header = [0u8; 112];
+            header[2] = name.len() as u8;
+            header[3..3 + name.len()].copy_from_slice(name.as_bytes());
+            header[66..70].copy_from_slice(b"APPL");
+            header[70..74].copy_from_slice(b"TEST");
+            header[74..76].copy_from_slice(&flags.to_be_bytes());
+            header[84..88].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+            header[88..92].copy_from_slice(&(data.len() as u32).to_be_bytes());
+            header[92..96].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+            header[96..100].copy_from_slice(&(data.len() as u32).to_be_bytes());
+            header[100..102].copy_from_slice(
+                &crate::game::installer_maker::installer_crc16(rsrc).to_be_bytes(),
+            );
+            header[102..104].copy_from_slice(
+                &crate::game::installer_maker::installer_crc16(data).to_be_bytes(),
+            );
+            let crc = crate::game::installer_maker::installer_crc16(&header[..110]);
+            header[110..112].copy_from_slice(&crc.to_be_bytes());
+            installer.extend_from_slice(&header);
+            installer.extend_from_slice(rsrc);
+            installer.extend_from_slice(data);
+        }
+        let len = installer.len() as u32;
+        installer[6..10].copy_from_slice(&len.to_be_bytes());
+        let source =
+            crate::binhex::make_test_binhex("Installer", *b"APPL", *b"TEST", 0, &installer, &[]);
+        let packed = pack_game_sources_for_web(&[&source], &[]).unwrap();
+        let mut runner = new_runner();
+        let mut loader = WebPackLoader::new(&mut runner, &packed).unwrap().unwrap();
+        while !loader.load_next_chunk(&mut runner, usize::MAX).unwrap() {}
+        drop(loader);
+        let dispatcher = runner.dispatcher_mut();
+        assert_eq!(
+            dispatcher.vfs.get("Installer/Game"),
+            Some(&b"game".to_vec())
+        );
+        assert_eq!(
+            dispatcher.vfs_rsrc.get("Installer/Game"),
+            Some(&b"original resources".to_vec())
+        );
+        for (bytes, rsrc, basename, flags) in [
+            (b"first".as_slice(), b"rs1".as_slice(), "Component", 0x20u16),
+            (
+                b"second".as_slice(),
+                b"rs2".as_slice(),
+                "component",
+                0x40u16,
+            ),
+        ] {
+            let matches: Vec<_> = dispatcher
+                .vfs
+                .iter()
+                .filter(|(_, data)| data.as_slice() == bytes)
+                .map(|(path, _)| path.clone())
+                .collect();
+            assert_eq!(matches.len(), 1);
+            let path = &matches[0];
+            assert_eq!(path.rsplit('/').next(), Some(basename));
+            assert_eq!(dispatcher.vfs_rsrc.get(path), Some(&rsrc.to_vec()));
+            assert_eq!(
+                dispatcher.vfs_file_metadata(path).unwrap().finder_flags,
+                flags
+            );
+        }
+        assert!(!dispatcher.vfs.contains_key("Installer/Component"));
+        assert_eq!(dispatcher.vfs.len(), 3);
     }
 
     #[test]
