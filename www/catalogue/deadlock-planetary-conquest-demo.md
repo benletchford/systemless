@@ -43,7 +43,6 @@ artifacts:
   source:
     type: url
     url: https://download.classicmacdemos.com/Deadlock%20Demo%20Installer.sit
-    download_page: https://classicmacdemos.com/deadlock-planetary-conquest
     expected_sha256: 25738bf30fb512d41775bcf5bc4f90ae2b681b04bc23144332941b7271f2a477
     expected_size: 13982503
   provenance:
