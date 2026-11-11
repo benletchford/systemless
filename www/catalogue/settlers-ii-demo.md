@@ -11,9 +11,10 @@ year: 1997
 architectures:
 - ppc
 default_architecture: ppc
+launch_enabled: true
 category: Strategy
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-11"
     tester: Catalogue maintainer
@@ -22,9 +23,26 @@ compatibility:
     environment: >-
       Complete original English Macintosh demo. At default settings, select Roman
       Campaign, Play chapter and Continue in the opening diary. The first settlement
-      renders at 2,242 frontend and guest ticks with zero exhausted frames. In-game
-      selection and browser qualification are pending.
+      renders at 2,242 frontend and guest ticks with zero exhausted frames. A matched
+      input and no-input pair confirms that clicking headquarters opens its inventory.
     status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6026
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: 5eb8fdef private browser preview
+    architecture: ppc
+    status: playable
+    environment: >-
+      Chromium worker and WebGL with the original archive, default PowerPC
+      settings and both Wasm response bodies verified. Enter Roman Campaign,
+      play the first chapter and dismiss the diary when it appears. Clicking
+      headquarters opens the inventory panel and leaves it visible throughout
+      the 20-second settlement sample. The matched no-input run shows the
+      settlement with no panel. All four 20-second campaign and settlement
+      windows pass pacing, with maximum worker frames of 28.6, 20.7, 20.8 and
+      21.0 ms and minimum audio queues of 119.4, 122.1, 132.7 and 124.9 ms.
+      Building, later chapters, persistence and released browser play remain
+      unverified.
     evidence: https://github.com/benletchford/systemless/issues/6026
 runtime:
   executable_path: Settlers II Demo/Settlers II Demo
