@@ -181,16 +181,32 @@ use super::*;
     }
 
     #[test]
-    fn hle_import_runner_get_new_palette_returns_initialized_resource_copy() {
+    fn get_new_palette_returns_resource_copy_without_modifying_current_dialog() {
         let pef = synthetic_pef_with_import(b"GetNewPalette");
         let mut loaded = load_pef_application(&pef).unwrap();
         let window = PPC_DATA_BASE + 0x3000;
         loaded
             .memory
-            .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+            .add_region(
+                window,
+                vec![0; crate::dialog_manager::DIALOG_PUBLIC_RECORD_SIZE as usize],
+            );
         loaded
             .current_gworld
             .with_mut(|current_gworld| *current_gworld = window);
+        loaded.memory.write_u16_be(
+            window + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+            crate::dialog_manager::DIALOG_WINDOW_KIND,
+        ).unwrap();
+        loaded.memory.write_u32_be(
+            window + crate::dialog_manager::DIALOG_ITEMS_OFFSET, 0x1122_3344,
+        ).unwrap();
+        loaded.memory.write_u32_be(
+            window + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET, 0x5566_7788,
+        ).unwrap();
+        let original_dialog = ppc_memory_read_bytes(
+            &mut loaded.memory, window, crate::dialog_manager::DIALOG_PUBLIC_RECORD_SIZE,
+        ).unwrap();
         let mut palette_resource = vec![0xbb; 32];
         palette_resource[..2].copy_from_slice(&1u16.to_be_bytes());
         palette_resource[16..22].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
@@ -226,17 +242,14 @@ use super::*;
             assert_eq!(loaded.memory.read_u8(palette + offset), Some(0));
         }
         assert_eq!(
-            loaded
-                .memory
-                .read_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-            Some(palette_handle)
+            ppc_memory_read_bytes(
+                &mut loaded.memory, window, crate::dialog_manager::DIALOG_PUBLIC_RECORD_SIZE,
+            ),
+            Some(original_dialog)
         );
-        assert_eq!(
-            loaded
-                .memory
-                .read_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
-            Some(1)
-        );
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPalette);
+        assert_eq!(loaded.cpu.gpr[3], 0);
     }
 
     #[test]
