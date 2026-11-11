@@ -44,7 +44,8 @@ const VISE_36_FULL_FILE_SUFFIX_LEN: usize = 16;
 fn depth_catalog(version: u32) -> bool {
     matches!(
         version,
-        VISE_VERSION_36_FULL
+        VISE_VERSION_35
+            | VISE_VERSION_36_FULL
             | VISE_VERSION_36_LITE
             | VISE_VERSION_EXTENDED_CATALOG
             | VISE_VERSION_PACKED_CATALOG
@@ -1068,8 +1069,8 @@ fn decode_huffman_block(
     }
 }
 
-// VISE 3.6 Full and Lite catalogs are depth-first: the parent field is a
-// nesting depth. Sibling subdirectories can
+// Full VISE 3.5 and the supported depth-based 3.6 catalogs store a
+// nesting depth in the parent field. Sibling subdirectories can
 // therefore use the same parent value for their files.
 fn depth_catalog_parent(stack: &[usize], depth: usize) -> Result<usize, String> {
     if depth == 0 {
@@ -1078,7 +1079,7 @@ fn depth_catalog_parent(stack: &[usize], depth: usize) -> Result<usize, String> 
     stack
         .get(depth - 1)
         .copied()
-        .ok_or_else(|| format!("invalid VISE 3.6 parent depth {depth}"))
+        .ok_or_else(|| format!("invalid VISE parent depth {depth}"))
 }
 
 fn child_path(
@@ -2008,6 +2009,7 @@ pub(crate) mod tests {
     #[test]
     fn catalog_preserves_nested_and_sibling_directory_depths() {
         for version in [
+            VISE_VERSION_35,
             VISE_VERSION_36_FULL,
             VISE_VERSION_36_LITE,
             VISE_VERSION_EXTENDED_CATALOG,
@@ -2048,8 +2050,10 @@ pub(crate) mod tests {
                             VISE_36_FULL_DIRECTORY_SUFFIX_LEN
                         } else if version == VISE_VERSION_EXTENDED_CATALOG {
                             VISE_EXTENDED_DIRECTORY_SUFFIX_LEN
-                        } else {
+                        } else if version == VISE_VERSION_36_LITE {
                             6
+                        } else {
+                            0
                         }
                     ]);
                 } else {
