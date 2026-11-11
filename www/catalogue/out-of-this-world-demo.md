@@ -11,9 +11,10 @@ year: 1992
 architectures:
 - 68k
 default_architecture: 68k
+launch_enabled: true
 category: Arcade
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-12"
     tester: Catalogue maintainer
@@ -32,6 +33,29 @@ compatibility:
       segment, audio fidelity and independent hardware accuracy remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6125
+  - date: "2026-11-12"
+    tester: Catalogue maintainer
+    systemless_version: 6b206045 private browser equivalent
+    architecture: 68k
+    status: playable
+    environment: >-
+      Chromium worker/WebGL at original default machine settings. Press Return
+      at Welcome, explicitly click the original outlined 640x400 button, use
+      Escape to return from the cinematic to Welcome, then Return to start.
+      Holding Up brings the character from the pool to the surface; the matched
+      no-Up control remains underwater and dies. Browser pre-input RGB images
+      are identical, and actual response/settled captures were inspected. The
+      complete unchanged archive and both page/worker Wasm response bodies are
+      pinned by size and SHA-256. All four 20-second interaction and sustained
+      windows pass: guest ticks/s 61.85, 58.06, 62.03, 60.09; maximum frames
+      17.2, 18.2, 19.5, 17.6 ms; minimum audio queues 138.6, 140.7, 132.8,
+      190.2 ms. Zero action/lifecycle/network errors; all targets resumed; no
+      concurrent heavy local job or game/settings overrides. The control's
+      sustained window shows the death/continue screen. Earlier Return-at-size
+      runs produced a smaller playfield and are excluded from qualification.
+      Later segment play, audio fidelity, human release and public replay remain
+      unverified. Private runtime source 6b206045 matches the merged runtime tree.
+    evidence: https://github.com/benletchford/systemless/issues/6127
 runtime:
   executable_path: Out of this World™ Demo 1.0.1/Out of this World™ Demo 1.0.1
 artifacts:
@@ -99,10 +123,10 @@ references:
 This original Macintosh demo includes a playable first segment of Delphine's
 cinematic adventure, also known as **Another World**.
 
-Press **Return** at Welcome, then select the original default **640x400** size.
+Press **Return** at Welcome, then **click the outlined 640x400 button**.
 You can return from the cinematic to Welcome with **Escape** and press Return
 again to enter play. Hold **Up** to swim out of the opening pool. The original
 controls screen also describes directional movement and Shift, Control or
-Option as action keys. Browser play remains pending.
+Option as action keys.
 
 ![Out of This World demo gameplay](https://assets.systemless.org/catalogue/media/sha256/17/17612d2b08343f4789cde0f94c6d170f7a2dfd70ada12179e0ede57d02b0189d.png)
