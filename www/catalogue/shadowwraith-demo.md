@@ -22,8 +22,8 @@ compatibility:
     architecture: 68k
     environment: >-
       Complete unchanged Info-Mac BinHex/Compact Pro archive at original default
-      machine settings. Choose Change on the original 256-color prompt, Yes on the
-      quit-other-applications prompt, then New Game. Holding the documented keypad 8 control
+      machine settings. Confirm Yes on the original quit-other-applications prompt,
+      click past the story screen, then choose New Game. Holding the documented keypad 8 control
       moves the ship north off its starting pad. A matched omitted-input control stays on
       the pad. Pre-input RGB frames are identical; response frames differ by 1619
       pixels and remain different after settling. Both runs finish 2964 frontend and 3564
@@ -44,6 +44,24 @@ compatibility:
       verified native interaction.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/6120
+  - date: "2026-11-12"
+    tester: Catalogue maintainer
+    systemless_version: bc789543 private browser
+    architecture: 68k
+    status: boots
+    environment: >-
+      Chromium worker/WebGL at default settings. Confirm the quit-applications
+      prompt, click past the story, then New Game. Keypad 8 moves the ship north;
+      the observed start-pad pixel check passes and the response screenshot was
+      inspected. The 20-second interaction records 24.21 guest ticks/s, below the
+      required 50, despite 62.11 host FPS, 20.6 ms maximum frame and 491.7 ms
+      minimum audio queue. Zero action/lifecycle/network errors. The sustained
+      phase and idle browser control remain unqualified. The original archive
+      and both page/worker Wasm response bodies are pinned by size and SHA-256.
+      Only the exact promoted entry and launch flag were added to the private
+      preview; no game/default changes or concurrent heavy local job. Launch
+      remains disabled pending pacing qualification.
+    evidence: https://github.com/benletchford/systemless/issues/6123
 runtime:
   executable_path: ShadowWraith_Demo.cpt/ShadowWraith/ShadowWraith Demo
 artifacts:
@@ -101,9 +119,11 @@ ShadowWraith's original two-level demo sends a fighter through a network of
 rooms, keys, enemies and teleporters. This is the promotional demo, with saving
 disabled, rather than the full retail game.
 
-The original 68K application has verified native movement. At startup, choose
-**Change** for 256 colors, confirm the application's normal prompt, then choose
-**New Game**. The default keypad controls use **8** to move forward, **5** to
-reverse, **4/6** to rotate and **7/9** to strafe. Browser play remains pending.
+The original 68K application has verified native movement. Confirm its normal
+quit-other-applications prompt, click past the story screen, then choose
+**New Game**. The PowerPC path also asks to change to 256 colors before its
+initialization error. The default keypad controls use **8** to move forward,
+**5** to reverse, **4/6** to rotate and **7/9** to strafe. Browser play remains
+pending.
 
 ![ShadowWraith demo gameplay](https://assets.systemless.org/catalogue/media/sha256/75/75fe4669e599e411506699e9fe993782e787bbe54b91d711156203c93182f2c2.png)
