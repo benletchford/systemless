@@ -16,7 +16,7 @@ compatibility:
   verified:
   - date: "2026-11-11"
     tester: Catalogue maintainer
-    systemless_version: 97bb8282 native candidate
+    systemless_version: c5f7760f native-equivalent runtime
     architecture: 68k
     environment: >-
       Complete unchanged original HQX, original guest defaults and genuine shipped
@@ -98,6 +98,7 @@ references:
 - https://github.com/benletchford/systemless/issues/6079
 - https://github.com/benletchford/systemless/pull/6077
 - https://github.com/benletchford/systemless/issues/6078
+- https://github.com/benletchford/systemless/issues/6081
 ---
 
 ![A multiple-choice question in the original demo](https://assets.systemless.org/catalogue/media/sha256/f6/f6dd327ac5f10a6e5ea3f0c43c55ce6e8382a3d207c2ff776ce821a954a8d776.png)
@@ -109,5 +110,9 @@ Choose a category with 1, 2 or 3. The players' buzzer keys are Q, B and P; buzz 
 and use a number key to answer. The native 68k run verifies category selection,
 buzzing in, the $2,000 reward and answer-driven advancement.
 
-Browser launch stays disabled pending qualification. The original PowerPC slice
+The first private browser introduction sample renders at 61.07 host FPS but advances
+only 22.77 guest ticks per second, below the required 50, and reports no audio-queue
+diagnostics. It stops before category and answer testing. Browser launch stays
+disabled while [the pacing and audio issue](https://github.com/benletchford/systemless/issues/6081)
+is open. The original PowerPC slice
 also has a separate [PEF loading issue](https://github.com/benletchford/systemless/issues/6078).
