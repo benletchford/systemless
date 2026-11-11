@@ -55,7 +55,7 @@ artifacts:
     license: Maintainer-accepted promotional demo
     rights_holder: New World Computing, Inc., Stick Man Games and original contributors
     permission: "Accepted under the maintainer-approved project policy for complete, unchanged, period-distributed promotional demos. This records project-policy acceptance, without claiming an affirmative publisher licence grant. No applicable explicit redistribution restriction was identified in the reviewed notices. Preserve all 218 files, both documentation parts, copyright notices and original demo limits: Kill 'Em All only, 52 turns, disabled saving and disabled background music."
-    notes: "All 218 files, 436 forks and 218 Finder type/creator/flag records match the July 1996 Inside Mac Games demo folder. All 177 resource payloads, names, IDs and attributes match. Two documentation filenames use equivalent classic Mac slash representations: period slash, packed U+F02F and independent unar metadata colon; unar exports those colons as underscores. No wrapper or raw resource-container byte identity is claimed. Full production packing matches independent unar extraction on all files, forks and Finder records. Notice review covered the 722-byte readme, both 28636- and 26173-byte documentation parts, and 60 standard UI/text/version resources, without compressed resources in that subset. Opaque game data, guest code and scripts were not decoded."
+    notes: "All 218 files, 436 forks and 218 Finder type/creator/flag records match the July 1996 Inside Mac Games demo folder. All 177 resource payloads, names, IDs and attributes match. Two documentation filenames use equivalent classic Mac slash representations: period slash, packed U+F02F and independent unar metadata colon; unar exports those colons as underscores. No wrapper or raw resource-container byte identity is claimed. Full production packing matches independent unar extraction on all files, forks and Finder records. Notice review covered the 722-byte readme, both 28636- and 26173-byte documentation parts, and 60 standard UI/text/version resources, without compressed resources in that subset. The original About dialog independently confirms Stick Man Games as developer and New World Computing as publisher, with the original 1996 copyright notice. Opaque game data, guest code and scripts were not decoded."
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -80,6 +80,8 @@ references:
 - https://archive.org/details/IMG38July1996
 - https://github.com/benletchford/systemless/issues/6095
 ---
+
+![City view after recruiting a gang and completing the first turn](https://assets.systemless.org/catalogue/media/sha256/ef/efac0d902985adb717b369123b76d73ad2ef147f46e72c4672dfee4510e391aa.png)
 
 Choose File > New Game, then Begin to use the original setup. Drag a recruitment
 portrait to a sector you control to queue a hire, then choose Done to end the turn.
