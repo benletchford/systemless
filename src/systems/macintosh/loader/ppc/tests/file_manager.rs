@@ -3826,6 +3826,91 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn pb_get_cat_info_preserves_unchanged_names_and_writes_changed_names() {
+        for directory in [false, true] {
+            for (qualified, readonly) in [(false, true), (true, false), (true, true)] {
+                let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+                let mut loaded = load_pef_application(&pef).unwrap();
+                let pb = PPC_DATA_BASE + 0x1000;
+                let name_ptr = PPC_DATA_BASE + 0x3000;
+                loaded.memory.add_region(pb, vec![0; 128]);
+                let leaf = if directory {
+                    b"Preferences".as_slice()
+                } else {
+                    b"Memo".as_slice()
+                };
+                if !directory {
+                    loaded.push_test_vfs_file(PpcVfsFileRecord {
+                        path: "System Folder/Memo".into(),
+                        data: b"memo".to_vec().into(),
+                        creator: u32::from_be_bytes(*b"ttxt"),
+                        file_type: u32::from_be_bytes(*b"TEXT"),
+                        finder_flags: 0,
+                        dirty: false,
+                    });
+                }
+                let mut input = Vec::new();
+                if qualified {
+                    input.push(b':');
+                }
+                input.extend_from_slice(leaf);
+                let mut storage = vec![input.len() as u8];
+                storage.extend_from_slice(&input);
+                if readonly {
+                    loaded.memory.add_readonly_region(name_ptr, storage.clone());
+                } else {
+                    loaded.memory.add_region(name_ptr, storage.clone());
+                }
+                loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+                loaded
+                    .memory
+                    .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+                    .unwrap();
+                loaded
+                    .memory
+                    .write_u32_be(pb + 48, PPC_SYSTEM_FOLDER_DIR_ID)
+                    .unwrap();
+                loaded.cpu.gpr[3] = pb;
+                let probe = loaded.run_with_hle_imports(64);
+                let expected = if qualified && readonly {
+                    PPC_PARAM_ERR
+                } else {
+                    PPC_NO_ERR
+                };
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+                assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(expected as u16));
+                assert_eq!(
+                    loaded.memory.read_u8(pb + 30).unwrap() & 0x10,
+                    if directory { 0x10 } else { 0 }
+                );
+                if readonly {
+                    assert_eq!(
+                        ppc_memory_read_bytes(&mut loaded.memory, name_ptr, storage.len() as u32),
+                        Some(storage)
+                    );
+                } else {
+                    assert_eq!(
+                        ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
+                        Some(leaf.to_vec())
+                    );
+                }
+                if directory {
+                    assert_eq!(
+                        loaded.memory.read_u32_be(pb + 48),
+                        Some(PPC_PREFERENCES_DIR_ID)
+                    );
+                    assert_eq!(
+                        loaded.memory.read_u32_be(pb + 100),
+                        Some(PPC_SYSTEM_FOLDER_DIR_ID)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_pb_get_cat_info_returns_directory_metadata() {
         let pef = synthetic_pef_with_import(b"PBGetCatInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
