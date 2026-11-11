@@ -95,4 +95,8 @@ Choose the visible puzzle control, dismiss the tutorial heading and select
 Actions > Run Puzzle to start the simulation.
 
 The original demo and its English, French and German help applications are retained.
-Browser qualification is pending; launch remains disabled.
+One private browser run starts and sustains the simulation within pacing limits,
+but a separate control run remains on the parts-loading screen and fails the
+initialization limits. Browser launch stays disabled; see
+[the initialization issue](https://github.com/benletchford/systemless/issues/6076).
+Part placement and solving a puzzle remain unverified.
