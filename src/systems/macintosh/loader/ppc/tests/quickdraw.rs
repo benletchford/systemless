@@ -3781,6 +3781,30 @@ fn hle_import_runner_backpat_and_backpixpat_install_fill_patterns() {
 }
 
 #[test]
+fn rectangle_intersection_does_not_snapshot_unrelated_handles() {
+    let pef = synthetic_pef_with_import(b"SectRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    for _ in 0..64 {
+        assert_ne!(loaded.process_memory_manager.0.borrow_mut()
+            .new_native_handle(&mut loaded.memory, 32, true), 0);
+    }
+    let rect = PPC_HEAP_BASE + 0x18000;
+    loaded.memory.add_region(rect, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rect, 0, 0, 20, 20).unwrap();
+    ppc_write_rect(&mut loaded.memory, rect + 8, 10, 5, 30, 40).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = rect + 8;
+    loaded.cpu.gpr[5] = rect;
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    let before = snapshots();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, rect), Some((10, 5, 20, 20)));
+    assert_eq!(snapshots(), before);
+}
+
+#[test]
 fn hle_import_runner_handles_set_rect() {
     let pef = synthetic_pef_with_import(b"SetRect");
     let mut loaded = load_pef_application(&pef).unwrap();

@@ -851,6 +851,9 @@ struct ResolvedOutputCache {
     size: (u32, u32),
     format: ResolvedOutputFormat,
     pixels: ResolvedOutput,
+    // Indexed RGBA can retain unchanged rows across frames. Palette changes
+    // affect every plain pixel without changing its screen-cell epoch.
+    rgba_rows: Option<(ScreenMark, [[u8; 3]; 256])>,
 }
 
 pub(crate) struct Presentation {
@@ -1211,6 +1214,7 @@ impl Presentation {
                 size,
                 format: ResolvedOutputFormat::Argb,
                 pixels: ResolvedOutput::Argb(pixels),
+                rgba_rows: None,
             });
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {
@@ -1230,6 +1234,15 @@ impl Presentation {
         });
         if !cache_matches {
             let mut cache = self.output_cache.borrow_mut();
+            let previous_rows = cache.as_ref().and_then(|cached| {
+                let (mark, palette) = cached.rgba_rows.as_ref()?;
+                (self.depth == 8
+                    && cached.size == size
+                    && cached.format == ResolvedOutputFormat::Rgba
+                    && mark.identity == self.identity
+                    && *palette == self.palette)
+                    .then_some(*mark)
+            });
             let mut pixels = match cache.take() {
                 Some(ResolvedOutputCache {
                     pixels: ResolvedOutput::Rgba(pixels),
@@ -1237,19 +1250,31 @@ impl Presentation {
                 }) => pixels,
                 _ => Vec::new(),
             };
-            pixels.clear();
-            pixels.reserve((self.logical_width() * self.height * scale * scale * 4) as usize);
-            self.render_scaled(scale, |rgb, count| {
-                let pixel = [rgb[0], rgb[1], rgb[2], 255];
-                for _ in 0..count {
-                    pixels.extend_from_slice(&pixel);
+            pixels.resize((size.0 * size.1 * 4) as usize, 0);
+            let tiles_per_row = screen_tiles_per_row(self.width);
+            for y in 0..self.height {
+                if previous_rows.is_some_and(|mark| {
+                    let start = y as usize * tiles_per_row;
+                    self.tile_epochs[start..start + tiles_per_row]
+                        .iter().all(|&epoch| epoch <= mark.epoch)
+                }) {
+                    continue;
                 }
-            });
+                let mut offset = (y * scale * size.0 * 4) as usize;
+                self.render_scaled_rows(scale, y..y + 1, |rgb, count| {
+                    let pixel = [rgb[0], rgb[1], rgb[2], 255];
+                    for _ in 0..count {
+                        pixels[offset..offset + 4].copy_from_slice(&pixel);
+                        offset += 4;
+                    }
+                });
+            }
             *cache = Some(ResolvedOutputCache {
                 source: self.visible_image.clone(),
                 size,
                 format: ResolvedOutputFormat::Rgba,
                 pixels: ResolvedOutput::Rgba(pixels),
+                rgba_rows: (self.depth == 8).then(|| (self.screen_mark(), self.palette)),
             });
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {
@@ -1260,11 +1285,15 @@ impl Presentation {
         })
     }
 
-    fn render_scaled(&self, scale: u32, mut emit: impl FnMut([u8; 3], u32)) {
+    fn render_scaled(&self, scale: u32, emit: impl FnMut([u8; 3], u32)) {
+        self.render_scaled_rows(scale, 0..self.height, emit);
+    }
+
+    fn render_scaled_rows(&self, scale: u32, rows: std::ops::Range<u32>, mut emit: impl FnMut([u8; 3], u32)) {
         if self.depth == 8 && self.scale % scale == 0 {
             let factor = self.scale / scale;
             let count = factor * factor;
-            for y in 0..self.height {
+            for y in rows {
                 for dy in 0..scale {
                     for x in 0..self.width {
                         let cell = (y * self.width + x) as usize;
@@ -1295,7 +1324,7 @@ impl Presentation {
         let width = self.logical_width();
         // Integrate each retained coverage cell directly into the requested
         // integer output scale, without materializing a larger RGB frame.
-        for y in 0..self.height {
+        for y in rows {
             for dy in 0..scale {
                 for x in 0..width {
                     let first = (y * self.width + x * lanes) as usize;
@@ -6670,6 +6699,44 @@ mod tests {
                 bus.presented_rgba_scaled(&rgba_guest, &rgba_guest, scale, &mut actual_no_overlay)
                     .unwrap();
                 assert_eq!(actual_no_overlay, rgba(&expected_no_overlay));
+            }
+        }
+    }
+
+    #[test]
+    fn cached_rgba_rows_match_full_resampling_after_screen_changes() {
+        for scale in 1..=4 {
+            let mut bus = bus();
+            let screen = (0x1000, 8, 8, 8, 8);
+            let palette = std::array::from_fn(|i| [i as u8; 3]);
+            bus.enable_outline_presentation(screen, palette, 4);
+            paint_detail(&mut bus, 0x1000);
+            let saved = bus.save_pixel_bytes(0x1000, 64);
+            let guest = [0; 64];
+            let rgba_guest = [0; 64 * 4];
+            let mut actual = Vec::new();
+            for frame in 0..7 {
+                match frame {
+                    1 => bus.write_byte(0x1021, 37),
+                    2 => bus.write_byte(0x1000, bus.read_byte(0x1000)),
+                    3 => bus.restore_saved_pixels(0x1000, &saved, 0, 64),
+                    4 => bus.prepare_outline_presentation(screen,
+                        std::array::from_fn(|i| [255 - i as u8, 0, i as u8])),
+                    5 => bus.enable_outline_presentation(screen, palette, 4),
+                    6 => paint_detail(&mut bus, 0x1010),
+                    _ => {},
+                }
+                // The full retained image and coverage resampler do not use
+                // the incremental RGBA cache being checked here.
+                let (w, h, full) = bus.presented_argb(&guest, &guest).unwrap();
+                let mut expected = Vec::new();
+                crate::display::resize_argb_coverage(&full, (w, h),
+                    (8 * scale, 8 * scale), &mut expected);
+                let expected: Vec<u8> = expected.iter().flat_map(|p|
+                    [(*p >> 16) as u8, (*p >> 8) as u8, *p as u8, (*p >> 24) as u8]
+                ).collect();
+                bus.presented_rgba_scaled(&rgba_guest, &rgba_guest, scale, &mut actual).unwrap();
+                assert_eq!(actual, expected, "scale={scale} frame={frame}");
             }
         }
     }
