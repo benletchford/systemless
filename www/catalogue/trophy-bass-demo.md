@@ -80,6 +80,7 @@ references:
 - https://coverdiscs.com/disc/inside-mac-games-vol-3-issue-12/
 - https://www.mobygames.com/game/4831/trophy-bass/releases/
 - https://github.com/benletchford/systemless/issues/6085
+- https://github.com/benletchford/systemless/issues/6087
 ---
 
 ![Casting at Lake Murray in the original demo](https://assets.systemless.org/catalogue/media/sha256/3b/3ba5ef092d75805c7ffe5e4c144c4dbaac5f98b1403a603ec752b478bf770e9a.png)
@@ -88,5 +89,8 @@ Choose Go To > Quick Fish from the original menu, then click Cast to throw the
 line. The complete demo preserves its game, data, info, music and sound files.
 
 Native testing verifies a cast against an idle control. Catching a fish, a complete
-round and browser pacing/audio remain unverified; browser launch stays disabled
-pending qualification.
+round and browser gameplay remain unverified. The first private browser title
+sample renders at 57.44 host FPS but advances only 29.20 guest ticks per second,
+below the required 50, with a 54.3 ms maximum frame against a 50 ms limit. Audio
+queueing passes that sample. Browser launch stays disabled while
+[the pacing issue](https://github.com/benletchford/systemless/issues/6087) is open.
