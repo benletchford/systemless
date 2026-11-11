@@ -3297,3 +3297,22 @@ worker bytecode pinned; debugger off during pacing, no concurrent builds/native
 runs. Actual active/control/released/final captures inspected. Browser launch is
 approved for the next human release; merge waits for the generic runtime fix.
 Public verification remains pending. No release/deploy operations.
+
+## Deadlock: Planetary Conquest Demo
+
+The unchanged [original installer SIT](https://classicmacdemos.com/deadlock-planetary-conquest)
+is 13,982,503 bytes, SHA-256 `25738bf30fb512d41775bcf5bc4f90ae2b681b04bc23144332941b7271f2a477`.
+[MacAddict 22, June 1998](https://archive.org/details/macaddict-cd-022) contains its
+original installer: data is byte-identical and all 216 resource payloads, names,
+IDs and attributes match. Raw resource-container and wrapper identity are not
+claimed. [Intake #6113](https://github.com/benletchford/systemless/issues/6113)
+records the scoped notice review and project-policy acceptance, including 32
+unread ADCR installer UI records; no affirmative publisher licence is claimed.
+All 81 file instances, 162 forks and 81 Finder records match independent
+extraction through the full production packer, preserving both preference
+variants. [Runtime fix #6112](https://github.com/benletchford/systemless/pull/6112)
+allows the original STi3 installer to expand. On that candidate, normal PPC Quick
+Start and End Turn/Done reach turn 2 with credits 542 and food 96; an omitted-click
+control remains on turn 1. The content-only screenshot comes from the unchanged
+archive's actual production-loader replay. Browser launch remains disabled;
+asset promotion, browser qualification and human release are separate gates.
