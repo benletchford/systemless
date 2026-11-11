@@ -347,7 +347,13 @@ pub(super) fn ppc_pb_get_cat_info(
     } else {
         entry.name.clone()
     };
-    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &output_name) {
+    // A named lookup can already contain the required output name in an
+    // application's constant storage. Leave identical Pascal strings alone;
+    // qualified and indexed lookups still publish their resulting leaf name.
+    if name_ptr != 0
+        && name_bytes != output_name
+        && !ppc_write_pstring_bytes(memory, name_ptr, &output_name)
+    {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {
