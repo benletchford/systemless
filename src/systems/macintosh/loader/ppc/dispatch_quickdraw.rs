@@ -2819,14 +2819,9 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
                 current_resource_refnum,
                 cpu.gpr[3] as u16 as i16,
             );
-            if palette != 0 && current_gworld != 0 {
-                let _ = memory.write_u32_be(
-                    current_gworld + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                    palette,
-                );
-                let _ =
-                    memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
-            }
+            // GetNewPalette creates a palette; SetPalette/NSetPalette attach it.
+            // Writing into the current port here would overwrite DialogRecord
+            // items and textH at the same offsets used by ordinary windows.
             PpcImportAction::Return(palette)
         }
         PpcQuickDrawCompatibilityOperation::ScrollRect => {
