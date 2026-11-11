@@ -8,6 +8,7 @@ pub enum PpcLowMemoryAccessor {
     GetRom85,
     GetDoubleTime,
     GetFsFcbLen,
+    GetFcbSPtr,
     GetGzMoveHnd,
     GetGzRootHnd,
     GetTheMenu,
@@ -54,10 +55,12 @@ pub(super) fn dispatch_low_memory_import(
                     );
                 }
                 PpcLowMemoryAccessor::GetDoubleTime
+                | PpcLowMemoryAccessor::GetFcbSPtr
                 | PpcLowMemoryAccessor::GetGzMoveHnd
                 | PpcLowMemoryAccessor::GetGzRootHnd => {
                     let address = match accessor {
                         PpcLowMemoryAccessor::GetDoubleTime => addr::DOUBLE_TIME,
+                        PpcLowMemoryAccessor::GetFcbSPtr => addr::FCB_S_PTR,
                         PpcLowMemoryAccessor::GetGzMoveHnd => addr::GZ_MOVE_HND,
                         PpcLowMemoryAccessor::GetGzRootHnd => addr::GZ_ROOT_HND,
                         _ => unreachable!(),

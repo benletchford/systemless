@@ -1612,8 +1612,8 @@ pub(crate) fn dispatcher_target_for_import(
     library_name: &str,
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
-    if library_name == "CarbonLib" && symbol_name == "LMSetCurMap" {
-        // LowMem.h declares this accessor only for non-Carbon CFM.
+    if library_name == "CarbonLib" && matches!(symbol_name, "LMSetCurMap" | "LMGetFCBSPtr") {
+        // LowMem.h declares these accessors only for non-Carbon CFM.
         return PpcImportDispatcherTarget::Unsupported;
     }
     // CarbonLib also exports the MathLib (fp.h) entry points with the same
@@ -4269,6 +4269,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "LMGetDoubleTime") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetDoubleTime)
+        }
+        ("InterfaceLib", "LMGetFCBSPtr") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetFcbSPtr)
         }
         ("InterfaceLib", "LMGetFSFCBLen") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetFsFcbLen)
