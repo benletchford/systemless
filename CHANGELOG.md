@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.116.0](https://github.com/benletchford/systemless/compare/v0.115.0...v0.116.0) (2026-11-11)
+
+
+### Features
+
+* add the original Deadlock demo ([6d99d38](https://github.com/benletchford/systemless/commit/6d99d38163f36287517aec8a4584a4e1783f849d))
+* add the original Tristan demo ([1349bf4](https://github.com/benletchford/systemless/commit/1349bf445e384a16a1bd486dd96f092948596cec))
+* **catalogue:** add Championship Manager 99/00 demo ([f8c2361](https://github.com/benletchford/systemless/commit/f8c23613f4e91c6f08067ea8cc18522df51809c7))
+* **catalogue:** add Crystal Crazy demo ([8ddc502](https://github.com/benletchford/systemless/commit/8ddc5029a00584b29f0f8ed633af1864d3c0d9d6))
+* **catalogue:** add Hoyle Board and Card Games demos ([effb70c](https://github.com/benletchford/systemless/commit/effb70c733ff94c3e7afb8e5598e6e1aba3bfce8))
+* **catalogue:** add King of Dragon Pass demo ([012a1d2](https://github.com/benletchford/systemless/commit/012a1d29e1b3273a4f50f8d5444504a684a21dac))
+* **catalogue:** add The Incredible Machine 3.0 demo ([ae64af4](https://github.com/benletchford/systemless/commit/ae64af4066bb55396dc59408be7ccdcf36f913fa))
+* **catalogue:** add the original Chaos Overlords demo ([ae2f538](https://github.com/benletchford/systemless/commit/ae2f538c2909c00bb0851b917a03e5e3533e4b19))
+* **catalogue:** add the original Rebel Assault II demo ([e230afd](https://github.com/benletchford/systemless/commit/e230afdcda25167f62a89b56432f49688c564766))
+* **catalogue:** add the original Trophy Bass demo ([7bcdc83](https://github.com/benletchford/systemless/commit/7bcdc830a093d94ec21893db2489f93b50df788c))
+* **catalogue:** add the original You Don’t Know Jack demo ([0e80c4b](https://github.com/benletchford/systemless/commit/0e80c4be2a51c78c00f0ce9a27ee9af7fa22e486))
+* **catalogue:** enable Freddi Fish and Putt-Putt Saves the Zoo ([c790ba2](https://github.com/benletchford/systemless/commit/c790ba27655e647331713832489064533180151e))
+* **catalogue:** enable Settlers II demo browser play ([8752c7e](https://github.com/benletchford/systemless/commit/8752c7e037736d5f1a8f6679e38660ea6f5b2410))
+* **catalogue:** enable tictactom browser play ([fc5ca2a](https://github.com/benletchford/systemless/commit/fc5ca2a75201c12d61e4110b34bbe4bf7072d6f2))
+* **catalogue:** stage five native-tested games ([d36bbda](https://github.com/benletchford/systemless/commit/d36bbda204095c40c5597a080cded17d0f0a6d81))
+* **catalogue:** stage Freddi Fish and Putt-Putt Saves the Zoo demos ([5b4df21](https://github.com/benletchford/systemless/commit/5b4df21f9dfaf5fae23bae6b85f42c0d4948a9f6))
+* **catalogue:** stage the original Avernum 2 demo ([fe0b82e](https://github.com/benletchford/systemless/commit/fe0b82e60cb68bcc9f46a94e2835dce6c1f3ebf0))
+* **catalogue:** stage the original Avernum 3 demo ([9a4b236](https://github.com/benletchford/systemless/commit/9a4b236170c5cb75a73e5164bcf5cf636a554eb6))
+* **catalogue:** stage the original Avernum demo ([6713c46](https://github.com/benletchford/systemless/commit/6713c46d885a77b58c4d6e48c240edeab3a1000e))
+* **catalogue:** stage the original Nethergate demo ([6e156b4](https://github.com/benletchford/systemless/commit/6e156b432ffabdbd1193319502c7fc924e8c1d2c))
+* **catalogue:** stage the original Settlers II demo ([5eb8fde](https://github.com/benletchford/systemless/commit/5eb8fdef8f198cf14cc3905319b3a8334eef48a2))
+* **catalogue:** stage three original Humongous adventure demos ([e182d5a](https://github.com/benletchford/systemless/commit/e182d5a9e34ec4d0be53ebee40dc74e5a3df8c9f))
+
+
+### Bug Fixes
+
+* expand checksummed STi3 folder marker archives ([ed9e1ff](https://github.com/benletchford/systemless/commit/ed9e1ff2383caf1e4fa4ab39fa48062fe9a47ea7))
+* expand STi2 demo installers without losing component variants ([c5f7760](https://github.com/benletchford/systemless/commit/c5f7760fa970648625365ad450303ea31501690b))
+* honor Resource Manager reopen permissions and current maps ([2cd3d97](https://github.com/benletchford/systemless/commit/2cd3d97e32fa036247d9e53ee8ddc8b0a406e53a))
+* implement the PowerPC LMSetResErr accessor ([44b8a33](https://github.com/benletchford/systemless/commit/44b8a333424380f42cf9dd3c4f13ca89e8e4f591))
+* **mac:** canonicalize PowerPC directory file specs ([df64535](https://github.com/benletchford/systemless/commit/df645359c1f82bb5aebada10079b82477f85bfe9))
+* **mac:** correct Ferazel palettes and reduce gameplay overhead ([6363b91](https://github.com/benletchford/systemless/commit/6363b91ee149c33adf4f03a2288ab44c3f4d34c0))
+* **ppc:** implement the black QuickDraw globals accessor ([4174b9e](https://github.com/benletchford/systemless/commit/4174b9e95150b54e53d73e69ac8b7326f1fe2976))
+* **ppc:** respect signed BlockMove sizes ([bd72ec1](https://github.com/benletchford/systemless/commit/bd72ec18a4970ba159394f21986521c21a7c7b68))
+* preserve dialog fields when creating PowerPC palettes ([4dd4f9e](https://github.com/benletchford/systemless/commit/4dd4f9e156cc24a44fb44da63739623af72fd297))
+* support classic PowerPC startup resource lookups ([4c69cf4](https://github.com/benletchford/systemless/commit/4c69cf4d9169ca51a191db4ba74c654885a40c28))
+* support PowerPC palette update modes ([d21a603](https://github.com/benletchford/systemless/commit/d21a603a94b43af4d8cc4fb9085acf552f62e127))
+
+
+### Performance Improvements
+
+* **mac:** reuse sparse lookup gaps across adjacent pages ([54fd86a](https://github.com/benletchford/systemless/commit/54fd86a87dd5fe4d3a2fc30b170b7cee59d38000))
+
 ## [0.115.0](https://github.com/benletchford/systemless/compare/v0.114.0...v0.115.0) (2026-11-10)
 
 
