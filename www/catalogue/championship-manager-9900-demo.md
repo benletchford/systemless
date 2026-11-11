@@ -14,24 +14,6 @@ default_architecture: ppc
 category: Strategy
 compatibility:
   status: unknown
-  verified:
-  - date: "2026-11-11"
-    tester: Catalogue maintainer
-    systemless_version: df645359 native-equivalent runtime
-    architecture: ppc
-    environment: >-
-      Complete unchanged demo with original guest defaults and normal English
-      Leagues quick start. Taking control of Arsenal reaches the manager news
-      screen. Continue Game selects board expectations; the omitted-input control
-      remains on the appointment message. Both runs pass six pixel assertions at
-      13876 frontend and guest ticks with zero exhausted frames. RGB-normalized
-      pre-input captures match exactly; post-input captures differ at 28362
-      pixels. Actual captures inspected. This verifies bounded native news
-      navigation only. Date advancement, matches, later management actions,
-      persistence and browser performance remain unverified. Frozen native binary
-      adcaa1a4 uses source 01638c43 with the runtime tree merged as df645359.
-    status: unknown
-    evidence: https://github.com/benletchford/systemless/issues/6059#issuecomment-6788785138
 runtime:
   executable_path: CM 9900 Demo/CM 9900 demo
 artifacts:
@@ -87,3 +69,11 @@ references:
 Choose a club and take responsibility for its squad in the original 3.5 demo.
 The complete original demo and its limits are preserved. Browser qualification
 is pending.
+
+Native testing reaches Arsenal appointment and the management news screen. Using
+Continue Game opens board expectations; the omitted-input control remains on
+the appointment message. Both runs pass six pixel assertions at 13,876 frontend
+and guest ticks with zero exhausted frames. Their pre-input captures match in
+RGB; post-input captures differ at 28,362 pixels. This verifies bounded news
+navigation. Date advancement, matches, later management actions, persistence
+and browser performance remain unverified. See the [native test evidence](https://github.com/benletchford/systemless/issues/6059#issuecomment-6788785138).
