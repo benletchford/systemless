@@ -20,7 +20,7 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: 97bb8282 native candidate
     architecture: 68k
-    environment: "Complete unchanged original HQX, original guest defaults and genuine shipped 68k slice. Category 2 selects Zoiks! Forsooth! and opens a multiple-choice question. Q highlights Angie, and answer 2 advances to the next category. Active and omitted-buzzer/answer control each finish 3306 frontend ticks with zero exhausted frames. RGB-normalized pre-answer images match exactly; the active-only buzzer highlight changes 4880 pixels, and post-answer frames differ at 306765 pixels. The control checks five observed pixels; active scenario completion alone is not the gameplay evidence. Named captures were inspected and compared. This verifies bounded native input and advancement, not the resulting score value, full-demo completion, browser pacing/audio or independent hardware accuracy."
+    environment: "Complete unchanged original HQX, original guest defaults and genuine shipped 68k slice. Category 2 selects Zoiks! Forsooth! and opens a multiple-choice question. Q highlights Angie, and answer 2 raises her score from $0 to $2,000 before advancing to the next category. Active and omitted-buzzer/answer control each finish 3306 frontend ticks with zero exhausted frames. RGB-normalized pre-answer images match exactly; the active-only buzzer highlight changes 4880 pixels, and post-answer frames differ at 306765 pixels. The final active run passes eight observed pixel assertions and the control passes five; its pre-answer, buzzer and final RGB frames match the earlier active run exactly. Active scenario completion alone is not the gameplay evidence. Named captures were inspected and compared. This verifies bounded native input and advancement, not full-demo completion, browser pacing/audio or independent hardware accuracy."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6079
 runtime:
@@ -31,7 +31,7 @@ artifacts:
   format: hqx
   source:
     type: url
-    url: https://download.classicmacdemos.com/YDKJ.hqx
+    url: https://classicmacdemos.com/download/you-dont-know-jack/
     download_page: https://classicmacdemos.com/you-dont-know-jack
     expected_sha256: d8a4b6b8abdf1ccf852f33aebee14b7d5112e1b6ea772e30d0bb65bc1c182e88
     expected_size: 16166552
@@ -98,7 +98,7 @@ installer and supplied QuickTime and Sound Manager components.
 
 Choose a category with 1, 2 or 3. The players' buzzer keys are Q, B and P; buzz in
 and use a number key to answer. The native 68k run verifies category selection,
-buzzing in and answer-driven advancement.
+buzzing in, the $2,000 reward and answer-driven advancement.
 
 Browser launch stays disabled pending qualification. The original PowerPC slice
 also has a separate [PEF loading issue](https://github.com/benletchford/systemless/issues/6078).
