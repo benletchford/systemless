@@ -4884,9 +4884,12 @@ pub(crate) fn ppc_color_tables_share_index_space(
         let table = handle
             .and_then(|handle| memory.read_u32_be(handle))
             .filter(|table| *table != 0)?;
-        let seed = memory.read_u32_be(table)?;
+        // Compare the indexed colors themselves, including resource tables
+        // with a zero ctSeed. A seed is not evidence against content equality.
+        // Remapping an identical offscreen table through a different current
+        // device would change the pixel indices used by later palette changes.
         let flags = memory.read_u16_be(table.checked_add(4)?)?;
-        if seed == 0 || flags & 0xc000 != 0 {
+        if flags & 0xc000 != 0 {
             return None;
         }
         let entry_count = usize::from(memory.read_u16_be(table.checked_add(6)?)?).checked_add(1)?;

@@ -40,7 +40,7 @@ struct ProcessMemoryRegion {
 /// `shared_handle` is reserved for
 /// installing another index over the same process fork, such as the native
 /// File Manager record and the classic VFS path map.
-pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>);
+pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>, Rc<Cell<Option<u64>>>);
 
 impl Default for ProcessForkBytes {
     fn default() -> Self {
@@ -54,7 +54,7 @@ impl Clone for ProcessForkBytes {
         // with_mut copies the backing bytes only if either snapshot is edited.
         // SAFETY: access is serialized by the runner, as for resource_snapshot.
         let backing = unsafe { Rc::clone(&*self.0.get()) };
-        Self(Rc::new(UnsafeCell::new(backing)))
+        Self(Rc::new(UnsafeCell::new(backing)), Rc::new(Cell::new(self.1.get())))
     }
 }
 
@@ -95,7 +95,7 @@ impl Eq for ProcessForkBytes {}
 
 impl From<Vec<u8>> for ProcessForkBytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(Rc::new(UnsafeCell::new(Rc::new(bytes))))
+        Self(Rc::new(UnsafeCell::new(Rc::new(bytes))), Rc::new(Cell::new(None)))
     }
 }
 
@@ -117,7 +117,22 @@ impl std::ops::Deref for ProcessForkBytes {
 
 impl ProcessForkBytes {
     pub(crate) fn shared_handle(&self) -> Self {
-        Self(Rc::clone(&self.0))
+        Self(Rc::clone(&self.0), Rc::clone(&self.1))
+    }
+
+    /// Hash unchanged forks once, including across attached native/classic views.
+    /// Detached snapshots retain their own cache when either view is edited.
+    pub(crate) fn content_hash(&self) -> u64 {
+        if let Some(hash) = self.1.get() {
+            return hash;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for &byte in self.as_slice() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.1.set(Some(hash));
+        hash
     }
 
     /// Retain immutable bytes for resource records. A subsequent file write
@@ -132,6 +147,8 @@ impl ProcessForkBytes {
     /// Mutate this process-owned fork for one serialized operation without
     /// allowing the mutable byte reference to escape.
     pub fn with_mut<R>(&mut self, operation: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        // Invalidate before exposing bytes, including when the operation unwinds.
+        self.1.set(None);
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference scoped to this operation.
         unsafe { operation(Rc::make_mut(&mut *self.0.get())) }
@@ -10954,6 +10971,38 @@ impl ProcessContext {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fork_content_hash_tracks_attached_writes_and_detached_snapshots() {
+        let fork = super::ProcessForkBytes::from(b"hello".to_vec());
+        assert_eq!(fork.content_hash(), 0xa430_d846_80aa_bd0b);
+        let mut attached = fork.shared_handle();
+        let mut detached = fork.clone();
+        let snapshot = fork.resource_snapshot();
+        attached.with_mut(|bytes| bytes[0] = b'j');
+        assert_eq!(fork.content_hash(), super::ProcessForkBytes::from(b"jello".to_vec()).content_hash());
+        assert_eq!(attached.content_hash(), fork.content_hash());
+        assert_eq!(detached.content_hash(), 0xa430_d846_80aa_bd0b);
+        assert_eq!(snapshot, b"hello");
+        detached.with_mut(|bytes| bytes.clear());
+        assert_eq!(detached.content_hash(), 0xcbf2_9ce4_8422_2325);
+        attached.with_mut(|bytes| *bytes = b"hello".to_vec());
+        assert_eq!(fork.content_hash(), 0xa430_d846_80aa_bd0b);
+    }
+
+    #[test]
+    fn fork_content_hash_is_invalidated_before_a_panicking_write() {
+        let mut fork = super::ProcessForkBytes::from(b"hello".to_vec());
+        assert_eq!(fork.content_hash(), 0xa430_d846_80aa_bd0b);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fork.with_mut(|bytes| {
+                bytes.clear();
+                panic!("write interrupted");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(fork.content_hash(), 0xcbf2_9ce4_8422_2325);
+    }
+
     #[test]
     fn resource_snapshots_survive_attached_file_writes_and_detached_clones() {
         let mut fork = super::ProcessForkBytes::from(b"abcdef".to_vec());

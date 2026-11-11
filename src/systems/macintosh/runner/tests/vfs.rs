@@ -3,6 +3,23 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::globals::addr;
 
 #[test]
+fn vfs_summary_hashes_observe_same_size_fork_edits() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.dispatcher.vfs.insert("Save".into(), b"hello".to_vec());
+    runner.dispatcher.vfs_rsrc.insert("Save".into(), b"hello".to_vec());
+    let before = runner.vfs_file_summary("Save").unwrap();
+    assert_eq!(before.data_hash, 0xa430_d846_80aa_bd0b);
+    assert_eq!(before.resource_hash, before.data_hash);
+    runner.dispatcher.vfs.with_entry_mut("Save", |bytes| bytes[0] = b'j');
+    runner.dispatcher.vfs_rsrc.with_entry_mut("Save", |bytes| bytes[0] = b'j');
+    let after = runner.vfs_file_summary("Save").unwrap();
+    assert_eq!(after.data_len, before.data_len);
+    assert_ne!(after.data_hash, before.data_hash);
+    assert_eq!(after.resource_hash, after.data_hash);
+    assert_eq!(runner.vfs_file_summary("Save").unwrap(), after);
+}
+
+#[test]
 fn vfs_file_snapshot_round_trips_both_forks_and_metadata() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     runner

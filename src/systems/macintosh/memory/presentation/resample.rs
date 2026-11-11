@@ -174,6 +174,7 @@ impl Presentation {
                 size,
                 format: ResolvedOutputFormat::Argb,
                 pixels: ResolvedOutput::Argb(pixels),
+                rgba_rows: None,
             });
         }
         std::cell::Ref::map(self.output_cache.borrow(), |cache| {

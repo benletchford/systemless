@@ -141,6 +141,28 @@ fn movie_poll_uses_no_handle_snapshot(target: &PpcImportDispatcherTarget, cpu: &
     }
 }
 
+// These helpers read/write caller-owned Points and Rects. They neither inspect
+// handle records nor observe the legacy GWorld state mirrors.
+fn geometry_uses_only_guest_memory(target: &PpcImportDispatcherTarget) -> bool {
+    matches!(target,
+        PpcImportDispatcherTarget::SetRect
+        | PpcImportDispatcherTarget::Pt2Rect
+        | PpcImportDispatcherTarget::SectRect
+        | PpcImportDispatcherTarget::UnionRect
+        | PpcImportDispatcherTarget::EqualRect
+        | PpcImportDispatcherTarget::EmptyRect
+        | PpcImportDispatcherTarget::SetPt
+        | PpcImportDispatcherTarget::EqualPt
+        | PpcImportDispatcherTarget::AddPt
+        | PpcImportDispatcherTarget::SubPt
+        | PpcImportDispatcherTarget::PtInRect
+        | PpcImportDispatcherTarget::OffsetRect
+        | PpcImportDispatcherTarget::InsetRect
+        | PpcImportDispatcherTarget::MapRect
+        | PpcImportDispatcherTarget::MapPt
+    )
+}
+
 #[cfg(test)]
 thread_local! {
     static HANDLE_SNAPSHOTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -298,12 +320,17 @@ pub(crate) fn dispatch_supported_import(
     // The process registry is authoritative. Refresh the legacy vector
     // booleans at each native boundary so rendering/debugging code that still
     // reads them sees any classic-side transition before this import runs.
-    ppc_sync_gworld_pixel_state_mirrors(gworlds, gworld_pixel_states);
+    let geometry_only = geometry_uses_only_guest_memory(&binding.dispatcher_target);
+    if !geometry_only {
+        ppc_sync_gworld_pixel_state_mirrors(gworlds, gworld_pixel_states);
+    }
 
     // Toolbox helpers use an import-scoped read view for guest ABI decoding.
     // Allocation ownership remains in the process Memory Manager, and the
     // next import observes its canonical records immediately.
-    let handles = &mut if movie_poll_uses_no_handle_snapshot(&binding.dispatcher_target, cpu) {
+    let handles = &mut if geometry_only
+        || movie_poll_uses_no_handle_snapshot(&binding.dispatcher_target, cpu)
+    {
         Vec::new()
     } else {
         #[cfg(test)]

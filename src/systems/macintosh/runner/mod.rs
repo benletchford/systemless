@@ -3703,21 +3703,19 @@ impl FixtureRunner {
         let data_fork = self
             .dispatcher
             .vfs
-            .get(path)
-            .map(|bytes| bytes.as_slice())
-            .unwrap_or(&[]);
+            .get_shared(path)
+            .map_or_else(|| vfs_fork_hash(&[]), |bytes| bytes.content_hash());
         let resource_fork = self
             .dispatcher
             .vfs_rsrc
-            .get(path)
-            .map(|bytes| bytes.as_slice())
-            .unwrap_or(&[]);
+            .get_shared(path)
+            .map_or_else(|| vfs_fork_hash(&[]), |bytes| bytes.content_hash());
         Some(VfsFileSummary {
             path: stat.path,
             data_len: stat.data_len,
             resource_len: stat.resource_len,
-            data_hash: vfs_fork_hash(data_fork),
-            resource_hash: vfs_fork_hash(resource_fork),
+            data_hash: data_fork,
+            resource_hash: resource_fork,
             file_type: stat.file_type,
             creator: stat.creator,
             finder_flags: stat.finder_flags,
