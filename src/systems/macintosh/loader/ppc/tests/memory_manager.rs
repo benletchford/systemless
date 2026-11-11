@@ -3139,6 +3139,40 @@ fn hle_import_runner_handles_block_move_data_alias() {
 }
 
 #[test]
+fn hle_import_runner_block_move_aliases_ignore_nonpositive_sizes() {
+    for name in [
+        b"BlockMove".as_slice(),
+        b"BlockMoveData".as_slice(),
+        b"BlockMoveUncached".as_slice(),
+        b"BlockMoveDataUncached".as_slice(),
+    ] {
+        for count in [0, 0x8000_0000, 0x8000_0001, 0xffff_ff81, 0xffff_ffff] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+            let source = PPC_DATA_BASE + 0x1000;
+            let destination = PPC_DATA_BASE + 0x1100;
+            loaded.memory.add_region(source, b"source!".to_vec());
+            loaded.memory.add_region(destination, b"retain!".to_vec());
+            loaded.cpu.gpr[3] = source;
+            loaded.cpu.gpr[4] = destination;
+            loaded.cpu.gpr[5] = count;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], source);
+            assert_eq!(loaded.cpu.gpr[4], destination);
+            assert_eq!(loaded.cpu.gpr[5], count);
+            for (address, expected) in [(source, b"source!"), (destination, b"retain!")] {
+                for (offset, byte) in expected.iter().copied().enumerate() {
+                    assert_eq!(loaded.memory.read_u8(address + offset as u32), Some(byte));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn carbon_block_zero_binds_weak_import_and_clears_requested_bytes() {
     let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
         b"CarbonLib",

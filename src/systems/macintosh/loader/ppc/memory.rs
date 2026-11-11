@@ -369,9 +369,15 @@ pub(crate) fn ppc_handle_bytes(
 }
 
 pub(crate) fn ppc_block_move(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) {
+    // Classic Size is signed, as in the 68K BlockMove implementation. Reject
+    // nonpositive counts before a negative Size becomes a huge host allocation.
+    let byte_count = cpu.gpr[5] as i32;
+    if byte_count <= 0 {
+        return;
+    }
     let source_ptr = cpu.gpr[3];
     let dest_ptr = cpu.gpr[4];
-    let byte_count = cpu.gpr[5] as usize;
+    let byte_count = byte_count as usize;
     let mut bytes = vec![0; byte_count];
     if memory.read_bytes_into(source_ptr, &mut bytes).is_none() {
         return;
