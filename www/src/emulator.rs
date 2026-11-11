@@ -275,6 +275,7 @@ pub struct Machine {
     presented_size: (u32, u32),
     frame_palette: display::RgbaPalette,
     frame_palette_clut: [[u16; 3]; 256],
+    frame_palette_gamma: display::DisplayGamma,
     frame_palette_valid: bool,
     input_dirty: bool,
     audio_staging: Vec<u8>,
@@ -524,6 +525,7 @@ impl Machine {
             presented_size: (0, 0),
             frame_palette: [0; 256],
             frame_palette_clut: [[0; 3]; 256],
+            frame_palette_gamma: display::default_display_gamma(),
             frame_palette_valid: false,
             input_dirty: false,
             audio_staging: Vec::new(),
@@ -782,6 +784,7 @@ impl Machine {
             || self.rendered_cursor.as_ref() != self.software_cursor()
             || !self.frame_palette_valid
             || self.frame_palette_clut != *dispatcher.device_clut
+            || self.frame_palette_gamma != dispatcher.device_gamma()
     }
 
     fn frontload_browser_audio(
@@ -950,24 +953,30 @@ impl Machine {
         if self.runner.bus().has_visible_outline_detail() {
             return None;
         }
-        let (mode, clut, mouse, cursor) = {
+        let (mode, clut, gamma, mouse, cursor) = {
             let dispatcher = self.runner.dispatcher();
             (
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
+                dispatcher.device_gamma(),
                 dispatcher.mouse_position(),
                 self.software_cursor().cloned(),
             )
         };
-        if !self
-            .indexed_frame
-            .capture(self.runner.bus(), mode, &clut, cursor.as_ref(), mouse)
-        {
+        if !self.indexed_frame.capture(
+            self.runner.bus(),
+            mode,
+            &clut,
+            &gamma,
+            cursor.as_ref(),
+            mouse,
+        ) {
             return None;
         }
         self.record_owned_presentation(
             mode,
             clut,
+            gamma,
             mouse,
             cursor,
             false,
@@ -982,11 +991,12 @@ impl Machine {
         if !self.runner.bus().has_visible_outline_detail() {
             return None;
         }
-        let (mode, clut, mouse, cursor) = {
+        let (mode, clut, gamma, mouse, cursor) = {
             let dispatcher = self.runner.dispatcher();
             (
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
+                dispatcher.device_gamma(),
                 dispatcher.mouse_position(),
                 self.software_cursor().cloned(),
             )
@@ -1006,7 +1016,13 @@ impl Machine {
             return None;
         }
         let exported = if let Some(cursor) = cursor.as_ref() {
-            display::render_screen_argb(self.runner.bus(), mode, &clut, &mut self.compact_guest);
+            display::render_screen_argb_with_gamma(
+                self.runner.bus(),
+                mode,
+                &clut,
+                &gamma,
+                &mut self.compact_guest,
+            );
             self.compact_overlay.clone_from(&self.compact_guest);
             display::render_cursor_argb(
                 &mut self.compact_overlay,
@@ -1028,7 +1044,7 @@ impl Machine {
         if !exported {
             return None;
         }
-        self.record_owned_presentation(mode, clut, mouse, cursor, true, size);
+        self.record_owned_presentation(mode, clut, gamma, mouse, cursor, true, size);
         Some(&self.compact_frame)
     }
 
@@ -1036,6 +1052,7 @@ impl Machine {
         &mut self,
         mode: (u32, u32, u16, u16, u16),
         clut: [[u16; 3]; 256],
+        gamma: display::DisplayGamma,
         mouse: (i16, i16),
         cursor: Option<display::CursorImage>,
         outline: bool,
@@ -1048,7 +1065,8 @@ impl Machine {
         self.rendered_mouse_pos = mouse;
         self.rendered_cursor = cursor;
         self.frame_palette_clut = clut;
-        self.frame_palette = display::rgba_palette_from_clut(&clut);
+        self.frame_palette_gamma = gamma;
+        self.frame_palette = display::rgba_palette_from_clut_with_gamma(&clut, &gamma);
         self.frame_palette_valid = true;
         self.rendered_packet = true;
         self.presented_size = size;
@@ -1065,11 +1083,12 @@ impl Machine {
             self.frame_epoch = None;
             self.rendered_packet = false;
         }
-        let (screen_mode, clut, mouse_pos, cursor) = {
+        let (screen_mode, clut, gamma, mouse_pos, cursor) = {
             let dispatcher = self.runner.dispatcher();
             (
                 dispatcher.screen_mode,
                 *dispatcher.device_clut,
+                dispatcher.device_gamma(),
                 dispatcher.mouse_position(),
                 self.software_cursor().cloned(),
             )
@@ -1081,7 +1100,9 @@ impl Machine {
         };
         let presentation_epoch = self.runner.bus().presentation_visible_epoch();
         let outline = self.runner.bus().has_visible_outline_detail();
-        let palette_changed = !self.frame_palette_valid || self.frame_palette_clut != clut;
+        let palette_changed = !self.frame_palette_valid
+            || self.frame_palette_clut != clut
+            || self.frame_palette_gamma != gamma;
 
         // Return the previous fully composed image when all guest and host
         // inputs match.
@@ -1110,8 +1131,9 @@ impl Machine {
         self.cursor_backup.restore(&mut self.frame_rgba);
 
         if palette_changed {
-            self.frame_palette = display::rgba_palette_from_clut(&clut);
+            self.frame_palette = display::rgba_palette_from_clut_with_gamma(&clut, &gamma);
             self.frame_palette_clut = clut;
+            self.frame_palette_gamma = gamma;
             self.frame_palette_valid = true;
         }
 
