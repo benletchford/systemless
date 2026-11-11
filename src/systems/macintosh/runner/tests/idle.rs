@@ -3853,7 +3853,7 @@ fn virtual_device_recording_rejects_unbalanced_cursor_changes() {
 
 #[test]
 fn patched_device_and_cursor_traps_cancel_virtual_recordings() {
-    for opcode in [0xA853u16, 0xA855, 0xAA31, 0xAA32] {
+    for opcode in [0xA853u16, 0xA855, 0xAA31, 0xAA32, 0xA879, 0xA87B, 0xA898, 0xA899, 0xA89E] {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.bus.write_long(0x016A, 100);
         runner.set_guest_tick_for_test(100);
@@ -5235,4 +5235,156 @@ fn main_device_poll_rejects_patched_dispatch_and_unsafe_result_slots() {
     let mut clean = main_device_poll_loop();
     clean.m68k.cpu.write_reg(Register::A7, 0x07FF_FFFF);
     assert!(clean.idle_query_has_unsafe_dispatch(0xAA2A));
+}
+
+#[test]
+fn quickdraw_virtual_idle_preflight_rejects_allocations_and_unmapped_records() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let port = 0x0020_0000;
+    let sp = 0x0010_0000;
+    let state = 0x0021_0000;
+    let clip = runner.bus.alloc(4);
+    let region = runner.bus.alloc(10);
+    let source = runner.bus.alloc(4);
+    let source_region = runner.bus.alloc(20);
+    runner.dispatcher.current_port.with_mut(|current| *current = port);
+    runner.dispatcher.port_draw_states.insert(port, Default::default());
+    runner.bus.write_long(port + 28, clip);
+    runner.bus.write_long(clip, region);
+    runner.bus.write_long(source, source_region);
+    runner.bus.write_word(source_region, 10);
+    runner.bus.write_long(sp, source);
+    assert!(runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA879, sp));
+    runner.bus.write_word(source_region, 20);
+    assert!(!runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA879, sp), "region growth must execute normally");
+    runner.bus.write_long(sp, state);
+    for opcode in [0xA87B, 0xA898, 0xA899, 0xA89E] {
+        assert!(runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, opcode, sp));
+        assert!(runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, opcode | 0x0400, sp));
+        assert!(virtual_idle_trap_is_journal_complete(opcode, true, true, true, 0, false));
+        assert!(!virtual_idle_trap_is_journal_complete(opcode, true, true, true, 0, true));
+        assert!(!idle_cycle_trap_is_journal_complete(opcode, true, true, true, 0, false));
+    }
+    runner.bus.write_long(sp, u32::MAX - 8);
+    assert!(!runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA898, sp));
+    assert!(!runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA899, sp));
+    runner.bus.write_long(sp, state);
+    runner.bus.write_word(port + 6, 0xC000);
+    assert!(!runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA89E, sp), "cold PixPat allocation must not be recorded");
+    let handle = runner.bus.alloc(4);
+    let record = runner.bus.alloc(28);
+    runner.bus.write_long(handle, record);
+    runner.bus.write_long(port + 58, handle);
+    assert!(!runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA899, sp), "caller-owned PixPat would allocate a replacement");
+    let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+    runner.dispatcher.owned_bit_pixpats.insert(handle);
+    assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    assert!(runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA899, sp));
+    assert!(runner.dispatcher.idle_quickdraw_state_call_is_safe(&runner.bus, 0xA89E, sp));
+}
+
+#[test]
+fn quickdraw_virtual_idle_preserves_clip_pen_and_browser_boundaries() {
+    fn arm(enabled: bool) -> FixtureRunner {
+        let mut r = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        r.virtual_idle_enabled = enabled;
+        let code = 0x0002_0000;
+        let port = 0x0020_0000;
+        let state = 0x0021_0000;
+        let rect = 0x0021_0100;
+        let out = 0x0021_0200;
+        let clip = r.bus.alloc(4);
+        let region = r.bus.alloc(10);
+        let saved = r.bus.alloc(4);
+        let saved_region = r.bus.alloc(10);
+        r.dispatcher.current_port.with_mut(|p| *p = port);
+        r.dispatcher.port_draw_states.insert(port, Default::default());
+        r.bus.write_long(port + 28, clip);
+        r.bus.write_long(clip, region);
+        r.bus.write_long(saved, saved_region);
+        for ptr in [region, saved_region] {
+            r.bus.write_word(ptr, 10);
+            r.bus.write_long(ptr + 2, 0);
+            r.bus.write_long(ptr + 6, 0x0064_0064);
+        }
+        r.bus.write_long(rect, 0x000A_000A);
+        r.bus.write_long(rect + 4, 0x0032_0032);
+        let mut words = vec![0x42A7, 0xAA32, 0x588F]; // device poll anchor
+        for (arg, trap) in [(out, 0xA874), (state, 0xA898)] {
+            words.extend([0x4879, (arg >> 16) as u16, arg as u16, trap]);
+        }
+        words.push(0xA89E);
+        for (arg, trap) in [(rect, 0xA87B), (state, 0xA899), (saved, 0xA879)] {
+            words.extend([0x4879, (arg >> 16) as u16, arg as u16, trap]);
+        }
+        words.push(0x6000);
+        words.push((-((words.len() as i16 - 1) * 2 + 2)) as u16);
+        for (i, word) in words.into_iter().enumerate() {
+            r.bus.write_word(code + i as u32 * 2, word);
+        }
+        r.m68k.cpu.write_reg(Register::PC, code);
+        r.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+        r.bus.write_long(0x016A, 100);
+        r.set_guest_tick_for_test(100);
+        r.set_instructions_per_tick(20_000);
+        r.dispatcher.set_sent_open_app_event_for_test(true);
+        r
+    }
+    for stop_at_any_trap in [false, true] {
+        let mut plain = arm(false);
+        let mut cursor = arm(true);
+        for _ in 0..12 {
+            let cap = plain.guest_tick() + 1;
+            assert_eq!(plain.run_gui_cpu_slice(3_331, cap), cursor.run_gui_cpu_slice(3_331, cap));
+        }
+        assert!(cursor.virtual_idle_entries > 0, "clip/pen loop must actually be recorded");
+        for iteration in 0..32 {
+            if iteration == 8 {
+                // A changed clip input must become visible on the next pass.
+                plain.bus.write_word(0x0021_0100, 20);
+                cursor.bus.write_word(0x0021_0100, 20);
+            }
+            let cap = plain.guest_tick() + 1;
+            let run = |r: &mut FixtureRunner| if stop_at_any_trap {
+                r.run_gui_cpu_slice_until_trap(3_331, cap)
+            } else {
+                r.run_gui_cpu_slice_until_host_work(3_331, cap)
+            };
+            assert_eq!(run(&mut plain), run(&mut cursor));
+            assert_eq!(plain.guest_tick(), cursor.guest_tick());
+            assert_eq!(plain.tick_budget, cursor.tick_budget);
+            assert_eq!(CpuArchitecturalSnapshot::capture(&plain.m68k.cpu.core),
+                       CpuArchitecturalSnapshot::capture(&cursor.m68k.cpu.core));
+            assert_eq!(IdleCycleHostSnapshot::capture(&plain.dispatcher),
+                       IdleCycleHostSnapshot::capture(&cursor.dispatcher));
+            assert_eq!(plain.bus.ram_slice(0, plain.bus.ram_size()),
+                       cursor.bus.ram_slice(0, cursor.bus.ram_size()));
+        }
+    }
+}
+
+#[test]
+fn quickdraw_virtual_idle_cancels_before_cold_pattern_allocation() {
+    let mut r = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let code = 0x0002_0000;
+    let port = 0x0020_0000;
+    r.bus.write_word(code, 0xA89E); // PenNormal on a cold color port
+    r.bus.write_word(port + 6, 0xC000);
+    r.dispatcher.current_port.with_mut(|p| *p = port);
+    r.dispatcher.port_draw_states.insert(port, Default::default());
+    r.m68k.cpu.write_reg(Register::PC, code);
+    r.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    r.bus.write_long(0x016A, 100);
+    r.set_guest_tick_for_test(100);
+    r.dispatcher.set_sent_open_app_event_for_test(true);
+    r.note_virtual_device_anchor_arrival(code);
+    assert!(r.pass_recorder.is_some());
+    assert!(r.dispatcher.owned_bit_pixpats.is_empty());
+    let (_, running) = r.run_steps_internal(
+        1, Some(100), 0, true, false, FrameFinalization::Deferred,
+    );
+    assert!(running);
+    assert!(r.pass_recorder.is_none(), "allocation must cancel before the trap executes");
+    assert_eq!(r.dispatcher.owned_bit_pixpats.len(), 1, "the real trap must still allocate its pattern");
+    assert!(r.dispatcher.idle_quickdraw_state_call_is_safe(&r.bus, 0xA89E, 0x0010_0000));
 }

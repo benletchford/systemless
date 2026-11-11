@@ -8145,6 +8145,16 @@ impl FixtureRunner {
                             &self.bus,
                             self.bus.read_word(self.m68k.cpu.core.a(7)) as i16,
                         );
+                    if self.pass_recorder.is_some()
+                        && matches!(canonical_trap_number(opcode),
+                            (true, 0x0079 | 0x007B | 0x0098 | 0x0099 | 0x009E))
+                        && (self.is_ui_tracking_active()
+                            || self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                            || !self.dispatcher.idle_quickdraw_state_call_is_safe(
+                                &self.bus, opcode, self.m68k.cpu.read_reg(Register::A7)))
+                    {
+                        self.cancel_pass_recording();
+                    }
                     let unsafe_dispatch = self.idle_query_has_unsafe_dispatch(opcode);
                     let resource_safe = if canonical_trap_number(opcode) == (true, 0x01A0)
                         && !unsafe_dispatch

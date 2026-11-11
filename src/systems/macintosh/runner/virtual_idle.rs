@@ -94,6 +94,10 @@ pub(crate) fn virtual_idle_trap_is_journal_complete(
                 | (true, 0x0074)
                 | (true, 0x0231)
                 | (true, 0x0232)
+                // Clip/pen save-restore paths have a pre-dispatch RAM and
+                // no-allocation guard. Complete draw-state mirrors are part
+                // of the host snapshot; a non-identity pass is rejected.
+                | (true, 0x0079 | 0x007B | 0x0098 | 0x0099 | 0x009E)
                 // ShieldCursor and ShowCursor can change the host cursor
                 // level. The pass-start host snapshot includes the entire
                 // cursor state, and a pass must restore it before recording.
@@ -342,7 +346,7 @@ impl FixtureRunner {
             && self.active_interrupt_callback.is_none()
             && !(matches!(
                 canonical_trap_number(opcode),
-                (true, 0x0053 | 0x0055 | 0x0231 | 0x0232)
+                (true, 0x0053 | 0x0055 | 0x0079 | 0x007B | 0x0098 | 0x0099 | 0x009E | 0x0231 | 0x0232)
             )
                 && self.dispatcher.has_native_trap_patch(&self.bus, opcode))
             && !self.idle_query_has_unsafe_dispatch(opcode)
