@@ -85,6 +85,7 @@ references:
 - https://coverdiscs.com/disc/inside-mac-games-vol-4-issue-3/
 - https://archive.org/details/IMG35March1996
 - https://github.com/benletchford/systemless/issues/6090
+- https://github.com/benletchford/systemless/issues/6092
 ---
 
 ![In the cockpit in The Mining Facility](https://assets.systemless.org/catalogue/media/sha256/be/be5be9e1ed1a2c0ffb96d8715030f6174574a5030e92e261f789c90ff7730f95.png)
@@ -94,5 +95,9 @@ Chapter 6 — The Mining Facility. Move the mouse to aim and hold its button to 
 The complete original demo retains its readmes, joystick utilities and settings.
 
 Native testing verifies bounded laser firing against an omitted-button control.
-A complete chapter and browser compatibility remain unverified; browser launch
-stays disabled pending qualification.
+A complete chapter remains unverified. The first private browser intro sample
+renders at 61.91 host FPS but advances only 26.24 guest ticks per second, below
+the required 50. Its 18.8 ms maximum runtime frame and 429.3 ms minimum audio
+queue meet their limits for that sample. No later browser gameplay, input-control
+or sustained phase was reached. Browser launch stays disabled while
+[the guest-speed issue](https://github.com/benletchford/systemless/issues/6092) is open.
