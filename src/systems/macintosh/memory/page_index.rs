@@ -29,6 +29,25 @@ pub(crate) struct PageIndex {
 }
 
 impl PageIndex {
+    /// A contiguous run of unmarked pages containing `address`, bounded by
+    /// its bitmap word. One word proves up to 256 KiB is empty without a
+    /// scan; a marked page requires the authoritative mapping lookup.
+    #[inline]
+    pub(crate) fn unmarked_span(&self, address: u32) -> Option<std::ops::Range<u64>> {
+        let page = (address >> PAGE_SHIFT) as usize;
+        let index = page / 64;
+        let word = self.words.as_deref().map_or(0, |words| words[index]);
+        let bit = 1u64 << (page % 64);
+        if word & bit != 0 {
+            return None;
+        }
+        let below = word & (bit - 1);
+        let above = word & !(bit - 1);
+        let first = index * 64 + (64 - below.leading_zeros() as usize);
+        let end = index * 64 + above.trailing_zeros() as usize;
+        Some((first as u64) << PAGE_SHIFT..(end as u64) << PAGE_SHIFT)
+    }
+
     /// Record that `start..end` holds a tracked range.
     pub(crate) fn mark(&mut self, start: u64, end: u64) {
         if end <= start {
@@ -76,6 +95,63 @@ mod tests {
     use super::{PageIndex, PAGE_SHIFT};
 
     const PAGE: u64 = 1 << PAGE_SHIFT;
+
+    #[test]
+    fn unmarked_spans_stop_at_marked_pages_and_bitmap_word_edges() {
+        let mut index = PageIndex::default();
+        for page in [3, 63, 64, 127] {
+            index.mark(page * PAGE, page * PAGE + 1);
+        }
+        for (page, first, end) in [(0, 0, 3), (2, 0, 3), (4, 4, 63), (62, 4, 63), (65, 65, 127)] {
+            let span = index.unmarked_span((page * PAGE) as u32).unwrap();
+            assert_eq!(span, first * PAGE..end * PAGE);
+            assert!(!index.may_overlap(span.start, span.end));
+        }
+        for page in [3, 63, 64, 127] {
+            assert_eq!(index.unmarked_span((page * PAGE) as u32), None);
+        }
+        assert_eq!(
+            index.unmarked_span(128 * PAGE as u32),
+            Some(128 * PAGE..192 * PAGE)
+        );
+    }
+
+    #[test]
+    fn empty_span_proofs_cover_arbitrary_bit_patterns_and_address_space_edges() {
+        for pattern in [
+            0,
+            u64::MAX,
+            1,
+            1 << 63,
+            0xaaaa_aaaa_aaaa_aaaa,
+            0x0100_0000_0000_0080,
+        ] {
+            let mut index = PageIndex::default();
+            for page in 0..64 {
+                if pattern & (1 << page) != 0 {
+                    index.mark(page * PAGE, page * PAGE + 1);
+                }
+            }
+            for page in 0..64 {
+                match index.unmarked_span((page * PAGE) as u32) {
+                    Some(span) => {
+                        assert_eq!(pattern & (1 << page), 0);
+                        assert!(span.start <= page * PAGE && (page + 1) * PAGE <= span.end);
+                        assert!(span.end <= 64 * PAGE);
+                        assert!(!index.may_overlap(span.start, span.end));
+                    }
+                    None => assert_ne!(pattern & (1 << page), 0),
+                }
+            }
+        }
+        let index = PageIndex::default();
+        assert_eq!(index.unmarked_span(0), Some(0..64 * PAGE));
+        assert_eq!(
+            index.unmarked_span(u32::MAX),
+            Some((1u64 << 32) - 64 * PAGE..1u64 << 32)
+        );
+        assert!(index.words.is_none());
+    }
 
     #[test]
     fn empty_index_rejects_every_range() {

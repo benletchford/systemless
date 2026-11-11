@@ -558,13 +558,10 @@ fn shared_run_at(state: &GuestAddressSpaceState, address: u32) -> Option<SharedR
 /// span one mapping owns, or the gap between mappings.
 #[inline]
 fn shared_lookup_at(state: &GuestAddressSpaceState, address: u32) -> SharedLookup {
-    let page_start =
-        u64::from(address >> super::page_index::PAGE_SHIFT) << super::page_index::PAGE_SHIFT;
-    let page_end = page_start + (1u64 << super::page_index::PAGE_SHIFT);
-    if !state.shared_pages.may_overlap(page_start, page_end) {
+    if let Some(span) = state.shared_pages.unmarked_span(address) {
         return SharedLookup::Gap {
-            start: page_start,
-            end: page_end,
+            start: span.start,
+            end: span.end,
         };
     }
     if let Some(run) = shared_run_at(state, address) {
@@ -2493,6 +2490,43 @@ mod tests {
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
 
+    #[test]
+    fn sparse_stream_reuses_empty_page_intervals_and_observes_new_aliases() {
+        const BASE: u32 = 0x20000;
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, vec![0x55; 64 * 4096]);
+        let mut bus = MacMemoryBus::new(16);
+        MemoryBus::write_long(&mut bus, 0, 0x1122_3344);
+        let shared = bus.shared_ram_region(0, 4).unwrap();
+        // SAFETY: all accesses to these adapters are serialized in this test.
+        unsafe {
+            memory.add_shared_region(0x1000, shared.clone());
+            memory.add_shared_region(0x100000, shared.clone());
+        }
+        let mut misses = 0;
+        for page in 0..64 {
+            let address = BASE + page * 4096;
+            misses += usize::from(
+                memory
+                    .state()
+                    .data_lookup
+                    .covering(u64::from(address), u64::from(address) + 4)
+                    .is_none(),
+            );
+            assert_eq!(memory.read_u32_be(address), Some(0x5555_5555));
+        }
+        assert!(
+            misses <= 2,
+            "64 sparse pages repeated the ledger lookup {misses} times"
+        );
+
+        // An alias published inside a cached empty interval must immediately
+        // take precedence over the old sparse bytes.
+        unsafe { memory.add_shared_region(BASE + 4096, shared) };
+        assert_eq!(memory.read_u32_be(BASE + 4096), Some(0x1122_3344));
+        assert_eq!(memory.read_u32_be(BASE + 8192), Some(0x5555_5555));
+    }
+
     /// The code epoch must change whenever an instruction token could, and
     /// stay put for plain data traffic, so the JIT can skip token checks.
     #[test]
@@ -3626,7 +3660,7 @@ mod tests {
         assert!(matches!(
             gap,
             SharedLookup::Gap {
-                start: 0x1000,
+                start: 0,
                 end: 0x2000
             }
         ));
