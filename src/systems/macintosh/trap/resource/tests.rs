@@ -6925,6 +6925,74 @@ fn pb_open() {
 }
 
 #[test]
+fn pb_open_reads_logical_data_instead_of_internal_resource_backing() {
+    for prefix in [
+        "__rsrc__",
+        crate::loader::ppc::PPC_OPEN_RESOURCE_FORK_PREFIX,
+    ] {
+        for data in [b"DATA".to_vec(), Vec::new()] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let logical = "games/Installer";
+            disp.vfs.insert(logical.to_string(), data.clone());
+            disp.vfs_rsrc.insert(logical.to_string(), b"RSRC".to_vec());
+            disp.vfs
+                .insert(format!("{prefix}{logical}"), b"RSRC".to_vec());
+
+            let pb = 0x300000;
+            let buffer = 0x310000;
+            setup_param_block(&mut bus, &mut cpu, pb, b"Installer");
+            bus.write_byte(pb + 27, 1); // fsRdPerm
+            call_trap_word(&mut disp, 0xA000, &mut cpu, &mut bus).unwrap();
+            assert_eq!(bus.read_word(pb + 16), 0);
+            let refnum = bus.read_word(pb + 24);
+            assert_ne!(refnum, 0);
+
+            bus.write_bytes(buffer, &[0xCC; 4]);
+            bus.write_long(pb + 32, buffer);
+            bus.write_long(pb + 36, 4);
+            bus.write_word(pb + 44, 1); // fsFromStart
+            bus.write_long(pb + 46, 0);
+            call_trap_word(&mut disp, 0xA002, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(bus.read_long(pb + 40), data.len() as u32);
+            assert_eq!(
+                bus.read_word(pb + 16) as i16,
+                if data.is_empty() { -39 } else { 0 }
+            );
+            assert_eq!(
+                bus.read_bytes(buffer, 4),
+                if data.is_empty() { vec![0xCC; 4] } else { data }
+            );
+            assert_eq!(
+                disp.open_files.get(&refnum).map(String::as_str),
+                Some(logical)
+            );
+        }
+    }
+}
+
+#[test]
+fn pb_open_does_not_expose_internal_resource_backing_without_a_logical_file() {
+    for prefix in [
+        "__rsrc__",
+        crate::loader::ppc::PPC_OPEN_RESOURCE_FORK_PREFIX,
+    ] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.vfs
+            .insert(format!("{prefix}games/Installer"), b"RSRC".to_vec());
+
+        let pb = 0x300000;
+        setup_param_block(&mut bus, &mut cpu, pb, b"Installer");
+        call_trap_word(&mut disp, 0xA000, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_word(pb + 16) as i16, -43);
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
+        assert_eq!(bus.read_word(pb + 24), 0);
+        assert!(disp.open_files.is_empty());
+    }
+}
+
+#[test]
 fn pb_open_reuses_fcb_after_close() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.vfs.insert("TestFile".to_string(), vec![1, 2, 3]);

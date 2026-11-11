@@ -8980,8 +8980,16 @@ impl super::TrapDispatcher {
         // start at its root. Preserve partial paths and other volume names.
         // Inside Macintosh: Files (1992), pp. 2-27 to 2-30.
         let hfs_normalized = super::TrapDispatcher::normalize_hfs_lookup_path(name);
-        // Sort key iteration so the first match is stable across runs.
-        let mut sorted_keys: Vec<&String> = self.vfs.keys().collect();
+        // Resource-fork backing buffers share the VFS for FCB reads, but
+        // must not participate in logical filename lookup. In particular,
+        // a basename must not select an internal backing key before the
+        // real data fork in a directory that sorts after that key.
+        // Sort the remaining keys so the first match is stable across runs.
+        let mut sorted_keys: Vec<&String> = self
+            .vfs
+            .keys()
+            .filter(|key| Self::resource_fork_backing_path(key).is_none())
+            .collect();
         sorted_keys.sort_unstable();
         if let Some(found) = sorted_keys
             .iter()
