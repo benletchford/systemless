@@ -159,6 +159,7 @@ pub enum PpcImportDispatcherTarget {
     InitCursor,
     GetQDGlobalsArrow,
     GetQDGlobalsScreenBits,
+    GetQDGlobalsBlack,
     GetQDGlobalsWhite,
     GetQDGlobalsGray,
     ApplyThemeBackground,
@@ -3276,6 +3277,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") => {
             PpcImportDispatcherTarget::GetQDGlobalsScreenBits
+        }
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsBlack" | "getqdglobalsblack") => {
+            PpcImportDispatcherTarget::GetQDGlobalsBlack
         }
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsWhite" | "getqdglobalswhite") => {
             PpcImportDispatcherTarget::GetQDGlobalsWhite

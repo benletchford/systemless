@@ -2014,6 +2014,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::InitGraf
         | PpcImportDispatcherTarget::GetQDGlobalsScreenBits
+        | PpcImportDispatcherTarget::GetQDGlobalsBlack
         | PpcImportDispatcherTarget::GetQDGlobalsWhite
         | PpcImportDispatcherTarget::GetQDGlobalsGray
         | PpcImportDispatcherTarget::ApplyThemeBackground

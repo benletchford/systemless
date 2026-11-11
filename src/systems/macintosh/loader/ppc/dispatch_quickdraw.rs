@@ -86,6 +86,22 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::Return(destination))
         }
+        PpcImportDispatcherTarget::GetQDGlobalsBlack => {
+            // Quickdraw.h: Pattern *GetQDGlobalsBlack(Pattern *black).
+            // QDGlobals.black is sixteen bytes before thePort.
+            let destination = cpu.gpr[3];
+            if destination == 0 || !ppc_memory_can_write_bytes(memory, destination, 8) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let black = toolbox_startup
+                .init_graf_global_ptr
+                .checked_sub(16)
+                .and_then(|address| ppc_memory_read_bytes(memory, address, 8))
+                // Before InitGraf, use its standard solid black pattern.
+                .unwrap_or_else(|| vec![0xff; 8]);
+            let _ = memory.write_bytes(destination, &black);
+            Some(PpcImportAction::Return(destination))
+        }
         PpcImportDispatcherTarget::GetQDGlobalsWhite => {
             // Quickdraw.h: Pattern *GetQDGlobalsWhite(Pattern *white).
             // QDGlobals.white is the eight bytes immediately before thePort.
