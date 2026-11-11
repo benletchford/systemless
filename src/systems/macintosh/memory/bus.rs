@@ -17,6 +17,22 @@ use super::{
 };
 use crate::process_context::SharedClassicHeapAllocator;
 
+/// Wasm's slice equality lowers to a byte-oriented memcmp. Front-buffer
+/// mirrors compare megabytes of mostly unchanged rows between guest ticks;
+/// compare full words without aligned references or reading beyond the row.
+#[cfg(any(target_arch = "wasm32", test))]
+fn presented_row_words_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left = left.chunks_exact(8);
+    let mut right = right.chunks_exact(8);
+    left.by_ref().zip(right.by_ref()).all(|(left, right)| {
+        u64::from_ne_bytes(left.try_into().unwrap())
+            == u64::from_ne_bytes(right.try_into().unwrap())
+    }) && left.remainder() == right.remainder()
+}
+
 pub(crate) const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 pub(crate) const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
 /// The alternate sound buffer sits $5C00 below the main one (Inside
@@ -3042,7 +3058,11 @@ impl MacMemoryBus {
         // read observer. Reuse that proof instead of routing the same row
         // again. An unchanged row needs no RAM copy, but a fresh store can
         // still be significant to the legacy sound observer.
-        let changed = self.ram_slice(translated, data.len() as u32) != data;
+        let previous = self.ram_slice(translated, data.len() as u32);
+        #[cfg(target_arch = "wasm32")]
+        let changed = !presented_row_words_equal(previous, data);
+        #[cfg(not(target_arch = "wasm32"))]
+        let changed = previous != data;
         self.note_bulk_store(translated, data.len() as u32);
         if changed {
             self.ram.write_bytes_in_bounds(translated as usize, data);
@@ -5358,6 +5378,30 @@ mod tests {
             0,
             "last legacy sound low byte"
         );
+    }
+
+    #[test]
+    fn presented_row_word_comparison_handles_unaligned_rows_and_every_tail_byte() {
+        let bytes: Vec<u8> = (0..1680).map(|i| (i * 37) as u8).collect();
+        for left_offset in 0..8 {
+            for right_offset in 0..8 {
+                for len in (0..=65).chain([1599, 1600, 1601]) {
+                    let left = &bytes[left_offset..left_offset + len];
+                    let mut right = vec![0; right_offset + len];
+                    right[right_offset..].copy_from_slice(left);
+                    assert!(presented_row_words_equal(left, &right[right_offset..]));
+                    assert!(!presented_row_words_equal(left, &[0; 1681]));
+                    for mismatch in 0..len {
+                        right[right_offset + mismatch] ^= 1;
+                        assert!(
+                            !presented_row_words_equal(left, &right[right_offset..]),
+                            "offsets {left_offset}/{right_offset}, len {len}, mismatch {mismatch}"
+                        );
+                        right[right_offset + mismatch] ^= 1;
+                    }
+                }
+            }
+        }
     }
 
     #[test]
