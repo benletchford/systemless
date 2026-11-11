@@ -3040,11 +3040,12 @@ impl MacMemoryBus {
         }
         // The gates above already prove a readable local RAM span and no
         // read observer. Reuse that proof instead of routing the same row
-        // again; the store and presentation update below are unchanged.
+        // again. An unchanged row needs no RAM copy, but a fresh store can
+        // still be significant to the legacy sound observer.
         let changed = self.ram_slice(translated, data.len() as u32) != data;
         self.note_bulk_store(translated, data.len() as u32);
-        self.ram.write_bytes_in_bounds(translated as usize, data);
         if changed {
+            self.ram.write_bytes_in_bounds(translated as usize, data);
             if let Some(mut p) = self.presentation.as_mut() {
                 p.sync_plain_screen_row(translated, data);
             }
@@ -5356,6 +5357,31 @@ mod tests {
             bus.read_byte(sound_base + LEGACY_SOUND_BUFFER_BYTES - 1),
             0,
             "last legacy sound low byte"
+        );
+    }
+
+    #[test]
+    fn unchanged_plain_presentation_writes_still_observe_legacy_sound_samples() {
+        use crate::memory::globals::addr;
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let main = bus.read_long(addr::SOUND_BASE);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        bus.enable_outline_presentation((main, 4, 4, 1, 8), palette, 2);
+        let same_bytes = bus.read_bytes(main, 4);
+        let epoch = bus.presentation_epoch();
+        assert_eq!(bus.watch_legacy_sound(), WatchChange::Armed);
+
+        assert!(bus.write_plain_presented_bytes(main, &same_bytes));
+        assert_eq!(bus.read_bytes(main, 4), same_bytes);
+        assert_eq!(bus.presentation_epoch(), epoch);
+        // Equal PCM bytes still constitute two fresh sample stores.
+        assert_eq!(
+            bus.take_legacy_sound_order(false),
+            Some(SoundOrder {
+                count: 2,
+                first: 0,
+                ascending: true,
+            })
         );
     }
 
