@@ -10,14 +10,14 @@ year: 1999
 architectures:
 - 68k
 default_architecture: 68k
-launch_enabled: false
+launch_enabled: true
 category: Strategy
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-08"
     tester: Catalogue maintainer
-    systemless_version: 1858f837 native baseline; browser qualification pending
+    systemless_version: 1858f837 native baseline
     architecture: 68k
     environment: >-
       Complete unchanged original archive; exact TicTacTom v1.0/TicTacTom executable.
@@ -30,9 +30,25 @@ compatibility:
       references establish consistency,not hardware accuracy. Original normal3x3 mode
       retained;3D mode and full rounds unverified. Native binary
       SHA-256148f46937353de4e3b322b2c14595204579a07b288754c853003bbc0b4a47cc1. Full games,other
-      modes,persistence,audio fidelity and released public play unverified. Launch disabled pending
-      actual hosted-original browser qualification.
+      modes, persistence, audio fidelity and released public play remain unverified.
     status: playable
+    evidence: https://github.com/benletchford/systemless/issues/5864
+  - date: "2026-11-11"
+    tester: Catalogue maintainer
+    systemless_version: 8752c7e0 private browser preview
+    architecture: 68k
+    status: playable
+    environment: >-
+      Chromium worker and WebGL at the original settings. The hosted archive
+      and both Wasm responses matched their byte and SHA-256 pins. File → New
+      Game opens an empty board. Clicking the top-left and bottom-right cells
+      places two X marks and the computer makes two O replies. The matched
+      control stays empty. The two boards are RGB-identical before input, and
+      each run passes 20 pixel checks. All four 20-second initialization and
+      sustained windows pass pacing. Maximum worker frames are 31.8, 22.5,
+      27.9 and 7.5 ms. Minimum audio queues are 132.9, 122.1, 129.3 and
+      121.5 ms. Full rounds, 3D mode, persistence, audio fidelity and released
+      browser play remain unverified.
     evidence: https://github.com/benletchford/systemless/issues/5864
 runtime:
   executable_path: TicTacTom v1.0/TicTacTom
