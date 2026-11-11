@@ -2,8 +2,7 @@
 id: trophy-bass-demo
 kind: game
 title: Trophy Bass Demo
-summary: >-
-  Cast a line at Lake Murray in Sierra's original fishing simulation demo.
+summary: Cast a line at Lake Murray in Sierra's original fishing simulation demo.
 developer: Dynamix, Inc.
 publisher: Sierra On-Line, Inc.
 year: 1995
@@ -12,7 +11,6 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Simulation
-launch_enabled: false
 compatibility:
   status: unknown
   verified:
@@ -30,11 +28,9 @@ artifacts:
   role: archive
   format: sit
   source:
-    type: url
-    url: https://classicmacdemos.com/download/trophy-bass/
-    download_page: https://classicmacdemos.com/trophy-bass
-    expected_sha256: 3740fb96db951965d41079cea082e38623f9732f391589b8b2c83b56d0383122
-    expected_size: 5554204
+    type: sha256
+    sha256: 3740fb96db951965d41079cea082e38623f9732f391589b8b2c83b56d0383122
+    size_bytes: 5554204
   provenance:
     redistribution: permitted
     original: true
@@ -53,21 +49,21 @@ artifacts:
       credits, notices and demo limits.
     notes: >-
       All five files, ten raw forks, all 353 resource payloads, names, IDs and
-      attributes, and all five Finder type/creator/flag records match Inside Mac Games
-      disc 33, December 1995, exactly. No period-wrapper or whole-disc byte identity
-      is claimed. Full production packing also matches independent unar extraction
-      on all five files, ten forks and five Finder records. Notice screening covered
-      nineteen selected included standard UI/text/version resources, without standard
-      compression. No selected TEXT resources or notice-term hits were present.
-      The original visible Sierra 1995 title copyright was inspected. The custom IFhs
-      Info file and opaque game Data were not decoded; no artwork-wide text
-      extraction is claimed.
+      attributes, and all five Finder type/creator/flag records match Inside Mac Games disc
+      33, December 1995, exactly. No period-wrapper or whole-disc byte identity is
+      claimed. Full production packing also matches independent unar extraction on all five
+      files, ten forks and five Finder records. Notice screening covered nineteen
+      selected included standard UI/text/version resources, without standard compression. No
+      selected TEXT resources or notice-term hits were present. The original visible
+      Sierra 1995 title copyright was inspected. The custom IFhs Info file and opaque
+      game Data were not decoded; no artwork-wide text extraction is claimed.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/trophy-bass-demo/gameplay.png
+    type: sha256
+    sha256: 3ba5ef092d75805c7ffe5e4c144c4dbaac5f98b1403a603ec752b478bf770e9a
+    size_bytes: 112109
   provenance:
     redistribution: permitted
     content_only: true
@@ -86,7 +82,7 @@ references:
 - https://github.com/benletchford/systemless/issues/6085
 ---
 
-![Casting at Lake Murray in the original demo](incoming/trophy-bass-demo/gameplay.png)
+![Casting at Lake Murray in the original demo](https://assets.systemless.org/catalogue/media/sha256/3b/3ba5ef092d75805c7ffe5e4c144c4dbaac5f98b1403a603ec752b478bf770e9a.png)
 
 Choose Go To > Quick Fish from the original menu, then click Cast to throw the
 line. The complete demo preserves its game, data, info, music and sound files.
