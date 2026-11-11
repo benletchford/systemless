@@ -1593,6 +1593,69 @@ impl PpcQ3SoftwareFrontBufferSurface {
     pub fn pixel_relative_offset(&self, point: (i32, i32)) -> Option<usize> {
         ppc_q3_front_buffer_pixel_relative_offset(self.front_buffer, point)
     }
+
+    /// `write_pixel`, with the report of a span store held in `run` while the
+    /// stores stay adjacent. The caller reports the last run with
+    /// [`PpcQ3UnreportedRun::finish`] before anything but this surface's own
+    /// pixel reads and writes can observe guest memory.
+    pub(crate) fn write_pixel_in_run(
+        &self,
+        memory: &mut PpcSectionMem,
+        point: (i32, i32),
+        color: u16,
+        run: &mut PpcQ3UnreportedRun,
+    ) -> bool {
+        if self.front_buffer.depth != 8 {
+            if let (Some(span), Some(offset)) = (self.span, self.pixel_relative_offset(point)) {
+                if run.words != 0 && run.first + run.words * 2 != offset {
+                    run.report(memory, span);
+                }
+                if memory
+                    .write_u16_be_in_span_unreported(span, offset, color)
+                    .is_none()
+                {
+                    return false;
+                }
+                if run.words == 0 {
+                    run.first = offset;
+                }
+                run.words += 1;
+                return true;
+            }
+        }
+        if let Some(span) = self.span {
+            run.report(memory, span);
+        }
+        self.write_pixel(memory, point, color)
+    }
+}
+
+/// Adjacent span words stored by a software primitive and not yet reported to
+/// the guest-memory observers.
+#[derive(Default)]
+pub(crate) struct PpcQ3UnreportedRun {
+    first: usize,
+    words: usize,
+}
+
+impl PpcQ3UnreportedRun {
+    fn report(&mut self, memory: &mut PpcSectionMem, span: GuestWritableSpan) {
+        if self.words != 0 {
+            memory.report_span_write(span, self.first, self.words);
+            self.words = 0;
+        }
+    }
+
+    /// Report whatever a finished fill of `surface` still holds.
+    pub(crate) fn finish(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        surface: PpcQ3SoftwareFrontBufferSurface,
+    ) {
+        if let Some(span) = surface.span {
+            self.report(memory, span);
+        }
+    }
 }
 
 // --- QuickDraw 3D Software Rasterizer & Depth Buffer ---
@@ -3944,6 +4007,43 @@ pub fn ppc_q3_write_software_depth_material_output_pixel(
     ppc_q3_write_software_material_output_pixel(memory, surface, point, material, output)
 }
 
+/// `ppc_q3_write_software_depth_material_output_pixel` for a fill that
+/// reports its span stores in runs.
+#[allow(clippy::too_many_arguments)]
+fn ppc_q3_write_software_depth_material_output_pixel_in_run(
+    memory: &mut PpcSectionMem,
+    surface: PpcQ3SoftwareFrontBufferSurface,
+    depth_buffer: &mut PpcQ3SoftwareDepthBuffer,
+    point: PpcQ3SoftwareProjectedPoint,
+    material: &PpcQ3SoftwareMaterialSample,
+    output: PpcQ3SoftwareMaterialOutput,
+    write_depth: bool,
+    run: &mut PpcQ3UnreportedRun,
+) -> bool {
+    if point.x < 0 || point.y < 0 {
+        return false;
+    }
+    let (x, y) = (point.x as u32, point.y as u32);
+    let depth_visible = if write_depth {
+        depth_buffer.test_and_update(x, y, point.z)
+    } else {
+        depth_buffer.test(x, y, point.z)
+    };
+    if !depth_visible {
+        return false;
+    }
+    let opacity = ppc_q3_software_blend_opacity(material, output.opacity, point.vertex_alpha);
+    let transparency = ppc_q3_software_effective_transparency(material.transparency, opacity);
+    let color = ppc_q3_software_material_output_pixel_color(
+        memory,
+        surface,
+        (point.x, point.y),
+        output.color,
+        transparency,
+    );
+    surface.write_pixel_in_run(memory, (point.x, point.y), color, run)
+}
+
 pub fn ppc_q3_write_software_material_output_pixel(
     memory: &mut PpcSectionMem,
     surface: PpcQ3SoftwareFrontBufferSurface,
@@ -4081,6 +4181,9 @@ pub fn ppc_q3_draw_software_triangle(
     };
 
     let mut pixels = 0usize;
+    // Nothing between two pixels of this fill observes guest memory except
+    // the fill's own reads, so adjacent stores are reported as one range.
+    let mut run = PpcQ3UnreportedRun::default();
     let area_f = area as f32;
     let (mut row_edge_weights, edge_x_steps, edge_y_steps) =
         ppc_q3_software_triangle_edge_walker(vertices, min_x, min_y);
@@ -4167,7 +4270,7 @@ pub fn ppc_q3_draw_software_triangle(
             } else {
                 output
             };
-            if ppc_q3_write_software_depth_material_output_pixel(
+            if ppc_q3_write_software_depth_material_output_pixel_in_run(
                 memory,
                 surface,
                 depth_buffer,
@@ -4175,6 +4278,7 @@ pub fn ppc_q3_draw_software_triangle(
                 material,
                 output,
                 write_depth,
+                &mut run,
             ) {
                 pixels = pixels.saturating_add(1);
             }
@@ -4183,6 +4287,7 @@ pub fn ppc_q3_draw_software_triangle(
         row_edge_weights[1] += edge_y_steps[1];
         row_edge_weights[2] += edge_y_steps[2];
     }
+    run.finish(memory, surface);
     pixels
 }
 

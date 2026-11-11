@@ -2063,6 +2063,54 @@ impl GuestAddressSpace {
         Some(())
     }
 
+    /// `write_u16_be_in_span` without the report. The caller owes
+    /// [`Self::report_span_write`] for every word stored this way before
+    /// anything else can observe guest memory; a run of adjacent words may be
+    /// reported together.
+    #[inline]
+    pub(crate) fn write_u16_be_in_span_unreported(
+        &mut self,
+        span: GuestWritableSpan,
+        relative_offset: usize,
+        value: u16,
+    ) -> Option<()> {
+        span.address_of(relative_offset)?;
+        self.state_mut()
+            .regions
+            .write_u16_be_in_span(span.span, relative_offset, value)
+    }
+
+    /// Report `words` adjacent big-endian words of a span, starting at
+    /// `relative_offset`, as written with the values they now hold. The
+    /// observers work on ranges, so this is the report of each word in turn.
+    pub(crate) fn report_span_write(
+        &mut self,
+        span: GuestWritableSpan,
+        relative_offset: usize,
+        words: usize,
+    ) {
+        const CHUNK_WORDS: usize = 64;
+        let state = self.state_mut();
+        let mut bytes = [0u8; CHUNK_WORDS * 2];
+        let mut done = 0;
+        while done < words {
+            let count = (words - done).min(CHUNK_WORDS);
+            let first = relative_offset + done * 2;
+            for word in 0..count {
+                let Some(value) = state.regions.read_u16_be_in_span(span.span, first + word * 2)
+                else {
+                    return;
+                };
+                bytes[word * 2..word * 2 + 2].copy_from_slice(&value.to_be_bytes());
+            }
+            let Some(address) = span.address_of(first) else {
+                return;
+            };
+            state.note_write(address, &bytes[..count * 2]);
+            done += count;
+        }
+    }
+
     #[inline]
     fn bus_fault(address: u32) -> BusFault {
         BusFault {
@@ -3177,6 +3225,68 @@ mod tests {
         assert_ne!(before, after, "span write left the code token intact");
 
         run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut memory), PPC_CODE, 2);
+    }
+
+    /// Words stored without a report are in guest memory before it, and the
+    /// one report of a run retires executed code exactly as the per-word
+    /// reports would: on the pages the run touches and nowhere else.
+    #[test]
+    fn a_reported_run_of_span_words_retires_the_code_it_overwrites() {
+        const PPC_CODE: u32 = 0x0300_0000;
+        const ADD_ONE: u32 = 0x3863_0001;
+        const ADD_TWO: u32 = 0x3863_0002;
+        const BLR: u32 = 0x4e80_0020;
+        // More words than one report chunk, ending on the executed page.
+        const WORDS: usize = 150;
+
+        let mut code = vec![0u8; 0x2000];
+        code[0x1000..0x1004].copy_from_slice(&ADD_ONE.to_be_bytes());
+        code[0x1004..0x1008].copy_from_slice(&BLR.to_be_bytes());
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(PPC_CODE, code);
+        let span = memory.writable_span(PPC_CODE, 0x2000).expect("writable span");
+        let entry = PPC_CODE + 0x1000;
+
+        let mut cpu = PpcCpu::new();
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut memory), entry, 1);
+        let before = PpcMemory::instruction_cache_token(&mut memory, entry).unwrap();
+
+        // A run that stays on the page below the code retires nothing.
+        for word in 0..WORDS {
+            memory
+                .write_u16_be_in_span_unreported(span, 0x100 + word * 2, word as u16 + 1)
+                .expect("span store");
+        }
+        memory.report_span_write(span, 0x100, WORDS);
+        assert_eq!(PpcMemory::read_u16_be(&mut memory, PPC_CODE + 0x100), Some(1));
+        assert_eq!(
+            PpcMemory::read_u16_be(&mut memory, PPC_CODE + 0x100 + (WORDS as u32 - 1) * 2),
+            Some(WORDS as u16)
+        );
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, entry),
+            Some(before)
+        );
+
+        // A run that ends by rewriting the first instruction; only its last
+        // two words lie on the executed page.
+        let first = 0x1004 - WORDS * 2;
+        for word in 0..WORDS {
+            let value = match first + word * 2 {
+                0x1000 => (ADD_TWO >> 16) as u16,
+                0x1002 => (ADD_TWO & 0xffff) as u16,
+                _ => 0,
+            };
+            memory
+                .write_u16_be_in_span_unreported(span, first + word * 2, value)
+                .expect("span store");
+        }
+        assert_eq!(PpcMemory::read_u32_be(&mut memory, entry), Some(ADD_TWO));
+        memory.report_span_write(span, first, WORDS);
+        let after = PpcMemory::instruction_cache_token(&mut memory, entry).unwrap();
+        assert_ne!(before, after, "the reported run left the code token intact");
+
+        run_cached_add(&mut cpu, &mut CountingGuestAddressSpace::new(&mut memory), entry, 2);
     }
 
     #[test]
