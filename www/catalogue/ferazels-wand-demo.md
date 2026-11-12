@@ -32,8 +32,8 @@ compatibility:
       A temporary same-origin copy of the exact archive loaded in the browser, passed
       the display prompt and New Game menu, and rendered the first stage. Repeated
       right-arrow input visibly moved Ferazel through the configured arrow-to-keypad
-      mapping. No browser warnings or errors appeared. The promoted archive responds to
-      a GET request from https://systemless.org with the expected size and browser access
+      mapping. No browser warnings or errors appeared. The promoted archive responds to a
+      GET request from https://systemless.org with the expected size and browser access
       header. Later levels remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/4054
@@ -69,8 +69,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/ferazels-wand-demo/gameplay.png
+    type: sha256
+    sha256: 2739aa609981dcaf3d0edd1569c6a86aa7862f91bb50f6fcfa8847f69d832e19
+    size_bytes: 307557
   provenance:
     redistribution: permitted
     original: true
@@ -82,11 +83,10 @@ artifacts:
       The underlying game artwork remains Ambrosia's property.
     notes: >-
       Captured on 2026-11-12 from the corrected browser build (0.117.0 plus the
-      gamma-fade and gameplay-overhead fixes), using Canvas2D at 2× display scale
-      after moving and jumping in the first level. Cropped to the 1216×944 game
-      content surface without resampling or altering artwork; excludes browser
-      framing and the Classic Mac menu bar. Replaces the earlier corrupted-palette
-      capture. PNG SHA-256
+      gamma-fade and gameplay-overhead fixes), using Canvas2D at 2× display scale after
+      moving and jumping in the first level. Cropped to the 1216×944 game content surface
+      without resampling or altering artwork; excludes browser framing and the Classic
+      Mac menu bar. Replaces the earlier corrupted-palette capture. PNG SHA-256
       2739aa609981dcaf3d0edd1569c6a86aa7862f91bb50f6fcfa8847f69d832e19; 307,557 bytes.
 references:
 - https://archive.org/details/tucows_205573_Ferazel_s_Wand
@@ -95,7 +95,7 @@ references:
 
 ## Enter Teraknorn
 
-![Ferazel in the opening demo level](incoming/ferazels-wand-demo/gameplay.png)
+![Ferazel in the opening demo level](https://assets.systemless.org/catalogue/media/sha256/27/2739aa609981dcaf3d0edd1569c6a86aa7862f91bb50f6fcfa8847f69d832e19.png)
 
 Ferazel walks, climbs, digs, and casts spells through the first three levels of
 Ambrosia's original demo. The full commercial game is not included.
