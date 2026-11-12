@@ -38,7 +38,6 @@ artifacts:
   source:
     type: url
     url: https://discmaster.textfiles.com/file/17741/MacAddict_035_1999_07.iso/Software/Fun%20%26%20Games/Deer%20Avenger%20Demo
-    download_page: https://classicmacdemos.com/deer-avenger
     expected_sha256: ef0f31d0bd7f631339e35df137bdf37da257950106dac8035a4425241076887f
     expected_size: 9857280
   provenance:
