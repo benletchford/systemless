@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://systemless.org/">
-    <img src=".github/assets/systemless-logo.svg" alt="Systemless mascot" width="192" height="192">
+    <img src=".github/assets/systemless-mascot-classic.png" alt="Systemless mascot" width="192" height="192">
   </a>
 </p>
 

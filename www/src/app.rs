@@ -37,31 +37,15 @@ pub(crate) fn report_runtime_notice(message: String) {
 }
 
 #[component]
-fn PixelMacMark() -> impl IntoView {
+fn SystemlessMark() -> impl IntoView {
     view! {
-        <svg
-            class="pixel-mac"
-            viewBox="0 0 16 16"
-            shape-rendering="crispEdges"
-            role="img"
-            aria-label="A smiling classic Macintosh"
-        >
-            <rect x="4" y="2" width="8" height="1" fill="var(--ink)"/>
-            <rect x="3" y="3" width="1" height="8" fill="var(--ink)"/>
-            <rect x="12" y="3" width="1" height="8" fill="var(--ink)"/>
-            <rect x="4" y="3" width="8" height="8" fill="#c9b183"/>
-            <rect x="5" y="4" width="6" height="6" fill="#2794c4"/>
-            <rect x="6" y="5" width="1" height="1" fill="#dff6ff"/>
-            <rect x="6" y="6" width="1" height="1" fill="var(--pixel-detail)"/>
-            <rect x="9" y="6" width="1" height="1" fill="var(--pixel-detail)"/>
-            <rect x="6" y="8" width="1" height="1" fill="var(--pixel-detail)"/>
-            <rect x="9" y="8" width="1" height="1" fill="var(--pixel-detail)"/>
-            <rect x="7" y="9" width="2" height="1" fill="var(--pixel-detail)"/>
-            <rect x="4" y="11" width="8" height="1" fill="var(--ink)"/>
-            <rect x="6" y="12" width="4" height="1" fill="var(--ink)"/>
-            <rect x="7" y="12" width="2" height="1" fill="#c9b183"/>
-            <rect x="5" y="13" width="6" height="1" fill="var(--ink)"/>
-        </svg>
+        <img
+            class="systemless-mark"
+            src="/assets/icons/systemless-mascot.png"
+            width="48"
+            height="48"
+            alt="Systemless mascot: a smiling classic Macintosh spirit"
+        />
     }
 }
 
@@ -182,7 +166,7 @@ fn LibraryPage(
         <div class="library">
             <section class="library-hero">
                 <div class="library-hero__content">
-                    <PixelMacMark/>
+                    <SystemlessMark/>
                     <div class="library-hero__copy">
                         {show_unapproved.then(|| view! {
                             <span class="eyebrow">"Preview library"</span>
@@ -820,7 +804,7 @@ fn push_route(path: &str) {
 fn set_document_head_for_home() {
     let description = "Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation.";
     let canonical = absolute_url("/");
-    let image = absolute_url("/assets/icons/favicon.svg");
+    let image = absolute_url("/assets/icons/systemless-mascot.png");
     set_document_head(HeadMeta {
         title: "Systemless | Play classic 68K and PowerPC Mac games in your browser".to_string(),
         description: description.to_string(),
@@ -837,7 +821,7 @@ fn set_document_head_for_home() {
 fn set_document_head_for_next() {
     let description = "Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation.";
     let canonical = absolute_url(crate::catalogue::NEXT_LIBRARY_ROUTE);
-    let image = absolute_url("/assets/icons/favicon.svg");
+    let image = absolute_url("/assets/icons/systemless-mascot.png");
     set_document_head(HeadMeta {
         title: "Systemless | Play classic 68K and PowerPC Mac games in your browser".to_string(),
         description: description.to_string(),
@@ -852,7 +836,7 @@ fn set_document_head_for_game(game: &Game) {
     let canonical = absolute_url(&browser_path_for_route(&canonical_path_for_game(game), "/"));
     let image = crate::paths::optional_asset_path(game.assets.screenshot_path)
         .map(|path| absolute_url(&path))
-        .unwrap_or_else(|| absolute_url("/assets/icons/favicon.svg"));
+        .unwrap_or_else(|| absolute_url("/assets/icons/systemless-mascot.png"));
     set_document_head(HeadMeta {
         title: format!("{}{} ({}) | Systemless", if game.approved { "Play " } else { "" }, game.title, game.year),
         description: game.description.to_string(),
