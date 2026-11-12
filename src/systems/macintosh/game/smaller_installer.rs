@@ -387,7 +387,17 @@ fn decode(bytes: &[u8], size: usize, compressed: bool) -> Result<Vec<u8>, String
             previous = byte;
             continue;
         }
-        match next()? {
+        let following = match next() {
+            Ok(byte) => byte,
+            // A raw stream may end with the literal escape itself. Accept only
+            // the final declared byte; expand_entries still checks the fork CRC.
+            Err(_) if !compressed && output.len() + 1 == size => {
+                output.push(0x81);
+                break;
+            }
+            Err(error) => return Err(error),
+        };
+        match following {
             0x82 => match next()? {
                 0 => {
                     output.extend_from_slice(&[0x81, 0x82]);
@@ -471,6 +481,32 @@ mod tests {
         assert!(decode(&[0x81, b'B'], 1, false).is_err());
         assert!(decode(&[129], 10, true).is_err());
         assert!(decode(&[1], 0, false).is_err());
+    }
+    #[test]
+    fn final_raw_rle_literal_is_bounded_and_fork_checksum_checked() {
+        assert_eq!(decode(&[0x81], 1, false).unwrap(), [0x81]);
+        assert_eq!(decode(&[b'A', 0x81], 2, false).unwrap(), [b'A', 0x81]);
+        assert_eq!(decode(&[0x81, 0x81], 2, false).unwrap(), [0x81, 0x81]);
+        for resource_only in [false, true] {
+            let mut bytes = fixture();
+            bytes[60] = 0x81;
+            bytes[38..42].copy_from_slice(&crc([0x81].into_iter()).to_be_bytes());
+            if resource_only {
+                bytes[44..48].copy_from_slice(&1u32.to_be_bytes());
+                bytes[48..52].copy_from_slice(&0u32.to_be_bytes());
+                bytes[52..56].copy_from_slice(&1u32.to_be_bytes());
+                bytes[56..60].copy_from_slice(&0u32.to_be_bytes());
+            }
+            let files = expand(&bytes, b"Smaller Installer").unwrap().unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].data, if resource_only { vec![] } else { vec![0x81] });
+            assert_eq!(files[0].rsrc, if resource_only { vec![0x81] } else { vec![] });
+            bytes[38] ^= 1;
+            assert!(expand(&bytes, b"Smaller Installer").is_err());
+        }
+        assert!(decode(&[0x81], 2, false).is_err());
+        assert!(decode(&[0x81, 0x82], 1, false).is_err());
+        assert!(decode(&[0x81, b'B'], 1, false).is_err());
     }
     fn fixture() -> Vec<u8> {
         let mut bytes = vec![0; 10];
