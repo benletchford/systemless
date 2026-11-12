@@ -18,8 +18,8 @@ compatibility:
     systemless_version: 0a0c6a31 native
     architecture: 68k
     environment: >-
-      Complete unchanged original sample at default machine settings. Normal Return
-      opens instructions and Space starts the first zone. Mouse movement to 450,330
+      Complete unchanged original sample at default machine settings. Return leaves the captured title
+      image unchanged; Space starts the first zone. Mouse movement to 450,330
       followed by eight ticks moves the cyan ship down 28 pixels against a matched
       omitted-input control. Starting RGB frames are identical; both runs finish 864 frontend
       and 1464 guest ticks with zero exhausted frames. External image assertions verify
@@ -63,7 +63,7 @@ artifacts:
       resource payload, name, ID and attribute; raw resource maps differ. Whole archive
       wrapper identity is not claimed. The complete 64-byte ReadMe and 31 readable selected
       standard text/UI/version resources were reviewed, with zero compressed unread
-      records. Original title, incomplete instructions and first-zone screens were
+      records. Original title and first-zone screens were
       inspected. PICT artwork was not decoded for text. Production packing matches all four
       files, eight forks and four Finder records against independent unar. No opaque game
       data, scripts or guest instructions were decoded.
@@ -95,7 +95,6 @@ Fly across the first zone in this original **Sky Shadow** sample, version **1.1.
 The complete package retains its original sounds and first-zone data.
 
 Press **Space** at the title to start. The mouse steers the craft. Native first-zone
-startup and a bounded mouse response are verified; instruction and HUD rendering
-have known limitations. Browser play remains pending.
+startup and a bounded mouse response are verified; instruction display remains unverified. Browser play remains pending.
 
 ![Sky Shadow first-zone gameplay](https://assets.systemless.org/catalogue/media/sha256/38/38456d2ca120ec1c692a6908d6530db2d2a9288b735820674b7e5e1aa2d278e7.png)
