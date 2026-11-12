@@ -18,19 +18,38 @@ compatibility:
     systemless_version: 0a0c6a31 native
     architecture: 68k
     environment: >-
-      Complete unchanged publisher MacBinary download at default machine settings.
-      Choose the original Set to 256 Colors button, then use the publisher-documented
-      Escape shortcut to finish a cutscene. The title and first weather-factory room
-      render. The original publisher run finishes 2056 frontend and 2656 guest ticks with
-      zero exhausted frames. Actual title and room captures inspected. Floor and doorway
-      clicks have not established character movement or a puzzle interaction; these
-      runs are not puzzle-input qualification. The publisher-documented inventory hover
-      does reveal Sam's bag at the bottom of the room. No modified files or CPU, memory
-      or display override. The original PPC version halts after the color prompt and is
-      not enabled. Browser input/pacing, later puzzles, persistence, audio fidelity and
-      independent hardware accuracy remain unverified.
-    status: boots
+      Complete unchanged publisher MacBinary using its original 68k version and
+      default machine settings. The publisher logo appears directly; the color-choice
+      dialog belonged to the halted PPC run. Ordinary intro input and the documented
+      Escape shortcut reach the weather-factory room. Click the yellow display at
+      175,240: it changes from a hat to a red heart. A matched omitted-click control
+      retains the hat. Starting RGB frames match exactly; both runs finish 2552
+      frontend and 3152 guest ticks with zero exhausted frames. External image checks
+      find 145 red pixels in the observed display region versus zero in the control;
+      scripts contain zero assertions. Actual response and control crops inspected.
+      This verifies one original animated clickpoint, not puzzle completion or character
+      movement. Inventory hover also reveals Sam's bag. No patched files or CPU,
+      memory or display override. The original PPC version halts after its color prompt
+      and is not enabled. Later puzzles, persistence, audio fidelity and independent
+      hardware accuracy remain unverified.
+    status: playable
     evidence: https://github.com/benletchford/systemless/issues/6136
+  - date: "2026-11-12"
+    tester: Catalogue maintainer
+    systemless_version: 099ba8bd private browser
+    architecture: 68k
+    environment: >-
+      Exact promoted archive and entry with private launch enabled only. Original
+      archive, page and worker Wasm response bodies and actual executed worker module
+      are pinned. The initial 20-second interaction window measures 21.43 guest ticks/s,
+      below the unchanged minimum of 50. Host 63.22 FPS, maximum frame 21.0 ms and
+      minimum audio queue 487.3 ms pass. The complete action sequence takes 33.281
+      seconds, exceeding the measured window; its later clickpoint capture is diagnostic
+      only. No action, lifecycle or network errors. Sustained and omission-control
+      browser cases were not run after this failure. Public launch remains disabled.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/6138
+
 runtime:
   executable_path: Pajama Sam 2 Demo/PJ2Demo
 artifacts:
@@ -100,7 +119,7 @@ The publisher's ReadMe describes a quest to find the missing Snowflake Inspector
 The complete package retains that ReadMe and its original bundled components.
 
 The original controls use point-and-click interaction and inventory items.
-**Escape** fast-forwards the current cutscene. Native startup reaches the first
-room; interactive gameplay and browser play remain unverified.
+**Escape** fast-forwards the current cutscene. Native startup and one animated clickpoint are verified. Browser play remains
+held on pacing; later puzzles remain unverified.
 
 ![Pajama Sam 2 weather-factory room](https://assets.systemless.org/catalogue/media/sha256/2d/2daaed1d9b4febd6e12c1c5772ef1f9250631c101ff1489a8e6b06b28ff12786.png)
