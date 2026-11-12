@@ -2513,6 +2513,9 @@ fn payload_from_forks(
         }
         match payload_from_stuffit_bytes(name, &data, executable_priority) {
             Ok(payload) => return Ok(payload),
+            // A header that fails to parse is an error; contents that fail to
+            // decompress (encrypted archives) leave the archive as a plain file.
+            Err(err) if err.contains(": failed to parse: ") => return Err(err),
             Err(err) => skipped_disk_image_errors.push(format!("Nested StuffIt {name}: {err}")),
         }
     }
@@ -2523,6 +2526,9 @@ fn payload_from_forks(
         }
         match payload_from_stuffit_bytes(name, &rsrc, executable_priority) {
             Ok(payload) => return Ok(payload),
+            // A header that fails to parse is an error; contents that fail to
+            // decompress (encrypted archives) leave the archive as a plain file.
+            Err(err) if err.contains(": failed to parse: ") => return Err(err),
             Err(err) => skipped_disk_image_errors.push(format!("Nested StuffIt {name}: {err}")),
         }
     }
@@ -8047,8 +8053,31 @@ mod tests {
 
     #[test]
     fn unreadable_nested_archive_is_kept_as_an_opaque_file() {
-        let mut archive = b"SIT!".to_vec();
-        archive.resize(80, 0);
+        let mut sit = SitArchive::new();
+        sit.add_entry(SitEntry {
+            name: "Notes".into(),
+            data_fork: (0..4096u32).map(|i| (i * 7 % 251) as u8).collect(),
+            resource_fork: Vec::new(),
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            is_folder: false,
+            data_method: 0,
+            rsrc_method: 0,
+            data_ulen: 0,
+            rsrc_ulen: 0,
+            finder_flags: 0,
+            creation_date: 0,
+            modification_date: 0,
+            is_compressed: false,
+            format: stuffit::ArchiveFormat::Sit5,
+        });
+        let mut archive = sit.serialize_compressed().unwrap();
+        // An encrypted SIT13 stream starts with an invalid table code, as in
+        // the encrypted add-ons on the Ferazel's Wand disc.
+        let after_type = archive.windows(8).position(|w| w == b"TEXTttxt").unwrap() + 8;
+        let stream = after_type + archive[after_type..].iter().position(|&b| b != 0).unwrap();
+        assert_eq!(archive[stream] >> 4, 1);
+        archive[stream] = 12 << 4;
         let payload = payload_from_forks(
             "Disc/Extras/Locked.sit",
             archive.clone(),
