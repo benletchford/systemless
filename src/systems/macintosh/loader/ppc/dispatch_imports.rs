@@ -320,15 +320,21 @@ pub(crate) fn dispatch_supported_import(
     // The process registry is authoritative. Refresh the legacy vector
     // booleans at each native boundary so rendering/debugging code that still
     // reads them sees any classic-side transition before this import runs.
-    let geometry_only = geometry_uses_only_guest_memory(&binding.dispatcher_target);
-    if !geometry_only {
+    // Hot input/clock polls likewise only read process state or write the
+    // caller's KeyMap. They cannot observe handles or GWorld mirrors.
+    let no_graphics_snapshot = geometry_uses_only_guest_memory(&binding.dispatcher_target)
+        || matches!(binding.dispatcher_target,
+            PpcImportDispatcherTarget::GetKeys
+            | PpcImportDispatcherTarget::Button
+            | PpcImportDispatcherTarget::TickCount);
+    if !no_graphics_snapshot {
         ppc_sync_gworld_pixel_state_mirrors(gworlds, gworld_pixel_states);
     }
 
     // Toolbox helpers use an import-scoped read view for guest ABI decoding.
     // Allocation ownership remains in the process Memory Manager, and the
     // next import observes its canonical records immediately.
-    let handles = &mut if geometry_only
+    let handles = &mut if no_graphics_snapshot
         || movie_poll_uses_no_handle_snapshot(&binding.dispatcher_target, cpu)
     {
         Vec::new()

@@ -28,6 +28,7 @@ impl IndexedFrame {
         bus: &MacMemoryBus,
         mode: ScreenMode,
         clut: &[[u16; 3]; 256],
+        gamma: &display::DisplayGamma,
         cursor: Option<&CursorImage>,
         mouse: (i16, i16),
     ) -> bool {
@@ -41,9 +42,9 @@ impl IndexedFrame {
         {
             return false;
         }
-        // Match the browser's existing render_rgba palette/gamma policy.
-        self.screen
-            .capture(bus, mode, clut, &display::default_display_gamma());
+        // Snapshot the active transfer table with the palette and pixels. Guest
+        // fades can change gamma without changing the framebuffer or CLUT.
+        self.screen.capture(bus, mode, clut, gamma);
         self.prepare(cursor, mouse)
     }
 
@@ -155,6 +156,47 @@ mod tests {
             display::render_cursor(&mut rgba, 37, 29, cursor, mouse);
         }
         rgba
+    }
+
+    #[test]
+    fn gamma_only_fades_and_palette_swaps_match_scalar_presentation() {
+        use systemless::systems::macintosh::memory::MemoryBus;
+        let mut bus = MacMemoryBus::new(1024);
+        for i in 0..4 {
+            bus.write_byte(128 + i, i as u8);
+        }
+        let mode = (128, 4, 4, 1, 8);
+        let mut clut = [[0; 3]; 256];
+        clut[0] = [0xffff; 3];
+        clut[1] = [0xffff, 0, 0];
+        clut[2] = [0, 0xffff, 0];
+        let mut frame = IndexedFrame::default();
+        for phase in 0..4 {
+            let gamma = if phase == 1 || phase == 2 {
+                [[0; 256]; 3]
+            } else {
+                display::linear_display_gamma()
+            };
+            if phase == 2 {
+                clut[1] = [0, 0, 0xffff];
+            }
+            assert!(frame.capture(&bus, mode, &clut, &gamma, None, (0, 0)));
+            let actual: Vec<u8> = frame
+                .screen
+                .pixels
+                .iter()
+                .flat_map(|&index| {
+                    frame.palette[index as usize * 4..index as usize * 4 + 4]
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            let expected = display::render_screen_with_gamma(&bus, mode, &clut, &gamma);
+            assert_eq!(actual, expected, "phase={phase}");
+            if phase == 1 || phase == 2 {
+                assert!(actual.chunks_exact(4).all(|pixel| pixel == [0, 0, 0, 255]));
+            }
+        }
     }
 
     #[test]

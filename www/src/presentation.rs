@@ -401,7 +401,20 @@ impl Canvas2dFrame {
     }
 
     fn paint_js(&mut self, width: u32, height: u32, rgba: &Uint8Array) {
-        self.paint(width, height, &rgba.to_vec());
+        if self.width != width || self.height != height {
+            let Some(next) = Self::new(self.context.clone(), width, height) else {
+                return;
+            };
+            *self = next;
+        }
+        if self.pixels.length() != rgba.length() {
+            return;
+        }
+        // Worker pixels already live in JavaScript. Copy directly into the
+        // reusable ImageData instead of allocating a Rust Vec and crossing
+        // the JS/Wasm boundary twice for every Retina frame.
+        self.pixels.set(rgba.as_ref(), 0);
+        let _ = self.context.put_image_data(&self.image_data, 0.0, 0.0);
     }
 }
 
