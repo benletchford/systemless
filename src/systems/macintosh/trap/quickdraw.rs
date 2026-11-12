@@ -12928,9 +12928,20 @@ impl super::TrapDispatcher {
                 }
                 let count = (req_size as usize) + 1;
 
-                // Destination: NIL handle → write into device_clut directly.
-                let dst_ptr = if dst_handle != 0 {
-                    bus.read_long(dst_handle)
+                // NIL and an explicit current-device table update both the
+                // guest ColorTable and hardware CLUT. Ordinary offscreen tables
+                // affect only their own memory. Neither path changes ctSeed or
+                // invalidates the inverse table (Inside Macintosh V, V-144).
+                let device_table_handle = self.current_gdevice_ctab_handle(bus);
+                let destination_handle = if dst_handle == 0 {
+                    device_table_handle
+                } else {
+                    dst_handle
+                };
+                let updates_device = dst_handle == 0
+                    || (device_table_handle != 0 && destination_handle == device_table_handle);
+                let dst_ptr = if destination_handle != 0 {
+                    bus.read_long(destination_handle)
                 } else {
                     0
                 };
@@ -12967,10 +12978,8 @@ impl super::TrapDispatcher {
                         bus.write_word(dst_entry + 2, r);
                         bus.write_word(dst_entry + 4, g);
                         bus.write_word(dst_entry + 6, b);
-                    } else {
-                        // NIL dstTable → write directly into device_clut.
-                        // Per IM, no ctSeed bump (i.e. don't invalidate
-                        // anything that depends on the inverse table).
+                    }
+                    if updates_device {
                         self.device_clut.set_entry(dst_idx as usize, [r, g, b]);
                     }
                 }
