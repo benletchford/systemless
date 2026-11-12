@@ -909,6 +909,22 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 mount_flags,
             ))))
         }
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbDirCreateSync,
+        ) => Some(PpcImportAction::Return(ppc_i16_result(
+            dispatch_file_manager::ppc_pb_dir_create(
+                cpu.gpr[3],
+                memory,
+                vfs_directories,
+                next_vfs_dir_id,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+            ),
+        ))),
         PpcImportDispatcherTarget::FileCompatibility(operation) => {
             Some(ppc_dispatch_file_compatibility(
                 operation,
@@ -1510,8 +1526,9 @@ pub(super) fn ppc_dispatch_file_compatibility(
         PpcFileCompatibilityOperation::PbHGetVolParmsSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR)),
         ),
-        PpcFileCompatibilityOperation::PbCatSearchSync
-        | PpcFileCompatibilityOperation::PbDirCreateSync => PpcImportAction::Return(
+        // Directory creation is dispatched above with the mutable catalog.
+        PpcFileCompatibilityOperation::PbDirCreateSync => unreachable!("directory creation dispatch"),
+        PpcFileCompatibilityOperation::PbCatSearchSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_FNF_ERR)),
         ),
         PpcFileCompatibilityOperation::OpenDf

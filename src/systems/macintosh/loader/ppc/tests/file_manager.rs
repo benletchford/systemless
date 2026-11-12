@@ -11653,3 +11653,114 @@ fn h_open_res_file_accepts_hgetvol_working_directory_and_explicit_directory_over
         }
     }
 }
+
+#[test]
+fn pbdircreatesync_creates_nested_directory_and_returns_catalog_id() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBDirCreateSync")).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 80;
+    loaded.memory.add_region(pb, vec![0; 512]);
+    write_ppc_pstring(&mut loaded.memory, name, b":Preferences:Temp:");
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_SYSTEM_FOLDER_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    let expected_id = *loaded.next_vfs_dir_id;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbDirCreateSync,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(expected_id));
+    let directory = loaded
+        .vfs_directories
+        .iter()
+        .find(|dir| dir.dir_id == expected_id)
+        .unwrap();
+    assert_eq!(directory.path, "System Folder/Preferences/Temp");
+    assert_eq!(directory.parent_dir_id, PPC_PREFERENCES_DIR_ID);
+    assert!(directory.dirty);
+    assert_eq!(loaded.next_vfs_dir_id, expected_id + 1);
+
+    // A duplicate must not allocate another ID or overwrite the input parent.
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_SYSTEM_FOLDER_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbDirCreateSync,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DUP_FN_ERR));
+    assert_eq!(
+        loaded.memory.read_u16_be(pb + 16),
+        Some(PPC_DUP_FN_ERR as u16)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(pb + 48),
+        Some(PPC_SYSTEM_FOLDER_DIR_ID)
+    );
+    assert_eq!(loaded.next_vfs_dir_id, expected_id + 1);
+}
+
+#[test]
+fn pbdircreatesync_reports_missing_parent_bad_volume_and_bad_parameter() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBDirCreateSync")).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 80;
+    loaded.memory.add_region(pb, vec![0; 512]);
+    let initial_dirs = loaded.vfs_directories.len();
+    let initial_id = *loaded.next_vfs_dir_id;
+    for (path, vref, expected) in [
+        (
+            &b":Absent:Temp:"[..],
+            PPC_BOOT_VOLUME_REF_NUM,
+            PPC_DIR_NF_ERR,
+        ),
+        (&b"Temp"[..], 1234, PPC_NSV_ERR),
+        (&b""[..], PPC_BOOT_VOLUME_REF_NUM, PPC_BD_NAM_ERR),
+    ] {
+        write_ppc_pstring(&mut loaded.memory, name, path);
+        loaded.memory.write_u32_be(pb + 18, name).unwrap();
+        loaded.memory.write_u16_be(pb + 22, vref as u16).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pb + 48, PPC_SYSTEM_FOLDER_DIR_ID)
+            .unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::FileCompatibility(
+                PpcFileCompatibilityOperation::PbDirCreateSync,
+            ),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(expected as u16));
+        assert_eq!(
+            loaded.memory.read_u32_be(pb + 48),
+            Some(PPC_SYSTEM_FOLDER_DIR_ID)
+        );
+        assert_eq!(loaded.vfs_directories.len(), initial_dirs);
+        assert_eq!(loaded.next_vfs_dir_id, initial_id);
+    }
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbDirCreateSync,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}

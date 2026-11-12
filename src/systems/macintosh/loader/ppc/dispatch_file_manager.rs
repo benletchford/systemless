@@ -447,6 +447,66 @@ pub(super) fn ppc_close_working_directory(
     }
 }
 
+/// PBDirCreateSync returns the new directory's ID in ioDirID (+48).
+/// Inside Macintosh: Files (1992), PBDirCreate; the catalog pathname and
+/// working-directory rules are shared with the other hierarchical PB calls.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_pb_dir_create(
+    pb: u32,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    next_vfs_dir_id: &mut u32,
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    default_dir_id: u32,
+    application_working_directory_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+) -> i16 {
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 52) {
+        return PPC_PARAM_ERR;
+    }
+    let result = (|| {
+        let (_, parent_dir_id, parent, leaf) = ppc_pb_catalog_path(
+            memory,
+            pb,
+            true,
+            vfs_directories,
+            vfs_volumes,
+            default_dir_id,
+            application_working_directory_ref_num,
+            working_directories,
+        )?;
+        let path = ppc_join_vfs_path(&parent, &leaf);
+        if ppc_directory_id_for_path(vfs_directories, &path).is_some()
+            || vfs_files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(&path))
+            || vfs_resource_files
+                .iter()
+                .any(|file| file.path.eq_ignore_ascii_case(&path))
+        {
+            return Err(PPC_DUP_FN_ERR);
+        }
+        let dir_id = *next_vfs_dir_id;
+        let next_id = dir_id.checked_add(1).ok_or(PPC_PARAM_ERR)?;
+        memory.write_u32_be(pb + 48, dir_id).ok_or(PPC_PARAM_ERR)?;
+        vfs_directories.push(PpcVfsDirectory {
+            dir_id,
+            parent_dir_id,
+            path,
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: true,
+        });
+        *next_vfs_dir_id = next_id;
+        Ok(())
+    })()
+    .map_or_else(|error| error, |()| PPC_NO_ERR);
+    ppc_complete_pb(memory, pb, result)
+}
+
 fn ppc_same_volume(left: i16, right: i16) -> bool {
     let normalize = |vref: i16| {
         if vref == 0 {
