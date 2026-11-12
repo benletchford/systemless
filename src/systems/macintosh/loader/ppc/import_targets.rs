@@ -4268,6 +4268,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SysBreak") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Debugger,
         ),
+        ("InterfaceLib", "LMGetMenuHook" | "lmgetmenuhook") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetMenuHook)
+        }
         ("InterfaceLib", "LMGetROM85") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetRom85)
         }

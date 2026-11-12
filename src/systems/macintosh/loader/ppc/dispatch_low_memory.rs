@@ -11,6 +11,8 @@ pub enum PpcLowMemoryAccessor {
     GetFcbSPtr,
     GetGzMoveHnd,
     GetGzRootHnd,
+    /// LMGetMenuHook: the MenuHook callback at $0A30.
+    GetMenuHook,
     GetTheMenu,
     /// LMSetCursorNew: the CrsrNew byte at $08CE.
     SetCursorNew,
@@ -57,12 +59,14 @@ pub(super) fn dispatch_low_memory_import(
                 PpcLowMemoryAccessor::GetDoubleTime
                 | PpcLowMemoryAccessor::GetFcbSPtr
                 | PpcLowMemoryAccessor::GetGzMoveHnd
-                | PpcLowMemoryAccessor::GetGzRootHnd => {
+                | PpcLowMemoryAccessor::GetGzRootHnd
+                | PpcLowMemoryAccessor::GetMenuHook => {
                     let address = match accessor {
                         PpcLowMemoryAccessor::GetDoubleTime => addr::DOUBLE_TIME,
                         PpcLowMemoryAccessor::GetFcbSPtr => addr::FCB_S_PTR,
                         PpcLowMemoryAccessor::GetGzMoveHnd => addr::GZ_MOVE_HND,
                         PpcLowMemoryAccessor::GetGzRootHnd => addr::GZ_ROOT_HND,
+                        PpcLowMemoryAccessor::GetMenuHook => 0x0a30,
                         _ => unreachable!(),
                     };
                     return Some(
