@@ -83,6 +83,7 @@ pub struct PpcDrawSprocketState {
     pub blanking_window: Option<u32>,
     pub context_state: PpcDspContextPlayState,
     pub context_attributes: PpcDspContextAttributes,
+    pub selected_context: u32,
     pub dirty_grid_size: (u32, u32),
     pub front_buffer_gworld: u32,
     pub back_buffer_gworld: u32,
@@ -131,6 +132,7 @@ impl Default for PpcDrawSprocketState {
             blanking_window: None,
             context_state: PpcDspContextPlayState::Inactive,
             context_attributes: PpcDspContextAttributes::default(),
+            selected_context: PPC_DSP_CONTEXT,
             dirty_grid_size: (32, 32),
             front_buffer_gworld: PPC_MAIN_GWORLD,
             back_buffer_gworld: PPC_DSP_BACK_GWORLD,
@@ -392,6 +394,48 @@ pub const PPC_DSP_CONTEXT_STATE_PAUSED: u32 = 1;
 pub const PPC_DSP_CONTEXT_STATE_INACTIVE: u32 = 2;
 // Keep synthetic device storage outside the guest RAM-backed application partition.
 pub const PPC_DSP_CONTEXT: u32 = 0x4000_0000;
+// Opaque identities for the software modes implemented by framebuffer activation.
+// Keep the original mutable FindBestContext/saved-context reference separate
+// from enumeration, whose mode identities must survive later searches.
+const PPC_DSP_ENUMERATED_CONTEXTS: [(u32, u32, u32, u32); 4] = [
+    (PPC_DSP_CONTEXT + 0x40, 640, 480, 16),
+    (PPC_DSP_CONTEXT + 0x10, 800, 600, 16),
+    (PPC_DSP_CONTEXT + 0x20, 640, 480, 8),
+    (PPC_DSP_CONTEXT + 0x30, 800, 600, 8),
+];
+
+pub(crate) fn ppc_dsp_enumerated_attributes(context: u32) -> Option<PpcDspContextAttributes> {
+    let &(_, width, height, depth) = PPC_DSP_ENUMERATED_CONTEXTS
+        .iter()
+        .find(|&&(reference, _, _, _)| reference == context)?;
+    let attributes = PpcDspContextAttributes {
+        width,
+        height,
+        display_depth: depth,
+        back_buffer_depth: depth,
+        display_best_depth_mask: 1 << depth.trailing_zeros(),
+        back_buffer_best_depth_mask: 1 << depth.trailing_zeros(),
+        ..PpcDspContextAttributes::default()
+    };
+    ppc_dsp_context_request_is_supported(attributes).then_some(attributes)
+}
+
+pub(crate) fn ppc_dsp_attributes_for_context(
+    context: u32,
+    state: &PpcDrawSprocketState,
+) -> Option<PpcDspContextAttributes> {
+    let enumerated = if context == PPC_DSP_CONTEXT {
+        PpcDspContextAttributes::default()
+    } else {
+        ppc_dsp_enumerated_attributes(context)?
+    };
+    Some(if context == state.selected_context {
+        state.context_attributes
+    } else {
+        enumerated
+    })
+}
+
 pub const PPC_DSP_CONTEXT_ATTRIBUTES_SIZE: u32 = 72;
 /// Private, versioned DrawSprocket context blob used for HLE save/restore.
 pub const PPC_DSP_FLAT_CONTEXT_SIZE: u32 = 12 + PPC_DSP_CONTEXT_ATTRIBUTES_SIZE;
@@ -873,8 +917,12 @@ pub(crate) fn ppc_dsp_context_flatten(
             .write_u32_be(flat + 4, PPC_DSP_FLAT_CONTEXT_VERSION)
             .is_none()
         || memory.write_u32_be(flat + 8, PPC_DSP_DISPLAY_ID).is_none()
-        || ppc_write_dsp_context_attributes(memory, flat + 12, draw_sprocket.context_attributes)
-            .is_none()
+        || ppc_write_dsp_context_attributes(
+            memory,
+            flat + 12,
+            ppc_dsp_attributes_for_context(cpu.gpr[3], draw_sprocket).unwrap(),
+        )
+        .is_none()
     {
         return PPC_PARAM_ERR;
     }
@@ -913,6 +961,7 @@ pub(crate) fn ppc_dsp_context_restore(
         return PPC_PARAM_ERR;
     }
     draw_sprocket.context_attributes = attributes;
+    draw_sprocket.selected_context = PPC_DSP_CONTEXT;
     PPC_NO_ERR
 }
 
@@ -935,7 +984,7 @@ pub(crate) fn ppc_dsp_context_get_buffer(
 }
 
 pub(crate) fn ppc_dsp_context_error(context: u32) -> Option<i16> {
-    if context == PPC_DSP_CONTEXT {
+    if context == PPC_DSP_CONTEXT || ppc_dsp_enumerated_attributes(context).is_some() {
         None
     } else {
         Some(PPC_DSP_CONTEXT_NOT_FOUND_ERR)
@@ -1058,7 +1107,7 @@ pub(crate) fn ppc_dsp_get_first_context(cpu: &PpcCpu, memory: &mut PpcSectionMem
         return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
     }
     if memory
-        .write_u32_be(context_out_ptr, PPC_DSP_CONTEXT)
+        .write_u32_be(context_out_ptr, PPC_DSP_ENUMERATED_CONTEXTS[0].0)
         .is_none()
     {
         return PPC_PARAM_ERR;
@@ -1066,7 +1115,11 @@ pub(crate) fn ppc_dsp_get_first_context(cpu: &PpcCpu, memory: &mut PpcSectionMem
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_dsp_get_next_context(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+pub(crate) fn ppc_dsp_get_next_context(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &PpcDrawSprocketState,
+) -> i16 {
     let current_context = cpu.gpr[3];
     let context_out_ptr = cpu.gpr[4];
     if context_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, context_out_ptr, 4) {
@@ -1075,9 +1128,33 @@ pub(crate) fn ppc_dsp_get_next_context(cpu: &PpcCpu, memory: &mut PpcSectionMem)
     if let Some(error) = ppc_dsp_context_error(current_context) {
         return error;
     }
-    // Systemless exposes one faithful software display context, so the first
-    // valid context is also the end of the enumeration described above.
-    PPC_DSP_CONTEXT_NOT_FOUND_ERR
+    // Apple Game Sprockets Legacy Reference, DSpGetNextContext: enumerate
+    // contexts on this display without reserving or activating any of them.
+    // FindBestContext retains its historical mutable reference. Continue from
+    // the corresponding mode when a caller enumerates from that reference.
+    let selected = draw_sprocket.context_attributes;
+    let Some(index) = PPC_DSP_ENUMERATED_CONTEXTS
+        .iter()
+        .position(|&(reference, width, height, depth)| {
+            reference == current_context
+                || (current_context == PPC_DSP_CONTEXT
+                    && (width, height, depth)
+                        == (selected.width, selected.height, selected.display_depth))
+        })
+    else {
+        return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+    };
+    let next = PPC_DSP_ENUMERATED_CONTEXTS[index + 1..]
+        .iter()
+        .map(|&(reference, _, _, _)| reference)
+        .find(|&reference| ppc_dsp_enumerated_attributes(reference).is_some());
+    let Some(next) = next else {
+        return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+    };
+    if memory.write_u32_be(context_out_ptr, next).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
 }
 
 pub(crate) fn ppc_dsp_process_event(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
@@ -1220,6 +1297,7 @@ pub(crate) fn ppc_dsp_find_best_context(
         return PPC_PARAM_ERR;
     }
     draw_sprocket.context_attributes = ppc_selected_dsp_context_attributes(requested);
+    draw_sprocket.selected_context = PPC_DSP_CONTEXT;
     draw_sprocket.started = true;
     PPC_NO_ERR
 }
@@ -1278,7 +1356,11 @@ pub(crate) fn ppc_dsp_get_mouse(
     PPC_NO_ERR
 }
 
-pub(crate) fn ppc_dsp_find_context_from_point(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+pub(crate) fn ppc_dsp_find_context_from_point(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &PpcDrawSprocketState,
+) -> i16 {
     // Inside Macintosh: Apple Game Sprockets Guide (1996),
     // "DSpFindContextFromPoint". PowerPC passes the four-byte Point value in r3.
     let global_v = (cpu.gpr[3] >> 16) as u16 as i16;
@@ -1294,7 +1376,13 @@ pub(crate) fn ppc_dsp_find_context_from_point(cpu: &PpcCpu, memory: &mut PpcSect
     {
         return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
     }
-    if memory.write_u32_be(out_context, PPC_DSP_CONTEXT).is_none() {
+    if memory
+        .write_u32_be(
+            out_context,
+            draw_sprocket.active_context.unwrap_or(PPC_DSP_CONTEXT),
+        )
+        .is_none()
+    {
         return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
@@ -1611,6 +1699,11 @@ pub(crate) fn ppc_dsp_context_reserve(
     {
         return PPC_PARAM_ERR;
     }
+    if cpu.gpr[4] == 0 && draw_sprocket.selected_context != context {
+        draw_sprocket.context_attributes =
+            ppc_dsp_attributes_for_context(context, draw_sprocket).unwrap();
+    }
+    draw_sprocket.selected_context = context;
     // Reserving an inactive context must leave the desktop display mode and
     // its pixels alone. The switch occurs when SetState activates the context.
     draw_sprocket.back_buffer_gworld = if draw_sprocket.context_attributes.page_count == 1 {

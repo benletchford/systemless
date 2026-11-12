@@ -1,6 +1,212 @@
 use super::*;
 
 #[test]
+fn draw_sprocket_next_context_continues_from_best_context_mode() {
+    let modes = [
+        (640, 480, 16u32),
+        (800, 600, 16),
+        (640, 480, 8),
+        (800, 600, 8),
+    ];
+    for (index, &(width, height, depth)) in modes.iter().enumerate() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let attributes = PPC_DATA_BASE + 0x1000;
+        let output = attributes + 128;
+        loaded.memory.add_region(attributes, vec![0; 132]);
+        write_test_dsp_context_attributes(
+            &mut loaded.memory,
+            attributes,
+            PpcDspContextAttributes {
+                width,
+                height,
+                display_depth: depth,
+                back_buffer_depth: depth,
+                display_best_depth_mask: 1 << depth.trailing_zeros(),
+                back_buffer_best_depth_mask: 1 << depth.trailing_zeros(),
+                ..PpcDspContextAttributes::default()
+            },
+        );
+        loaded.cpu.gpr[3] = attributes;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let selected = loaded.memory.read_u32_be(output).unwrap();
+        loaded.cpu.gpr[3] = selected;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
+        if index == modes.len() - 1 {
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR)
+            );
+            assert_eq!(loaded.memory.read_u32_be(output), Some(selected));
+        } else {
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let next = loaded.memory.read_u32_be(output).unwrap();
+            loaded.cpu.gpr[3] = next;
+            loaded.cpu.gpr[4] = attributes;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::DSpContextGetAttributes,
+            );
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            let actual = ppc_read_dsp_context_attributes(&mut loaded.memory, attributes).unwrap();
+            assert_eq!(
+                (actual.width, actual.height, actual.display_depth),
+                modes[index + 1]
+            );
+        }
+        assert_eq!(loaded.draw_sprocket.reserved_context, None);
+        assert_eq!(loaded.draw_sprocket.active_context, None);
+    }
+}
+
+#[test]
+fn draw_sprocket_enumeration_survives_nondefault_best_context_search() {
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let attributes = PPC_DATA_BASE + 0x1000;
+    let output = attributes + 128;
+    loaded.memory.add_region(attributes, vec![0; 132]);
+    let requested = PpcDspContextAttributes {
+        width: 800,
+        height: 600,
+        display_depth: 8,
+        back_buffer_depth: 8,
+        display_best_depth_mask: 1 << 3,
+        back_buffer_best_depth_mask: 1 << 3,
+        ..PpcDspContextAttributes::default()
+    };
+    write_test_dsp_context_attributes(&mut loaded.memory, attributes, requested);
+    loaded.cpu.gpr[3] = attributes;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let selected = loaded.memory.read_u32_be(output).unwrap();
+    let desktop = loaded.presented_front_buffer().unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetFirstContext);
+    let mut modes = Vec::new();
+    for _ in 0..4 {
+        let reference = loaded.memory.read_u32_be(output).unwrap();
+        assert_ne!(reference, selected);
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = attributes;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextGetAttributes);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let mode = ppc_read_dsp_context_attributes(&mut loaded.memory, attributes).unwrap();
+        modes.push((mode.width, mode.height, mode.display_depth));
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
+    }
+    assert_eq!(modes, [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8)]);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR));
+    assert_eq!(loaded.draw_sprocket.context_attributes, requested);
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+    loaded.cpu.gpr[3] = selected;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.context_attributes, requested);
+}
+
+
+#[test]
+fn draw_sprocket_enumerates_modes_without_switching_and_reserves_each_identity() {
+    let mut references = Vec::new();
+    for (index, (width, height, depth)) in
+        [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8)]
+            .into_iter()
+            .enumerate()
+    {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpGetFirstContext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let output = PPC_DATA_BASE + 0x1000;
+        let attributes = output + 16;
+        loaded.memory.add_region(output, vec![0xaa; 128]);
+        let desktop = loaded.presented_front_buffer().unwrap();
+        loaded.cpu.gpr[3] = 1;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetFirstContext);
+        for _ in 0..index {
+            loaded.cpu.gpr[3] = loaded.memory.read_u32_be(output).unwrap();
+            loaded.cpu.gpr[4] = output;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        let reference = loaded.memory.read_u32_be(output).unwrap();
+        assert!(!references.contains(&reference));
+        references.push(reference);
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = attributes;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextGetAttributes,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let advertised = ppc_read_dsp_context_attributes(&mut loaded.memory, attributes).unwrap();
+        assert_eq!(
+            (
+                advertised.width,
+                advertised.height,
+                advertised.display_depth
+            ),
+            (width, height, depth)
+        );
+        assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+        assert_eq!(loaded.draw_sprocket.reserved_context, None);
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.draw_sprocket.context_attributes, advertised);
+        assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.draw_sprocket.active_context, Some(reference));
+        assert_eq!(loaded.presented_front_buffer().unwrap().width, width);
+        assert_eq!(loaded.presented_front_buffer().unwrap().height, height);
+        loaded.cpu.gpr[3] = (100 << 16) | 100;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindContextFromPoint);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u32_be(output), Some(reference));
+        // Querying a different mode must not inherit the active mode's attributes.
+        let other = if index == 0 {
+            PPC_DSP_CONTEXT + 0x10
+        } else {
+            PPC_DSP_CONTEXT + 0x40
+        };
+        loaded.cpu.gpr[3] = other;
+        loaded.cpu.gpr[4] = attributes;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextGetAttributes,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let other_attributes =
+            ppc_read_dsp_context_attributes(&mut loaded.memory, attributes).unwrap();
+        assert_eq!(other_attributes.width, if index == 0 { 800 } else { 640 });
+        assert_eq!(other_attributes.display_depth, 16);
+        if index == 3 {
+            loaded.cpu.gpr[3] = reference;
+            loaded.cpu.gpr[4] = output;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR)
+            );
+            assert_eq!(loaded.memory.read_u32_be(output), Some(reference));
+        }
+    }
+}
+
+#[test]
 fn draw_sprocket_reservation_page_fallback_preserves_dimensions_and_depth() {
     for (width, height, depth) in [(640, 480, 8u32), (800, 600, 16u32)] {
         for pages in [3, 4, u32::MAX] {
@@ -1112,7 +1318,7 @@ fn find_best_context_on_display_id_selects_main_display_only() {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(
             loaded.memory.read_u32_be(context_out),
-            Some(PPC_DSP_CONTEXT)
+            Some(PPC_DSP_CONTEXT + 0x40)
         );
     }
 

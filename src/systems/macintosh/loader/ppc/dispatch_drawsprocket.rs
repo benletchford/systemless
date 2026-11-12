@@ -106,7 +106,7 @@ pub(super) fn dispatch_drawsprocket_import(
             ppc_i16_result(ppc_dsp_get_first_context(cpu, memory)),
         )),
         PpcImportDispatcherTarget::DSpGetNextContext => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_get_next_context(cpu, memory)),
+            ppc_i16_result(ppc_dsp_get_next_context(cpu, memory, draw_sprocket)),
         )),
         PpcImportDispatcherTarget::DSpProcessEvent => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_process_event(cpu, memory)),
@@ -121,7 +121,7 @@ pub(super) fn dispatch_drawsprocket_import(
             ppc_dsp_get_mouse(cpu, memory, &input),
         ))),
         PpcImportDispatcherTarget::DSpFindContextFromPoint => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_find_context_from_point(cpu, memory)),
+            ppc_i16_result(ppc_dsp_find_context_from_point(cpu, memory, draw_sprocket)),
         )),
         PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_global_to_local(cpu, memory)),
@@ -405,7 +405,7 @@ pub(super) fn dispatch_drawsprocket_import(
             } else if ppc_write_dsp_context_attributes(
                 memory,
                 attributes_out_ptr,
-                draw_sprocket.context_attributes,
+                ppc_dsp_attributes_for_context(cpu.gpr[3], draw_sprocket).unwrap(),
             )
             .is_none()
             {
