@@ -30,7 +30,7 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6206
 runtime:
-  executable_path: Deer Avenger Demo/Deer Avenger Demo
+  executable_path: Deer Avenger Demo/Deer Avenger Demo/Deer Avenger Demo
 artifacts:
 - id: archive
   role: archive
