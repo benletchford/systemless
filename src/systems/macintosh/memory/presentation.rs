@@ -1624,9 +1624,7 @@ impl Presentation {
             return;
         }
         self.changed(true);
-        for offset in 0..bytes.len() as u32 {
-            self.touch_screen(x + offset, y);
-        }
+        self.touch_screen_span(x, x + bytes.len() as u32 - 1, y);
         for (offset, &value) in bytes.iter().enumerate() {
             let cell = start + offset;
             self.detail_cache.get_mut()[cell] = None;
@@ -6244,6 +6242,46 @@ mod tests {
             .as_ref()
             .unwrap()
             .plain_screen_row(0x1007, 2));
+    }
+
+    #[test]
+    fn framebuffer_plain_row_marks_only_covered_tiles_and_ignores_repeat() {
+        for (x, len) in [(0, 1), (3, 12), (15, 2), (16, 16), (17, 31), (47, 17)] {
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            bus.fill_bytes(0x1000, 80 * 4, 255);
+            bus.enable_outline_presentation(
+                (0x1000, 80, 64, 4, 8),
+                std::array::from_fn(|i| [i as u8; 3]),
+                2,
+            );
+            let address = 0x1000 + 80 + x;
+            let bytes = vec![17; len as usize];
+            let mark = bus.presentation.as_ref().unwrap().screen_mark();
+            let revision = bus.presentation_epoch().unwrap();
+            bus.sync_presented_bytes(address, 0x8000, &bytes);
+            assert_eq!(bus.read_bytes(address, len as usize), bytes);
+            assert_eq!(bus.read_bytes(0x1000 + 80 + 64, 16), [255; 16]);
+            assert_eq!(bus.presentation_epoch(), Some(revision + 1));
+            let p = bus.presentation.as_ref().unwrap();
+            for row in 0..4 {
+                for column in 0..64 {
+                    let covered = row == 1
+                        && (x / SCREEN_TILE..=(x + len - 1) / SCREEN_TILE)
+                            .contains(&(column / SCREEN_TILE));
+                    assert_eq!(
+                        p.screen_rect_unchanged_since(mark, (row as i16, column as i16, 1, 1)),
+                        !covered,
+                        "span {x}/{len}, point {column}/{row}",
+                    );
+                }
+            }
+            let after = p.screen_mark();
+            drop(p);
+            bus.sync_presented_bytes(address, 0x8000, &bytes);
+            let p = bus.presentation.as_ref().unwrap();
+            assert!(p.screen_rect_unchanged_since(after, (0, 0, 64, 4)));
+            assert_eq!(bus.presentation_epoch(), Some(revision + 1));
+        }
     }
 
     #[test]
