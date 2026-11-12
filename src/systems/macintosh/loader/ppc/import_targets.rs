@@ -4277,6 +4277,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetMenuHook" | "lmgetmenuhook") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetMenuHook)
         }
+        ("InterfaceLib" | "CarbonLib", "GetSysPPtr") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetSysParamPointer)
+        }
         ("InterfaceLib", "LMGetROM85") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetRom85)
         }
