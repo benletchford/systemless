@@ -1,5 +1,6 @@
 ---
 id: postal-demo
+launch_enabled: true
 kind: game
 title: Postal Demo
 summary: Play the Construction Site in the original Macintosh Postal demo.
@@ -10,7 +11,7 @@ architectures:
 default_architecture: ppc
 category: Arcade
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-12"
     tester: Catalogue maintainer
@@ -28,6 +29,32 @@ compatibility:
       browser pacing.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6186
+  - date: "2026-11-13"
+    tester: Catalogue maintainer
+    systemless_version: fd6991fe release browser preview
+    architecture: ppc
+    environment: >-
+      Private Chromium 156 release preview at original machine, preferred partition,
+      sound, graphics, difficulty and preferences. Both active and omission cases
+      continuously measure 80 seconds beginning before New, including the complete
+      30-40 second loading sequence. Four consecutive 20-second sections per case
+      pass the standard pacing gates and full-section checks; no startup work is
+      excluded or hidden in a longer average. Across eight full sections, maximum
+      runtime frame is 33.95 ms and minimum audio queue is 107.03 ms. Original
+      archive, main/worker Wasm responses and actual executing-worker wire bytes
+      match their pins; all targets are resumed and Debugger is disabled before
+      measurement. The initial Up hold visibly moves the player while omission
+      stays at the start; both cases then use the same ordinary walking and turning.
+      Dynamic actors differ before input, so whole-frame pre-input identity is not
+      claimed. Both remain in live play through the final 60-80 second section,
+      ending with 54 and 36 health. Active recording exits with a post-measurement
+      offline metadata error; its complete 4877-frame trace is separately revalidated
+      against all live reports without replay. Omission recording and offline checks
+      pass normally with 4869 frames. Bounded level entry and movement only; not
+      complete-level, every-weapon, multiplayer, saves, audio-fidelity, independent
+      hardware or public-deployment qualification.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6188
 runtime:
   executable_path: Postal™ Demo Folder/Postal™
 artifacts:
@@ -87,6 +114,6 @@ Press **Return** to continue the opening screens, then choose **Start → Single
 Player → New**. Use the arrow keys to move and turn. The bundled release notes
 describe the other controls and game modes.
 
-Native level entry and movement are verified. Browser qualification remains pending.
+Level entry and movement have been checked in native and browser preview runs.
 
 ![The player moving across the Construction Site](https://assets.systemless.org/catalogue/media/sha256/74/74ff1d76d45220c9a69fbee20a9a691da6a0c260ef1d326cd83fe9b1dd1e4cfd.png)
