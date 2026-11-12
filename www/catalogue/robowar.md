@@ -2,7 +2,9 @@
 id: robowar
 kind: game
 title: RoboWar
-summary: Pit programmable robot gladiators against each other in the original Macintosh arena.
+summary: >-
+  Pit programmable robot gladiators against each other in the original Macintosh
+  arena.
 developer: David Harris and Lucas Dixon
 publisher: RoboWar maintainers
 year: 1990
@@ -10,7 +12,6 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Strategy
-launch_enabled: false
 compatibility:
   status: unknown
   verified:
@@ -20,32 +21,31 @@ compatibility:
     architecture: ppc
     environment: >-
       Complete original creator-hosted 4.5.2 package at default machine settings.
-      Dismiss the application's bundled-preference update notice and title screen,
-      open Robots/Coroner1 through File/Open Robot, then File/Duplicate. Clicking
-      Battle starts combat; an equal-clock omitted-click control stays idle.
-      Pre-input RGB images match exactly. After 30 ticks the active arena shows two
-      moved robots, Chronons 15 and Halt, versus stationary robots, Chronons 0 and
-      Battle in the control. The arena differs by 1259 pixels. After 210 ticks the
-      active battle has ended at Chronons 69 while the control remains at zero.
-      Both runs finish 1112 frontend and 1071 guest ticks with no exhausted frames.
-      Actual captures and external image comparisons were inspected; scripts have
-      zero assertions. No robot program or preferences were externally changed.
-      This verifies bounded combat, not robot editing, tournaments, persistence,
-      audio fidelity, independent hardware accuracy or browser pacing.
+      Dismiss the application's bundled-preference update notice and title screen, open
+      Robots/Coroner1 through File/Open Robot, then File/Duplicate. Clicking Battle
+      starts combat; an equal-clock omitted-click control stays idle. Pre-input RGB images
+      match exactly. After 30 ticks the active arena shows two moved robots, Chronons 15
+      and Halt, versus stationary robots, Chronons 0 and Battle in the control. The
+      arena differs by 1259 pixels. After 210 ticks the active battle has ended at
+      Chronons 69 while the control remains at zero. Both runs finish 1112 frontend and 1071
+      guest ticks with no exhausted frames. Actual captures and external image
+      comparisons were inspected; scripts have zero assertions. No robot program or preferences
+      were externally changed. This verifies bounded combat, not robot editing,
+      tournaments, persistence, audio fidelity, independent hardware accuracy or browser
+      pacing.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6168
 runtime:
-  show_menu_bar: true
   executable_path: RoboWar 4.5.2/RoboWar 4.5.2
+  show_menu_bar: true
 artifacts:
 - id: archive
   role: archive
   format: sit
   source:
-    type: url
-    url: https://robowar.sourceforge.net/files/RoboWar4.5.2.sit
-    expected_sha256: 20f38deab4cc16fccb054009376108b50a3040f7fe8dd87b132eb59d7e53e0df
-    expected_size: 2501047
+    type: sha256
+    sha256: 20f38deab4cc16fccb054009376108b50a3040f7fe8dd87b132eb59d7e53e0df
+    size_bytes: 2501047
   provenance:
     redistribution: permitted
     original: true
@@ -56,34 +56,37 @@ artifacts:
     license: Original freeware terms
     rights_holder: David Harris, Lucas Dixon and original contributors
     permission: >-
-      The bundled Instructions state that RoboWar is freeware and individuals may
-      use it and give it to friends, with copyright retained. Companies interested
-      in CDs or pay sites must contact Lucas Dixon. Preserve the complete original
-      package and all notices; no commercial distribution or public-domain claim.
+      The bundled Instructions state that RoboWar is freeware and individuals may use
+      it and give it to friends, with copyright retained. Companies interested in CDs
+      or pay sites must contact Lucas Dixon. Preserve the complete original package and
+      all notices; no commercial distribution or public-domain claim.
     notes: >-
       Exact complete archive linked by the maintainers as the last released Mac
-      version. Production expansion matches independent unar/lsar extraction for
-      all 62 files, 124 forks and 62 Finder records, including original RoboPrefs,
-      supplied robots, tournament material and converter. Main and converter
-      Readmes, current Instructions and About notices were reviewed. Older speech
-      resources retain legacy shareware wording alongside the newer explicit
-      freeware notice. Four tournament text/RTF documents have no distribution-term
-      matches. No third-party robot source, game instructions or opaque bundles
-      were reverse engineered. This is scoped acceptance of the unchanged freeware
-      package, not a grant of rights over separate artwork, robots or source code.
+      version. Production expansion matches independent unar/lsar extraction for all 62
+      files, 124 forks and 62 Finder records, including original RoboPrefs, supplied
+      robots, tournament material and converter. Main and converter Readmes, current
+      Instructions and About notices were reviewed. Older speech resources retain legacy
+      shareware wording alongside the newer explicit freeware notice. Four tournament
+      text/RTF documents have no distribution-term matches. No third-party robot source, game
+      instructions or opaque bundles were reverse engineered. This is scoped acceptance
+      of the unchanged freeware package, not a grant of rights over separate artwork,
+      robots or source code.
 - id: gameplay-screenshot
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/robowar/gameplay.png
+    type: sha256
+    sha256: 05c8cc87dbe6b8a0753b2542dc09481ab4e97bcdf2508153565d27a3bb29515a
+    size_bytes: 4138
   provenance:
     redistribution: permitted
     content_only: true
     sources:
     - https://github.com/benletchford/systemless/issues/6168
     rights_holder: David Harris, Lucas Dixon and original contributors
-    permission: Real content-only capture of normal play from the accepted original freeware package.
+    permission: >-
+      Real content-only capture of normal play from the accepted original freeware
+      package.
     notes: >-
       Unscaled 500x301 crop of the native battle at tick 30, excluding desktop,
       window frame and Classic menu bar. Original pixels are unretouched.
@@ -100,4 +103,4 @@ Dismiss the startup notice and title screen. Choose **File → Open Robot**, ope
 The original package includes more robots and instructions in the Apple menu.
 Browser play is pending qualification.
 
-![Two robot gladiators fighting in the arena](incoming/robowar/gameplay.png)
+![Two robot gladiators fighting in the arena](https://assets.systemless.org/catalogue/media/sha256/05/05c8cc87dbe6b8a0753b2542dc09481ab4e97bcdf2508153565d27a3bb29515a.png)
