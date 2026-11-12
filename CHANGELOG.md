@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.117.0](https://github.com/benletchford/systemless/compare/v0.116.0...v0.117.0) (2026-11-12)
+
+
+### Features
+
+* **catalogue:** add the original Battle-Girl demo ([f8e61dc](https://github.com/benletchford/systemless/commit/f8e61dc8b8e6d4275f458f72e329b092197e1de1))
+* **catalogue:** add the original Out of This World demo ([db85061](https://github.com/benletchford/systemless/commit/db850615f30780142b34278a974f9f1690105a72))
+* **catalogue:** add the original ShadowWraith demo ([f981cca](https://github.com/benletchford/systemless/commit/f981cca56ae320a36f094f4bffafef9aa2e13797))
+* **catalogue:** enable verified Out of This World browser play ([f46a4ed](https://github.com/benletchford/systemless/commit/f46a4ed042ddc41359b86db54dcc651bceeecbd2))
+
+
+### Bug Fixes
+
+* **catalogue:** correct ShadowWraith startup and browser status ([6b20604](https://github.com/benletchford/systemless/commit/6b206045452da8fbd9707ea6548c008e9ab2a730))
+
 ## [0.116.0](https://github.com/benletchford/systemless/compare/v0.115.0...v0.116.0) (2026-11-11)
 
 
