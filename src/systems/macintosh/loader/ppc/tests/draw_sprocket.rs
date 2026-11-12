@@ -1,6 +1,54 @@
 use super::*;
 
 #[test]
+fn draw_sprocket_back_port_bounds_follow_activation_and_restore() {
+    for (width, height, depth) in [(640, 480, 8u32), (800, 600, 16)] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let attributes = PPC_DATA_BASE + 0x1000;
+        let output = attributes + 128;
+        loaded.memory.add_region(attributes, vec![0; 132]);
+        let old_rect = ppc_read_rect(&mut loaded.memory, PPC_DSP_BACK_GWORLD + 16).unwrap();
+        let visible = loaded.memory.read_u32_be(PPC_DSP_BACK_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+        let old_visible = ppc_read_rgn_bbox(&mut loaded.memory, visible).unwrap();
+        write_test_dsp_context_attributes(&mut loaded.memory, attributes, PpcDspContextAttributes {
+            width, height,
+            display_depth: depth, back_buffer_depth: depth,
+            display_best_depth_mask: 1 << depth.trailing_zeros(),
+            back_buffer_best_depth_mask: 1 << depth.trailing_zeros(),
+            ..PpcDspContextAttributes::default()
+        });
+        loaded.cpu.gpr[3] = attributes;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let context = loaded.memory.read_u32_be(output).unwrap();
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, PPC_DSP_BACK_GWORLD + 16), Some(old_rect));
+        assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, visible), Some(old_visible));
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let expected = (0, 0, height as i16, width as i16);
+        for port in [PPC_MAIN_GWORLD, PPC_DSP_BACK_GWORLD] {
+            assert_eq!(ppc_read_rect(&mut loaded.memory, port + 16), Some(expected));
+        }
+        assert_eq!(ppc_read_rect(&mut loaded.memory, PPC_DSP_BACK_PIXMAP + 6), Some(expected));
+        assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, visible), Some(expected));
+        loaded.cpu.gpr[3] = context;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextRelease);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(ppc_read_rect(&mut loaded.memory, PPC_DSP_BACK_GWORLD + 16), Some(old_rect));
+        assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, visible), Some(old_visible));
+    }
+}
+
+
+#[test]
 fn draw_sprocket_reservation_page_fallback_preserves_dimensions_and_depth() {
     for (width, height, depth) in [(640, 480, 8u32), (800, 600, 16u32)] {
         for pages in [3, 4, u32::MAX] {
