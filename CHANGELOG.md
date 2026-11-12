@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.120.0](https://github.com/benletchford/systemless/compare/v0.119.0...v0.120.0) (2026-11-12)
+
+
+### Features
+
+* add the original Deer Avenger demo ([f0e4269](https://github.com/benletchford/systemless/commit/f0e42699060613000c2d0d1b60580e109253cc8b))
+* add the original Discworld demo ([0101647](https://github.com/benletchford/systemless/commit/0101647f97bb3353cb625d15088501175e620c95))
+* **catalogue:** add the original Dr Seuss ABC demo ([d37cde5](https://github.com/benletchford/systemless/commit/d37cde5c0f7f25de1a4a0a74170e54fb4678291a))
+* **catalogue:** add the original Links Pro demo ([ade99a4](https://github.com/benletchford/systemless/commit/ade99a4676d125f0bc18866eaed4e908b3a623b1))
+* **catalogue:** add the original Postal demo ([5419764](https://github.com/benletchford/systemless/commit/54197646738bc312263cdf319815d05e64f788de))
+* **catalogue:** add the original Virtual Pool demo ([dfb27fb](https://github.com/benletchford/systemless/commit/dfb27fb041f410e79af492ea13d466f0df2aae2a))
+* **catalogue:** enable the Postal demo after browser checks ([c933ca2](https://github.com/benletchford/systemless/commit/c933ca2f19f96265b5b07ee6650cea93bbd1acac))
+* support RGB32 DrawSprocket displays ([babc4c5](https://github.com/benletchford/systemless/commit/babc4c5e3c43c755710f8e949f55ba8dc9b5dd2c))
+
+
+### Bug Fixes
+
+* decode final raw-RLE escape literals ([c828d91](https://github.com/benletchford/systemless/commit/c828d914206c6b87c9621fb4e688d7fac33bcdae))
+* expand STi2 archives with stale folder metadata ([bf54b75](https://github.com/benletchford/systemless/commit/bf54b7521fbd76ebb8cefd5ad9d917e741d874ed))
+* synchronize classic RestoreEntries device colours ([3fb622c](https://github.com/benletchford/systemless/commit/3fb622c8ef7541c04f2c278d3e0855479087ab6d))
+
 ## [0.119.0](https://github.com/benletchford/systemless/compare/v0.118.0...v0.119.0) (2026-11-12)
 
 
