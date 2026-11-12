@@ -1,14 +1,13 @@
-<p align="center">
+<h1 align="center">
   <a href="https://systemless.org/">
-    <img src=".github/assets/systemless-mascot-classic.png" alt="Systemless mascot" width="192" height="192">
+    <img src=".github/assets/systemless-mascot-classic.png" alt="Systemless mascot" width="64" height="64" align="absmiddle">
   </a>
-</p>
-
-<h1 align="center">systemless</h1>
+  systemless
+</h1>
 
 <p align="center">
-  <strong>A high-level runtime for classic Macintosh applications and games.</strong><br>
-  Run original Mac software without a ROM image, System installation, or hardware emulation.
+  <strong>Run classic Macintosh apps and games.</strong><br>
+  No ROM image, System installation, or hardware emulation required.
 </p>
 
 <p align="center">
