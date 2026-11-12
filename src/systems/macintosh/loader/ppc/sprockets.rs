@@ -1760,6 +1760,19 @@ pub(crate) fn ppc_configure_dsp_framebuffers(
             )?;
             // Every PixMap owns a color table handle, direct ones included.
             memory.write_u32_be(record.pixmap + 42, PPC_MAIN_CTABLE_HANDLE)?;
+            if record.port == PPC_DSP_BACK_GWORLD {
+                // The back CGrafPort must expose the same extent as its PixMap.
+                // GetPortBounds and callers reading portRect use this record.
+                ppc_write_rect(
+                    memory, record.port + 16, 0, 0,
+                    attributes.height as i16, attributes.width as i16,
+                )?;
+                let visible = memory.read_u32_be(record.port + PPC_CGRAF_PORT_VIS_RGN_OFFSET)?;
+                ppc_write_rgn_bbox(
+                    memory, visible, 0, 0,
+                    attributes.height as i16, attributes.width as i16,
+                )?;
+            }
         } else {
             // A screen-backed window keeps its local bounds through a display
             // switch. Only its shared pixel format changes while the context
@@ -1861,7 +1874,12 @@ fn ppc_dsp_capture_desktop(
         PPC_MAIN_GWORLD + 16,
         ppc_memory_read_bytes(memory, PPC_MAIN_GWORLD + 16, 8)?,
     )];
-    for rgn in [PPC_MAIN_VIS_RGN_HANDLE, PPC_GRAY_RGN_HANDLE] {
+    screen_geometry.push((
+        PPC_DSP_BACK_GWORLD + 16,
+        ppc_memory_read_bytes(memory, PPC_DSP_BACK_GWORLD + 16, 8)?,
+    ));
+    let back_visible = memory.read_u32_be(PPC_DSP_BACK_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET)?;
+    for rgn in [PPC_MAIN_VIS_RGN_HANDLE, PPC_GRAY_RGN_HANDLE, back_visible] {
         let ptr = ppc_rgn_ptr(memory, rgn)?;
         let size = u32::from(memory.read_u16_be(ptr)?.max(10));
         screen_geometry.push((ptr, ppc_memory_read_bytes(memory, ptr, size)?));
