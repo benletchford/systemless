@@ -12191,3 +12191,28 @@ fn resource_open_tn1120_failures_preserve_current_map_and_permissions() {
         }
     }
 }
+
+#[test]
+fn pbhgetfinfo_does_not_find_a_file_in_an_unrelated_directory() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let wanted_dir = disp.ensure_vfs_directory("Requested");
+    disp.ensure_vfs_directory("Unrelated");
+    disp.vfs.insert("Unrelated/Shared Data".into(), vec![1, 2, 3]);
+
+    let pb = 0x300000u32;
+    setup_param_block(&mut bus, &mut cpu, pb, b"Shared Data");
+    bus.write_word(pb + 22, (-1i16) as u16);
+    bus.write_long(pb + 48, wanted_dir);
+    call_trap_word(&mut disp, 0xA20C, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0) as i32, -43);
+    assert_eq!(bus.read_word(pb + 16) as i16, -43);
+
+    // The same file remains discoverable when its actual directory is supplied.
+    let actual_dir = disp.ensure_vfs_directory("Unrelated");
+    setup_param_block(&mut bus, &mut cpu, pb, b"Shared Data");
+    bus.write_word(pb + 22, (-1i16) as u16);
+    bus.write_long(pb + 48, actual_dir);
+    call_trap_word(&mut disp, 0xA20C, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(bus.read_long(pb + 54), 3);
+}

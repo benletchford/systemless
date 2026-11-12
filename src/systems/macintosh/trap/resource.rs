@@ -5760,7 +5760,14 @@ impl super::TrapDispatcher {
                         .map(|entry| entry.path)
                 } else {
                     self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
-                        .or_else(|| self.find_vfs_file(&filename))
+                        .or_else(|| {
+                            // HFS by-name requests stay within the specified
+                            // directory. A global basename match can report a
+                            // file that a subsequent HOpen cannot open.
+                            (self.current_trap_word & 0x0200 == 0)
+                                .then(|| self.find_vfs_file(&filename))
+                                .flatten()
+                        })
                 };
 
                 if let Some(vfs_name) = lookup {
