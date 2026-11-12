@@ -65,10 +65,12 @@ pub fn parse_installer_maker_st46(data: &[u8]) -> Option<InstallerMakerContainer
 
 pub fn parse_installer_maker(data: &[u8]) -> Option<InstallerMakerContainer<'_>> {
     if data.starts_with(STI2_MAGIC) {
-        parse_installer_maker_short_result(data, STI2_MAGIC, "STi2").ok()
+        parse_installer_maker_short_result(data, STI2_MAGIC, "STi2")
+            .or_else(|_| parse_marked_result(data, STI2_MAGIC, "STi2"))
+            .ok()
     } else if data.starts_with(STI3_MAGIC) {
         parse_installer_maker_short_result(data, STI3_MAGIC, "STi3")
-            .or_else(|_| parse_sti3_marked_result(data))
+            .or_else(|_| parse_marked_result(data, STI3_MAGIC, "STi3"))
             .ok()
     } else if data.starts_with(ST65_MAGIC) {
         parse_installer_maker_st65_result(data).ok()
@@ -77,13 +79,17 @@ pub fn parse_installer_maker(data: &[u8]) -> Option<InstallerMakerContainer<'_>>
     }
 }
 
-// Some STi3 installers retain stale aggregate folder lengths. Their folder
-// markers still delimit a complete, checksummed sequence, and the archive
-// count records root files rather than folders. Keep this stricter fallback
-// separate from the extent-based ST46/ST65 parser.
-fn parse_sti3_marked_result(data: &[u8]) -> Result<InstallerMakerContainer<'_>, String> {
-    let header = get_range(data, 0, ST65_HEADER_LEN, "STi3 header")?;
-    if !header.starts_with(STI3_MAGIC) || &header[10..14] != b"rLau" {
+// Some STi2/STi3 installers retain stale aggregate folder lengths. Their
+// markers delimit a checksummed sequence, with the header counting root files.
+// Keep this fallback separate from the extent-based parser. STi2 end labels
+// may name a parent (or be empty); depth and bounds remain authoritative.
+fn parse_marked_result<'a>(
+    data: &'a [u8],
+    magic: &[u8; 4],
+    kind: &str,
+) -> Result<InstallerMakerContainer<'a>, String> {
+    let header = get_range(data, 0, ST65_HEADER_LEN, &format!("{kind} header"))?;
+    if !header.starts_with(magic) || &header[10..14] != b"rLau" {
         return Err("missing STi3 archive signature".to_string());
     }
     let expected_roots = usize::from(read_u16_be(header, 4, "STi3 root file count")?);
@@ -106,13 +112,16 @@ fn parse_sti3_marked_result(data: &[u8]) -> Result<InstallerMakerContainer<'_>, 
         if installer_crc16(&record[..110]) != read_u16_be(record, 110, "STi3 header CRC")? {
             return Err("invalid STi3 entry header CRC".to_string());
         }
-        let name_len = usize::from(record[ST46_NAME_LEN_OFFSET]);
-        if name_len == 0 || name_len > 31 {
-            return Err("invalid STi3 entry name length".to_string());
-        }
-        let local_name = decode_mac_roman(&record[3..3 + name_len]);
         let rsrc_method = record[ST46_RSRC_METHOD_OFFSET];
         let data_method = record[ST46_DATA_METHOD_OFFSET];
+        let unnamed_sti2_end = magic == STI2_MAGIC
+            && rsrc_method == ST46_FOLDER_END
+            && data_method == ST46_FOLDER_END;
+        let name_len = usize::from(record[ST46_NAME_LEN_OFFSET]);
+        if (name_len == 0 && !unnamed_sti2_end) || name_len > 31 {
+            return Err(format!("invalid {kind} entry name length"));
+        }
+        let local_name = decode_mac_roman(&record[3..3 + name_len]);
         offset += ST46_ENTRY_HEADER_LEN;
         if rsrc_method == ST46_FOLDER_START && data_method == ST46_FOLDER_START {
             if folders.len() >= ST46_MAX_FOLDER_DEPTH {
@@ -122,8 +131,11 @@ fn parse_sti3_marked_result(data: &[u8]) -> Result<InstallerMakerContainer<'_>, 
             continue;
         }
         if rsrc_method == ST46_FOLDER_END && data_method == ST46_FOLDER_END {
-            if folders.pop().as_deref() != Some(local_name.as_str()) {
-                return Err("unmatched STi3 folder end marker".to_string());
+            let open = folders.pop();
+            if open.is_none()
+                || (magic != STI2_MAGIC && open.as_deref() != Some(local_name.as_str()))
+            {
+                return Err(format!("unmatched {kind} folder end marker"));
             }
             continue;
         }
@@ -954,6 +966,103 @@ mod tests {
         data
     }
 
+    fn sti2_root_file_and_folder(folder_last: bool) -> Vec<u8> {
+        let mut nested = st65_nested_archive();
+        for offset in [
+            ST65_HEADER_LEN,
+            ST65_HEADER_LEN + 112,
+            ST65_HEADER_LEN + 229,
+        ] {
+            let crc = installer_crc16(&nested[offset..offset + 110]);
+            nested[offset + 110..offset + 112].copy_from_slice(&crc.to_be_bytes());
+        }
+        let mut file = vec![0u8; ST46_ENTRY_HEADER_LEN];
+        file[2] = 6;
+        file[3..9].copy_from_slice(b"Readme");
+        file[88..92].copy_from_slice(&3u32.to_be_bytes());
+        file[96..100].copy_from_slice(&3u32.to_be_bytes());
+        let crc = installer_crc16(&file[..110]);
+        file[110..112].copy_from_slice(&crc.to_be_bytes());
+        file.extend_from_slice(b"doc");
+        let mut data = nested[..ST65_HEADER_LEN].to_vec();
+        data[..4].copy_from_slice(STI2_MAGIC);
+        // STi2 counts root files, not folders or files nested inside them.
+        data[4..6].copy_from_slice(&1u16.to_be_bytes());
+        if folder_last {
+            data.extend_from_slice(&file);
+            data.extend_from_slice(&nested[ST65_HEADER_LEN..]);
+        } else {
+            data.extend_from_slice(&nested[ST65_HEADER_LEN..]);
+            data.extend_from_slice(&file);
+        }
+        let len = data.len() as u32;
+        data[6..10].copy_from_slice(&len.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn sti2_root_file_counts_allow_leading_and_trailing_folders() {
+        for folder_last in [false, true] {
+            let data = sti2_root_file_and_folder(folder_last);
+            let parsed = parse_installer_maker(&data).expect("complete STi2 root file set");
+            assert_eq!(parsed.entries.len(), 2);
+            let readme = parsed.entries.iter().find(|e| e.name == "Readme").unwrap();
+            assert_eq!(readme.data_packed, b"doc");
+            let game = parsed
+                .entries
+                .iter()
+                .find(|e| e.name == "Folder/Game")
+                .unwrap();
+            assert_eq!(game.rsrc_packed, b"rs");
+            assert_eq!(game.data_packed, b"dat");
+            assert_eq!(game.file_type, *b"APPL");
+        }
+    }
+
+    #[test]
+    fn sti2_nested_root_counts_preserve_crc_extent_and_eof_checks() {
+        let original = sti2_root_file_and_folder(true);
+        for count in [0u16, 3] {
+            let mut bad = original.clone();
+            bad[4..6].copy_from_slice(&count.to_be_bytes());
+            assert!(parse_installer_maker(&bad).is_none());
+        }
+        for len in 0..original.len() {
+            assert!(parse_installer_maker(&original[..len]).is_none());
+        }
+        let folder = ST65_HEADER_LEN + ST46_ENTRY_HEADER_LEN + 3;
+        let mut bad = original.clone();
+        bad[folder + 3] ^= 1;
+        assert!(parse_installer_maker(&bad).is_none());
+        let mut bad = original;
+        let file = folder + ST46_ENTRY_HEADER_LEN;
+        bad[file + 96..file + 100].copy_from_slice(&u32::MAX.to_be_bytes());
+        let crc = installer_crc16(&bad[file..file + 110]);
+        bad[file + 110..file + 112].copy_from_slice(&crc.to_be_bytes());
+        assert!(parse_installer_maker(&bad).is_none());
+    }
+
+    #[test]
+    fn sti2_markers_allow_stale_folder_extents_but_require_balanced_depth() {
+        let mut data = sti2_root_file_and_folder(true);
+        let folder = ST65_HEADER_LEN + ST46_ENTRY_HEADER_LEN + 3;
+        data[folder + 96..folder + 100].copy_from_slice(&u32::MAX.to_be_bytes());
+        let crc = installer_crc16(&data[folder..folder + 110]);
+        data[folder + 110..folder + 112].copy_from_slice(&crc.to_be_bytes());
+        let end = data.len() - ST46_ENTRY_HEADER_LEN;
+        data[end + 2] = 6;
+        data[end + 3..end + 9].copy_from_slice(b"Parent");
+        let crc = installer_crc16(&data[end..end + 110]);
+        data[end + 110..end + 112].copy_from_slice(&crc.to_be_bytes());
+        let parsed = parse_installer_maker(&data).expect("checked STi2 folder markers");
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[1].name, "Folder/Game");
+        // Removing a CRC-valid closing marker cannot make a complete archive.
+        data.truncate(data.len() - ST46_ENTRY_HEADER_LEN);
+        let len = data.len() as u32;
+        data[6..10].copy_from_slice(&len.to_be_bytes());
+        assert!(parse_installer_maker(&data).is_none());
+    }
     #[test]
     fn installer_method13_decodes_generated_data_and_checks_fork_crc() {
         let original = b"original installer fork without commercial fixture bytes".repeat(8);
@@ -1160,7 +1269,7 @@ mod tests {
         let mut bad = original.clone();
         bad[10] = 0;
         assert!(parse_installer_maker_st65_result(&bad).is_err());
-        for count in [0u16, 2] {
+        for count in [0u16, 3] {
             let mut bad = original.clone();
             bad[4..6].copy_from_slice(&count.to_be_bytes());
             assert!(parse_installer_maker_st65_result(&bad).is_err());
@@ -1211,7 +1320,7 @@ mod tests {
             bad[offset] = 0;
             assert!(parse_installer_maker(&bad).is_none());
         }
-        for count in [0u16, 2] {
+        for count in [0u16, 3] {
             let mut bad = original.clone();
             bad[4..6].copy_from_slice(&count.to_be_bytes());
             assert!(parse_installer_maker(&bad).is_none());
