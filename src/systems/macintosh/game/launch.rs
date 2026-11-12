@@ -4367,7 +4367,13 @@ fn is_system_folder_path(path: &str) -> bool {
 }
 
 fn is_stuffit_archive(bytes: &[u8]) -> bool {
-    bytes.len() >= 80 && (&bytes[0..4] == b"SIT!" || &bytes[0..7] == b"StuffIt")
+    // The product name also begins ordinary ReadMe and registration documents.
+    // SIT-5's banner has a four-byte ending year between these fixed parts.
+    const SIT5_PREFIX: &[u8] = b"StuffIt (c)1997-";
+    const SIT5_SUFFIX: &[u8] = b" Aladdin Systems, Inc., http://www.aladdinsys.com/StuffIt/\r\n";
+    bytes.len() >= 80
+        && (bytes.starts_with(b"SIT!")
+            || (bytes.starts_with(SIT5_PREFIX) && bytes.get(SIT5_PREFIX.len() + 4..80) == Some(SIT5_SUFFIX)))
 }
 
 fn log_vfs(runner: &FixtureRunner) {
@@ -4421,6 +4427,72 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn stuffit_header_detection_preserves_ordinary_document_forks() {
+        let data = b"StuffIt registration document\r".repeat(8);
+        let rsrc = empty_resource_fork_bytes();
+        let payload = payload_from_forks(
+            "Registration",
+            data.clone(),
+            rsrc.clone(),
+            *b"TEXT",
+            *b"ttxt",
+            0x100,
+            2,
+        )
+        .expect("a document mentioning StuffIt is not a nested archive");
+        assert_eq!(payload.files.len(), 1);
+        let file = &payload.files[0];
+        assert_eq!(file.name, "Registration");
+        assert_eq!(file.data, data);
+        assert_eq!(file.rsrc, rsrc);
+        assert_eq!(file.file_type, *b"TEXT");
+        assert_eq!(file.creator, *b"ttxt");
+        assert_eq!(file.finder_flags, 0x100);
+    }
+
+    #[test]
+    fn stuffit_header_detection_expands_archives_and_retains_parse_errors() {
+        let mut archive = SitArchive::new();
+        archive.add_entry(SitEntry {
+            name: "Readme".into(),
+            data_fork: b"original document".to_vec(),
+            resource_fork: Vec::new(),
+            file_type: *b"TEXT",
+            creator: *b"ttxt",
+            is_folder: false,
+            data_method: 0,
+            rsrc_method: 0,
+            data_ulen: 0,
+            rsrc_ulen: 0,
+            finder_flags: 0,
+            creation_date: 0,
+            modification_date: 0,
+            is_compressed: false,
+            format: stuffit::ArchiveFormat::Sit5,
+        });
+        let mut bytes = archive.serialize_compressed().unwrap();
+        let payload = payload_from_forks(
+            "Archive",
+            bytes.clone(),
+            Vec::new(),
+            *b"SIT5",
+            *b"SIT!",
+            0,
+            2,
+        )
+        .expect("a genuine StuffIt 5 archive should expand");
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].name, "Readme");
+        assert_eq!(payload.files[0].data, b"original document");
+
+        bytes[82] = 42;
+        let error = payload_from_forks("Archive", bytes, Vec::new(), *b"SIT5", *b"SIT!", 0, 2)
+            .expect_err("a recognized archive with an unsupported version must still fail");
+        assert!(error.contains("UnsupportedVersion(42)"), "{error}");
+    }
+
 
     fn external_vise_test_archive() -> Vec<u8> {
         let mut data = vec![0; 44];
