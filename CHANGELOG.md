@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.119.0](https://github.com/benletchford/systemless/compare/v0.118.0...v0.119.0) (2026-11-12)
+
+
+### Features
+
+* adopt platinum and graphite website themes ([#6180](https://github.com/benletchford/systemless/issues/6180)) ([fd210ec](https://github.com/benletchford/systemless/commit/fd210ece21f162d8ea7b3d067ff554fe99e13640))
+* **catalogue:** add the original Mario’s Game Gallery demo ([79dd39f](https://github.com/benletchford/systemless/commit/79dd39f3d197abb6beb07b8a9b0f52796e3c12d3))
+* **catalogue:** add the original PowerMonger period demo ([36b71fc](https://github.com/benletchford/systemless/commit/36b71fcc415d58fd87f746b2d12067bfa397444f))
+* **catalogue:** add the original RoboWar freeware package ([16c1af2](https://github.com/benletchford/systemless/commit/16c1af27566cfb9dba6c9f5b2e41ca38d4b93a24))
+* **catalogue:** approve PowerMonger browser play ([7b3bf74](https://github.com/benletchford/systemless/commit/7b3bf74096dc86bca4b1cba27e418244cce21b08))
+* replace Systemless branding with classic CRT mascot ([#6175](https://github.com/benletchford/systemless/issues/6175)) ([008cede](https://github.com/benletchford/systemless/commit/008cede2114baefe227c54916f8107b4578fb801))
+
+
+### Bug Fixes
+
+* align DrawSprocket back buffer bounds during mode switches ([0ecbcdd](https://github.com/benletchford/systemless/commit/0ecbcdd7e623fe94829299ad4202de119964b1ed))
+
 ## [0.118.0](https://github.com/benletchford/systemless/compare/v0.117.0...v0.118.0) (2026-11-12)
 
 
