@@ -29,6 +29,23 @@ compatibility:
       eb967b5de7e8941baa35608654303611d0123484b9b7a4c53f130bde9cced2fa.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6210
+  - date: "2026-11-13"
+    tester: Catalogue maintainer
+    systemless_version: 6e4397ea private candidate
+    architecture: 68k
+    environment: >-
+      Complete original archive and defaults, Return at title without skipping intro.
+      Actual archive response, both Wasm response bodies and executed current-worker module
+      verified. Private Wasm 16326980 bytes, SHA256
+      e6a958a853e392d1575a970e72007c9073c7f6838f468cb2d5fbb9aa0596d585.
+      First two consecutive full 20-second intro windows pass; third fails steady guest
+      ticks 47.4019/s below 50 despite full-window 59.2483/s. Full host 61.2499 FPS,
+      max runtime frame 16.775 ms and minimum audio queue 472.018 ms pass. Actual intro
+      images inspected. No browser room/input or sustained-world qualification; no
+      unchanged retry. Browser launch stays disabled. Hardware accuracy, audio fidelity,
+      full adventure and public performance remain unverified.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/6212
 runtime:
   executable_path: Discworld/Discworld
 artifacts:
@@ -89,10 +106,11 @@ references:
 - https://classicmacdemos.com/discworld
 - https://archive.org/details/IMG37MayJune1996
 - https://github.com/benletchford/systemless/issues/6210
+- https://github.com/benletchford/systemless/issues/6212
 ---
 
 Play the original Macintosh **Discworld** demo. Press **Return** at the title and let the opening sequence finish before exploring Rincewind’s room. Follow the game’s visible cursor when selecting a destination.
 
-Native startup and walking response are verified. Browser launch remains disabled pending browser qualification.
+Native startup and walking response are verified. Browser launch is held for intro performance improvements.
 
 ![Rincewind at the wardrobe](https://assets.systemless.org/catalogue/media/sha256/b2/b2db194fb651684c26ef5c6af857effa2bd4ed400170b8e8e5b6cd74c29aced1.png)
