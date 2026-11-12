@@ -69,9 +69,8 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: sha256
-    sha256: 0e594031ce426232d642eefbc01ee96c8914ac0a8e12583c60858626b0cf5d36
-    size_bytes: 374287
+    type: incoming
+    path: catalogue/incoming/ferazels-wand-demo/gameplay.png
   provenance:
     redistribution: permitted
     original: true
@@ -82,9 +81,13 @@ artifacts:
       Fresh gameplay capture from the complete, unchanged original demo installer.
       The underlying game artwork remains Ambrosia's property.
     notes: >-
-      Cropped 608×472 game-content capture after a keypad-6 movement probe. It
-      excludes emulator framing and the Classic Mac menu bar. PNG SHA-256
-      0e594031ce426232d642eefbc01ee96c8914ac0a8e12583c60858626b0cf5d36; 374,287 bytes.
+      Captured on 2026-11-12 from the corrected browser build (0.117.0 plus the
+      gamma-fade and gameplay-overhead fixes), using Canvas2D at 2× display scale
+      after moving and jumping in the first level. Cropped to the 1216×944 game
+      content surface without resampling or altering artwork; excludes browser
+      framing and the Classic Mac menu bar. Replaces the earlier corrupted-palette
+      capture. PNG SHA-256
+      2739aa609981dcaf3d0edd1569c6a86aa7862f91bb50f6fcfa8847f69d832e19; 307,557 bytes.
 references:
 - https://archive.org/details/tucows_205573_Ferazel_s_Wand
 - https://www.macintoshrepository.org/4577-ferazel-s-wand
@@ -92,7 +95,7 @@ references:
 
 ## Enter Teraknorn
 
-![Ferazel in the opening demo level](https://assets.systemless.org/catalogue/media/sha256/0e/0e594031ce426232d642eefbc01ee96c8914ac0a8e12583c60858626b0cf5d36.png)
+![Ferazel in the opening demo level](incoming/ferazels-wand-demo/gameplay.png)
 
 Ferazel walks, climbs, digs, and casts spells through the first three levels of
 Ambrosia's original demo. The full commercial game is not included.

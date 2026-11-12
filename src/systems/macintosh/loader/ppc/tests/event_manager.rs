@@ -1760,3 +1760,39 @@ fn wait_next_event_charges_toolbox_time_without_losing_queued_input() {
     assert!(loaded.event_queue().is_empty());
     assert!(ppc_run_result_cycles(input.result) > 64);
 }
+
+#[test]
+fn input_polls_observe_changes_without_snapshotting_unrelated_handles() {
+    for import in [b"GetKeys".as_slice(), b"Button".as_slice(), b"TickCount".as_slice()] {
+        let pef = synthetic_pef_with_import(import);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        for _ in 0..64 {
+            assert_ne!(loaded.process_memory_manager.0.borrow_mut()
+                .new_native_handle(&mut loaded.memory, 32, true), 0);
+        }
+        let key_map = PPC_HEAP_BASE + 0x18000;
+        loaded.memory.add_region(key_map, vec![0xaa; 16]);
+        loaded.set_clock_cycle_timing(1_000_000, 0);
+        for down in [true, false] {
+            let mut input = PpcInputSnapshot::default();
+            input.mouse_button = down;
+            input.key_map[7] = if down { 0x80 } else { 0 };
+            loaded.set_input_snapshot(input);
+            loaded.set_tick_count(42);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.gpr[3] = key_map;
+            let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+            let before = snapshots();
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(snapshots(), before);
+            match import {
+                b"GetKeys" => assert_eq!(loaded.memory.read_u8(key_map + 7), Some(if down { 0x80 } else { 0 })),
+                b"Button" => assert_eq!(loaded.cpu.gpr[3], u32::from(down)),
+                b"TickCount" => assert_eq!(loaded.cpu.gpr[3], 42),
+                _ => unreachable!(),
+            }
+        }
+    }
+}
