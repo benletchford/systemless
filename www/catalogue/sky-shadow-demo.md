@@ -24,8 +24,9 @@ compatibility:
       omitted-input control. Starting RGB frames are identical; both runs finish 864 frontend
       and 1464 guest ticks with zero exhausted frames. External image assertions verify
       the ship masks and movement; scripts contain zero assertions. Actual captures
-      inspected. Instructions are incompletely rendered and the short active capture omits
-      the HUD; these visual limitations remain unresolved. A larger movement causes a
+      inspected. Instruction display remains unverified. The entire HUD region is
+      byte-identical in active and control captures; a cropped inspection confirms it
+      is present despite an incomplete image preview. A larger movement causes a
       crash while the control remains airborne. No game-file, CPU, memory or display
       override. Browser input/pacing, later gameplay, audio fidelity and independent
       hardware accuracy remain unverified.
