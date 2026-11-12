@@ -23,6 +23,7 @@ pub const PPC_DSP_LARGE_SCREEN_HEIGHT: u32 = 600;
 pub const PPC_DSP_CONTEXT_OPTION_QD3D_ACCEL: u32 = 1 << 0;
 pub const PPC_DSP_DEPTH_MASK_16: u32 = 1 << 4;
 pub const PPC_MAIN_SCREEN_STORAGE_DEPTH: u32 = 16;
+pub const PPC_DSP_DEPTH_MASK_32: u32 = 1 << 5;
 pub const PPC_DSP_ADVERTISED_PAGE_COUNT: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -397,11 +398,13 @@ pub const PPC_DSP_CONTEXT: u32 = 0x4000_0000;
 // Opaque identities for the software modes implemented by framebuffer activation.
 // Keep the original mutable FindBestContext/saved-context reference separate
 // from enumeration, whose mode identities must survive later searches.
-const PPC_DSP_ENUMERATED_CONTEXTS: [(u32, u32, u32, u32); 4] = [
+const PPC_DSP_ENUMERATED_CONTEXTS: [(u32, u32, u32, u32); 6] = [
     (PPC_DSP_CONTEXT + 0x40, 640, 480, 16),
     (PPC_DSP_CONTEXT + 0x10, 800, 600, 16),
     (PPC_DSP_CONTEXT + 0x20, 640, 480, 8),
     (PPC_DSP_CONTEXT + 0x30, 800, 600, 8),
+    (PPC_DSP_CONTEXT + 0x50, 640, 480, 32),
+    (PPC_DSP_CONTEXT + 0x60, 800, 600, 32),
 ];
 
 pub(crate) fn ppc_dsp_enumerated_attributes(context: u32) -> Option<PpcDspContextAttributes> {
@@ -768,7 +771,7 @@ pub(crate) fn ppc_selected_dsp_context_attributes(
 }
 
 pub(crate) fn ppc_selected_dsp_depth(depth_mask: u32, best_depth: u32, default_depth: u32) -> u32 {
-    if matches!(best_depth, 8 | 16)
+    if matches!(best_depth, 8 | 16 | 32)
         && (depth_mask == 0 || depth_mask & (1 << best_depth.trailing_zeros()) != 0)
     {
         return best_depth;
@@ -777,6 +780,8 @@ pub(crate) fn ppc_selected_dsp_depth(depth_mask: u32, best_depth: u32, default_d
         16
     } else if depth_mask & PPC_DSP_DEPTH_MASK_8 != 0 {
         8
+    } else if depth_mask & PPC_DSP_DEPTH_MASK_32 != 0 {
+        32
     } else {
         default_depth
     }
@@ -811,9 +816,10 @@ pub(crate) fn ppc_dsp_context_request_is_supported(requested: PpcDspContextAttri
 }
 
 pub(crate) fn ppc_dsp_depth_request_is_supported(depth_mask: u32, best_depth: u32) -> bool {
-    const SUPPORTED_DEPTH_MASK: u32 = PPC_DSP_DEPTH_MASK_8 | PPC_DSP_DEPTH_MASK_16;
+    const SUPPORTED_DEPTH_MASK: u32 =
+        PPC_DSP_DEPTH_MASK_8 | PPC_DSP_DEPTH_MASK_16 | PPC_DSP_DEPTH_MASK_32;
     (depth_mask == 0 || depth_mask & SUPPORTED_DEPTH_MASK != 0)
-        && (best_depth == 0 || matches!(best_depth, 8 | 16))
+        && (best_depth == 0 || matches!(best_depth, 8 | 16 | 32))
 }
 
 pub(crate) fn ppc_dsp_back_buffer_depth_request_is_supported(
@@ -1599,7 +1605,7 @@ fn ppc_dsp_restore_underlay(
         return false;
     };
     if source.depth != back.depth
-        || !matches!(back.depth, 8 | 16)
+        || !matches!(back.depth, 8 | 16 | 32)
         || source.width != back.width
         || source.height != back.height
     {
@@ -1731,7 +1737,7 @@ pub(crate) fn ppc_configure_dsp_framebuffers(
     ) || attributes.width > ppc_main_screen_width()
         || attributes.height > ppc_main_screen_height()
         || attributes.display_depth != attributes.back_buffer_depth
-        || !matches!(attributes.display_depth, 8 | 16)
+        || !matches!(attributes.display_depth, 8 | 16 | 32)
     {
         return None;
     }
@@ -1836,6 +1842,17 @@ fn ppc_dsp_blank_display(
             let pixel = ppc_rgb_color_to_rgb555(blanking_color).to_be_bytes();
             for pair in pixels.chunks_exact_mut(2) {
                 pair.copy_from_slice(&pixel);
+            }
+        }
+        32 => {
+            let pixel = [
+                0,
+                (blanking_color.red >> 8) as u8,
+                (blanking_color.green >> 8) as u8,
+                (blanking_color.blue >> 8) as u8,
+            ];
+            for value in pixels.chunks_exact_mut(4) {
+                value.copy_from_slice(&pixel);
             }
         }
         _ => return None,
@@ -2235,7 +2252,7 @@ pub(crate) fn ppc_dsp_present_back_buffer(
     if back.width != front.width
         || back.height != front.height
         || back.depth != front.depth
-        || !matches!(back.depth, 8 | 16)
+        || !matches!(back.depth, 8 | 16 | 32)
     {
         return false;
     }

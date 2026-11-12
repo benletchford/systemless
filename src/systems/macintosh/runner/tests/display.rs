@@ -612,3 +612,77 @@ fn ppc_host_sync_paints_the_matte_only_when_its_geometry_changes() {
     assert_eq!(runner.dispatcher.screen_mode.2, canvas_width);
     assert_eq!(runner.bus.read_byte(runner.dispatcher.screen_mode.0), 0);
 }
+
+#[test]
+fn ppc_rgb32_front_buffer_reaches_host_pixels_and_fades_without_mutating_guest() {
+    let source = vec![
+        0x7f, 0x12, 0x34, 0x56, 0x80, 0xab, 0xcd, 0xef, 0xee, 0xee, 0xee, 0xee, 0xff, 0xff, 0, 0,
+        0x33, 0, 0x80, 0xff, 0xdd, 0xdd, 0xdd, 0xdd,
+    ];
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let mut ppc_app = app.ppc.take().unwrap();
+    ppc_app.memory.add_region(PPC_HEAP_BASE, source.clone());
+    ppc_app.set_heap_cursor(PPC_HEAP_BASE + source.len() as u32);
+    ppc_app.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: PPC_MAIN_GWORLD,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: PPC_HEAP_BASE,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 2,
+        height: 2,
+        depth: 32,
+        row_bytes: 12,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    ppc_app.attach_unconverted_process_services(&mut runner.process_context);
+    for percent in [100, 50, 0] {
+        ppc_app.draw_sprocket.last_fade_percent = Some(percent);
+        ppc_app.draw_sprocket.last_fade_zero_color = Some(PpcRgbColor {
+            red: 0x4040,
+            green: 0x8080,
+            blue: 0xc0c0,
+        });
+        runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+        let mode = runner.dispatcher.screen_mode;
+        assert_eq!((mode.1, mode.2, mode.3, mode.4), (8, 2, 2, 32));
+        let device_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let device = runner.bus.read_long(device_handle);
+        let map_handle = runner.bus.read_long(device + 22);
+        let map = runner.bus.read_long(map_handle);
+        assert_eq!(runner.bus.read_word(map + 30), 16);
+        assert_eq!(runner.bus.read_word(map + 32), 32);
+        assert_eq!(runner.bus.read_word(map + 34), 3);
+        assert_eq!(runner.bus.read_word(map + 36), 8);
+        let mut rgba = Vec::new();
+        crate::display::render_screen_into(&runner.bus, mode, &[[0; 3]; 256], &mut rgba);
+        let mut expected = Vec::new();
+        for color in [
+            [0x12u32, 0x34, 0x56],
+            [0xab, 0xcd, 0xef],
+            [0xff, 0, 0],
+            [0, 0x80, 0xff],
+        ] {
+            for (channel, zero) in color.into_iter().zip([0x40u32, 0x80, 0xc0]) {
+                expected.push(
+                    ((channel * percent as u32 + zero * (100 - percent as u32) + 50) / 100) as u8,
+                );
+            }
+            expected.push(255);
+        }
+        assert_eq!(rgba, expected);
+        assert_eq!(
+            crate::display::screen_pixel_rgb(&runner.bus, mode, &[[0; 3]; 256], 1, 1),
+            Some(expected[12..15].try_into().unwrap())
+        );
+        let mut unchanged = vec![0; source.len()];
+        assert!(ppc_app
+            .memory
+            .read_bytes_into(PPC_HEAP_BASE, &mut unchanged)
+            .is_some());
+        assert_eq!(unchanged, source);
+    }
+}

@@ -57,6 +57,8 @@ fn draw_sprocket_next_context_continues_from_best_context_mode() {
         (800, 600, 16),
         (640, 480, 8),
         (800, 600, 8),
+        (640, 480, 32),
+        (800, 600, 32),
     ];
     for (index, &(width, height, depth)) in modes.iter().enumerate() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
@@ -139,7 +141,7 @@ fn draw_sprocket_enumeration_survives_nondefault_best_context_search() {
     loaded.cpu.gpr[4] = output;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetFirstContext);
     let mut modes = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..6 {
         let reference = loaded.memory.read_u32_be(output).unwrap();
         assert_ne!(reference, selected);
         loaded.cpu.gpr[3] = reference;
@@ -152,7 +154,7 @@ fn draw_sprocket_enumeration_survives_nondefault_best_context_search() {
         loaded.cpu.gpr[4] = output;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
     }
-    assert_eq!(modes, [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8)]);
+    assert_eq!(modes, [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8), (640, 480, 32), (800, 600, 32)]);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR));
     assert_eq!(loaded.draw_sprocket.context_attributes, requested);
     assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
@@ -168,7 +170,7 @@ fn draw_sprocket_enumeration_survives_nondefault_best_context_search() {
 fn draw_sprocket_enumerates_modes_without_switching_and_reserves_each_identity() {
     let mut references = Vec::new();
     for (index, (width, height, depth)) in
-        [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8)]
+        [(640, 480, 16), (800, 600, 16), (640, 480, 8), (800, 600, 8), (640, 480, 32), (800, 600, 32)]
             .into_iter()
             .enumerate()
     {
@@ -243,7 +245,7 @@ fn draw_sprocket_enumerates_modes_without_switching_and_reserves_each_identity()
             ppc_read_dsp_context_attributes(&mut loaded.memory, attributes).unwrap();
         assert_eq!(other_attributes.width, if index == 0 { 800 } else { 640 });
         assert_eq!(other_attributes.display_depth, 16);
-        if index == 3 {
+        if index == 5 {
             loaded.cpu.gpr[3] = reference;
             loaded.cpu.gpr[4] = output;
             run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpGetNextContext);
@@ -1078,8 +1080,8 @@ fn find_best_context_on_display_id_selects_main_display_only() {
             PpcDspContextAttributes {
                 width: 800,
                 height: 600,
-                display_best_depth_mask: 1 << 5,
-                display_depth: 32,
+                display_best_depth_mask: 1 << 6,
+                display_depth: 24,
                 ..PpcDspContextAttributes::default()
             },
         );
@@ -1172,37 +1174,37 @@ fn find_best_context_on_display_id_selects_main_display_only() {
     }
 
     #[test]
-    fn hle_import_runner_draw_sprocket_find_best_context_rejects_depth_requests_excluding_16bpp() {
+    fn hle_import_runner_draw_sprocket_find_best_context_rejects_depth_requests_without_supported_depth() {
         for (case, attributes) in [
             (
-                "display mask excludes 16-bit",
+                "display mask excludes supported depths",
                 PpcDspContextAttributes {
-                    display_best_depth_mask: 1 << 5,
+                    display_best_depth_mask: 1 << 6,
                     display_depth: 0,
                     ..PpcDspContextAttributes::default()
                 },
             ),
             (
-                "display best depth excludes 16-bit",
+                "display best depth excludes supported depths",
                 PpcDspContextAttributes {
                     display_best_depth_mask: PPC_DSP_DEPTH_MASK_16,
-                    display_depth: 32,
+                    display_depth: 24,
                     ..PpcDspContextAttributes::default()
                 },
             ),
             (
-                "back-buffer mask excludes 16-bit",
+                "back-buffer mask excludes supported depths",
                 PpcDspContextAttributes {
-                    back_buffer_best_depth_mask: 1 << 5,
+                    back_buffer_best_depth_mask: 1 << 6,
                     back_buffer_depth: 0,
                     ..PpcDspContextAttributes::default()
                 },
             ),
             (
-                "back-buffer best depth excludes 16-bit",
+                "back-buffer best depth excludes supported depths",
                 PpcDspContextAttributes {
                     back_buffer_best_depth_mask: PPC_DSP_DEPTH_MASK_16,
-                    back_buffer_depth: 32,
+                    back_buffer_depth: 24,
                     ..PpcDspContextAttributes::default()
                 },
             ),
@@ -3778,4 +3780,139 @@ fn draw_sprocket_direct_context_palette_does_not_change_display_colors() {
         ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE).unwrap(),
         table
     );
+}
+
+#[test]
+fn draw_sprocket_rgb32_pixels_swap_and_desktop_restore() {
+    for (width, height, pages) in [(640u32, 480u32, 1u32), (800, 600, 2)] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let attributes = PPC_DATA_BASE + 0x1000;
+        let output = attributes + 128;
+        loaded.memory.add_region(attributes, vec![0; 132]);
+        loaded
+            .memory
+            .write_u16_be(PPC_MAIN_SCREEN_BASE, 0x5aa5)
+            .unwrap();
+        let desktop = *loaded
+            .gworlds
+            .iter()
+            .find(|r| r.port == PPC_MAIN_GWORLD)
+            .unwrap();
+        write_test_dsp_context_attributes(
+            &mut loaded.memory,
+            attributes,
+            PpcDspContextAttributes {
+                width,
+                height,
+                page_count: pages,
+                display_depth: 32,
+                back_buffer_depth: 32,
+                display_best_depth_mask: 0x20,
+                back_buffer_best_depth_mask: 0x20,
+                ..PpcDspContextAttributes::default()
+            },
+        );
+        loaded.cpu.gpr[3] = attributes;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+        assert_eq!(loaded.cpu.gpr[3], 0, "real RGB32 context must be found");
+        let context = loaded.memory.read_u32_be(output).unwrap();
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_MAIN_SCREEN_BASE),
+            Some(0x5aa5)
+        );
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let front = *loaded
+            .gworlds
+            .iter()
+            .find(|r| r.port == loaded.draw_sprocket.front_buffer_gworld)
+            .unwrap();
+        let back = *loaded
+            .gworlds
+            .iter()
+            .find(|r| r.port == loaded.draw_sprocket.back_buffer_gworld)
+            .unwrap();
+        assert_eq!(
+            (front.width, front.height, front.depth),
+            (width, height, 32)
+        );
+        assert_eq!((back.width, back.height, back.depth), (width, height, 32));
+        assert_eq!(front.port == back.port, pages == 1);
+        for record in [front, back] {
+            assert!(record.row_bytes >= width * 4);
+            assert_eq!(loaded.memory.read_u16_be(record.pixmap + 30), Some(16));
+            assert_eq!(loaded.memory.read_u16_be(record.pixmap + 32), Some(32));
+            assert_eq!(loaded.memory.read_u16_be(record.pixmap + 34), Some(3));
+            assert_eq!(loaded.memory.read_u16_be(record.pixmap + 36), Some(8));
+            assert_eq!(
+                loaded.memory.read_u32_be(
+                    record.base_addr + (height - 1) * record.row_bytes + (width - 1) * 4
+                ),
+                Some(0)
+            );
+        }
+        for (x, y, color) in [(0, 0, 0x00123456), (width - 1, height - 1, 0x00abcdef)] {
+            loaded
+                .memory
+                .write_u32_be(back.base_addr + y * back.row_bytes + x * 4, color)
+                .unwrap();
+        }
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DSpContextSwapBuffers,
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        for (x, y, color) in [(0, 0, 0x00123456), (width - 1, height - 1, 0x00abcdef)] {
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(front.base_addr + y * front.row_bytes + x * 4),
+                Some(color)
+            );
+        }
+        for state in [PPC_DSP_CONTEXT_STATE_PAUSED, PPC_DSP_CONTEXT_STATE_ACTIVE] {
+            loaded.cpu.gpr[3] = context;
+            loaded.cpu.gpr[4] = state;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u32_be(front.base_addr), Some(0x00123456));
+        }
+        loaded.cpu.gpr[3] = context;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextRelease);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let restored = *loaded
+            .gworlds
+            .iter()
+            .find(|r| r.port == PPC_MAIN_GWORLD)
+            .unwrap();
+        assert_eq!(
+            (
+                restored.width,
+                restored.height,
+                restored.depth,
+                restored.row_bytes
+            ),
+            (
+                desktop.width,
+                desktop.height,
+                desktop.depth,
+                desktop.row_bytes
+            )
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_MAIN_SCREEN_BASE),
+            Some(0x5aa5)
+        );
+    }
 }

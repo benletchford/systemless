@@ -19,7 +19,9 @@ pub(crate) fn ppc_main_screen_fits() -> bool {
 }
 
 pub(crate) fn ppc_main_screen_buffer_size() -> u32 {
-    ppc_row_bytes(ppc_main_screen_width(), PPC_MAIN_SCREEN_STORAGE_DEPTH).unwrap()
+    // Reserve enough memory for true RGB32 contexts while the desktop remains
+    // at the profile's own depth. The span check above also covers this capacity.
+    ppc_row_bytes(ppc_main_screen_width(), 32).unwrap()
         * ppc_main_screen_height()
 }
 
@@ -2453,6 +2455,7 @@ pub(crate) fn ppc_update_pixmap_depth(
     let (pixel_type, component_count, component_size) = match depth {
         1 | 2 | 4 | 8 => (0, 1, depth as u16),
         16 => (16, 3, 5),
+        32 => (16, 3, 8),
         _ => return None,
     };
     memory.write_u16_be(pixmap + 4, (row_bytes as u16) | 0x8000)?;

@@ -10707,7 +10707,7 @@ impl FixtureRunner {
     }
 
     fn ppc_host_row_bytes(width: u32, depth: u32) -> Option<u32> {
-        if !matches!(depth, 1 | 2 | 4 | 8 | 16) {
+        if !matches!(depth, 1 | 2 | 4 | 8 | 16 | 32) {
             return None;
         }
         width.checked_mul(depth)?.checked_add(7)?.checked_div(8)
@@ -11028,10 +11028,25 @@ impl FixtureRunner {
         let Some(percent) = percent else {
             return;
         };
+        let percent = percent.clamp(0, 100) as u32;
+        if depth == 32 {
+            let color = zero_color.unwrap_or(PpcRgbColor {
+                red: 0,
+                green: 0,
+                blue: 0,
+            });
+            let zero = [color.red, color.green, color.blue].map(|c| (u32::from(c) + 128) / 257);
+            for pixel in row.chunks_exact_mut(4) {
+                for (component, zero) in pixel[1..].iter_mut().zip(zero) {
+                    *component =
+                        ((u32::from(*component) * percent + zero * (100 - percent) + 50) / 100) as u8;
+                }
+            }
+            return;
+        }
         if depth != 16 {
             return;
         }
-        let percent = percent.clamp(0, 100) as u32;
         if percent == 100 && zero_color.is_none() {
             return;
         }
@@ -11190,7 +11205,7 @@ impl FixtureRunner {
         let (pixel_type, component_count, component_size, gdevice_type) = if depth <= 8 {
             (0, 1, depth, 0)
         } else {
-            (16, 3, 5, 2)
+            (16, 3, if depth == 32 { 8 } else { 5 }, 2)
         };
         self.bus.write_word(pixmap + 30, pixel_type);
         self.bus.write_word(pixmap + 32, depth);
