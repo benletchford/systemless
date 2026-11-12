@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.118.0](https://github.com/benletchford/systemless/compare/v0.117.0...v0.118.0) (2026-11-12)
+
+
+### Features
+
+* **catalogue:** add the original Pajama Sam 2 demo ([04a2ca9](https://github.com/benletchford/systemless/commit/04a2ca946b9b101c30f673e14f8eb4c06f6c26e4))
+* **catalogue:** add the original Pajama Sam demo ([2364e35](https://github.com/benletchford/systemless/commit/2364e3560ef1aa17352830c0ca6fd2cda00cc2ab))
+* **catalogue:** add the original Sky Shadow sample ([099ba8b](https://github.com/benletchford/systemless/commit/099ba8bd2cfc01c1e5180b001cd0efb7485b3f2e))
+* **catalogue:** add the Terminal Velocity demo ([5ae5b22](https://github.com/benletchford/systemless/commit/5ae5b226cac79466af734ee26741cb4d0c11f2cd))
+
+
+### Bug Fixes
+
+* **archives:** distinguish StuffIt archives from ordinary text ([95e6c51](https://github.com/benletchford/systemless/commit/95e6c51b32cb9c503886f22659cd4e23f17d6d68))
+* **catalogue:** restore the Terminal Velocity game menu ([e240f61](https://github.com/benletchford/systemless/commit/e240f61f325ee25f8c85cb4c36cadb39e793646c))
+* create directories through PowerPC PBDirCreateSync ([7638a37](https://github.com/benletchford/systemless/commit/7638a379bc3e16ff7a2bc915d37f725a8efa47b5))
+* enumerate supported DrawSprocket contexts consistently ([606b0b2](https://github.com/benletchford/systemless/commit/606b0b2a6530ba8a9f7f3cef7fc08571862fd08e))
+* expose classic PowerPC menu hook accessors ([8476daf](https://github.com/benletchford/systemless/commit/8476daf7d2f1049e50d440f06d8fec0bea165cfb))
+* **web:** correct Ferazel fades and reduce browser gameplay overhead ([c2188fb](https://github.com/benletchford/systemless/commit/c2188fbcddd0bbacd352294bdccdaa93fbd90ed9))
+
 ## [0.117.0](https://github.com/benletchford/systemless/compare/v0.116.0...v0.117.0) (2026-11-12)
 
 
