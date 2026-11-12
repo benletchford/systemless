@@ -37,6 +37,7 @@ compatibility:
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6147
 runtime:
+  show_menu_bar: true
   executable_path: Terminal Velocity (PPC)/Terminal Velocity Demo (PPC)
 artifacts:
 - id: archive
