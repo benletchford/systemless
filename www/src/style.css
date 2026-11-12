@@ -47,20 +47,20 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
-  --bg: #f2efe9;
-  --surface: #fbf9f5;
-  --ink: #15130f;
-  --body: #443f37;
-  --muted: #7c766d;
-  --faint: #a09889;
-  --rule: #dfd9ce;
-  --rule-2: #eae5db;
-  --rule-strong: #c9c2b6;
-  --accent: #c7381f;
-  --on-accent: #f7f4ee;
-  --footer-bg: #ede9e1;
-  --bg-blur: rgba(242, 239, 233, 0.88);
-  --screen: #15130f;
+  --bg: #dddddd;
+  --surface: #f5f5f5;
+  --ink: #171717;
+  --body: #3f3f3f;
+  --muted: #555555;
+  --faint: #616161;
+  --rule: #a3a3a3;
+  --rule-2: #c5c5c5;
+  --rule-strong: #858585;
+  --accent: #34348c;
+  --on-accent: #ffffff;
+  --footer-bg: #d3d3d3;
+  --bg-blur: rgba(221, 221, 221, 0.88);
+  --screen: #171717;
   --content-width: 640px;
   --game-width: 800px;
   --library-width: 1280px;
@@ -73,19 +73,19 @@
 }
 
 html[data-theme="dark"] {
-  --bg: #131211;
-  --surface: #1a1816;
-  --ink: #efebe3;
-  --body: #c4beb4;
-  --muted: #948d82;
-  --faint: #6e685f;
-  --rule: #2c2924;
-  --rule-2: #221f1b;
-  --rule-strong: #3a3630;
-  --accent: #e4653f;
-  --on-accent: #17150f;
-  --footer-bg: #191715;
-  --bg-blur: rgba(19, 18, 17, 0.9);
+  --bg: #202020;
+  --surface: #2d2d2d;
+  --ink: #eeeeee;
+  --body: #d0d0d0;
+  --muted: #b8b8b8;
+  --faint: #a3a3a3;
+  --rule: #585858;
+  --rule-2: #404040;
+  --rule-strong: #707070;
+  --accent: #b2b2ed;
+  --on-accent: #202020;
+  --footer-bg: #252525;
+  --bg-blur: rgba(32, 32, 32, 0.9);
 }
 
 html, body {
@@ -113,7 +113,7 @@ input {
 
 ::selection {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 
 .app {
@@ -381,7 +381,7 @@ input {
 .cli-platform__option--active {
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 1px 3px rgba(21, 19, 15, 0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .cli-platform__option:focus-visible {
@@ -899,7 +899,7 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #a39b90;
+  color: #b8b8b8;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;
   letter-spacing: 0.08em;

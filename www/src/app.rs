@@ -727,7 +727,7 @@ fn apply_theme(dark: bool) {
         let _ = storage.set_item(THEME_STORAGE_KEY, if dark { "dark" } else { "light" });
     }
     if let Ok(Some(theme_color)) = document.query_selector("meta[name='theme-color']") {
-        let _ = theme_color.set_attribute("content", if dark { "#131211" } else { "#f2efe9" });
+        let _ = theme_color.set_attribute("content", if dark { "#202020" } else { "#dddddd" });
     }
 }
 
