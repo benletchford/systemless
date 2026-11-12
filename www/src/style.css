@@ -64,7 +64,6 @@
   --content-width: 640px;
   --game-width: 800px;
   --library-width: 1280px;
-  --pixel-detail: #15130f;
   --mark: 112px;
   --mark-gap: 28px;
   --pad-x: 32px;
@@ -274,7 +273,7 @@ input {
   text-align: left;
 }
 
-.pixel-mac {
+.systemless-mark {
   display: block;
   flex: none;
   width: var(--mark);

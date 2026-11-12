@@ -1,9 +1,10 @@
 const CACHE_PREFIX = "systemless";
-const STATIC_CACHE = `${CACHE_PREFIX}-static-v6`;
+const STATIC_CACHE = `${CACHE_PREFIX}-static-v7`;
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
-  "/assets/icons/favicon.svg",
+  "/assets/icons/favicon.png",
+  "/assets/icons/systemless-mascot.png",
   "/assets/icons/icon-192.png",
   "/assets/icons/icon-512.png",
   "/assets/icons/apple-touch-icon.png",
