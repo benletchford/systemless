@@ -30,6 +30,23 @@ compatibility:
       SHA256 8e8ccf50d35447130c002d51b012699616546c69e19b46441633768b6b4d9429.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6215
+  - date: "2026-11-13"
+    tester: Catalogue maintainer
+    systemless_version: 3fb622c8 private candidate
+    architecture: 68k
+    environment: >-
+      Complete original archive and defaults. The browser reaches the correctly coloured
+      language screen, but the premeasurement 1200-guest-tick readiness wait exceeds 60 seconds.
+      All first 60 seconds retained: three raw 20-second startup windows advance guest ticks
+      at 20.9630, 19.5670 and 18.2161/s, with host rates above 60 FPS. These are startup diagnostics,
+      not formal world-input qualification. Archive and both main/worker Wasm HTTP body hashes
+      match; Wasm 16331939 bytes, SHA256
+      3d133873583e3389aa8254eea4d30ac2f4c0498d157f1d84567daf91b091ee3f.
+      The executing-worker wire-byte check was not reached. No browser English-selection,
+      steering/omission or sustained-world samples ran. Actual failure image inspected.
+      No unchanged retry or longer-wait qualification. Browser launch stays disabled.
+    status: boots
+    evidence: https://github.com/benletchford/systemless/issues/6217
 runtime:
   executable_path: Time Warp of Dr. Brain/Dr. Brain
 artifacts:
@@ -82,6 +99,7 @@ references:
 - https://github.com/benletchford/systemless/issues/6215
 - https://github.com/benletchford/systemless/issues/6213
 - https://github.com/benletchford/systemless/pull/6214
+- https://github.com/benletchford/systemless/issues/6217
 ---
 
 Play the original Macintosh **The Time Warp of Dr. Brain** demo. Choose **English**, then move the pointer through the river to steer Beaver Brain.
