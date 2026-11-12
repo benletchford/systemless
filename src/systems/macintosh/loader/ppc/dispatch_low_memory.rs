@@ -6,6 +6,8 @@ use super::*;
 pub enum PpcLowMemoryAccessor {
     /// LMGetROM85: the ROM85 word at $028E.
     GetRom85,
+    /// GetSysPPtr: address of the 20-byte SysParam record, not its contents.
+    GetSysParamPointer,
     GetDoubleTime,
     GetFsFcbLen,
     GetFcbSPtr,
@@ -50,6 +52,11 @@ pub(super) fn dispatch_low_memory_import(
             // the host mouse with each input snapshot.
             use crate::memory::globals::addr;
             let written = match accessor {
+                PpcLowMemoryAccessor::GetSysParamPointer => {
+                    // OSUtils.h and Parameter RAM Utilities, GetSysPPtr:
+                    // SysParam is the existing low-memory record at $01F8.
+                    return Some(PpcImportAction::Return(0x01f8));
+                }
                 PpcLowMemoryAccessor::GetRom85 => {
                     return Some(
                         memory
