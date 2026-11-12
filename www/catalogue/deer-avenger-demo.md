@@ -34,10 +34,10 @@ compatibility:
       path. Archive response, both Wasm response bodies and executed current-worker module
       bytes verified. Private Wasm 16322425 bytes, SHA256 044a8fe000eee88b2a9c510a6e9e1945b15f3ef644a8a97f79a73f82cb6aadce.
       Active initial shot shows recoil, muzzle flash and casing; omission remains armed. Shared
-      sustained phases use ordinary panning/repeated firing. All four full20s windows retain
+      sustained phases use ordinary panning/repeated firing. All four full 20-second windows retain
       initialization/readiness and meet full-window gates. Active initial/sustained and omission
-      initial pass all checks. Omission sustained fails steady guest ticks46.8794/s below50,
-      despite full-window54.7781/s. No overall browser qualification or unchanged retry. Hunter
+      initial pass all checks. Omission sustained fails steady guest ticks 46.8794/s below 50,
+      despite full-window 54.7781/s. No overall browser qualification or unchanged retry. Hunter
       hits, trophies, full-game, audio fidelity and hardware accuracy remain unverified.
     status: boots
     evidence: https://github.com/benletchford/systemless/issues/6208
