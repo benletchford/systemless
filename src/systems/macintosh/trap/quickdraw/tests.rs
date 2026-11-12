@@ -10126,6 +10126,103 @@
         assert_eq!(bus.read_long(ctab), seed, "RestoreEntries must not reseed");
     }
 
+    fn check_restore_entries_destination(destination_kind: u8) {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let device_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let device_table = bus.read_long(device_handle);
+        let device_seed = bus.read_long(device_table);
+        let before_display = *d.device_clut;
+        let before_matching = *d.color_manager_clut;
+        d.clut_protected[42] = true;
+        d.clut_reserved[7] = true;
+
+        let source = bus.alloc(32);
+        bus.fill_zeros(source, 32);
+        bus.write_word(source + 6, 2);
+        let source_handle = bus.alloc(4);
+        bus.write_long(source_handle, source);
+        let colors = [
+            (0x087Au16, [0x1234u16, 0x5678, 0x9ABC]),
+            (0x0042, [0x1111, 0x2222, 0x3333]),
+            (0x062B, [0xABCD, 0x2468, 0x1357]),
+        ];
+        for (i, (value, rgb)) in colors.iter().enumerate() {
+            let entry = source + 8 + i as u32 * 8;
+            bus.write_word(entry, *value);
+            for (component, color) in rgb.iter().enumerate() {
+                bus.write_word(entry + 2 + component as u32 * 2, *color);
+            }
+        }
+        let selection = bus.alloc(8);
+        bus.write_word(selection, 2);
+        for (i, index) in [42u16, 300, 7].iter().enumerate() {
+            bus.write_word(selection + 2 + i as u32 * 2, *index);
+        }
+        let destination = match destination_kind {
+            0 => 0,
+            1 => device_handle,
+            _ => {
+                let table = bus.alloc(8 + 256 * 8);
+                bus.fill_zeros(table, 8 + 256 * 8);
+                bus.write_long(table, 0x13572468);
+                bus.write_word(table + 6, 255);
+                let handle = bus.alloc(4);
+                bus.write_long(handle, table);
+                handle
+            }
+        };
+        let destination_table = if destination == 0 {
+            device_table
+        } else {
+            bus.read_long(destination)
+        };
+        let destination_seed = bus.read_long(destination_table);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, destination);
+        bus.write_long(TEST_SP + 8, source_handle);
+        assert!(d
+            .dispatch_quickdraw(true, 0x24A, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_word(selection + 4), 0xFFFF);
+        for (index, (value, rgb)) in [(42u32, colors[0]), (7, colors[2])] {
+            let entry = destination_table + 8 + index * 8;
+            assert_eq!(bus.read_word(entry), value);
+            for (component, color) in rgb.iter().enumerate() {
+                assert_eq!(bus.read_word(entry + 2 + component as u32 * 2), *color);
+            }
+            if destination_kind < 2 {
+                assert_eq!(d.device_clut[index as usize], rgb);
+            }
+        }
+        if destination_kind == 2 {
+            assert_eq!(*d.device_clut, before_display);
+        } else {
+            assert_eq!(d.device_clut[8], before_display[8]);
+        }
+        assert_eq!(bus.read_long(destination_table), destination_seed);
+        assert_eq!(bus.read_long(device_table), device_seed);
+        assert_eq!(*d.color_manager_clut, before_matching);
+    }
+
+    #[test]
+    fn restore_entries_nil_device_updates_memory_and_display_without_reseeding() {
+        check_restore_entries_destination(0);
+    }
+
+    #[test]
+    fn restore_entries_explicit_device_updates_memory_and_display_without_reseeding() {
+        check_restore_entries_destination(1);
+    }
+
+    #[test]
+    fn restore_entries_offscreen_destination_leaves_display_unchanged() {
+        check_restore_entries_destination(2);
+    }
+
     #[test]
     fn getsubtable_pascal_procedure_preserves_stack_across_five_calls() {
         // IM:V 1986 p. V-142 (Color Manager — Color Manager Routines):
