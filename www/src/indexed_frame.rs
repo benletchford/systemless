@@ -44,8 +44,7 @@ impl IndexedFrame {
         }
         // Snapshot the active transfer table with the palette and pixels. Guest
         // fades can change gamma without changing the framebuffer or CLUT.
-        self.screen
-            .capture(bus, mode, clut, gamma);
+        self.screen.capture(bus, mode, clut, gamma);
         self.prepare(cursor, mouse)
     }
 
@@ -182,9 +181,16 @@ mod tests {
                 clut[1] = [0, 0, 0xffff];
             }
             assert!(frame.capture(&bus, mode, &clut, &gamma, None, (0, 0)));
-            let actual: Vec<u8> = frame.screen.pixels.iter().flat_map(|&index| {
-                frame.palette[index as usize * 4..index as usize * 4 + 4].iter().copied()
-            }).collect();
+            let actual: Vec<u8> = frame
+                .screen
+                .pixels
+                .iter()
+                .flat_map(|&index| {
+                    frame.palette[index as usize * 4..index as usize * 4 + 4]
+                        .iter()
+                        .copied()
+                })
+                .collect();
             let expected = display::render_screen_with_gamma(&bus, mode, &clut, &gamma);
             assert_eq!(actual, expected, "phase={phase}");
             if phase == 1 || phase == 2 {

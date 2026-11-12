@@ -962,11 +962,14 @@ impl Machine {
                 self.software_cursor().cloned(),
             )
         };
-        if !self
-            .indexed_frame
-            .capture(self.runner.bus(), mode, &clut,
-                &self.runner.dispatcher().device_gamma(), cursor.as_ref(), mouse)
-        {
+        if !self.indexed_frame.capture(
+            self.runner.bus(),
+            mode,
+            &clut,
+            &self.runner.dispatcher().device_gamma(),
+            cursor.as_ref(),
+            mouse,
+        ) {
             return None;
         }
         self.record_owned_presentation(
@@ -1010,8 +1013,13 @@ impl Machine {
             return None;
         }
         let exported = if let Some(cursor) = cursor.as_ref() {
-            display::render_screen_argb_with_gamma(self.runner.bus(), mode, &clut,
-                &self.runner.dispatcher().device_gamma(), &mut self.compact_guest);
+            display::render_screen_argb_with_gamma(
+                self.runner.bus(),
+                mode,
+                &clut,
+                &self.runner.dispatcher().device_gamma(),
+                &mut self.compact_guest,
+            );
             self.compact_overlay.clone_from(&self.compact_guest);
             display::render_cursor_argb(
                 &mut self.compact_overlay,
@@ -1054,7 +1062,8 @@ impl Machine {
         self.rendered_cursor = cursor;
         self.frame_palette_clut = clut;
         self.frame_palette_gamma = self.runner.dispatcher().device_gamma();
-        self.frame_palette = display::rgba_palette_from_clut_with_gamma(&clut, &self.frame_palette_gamma);
+        self.frame_palette =
+            display::rgba_palette_from_clut_with_gamma(&clut, &self.frame_palette_gamma);
         self.frame_palette_valid = true;
         self.rendered_packet = true;
         self.presented_size = size;
