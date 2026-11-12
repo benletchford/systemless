@@ -372,6 +372,7 @@ pub fn render_screen_with_rgba_palette_into(
     let fb = bus.ram_slice(scrn_base, framebuffer_len);
 
     match pixel_size {
+        32 => render_32bpp_rgba_rows(fb, row_bytes, w, h, pixels),
         16 => render_16bpp_rgba_rows(fb, row_bytes, w, h, pixels),
         8 => render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
         4 => render_4bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
@@ -405,7 +406,7 @@ fn packed_screen_framebuffer_len(
     }
     let bits_per_row = u32::from(width).checked_mul(u32::from(pixel_size))?;
     let minimum_row_bytes = match pixel_size {
-        1 | 2 | 4 | 8 | 16 => bits_per_row.checked_add(7)? / 8,
+        1 | 2 | 4 | 8 | 16 | 32 => bits_per_row.checked_add(7)? / 8,
         _ => return None,
     };
     if row_bytes < minimum_row_bytes {
@@ -748,6 +749,17 @@ fn render_8bpp_rgba_rows(
     }
 }
 
+// QuickDraw direct RGB32 stores an unused byte followed by red, green, blue.
+fn render_32bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let src = y * row_bytes as usize + x * 4;
+            let dst = (y * w as usize + x) * 4;
+            pixels[dst..dst + 4].copy_from_slice(&[fb[src + 1], fb[src + 2], fb[src + 3], 0xff]);
+        }
+    }
+}
+
 fn render_16bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
     for gy in 0..h as usize {
         let row_start = gy * row_bytes as usize;
@@ -881,6 +893,10 @@ pub fn screen_pixel_rgb_with_gamma(
     validated_screen_framebuffer_len(bus, screen_mode)?;
 
     match pixel_size {
+        32 => {
+            let addr = scrn_base + y * row_bytes + x * 4;
+            Some([bus.read_byte(addr + 1), bus.read_byte(addr + 2), bus.read_byte(addr + 3)])
+        }
         16 => {
             let addr = scrn_base + y * row_bytes + x * 2;
             Some(rgb555_to_rgb888(bus.read_word(addr)))
@@ -1034,6 +1050,14 @@ pub fn render_packed_screen_argb(
     }
 
     match pixel_size {
+        32 => {
+            for y in 0..h {
+                for x in 0..w {
+                    let src = y * row_bytes as usize + x * 4;
+                    pixels[y * w + x] = 0xff000000 | (u32::from_be_bytes(fb[src..src + 4].try_into().unwrap()) & 0x00ffffff);
+                }
+            }
+        }
         16 => {
             for gy in 0..h {
                 let row_start = gy * row_bytes as usize;
@@ -2443,12 +2467,25 @@ mod owned_frame_tests {
     }
 
     #[test]
+    fn rgb32_owned_rows_preserve_channels_stride_and_ignore_unused_byte() {
+        let bytes = [
+            0x7f, 0x12, 0x34, 0x56, 0x80, 0xab, 0xcd, 0xef, 0xee, 0xee, 0xee, 0xee, 0xff, 0xff, 0, 0,
+            0x33, 0, 0x80, 0xff, 0xdd, 0xdd, 0xdd, 0xdd,
+        ];
+        let mut output = Vec::new();
+        render_packed_screen_argb(&bytes, (12, 2, 2, 32), &[0; 256], &mut output);
+        assert_eq!(output, [0xff123456, 0xffabcdef, 0xffff0000, 0xff0080ff]);
+        render_packed_screen_argb(&bytes[..19], (12, 2, 2, 32), &[0; 256], &mut output);
+        assert_eq!(output, [BLACK_ARGB; 4]);
+    }
+
+    #[test]
     fn malformed_owned_layouts_keep_black_fallback() {
         let mut output = vec![0xffffffff; 9];
         for (bytes, layout) in [
             (vec![1; 5], (4, 4, 2, 8)),
             (vec![0xff; 2], (1, 9, 1, 1)),
-            (vec![0xff; 16], (16, 4, 1, 32)),
+            (vec![0xff; 16], (16, 4, 1, 24)),
         ] {
             render_packed_screen_argb(&bytes, layout, &[0xffffffff; 256], &mut output);
             assert_eq!(
