@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "systemless";
-const STATIC_CACHE = `${CACHE_PREFIX}-static-v7`;
+const STATIC_CACHE = `${CACHE_PREFIX}-static-v8`;
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
