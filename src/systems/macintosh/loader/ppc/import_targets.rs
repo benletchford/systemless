@@ -4268,6 +4268,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SysBreak") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Debugger,
         ),
+        ("InterfaceLib", "LMGetMBarHook" | "lmgetmbarhook") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetMBarHook)
+        }
+        ("InterfaceLib", "LMSetMBarHook" | "lmsetmbarhook") => {
+            PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetMBarHook)
+        }
         ("InterfaceLib", "LMGetMenuHook" | "lmgetmenuhook") => {
             PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetMenuHook)
         }

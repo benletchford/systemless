@@ -10379,3 +10379,31 @@ fn lm_get_menu_hook_observes_setter_and_direct_low_memory_updates() {
         assert_eq!(loaded.memory.read_u32_be(0x0a30), Some(callback));
     }
 }
+
+#[test]
+fn lm_get_mbar_hook_observes_setter_without_changing_menu_hook() {
+    let getter = PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::GetMBarHook);
+    let setter = PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetMBarHook);
+    for symbol in ["LMGetMBarHook", "lmgetmbarhook"] {
+        assert_eq!(dispatcher_target_for_import("InterfaceLib", symbol), getter);
+    }
+    for symbol in ["LMSetMBarHook", "lmsetmbarhook"] {
+        assert_eq!(dispatcher_target_for_import("InterfaceLib", symbol), setter);
+    }
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMGetMBarHook")).unwrap();
+    run_test_import(&mut loaded, getter.clone());
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.memory.write_u32_be(0x0a30, 0x8765_4321).unwrap();
+    loaded.memory.write_u32_be(0x0a2c, 0x8123_4568).unwrap();
+    run_test_import(&mut loaded, getter.clone());
+    let saved = loaded.cpu.gpr[3];
+    assert_eq!(saved, 0x8123_4568);
+    for callback in [0x0123_4568, saved, 0] {
+        loaded.cpu.gpr[3] = callback;
+        run_test_import(&mut loaded, setter.clone());
+        run_test_import(&mut loaded, getter.clone());
+        assert_eq!(loaded.cpu.gpr[3], callback);
+        assert_eq!(loaded.memory.read_u32_be(0x0a2c), Some(callback));
+        assert_eq!(loaded.memory.read_u32_be(0x0a30), Some(0x8765_4321));
+    }
+}
