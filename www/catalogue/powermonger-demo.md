@@ -1,6 +1,7 @@
 ---
 id: powermonger-demo
 kind: game
+launch_enabled: true
 title: PowerMonger Demo
 summary: >-
   Explore a living 3D landscape and begin a conquest in the original Macintosh
@@ -13,7 +14,7 @@ architectures:
 default_architecture: 68k
 category: Strategy
 compatibility:
-  status: unknown
+  status: playable
   verified:
   - date: "2026-11-12"
     tester: Catalogue maintainer
@@ -31,6 +32,30 @@ compatibility:
       CPU, partition or display settings were changed. This verifies bounded world
       entry and overview-camera input, not conquest completion, saves, audio fidelity,
       independent hardware accuracy or browser pacing.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6172
+  - date: "2026-11-12"
+    tester: Catalogue maintainer
+    systemless_version: 843a23d2 private release preview
+    architecture: 68k
+    environment: >-
+      Fresh private HTTPS browser active and omitted-input runs using the exact
+      hosted original archive at default 25 MHz, display, partition and sound.
+      Each case passes a 20-second new-conquest/world-initialization and camera
+      window plus a separate 20-second sustained world window. Original Command-N
+      and territory hover/click reach live play. Overview input changes 57132
+      landscape pixels versus 149 in the control; pre-input RGB frames match
+      exactly. Actual input and sustained captures were inspected. Endpoint guest
+      rates are 59.09-60.00 ticks/sec and host rates 60.00-62.26 FPS; maximum runtime
+      frames are 16.2-16.4 ms and minimum audio queue is 115.9 ms. No action,
+      lifecycle or network errors. Original archive and main/worker Wasm response
+      bodies match pins; the executing worker module is independently pinned and
+      its Debugger disabled afterward. All observed targets resume. No game files,
+      preferences or machine settings change. This is bounded private browser
+      world/camera approval, not released public verification, completion, saves,
+      audio fidelity or independent hardware accuracy. Runtime source matches the
+      merged catalogue source except the private launch flag; draft runtime
+      optimizations are excluded.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6172
 runtime:
@@ -101,6 +126,6 @@ Begin a conquest in **PowerMonger Demo 1.2**, the original Macintosh strategy de
 At the title, use **Command-N** for **Conquest → Start New Conquest**. Hover over
 the **first territory in the upper-left corner**, then click to enter the world.
 Click the small **overview map** on the left to change the landscape view.
-Native world entry and camera input are verified; browser play remains pending.
+World entry and overview-camera input are verified in a private browser preview.
 
 ![Exploring the first territory in PowerMonger](https://assets.systemless.org/catalogue/media/sha256/98/98cbc8aa2af268910b9817abdd15cdd26cda3a089e9668363f7f4f99d0e52d13.png)
