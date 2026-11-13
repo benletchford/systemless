@@ -1692,6 +1692,7 @@ fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
 
     assert!(ppc_draw_dialog(
         &loaded.window_list,
+        &loaded.param_text,
         &mut loaded.memory,
         &test_handle_records!(loaded),
         &loaded.controls.records(),
@@ -7605,4 +7606,177 @@ fn set_dialog_item_text_redraws_only_its_visible_item_and_erases_shorter_text() 
             }
         }
     }
+}
+
+
+#[test]
+fn param_text_is_applied_at_draw_time_without_changing_dialog_item_text() {
+    fn render(
+        item_type: u8,
+        initial: &[u8],
+        replacement: &[u8],
+        next_param: &[u8],
+    ) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"GetNewDialog"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 16];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&150i16.to_be_bytes());
+        ditl[14] = item_type;
+        ditl[15] = initial.len() as u8;
+        ditl.extend_from_slice(initial);
+        if ditl.len() % 2 != 0 {
+            ditl.push(0);
+        }
+        for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: *loaded.process_file_system.current_resource_file,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.param_text.set_slot(0, b"FIRST".to_vec());
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        let dialog = loaded.cpu.gpr[3];
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        let handles = test_handle_records!(loaded);
+        let items = ppc_dialog_items_for_dialog(&mut loaded.memory, &handles, dialog).unwrap();
+        let handle = items[0].handle;
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let capture = |loaded: &mut PpcLoadedApp| {
+            let mut pixels = Vec::new();
+            for y in bounds.0 + 10..bounds.0 + 40 {
+                for x in bounds.1 + 10..bounds.1 + 150 {
+                    pixels.push(
+                        ppc_quickdraw_read_pixel(
+                            &mut loaded.memory,
+                            front,
+                            (i32::from(x), i32::from(y)),
+                        )
+                        .unwrap(),
+                    );
+                }
+            }
+            pixels
+        };
+        let created = capture(&mut loaded);
+        let text_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(text_ptr, vec![0; 512]);
+        write_ppc_pstring(&mut loaded.memory, text_ptr, replacement);
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = text_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDialogItemText);
+        let replaced = capture(&mut loaded);
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = text_ptr + 256;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetDialogItemText);
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, text_ptr + 256),
+            Some(replacement.to_vec())
+        );
+        write_ppc_pstring(&mut loaded.memory, text_ptr, next_param);
+        loaded.cpu.gpr[3] = text_ptr;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ParamText);
+        // DrawDialog redraws items without erasing the port; supply the clean
+        // update region an application's update handler would provide.
+        ppc_fill_front_rect(
+            &mut loaded.memory,
+            front,
+            (bounds.0 + 10, bounds.1 + 10, bounds.0 + 40, bounds.1 + 150),
+            PpcRgbColor {
+                red: 0xffff,
+                green: 0xffff,
+                blue: 0xffff,
+            },
+        );
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        let changed = capture(&mut loaded);
+        assert_eq!(
+            ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle),
+            Some(replacement.to_vec())
+        );
+        (created, replaced, changed)
+    }
+    let templated = render(
+        PPC_DIALOG_ITEM_STATIC_TEXT,
+        b"Initial ^0",
+        b"Replaced ^0",
+        b"SECOND",
+    );
+    let first = render(
+        PPC_DIALOG_ITEM_STATIC_TEXT,
+        b"Initial FIRST",
+        b"Replaced FIRST",
+        b"SECOND",
+    );
+    let second = render(
+        PPC_DIALOG_ITEM_STATIC_TEXT,
+        b"Initial SECOND",
+        b"Replaced SECOND",
+        b"SECOND",
+    );
+    assert_eq!(
+        templated.0, first.0,
+        "creation keeps placeholders but draws their values"
+    );
+    assert_eq!(
+        templated.1, first.1,
+        "SetDialogItemText draws substituted static text"
+    );
+    assert_eq!(
+        templated.2, second.2,
+        "later ParamText changes the existing item's rendering"
+    );
+    assert_ne!(
+        templated.1, templated.2,
+        "the fixture must distinguish parameter values"
+    );
+    let edit = render(
+        PPC_DIALOG_ITEM_EDIT_TEXT,
+        b"Initial ^0",
+        b"Replaced ^0",
+        b"SECOND",
+    );
+    let edit_unchanged = render(
+        PPC_DIALOG_ITEM_EDIT_TEXT,
+        b"Initial ^0",
+        b"Replaced ^0",
+        b"FIRST",
+    );
+    assert_eq!(
+        edit.2, edit_unchanged.2,
+        "edit text stays literal after ParamText changes"
+    );
+    assert_ne!(edit.1, first.1, "edit text must not be substituted");
 }
