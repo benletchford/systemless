@@ -1,6 +1,10 @@
 ---
 id: wumpus
 launch_enabled: true
+native:
+  enabled: true
+  edition: "Freeware"
+  limits: "Complete original freeware game. Preserve the application and its resources unchanged."
 kind: game
 title: Wumpus! 1.0
 summary: >-

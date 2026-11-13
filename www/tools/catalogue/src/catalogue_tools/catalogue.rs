@@ -510,6 +510,8 @@ pub struct CompiledEntry {
     pub path: String,
     pub aliases: Vec<String>,
     pub launch_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeAvailability>,
     pub compatibility: Compatibility,
     pub runtime: Runtime,
     pub controls: Controls,
@@ -565,6 +567,7 @@ pub fn build(c: &Catalogue) -> Result<CompiledCatalogue> {
                 path: community::canonical_path(e),
                 aliases: e.aliases.clone(),
                 launch_enabled: e.launch_enabled,
+                native: e.native.clone(),
                 compatibility: e.compatibility.clone(),
                 runtime: e.runtime.clone(),
                 plugins: e.plugins.clone(),

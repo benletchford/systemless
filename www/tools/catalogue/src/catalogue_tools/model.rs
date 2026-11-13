@@ -61,6 +61,9 @@ pub struct Entry {
     /// Enables the launcher, independently of listing and compatibility verification.
     #[serde(default, skip_serializing_if = "is_default")]
     pub launch_enabled: bool,
+    /// Curated native-app availability; omitted entries are excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeAvailability>,
     pub compatibility: Compatibility,
     #[serde(
         default,
@@ -80,6 +83,15 @@ pub struct Entry {
     pub plugins: Vec<Plugin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeAvailability {
+    #[serde(default)]
+    pub enabled: bool,
+    pub edition: String,
+    pub limits: String,
 }
 
 /// Optional downloads and installation files are declared assets, so provenance,

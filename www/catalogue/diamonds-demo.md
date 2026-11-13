@@ -11,6 +11,10 @@ architectures:
 default_architecture: 68k
 category: Arcade
 launch_enabled: true
+native:
+  enabled: true
+  edition: "Demo"
+  limits: "Original Diamonds 2.0 demonstration. Keep the complete package and its original notices."
 compatibility:
   status: playable
   verified:
