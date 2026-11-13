@@ -1624,13 +1624,13 @@ impl Presentation {
             return;
         }
         self.changed(true);
-        for offset in 0..bytes.len() as u32 {
-            self.touch_screen(x + offset, y);
-        }
-        for (offset, &value) in bytes.iter().enumerate() {
-            let cell = start + offset;
-            self.detail_cache.get_mut()[cell] = None;
-            self.guest_values[cell] = u16::from(value);
+        // One epoch for the row's tiles and one pass over each store: a mark
+        // only ever asks whether a tile changed after it was taken.
+        let cells = start..start + bytes.len();
+        self.touch_screen_span(x, x + bytes.len() as u32 - 1, y);
+        self.detail_cache.get_mut()[cells.clone()].fill(None);
+        for (cell, &value) in self.guest_values[cells].iter_mut().zip(bytes) {
+            *cell = u16::from(value);
         }
     }
 
@@ -5128,6 +5128,59 @@ mod tests {
             bus.screen_rect_unchanged_since(again, (1, 0, 8, 1)),
             "pasting the same bytes changes nothing"
         );
+    }
+
+    /// A plain row written through the host sync marks exactly the tiles it
+    /// covers, stores every byte, and counts as one change; the same bytes
+    /// again change nothing.
+    #[test]
+    fn plain_row_sync_marks_its_tiles_and_records_every_byte() {
+        const BASE: u32 = 0x1000;
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let palette = std::array::from_fn(|i| [i as u8; 3]);
+        // Four 16-pixel tiles per row.
+        bus.fill_bytes(BASE, 64 * 4, 255);
+        bus.enable_outline_presentation((BASE, 64, 64, 4, 8), palette, 2);
+        let row: Vec<u8> = (0..24u8).map(|n| n.wrapping_mul(7) + 1).collect();
+        let address = BASE + 64 + 20;
+        let before = bus.screen_mark().expect("presented screen");
+        let revision = bus.presentation_epoch().unwrap();
+
+        assert!(bus.write_plain_presented_bytes(address, &row));
+
+        assert_eq!(bus.read_bytes(address, 24), row);
+        assert_eq!(bus.presentation_epoch(), Some(revision + 1));
+        // The mirror holds the whole row and nothing beside it.
+        let mirrored =
+            bus.presentation.as_ref().unwrap().guest_values[64 + 19..64 + 45].to_vec();
+        let expected: Vec<u16> = std::iter::once(255)
+            .chain(row.iter().map(|&value| u16::from(value)))
+            .chain(std::iter::once(255))
+            .collect();
+        assert_eq!(mirrored, expected);
+        // Columns 20..44 of row 1 lie in tiles 1 and 2.
+        for (tile, changed) in [(0, false), (1, true), (2, true), (3, false)] {
+            assert_eq!(
+                !bus.screen_rect_unchanged_since(before, (1, tile * 16, 16, 1)),
+                changed,
+                "tile {tile}"
+            );
+        }
+        assert!(bus.screen_rect_unchanged_since(before, (0, 0, 64, 1)));
+        assert!(bus.screen_rect_unchanged_since(before, (2, 0, 64, 1)));
+
+        // The same row again is no change at all.
+        let again = bus.screen_mark().expect("presented screen");
+        assert!(bus.write_plain_presented_bytes(address, &row));
+        assert_eq!(bus.presentation_epoch(), Some(revision + 1));
+        assert!(bus.screen_rect_unchanged_since(again, (1, 0, 64, 1)));
+
+        // A change in the last byte alone is still seen.
+        let mut other = row.clone();
+        *other.last_mut().unwrap() ^= 0x40;
+        assert!(bus.write_plain_presented_bytes(address, &other));
+        assert_eq!(bus.presentation_epoch(), Some(revision + 2));
+        assert!(!bus.screen_rect_unchanged_since(again, (1, 32, 16, 1)));
     }
 
     #[test]
