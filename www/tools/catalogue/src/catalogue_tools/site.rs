@@ -540,6 +540,11 @@ pub fn write_pages(
     output: &Path,
     origin: &str,
 ) -> Result<()> {
+    // Native clients consume the same resolved, versioned catalogue as the site.
+    crate::catalogue_tools::catalogue::atomic_write(
+        &output.join("catalogue.json"),
+        &serde_json::to_vec(c)?,
+    )?;
     let approved_ids: Vec<_> = c
         .entries
         .iter()
