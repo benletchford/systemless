@@ -5326,9 +5326,35 @@ pub(crate) fn ppc_copy_bits(
         // device table.
         let dst_device_ctable_resolution =
             ppc_gdevice_ctable_handle_with_provenance(memory, current_gdevice);
+        // A GWorld made without noNewDevice has its own device built from its
+        // table, but its record shares the main device. Imaging With QuickDraw
+        // (1994), chapter 6.
+        // The shared record cannot tell a selected main device from the implicit
+        // one, so screen destinations keep the main table and a noNewDevice GWorld
+        // on the main device uses its own.
+        let screen_base = gworlds
+            .iter()
+            .find(|record| record.port == PPC_MAIN_GWORLD)
+            .map(|record| record.base_addr);
+        let offscreen_device_ctable = gworlds
+            .iter()
+            .find(|record| {
+                record.port == current_gworld
+                    && record.port != PPC_MAIN_GWORLD
+                    && record.gdevice == PPC_MAIN_GDEVICE
+                    && Some(record.base_addr) != screen_base
+                    && Some(dst_bits.base_addr) != screen_base
+            })
+            .filter(|_| current_gdevice == PPC_MAIN_GDEVICE)
+            .and_then(|_| ppc_live_gworld_ctable_handle(memory, gworlds, current_gworld));
         let mut dst_clut_resolution_known = false;
         let dst_clut = ppc_indexed_depth_entry_count(dst_bits.depth).map(|_| {
-            if let Some(handle) = dst_device_ctable_resolution.handle {
+            if let Some(handle) = offscreen_device_ctable {
+                let (clut, known) =
+                    ppc_copy_bits_clut_with_provenance(memory, handle, color_manager_clut);
+                dst_clut_resolution_known = known;
+                clut
+            } else if let Some(handle) = dst_device_ctable_resolution.handle {
                 let (clut, known) =
                     ppc_copy_bits_clut_with_provenance(memory, handle, color_manager_clut);
                 dst_clut_resolution_known = dst_device_ctable_resolution.known && known;

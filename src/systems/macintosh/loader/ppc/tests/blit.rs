@@ -4130,6 +4130,92 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
     }
 
     #[test]
+    fn copybits_translates_through_the_current_offscreen_gworld_table() {
+        assert_eq!(copybits_from_offscreen_port(false), 42);
+    }
+
+    #[test]
+    fn copybits_to_the_screen_keeps_the_main_device_table_from_an_offscreen_port() {
+        assert_ne!(copybits_from_offscreen_port(true), 42);
+    }
+
+    fn copybits_from_offscreen_port(dst_is_screen: bool) -> u8 {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x15000;
+        let src_pixels = scratch;
+        let port_pixels = scratch + 0x10;
+        let screen_base = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == PPC_MAIN_GWORLD)
+            .unwrap()
+            .base_addr;
+        let dst_pixels = if dst_is_screen { screen_base } else { port_pixels };
+        let src_pixmap = scratch + 0x20;
+        let dst_pixmap = scratch + 0x60;
+        let src_ctable_handle = scratch + 0xa0;
+        let src_ctable = scratch + 0xb0;
+        let dst_ctable_handle = scratch + 0xd0;
+        let dst_ctable = scratch + 0xe0;
+        let rect = scratch + 0x900;
+        let port = scratch + 0x920;
+        loaded.memory.add_region(scratch, vec![0; 0xa00]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 1, 0, 0, 1, 1, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 1, 0, 0, 1, 1, 8).unwrap();
+        for (pixmap, handle, table) in [
+            (src_pixmap, src_ctable_handle, src_ctable),
+            (dst_pixmap, dst_ctable_handle, dst_ctable),
+        ] {
+            loaded.memory.write_u32_be(pixmap + 42, handle).unwrap();
+            loaded.memory.write_u32_be(handle, table).unwrap();
+        }
+        loaded.memory.write_u16_be(src_ctable + 6, 1).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 16, 1).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 18, 0xffff).unwrap();
+        loaded.memory.write_u16_be(dst_ctable + 6, 255).unwrap();
+        for index in 0..256u32 {
+            loaded
+                .memory
+                .write_u16_be(dst_ctable + 8 + index * 8, index as u16)
+                .unwrap();
+        }
+        loaded
+            .memory
+            .write_u16_be(dst_ctable + 8 + 42 * 8 + 2, 0xffff)
+            .unwrap();
+        loaded.memory.write_u8(src_pixels, 1).unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+        loaded.gworlds.push(PpcGWorldRecord {
+            ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+            port,
+            pixmap_handle: 0,
+            pixmap: dst_pixmap,
+            base_addr: port_pixels,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 1,
+            height: 1,
+            depth: 8,
+            row_bytes: 1,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        });
+        loaded
+            .current_gworld
+            .with_mut(|current_gworld| *current_gworld = port);
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        loaded.memory.read_u8(dst_pixels).unwrap()
+    }
+
+    #[test]
     fn copybits_mono_expansion_uses_explicit_foreground_index() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();
