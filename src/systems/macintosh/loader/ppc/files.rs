@@ -463,6 +463,8 @@ pub(super) fn ppc_pb_set_cat_info(
 pub(super) fn ppc_pb_get_finfo(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    files: &[PpcFileRecord],
+    resource_files: &[PpcResourceFileRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -535,13 +537,53 @@ pub(super) fn ppc_pb_get_finfo(
     {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &ppc_vfs_basename_bytes(&path)) {
+    // Inside Macintosh Volume IV (1986), IV-148--IV-149 (PBGetFInfo), and
+    // Inside Macintosh: Files (1992), 2-194--2-195 (PBHGetFInfo), on a
+    // lookup by name: "If the file is open, the reference number of the
+    // first access path found is returned in ioFRefNum, and the name of the
+    // file is returned in ioNamePtr (unless ioNamePtr is NIL)." Otherwise the
+    // name is input only, and callers go on using the same string. An
+    // indexed lookup returns the name it found, as before. ioFRefNum is
+    // cleared when the file is not open, so a block reused across calls
+    // cannot report a stale access path.
+    let open_ref_num = ppc_open_fork_ref_num_for_path(files, resource_files, &path);
+    if (fdir_index > 0 || open_ref_num != 0)
+        && name_ptr != 0
+        && !ppc_write_pstring_bytes(memory, name_ptr, &ppc_vfs_basename_bytes(&path))
+    {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {
+    if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none()
+        || memory.write_u16_be(pb + 24, open_ref_num as u16).is_none()
+    {
         return PPC_PARAM_ERR;
     }
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
+}
+
+/// Reference number of the first open fork of `path`, or zero when neither
+/// fork is open.
+fn ppc_open_fork_ref_num_for_path(
+    files: &[PpcFileRecord],
+    resource_files: &[PpcResourceFileRecord],
+    path: &str,
+) -> i16 {
+    files
+        .iter()
+        .find(|file| {
+            file.path
+                .strip_prefix(PPC_OPEN_RESOURCE_FORK_PREFIX)
+                .unwrap_or(&file.path)
+                .eq_ignore_ascii_case(path)
+        })
+        .map(|file| file.ref_num)
+        .or_else(|| {
+            resource_files
+                .iter()
+                .find(|file| file.path.eq_ignore_ascii_case(path))
+                .map(|file| file.ref_num)
+        })
+        .unwrap_or(0)
 }
 
 pub(super) fn ppc_pb_set_finfo(
