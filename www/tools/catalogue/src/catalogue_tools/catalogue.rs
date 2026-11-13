@@ -479,7 +479,8 @@ fn render_events<'a>(
     });
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events);
-    html
+    // Raw HTML is escaped above, so only generated image tags are changed.
+    html.replace("<img ", "<img crossorigin=\"anonymous\" ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

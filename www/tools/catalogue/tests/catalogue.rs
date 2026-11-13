@@ -1695,7 +1695,7 @@ fn architecture_archives_survive_compilation_and_select_default_port() {
 }
 
 #[test]
-fn compute_default_survives_catalogue_serialization_and_requires_worker() {
+fn compute_default_survives_catalogue_serialization_and_images_use_cors() {
     let c = common::catalogue();
     let mut entry = c.documents[0].entry.clone();
     assert!(!entry.runtime.gpu_compute);
@@ -1708,4 +1708,11 @@ fn compute_default_survives_catalogue_serialization_and_requires_worker() {
         .unwrap_err()
         .to_string()
         .contains("requires worker"));
+    let html = catalogue::render_markdown(
+        &c.config,
+        &entry,
+        "![sample](https://example.org/image.png)\n\n`<img src=x>`",
+    );
+    assert!(html.contains("<img crossorigin=\"anonymous\" src="));
+    assert!(html.contains("&lt;img src=x&gt;"));
 }

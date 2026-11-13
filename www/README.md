@@ -61,10 +61,11 @@ run one at a time on the shared scratch buffers.
 
 `SharedArrayBuffer` requires a cross-origin isolated page. `public/_headers`
 sets `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: credentialless` for Cloudflare Pages. A local
+`Cross-Origin-Embedder-Policy: require-corp` for Cloudflare Pages. A local
 `trunk serve` does not send them, so compute reports itself unavailable there;
-serve `dist` with those headers instead. Browsers without `credentialless`
-support (Safari), without WebGPU, or without isolation keep CPU rendering.
+serve `dist` with those headers instead. Cross-origin catalogue thumbnails use
+anonymous CORS and require the asset server to return `Access-Control-Allow-Origin`.
+Browsers without WebGPU or without isolation keep CPU rendering.
 
 Failures never alter guest pixels: a declined operation falls back to the CPU,
 and a device loss, worker failure or reply timeout (5 s by default,

@@ -422,7 +422,7 @@ pub fn pages(
             e.year
         );
         let mut body = format!(
-            "<p><a href=\"/\">Systemless game library</a></p><h1>{}</h1><p>{}</p><p>{}, {}</p><img src=\"{}\" alt=\"{} gameplay\">",
+            "<p><a href=\"/\">Systemless game library</a></p><h1>{}</h1><p>{}</p><p>{}, {}</p><img crossorigin=\"anonymous\" src=\"{}\" alt=\"{} gameplay\">",
             escape(&e.title),
             escape(&e.summary),
             escape(&e.developer),
