@@ -17,7 +17,8 @@ pub use application_icon::{
     ApplicationIconRepresentation, ApplicationIdentity,
 };
 pub use launch::{
-    init_game, init_game_owned, load_game, load_game_from_path, new_runner, new_runner_with_addressing,
+    init_game, init_game_owned, load_game, load_game_from_path, load_game_from_path_with_volumes,
+    mount_locked_volume_from_path, mount_locked_volume_image, new_runner, new_runner_with_addressing,
     new_runner_with_configuration, new_runner_with_display, new_runner_with_screen_depth, pack_game_sources_for_web,
-    pack_stuffit_for_web, WebPackLoader, MAX_INSTRUCTIONS_PER_FRAME, RAM_SIZE,
+    pack_stuffit_for_web, MountedVolume, WebPackLoader, MAX_INSTRUCTIONS_PER_FRAME, RAM_SIZE,
 };

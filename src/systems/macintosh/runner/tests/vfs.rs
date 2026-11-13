@@ -320,3 +320,100 @@ fn immediate_pending_launch_application_switches_from_vfs_without_event_yield() 
     .expect("CurApName is ASCII");
     assert_eq!(cur_ap_name, "Register Helper");
 }
+
+#[test]
+fn mounted_cd_volume_is_enumerated_locked_and_rejects_file_manager_writes() {
+    use crate::cpu::{CpuOps, Register};
+    use crate::memory::MemoryBus;
+    use crate::trap::test_helpers::MockCpu;
+
+    let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+    builder.add_file("Data File", b"disc contents", 0o100644);
+    let mut runner = crate::game::new_runner();
+    let disc = crate::game::mount_locked_volume_image(&mut runner, &builder.build())
+        .expect("disc image should mount");
+    let mut cpu = MockCpu::new();
+    let pb = 0x30_0000u32;
+    let name = pb + 0x100;
+    let call = |runner: &mut FixtureRunner, cpu: &mut MockCpu, trap: u16| {
+        cpu.write_reg(Register::A0, pb);
+        runner
+            .dispatcher
+            .dispatch(trap, cpu, &mut runner.bus)
+            .unwrap();
+        cpu.read_reg(Register::D0) as i32
+    };
+
+    // Indexed PBHGetVInfo walks the VCB queue: the startup volume, then the
+    // disc, then nsvErr. Inside Macintosh: Files (1992), p. 2-145.
+    let mut volumes = Vec::new();
+    for index in 1..=3u16 {
+        runner.bus.fill_bytes(pb, 0x100, 0);
+        runner.bus.write_long(pb + 18, name);
+        runner.bus.write_word(pb + 28, index);
+        let result = call(&mut runner, &mut cpu, 0xA207);
+        if result != 0 {
+            assert_eq!(result, -35, "nsvErr ends enumeration");
+            break;
+        }
+        volumes.push((
+            String::from_utf8(runner.bus.read_pstring(name)).unwrap(),
+            runner.bus.read_word(pb + 22) as i16,
+            runner.bus.read_word(pb + 38) & 0x0080,
+        ));
+    }
+    assert_eq!(
+        volumes,
+        [
+            ("MacintoshHD".to_string(), -1, 0),
+            ("HFS+ Disk Image".to_string(), disc.ref_num, 0x0080),
+        ]
+    );
+    assert_ne!(disc.ref_num, -1);
+
+    // A full pathname reaches the file on the second volume; read access
+    // succeeds and write access fails with the hardware-lock wPrErr.
+    let open = |runner: &mut FixtureRunner, cpu: &mut MockCpu, permission: u8| {
+        runner.bus.fill_bytes(pb, 0x100, 0);
+        runner.bus.write_long(pb + 18, name);
+        runner.bus.write_pstring(name, b"HFS+ Disk Image:Data File");
+        runner.bus.write_byte(pb + 27, permission);
+        call(runner, cpu, 0xA200)
+    };
+    assert_eq!(open(&mut runner, &mut cpu, 3), -44, "fsRdWrPerm is wPrErr");
+    assert_eq!(open(&mut runner, &mut cpu, 1), 0, "fsRdPerm opens");
+    let ref_num = runner.bus.read_word(pb + 24);
+    assert_eq!(
+        runner
+            .dispatcher
+            .open_files
+            .get(&ref_num)
+            .map(String::as_str),
+        Some("HFS+ Disk Image/Data File")
+    );
+
+    // Creating a file is refused on the disc but allowed on the startup disk.
+    for (path, expected) in [
+        (&b"HFS+ Disk Image:Saved Game"[..], -44),
+        (&b"MacintoshHD:Saved Game"[..], 0),
+    ] {
+        runner.bus.fill_bytes(pb, 0x100, 0);
+        runner.bus.write_long(pb + 18, name);
+        runner.bus.write_pstring(name, path);
+        assert_eq!(
+            call(&mut runner, &mut cpu, 0xA208),
+            expected,
+            "PBHCreate {}",
+            String::from_utf8_lossy(path)
+        );
+    }
+    assert!(!runner
+        .dispatcher
+        .vfs
+        .contains_key("HFS+ Disk Image/Saved Game"));
+    assert!(runner.dispatcher.vfs.contains_key("Saved Game"));
+    assert_eq!(
+        runner.dispatcher.vfs.get("HFS+ Disk Image/Data File"),
+        Some(&b"disc contents".to_vec())
+    );
+}

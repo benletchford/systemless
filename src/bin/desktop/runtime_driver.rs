@@ -55,6 +55,8 @@ pub(super) struct GuiDriver {
     /// Force the next host present even if the guest tick has not advanced.
     pub(super) force_next_render: bool,
     game_path: PathBuf,
+    /// Additional media mounted as locked volumes beside the game.
+    pub(super) mounts: Vec<PathBuf>,
     arrows_as_numpad: bool,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
@@ -115,6 +117,7 @@ impl GuiDriver {
             last_presented_guest_tick: None,
             force_next_render: true,
             game_path,
+            mounts: Vec::new(),
             arrows_as_numpad,
             addressing_24_bit,
             screen_depth,
@@ -144,8 +147,8 @@ impl GuiDriver {
         // Native menus replace only the presented menu-bar rows (cropped via
         // hidden_menu_height). Keep guest-controlled presentation here: forcing
         // kiosk mode also removes the desktop and native PowerPC window frames.
-        let app =
-            game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
+        let app = super::load_launch_media(&mut runner, &self.game_path, &self.mounts)
+            .expect("Failed to load game");
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner)
             .expect("Failed to open desktop save store");
         eprintln!(

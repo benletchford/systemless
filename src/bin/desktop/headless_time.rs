@@ -123,6 +123,7 @@ fn validate_script(script: &[ScriptedInput], ticks: u32) -> Result<(), String> {
 
 pub(super) fn run(
     path: &std::path::Path,
+    mounts: &[std::path::PathBuf],
     ticks: u32,
     start_time: u32,
     addressing_24_bit: bool,
@@ -146,7 +147,7 @@ pub(super) fn run(
         runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
     }
     runner.set_app_start_time(start_time);
-    let app = game::load_game_from_path(&mut runner, path).expect("Failed to load game");
+    let app = super::load_launch_media(&mut runner, path, mounts).expect("Failed to load game");
     let mut saves = DesktopSaveStore::for_loaded_archive(path, &mut runner)
         .expect("Failed to open desktop save store");
     for file in saves.load_saved_files() {
