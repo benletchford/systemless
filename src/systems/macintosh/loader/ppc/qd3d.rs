@@ -5897,6 +5897,9 @@ pub fn ppc_q3_copy_or_zero(
     if dest_ptr == 0 {
         return false;
     }
+    if ppc_q3_copy_or_zero_whole(memory, source_ptr, dest_ptr, byte_count) {
+        return true;
+    }
     for offset in 0..byte_count {
         let byte = if source_ptr == 0 {
             0
@@ -5906,6 +5909,56 @@ pub fn ppc_q3_copy_or_zero(
         if memory.write_u8(dest_ptr + offset, byte).is_none() {
             return false;
         }
+    }
+    true
+}
+
+/// Store the byte loop's result in bulk when it cannot differ: the destination
+/// is one ordinary mapping that accepts the whole range, and any source is one
+/// ordinary mapping disjoint from it, so no store can change a byte still to
+/// be read. Changes nothing and returns false otherwise.
+fn ppc_q3_copy_or_zero_whole(
+    memory: &mut PpcSectionMem,
+    source_ptr: u32,
+    dest_ptr: u32,
+    byte_count: u32,
+) -> bool {
+    let len = byte_count as usize;
+    let Some(dest_end) = dest_ptr.checked_add(byte_count) else {
+        return false;
+    };
+    // Ordinary mappings own their bytes, so with an ordinary source disjoint
+    // addresses cannot alias; shared mappings can, and keep the byte loop.
+    if memory.readable_bytes(dest_ptr, len).is_none() {
+        return false;
+    }
+    if source_ptr != 0 {
+        let Some(source_end) = source_ptr.checked_add(byte_count) else {
+            return false;
+        };
+        if (source_ptr < dest_end && dest_ptr < source_end)
+            || memory.readable_bytes(source_ptr, len).is_none()
+        {
+            return false;
+        }
+    }
+    // One destination region is writable throughout or not at all, so either
+    // the first chunk is refused, changing nothing, or every chunk is stored.
+    let mut chunk = [0u8; 4096];
+    let mut offset = 0;
+    while offset < len {
+        let size = (len - offset).min(chunk.len());
+        if source_ptr != 0 {
+            let Some(bytes) = memory.readable_bytes(source_ptr + offset as u32, size) else {
+                return false;
+            };
+            chunk[..size].copy_from_slice(bytes);
+        }
+        if memory.write_bytes(dest_ptr + offset as u32, &chunk[..size]).is_none() {
+            debug_assert_eq!(offset, 0, "a destination region refused a later chunk");
+            return false;
+        }
+        offset += size;
     }
     true
 }

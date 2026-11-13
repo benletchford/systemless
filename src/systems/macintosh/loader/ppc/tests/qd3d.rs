@@ -27942,3 +27942,113 @@ fn hle_import_runner_reports_the_apple_software_engine_without_fast_features() {
         assert_eq!(loaded.memory.read_u32_be(response_ptr), Some(expected), "selector {selector}");
     }
 }
+
+#[test]
+fn q3_copy_or_zero_matches_the_byte_loop_across_layouts() {
+    use crate::memory::bus::SharedRamRegion;
+    // Frozen pre-optimization copy: forward byte order, unreadable source
+    // bytes as zero, stopping at the first rejected store.
+    fn reference(memory: &mut PpcSectionMem, source_ptr: u32, dest_ptr: u32, byte_count: u32) -> bool {
+        if dest_ptr == 0 {
+            return false;
+        }
+        for offset in 0..byte_count {
+            let byte = if source_ptr == 0 { 0 } else { memory.read_u8(source_ptr + offset).unwrap_or(0) };
+            if memory.write_u8(dest_ptr + offset, byte).is_none() {
+                return false;
+            }
+        }
+        true
+    }
+    const A: u32 = 0x2000;
+    const B: u32 = 0x3000;
+    let pattern = |seed: u32| (0..64u32).map(|n| (n * 29 + seed) as u8).collect::<Vec<u8>>();
+    let layout = |kind: u32| {
+        let mut memory = PpcSectionMem::new();
+        match kind {
+            0 => {
+                memory.add_region(A, pattern(1));
+                memory.add_region(B, pattern(7));
+            }
+            // Both ranges in one region, for overlapping copies.
+            1 => memory.add_region(A, [pattern(1), pattern(7)].concat()),
+            // A hole in the source and a read-only destination tail.
+            2 => {
+                memory.add_region(A, pattern(1)[..20].to_vec());
+                memory.add_region(A + 24, pattern(1)[24..].to_vec());
+                memory.add_region(B, pattern(7)[..40].to_vec());
+                memory.add_readonly_region(B + 40, pattern(7)[40..].to_vec());
+            }
+            // One shared allocation mapped at both addresses: disjoint
+            // addresses alias the same bytes.
+            3 => {
+                let shared = SharedRamRegion::from_owned_bytes(pattern(3));
+                // SAFETY: the test owns the backing and accesses it serially.
+                unsafe {
+                    memory.add_shared_region(A, shared.clone());
+                    memory.add_shared_region(B, shared);
+                }
+            }
+            // An ordinary source and a shared destination.
+            4 => {
+                memory.add_region(A, pattern(1));
+                // SAFETY: as above.
+                unsafe { memory.add_shared_region(B, SharedRamRegion::from_owned_bytes(pattern(7))) };
+            }
+            // A newer overlay covering part of an older region.
+            5 => {
+                memory.add_region(A, pattern(1));
+                memory.add_region(A + 16, pattern(5)[..16].to_vec());
+                memory.add_region(B, pattern(7));
+            }
+            _ => unreachable!(),
+        }
+        memory
+    };
+    let cases = [
+        (A, B, 64), (A + 5, B + 9, 30), (0, B, 64), (A, B, 0), (0, B + 40, 24),
+        (A, A + 3, 40), (A + 3, A, 40), (A, A, 64), (A + 64, A + 70, 40),
+        (A + 10, B + 30, 30), (A + 18, B, 12), (A, B + 60, 8), (A + 60, B, 8), (0x9000, B, 8),
+    ];
+    for kind in 0..6 {
+        for (source, dest, count) in cases {
+            let (mut expected, mut actual) = (layout(kind), layout(kind));
+            let result = reference(&mut expected, source, dest, count);
+            assert_eq!(ppc_q3_copy_or_zero(&mut actual, source, dest, count), result,
+                "layout={kind}, source={source:#x}, dest={dest:#x}, count={count}");
+            for address in (A - 8..A + 136).chain(B - 8..B + 72) {
+                assert_eq!(actual.read_u8(address), expected.read_u8(address),
+                    "layout={kind}, source={source:#x}, dest={dest:#x}, count={count}, address={address:#x}");
+            }
+        }
+    }
+    // Ranges spanning several bulk chunks, unaligned to the chunk size, into
+    // a writable or a read-only destination.
+    const C: u32 = 0x10000;
+    const D: u32 = 0x20000;
+    const LONG: u32 = 3 * 4096 + 100;
+    let long = |seed: u32| (0..LONG).map(|n| (n * 29 + n / 251 + seed) as u8).collect::<Vec<u8>>();
+    for readonly in [false, true] {
+        let layout = || {
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(C, long(1));
+            if readonly {
+                memory.add_readonly_region(D, long(7));
+            } else {
+                memory.add_region(D, long(7));
+            }
+            memory
+        };
+        for (source, dest, count) in [(C, D, LONG), (C + 5, D + 4093, 2 * 4096 + 17), (0, D + 1, 4097)] {
+            let (mut expected, mut actual) = (layout(), layout());
+            let result = reference(&mut expected, source, dest, count);
+            assert_eq!(result, !readonly);
+            assert_eq!(ppc_q3_copy_or_zero(&mut actual, source, dest, count), result,
+                "readonly={readonly}, source={source:#x}, dest={dest:#x}, count={count}");
+            for address in (C - 8..C + LONG + 8).chain(D - 8..D + LONG + 8) {
+                assert_eq!(actual.read_u8(address), expected.read_u8(address),
+                    "readonly={readonly}, source={source:#x}, dest={dest:#x}, count={count}, address={address:#x}");
+            }
+        }
+    }
+}
