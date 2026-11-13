@@ -1006,11 +1006,15 @@ impl PpcLoadedApp {
         if let (Some(clear_color), Some((left, top, right, bottom))) =
             (target.clear_color, viewport.inclusive_bounds())
         {
+            // Nothing observes guest memory between the pixels of the clear.
+            let mut run = PpcQ3UnreportedRun::default();
             for y in top..=bottom {
                 for x in left..=right {
-                    let _ = surface.write_pixel(&mut self.memory, (x, y), clear_color);
+                    let _ =
+                        surface.write_pixel_in_run(&mut self.memory, (x, y), clear_color, &mut run);
                 }
             }
+            run.finish(&mut self.memory, surface);
         }
         let mut deferred_primitives = Vec::new();
         for command in commands {
