@@ -5,7 +5,7 @@
 //! the thread that owns the device, so the emulation worker sends a snapshot
 //! to a dedicated compute worker and blocks on a shared reply buffer. Any
 //! failure returns an error, which leaves guest pixels to the CPU path.
-use crate::gpu_wire::{decode_response, Request, RequestKind, Response};
+use crate::gpu_wire::{decode_response, RequestKind, RequestRef, Response};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use systemless::gpu_compute::{quickdraw_prefers_blit, quickdraw_prefers_raster, Qd3dWorkEstimate};
@@ -151,7 +151,7 @@ impl GpuProxy {
     /// operation is counted as completed and its pixels reach guest memory.
     fn call<T>(
         &self,
-        request: Request,
+        request: RequestRef<'_>,
         accept: impl FnOnce(Response) -> Option<T>,
     ) -> Result<T, String> {
         if let Some(reason) = &self.0.stats.borrow().disabled {
@@ -233,21 +233,21 @@ impl QuickDrawGpuRenderer for GpuProxy {
         &mut self,
         command: &QuickDrawGpuBlit,
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-        self.call(Request::BlitCells(command.clone()), |reply| match reply {
+        self.call(RequestRef::BlitCells(command), |reply| match reply {
             Response::Pixels(pixels) => Some(pixels),
             _ => None,
         })
     }
 
     fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
-        self.call(Request::PackedBlit(command.clone()), |reply| match reply {
+        self.call(RequestRef::PackedBlit(command), |reply| match reply {
             Response::Bytes(bytes) => Some(bytes),
             _ => None,
         })
     }
 
     fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
-        self.call(Request::Blit(command.clone()), |reply| match reply {
+        self.call(RequestRef::Blit(command), |reply| match reply {
             Response::Words(words) => Some(words),
             _ => None,
         })
@@ -259,9 +259,9 @@ impl QuickDrawGpuRenderer for GpuProxy {
         background: &[u32],
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
         self.call(
-            Request::Raster {
-                command: command.clone(),
-                background: background.to_vec(),
+            RequestRef::Raster {
+                command,
+                background,
             },
             |reply| match reply {
                 Response::Pixels(pixels) => Some(pixels),
@@ -279,10 +279,10 @@ impl GpuProxy {
         clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
         self.call(
-            Request::Qd3d {
-                frame: frame.clone(),
-                background: background.to_vec(),
-                clut: clut.map(|clut| Box::new(*clut)),
+            RequestRef::Qd3d {
+                frame,
+                background,
+                clut,
             },
             |reply| match reply {
                 Response::Halfwords(pixels) if pixels.len() == background.len() => Some(pixels),
@@ -362,7 +362,7 @@ impl GpuTransport for WorkerTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu_wire::{encode_response, Failure};
+    use crate::gpu_wire::{encode_response, Failure, Request};
 
     /// Decodes each request and answers like a device that copies backgrounds.
     struct Loopback {
