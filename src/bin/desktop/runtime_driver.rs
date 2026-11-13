@@ -10,8 +10,6 @@ use super::{
 };
 use std::path::PathBuf;
 use systemless::systems::macintosh::game;
-#[cfg(target_os = "macos")]
-use systemless::systems::macintosh::runner::MenuBarPolicy;
 use systemless::systems::macintosh::{runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
@@ -143,10 +141,9 @@ impl GuiDriver {
             runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
             runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
         }
-        #[cfg(target_os = "macos")]
-        if self.native_integrations {
-            runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
-        }
+        // Native menus replace only the presented menu-bar rows (cropped via
+        // hidden_menu_height). Keep guest-controlled presentation here: forcing
+        // kiosk mode also removes the desktop and native PowerPC window frames.
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner)
