@@ -302,7 +302,14 @@ wire_struct!(QuickDrawGpuPackedCopy {
 impl Wire for PpcQ3GpuTexture {
     const MIN_BYTES: usize = 0;
     fn put(&self, out: &mut Vec<u8>) {
-        let PpcQ3GpuTexture { width, height, rgba, wrap_u, wrap_v, identity: _ } = self;
+        let PpcQ3GpuTexture {
+            width,
+            height,
+            rgba,
+            wrap_u,
+            wrap_v,
+            identity: _,
+        } = self;
         width.put(out);
         height.put(out);
         rgba.put(out);
