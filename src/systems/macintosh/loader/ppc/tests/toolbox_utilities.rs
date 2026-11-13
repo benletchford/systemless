@@ -1874,3 +1874,38 @@ fn carbon_p2cstrcpy_and_c2pstrcpy_take_the_destination_first() {
         Some(b"\x03Oni".to_vec())
     );
 }
+
+#[test]
+fn get_sys_pptr_returns_the_existing_parameter_record_without_modifying_it() {
+    for library in [b"InterfaceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let target = PpcImportDispatcherTarget::LowMemoryAccessor(
+            PpcLowMemoryAccessor::GetSysParamPointer,
+        );
+        assert_eq!(
+            dispatcher_target_for_import(std::str::from_utf8(library).unwrap(), "GetSysPPtr"),
+            target,
+        );
+        let pef = synthetic_pef_with_library_import(library, b"GetSysPPtr");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut record = [0u8; 20];
+        // The normal application mapping must already contain SysParam.
+        assert!(loaded.memory.read_bytes_into(0x01f8, &mut record).is_some());
+        for (index, byte) in record.iter_mut().enumerate() {
+            *byte = 0xa0 + index as u8;
+        }
+        loaded.memory.write_bytes(0x01f8, &record).unwrap();
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], 0x01f8);
+        let mut observed = [0; 20];
+        loaded.memory.read_bytes_into(loaded.cpu.gpr[3], &mut observed).unwrap();
+        assert_eq!(observed, record);
+
+        // The returned pointer aliases current low memory, not a cached copy.
+        loaded.memory.write_u8(loaded.cpu.gpr[3] + 19, 0x5a).unwrap();
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], 0x01f8);
+        record[19] = 0x5a;
+        loaded.memory.read_bytes_into(loaded.cpu.gpr[3], &mut observed).unwrap();
+        assert_eq!(observed, record);
+    }
+}
