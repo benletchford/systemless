@@ -2143,6 +2143,12 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
+        // A word on pages no shared mapping touches has only the sparse map
+        // behind it. The page filter proves that in one test, before the
+        // ledger cache, whose answers for such pages span a single page each.
+        if !state.may_overlap_shared(start, end) {
+            return PpcMemory::read_u16_be(&mut state.regions, addr);
+        }
         let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
         if needs_store {
             state.data_lookup.store(lookup);
@@ -2180,6 +2186,12 @@ impl PpcMemory for GuestAddressSpace {
         };
         let state = self.state_mut();
         let start = u64::from(addr);
+        // A word on pages no shared mapping touches has only the sparse map
+        // behind it. The page filter proves that in one test, before the
+        // ledger cache, whose answers for such pages span a single page each.
+        if !state.may_overlap_shared(start, end) {
+            return PpcMemory::read_u32_be(&mut state.regions, addr);
+        }
         let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
         if needs_store {
             state.data_lookup.store(lookup);
@@ -2321,6 +2333,13 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
+        // As for reads: the page filter proves the sparse map is the only
+        // backing before the ledger cache is consulted.
+        if !state.may_overlap_shared(start, end) {
+            PpcMemory::write_u16_be(&mut state.regions, addr, value)?;
+            state.note_write(addr, &bytes);
+            return Some(());
+        }
         let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
         if needs_store {
             state.data_lookup.store(lookup);
@@ -2362,6 +2381,13 @@ impl PpcMemory for GuestAddressSpace {
         let state = self.state_mut();
         let start = u64::from(addr);
         let bytes = value.to_be_bytes();
+        // As for reads: the page filter proves the sparse map is the only
+        // backing before the ledger cache is consulted.
+        if !state.may_overlap_shared(start, end) {
+            PpcMemory::write_u32_be(&mut state.regions, addr, value)?;
+            state.note_write(addr, &bytes);
+            return Some(());
+        }
         let (lookup, needs_store) = state.data_lookup.resolve(state, addr, start, end);
         if needs_store {
             state.data_lookup.store(lookup);
@@ -2539,7 +2565,7 @@ mod tests {
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
 
     #[test]
-    fn sparse_stream_reuses_empty_page_intervals_and_observes_new_aliases() {
+    fn sparse_stream_bypasses_ledger_and_observes_new_aliases() {
         const BASE: u32 = 0x20000;
         let mut memory = GuestAddressSpace::new();
         memory.add_region(BASE, vec![0x55; 64 * 4096]);
@@ -2551,25 +2577,20 @@ mod tests {
             memory.add_shared_region(0x1000, shared.clone());
             memory.add_shared_region(0x100000, shared.clone());
         }
-        let mut misses = 0;
         for page in 0..64 {
             let address = BASE + page * 4096;
-            misses += usize::from(
-                memory
-                    .state()
-                    .data_lookup
-                    .covering(u64::from(address), u64::from(address) + 4)
-                    .is_none(),
-            );
             assert_eq!(memory.read_u32_be(address), Some(0x5555_5555));
+            // The page filter now proves this access is sparse before the
+            // ledger is consulted. A cold ledger is not a lookup miss.
+            assert!(memory
+                .state()
+                .data_lookup
+                .covering(u64::from(address), u64::from(address) + 4)
+                .is_none());
         }
-        assert!(
-            misses <= 2,
-            "64 sparse pages repeated the ledger lookup {misses} times"
-        );
 
-        // An alias published inside a cached empty interval must immediately
-        // take precedence over the old sparse bytes.
+        // An alias published inside a previously plain interval must immediately
+        // take precedence over the old sparse bytes through the updated filter.
         unsafe { memory.add_shared_region(BASE + 4096, shared) };
         assert_eq!(memory.read_u32_be(BASE + 4096), Some(0x1122_3344));
         assert_eq!(memory.read_u32_be(BASE + 8192), Some(0x5555_5555));
@@ -4615,6 +4636,84 @@ mod tests {
         assert_ne!(token, 0);
     }
 
+    /// Words on pages the shared-page filter clears take the sparse map
+    /// directly. Every 16- and 32-bit access around plain, shared, read-only
+    /// and unmapped boundaries must still equal its byte-wise result,
+    /// including words that begin on a plain page and end on a shared one.
+    #[test]
+    fn scalar_words_match_bytes_around_shared_page_boundaries() {
+        use crate::memory::bus::SharedRamRegion;
+
+        const PAGE: u32 = 0x1000;
+        const BASE: u32 = 0x0700_0000;
+        let build = || {
+            let mut memory = GuestAddressSpace::new();
+            let pattern = |seed: u32, len: u32| {
+                (0..len).map(|n| (n.wrapping_mul(31) + n / 253 + seed) as u8).collect::<Vec<u8>>()
+            };
+            // Four plain pages, the third aliased by a shared mapping, then a
+            // read-only page; the page after that is unmapped. A second shared
+            // mapping far above puts the pages between inside the shared
+            // bounds, so only the page filter can clear them.
+            memory.add_region(BASE, pattern(1, 4 * PAGE));
+            memory.add_readonly_region(BASE + 4 * PAGE, pattern(9, PAGE));
+            // SAFETY: the test owns the backing and accesses it serially.
+            unsafe {
+                memory.add_shared_region(
+                    BASE + 2 * PAGE,
+                    SharedRamRegion::from_owned_bytes(pattern(5, PAGE)),
+                );
+                memory.add_shared_region(
+                    BASE + 16 * PAGE,
+                    SharedRamRegion::from_owned_bytes(pattern(7, PAGE)),
+                );
+            }
+            memory
+        };
+        let edges = [0, PAGE, 2 * PAGE, 3 * PAGE, 4 * PAGE, 5 * PAGE];
+        for edge in edges {
+            for delta in -5i32..=5 {
+                let Some(addr) = (BASE + edge).checked_add_signed(delta) else {
+                    continue;
+                };
+                for width in [2usize, 4] {
+                    let mut memory = build();
+                    let bytes: Option<Vec<u8>> = (0..width as u32)
+                        .map(|n| PpcMemory::read_u8(&mut memory, addr + n))
+                        .collect();
+                    let word = if width == 2 {
+                        PpcMemory::read_u16_be(&mut memory, addr).map(u32::from)
+                    } else {
+                        PpcMemory::read_u32_be(&mut memory, addr)
+                    };
+                    let expected = bytes.map(|bytes| {
+                        bytes.iter().fold(0u32, |word, byte| (word << 8) | u32::from(*byte))
+                    });
+                    assert_eq!(word, expected, "read addr={addr:#x} width={width}");
+
+                    // A scalar store is all or nothing, like the bulk store.
+                    let value = 0xa1b2_c3d4u32;
+                    let stored = &value.to_be_bytes()[4 - width..];
+                    let mut reference = build();
+                    let expected = reference.write_bytes(addr, stored);
+                    let result = if width == 2 {
+                        PpcMemory::write_u16_be(&mut memory, addr, value as u16)
+                    } else {
+                        PpcMemory::write_u32_be(&mut memory, addr, value)
+                    };
+                    assert_eq!(result, expected, "write addr={addr:#x} width={width}");
+                    for near in addr.saturating_sub(8)..addr + 12 {
+                        assert_eq!(
+                            PpcMemory::read_u8(&mut memory, near),
+                            PpcMemory::read_u8(&mut reference, near),
+                            "after write addr={addr:#x} width={width} near={near:#x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// The scalar fast path must keep reporting writes: a write that lands in
     /// executed code rotates its token even when no shared mapping overlaps.
     #[test]
@@ -4627,6 +4726,9 @@ mod tests {
         PpcMemory::write_u32_be(&mut memory, CODE, 0x1122_3344).expect("writable code");
         let second = PpcMemory::instruction_cache_token(&mut memory, CODE).expect("token");
         assert_ne!(first, second, "a write must retire the page's token");
+        PpcMemory::write_u16_be(&mut memory, CODE + 8, 0x5566).expect("writable code");
+        let third = PpcMemory::instruction_cache_token(&mut memory, CODE).expect("token");
+        assert_ne!(second, third, "a 16-bit write must retire the page's token");
 
         // A read-only ordinary region cannot accept the write, and the failure
         // must not depend on the ledger cache being warm.
