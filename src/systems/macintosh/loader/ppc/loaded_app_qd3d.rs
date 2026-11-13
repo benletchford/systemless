@@ -82,6 +82,7 @@ fn q3_gpu_nonfilled_draw(
 
 fn q3_cached_gpu_texture(
     memory: &mut PpcSectionMem,
+    decoded: &mut PpcQ3GpuTextureCache,
     textures: &mut Vec<PpcQ3GpuTexture>,
     cache: &mut Vec<(PpcQ3SoftwareTexture, Option<PpcQ3ShaderBoundaryRecord>, usize)>,
     texture: PpcQ3SoftwareTexture,
@@ -93,7 +94,7 @@ fn q3_cached_gpu_texture(
     {
         return Some(*index);
     }
-    let decoded = ppc_q3_gpu_texture_from_software(memory, texture, boundary)?;
+    let decoded = decoded.texture(memory, texture, boundary)?;
     let index = textures.len();
     textures.push(decoded);
     cache.push((texture, boundary, index));
@@ -456,9 +457,11 @@ impl PpcLoadedApp {
             .viewport
             .unwrap_or_else(|| PpcQ3ViewportRect::full(front_buffer));
         let viewport_bounds = viewport.inclusive_bounds()?;
+        self.q3_gpu_texture_cache.begin_frame();
         let mut textures = Vec::new();
-        // Reuse decoded texels only within this packet. Guest writes between
-        // frames must always be observed by a fresh preparation.
+        // Within this packet a texture is decoded once. Across packets a
+        // decoding is reused only while its source bytes compare equal, so
+        // guest writes between frames are always observed.
         let mut texture_cache = Vec::new();
         let mut draws = Vec::new();
 
@@ -608,6 +611,7 @@ impl PpcLoadedApp {
                 }
                 Some(texture) => Some(q3_cached_gpu_texture(
                     &mut self.memory,
+                    &mut self.q3_gpu_texture_cache,
                     &mut textures,
                     &mut texture_cache,
                     texture,
@@ -3020,14 +3024,15 @@ mod packet_texture_cache_tests {
             byte_order: PPC_Q3_ENDIAN_BIG,
             pixel_bytes: 4,
         };
+        let mut decoded = PpcQ3GpuTextureCache::default();
         let mut textures = Vec::new();
         let mut cache = Vec::new();
         assert_eq!(
-            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, None),
+            q3_cached_gpu_texture(&mut memory, &mut decoded, &mut textures, &mut cache, texture, None),
             Some(0)
         );
         assert_eq!(
-            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, None),
+            q3_cached_gpu_texture(&mut memory, &mut decoded, &mut textures, &mut cache, texture, None),
             Some(0)
         );
         assert_eq!(textures.len(), 1);
@@ -3038,7 +3043,7 @@ mod packet_texture_cache_tests {
             v_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
         });
         assert_eq!(
-            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, clamp),
+            q3_cached_gpu_texture(&mut memory, &mut decoded, &mut textures, &mut cache, texture, clamp),
             Some(1)
         );
         assert_eq!(textures.len(), 2);
@@ -3048,7 +3053,7 @@ mod packet_texture_cache_tests {
             ..clamp.unwrap()
         });
         assert!(
-            q3_cached_gpu_texture(&mut memory, &mut textures, &mut cache, texture, invalid).is_none()
+            q3_cached_gpu_texture(&mut memory, &mut decoded, &mut textures, &mut cache, texture, invalid).is_none()
         );
         assert_eq!(textures.len(), 2);
 
@@ -3056,7 +3061,14 @@ mod packet_texture_cache_tests {
         let mut next_textures = Vec::new();
         let mut next_cache = Vec::new();
         assert_eq!(
-            q3_cached_gpu_texture(&mut memory, &mut next_textures, &mut next_cache, texture, None),
+            q3_cached_gpu_texture(
+                &mut memory,
+                &mut decoded,
+                &mut next_textures,
+                &mut next_cache,
+                texture,
+                None
+            ),
             Some(0)
         );
         assert_eq!(next_textures[0].rgba, [0, 255, 0, 255]);

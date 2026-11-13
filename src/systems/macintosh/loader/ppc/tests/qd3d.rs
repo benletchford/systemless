@@ -28121,3 +28121,106 @@ fn q3_clip_inside_triangles_match_the_plane_by_plane_clip() {
     }
     assert!(inside > 500 && clipped_cases > 500, "inside={inside}, clipped={clipped_cases}");
 }
+
+#[test]
+fn q3_gpu_texture_cache_reuses_only_unchanged_ordinary_rows() {
+    use crate::memory::bus::SharedRamRegion;
+    const BASE: u32 = 0x1200;
+    let pixels: Vec<u8> = (0..64).map(|n| (n * 13 + 5) as u8).collect();
+    let texture = PpcQ3SoftwareTexture {
+        image_base: BASE, valid_size: pixels.len() as u32, image_offset: 3,
+        width: 3, height: 2, row_bytes: 11, pixel_type: PPC_Q3_PIXEL_TYPE_ARGB16,
+        byte_order: PPC_Q3_ENDIAN_BIG, pixel_bytes: 2,
+    };
+    let clamp = Some(PpcQ3ShaderBoundaryRecord {
+        shader: 0, u_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+        v_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+    });
+    // Ordinary memory: a repeat request reuses the entry, a guest write
+    // replaces it, and every answer equals a fresh conversion.
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(BASE, pixels.clone());
+    let mut cache = PpcQ3GpuTextureCache::default();
+    let first = ppc_q3_gpu_texture_from_software(&mut memory, texture, clamp);
+    for frame in 0..3 {
+        cache.begin_frame();
+        if frame == 2 {
+            memory.write_u8(BASE + 4, 0x7f).unwrap();
+        }
+        let fresh = ppc_q3_gpu_texture_from_software(&mut memory, texture, clamp);
+        assert_eq!(cache.texture(&mut memory, texture, clamp), fresh, "frame={frame}");
+        assert_eq!(fresh == first, frame < 2, "the guest write must change the texture");
+        assert_eq!(cache.len(), 1);
+    }
+    // Another descriptor at the same address is converted separately.
+    let other = PpcQ3SoftwareTexture { pixel_type: PPC_Q3_PIXEL_TYPE_RGB16, ..texture };
+    assert_eq!(cache.texture(&mut memory, other, clamp),
+        ppc_q3_gpu_texture_from_software(&mut memory, other, clamp));
+    assert_eq!(cache.len(), 2);
+    // Textures the last two frames did not use are forgotten.
+    for unused_frames in 1..=3 {
+        cache.begin_frame();
+        assert_eq!(cache.len(), if unused_frames < 3 { 2 } else { 0 }, "{unused_frames}");
+    }
+    // Rows split across mappings or touching shared memory cannot be compared
+    // as one slice, so they are converted every time and never cached.
+    for layout in 0..2 {
+        let mut memory = PpcSectionMem::new();
+        if layout == 0 {
+            memory.add_region(BASE, pixels[..6].to_vec());
+            memory.add_region(BASE + 6, pixels[6..].to_vec());
+        } else {
+            memory.add_region(BASE, pixels.clone());
+            // SAFETY: the test owns the backing and accesses it serially.
+            unsafe {
+                memory.add_shared_region(BASE + 6, SharedRamRegion::from_owned_bytes(vec![0x8a, 0xba, 0xcd]));
+            }
+        }
+        let mut cache = PpcQ3GpuTextureCache::default();
+        cache.begin_frame();
+        let fresh = ppc_q3_gpu_texture_from_software(&mut memory, texture, clamp);
+        assert!(fresh.is_some(), "layout={layout}");
+        assert_eq!(cache.texture(&mut memory, texture, clamp), fresh, "layout={layout}");
+        assert_eq!(cache.len(), 0, "layout={layout}");
+    }
+}
+
+#[test]
+fn q3_gpu_texture_cache_observes_a_write_to_any_byte() {
+    const BASE: u32 = 0x1200;
+    let pixels: Vec<u8> = (0..64).map(|n| (n * 13 + 5) as u8).collect();
+    let texture = PpcQ3SoftwareTexture {
+        image_base: BASE, valid_size: pixels.len() as u32, image_offset: 3,
+        width: 4, height: 4, row_bytes: 11, pixel_type: PPC_Q3_PIXEL_TYPE_ARGB16,
+        byte_order: PPC_Q3_ENDIAN_BIG, pixel_bytes: 2,
+    };
+    // One mapping takes the whole-image comparison. A split at the start of
+    // row 2 leaves every row readable but not the image, so rows are compared
+    // one at a time.
+    for split in [None, Some(3 + 2 * 11)] {
+        for target in 0..pixels.len() as u32 {
+            let mut memory = PpcSectionMem::new();
+            match split {
+                None => memory.add_region(BASE, pixels.clone()),
+                Some(at) => {
+                    memory.add_region(BASE, pixels[..at].to_vec());
+                    memory.add_region(BASE + at as u32, pixels[at..].to_vec());
+                }
+            }
+            let mut cache = PpcQ3GpuTextureCache::default();
+            cache.begin_frame();
+            let first = cache.texture(&mut memory, texture, None);
+            assert!(first.is_some());
+            assert_eq!(first, ppc_q3_gpu_texture_from_software(&mut memory, texture, None));
+            assert_eq!(cache.len(), 1, "split={split:?}");
+            // Flip all bits so every texel channel that reads the byte changes.
+            memory.write_u8(BASE + target, !pixels[target as usize]).unwrap();
+            cache.begin_frame();
+            assert_eq!(
+                cache.texture(&mut memory, texture, None),
+                ppc_q3_gpu_texture_from_software(&mut memory, texture, None),
+                "split={split:?}, target={target}"
+            );
+        }
+    }
+}

@@ -61,6 +61,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         q3_error_state: Default::default(),
         q3_lifecycle: Default::default(),
         q3_memory_storages: Vec::new(),
+        q3_gpu_texture_cache: Default::default(),
         q3_files: Vec::new(),
         q3_group_memberships: Vec::new(),
         q3_file_groups: Vec::new(),

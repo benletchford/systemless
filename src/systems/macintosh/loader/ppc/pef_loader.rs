@@ -1176,6 +1176,7 @@ fn load_pef_application_with_optional_disk_fragment(
         q3_error_state: PpcQ3ErrorState::default(),
         q3_lifecycle: PpcQ3LifecycleState::default(),
         q3_memory_storages: Vec::new(),
+        q3_gpu_texture_cache: Default::default(),
         q3_files: Vec::new(),
         q3_group_memberships: Vec::new(),
         q3_file_groups: Vec::new(),

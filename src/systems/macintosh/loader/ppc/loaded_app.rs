@@ -63,6 +63,7 @@ pub struct PpcLoadedApp {
     pub q3_error_state: PpcQ3ErrorState,
     pub q3_lifecycle: PpcQ3LifecycleState,
     pub q3_memory_storages: Vec<PpcQ3MemoryStorageRecord>,
+    pub q3_gpu_texture_cache: PpcQ3GpuTextureCache,
     pub q3_files: Vec<PpcQ3FileRecord>,
     pub q3_group_memberships: Vec<PpcQ3GroupMembershipRecord>,
     pub q3_file_groups: Vec<PpcQ3FileGroupRecord>,
