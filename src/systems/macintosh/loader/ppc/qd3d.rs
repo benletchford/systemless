@@ -4206,15 +4206,36 @@ pub fn ppc_q3_draw_software_triangle(
             let weight0 = w0 as f32 / area_f;
             let weight1 = w1 as f32 / area_f;
             let weight2 = w2 as f32 / area_f;
+            // Interpolation and shading only read guest memory, and every
+            // style writes at this position and depth, so a pixel the depth
+            // buffer already rejects is skipped before either.
+            let z = ppc_q3_software_interpolate_depth(&vertices, [weight0, weight1, weight2]);
+            if x < 0 || y < 0 || !depth_buffer.test(x as u32, y as u32, z) {
+                continue;
+            }
             let perspective_weights =
                 ppc_q3_software_perspective_weights(&vertices, [weight0, weight1, weight2]);
-            let point = ppc_q3_software_interpolate_projected_point_with_weights(
-                &vertices,
-                [weight0, weight1, weight2],
-                perspective_weights,
-                x,
-                y,
-            );
+            let point = match interpolation_style {
+                // Flat and vertex lighting were evaluated before the loop;
+                // a pixel reads only its texture coordinates and fog depth,
+                // and in the vertex style its alpha.
+                PPC_Q3_INTERPOLATION_STYLE_NONE | PPC_Q3_INTERPOLATION_STYLE_VERTEX => {
+                    ppc_q3_software_interpolate_texture_and_fog_point(
+                        &vertices,
+                        z,
+                        perspective_weights,
+                        x,
+                        y,
+                    )
+                }
+                _ => ppc_q3_software_interpolate_projected_point_with_weights(
+                    &vertices,
+                    [weight0, weight1, weight2],
+                    perspective_weights,
+                    x,
+                    y,
+                ),
+            };
             let (write_point, output, needs_texture_and_fog) = match interpolation_style {
                 PPC_Q3_INTERPOLATION_STYLE_NONE => {
                     let (flat_point, output) =
@@ -4469,6 +4490,65 @@ pub fn ppc_q3_software_interpolate_projected_point_with_weights(
             (Some(state_a), Some(state_b), Some(state_c)) => Some(state_a && state_b && state_c),
             _ => None,
         },
+        vertex_alpha: match (a.vertex_alpha, b.vertex_alpha, c.vertex_alpha) {
+            (Some(alpha_a), Some(alpha_b), Some(alpha_c)) => {
+                Some(weight0.mul_add(alpha_a, weight1.mul_add(alpha_b, weight2 * alpha_c)))
+            }
+            _ => None,
+        },
+    }
+}
+
+/// The depth `ppc_q3_software_interpolate_projected_point_with_weights`
+/// gives a pixel, alone.
+#[inline]
+fn ppc_q3_software_interpolate_depth(
+    vertices: &[PpcQ3SoftwareProjectedPoint; 3],
+    weights: [f32; 3],
+) -> f32 {
+    let [a, b, c] = vertices;
+    let [affine_weight0, affine_weight1, affine_weight2] = weights;
+    affine_weight0.mul_add(a.z, affine_weight1.mul_add(b.z, affine_weight2 * c.z))
+}
+
+/// `ppc_q3_software_interpolate_projected_point_with_weights` for a pixel
+/// whose lighting is already known: the position, depth, texture
+/// coordinates, fog depth and alpha it would compute, and nothing else. The
+/// lighting inputs are left empty and must not be read.
+fn ppc_q3_software_interpolate_texture_and_fog_point(
+    vertices: &[PpcQ3SoftwareProjectedPoint; 3],
+    z: f32,
+    perspective_weights: [f32; 3],
+    x: i32,
+    y: i32,
+) -> PpcQ3SoftwareProjectedPoint {
+    let [a, b, c] = vertices;
+    let [weight0, weight1, weight2] = perspective_weights;
+    PpcQ3SoftwareProjectedPoint {
+        x,
+        y,
+        raster_position: None,
+        z,
+        reciprocal_w: 0.0,
+        world: (0.0, 0.0, 0.0),
+        view_direction: None,
+        fog_depth: weight0.mul_add(
+            a.fog_depth,
+            weight1.mul_add(b.fog_depth, weight2 * c.fog_depth),
+        ),
+        uv: match (a.uv, b.uv, c.uv) {
+            (Some(uv_a), Some(uv_b), Some(uv_c)) => Some((
+                weight0.mul_add(uv_a.0, weight1.mul_add(uv_b.0, weight2 * uv_c.0)),
+                weight0.mul_add(uv_a.1, weight1.mul_add(uv_b.1, weight2 * uv_c.1)),
+            )),
+            _ => None,
+        },
+        diffuse: None,
+        ambient_coefficient: None,
+        normal: None,
+        specular_color: None,
+        specular_control: None,
+        highlight_state: None,
         vertex_alpha: match (a.vertex_alpha, b.vertex_alpha, c.vertex_alpha) {
             (Some(alpha_a), Some(alpha_b), Some(alpha_c)) => {
                 Some(weight0.mul_add(alpha_a, weight1.mul_add(alpha_b, weight2 * alpha_c)))
@@ -17140,3 +17220,81 @@ fn ppc_write_c_string(memory: &mut PpcSectionMem, ptr: u32, bytes: &[u8]) -> Opt
     Some(())
 }
 
+#[cfg(test)]
+mod reduced_interpolation_tests {
+    use super::*;
+
+    /// The reduced interpolation gives a pixel the same depth, texture
+    /// coordinates, fog depth and alpha as the full one, bit for bit, with
+    /// and without the optional vertex attributes.
+    #[test]
+    fn texture_and_fog_point_matches_the_full_interpolation() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut unit = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        for case in 0..20_000 {
+            let with_uv = case % 2 == 0;
+            let with_alpha = case % 3 != 0;
+            let mut vertex = || PpcQ3SoftwareProjectedPoint {
+                x: 0,
+                y: 0,
+                raster_position: None,
+                z: unit(),
+                reciprocal_w: 0.01 + unit(),
+                world: (unit() * 900.0, unit() * 900.0, unit() * 900.0),
+                view_direction: Some((unit(), unit(), 0.1 + unit())),
+                fog_depth: unit() * 2000.0,
+                uv: with_uv.then(|| (unit() * 4.0 - 2.0, unit() * 4.0 - 2.0)),
+                diffuse: Some((unit(), unit(), unit())),
+                ambient_coefficient: Some(unit()),
+                normal: Some((unit(), unit(), 0.1 + unit())),
+                specular_color: Some((unit(), unit(), unit())),
+                specular_control: Some(unit() * 40.0),
+                highlight_state: Some(true),
+                vertex_alpha: with_alpha.then(|| unit()),
+            };
+            let vertices = [vertex(), vertex(), vertex()];
+            let (first, second) = (unit(), unit());
+            let weights = [first * second, first * (1.0 - second), 1.0 - first];
+            let perspective = ppc_q3_software_perspective_weights(&vertices, weights);
+            let (x, y) = (case % 640, case % 480);
+
+            let full = ppc_q3_software_interpolate_projected_point_with_weights(
+                &vertices,
+                weights,
+                perspective,
+                x,
+                y,
+            );
+            let z = ppc_q3_software_interpolate_depth(&vertices, weights);
+            let reduced = ppc_q3_software_interpolate_texture_and_fog_point(
+                &vertices,
+                z,
+                perspective,
+                x,
+                y,
+            );
+
+            assert_eq!(z.to_bits(), full.z.to_bits(), "case {case}");
+            assert_eq!((reduced.x, reduced.y), (full.x, full.y));
+            assert_eq!(reduced.z.to_bits(), full.z.to_bits());
+            assert_eq!(reduced.fog_depth.to_bits(), full.fog_depth.to_bits(), "case {case}");
+            assert_eq!(
+                reduced.uv.map(|(u, v)| (u.to_bits(), v.to_bits())),
+                full.uv.map(|(u, v)| (u.to_bits(), v.to_bits())),
+                "case {case}"
+            );
+            assert_eq!(
+                reduced.vertex_alpha.map(f32::to_bits),
+                full.vertex_alpha.map(f32::to_bits),
+                "case {case}"
+            );
+            assert_eq!(reduced.uv.is_some(), with_uv);
+            assert_eq!(reduced.vertex_alpha.is_some(), with_alpha);
+        }
+    }
+}
