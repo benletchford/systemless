@@ -22,9 +22,62 @@ pub struct Qd3dCompute {
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
+    textures: std::cell::RefCell<ResidentTextures>,
+}
+
+/// The device texture buffer and the verified byte versions cached in it.
+/// Matching identities and bytes reuse an upload until the buffer is refilled;
+/// textures without an identity are written every frame.
+#[derive(Default)]
+struct ResidentTextures {
+    buffer: Option<wgpu::Buffer>,
+    layout: ResidentLayout,
+}
+
+/// Word offsets and immutable byte snapshots written since the last refill.
+/// An identity is a lookup hint: public pixel vectors can change after cloning.
+/// Multiple byte versions of an identity may coexist within a frame.
+#[derive(Default, Clone)]
+struct ResidentLayout {
+    words: std::collections::HashMap<u64, Vec<(Arc<[u8]>, u32)>>,
+    used_words: u64,
+}
+
+impl ResidentLayout {
+    fn word(&self, identity: Option<u64>, rgba: &[u8]) -> Option<u32> {
+        self.words.get(&identity?)?.iter()
+            .find_map(|(bytes, word)| (bytes.as_ref() == rgba).then_some(*word))
+    }
+
+    fn clear(&mut self) {
+        self.words.clear();
+        self.used_words = 0;
+    }
+
+    /// The texture's word offset, and whether its bytes must be written there.
+    fn place(&mut self, identity: Option<u64>, rgba: &[u8]) -> (u32, bool) {
+        if let Some(word) = self.word(identity, rgba) {
+            return (word, false);
+        }
+        let word = self.used_words as u32;
+        self.used_words += rgba.len() as u64 / 4;
+        if let Some(identity) = identity {
+            self.words
+                .entry(identity)
+                .or_default()
+                .push((Arc::from(rgba), word));
+        }
+        (word, true)
+    }
 }
 
 impl Qd3dCompute {
+    /// Number of texture identities recorded as resident, for tests.
+    #[doc(hidden)]
+    pub fn resident_texture_count(&self) -> usize {
+        self.textures.borrow().layout.words.len()
+    }
+
     pub async fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -55,6 +108,7 @@ impl Qd3dCompute {
             queue,
             pipeline,
             palette: Default::default(),
+            textures: Default::default(),
         })
     }
 
@@ -101,22 +155,74 @@ impl Qd3dCompute {
         {
             return Err("invalid QD3D GPU framebuffer".into());
         }
-        let mut texture_bytes = Vec::new();
-        let mut textures = Vec::new();
-        for texture in &frame.textures {
-            let count = (u64::from(texture.width) * u64::from(texture.height))
-                .checked_mul(4)
-                .ok_or("GPU texture size overflow")?;
-            if count == 0
-                || count != texture.rgba.len() as u64
-                || texture_bytes.len() as u64 + count
-                    > limits.max_storage_buffer_binding_size.into()
-            {
-                return Err("invalid QD3D GPU texture".into());
+        // Plan where each texture will sit without changing the resident
+        // state or queueing a write: the frame can still be rejected below,
+        // and a rejected frame is never submitted.
+        // Browser wire textures carry no identities. Keep their original
+        // one-upload-per-frame path instead of accumulating uncached entries.
+        let uncached_frame = frame.textures.iter().all(|texture| texture.identity.is_none());
+        let (texture_buffer, texture_layout, textures) = {
+            let resident = self.textures.borrow();
+            let mut frame_bytes = 0u64;
+            let mut new_bytes = 0u64;
+            for texture in &frame.textures {
+                let count = (u64::from(texture.width) * u64::from(texture.height))
+                    .checked_mul(4)
+                    .ok_or("GPU texture size overflow")?;
+                if count == 0
+                    || count != texture.rgba.len() as u64
+                    || frame_bytes + count > limits.max_storage_buffer_binding_size.into()
+                {
+                    return Err("invalid QD3D GPU texture".into());
+                }
+                frame_bytes += count;
+                if resident.layout.word(texture.identity, &texture.rgba).is_none() {
+                    new_bytes += count;
+                }
             }
-            textures.push((texture_bytes.len() as u32 / 4, texture));
-            texture_bytes.extend_from_slice(&texture.rgba);
-        }
+            let frame_bytes = frame_bytes.max(4);
+            let capacity = resident.buffer.as_ref().map_or(0, wgpu::Buffer::size);
+            let mut refill = uncached_frame || resident.layout.used_words * 4 + new_bytes > capacity;
+            // A refill sizes the buffer for this frame with room for the next,
+            // up to the same limit the scratch map applies; asking for more
+            // would recreate a limit-sized buffer on every refill.
+            let limit = limits
+                .max_buffer_size
+                .min(u64::from(limits.max_storage_buffer_binding_size));
+            let size = if uncached_frame {
+                frame_bytes
+            } else if refill {
+                frame_bytes.saturating_mul(2).min(limit)
+            } else {
+                capacity
+            };
+            let buffer = self.buffers.get(
+                &self.device,
+                "3d-textures",
+                size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
+            refill |= resident.buffer.as_ref() != Some(&buffer);
+            let needed = if refill {
+                frame_bytes
+            } else {
+                resident.layout.used_words * 4 + new_bytes
+            };
+            if buffer.size() < needed {
+                return Err("QD3D GPU texture storage exceeds limits".into());
+            }
+            let mut layout = if refill { ResidentLayout::default() } else { resident.layout.clone() };
+            let textures: Vec<_> = frame
+                .textures
+                .iter()
+                .map(|texture| {
+                    let (word, write) =
+                        layout.place(texture.identity, &texture.rgba);
+                    (word, write, texture)
+                })
+                .collect();
+            (buffer, layout, textures)
+        };
         let mut light_bytes = Vec::new();
         let mut triangles = Vec::new();
         let mut deferred = Vec::new();
@@ -126,7 +232,7 @@ impl Qd3dCompute {
             }
             let (offset, width, height, wrap) = match draw.texture {
                 Some(index) => {
-                    let (offset, texture) =
+                    let (offset, _, texture) =
                         textures.get(index).ok_or("invalid GPU texture reference")?;
                     (
                         *offset,
@@ -418,15 +524,34 @@ impl Qd3dCompute {
         if triangles.is_empty() {
             triangles.resize(TRIANGLE_BYTES, 0);
         }
-        if texture_bytes.is_empty() {
-            texture_bytes.resize(4, 255);
+        // Every check has passed: write the textures that are not resident
+        // and record the layout. The borrow ends before any readback await.
+        {
+            let mut resident = self.textures.borrow_mut();
+            if uncached_frame {
+                let bytes: Vec<u8> = textures
+                    .iter()
+                    .flat_map(|(_, _, texture)| texture.rgba.iter().copied())
+                    .collect();
+                if !bytes.is_empty() {
+                    self.queue.write_buffer(&texture_buffer, 0, &bytes);
+                }
+            } else {
+                for (word, write, texture) in &textures {
+                    if *write {
+                        self.queue
+                            .write_buffer(&texture_buffer, u64::from(*word) * 4, &texture.rgba);
+                    }
+                }
+            }
+            resident.layout = texture_layout;
+            resident.buffer = Some(texture_buffer.clone());
         }
         let buffer = |role, bytes: &[u8], usage| {
             self.buffers
                 .upload(&self.device, &self.queue, role, bytes, usage)
         };
         let triangle_buffer = buffer("3d-triangles", &triangles, wgpu::BufferUsages::STORAGE);
-        let texture_buffer = buffer("3d-textures", &texture_bytes, wgpu::BufferUsages::STORAGE);
         let tile_buffer = buffer("3d-tiles", &tiles, wgpu::BufferUsages::STORAGE);
         let light_buffer = buffer("3d-lights", &light_bytes, wgpu::BufferUsages::STORAGE);
         // Live guest palettes can change between frames. Cache by all components,
@@ -696,4 +821,48 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
         && v.reciprocal_w > 0.
         && v.screen_x.abs() <= 32768.
         && v.screen_y.abs() <= 32768.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_layout_writes_each_identity_once_until_cleared() {
+        let mut layout = ResidentLayout::default();
+        // New identities and uncached textures take the next free words.
+        assert_eq!(layout.place(Some(7), &[0; 64]), (0, true));
+        assert_eq!(layout.place(None, &[0; 16]), (16, true));
+        assert_eq!(layout.place(Some(9), &[0; 4]), (20, true));
+        // A written identity keeps its offset and is not written again; an
+        // uncached texture is written again at a new offset.
+        assert_eq!(layout.place(Some(7), &[0; 64]), (0, false));
+        assert_eq!(layout.place(Some(9), &[0; 4]), (20, false));
+        assert_eq!(layout.place(None, &[0; 16]), (21, true));
+        assert_eq!(layout.used_words, 25);
+        assert_eq!(layout.word(Some(9), &[0; 4]), Some(20));
+        assert_eq!(layout.word(Some(8), &[0; 4]), None);
+        assert_eq!(layout.word(None, &[0; 4]), None);
+        // After a refill nothing is resident.
+        layout.clear();
+        assert_eq!(layout.word(Some(7), &[0; 64]), None);
+        assert_eq!(layout.place(Some(9), &[0; 4]), (0, true));
+        assert_eq!(layout.place(Some(7), &[0; 64]), (1, true));
+    }
+
+    #[test]
+    fn resident_layout_checks_bytes_when_an_identity_is_reused() {
+        let mut layout = ResidentLayout::default();
+        assert_eq!(layout.place(Some(7), &[1; 16]), (0, true));
+        // Public pixels can be mutated, including on a clone sharing an ID.
+        assert_eq!(layout.word(Some(7), &[2; 16]), None);
+        assert_eq!(layout.place(Some(7), &[2; 16]), (4, true));
+        // Both versions can be drawn in one frame without aliasing.
+        assert_eq!(layout.place(Some(7), &[1; 16]), (0, false));
+        assert_eq!(layout.place(Some(7), &[2; 16]), (4, false));
+        assert_eq!(layout.place(Some(7), &[2; 32]), (8, true));
+        assert_eq!(layout.used_words, 16);
+        layout.clear();
+        assert_eq!(layout.word(Some(7), &[1; 16]), None);
+    }
 }

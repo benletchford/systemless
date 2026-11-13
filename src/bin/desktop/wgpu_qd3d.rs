@@ -498,6 +498,112 @@ mod tests {
     }
 
     #[test]
+    fn resident_textures_render_like_full_uploads() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        // One textured triangle per texture, side by side.
+        let frame = |textures: &[(Option<u64>, u8)]| {
+            let draws = (0..textures.len())
+                .map(|index| {
+                    let mut draw = triangle(0.5, [1., 1., 1., 1.]);
+                    draw.texture = Some(index);
+                    let left = (index * 8) as f32;
+                    for (v, (x, y, uv)) in draw.vertices.iter_mut().zip([
+                        (left, 1., [0., 0.]),
+                        (left + 7., 1., [1., 0.]),
+                        (left, 22., [0., 1.]),
+                    ]) {
+                        (v.screen_x, v.screen_y, v.uv) = (x, y, uv);
+                    }
+                    draw
+                })
+                .collect();
+            PpcQ3RasterFrame {
+                width: 32,
+                height: 24,
+                viewport: [0, 0, 31, 23],
+                clear_color: None,
+                textures: textures
+                    .iter()
+                    .map(|&(identity, seed)| PpcQ3GpuTexture {
+                        width: 2,
+                        height: 2,
+                        rgba: (0..16u8)
+                            .map(|n| if n % 4 == 3 { 255 } else { n.wrapping_mul(37) ^ seed })
+                            .collect(),
+                        wrap_u: false,
+                        wrap_v: false,
+                        identity,
+                    })
+                    .collect(),
+                draws,
+            }
+        };
+        let background = vec![0x801f; 32 * 24];
+        let render = |frame: &PpcQ3RasterFrame| state.render(frame, &background).unwrap();
+        // Keep the oracle separate so it cannot clear the resident state
+        // between frames, including frames that mutate an existing identity.
+        let oracle = State::new().expect("GPU already initialized");
+        // A render without identities writes every texture: the oracle.
+        let fresh = |frame: &PpcQ3RasterFrame| {
+            let mut frame = frame.clone();
+            frame.textures.iter_mut().for_each(|texture| texture.identity = None);
+            oracle.render(&frame, &background).unwrap()
+        };
+        let base = u64::MAX - 100;
+        let mut steps: Vec<Vec<(Option<u64>, u8)>> = vec![
+            vec![(Some(base), 1)],
+            vec![(Some(base), 1)],
+            // A mutated clone keeps its identity; both versions may coexist.
+            vec![(Some(base), 91)],
+            vec![(Some(base), 1), (Some(base), 91)],
+            // One resident texture and one new, then a duplicate in one frame
+            // beside an uncached texture.
+            vec![(Some(base), 1), (Some(base + 1), 2)],
+            vec![(Some(base + 1), 2), (Some(base + 1), 2), (None, 3)],
+        ];
+        // New identities until the buffer must be refilled, then old ones.
+        steps.extend((2..10).map(|n| vec![(Some(base + n), n as u8 * 11), (Some(base), 1)]));
+        steps.push(vec![(Some(base + 1), 2), (Some(base), 1), (Some(base + 3), 33)]);
+        steps.push(Vec::new());
+        steps.push(vec![(None, 77), (Some(base), 1)]);
+        for (step, textures) in steps.iter().enumerate() {
+            let frame = frame(textures);
+            let expected = fresh(&frame);
+            assert_eq!(render(&frame), expected, "step {step}");
+            assert_eq!(render(&frame), expected, "step {step} reused");
+            // Independently of the texture buffer layout: each triangle's
+            // pixel near its first vertex samples texel (0, 1) of its texture.
+            for (index, texture) in frame.textures.iter().enumerate() {
+                let texel = &texture.rgba[8..11];
+                let rgb = [0, 1, 2].map(|i| f32::from(texel[i]) / 255.);
+                assert_eq!(
+                    expected[3 * 32 + index * 8 + 1],
+                    ppc_q3_rgb555((rgb[0], rgb[1], rgb[2])),
+                    "step {step}, texture {index}"
+                );
+            }
+        }
+        // A frame rejected after its textures were planned is never
+        // submitted, so it must record nothing as resident.
+        let resident = state.resident_texture_count();
+        let mut rejected = frame(&[(Some(base + 50), 9), (Some(base), 1)]);
+        rejected.draws[1].vertices[0].screen_x = f32::NAN;
+        assert!(state.render(&rejected, &background).is_err());
+        assert_eq!(state.resident_texture_count(), resident);
+        let accepted = frame(&[(Some(base + 50), 9), (Some(base), 1)]);
+        assert_eq!(render(&accepted), fresh(&accepted));
+    }
+
+    #[test]
     fn tile_lists_preserve_order_and_bound_storage() {
         let mut primitive = vec![0u8; TRIANGLE_BYTES];
         for (v, (x, y)) in [(0., 0.), (31., 0.), (0., 31.)].into_iter().enumerate() {
@@ -1496,6 +1602,7 @@ mod tests {
                         rgba: vec![128, 255, 64, 128],
                         wrap_u: false,
                         wrap_v: false,
+                        identity: None,
                     }],
                     draws: vec![draw],
                 };
@@ -1754,6 +1861,7 @@ mod tests {
                     rgba: vec![255, 0, 0, 128],
                     wrap_u: false,
                     wrap_v: false,
+                    identity: None,
                 }],
                 draws: vec![draw],
             };
@@ -1915,6 +2023,7 @@ mod tests {
             rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
             wrap_u: false,
             wrap_v: false,
+            identity: None,
         };
         let mut first = triangle(0., [1.; 4]);
         first.texture = Some(0);
@@ -1981,6 +2090,7 @@ mod tests {
                         ],
                         wrap_u: wrap,
                         wrap_v: wrap,
+                        identity: None,
                     }],
                     draws: vec![draw],
                 };

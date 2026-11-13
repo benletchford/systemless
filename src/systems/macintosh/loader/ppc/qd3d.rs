@@ -684,14 +684,29 @@ pub struct PpcQ3GpuFrame {
     pub draws: Vec<PpcQ3GpuDraw>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PpcQ3GpuTexture {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
     pub wrap_u: bool,
     pub wrap_v: bool,
+    /// Conversion-cache identity used as a renderer lookup hint. Since `rgba`
+    /// is public and mutable, renderers must verify bytes before reusing it.
+    /// `None` for a texture that did not come from the conversion cache.
+    pub identity: Option<u64>,
 }
+
+// Identity names an upload, not the texture's content: equal pixels and
+// sampling are equal textures whether or not they came from the cache.
+impl PartialEq for PpcQ3GpuTexture {
+    fn eq(&self, other: &Self) -> bool {
+        (self.width, self.height, &self.rgba, self.wrap_u, self.wrap_v)
+            == (other.width, other.height, &other.rgba, other.wrap_u, other.wrap_v)
+    }
+}
+
+impl Eq for PpcQ3GpuTexture {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PpcQ3GpuDraw {
@@ -2321,6 +2336,7 @@ pub fn ppc_q3_gpu_texture_from_software(
         rgba,
         wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
         wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
+        identity: None,
     })
 }
 
@@ -2441,9 +2457,15 @@ impl PpcQ3GpuTextureCache {
                 return Some(entry.texture.clone());
             }
         }
-        let converted = ppc_q3_gpu_texture_from_software(memory, texture, shader_boundary);
-        match (&converted, ppc_q3_gpu_texture_source(memory, texture)) {
+        let mut converted = ppc_q3_gpu_texture_from_software(memory, texture, shader_boundary);
+        match (&mut converted, ppc_q3_gpu_texture_source(memory, texture)) {
             (Some(converted), Some(source)) => {
+                // Process-wide, so no two caches (an application clone, for
+                // example) can give different bytes the same identity.
+                static NEXT_IDENTITY: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(1);
+                converted.identity =
+                    Some(NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
                 self.entries.insert(
                     key,
                     PpcQ3GpuTextureCacheEntry { source, texture: converted.clone(), used: self.frame },

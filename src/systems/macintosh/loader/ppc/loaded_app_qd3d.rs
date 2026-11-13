@@ -605,6 +605,7 @@ impl PpcLoadedApp {
                                 ],
                                 wrap_u: false,
                                 wrap_v: false,
+                                identity: None,
                             });
                             index
                         })

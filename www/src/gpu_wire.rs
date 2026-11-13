@@ -297,13 +297,29 @@ wire_struct!(QuickDrawGpuPackedCopy {
     background,
     palette
 });
-wire_struct!(PpcQ3GpuTexture {
-    width,
-    height,
-    rgba,
-    wrap_u,
-    wrap_v
-});
+// The cache identity stays on the sending side: the receiving renderer treats
+// every texture as new and writes it each frame.
+impl Wire for PpcQ3GpuTexture {
+    const MIN_BYTES: usize = 0;
+    fn put(&self, out: &mut Vec<u8>) {
+        let PpcQ3GpuTexture { width, height, rgba, wrap_u, wrap_v, identity: _ } = self;
+        width.put(out);
+        height.put(out);
+        rgba.put(out);
+        wrap_u.put(out);
+        wrap_v.put(out);
+    }
+    fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        Ok(PpcQ3GpuTexture {
+            width: Wire::get(input)?,
+            height: Wire::get(input)?,
+            rgba: Wire::get(input)?,
+            wrap_u: Wire::get(input)?,
+            wrap_v: Wire::get(input)?,
+            identity: None,
+        })
+    }
+}
 wire_struct!(PpcQ3LightData {
     is_on,
     brightness,
@@ -703,6 +719,7 @@ mod tests {
                 rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
                 wrap_u: true,
                 wrap_v: false,
+                identity: None,
             }],
             draws: vec![PpcQ3RasterDraw {
                 primitive: PpcQ3RasterPrimitive::Lines,
