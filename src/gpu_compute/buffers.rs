@@ -28,6 +28,7 @@ pub enum BindingRole {
     Bitmap,
     Qd3d,
     Qd3dIndexed,
+    Qd3dVertices,
 }
 
 struct CachedBindings {
@@ -39,9 +40,9 @@ struct CachedBindings {
 #[derive(Default)]
 pub struct ScratchBuffers {
     buffers: RefCell<HashMap<&'static str, wgpu::Buffer>>,
-    // Four fixed roles plus the five bitmap pipeline variants. No history
+    // Five fixed roles plus the five bitmap pipeline variants. No history
     // grows with request count, and scratch growth invalidates every slot.
-    bindings: RefCell<[Option<CachedBindings>; 9]>,
+    bindings: RefCell<[Option<CachedBindings>; 10]>,
     #[cfg(feature = "test-support")]
     binding_creations: std::cell::Cell<u64>,
 }
@@ -76,15 +77,16 @@ impl ScratchBuffers {
             BindingRole::PolygonProducts => 1,
             BindingRole::Qd3d => 2,
             BindingRole::Qd3dIndexed => 3,
-            BindingRole::Bitmap => (4..9)
+            BindingRole::Qd3dVertices => 4,
+            BindingRole::Bitmap => (5..10)
                 .find(|&slot| {
                     bindings[slot]
                         .as_ref()
                         .is_some_and(|entry| entry.pipeline == *pipeline)
                 })
-                .or_else(|| (4..9).find(|&slot| bindings[slot].is_none()))
+                .or_else(|| (5..10).find(|&slot| bindings[slot].is_none()))
                 // A future sixth variant replaces an entry instead of growing.
-                .unwrap_or(4),
+                .unwrap_or(5),
         };
         let cached = &mut bindings[slot];
         if let Some(entry) = cached {

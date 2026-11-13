@@ -1989,4 +1989,220 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn gpu_qd3d_vertex_shade_pass_matches_mixed_multi_tile_scene() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let (width, height) = (48, 32);
+        let background: Vec<u16> = (0..(width * height) as usize)
+            .map(|i| 0x8000 | ((i as u16 * 13 + 7) & 0x7fff))
+            .collect();
+
+        // Span multiple 16x16 tiles so a triangle shaded in place is read by
+        // several tiles without repeating or corrupting vertex colors.
+        let mut lit_front = PpcQ3RasterDraw {
+            primitive: PpcQ3RasterPrimitive::Triangles,
+            test_depth: true,
+            write_depth: true,
+            blend: false,
+            ambient_light: Some([0.12, 0.16, 0.2]),
+            ambient_per_vertex: true,
+            fog: Some(PpcQ3FogStyleData {
+                state: 1,
+                mode: PPC_Q3_FOG_MODE_LINEAR,
+                fog_start: 1.,
+                fog_end: 6.,
+                density: 0.25,
+                color: (1., 0.1, 0.2, 0.4),
+            }),
+            texture: None,
+            lighting: Some(PpcQ3RasterLighting {
+                interpolation_style: PPC_Q3_INTERPOLATION_STYLE_VERTEX,
+                illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                lights: vec![
+                    PpcQ3LightRecord {
+                        light: 0,
+                        light_type: 0,
+                        data: PpcQ3LightData {
+                            is_on: 1,
+                            brightness: 0.75,
+                            color: (0.9, 0.5, 0.3),
+                        },
+                        kind: PpcQ3LightKind::Directional {
+                            casts_shadows: 0,
+                            direction: (0.25, -0.35, -1.),
+                        },
+                    },
+                    PpcQ3LightRecord {
+                        light: 0,
+                        light_type: 0,
+                        data: PpcQ3LightData {
+                            is_on: 1,
+                            brightness: 0.55,
+                            color: (0.3, 0.6, 0.9),
+                        },
+                        kind: PpcQ3LightKind::Point {
+                            casts_shadows: 0,
+                            attenuation: 1,
+                            location: (0.4, 0.2, 2.),
+                        },
+                    },
+                ],
+            }),
+            vertices: vec![
+                vertex(5., 4., 0.3, [0.7, 0.35, 0.25, 1.]),
+                vertex(41., 6., 0.35, [0.3, 0.75, 0.4, 1.]),
+                vertex(20., 27., 0.4, [0.25, 0.4, 0.8, 1.]),
+            ],
+        };
+        for (i, v) in lit_front.vertices.iter_mut().enumerate() {
+            let n = ppc_q3_vector3d_normalized_value(
+                [(0., 0., 1.), (0.4, -0.2, 1.), (-0.3, 0.5, 1.)][i],
+            )
+            .unwrap();
+            v.shading.normal = Some([n.0, n.1, n.2]);
+            v.shading.view_direction = Some([0.1, -0.1, 1.]);
+            v.shading.world = [[-0.6, -0.4, 0.], [1.1, -0.2, 0.2], [0.2, 0.9, -0.1]][i];
+            v.shading.specular_color = [0.5, 0.6, 0.8];
+            v.shading.specular_control = 12.;
+            v.shading.highlight = true;
+            v.ambient_coefficient = [0.3, 0.85, 0.55][i];
+            v.fog_depth = [1.5, 3.2, 4.8][i];
+            v.reciprocal_w = [1., 0.6, 0.35][i];
+        }
+
+        // Partially occluded behind lit_front so depth-rejected pixels skip
+        // attribute loads while visible pixels still show vertex lighting.
+        let mut lit_back = lit_front.clone();
+        for (v, (x, y)) in lit_back
+            .vertices
+            .iter_mut()
+            .zip([(10., 5.), (43., 25.), (6., 26.)])
+        {
+            v.screen_x = x;
+            v.screen_y = y;
+            v.depth = 0.75;
+            v.color = [0.9, 0.8, 0.2, 1.];
+        }
+
+        // Per-vertex ambient without spatial lights exercises the ambient-only
+        // branch of shade_vertices across tile boundaries.
+        let mut ambient_blend = PpcQ3RasterDraw {
+            primitive: PpcQ3RasterPrimitive::Triangles,
+            test_depth: true,
+            write_depth: false,
+            blend: true,
+            ambient_light: Some([0.85, 0.7, 0.5]),
+            ambient_per_vertex: true,
+            fog: None,
+            texture: None,
+            lighting: None,
+            vertices: vec![
+                vertex(6., 8., 0.2, [0.8, 0.4, 0.9, 0.55]),
+                vertex(38., 10., 0.2, [0.3, 0.9, 0.5, 0.55]),
+                vertex(22., 26., 0.2, [0.9, 0.6, 0.2, 0.55]),
+            ],
+        };
+        for (i, v) in ambient_blend.vertices.iter_mut().enumerate() {
+            v.ambient_coefficient = [0.2, 0.95, 0.5][i];
+            v.reciprocal_w = [1., 0.5, 0.25][i];
+        }
+
+        // Pixel-interpolated Phong triangle in the same dispatch must remain
+        // untouched by shade_vertices and shade per pixel in raster.
+        let mut phong_pixel = lit_front.clone();
+        phong_pixel.lighting.as_mut().unwrap().interpolation_style =
+            PPC_Q3_INTERPOLATION_STYLE_PIXEL;
+        phong_pixel.fog = None;
+        for (v, (x, y)) in phong_pixel
+            .vertices
+            .iter_mut()
+            .zip([(26., 4.), (42., 5.), (36., 18.)])
+        {
+            v.screen_x = x;
+            v.screen_y = y;
+            v.depth = 0.15;
+        }
+
+        // Lines with ambient_per_vertex=true and points outside the cleared
+        // sub-viewport must keep kind != 0u ambient semantics and background reads.
+        let mut line = triangle(0.1, [0.9, 0.5, 0.4, 0.6]);
+        line.primitive = PpcQ3RasterPrimitive::Lines;
+        line.test_depth = true;
+        line.write_depth = false;
+        line.blend = true;
+        line.ambient_light = Some([0.8, 0.75, 0.6]);
+        line.ambient_per_vertex = true;
+        line.vertices = vec![
+            vertex(1., 2., 0.1, [0.9, 0.5, 0.4, 0.6]),
+            vertex(24., 16., 0.1, [0.9, 0.5, 0.4, 0.6]),
+            vertex(1., 2., 0.1, [0.9, 0.5, 0.4, 0.6]),
+        ];
+        for v in &mut line.vertices {
+            v.ambient_coefficient = 0.65;
+        }
+
+        let frame = PpcQ3RasterFrame {
+            width,
+            height,
+            viewport: [4, 3, 43, 28],
+            clear_color: Some([0.12, 0.22, 0.34, 1.]),
+            textures: vec![],
+            draws: vec![lit_front, lit_back, phong_pixel, ambient_blend, line],
+        };
+        let expected = cpu_render(&frame, &background);
+        let first = state.render(&frame, &background).unwrap();
+        let unlit = PpcQ3RasterFrame {
+            width,
+            height,
+            viewport: [4, 3, 43, 28],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![triangle(0.4, [0.3, 0.6, 0.2, 1.])],
+        };
+        assert_eq!(
+            state.render(&unlit, &background).unwrap(),
+            cpu_render(&unlit, &background)
+        );
+        #[cfg(feature = "test-support")]
+        let creations_before = state.buffers.resource_snapshot()["bind_group_creations"]
+            .as_u64()
+            .unwrap();
+        let second = state.render(&frame, &background).unwrap();
+        assert_eq!(
+            state.render(&unlit, &background).unwrap(),
+            cpu_render(&unlit, &background)
+        );
+        #[cfg(feature = "test-support")]
+        assert_eq!(
+            state.buffers.resource_snapshot()["bind_group_creations"]
+                .as_u64()
+                .unwrap(),
+            creations_before,
+            "steady-state mixed vertex/raster dispatches must reuse cached bind groups"
+        );
+        assert_eq!(first, second);
+        for (i, (&actual, &expected)) in first.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual & 0x8000,
+                expected & 0x8000,
+                "coverage bit at pixel {i}"
+            );
+            for shift in [0, 5, 10] {
+                assert!(
+                    ((actual >> shift) & 31).abs_diff((expected >> shift) & 31) <= 1,
+                    "pixel {i} channel shift {shift}: {actual:04x} vs {expected:04x}"
+                );
+            }
+        }
+    }
 }

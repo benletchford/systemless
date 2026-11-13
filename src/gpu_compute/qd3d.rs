@@ -21,6 +21,7 @@ pub struct Qd3dCompute {
     pub device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
+    vertex_shade: wgpu::ComputePipeline,
     palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
 }
 
@@ -43,6 +44,14 @@ impl Qd3dCompute {
             compilation_options: Default::default(),
             cache: None,
         });
+        let vertex_shade = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("QD3D vertex lighting"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("shade_vertices"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
         if let Some(error) = scopes.pop_unrecorded().await {
             return Err(error);
         }
@@ -54,6 +63,7 @@ impl Qd3dCompute {
             device,
             queue,
             pipeline,
+            vertex_shade,
             palette: Default::default(),
         })
     }
@@ -120,6 +130,7 @@ impl Qd3dCompute {
         let mut light_bytes = Vec::new();
         let mut triangles = Vec::new();
         let mut deferred = Vec::new();
+        let mut vertex_shade = false;
         for draw in &frame.draws {
             if draw.vertices.len() % 3 != 0 {
                 return Err("incomplete GPU primitive triple".into());
@@ -297,6 +308,11 @@ impl Qd3dCompute {
                 } else {
                     draw.primitive
                 };
+                vertex_shade |= primitive == PpcQ3RasterPrimitive::Triangles
+                    && ((light_info[1] != 0 && light_info[2] != 2)
+                        || (light_info[1] == 0
+                            && draw.ambient_light.is_some()
+                            && draw.ambient_per_vertex));
                 for triangle in packets {
                     let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
                     for v in triangle {
@@ -398,7 +414,12 @@ impl Qd3dCompute {
             triangles.extend(bytes);
         }
         let triangle_count = triangles.len() / TRIANGLE_BYTES;
-        if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into() {
+        if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into()
+            || (vertex_shade
+                && u32::try_from(triangle_count)
+                    .map(|count| count.div_ceil(64) > limits.max_compute_workgroups_per_dimension)
+                    .unwrap_or(true))
+        {
             return Err("QD3D GPU primitive storage exceeds limits".into());
         }
         // Build lists after transparency sorting: each tile retains the exact
@@ -507,6 +528,18 @@ impl Qd3dCompute {
             wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        if vertex_shade {
+            let shade_group = self.buffers.bind_group(
+                &self.device,
+                BindingRole::Qd3dVertices,
+                &self.vertex_shade,
+                &[(3, &geometry), (4, &light_buffer), (7, &triangle_buffer)],
+            );
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.vertex_shade);
+            pass.set_bind_group(0, &shade_group, &[]);
+            pass.dispatch_workgroups((triangle_count as u32).div_ceil(64), 1, 1);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.pipeline);
