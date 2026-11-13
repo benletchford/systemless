@@ -788,9 +788,15 @@ pub(super) fn ppc_pbh_get_v_info(
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     default_dir_id: u32,
     working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    hfs: bool,
 ) -> i16 {
+    // Inside Macintosh Volume IV (1986), IV-129--IV-130: PBGetVInfo's
+    // parameter block ends with ioVFrBlk at offset 62, 64 bytes in all, and
+    // PBHGetVInfo "returns a larger parameter block" that runs to 122 bytes.
+    // Callers of the former allocate only the shorter block.
     let pb = cpu.gpr[3];
-    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 122) {
+    let pb_len = if hfs { 122 } else { 64 };
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, pb_len) {
         return PPC_PARAM_ERR;
     }
     let Some(name_ptr) = memory.read_u32_be(pb + 18) else {
@@ -907,8 +913,12 @@ pub(super) fn ppc_pbh_get_v_info(
         })
         .unwrap_or(volume.file_count);
 
-    // Inside Macintosh: Files (1992), p. 2-238: HVolumeParam layout.
-    let writes = [
+    // The two layouts have the same field sizes through offset 63, and both
+    // calls receive the same values there, as before. Offset 34 is named
+    // ioVLsBkUp in the shorter block and ioVLsMod in the longer, and holds
+    // the last modification date in both (Inside Macintosh Volume IV,
+    // IV-123--IV-124).
+    let common = [
         memory.write_u16_be(pb + 22, volume.ref_num as u16),
         memory.write_u32_be(pb + 30, volume.created_date),
         memory.write_u32_be(pb + 34, volume.modified_date),
@@ -922,6 +932,14 @@ pub(super) fn ppc_pbh_get_v_info(
         memory.write_u16_be(pb + 56, volume.allocation_start),
         memory.write_u32_be(pb + 58, volume.next_catalog_id),
         memory.write_u16_be(pb + 62, volume.free_blocks),
+    ];
+    if common.iter().any(Option::is_none) {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    }
+    if !hfs {
+        return ppc_complete_pb(memory, pb, PPC_NO_ERR);
+    }
+    let writes = [
         memory.write_u16_be(pb + 64, 0x4244),
         memory.write_u16_be(pb + 66, 1),
         memory.write_u16_be(pb + 68, (-33i16) as u16),

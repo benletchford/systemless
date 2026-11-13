@@ -11764,3 +11764,38 @@ fn pbdircreatesync_reports_missing_parent_bad_volume_and_bad_parameter() {
     );
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 }
+
+#[test]
+fn pb_get_v_info_fills_only_the_64_byte_volume_param() {
+    for (symbol, hfs) in [(&b"PBGetVInfoSync"[..], false), (&b"PBHGetVInfoSync"[..], true)] {
+        let pef = synthetic_pef_with_import(symbol);
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        // Bytes after the block stand for the caller's neighbouring data.
+        loaded.memory.add_region(pb, vec![0xa5; 0x100]);
+        for offset in 0..30 {
+            loaded.memory.write_u8(pb + offset, 0).unwrap();
+        }
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR), "hfs={hfs}");
+        let tail: Vec<u8> = (64..122).filter_map(|offset| loaded.memory.read_u8(pb + offset)).collect();
+        if hfs {
+            assert_eq!(&tail[..2], &[0x42, 0x44], "HVolumeParam carries ioVSigWord");
+        } else {
+            assert_eq!(tail, vec![0xa5; 58], "VolumeParam ends at offset 64");
+        }
+    }
+
+    // A caller that maps only the 64-byte block is served.
+    let pef = synthetic_pef_with_import(b"PBGetVInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let pb = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(pb, vec![0; 64]);
+    loaded.cpu.gpr[3] = pb;
+    let _ = loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+}
