@@ -3520,6 +3520,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "LMGetCurApRefNum") => PpcImportDispatcherTarget::LMGetCurApRefNum,
         ("InterfaceLib", "GetVCBQHdr") => PpcImportDispatcherTarget::GetVCBQHdr,
         ("InterfaceLib", "GetDrvQHdr") => PpcImportDispatcherTarget::GetDrvQHdr,
+        // Universal Interfaces' LowMem.h name for the same accessor.
+        ("InterfaceLib", "LMGetDrvQHdr") => PpcImportDispatcherTarget::GetDrvQHdr,
         ("InterfaceLib", "LMGetSysEvtMask") => PpcImportDispatcherTarget::LMGetSysEvtMask,
         ("InterfaceLib", "LMSetSysEvtMask") => PpcImportDispatcherTarget::LMSetSysEvtMask,
         ("InterfaceLib", "LMGetDefltStack") => PpcImportDispatcherTarget::LMGetDefltStack,

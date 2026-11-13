@@ -910,3 +910,19 @@ fn lowercase_getresinfo_writes_a_c_name_and_prevalidates_outputs() {
         }
     }
 }
+
+#[test]
+fn hle_import_runner_lm_get_drvq_hdr_returns_low_memory_queue_address() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetDrvQHdr"),
+        PpcImportDispatcherTarget::GetDrvQHdr
+    );
+    let pef = synthetic_pef_with_import(b"LMGetDrvQHdr");
+    let mut loaded = load_pef_application(&pef).unwrap();
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], crate::memory::globals::addr::DRV_Q_HDR);
+}
