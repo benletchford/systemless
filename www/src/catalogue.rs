@@ -76,6 +76,7 @@ impl GameAssets {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameSettings {
     pub worker: bool,
+    pub gpu_compute: bool,
     pub key_mappings: &'static [(&'static str, &'static str)],
     pub arrows_as_numpad: bool,
     pub launch_modifiers: &'static [LaunchModifier],

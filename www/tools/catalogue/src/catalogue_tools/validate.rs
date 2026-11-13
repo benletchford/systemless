@@ -300,6 +300,10 @@ pub fn entry(e: &Entry) -> Result<()> {
             "duplicate launch modifier"
         );
     }
+    ensure!(
+        !e.runtime.gpu_compute || e.runtime.worker,
+        "adaptive GPU compute requires worker execution"
+    );
     let pacing = &e.runtime.runtime_pacing;
     ensure!(
         (1..=4).contains(&pacing.max_ticks_per_paint)

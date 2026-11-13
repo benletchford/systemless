@@ -46,7 +46,10 @@ PowerPC guests. Select the dispatch explicitly with
 `gpu_compute=adaptive|force|off`; `adaptive` uses the desktop heuristics and
 keeps small operations on the CPU, while `force` sends every supported
 operation to the GPU for equivalence checks. Compute works only in worker
-execution mode.
+execution mode. Catalogue entries may set `runtime.gpu_compute = true` after
+qualification to select adaptive compute without a URL option. Explicit
+`gpu_compute` options take precedence; `off` disables it and unknown values
+keep CPU rendering. The catalogue default is false.
 
 Guest memory stays authoritative. QuickDraw and QD3D results must be committed
 before the guest resumes, but WebGPU completes readback only on the event loop

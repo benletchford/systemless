@@ -65,7 +65,12 @@ pub struct ComputeOptions {
 }
 
 impl ComputeOptions {
+    #[cfg(test)]
     pub fn from_query(search: &str) -> Option<Self> {
+        Self::from_query_with_default(search, false)
+    }
+
+    pub fn from_query_with_default(search: &str, adaptive_default: bool) -> Option<Self> {
         let mut renderer_wgpu = false;
         let mut mode = None;
         let mut timeout_ms = None;
@@ -84,7 +89,7 @@ impl ComputeOptions {
             Some(Some(dispatch)) => dispatch,
             // An unrecognized explicit mode never enables GPU work.
             Some(None) => return None,
-            None if renderer_wgpu => Dispatch::Adaptive,
+            None if renderer_wgpu || adaptive_default => Dispatch::Adaptive,
             None => return None,
         };
         (dispatch != Dispatch::Off).then_some(Self {
@@ -512,6 +517,29 @@ mod tests {
         assert_eq!(Dispatch::parse("force"), Some(Dispatch::Forced));
         assert_eq!(Dispatch::parse("cpu"), Some(Dispatch::Off));
         assert_eq!(Dispatch::parse("nope"), None);
+    }
+
+    #[test]
+    fn catalogue_default_respects_explicit_overrides() {
+        assert_eq!(
+            ComputeOptions::from_query_with_default("", true)
+                .unwrap()
+                .mode,
+            "adaptive"
+        );
+        for mode in ["off", "cpu", "0", "bogus"] {
+            assert_eq!(
+                ComputeOptions::from_query_with_default(&format!("?gpu_compute={mode}"), true),
+                None
+            );
+        }
+        assert_eq!(
+            ComputeOptions::from_query_with_default("?gpu_compute=force", true)
+                .unwrap()
+                .mode,
+            "force"
+        );
+        assert_eq!(ComputeOptions::from_query_with_default("", false), None);
     }
 
     #[test]

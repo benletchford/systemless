@@ -2582,7 +2582,10 @@ async fn boot_catalogue_worker(
     let search = web_sys::window()
         .and_then(|window| window.location().search().ok())
         .unwrap_or_default();
-    if let Some(options) = crate::gpu_proxy::ComputeOptions::from_query(&search) {
+    if let Some(options) = crate::gpu_proxy::ComputeOptions::from_query_with_default(
+        &search,
+        game.settings.gpu_compute,
+    ) {
         let compute = Object::new();
         set_js_property(&compute, "mode", &JsValue::from_str(options.mode));
         if let Some(ms) = options.timeout_ms {

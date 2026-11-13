@@ -202,6 +202,8 @@ pub struct Verification {
 #[serde(default, deny_unknown_fields)]
 pub struct Runtime {
     pub worker: bool,
+    /// Prefer adaptive guest-visible compute after per-title qualification.
+    pub gpu_compute: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub launch_modifiers: Vec<LaunchModifier>,
     pub show_menu_bar: bool,
@@ -225,6 +227,7 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             worker: true,
+            gpu_compute: false,
             launch_modifiers: Vec::new(),
             show_menu_bar: false,
             screen_depth: None,
