@@ -2565,7 +2565,7 @@ mod tests {
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
 
     #[test]
-    fn sparse_stream_reuses_empty_page_intervals_and_observes_new_aliases() {
+    fn sparse_stream_bypasses_ledger_and_observes_new_aliases() {
         const BASE: u32 = 0x20000;
         let mut memory = GuestAddressSpace::new();
         memory.add_region(BASE, vec![0x55; 64 * 4096]);
@@ -2577,25 +2577,20 @@ mod tests {
             memory.add_shared_region(0x1000, shared.clone());
             memory.add_shared_region(0x100000, shared.clone());
         }
-        let mut misses = 0;
         for page in 0..64 {
             let address = BASE + page * 4096;
-            misses += usize::from(
-                memory
-                    .state()
-                    .data_lookup
-                    .covering(u64::from(address), u64::from(address) + 4)
-                    .is_none(),
-            );
             assert_eq!(memory.read_u32_be(address), Some(0x5555_5555));
+            // The page filter now proves this access is sparse before the
+            // ledger is consulted. A cold ledger is not a lookup miss.
+            assert!(memory
+                .state()
+                .data_lookup
+                .covering(u64::from(address), u64::from(address) + 4)
+                .is_none());
         }
-        assert!(
-            misses <= 2,
-            "64 sparse pages repeated the ledger lookup {misses} times"
-        );
 
-        // An alias published inside a cached empty interval must immediately
-        // take precedence over the old sparse bytes.
+        // An alias published inside a previously plain interval must immediately
+        // take precedence over the old sparse bytes through the updated filter.
         unsafe { memory.add_shared_region(BASE + 4096, shared) };
         assert_eq!(memory.read_u32_be(BASE + 4096), Some(0x1122_3344));
         assert_eq!(memory.read_u32_be(BASE + 8192), Some(0x5555_5555));
