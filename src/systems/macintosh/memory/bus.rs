@@ -3845,6 +3845,20 @@ impl MacMemoryBus {
         Some((ptr, self.ram_size))
     }
 
+    /// Read-only CPU access to stable local RAM. Reuse the tracked window's
+    /// mapping and diagnostic guards, but never permit direct stores: drawing,
+    /// protected code, write probes and sound watches remain bus operations.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn portable_read_region(&mut self) -> Option<m68k::FastMemRegion> {
+        let (ptr, len) = self.tracked_mem_window()?;
+        Some(m68k::FastMemRegion {
+            ptr: ptr.cast_mut(),
+            base: 0,
+            len,
+            writable: false,
+        })
+    }
+
     /// Dump stack contents around the given SP for debugging
     pub fn dump_stack(&self, sp: u32, label: &str) {
         eprintln!("[STACK DUMP] {} (SP=${:08X})", label, sp);

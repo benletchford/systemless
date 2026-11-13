@@ -4,6 +4,8 @@
 
 mod address_space;
 mod page_index;
+#[cfg(test)]
+mod portable_read_tests;
 pub mod bus;
 pub mod globals;
 
@@ -135,6 +137,16 @@ impl m68k::AddressBus for MacMemoryBus {
     fn tracked_mem(&mut self) -> Option<m68k::TrackedMem> {
         let (ptr, len) = self.tracked_mem_window()?;
         Some(m68k::TrackedMem { ptr, base: 0, len })
+    }
+
+    // Portable execution cannot use the native tracked-JIT write callback.
+    // A read-only region accelerates reads while every store (including RMW)
+    // still goes through the bus's protection and presentation hooks.
+    #[cfg(target_arch = "wasm32")]
+    fn fast_mem_regions(&mut self) -> [Option<m68k::FastMemRegion>; m68k::MAX_FAST_MEM_REGIONS] {
+        let mut regions = [None; m68k::MAX_FAST_MEM_REGIONS];
+        regions[0] = self.portable_read_region();
+        regions
     }
 
     fn tracked_store_filter(&mut self) -> *const u8 {
