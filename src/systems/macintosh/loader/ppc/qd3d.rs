@@ -3352,6 +3352,15 @@ pub fn ppc_q3_software_clip_projected_triangle(
         );
     }
 
+    // A triangle inside every plane passes each clip below unchanged: no edge
+    // crosses a plane, so each pass keeps the three vertices in order.
+    if vertices
+        .iter()
+        .all(|vertex| vertex.clip.is_some_and(ppc_q3_software_clip_inside_frustum))
+    {
+        return vertices.to_vec();
+    }
+
     let mut clipped = vertices.to_vec();
     // Clip the near plane before the sides. With a perspective camera, an
     // edge crossing behind the eye can otherwise intersect both side planes

@@ -28052,3 +28052,72 @@ fn q3_copy_or_zero_matches_the_byte_loop_across_layouts() {
         }
     }
 }
+
+#[test]
+fn q3_clip_inside_triangles_match_the_plane_by_plane_clip() {
+    let camera = PpcQ3CameraRecord {
+        camera: PPC_Q3_OBJECT_BASE, camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement: PpcQ3CameraPlacement {
+            camera_location: (0., 0., 0.), point_of_interest: (0., 0., -1.),
+            up_vector: (0., 1., 0.),
+        },
+        range_hither: 10., range_yon: 2800.,
+        viewport_origin: (-1., 1.), viewport_width: 2., viewport_height: 2.,
+        projection: PpcQ3CameraProjection::ViewAngleAspect { fov: 1., aspect_ratio_x_to_y: 1. },
+    };
+    let front = PpcFrontBuffer { base_addr: 0, row_bytes: 1280, width: 640, height: 480, depth: 16 };
+    let pane = PpcQ3ViewportRect { left: 118, top: 9, right: 628, bottom: 370 };
+    // The six clips in their original order, without the early return.
+    let reference = |vertices: [PpcQ3SoftwareProjectedVertex; 3]| {
+        let mut clipped = vertices.to_vec();
+        for plane in [
+            PpcQ3SoftwareClipPlane::Near, PpcQ3SoftwareClipPlane::Left, PpcQ3SoftwareClipPlane::Right,
+            PpcQ3SoftwareClipPlane::Bottom, PpcQ3SoftwareClipPlane::Top, PpcQ3SoftwareClipPlane::Far,
+        ] {
+            clipped = ppc_q3_software_clip_projected_polygon_clip(&clipped, plane, camera, front, pane);
+            if clipped.len() < 3 {
+                return Vec::new();
+            }
+        }
+        clipped
+    };
+    // Ratios to w that sit inside, on, within the tolerance of, and outside a plane.
+    let eps = PPC_Q3_SOFTWARE_CLIP_EPSILON;
+    let ratios = [0., 0.4, -0.7, 1., -1., 1. + eps * 0.5, -1. - eps * 0.5, 1. + eps * 4., -1. - eps * 4., 1.3, -2.];
+    let ws = [1., 37.5, 0.001, -2., 0., f32::NAN, f32::INFINITY];
+    let mut seed = 0x2545_f491u32;
+    let mut next = |len: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as usize % len
+    };
+    let (mut inside, mut clipped_cases) = (0, 0);
+    for case in 0..6000 {
+        let vertices: [PpcQ3SoftwareProjectedVertex; 3] = std::array::from_fn(|index| {
+            // Most cases keep every vertex strictly inside; the rest mix in boundary values.
+            let w = if case % 3 == 0 { ws[next(2)] } else { ws[next(ws.len())] };
+            let mut ratio = || if case % 3 == 0 { ratios[next(3)] } else { ratios[next(ratios.len())] };
+            let clip = (ratio() * w, ratio() * w, ratio() * w, w);
+            let (x, y, z) = match ppc_q3_software_clip_to_projected(clip) {
+                Some(projected) => {
+                    let (x, y) = ppc_q3_software_projected_to_screen(projected, Some(camera), front, pane);
+                    (x, y, projected.2)
+                }
+                None => (0., 0., 0.),
+            };
+            PpcQ3SoftwareProjectedVertex {
+                x, y, z, clip: Some(clip), world: (index as f32, case as f32, 0.),
+                view_direction: None, fog_depth: 0., uv: Some((index as f32, 1.)), diffuse: None,
+                ambient_coefficient: None, normal: None, specular_color: None,
+                specular_control: None, highlight_state: None, vertex_alpha: None,
+            }
+        });
+        let expected = reference(vertices);
+        let actual = ppc_q3_software_clip_projected_triangle(Some(camera), front, pane, vertices);
+        // Debug formatting compares NaN payloads that PartialEq would reject.
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"), "case {case}: {vertices:?}");
+        if expected == vertices.to_vec() { inside += 1 } else { clipped_cases += 1 }
+    }
+    assert!(inside > 500 && clipped_cases > 500, "inside={inside}, clipped={clipped_cases}");
+}
