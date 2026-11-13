@@ -158,7 +158,7 @@ fn hle_import_runner_returns_minus_one_for_missing_note_alert() {
 }
 
 #[test]
-fn hle_alert_materializes_expanded_param_text() {
+fn hle_alert_preserves_param_text_placeholders() {
     let pef = synthetic_pef_with_import(b"Alert");
     let mut loaded = load_pef_application(&pef).unwrap();
     let alert_id = 128i16;
@@ -221,7 +221,7 @@ fn hle_alert_materializes_expanded_param_text() {
             &test_handle_records!(loaded),
             text_handle
         ),
-        Some(b"Configured for this display".to_vec())
+        Some(b"^0".to_vec())
     );
 
     loaded.param_text.set_slot(0, b"later value".to_vec());
@@ -231,8 +231,8 @@ fn hle_alert_materializes_expanded_param_text() {
             &test_handle_records!(loaded),
             text_handle
         ),
-        Some(b"Configured for this display".to_vec()),
-        "ParamText applies when the alert is created"
+        Some(b"^0".to_vec()),
+        "the item retains its placeholders for subsequent draws"
     );
     assert_eq!(
         loaded.memory.read_u16_be(crate::memory::globals::addr::ALERT_STAGE),

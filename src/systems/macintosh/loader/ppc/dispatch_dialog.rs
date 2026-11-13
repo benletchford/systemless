@@ -556,6 +556,7 @@ pub(super) fn dispatch_dialog_import(
                             }
                             let _ = ppc_draw_dialog_items(
                                 window_list,
+                                param_text,
                                 memory, handles, controls, gworlds, screen_clut,
                                 vfs_resources, current_resource_refnum, dialog,
                                 Some(eval.item_handle),
@@ -1021,6 +1022,7 @@ pub(super) fn dispatch_dialog_import(
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
             let _ = ppc_draw_dialog(
                 window_list,
+                param_text,
                 memory,
                 handles,
                 controls,
@@ -1047,6 +1049,7 @@ pub(super) fn dispatch_dialog_import(
             let filter_result = ppc_finish_modal_filter(cpu, memory, dialog_callback_stack);
             let pass = ppc_modal_dialog(
                 window_list,
+                param_text,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -1171,6 +1174,7 @@ pub(super) fn dispatch_dialog_import(
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
                 let _ = ppc_draw_dialog(
                     window_list,
+                    param_text,
                     memory,
                     handles,
                     controls,
@@ -1190,6 +1194,7 @@ pub(super) fn dispatch_dialog_import(
             cpu.gpr[4] = window_list.dialog_private_address(dialog, DIALOG_ALERT_HIT_OFFSET);
             let pass = ppc_modal_dialog(
                 window_list,
+                param_text,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -1348,6 +1353,7 @@ pub(super) fn dispatch_dialog_import(
                 *current_gdevice = ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
                 let _ = ppc_draw_dialog(
                     window_list,
+                    param_text,
                     memory,
                     handles,
                     controls,
@@ -1373,6 +1379,7 @@ pub(super) fn dispatch_dialog_import(
             cpu.gpr[4] = window_list.dialog_private_address(dialog, DIALOG_ALERT_HIT_OFFSET);
             let pass = ppc_modal_dialog(
                 window_list,
+                param_text,
                 cpu,
                 process_memory_manager,
                 memory,
@@ -1847,6 +1854,7 @@ fn ppc_dispatch_dialog_compatibility(
                         ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
                     let _ = ppc_draw_dialog(
                         window_list,
+                        param_text,
                         memory,
                         handles,
                         controls,
@@ -2137,6 +2145,7 @@ fn ppc_dispatch_dialog_compatibility(
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
             let _ = ppc_draw_dialog(
                 window_list,
+                param_text,
                 memory,
                 handles,
                 controls,
@@ -3551,13 +3560,12 @@ fn ppc_initialize_dialog_items(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
-    param_text: &SharedProcessDialogText,
+    _param_text: &SharedProcessDialogText,
     dialog: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> bool {
-    let param_text = param_text.snapshot();
     let Some(items_handle) = memory
         .read_u32_be(dialog.wrapping_add(DIALOG_ITEMS_OFFSET))
         .filter(|handle| *handle != 0)
@@ -3655,17 +3663,14 @@ fn ppc_initialize_dialog_items(
                 }
             }
             DIALOG_ITEM_STATIC_TEXT => {
-                // Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
-                // ParamText replaces ^0..^3 in static-text items of every
-                // subsequently created dialog or alert.
-                let text = ppc_apply_param_text(&item.payload, &param_text);
+                // Preserve placeholders for readback and later ParamText calls.
                 ppc_process_alloc_handle_with_bytes(
                     process_memory_manager,
                     memory,
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    &text,
+                    &item.payload,
                 )
             }
             DIALOG_ITEM_EDIT_TEXT => ppc_process_alloc_handle_with_bytes(
@@ -4746,6 +4751,7 @@ fn ppc_dialog_item_title(
 
 pub(super) fn ppc_draw_dialog(
     window_list: &SharedProcessWindowList,
+    param_text: &SharedProcessDialogText,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     controls: &[PpcControlRecord],
@@ -4757,6 +4763,7 @@ pub(super) fn ppc_draw_dialog(
 ) -> bool {
     ppc_draw_dialog_items(
         window_list,
+        param_text,
         memory,
         handles,
         controls,
@@ -4771,6 +4778,7 @@ pub(super) fn ppc_draw_dialog(
 
 fn ppc_draw_dialog_items(
     window_list: &SharedProcessWindowList,
+    param_text: &SharedProcessDialogText,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     controls: &[PpcControlRecord],
@@ -4854,7 +4862,12 @@ fn ppc_draw_dialog_items(
                 }
             }
             DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT => {
-                let text = ppc_dialog_item_title(memory, handles, item);
+                let raw_text = ppc_dialog_item_title(memory, handles, item);
+                let text = if dialog_item_base_type(item.item_type) == DIALOG_ITEM_STATIC_TEXT {
+                    param_text.with_ref(|slots| ppc_apply_param_text(&raw_text, slots).into_owned())
+                } else {
+                    raw_text
+                };
                 if text_handle.is_some() {
                     let background = ppc_theme_rgb(palette.window_background);
                     let mut style = ppc_dialog_item_text_style(
@@ -5382,6 +5395,7 @@ fn ppc_read_event_record(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<P
 /// did with the event of the previous pass, when this pass resumes after it.
 fn ppc_modal_dialog(
     window_list: &SharedProcessWindowList,
+    param_text: &SharedProcessDialogText,
     cpu: &mut PpcCpu,
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -5521,6 +5535,7 @@ fn ppc_modal_dialog(
                     );
                     let _ = ppc_draw_dialog(
                         window_list,
+                        param_text,
                         memory,
                         handles,
                         controls,
@@ -5560,6 +5575,7 @@ fn ppc_modal_dialog(
                 {
                     let _ = ppc_draw_dialog(
                         window_list,
+                        param_text,
                         memory,
                         handles,
                         controls,
@@ -5636,6 +5652,7 @@ fn ppc_modal_dialog(
                     handled_edit_event = true;
                     let _ = ppc_draw_dialog(
                         window_list,
+                        param_text,
                         memory,
                         handles,
                         controls,
@@ -5663,6 +5680,7 @@ fn ppc_modal_dialog(
         Some(6) => {
             let _ = ppc_draw_dialog(
                 window_list,
+                param_text,
                 memory,
                 handles,
                 controls,
