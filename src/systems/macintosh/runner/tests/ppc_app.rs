@@ -146,6 +146,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         q3_error_state: Default::default(),
         q3_lifecycle: Default::default(),
         q3_memory_storages: Vec::new(),
+        q3_gpu_texture_cache: Default::default(),
         q3_files: Vec::new(),
         q3_group_memberships: Vec::new(),
         q3_file_groups: Vec::new(),

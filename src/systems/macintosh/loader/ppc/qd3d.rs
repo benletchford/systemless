@@ -1135,7 +1135,7 @@ pub struct PpcQ3ShaderUvTransformRecord {
     pub matrix: [[f32; 3]; 3],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PpcQ3ShaderBoundaryRecord {
     pub shader: u32,
     pub u_boundary: u32,
@@ -1730,7 +1730,7 @@ pub fn ppc_q3_color_finite((red, green, blue): (f32, f32, f32)) -> bool {
     red.is_finite() && green.is_finite() && blue.is_finite()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PpcQ3SoftwareTexture {
     pub image_base: u32,
     pub valid_size: u32,
@@ -2270,8 +2270,7 @@ pub fn ppc_q3_gpu_texture_from_software(
     let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4)?);
     for y in 0..texture.height {
         if let Some(row) = ppc_q3_gpu_texture_row(memory, texture, y) {
-            // Borrow only this conversion's visible row. Guest writes between
-            // frames remain observable; no texture cache or extra scratch copy.
+            // Borrow only this conversion's visible row, with no scratch copy.
             if !ppc_q3_gpu_texture_fast_16_row(&mut rgba, row, texture) {
                 for bytes in row.chunks_exact(texture.pixel_bytes as usize) {
                     let mut pixel = [0; 4];
@@ -2394,6 +2393,134 @@ fn q3_convert_16_row<const FORMAT: u8, const LITTLE: bool>(rgba: &mut Vec<u8>, r
             255
         };
     }
+}
+
+/// GPU textures converted in earlier frames. An entry is reused only while
+/// every source row it was converted from is a single ordinary readable slice
+/// holding the same bytes, so a cached conversion can never hide a guest write.
+#[derive(Debug, Default)]
+pub struct PpcQ3GpuTextureCache {
+    entries: HashMap<(PpcQ3SoftwareTexture, Option<PpcQ3ShaderBoundaryRecord>), PpcQ3GpuTextureCacheEntry>,
+    frame: u64,
+}
+
+// A clone converts afresh: the cache only saves work, and copying converted
+// textures with every application clone would cost more than it saves.
+impl Clone for PpcQ3GpuTextureCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug)]
+struct PpcQ3GpuTextureCacheEntry {
+    source: Vec<u8>,
+    texture: PpcQ3GpuTexture,
+    used: u64,
+}
+
+impl PpcQ3GpuTextureCache {
+    /// Start a frame, forgetting textures that the last two frames did not use.
+    pub fn begin_frame(&mut self) {
+        self.frame += 1;
+        let frame = self.frame;
+        self.entries.retain(|_, entry| entry.used + 2 >= frame);
+    }
+
+    /// The conversion `ppc_q3_gpu_texture_from_software` would return now.
+    pub fn texture(
+        &mut self,
+        memory: &mut PpcSectionMem,
+        texture: PpcQ3SoftwareTexture,
+        shader_boundary: Option<PpcQ3ShaderBoundaryRecord>,
+    ) -> Option<PpcQ3GpuTexture> {
+        let key = (texture, shader_boundary);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            if ppc_q3_gpu_texture_source_matches(memory, texture, &entry.source) {
+                entry.used = self.frame;
+                return Some(entry.texture.clone());
+            }
+        }
+        let converted = ppc_q3_gpu_texture_from_software(memory, texture, shader_boundary);
+        match (&converted, ppc_q3_gpu_texture_source(memory, texture)) {
+            (Some(converted), Some(source)) => {
+                self.entries.insert(
+                    key,
+                    PpcQ3GpuTextureCacheEntry { source, texture: converted.clone(), used: self.frame },
+                );
+            }
+            _ => {
+                self.entries.remove(&key);
+            }
+        }
+        converted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// Every row the conversion reads, when each is one ordinary readable slice:
+/// exactly the bytes that determine the converted texture.
+fn ppc_q3_gpu_texture_source(memory: &mut PpcSectionMem, texture: PpcQ3SoftwareTexture) -> Option<Vec<u8>> {
+    let mut source = Vec::new();
+    for y in 0..texture.height {
+        source.extend_from_slice(ppc_q3_gpu_texture_row(memory, texture, y)?);
+    }
+    Some(source)
+}
+
+fn ppc_q3_gpu_texture_source_matches(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    source: &[u8],
+) -> bool {
+    // One lookup for the whole image when it lies in a single mapping: each
+    // row is then a slice of these same bytes.
+    if let Some((image, row_len)) = ppc_q3_gpu_texture_image(memory, texture) {
+        let rows = image.chunks(texture.row_bytes as usize).map(|row| &row[..row_len]);
+        return source.len() == row_len * texture.height as usize
+            && rows.zip(source.chunks_exact(row_len)).all(|(row, stored)| row == stored);
+    }
+    let mut offset = 0;
+    for y in 0..texture.height {
+        let Some(row) = ppc_q3_gpu_texture_row(memory, texture, y) else {
+            return false;
+        };
+        if source.get(offset..offset + row.len()) != Some(row) {
+            return false;
+        }
+        offset += row.len();
+    }
+    offset == source.len()
+}
+
+/// Every row `ppc_q3_gpu_texture_row` would return, as one borrowed span from
+/// the first row's start to the last row's end, with the row length. `None`
+/// when any row would be refused or the span is not one readable slice.
+fn ppc_q3_gpu_texture_image(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+) -> Option<(&[u8], usize)> {
+    if !(1..=4).contains(&texture.pixel_bytes) || texture.height == 0 {
+        return None;
+    }
+    let row_len = texture.width.checked_mul(texture.pixel_bytes)?;
+    if row_len == 0 || row_len > texture.row_bytes {
+        return None;
+    }
+    // Row starts grow with y, so the last row's bounds imply every row's.
+    let last = (texture.height - 1).checked_mul(texture.row_bytes)?;
+    let end = texture.image_offset.checked_add(last)?.checked_add(row_len)?;
+    if end > texture.valid_size {
+        return None;
+    }
+    let base = texture.image_base.checked_add(texture.image_offset)?;
+    base.checked_add(last)?.checked_add(row_len)?;
+    let image = memory.readable_bytes(base, usize::try_from(last.checked_add(row_len)?).ok()?)?;
+    Some((image, row_len as usize))
 }
 
 fn ppc_q3_gpu_texture_row(
