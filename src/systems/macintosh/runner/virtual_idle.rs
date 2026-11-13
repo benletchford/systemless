@@ -710,7 +710,9 @@ impl FixtureRunner {
             steps = steps.saturating_sub(executed);
             self.tick_budget -= executed as i32;
             match batch.exit {
-                BatchExit::BudgetExhausted | BatchExit::WatchedPc { .. } => {}
+                BatchExit::BudgetExhausted
+                | BatchExit::WatchedPc { .. }
+                | BatchExit::BoundaryRequested => {}
                 BatchExit::AlineTrap { opcode } => {
                     if self.dispatch_classic_with_process_services(opcode).is_err() {
                         self.halted = true;

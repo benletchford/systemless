@@ -203,7 +203,9 @@ impl M68kCpu {
         let result = self.core.run_batch(bus, max_instructions, watch_pcs);
         bus.end_cpu_drawing(!matches!(
             result.exit,
-            m68k::BatchExit::BudgetExhausted | m68k::BatchExit::WatchedPc { .. }
+            m68k::BatchExit::BudgetExhausted
+                | m68k::BatchExit::WatchedPc { .. }
+                | m68k::BatchExit::BoundaryRequested
         ));
         result
     }
