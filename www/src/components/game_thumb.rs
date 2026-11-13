@@ -9,6 +9,7 @@ pub fn GameThumb(game: &'static Game) -> impl IntoView {
         view! {
             <img
                 class="game-thumb"
+                crossorigin="anonymous"
                 src=src
                 alt=format!("{} screenshot", game.title)
                 draggable="false"
