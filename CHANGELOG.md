@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.121.0](https://github.com/benletchford/systemless/compare/v0.120.0...v0.121.0) (2026-11-13)
+
+
+### Features
+
+* add the original Absolute Zero demo ([c98c6f0](https://github.com/benletchford/systemless/commit/c98c6f021461675317c10e6c99d0d03d491c16c0))
+* add the original Flight Commander 2 demo ([4a4e601](https://github.com/benletchford/systemless/commit/4a4e60179ba0dc5b36f79378062c02b3f77aa9ea))
+* add the original Skull Cracker demo ([167adaa](https://github.com/benletchford/systemless/commit/167adaa965beaf6ffa7de68676f289fecce25f76))
+* add the original Time Warp of Dr Brain demo ([fbc32ec](https://github.com/benletchford/systemless/commit/fbc32ec91094ff71828be061c20194c06a06be35))
+* **catalogue:** declare curated native app availability ([#6242](https://github.com/benletchford/systemless/issues/6242)) ([4ed72d3](https://github.com/benletchford/systemless/commit/4ed72d36e27d5c3b9bf68bce61f01d2e9fc3e7d8))
+* **catalogue:** publish resolved JSON feed for native clients ([#6238](https://github.com/benletchford/systemless/issues/6238)) ([2b54c53](https://github.com/benletchford/systemless/commit/2b54c5315955f00c11912caba83195dd13ffdb5b))
+* **web:** support per-title adaptive GPU compute defaults ([88b6a04](https://github.com/benletchford/systemless/commit/88b6a0495a2ec4fa66f41fdbf3a0389ec3b7cded))
+
+
+### Bug Fixes
+
+* keep HFS file information lookups within their directory ([af38fb8](https://github.com/benletchford/systemless/commit/af38fb8b7291d9be1e396496a801352c8ee0570f))
+* **web:** support require-corp isolation for GPU compute ([e695682](https://github.com/benletchford/systemless/commit/e69568222b8a17e86a6fddc783809f0c9be4bae4))
+
+
+### Performance Improvements
+
+* cache native trap return watch targets ([3d874b1](https://github.com/benletchford/systemless/commit/3d874b12a1bd86b0f1bc675635268c0d04a3845b))
+* **qd3d:** compute the normal matrix once per draw command ([20ba723](https://github.com/benletchford/systemless/commit/20ba723b1773111b9a88b50954c59c8bfe1ecbbb))
+* **qd3d:** copy guest arrays in bulk when equivalent ([6cdbc1c](https://github.com/benletchford/systemless/commit/6cdbc1cbebf33c0a52a40b891766b1a31de06a33))
+* **qd3d:** report software fills to memory observers in runs ([fe5a118](https://github.com/benletchford/systemless/commit/fe5a1188a3de74481866abe8a0b9bbcc02e5e6cd))
+* **qd3d:** return triangles inside the frustum without clipping ([97ed5af](https://github.com/benletchford/systemless/commit/97ed5af0fe4052fddaa86b0ad2cf122163874e9b))
+* **qd3d:** test depth before interpolating and shading a software pixel ([bea2ac5](https://github.com/benletchford/systemless/commit/bea2ac538ba58d14ed046271330d77189f66635c))
+
 ## [0.120.0](https://github.com/benletchford/systemless/compare/v0.119.0...v0.120.0) (2026-11-12)
 
 
