@@ -680,6 +680,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
                 cpu,
                 memory,
+                files,
+                resource_files,
                 vfs_directories,
                 vfs_files,
                 vfs_resource_files,
@@ -692,6 +694,8 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_get_finfo(
                 cpu,
                 memory,
+                files,
+                resource_files,
                 vfs_directories,
                 vfs_files,
                 vfs_resource_files,

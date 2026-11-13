@@ -11799,3 +11799,89 @@ fn pb_get_v_info_fills_only_the_64_byte_volume_param() {
     let _ = loaded.run_with_hle_imports(64);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
 }
+
+#[test]
+fn pb_get_finfo_reports_the_open_fork_reference_number_or_zero() {
+    let pef = synthetic_pef_with_import(b"PBGetFInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
+    let path = "System Folder/Preferences/Boot Data";
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "System Folder/Preferences/Boot Data".to_string(),
+            data: b"boot".to_vec().into(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"DATA"),
+            finder_flags: 0,
+            dirty: false,
+        });
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name_ptr = pb + 128;
+    loaded.memory.add_region(pb, vec![0; 256]);
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, name_ptr, b"Boot Data"));
+    loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+    // The caller's block still holds a value from an earlier call.
+    loaded.memory.write_u16_be(pb + 24, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 24), Some(0), "the file is not open");
+
+    loaded.push_test_open_file(PpcFileRecord { ref_num: 7, path: path.to_string(), position: 0 });
+    loaded.memory.write_u16_be(pb + 24, 0x1234).unwrap();
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    let _ = loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u16_be(pb + 24), Some(7), "the data fork is open");
+    // An open file's name is returned as well.
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, name_ptr, b"BOOT DATA"));
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = pb;
+    let _ = loaded.run_with_hle_imports(64);
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
+        Some(b"Boot Data".to_vec())
+    );
+}
+
+#[test]
+fn pb_get_finfo_by_name_leaves_the_callers_name_unchanged() {
+    let pef = synthetic_pef_with_import(b"PBGetFInfoSync");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|default_dir_id| *default_dir_id = PPC_PREFERENCES_DIR_ID);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "System Folder/Preferences/Boot Data".to_string(),
+            data: b"boot".to_vec().into(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"DATA"),
+            finder_flags: 0,
+            dirty: false,
+        });
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name_ptr = pb + 128;
+    loaded.memory.add_region(pb, vec![0; 256]);
+    // A lookup by name (ioFDirIndex zero) of a file that is not open: the
+    // name is input only, so its spelling, here a full pathname in another
+    // case, must survive.
+    let given = b"macintoshhd:system folder:preferences:BOOT DATA";
+    assert!(ppc_write_pstring_bytes(&mut loaded.memory, name_ptr, given));
+    loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+    loaded.memory.write_u16_be(pb + 28, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(pb + 54), Some(4));
+    assert_eq!(ppc_read_pstring_bytes(&mut loaded.memory, name_ptr), Some(given.to_vec()));
+}
