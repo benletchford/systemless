@@ -341,6 +341,8 @@ impl PpcLoadedApp {
         let mut q3_styles = std::mem::take(&mut self.q3_styles);
         let mut q3_cameras = std::mem::take(&mut self.q3_cameras);
         let mut q3_lights = std::mem::take(&mut self.q3_lights);
+        let mut q3_present_pacing = std::mem::take(&mut self.q3_present_pacing);
+        let q3_present_vsync = q3_present_pacing.enabled;
         let mut input_sprocket = self.input_sprocket;
         let mut input_sprocket_virtual_elements =
             std::mem::take(&mut self.input_sprocket_virtual_elements);
@@ -742,6 +744,11 @@ impl PpcLoadedApp {
                         );
                     }
                     if q3_end_rendering_import_index == Some(index) {
+                        let is_q3_window_port = |port: u32| {
+                            port == PPC_MAIN_GWORLD
+                                || port == draw_sprocket.front_buffer_gworld
+                                || window_list.contains_window(port)
+                        };
                         let action = dispatch_q3_view_end_rendering_import(
                             cpu,
                             &mut q3_views,
@@ -760,6 +767,17 @@ impl PpcLoadedApp {
                             *current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
+                            q3_present_vsync.then_some(PpcQ3PresentPacing {
+                                state: &mut q3_present_pacing,
+                                park_enabled: true,
+                                tick: import_tick_count,
+                                cycles_until_next_tick: ppc_cycles_until_next_tick(
+                                    clock_cycles_per_tick,
+                                    clock_cycle_phase,
+                                    elapsed,
+                                ),
+                                is_window_port: &is_q3_window_port,
+                            }),
                         );
                         handled_import_count = handled_import_count.saturating_add(1);
                         return ppc_import_action_with_extra_cycles(
@@ -1066,6 +1084,11 @@ impl PpcLoadedApp {
                                 },
                             );
                         }
+                        let is_q3_window_port = |port: u32| {
+                            port == PPC_MAIN_GWORLD
+                                || port == draw_sprocket.front_buffer_gworld
+                                || window_list.contains_window(port)
+                        };
                         let action = dispatch_q3_view_end_rendering_import(
                             cpu,
                             &mut q3_views,
@@ -1084,6 +1107,17 @@ impl PpcLoadedApp {
                             *current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
+                            q3_present_vsync.then_some(PpcQ3PresentPacing {
+                                state: &mut q3_present_pacing,
+                                park_enabled: true,
+                                tick: import_tick_count,
+                                cycles_until_next_tick: ppc_cycles_until_next_tick(
+                                    clock_cycles_per_tick,
+                                    clock_cycle_phase,
+                                    elapsed,
+                                ),
+                                is_window_port: &is_q3_window_port,
+                            }),
                         );
                         handled_import_count = handled_import_count.saturating_add(1);
                         return ppc_import_action_with_extra_cycles(
@@ -1911,6 +1945,13 @@ impl PpcLoadedApp {
                                             current_gworld.with_mut(|current_gworld| {
                                             current_gdevice.with_mut(|current_gdevice| {
                                             files.with_mut(|files| {
+                                            let q3_present_tick = import_tick_count;
+                                            let dsp_front_buffer = draw_sprocket.front_buffer_gworld;
+                                            let is_q3_window_port = |port: u32| {
+                                                port == PPC_MAIN_GWORLD
+                                                    || port == dsp_front_buffer
+                                                    || window_list.contains_window(port)
+                                            };
                                             let resumed_control = ppc_control_definition_continuation(
                                                 binding, cpu, memory, &mut *process_memory_manager, &mut heap_cursor,
                                                 heap_limit, &mut last_mem_error, controls, &gworlds,
@@ -2034,6 +2075,17 @@ impl PpcLoadedApp {
                                             input,
                                             process_input: &process_input,
                                             event_queue,
+                                            q3_present_pacing: q3_present_vsync.then_some(PpcQ3PresentPacing {
+                                                state: &mut q3_present_pacing,
+                                                park_enabled: true,
+                                                tick: q3_present_tick,
+                                                cycles_until_next_tick: ppc_cycles_until_next_tick(
+                                                    clock_cycles_per_tick,
+                                                    clock_cycle_phase,
+                                                    elapsed,
+                                                ),
+                                                is_window_port: &is_q3_window_port,
+                                            }),
                                             draw_sprocket: &mut draw_sprocket,
                                             });
                                             action.and_then(|action| ppc_control_definition_continuation(
@@ -2574,6 +2626,7 @@ impl PpcLoadedApp {
         self.q3_texture_shaders = q3_texture_shaders;
         self.q3_renderer_preferences = q3_renderer_preferences;
         self.q3_draw_contexts = q3_draw_contexts;
+        self.q3_present_pacing = q3_present_pacing;
         self.q3_trimeshes = q3_trimeshes;
         self.q3_styles = q3_styles;
         self.q3_cameras = q3_cameras;

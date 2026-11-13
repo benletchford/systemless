@@ -253,6 +253,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         q3_styles: Vec::new(),
         q3_cameras: Vec::new(),
         q3_lights: Vec::new(),
+        q3_present_pacing: Default::default(),
         input_sprocket: Default::default(),
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup: Default::default(),

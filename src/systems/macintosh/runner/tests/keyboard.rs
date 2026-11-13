@@ -148,6 +148,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         q3_styles: Vec::new(),
         q3_cameras: Vec::new(),
         q3_lights: Vec::new(),
+        q3_present_pacing: Default::default(),
         input_sprocket: Default::default(),
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup: Default::default(),

@@ -88,6 +88,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         q3_styles: Vec::new(),
         q3_cameras: Vec::new(),
         q3_lights: Vec::new(),
+        q3_present_pacing: Default::default(),
         input_sprocket: Default::default(),
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup: Default::default(),

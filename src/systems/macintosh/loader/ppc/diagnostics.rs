@@ -100,6 +100,7 @@ static PPC_TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 static PPC_HLE_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static PPC_GWORLD_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static QD3D_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+static QD3D_PRESENT_VSYNC_ENABLED: OnceLock<bool> = OnceLock::new();
 static QD3D_TRIMESH_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static QD3D_COLLISION_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 static QD3D_DUMP_FRAME_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -185,6 +186,18 @@ pub(super) fn ppc_res_type_text(res_type: u32) -> String {
 
 pub(crate) fn qd3d_trace_enabled() -> bool {
     *QD3D_TRACE_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_QD3D_TRACE").is_some())
+}
+
+/// Opt-in pacing of QuickDraw 3D window presents
+/// (`SYSTEMLESS_QD3D_PRESENT_VSYNC=1`): a present to a double-buffered window
+/// draw context waits for the next tick once that context has already
+/// presented in the current tick, as on a retrace-locked accelerator. Off by
+/// default, and by `SYSTEMLESS_QD3D_PRESENT_VSYNC=0`; a launched application
+/// copies the setting into its pacing state.
+pub(crate) fn qd3d_present_vsync_enabled() -> bool {
+    *QD3D_PRESENT_VSYNC_ENABLED.get_or_init(|| {
+        std::env::var_os("SYSTEMLESS_QD3D_PRESENT_VSYNC").is_some_and(|value| value != "0")
+    })
 }
 
 pub(crate) fn qd3d_trimesh_trace_enabled() -> bool {

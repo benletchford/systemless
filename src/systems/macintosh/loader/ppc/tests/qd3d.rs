@@ -28224,3 +28224,194 @@ fn q3_gpu_texture_cache_observes_a_write_to_any_byte() {
         }
     }
 }
+
+const PRESENT_PACING_VIEW: u32 = 0x0200_0100;
+const PRESENT_PACING_CONTEXT: u32 = 0x0200_0200;
+const PRESENT_PACING_WINDOW: u32 = 0x0300_0000;
+const PRESENT_PACING_OFFSCREEN: u32 = 0x0310_0000;
+
+fn present_pacing_mac_context(port: u32, double_buffered: bool) -> PpcQ3DrawContextRecord {
+    let mut data = vec![0u8; PPC_Q3_MAC_DRAW_CONTEXT_DATA_SIZE as usize];
+    let state = PPC_Q3_DRAW_CONTEXT_DOUBLE_BUFFER_STATE_OFFSET as usize;
+    data[state..state + 4].copy_from_slice(&u32::from(double_buffered).to_be_bytes());
+    let port_offset = PPC_Q3_MAC_DRAW_CONTEXT_PORT_OFFSET as usize;
+    data[port_offset..port_offset + 4].copy_from_slice(&port.to_be_bytes());
+    PpcQ3DrawContextRecord {
+        draw_context: PRESENT_PACING_CONTEXT,
+        draw_context_type: PPC_Q3_DRAW_CONTEXT_TYPE_MACINTOSH,
+        data,
+    }
+}
+
+fn present_pacing_pixmap_context() -> PpcQ3DrawContextRecord {
+    let mut data = vec![0u8; PPC_Q3_PIXMAP_DRAW_CONTEXT_DATA_SIZE as usize];
+    let state = PPC_Q3_DRAW_CONTEXT_DOUBLE_BUFFER_STATE_OFFSET as usize;
+    data[state..state + 4].copy_from_slice(&1u32.to_be_bytes());
+    PpcQ3DrawContextRecord {
+        draw_context: PRESENT_PACING_CONTEXT,
+        draw_context_type: PPC_Q3_DRAW_CONTEXT_TYPE_PIXMAP,
+        data,
+    }
+}
+
+/// Runs the EndRendering that completes one frame on `context` at `tick`
+/// and returns its action. `tick` of `None` means pacing is off.
+fn present_pacing_end_rendering(
+    context: &PpcQ3DrawContextRecord,
+    state: &mut PpcQ3PresentPacingState,
+    tick: Option<u32>,
+    park_enabled: bool,
+) -> PpcImportAction {
+    present_pacing_end_rendering_at_depth(context, state, tick, park_enabled, 1)
+}
+
+fn present_pacing_end_rendering_at_depth(
+    context: &PpcQ3DrawContextRecord,
+    state: &mut PpcQ3PresentPacingState,
+    tick: Option<u32>,
+    park_enabled: bool,
+    rendering_depth: u32,
+) -> PpcImportAction {
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = PRESENT_PACING_VIEW;
+    let mut views = vec![PpcQ3ViewStateRecord {
+        draw_context: context.draw_context,
+        rendering_depth,
+        ..PpcQ3ViewStateRecord::new(PRESENT_PACING_VIEW)
+    }];
+    let is_window_port = |port: u32| port == PRESENT_PACING_WINDOW;
+    let pacing = tick.map(|tick| PpcQ3PresentPacing {
+        state,
+        park_enabled,
+        tick,
+        cycles_until_next_tick: PRESENT_PACING_CYCLES_TO_BOUNDARY,
+        is_window_port: &is_window_port,
+    });
+    let action = dispatch_q3_view_end_rendering_import(
+        &mut cpu,
+        &mut views,
+        &[],
+        &[],
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        std::slice::from_ref(context),
+        &[],
+        &[],
+        0,
+        &mut PpcQ3ErrorState::default(),
+        false,
+        pacing,
+    );
+    // A blocked present must leave the frame open for the re-entered call.
+    if matches!(action, PpcImportAction::Yield(_)) {
+        assert_eq!(views[0].rendering_depth, rendering_depth);
+    }
+    action
+}
+
+const PRESENT_PACING_CYCLES_TO_BOUNDARY: u64 = 400_000;
+const PRESENT_DONE: PpcImportAction = PpcImportAction::Return(PPC_Q3_VIEW_STATUS_DONE);
+
+#[test]
+fn q3_present_pacing_blocks_a_second_window_present_in_one_tick_until_the_boundary() {
+    let context = present_pacing_mac_context(PRESENT_PACING_WINDOW, true);
+    let mut state = PpcQ3PresentPacingState::default();
+
+    assert_eq!(present_pacing_end_rendering(&context, &mut state, Some(100), true), PRESENT_DONE);
+    // The second frame of tick 100 blocks in EndRendering for exactly the
+    // cycles left to the boundary, without consuming the frame.
+    assert_eq!(
+        present_pacing_end_rendering(&context, &mut state, Some(100), true),
+        PpcImportAction::Yield(PRESENT_PACING_CYCLES_TO_BOUNDARY)
+    );
+    // A slice that ended before the boundary re-enters in the same tick and
+    // keeps waiting; it is still one wait.
+    assert_eq!(
+        present_pacing_end_rendering(&context, &mut state, Some(100), true),
+        PpcImportAction::Yield(PRESENT_PACING_CYCLES_TO_BOUNDARY)
+    );
+    assert_eq!(state.parks_of(PpcQ3PresentKind::Window), 1);
+    assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 1);
+    // At the boundary the blocked present goes through as tick 101's present.
+    assert_eq!(present_pacing_end_rendering(&context, &mut state, Some(101), true), PRESENT_DONE);
+    assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 2);
+    // So the next frame drawn in tick 101 waits for tick 102.
+    assert!(matches!(
+        present_pacing_end_rendering(&context, &mut state, Some(101), true),
+        PpcImportAction::Yield(_)
+    ));
+    assert_eq!(state.parks_of(PpcQ3PresentKind::Window), 2);
+}
+
+#[test]
+fn q3_present_pacing_never_parks_the_first_present_of_a_tick() {
+    let context = present_pacing_mac_context(PRESENT_PACING_WINDOW, true);
+    let mut state = PpcQ3PresentPacingState::default();
+    for tick in [0, 1, 2, 5, 9, u32::MAX, 0] {
+        assert_eq!(present_pacing_end_rendering(&context, &mut state, Some(tick), true), PRESENT_DONE);
+    }
+    assert_eq!(state.parks_of(PpcQ3PresentKind::Window), 0);
+    assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 7);
+}
+
+#[test]
+fn q3_present_pacing_never_parks_pixmap_offscreen_or_single_buffered_contexts() {
+    for (context, kind) in [
+        (present_pacing_pixmap_context(), PpcQ3PresentKind::Pixmap),
+        (
+            present_pacing_mac_context(PRESENT_PACING_OFFSCREEN, true),
+            PpcQ3PresentKind::Offscreen,
+        ),
+        (
+            present_pacing_mac_context(PRESENT_PACING_WINDOW, false),
+            PpcQ3PresentKind::SingleBuffered,
+        ),
+    ] {
+        let mut state = PpcQ3PresentPacingState::default();
+        for _ in 0..4 {
+            assert_eq!(
+                present_pacing_end_rendering(&context, &mut state, Some(42), true),
+                PRESENT_DONE,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(state.presents_of(kind), 4, "{kind:?}");
+        assert_eq!(state.parks, [0; 5], "{kind:?}");
+    }
+}
+
+#[test]
+fn q3_present_pacing_off_leaves_end_rendering_unchanged() {
+    let context = present_pacing_mac_context(PRESENT_PACING_WINDOW, true);
+    let mut state = PpcQ3PresentPacingState::default();
+    for _ in 0..3 {
+        assert_eq!(present_pacing_end_rendering(&context, &mut state, None, true), PRESENT_DONE);
+    }
+    assert_eq!(state, PpcQ3PresentPacingState::default());
+    // Counting without parking also leaves every present untouched.
+    for _ in 0..3 {
+        assert_eq!(present_pacing_end_rendering(&context, &mut state, Some(9), false), PRESENT_DONE);
+    }
+    assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 3);
+    assert_eq!(state.parks, [0; 5]);
+}
+
+#[test]
+fn q3_present_pacing_does_not_block_an_unfinished_nested_end_rendering() {
+    let context = present_pacing_mac_context(PRESENT_PACING_WINDOW, true);
+    let mut state = PpcQ3PresentPacingState::default();
+    assert_eq!(present_pacing_end_rendering(&context, &mut state, Some(5), true), PRESENT_DONE);
+    // An inner EndRendering (rendering depth stays above zero) presents
+    // nothing, so it neither waits nor counts.
+    assert_eq!(
+        present_pacing_end_rendering_at_depth(&context, &mut state, Some(5), true, 2),
+        PRESENT_DONE
+    );
+    assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 1);
+    assert_eq!(state.parks, [0; 5]);
+}

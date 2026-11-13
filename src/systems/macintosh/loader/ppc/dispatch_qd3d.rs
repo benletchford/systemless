@@ -1493,6 +1493,7 @@ pub(super) struct PpcQ3GroupViewDispatchContext<'a> {
     pub(super) current_gworld: u32,
     pub(super) q3_error_state: &'a mut PpcQ3ErrorState,
     pub(super) input_idle: bool,
+    pub(super) q3_present_pacing: Option<PpcQ3PresentPacing<'a>>,
 }
 
 pub(super) fn dispatch_q3_group_view_import(
@@ -1509,6 +1510,7 @@ pub(super) fn dispatch_q3_group_view_import(
         current_gworld,
         q3_error_state,
         input_idle,
+        q3_present_pacing,
     } = context;
 
     macro_rules! set_owned_view_slot {
@@ -1732,6 +1734,7 @@ pub(super) fn dispatch_q3_group_view_import(
                 current_gworld,
                 q3_error_state,
                 input_idle,
+                q3_present_pacing,
             ))
         }
         PpcImportDispatcherTarget::Q3ViewStartBoundingBox

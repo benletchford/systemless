@@ -121,6 +121,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) process_input: &'a crate::process_context::SharedProcessInputState,
     pub(crate) event_queue: &'a mut EventQueue,
     pub(crate) draw_sprocket: &'a mut PpcDrawSprocketState,
+    pub(crate) q3_present_pacing: Option<PpcQ3PresentPacing<'a>>,
 }
 
 // These operations use movie/controller state and guest pointers directly, not
@@ -297,6 +298,7 @@ pub(crate) fn dispatch_supported_import(
         process_input,
         event_queue,
         draw_sprocket,
+        q3_present_pacing,
     } = context;
     if matches!(binding.dispatcher_target,
         PpcImportDispatcherTarget::CloseWindow |
@@ -502,6 +504,7 @@ pub(crate) fn dispatch_supported_import(
             current_gworld: *current_gworld,
             q3_error_state,
             input_idle: input.is_idle(),
+            q3_present_pacing,
         })
     {
         return Some(action);
