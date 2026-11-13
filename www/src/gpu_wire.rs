@@ -64,6 +64,44 @@ pub trait Wire: Sized {
     const MIN_BYTES: usize;
     fn put(&self, out: &mut Vec<u8>);
     fn get(input: &mut Reader<'_>) -> Result<Self, WireError>;
+
+    fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+        out.reserve(values.len().saturating_mul(Self::MIN_BYTES));
+        for value in values {
+            value.put(out);
+        }
+    }
+
+    fn get_vec(input: &mut Reader<'_>, len: usize) -> Result<Vec<Self>, WireError> {
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            values.push(Self::get(input)?);
+        }
+        Ok(values)
+    }
+}
+
+fn put_sequence<T: Wire>(values: &[T], out: &mut Vec<u8>) {
+    u32::try_from(values.len())
+        .expect("GPU compute sequence exceeds u32")
+        .put(out);
+    T::put_slice(values, out);
+}
+
+impl Wire for u8 {
+    const MIN_BYTES: usize = 1;
+    fn put(&self, out: &mut Vec<u8>) {
+        out.push(*self);
+    }
+    fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        Ok(input.take(1)?[0])
+    }
+    fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+        out.extend_from_slice(values);
+    }
+    fn get_vec(input: &mut Reader<'_>, len: usize) -> Result<Vec<Self>, WireError> {
+        Ok(input.take(len)?.to_vec())
+    }
 }
 
 macro_rules! wire_number {
@@ -76,10 +114,30 @@ macro_rules! wire_number {
             fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
                 Ok(<$ty>::from_le_bytes(input.array()?))
             }
+            fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+                let byte_len = values
+                    .len()
+                    .checked_mul(Self::MIN_BYTES)
+                    .expect("GPU compute sequence exceeds capacity");
+                out.reserve(byte_len);
+                for value in values {
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+            fn get_vec(input: &mut Reader<'_>, len: usize) -> Result<Vec<Self>, WireError> {
+                let byte_len = len
+                    .checked_mul(Self::MIN_BYTES)
+                    .ok_or(WireError("sequence exceeds message"))?;
+                let bytes = input.take(byte_len)?;
+                Ok(bytes
+                    .chunks_exact(Self::MIN_BYTES)
+                    .map(|chunk| <$ty>::from_le_bytes(chunk.try_into().unwrap()))
+                    .collect())
+            }
         }
     )*};
 }
-wire_number!(u8, u16, u32, i32, u64, f32);
+wire_number!(u16, u32, i32, u64, f32);
 
 impl Wire for bool {
     const MIN_BYTES: usize = 1;
@@ -108,14 +166,26 @@ impl Wire for usize {
 impl<T: Wire, const N: usize> Wire for [T; N] {
     const MIN_BYTES: usize = T::MIN_BYTES * N;
     fn put(&self, out: &mut Vec<u8>) {
-        self.iter().for_each(|value| value.put(out));
+        T::put_slice(self, out);
     }
     fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
-        let mut values = Vec::with_capacity(N);
-        for _ in 0..N {
-            values.push(T::get(input)?);
+        let mut error = None;
+        let values: [Option<T>; N] = std::array::from_fn(|_| {
+            if error.is_some() {
+                return None;
+            }
+            match T::get(input) {
+                Ok(value) => Some(value),
+                Err(err) => {
+                    error = Some(err);
+                    None
+                }
+            }
+        });
+        if let Some(err) = error {
+            return Err(err);
         }
-        Ok(values.try_into().ok().unwrap())
+        Ok(values.map(|value| value.unwrap()))
     }
 }
 
@@ -149,28 +219,21 @@ impl<T: Wire> Wire for Option<T> {
 impl<T: Wire> Wire for Vec<T> {
     const MIN_BYTES: usize = 4;
     fn put(&self, out: &mut Vec<u8>) {
-        u32::try_from(self.len())
-            .expect("GPU compute sequence exceeds u32")
-            .put(out);
-        self.iter().for_each(|value| value.put(out));
+        put_sequence(self, out);
     }
     fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
         let len = u32::get(input)? as usize;
         if len.saturating_mul(T::MIN_BYTES.max(1)) > input.bytes.len() {
             return Err(WireError("sequence exceeds message"));
         }
-        let mut values = Vec::with_capacity(len);
-        for _ in 0..len {
-            values.push(T::get(input)?);
-        }
-        Ok(values)
+        T::get_vec(input, len)
     }
 }
 
 impl Wire for String {
     const MIN_BYTES: usize = 4;
     fn put(&self, out: &mut Vec<u8>) {
-        self.as_bytes().to_vec().put(out);
+        put_sequence(self.as_bytes(), out);
     }
     fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
         String::from_utf8(Vec::<u8>::get(input)?).map_err(|_| WireError("invalid text"))
@@ -239,7 +302,54 @@ wire_struct!(QuickDrawGpuCommand {
     pattern,
     transfer
 });
-wire_struct!(QuickDrawGpuPixel { value, covered });
+impl Wire for QuickDrawGpuPixel {
+    const MIN_BYTES: usize = 5;
+
+    fn put(&self, out: &mut Vec<u8>) {
+        let Self { value, covered } = self;
+        value.put(out);
+        covered.put(out);
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        Ok(Self {
+            value: Wire::get(input)?,
+            covered: Wire::get(input)?,
+        })
+    }
+
+    fn put_slice(values: &[Self], out: &mut Vec<u8>) {
+        let byte_len = values
+            .len()
+            .checked_mul(Self::MIN_BYTES)
+            .expect("GPU compute sequence exceeds capacity");
+        out.reserve(byte_len);
+        for Self { value, covered } in values {
+            out.extend_from_slice(&value.to_le_bytes());
+            out.push(u8::from(*covered));
+        }
+    }
+
+    fn get_vec(input: &mut Reader<'_>, len: usize) -> Result<Vec<Self>, WireError> {
+        let byte_len = len
+            .checked_mul(Self::MIN_BYTES)
+            .ok_or(WireError("sequence exceeds message"))?;
+        let bytes = input.take(byte_len)?;
+        let mut pixels = Vec::with_capacity(len);
+        for chunk in bytes.chunks_exact(Self::MIN_BYTES) {
+            let covered = match chunk[4] {
+                0 => false,
+                1 => true,
+                _ => return Err(WireError("invalid boolean")),
+            };
+            pixels.push(Self {
+                value: u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),
+                covered,
+            });
+        }
+        Ok(pixels)
+    }
+}
 wire_struct!(QuickDrawGpuDirectColor {
     source_depth,
     destination_depth,
@@ -487,7 +597,25 @@ pub enum Response {
     Halfwords(Vec<u16>),
 }
 
-impl Request {
+/// Borrowed view of [`Request`] so the emulation worker can encode guest
+/// snapshots directly without cloning textures, vertices or backgrounds.
+#[derive(Clone, Copy)]
+pub enum RequestRef<'a> {
+    Raster {
+        command: &'a QuickDrawGpuCommand,
+        background: &'a [u32],
+    },
+    BlitCells(&'a QuickDrawGpuBlit),
+    Blit(&'a QuickDrawGpuBlit),
+    PackedBlit(&'a QuickDrawGpuPackedCopy),
+    Qd3d {
+        frame: &'a PpcQ3RasterFrame,
+        background: &'a [u16],
+        clut: Option<&'a [[u16; 3]; 256]>,
+    },
+}
+
+impl<'a> RequestRef<'a> {
     pub fn kind(&self) -> RequestKind {
         match self {
             Self::Raster { .. } => RequestKind::Raster,
@@ -496,16 +624,71 @@ impl Request {
         }
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = vec![WIRE_VERSION];
+    fn encoded_capacity_hint(&self) -> usize {
         match self {
+            Self::Raster {
+                command,
+                background,
+            } => 64usize
+                .saturating_add(
+                    command
+                        .mask
+                        .as_ref()
+                        .map_or(0, |mask| 24usize.saturating_add(mask.coverage.len())),
+                )
+                .saturating_add(command.polygon_edges.as_ref().map_or(0, |edges| {
+                    4usize.saturating_add(edges.len().saturating_mul(16))
+                }))
+                .saturating_add(background.len().saturating_mul(4)),
+            Self::BlitCells(command) | Self::Blit(command) => 64usize
+                .saturating_add(command.pixels.len().saturating_mul(4))
+                .saturating_add(
+                    command
+                        .columns
+                        .len()
+                        .saturating_add(command.rows.len())
+                        .saturating_mul(8),
+                ),
+            Self::PackedBlit(command) => 64usize
+                .saturating_add(command.source.len())
+                .saturating_add(command.background.len())
+                .saturating_add(usize::from(command.palette.is_some()) * 256),
+            Self::Qd3d {
+                frame,
+                background,
+                clut,
+            } => {
+                let textures = frame.textures.iter().fold(0usize, |acc, tex| {
+                    acc.saturating_add(14).saturating_add(tex.rgba.len())
+                });
+                let draws = frame.draws.iter().fold(0usize, |acc, draw| {
+                    let lights = draw.lighting.as_ref().map_or(0, |l| {
+                        16usize.saturating_add(l.lights.len().saturating_mul(80))
+                    });
+                    acc.saturating_add(88)
+                        .saturating_add(lights)
+                        .saturating_add(draw.vertices.len().saturating_mul(108))
+                });
+                64usize
+                    .saturating_add(textures)
+                    .saturating_add(draws)
+                    .saturating_add(background.len().saturating_mul(2))
+                    .saturating_add(usize::from(clut.is_some()) * (256 * 6))
+            }
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.encoded_capacity_hint());
+        out.push(WIRE_VERSION);
+        match *self {
             Self::Raster {
                 command,
                 background,
             } => {
                 out.push(1);
                 command.put(&mut out);
-                background.put(&mut out);
+                put_sequence(background, &mut out);
             }
             Self::BlitCells(command) => {
                 out.push(2);
@@ -526,11 +709,65 @@ impl Request {
             } => {
                 out.push(5);
                 frame.put(&mut out);
-                background.put(&mut out);
-                clut.put(&mut out);
+                put_sequence(background, &mut out);
+                clut.is_some().put(&mut out);
+                if let Some(clut) = clut {
+                    clut.put(&mut out);
+                }
             }
         }
         out
+    }
+
+    /// Upper bound of the encoded response, so the shared reply buffer can be
+    /// sized before the emulation worker blocks.
+    pub fn response_capacity(&self) -> usize {
+        const HEADER: usize = 16;
+        const ERROR_TEXT: usize = 4096;
+        let payload = match *self {
+            Self::Raster { command, .. } => command.pixel_count().unwrap_or(0).saturating_mul(5),
+            Self::BlitCells(command) => blit_cells(command).saturating_mul(5),
+            Self::Blit(command) => blit_cells(command).saturating_mul(4),
+            Self::PackedBlit(command) => {
+                (command.destination_stride as usize).saturating_mul(command.height as usize)
+            }
+            Self::Qd3d { frame, .. } => (frame.width as usize)
+                .saturating_mul(frame.height as usize)
+                .saturating_mul(2),
+        };
+        payload.max(ERROR_TEXT).saturating_add(HEADER)
+    }
+}
+
+impl Request {
+    #[cfg(test)]
+    pub fn as_ref(&self) -> RequestRef<'_> {
+        match self {
+            Self::Raster {
+                command,
+                background,
+            } => RequestRef::Raster {
+                command,
+                background,
+            },
+            Self::BlitCells(command) => RequestRef::BlitCells(command),
+            Self::Blit(command) => RequestRef::Blit(command),
+            Self::PackedBlit(command) => RequestRef::PackedBlit(command),
+            Self::Qd3d {
+                frame,
+                background,
+                clut,
+            } => RequestRef::Qd3d {
+                frame,
+                background,
+                clut: clut.as_deref(),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub fn encode(&self) -> Vec<u8> {
+        self.as_ref().encode()
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
@@ -559,21 +796,9 @@ impl Request {
 
     /// Upper bound of the encoded response, so the shared reply buffer can be
     /// sized before the emulation worker blocks.
+    #[cfg(test)]
     pub fn response_capacity(&self) -> usize {
-        const HEADER: usize = 16;
-        const ERROR_TEXT: usize = 4096;
-        let payload = match self {
-            Self::Raster { command, .. } => command.pixel_count().unwrap_or(0).saturating_mul(5),
-            Self::BlitCells(command) => blit_cells(command).saturating_mul(5),
-            Self::Blit(command) => blit_cells(command).saturating_mul(4),
-            Self::PackedBlit(command) => {
-                (command.destination_stride as usize).saturating_mul(command.height as usize)
-            }
-            Self::Qd3d { frame, .. } => (frame.width as usize)
-                .saturating_mul(frame.height as usize)
-                .saturating_mul(2),
-        };
-        payload.max(ERROR_TEXT).saturating_add(HEADER)
+        self.as_ref().response_capacity()
     }
 }
 
@@ -589,39 +814,44 @@ pub enum RequestKind {
 }
 
 pub fn encode_response(result: &Result<Response, Failure>) -> Vec<u8> {
-    let mut out = vec![WIRE_VERSION];
     match result {
         Ok(Response::Pixels(pixels)) => {
-            out.push(1);
+            let mut out = Vec::with_capacity(6usize.saturating_add(pixels.len().saturating_mul(5)));
+            out.extend_from_slice(&[WIRE_VERSION, 1]);
             pixels.put(&mut out);
+            out
         }
         Ok(Response::Words(words)) => {
-            out.push(2);
+            let mut out = Vec::with_capacity(6usize.saturating_add(words.len().saturating_mul(4)));
+            out.extend_from_slice(&[WIRE_VERSION, 2]);
             words.put(&mut out);
+            out
         }
         Ok(Response::Bytes(bytes)) => {
-            out.push(3);
+            let mut out = Vec::with_capacity(6usize.saturating_add(bytes.len()));
+            out.extend_from_slice(&[WIRE_VERSION, 3]);
             bytes.put(&mut out);
+            out
         }
         Ok(Response::Halfwords(values)) => {
-            out.push(4);
+            let mut out = Vec::with_capacity(6usize.saturating_add(values.len().saturating_mul(2)));
+            out.extend_from_slice(&[WIRE_VERSION, 4]);
             values.put(&mut out);
+            out
         }
         Err(failure) => {
-            out.push(if failure.fatal { 5 } else { 0 });
             // Keep failures within the reply capacity reserved for text.
-            let mut text = failure.message.clone();
-            if text.len() > 2048 {
-                let mut end = 2048;
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                text.truncate(end);
+            let mut end = failure.message.len().min(2048);
+            while !failure.message.is_char_boundary(end) {
+                end -= 1;
             }
-            text.put(&mut out);
+            let text = &failure.message[..end];
+            let mut out = Vec::with_capacity(6usize.saturating_add(text.len()));
+            out.extend_from_slice(&[WIRE_VERSION, if failure.fatal { 5 } else { 0 }]);
+            put_sequence(text.as_bytes(), &mut out);
+            out
         }
     }
-    out
 }
 
 pub fn decode_response(bytes: &[u8]) -> Result<Response, Failure> {
@@ -927,5 +1157,114 @@ mod tests {
             2
         ])));
         assert!(reply.len() <= request.response_capacity());
+    }
+
+    #[test]
+    fn borrowed_requests_and_bulk_sequences_match_scalar_wire_format() {
+        let mut rich_frame = frame();
+        rich_frame.textures[0].rgba = (0..517).map(|i| (i * 37 + 11) as u8).collect();
+        for v in &mut rich_frame.draws[0].vertices {
+            v.shading.view_direction = Some([-0.25, 0.5, 0.75]);
+        }
+        let background: Vec<u16> = (0..(64 * 48))
+            .map(|i| ((i as u16).wrapping_mul(0x1357)) ^ 0x8001)
+            .collect();
+        let clut: [[u16; 3]; 256] = std::array::from_fn(|i| {
+            [
+                (i as u16) * 257,
+                ((255 - i) as u16) * 257,
+                ((i * 7) as u16) ^ 0x55aa,
+            ]
+        });
+
+        let borrowed = RequestRef::Qd3d {
+            frame: &rich_frame,
+            background: &background,
+            clut: Some(&clut),
+        };
+        let hint = borrowed.encoded_capacity_hint();
+        let borrowed_capacity = borrowed.response_capacity();
+        let encoded = borrowed.encode();
+        assert!(
+            encoded.len() <= hint,
+            "Qd3d capacity hint {hint} underestimated {} encoded bytes",
+            encoded.len()
+        );
+
+        // Compare against an independent element-by-element scalar reference encoding.
+        let mut expected = vec![WIRE_VERSION, 5];
+        rich_frame.width.put(&mut expected);
+        rich_frame.height.put(&mut expected);
+        for v in rich_frame.viewport {
+            v.put(&mut expected);
+        }
+        rich_frame.clear_color.is_some().put(&mut expected);
+        for c in rich_frame.clear_color.unwrap() {
+            c.put(&mut expected);
+        }
+        (rich_frame.textures.len() as u32).put(&mut expected);
+        for tex in &rich_frame.textures {
+            tex.width.put(&mut expected);
+            tex.height.put(&mut expected);
+            (tex.rgba.len() as u32).put(&mut expected);
+            for &b in &tex.rgba {
+                expected.push(b);
+            }
+            tex.wrap_u.put(&mut expected);
+            tex.wrap_v.put(&mut expected);
+        }
+        rich_frame.draws.put(&mut expected);
+        (background.len() as u32).put(&mut expected);
+        for &hw in &background {
+            expected.extend_from_slice(&hw.to_le_bytes());
+        }
+        true.put(&mut expected);
+        for rgb in &clut {
+            for &ch in rgb {
+                expected.extend_from_slice(&ch.to_le_bytes());
+            }
+        }
+        assert_eq!(encoded, expected);
+
+        let owned = Request::Qd3d {
+            frame: rich_frame,
+            background: background.clone(),
+            clut: Some(Box::new(clut)),
+        };
+        assert_eq!(owned.encode(), encoded);
+        assert_eq!(owned.response_capacity(), borrowed_capacity);
+        let Request::Qd3d {
+            frame: decoded_frame,
+            background: decoded_bg,
+            clut: decoded_clut,
+        } = Request::decode(&encoded).unwrap()
+        else {
+            panic!("expected Qd3d");
+        };
+        assert_eq!(decoded_bg, background);
+        assert_eq!(*decoded_clut.unwrap(), clut);
+        assert_eq!(decoded_frame.textures[0].rgba.len(), 517);
+
+        // Exact single-allocation sizing and validation on response slices.
+        let halfword_reply = encode_response(&Ok(Response::Halfwords(background.clone())));
+        assert_eq!(halfword_reply.len(), 6 + background.len() * 2);
+        assert_eq!(halfword_reply.capacity(), halfword_reply.len());
+        assert_eq!(
+            decode_response(&halfword_reply),
+            Ok(Response::Halfwords(background))
+        );
+
+        let mut bad_pixels = encode_response(&Ok(Response::Pixels(vec![QuickDrawGpuPixel {
+            value: 0x1122_3344,
+            covered: true,
+        }])));
+        *bad_pixels.last_mut().unwrap() = 2;
+        assert!(decode_response(&bad_pixels).unwrap_err().fatal);
+
+        let mut short_array = Reader::new(&[1, 0, 0, 0, 2, 0]);
+        assert_eq!(
+            <[u32; 2]>::get(&mut short_array),
+            Err(WireError("truncated"))
+        );
     }
 }
