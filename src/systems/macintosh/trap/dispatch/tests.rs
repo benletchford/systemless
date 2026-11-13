@@ -1094,15 +1094,15 @@
             let tick_cell = raw_trap_route(0xA975).table_address;
             bus.write_long(tick_cell, 0x1234_5678);
             dispatcher.current_trap_caller = Some(0x0020_1000);
-            dispatcher.pending_native_trap_calls.insert(
+            dispatcher.retain_native_trap_call(
                 0xA975,
-                vec![NativeTrapCallState {
+                NativeTrapCallState {
                     return_pc: 0x0020_2000,
                     argument_sp: 0x003f_ff00,
                     os_dispatch_frame: None,
                     preserved_d_regs: [1; 5],
                     preserved_a_regs: [2; 5],
-                }],
+                },
             );
             match failure {
                 0 => {
@@ -1477,15 +1477,15 @@
             .install_trap_address(&mut bus, protected_word, first_protected_patch)
             .expect("first protected patch must install");
         bus.write_long(direct_entry, first_direct_patch);
-        dispatcher.pending_native_trap_calls.insert(
+        dispatcher.retain_native_trap_call(
             0xA039,
-            vec![NativeTrapCallState {
+            NativeTrapCallState {
                 return_pc: 0x0023_0000,
                 argument_sp: 0x003F_FF00,
                 os_dispatch_frame: None,
                 preserved_d_regs: [1; 5],
                 preserved_a_regs: [2; 5],
-            }],
+            },
         );
         dispatcher.current_trap_caller = Some(0x0023_1000);
 
@@ -1513,15 +1513,15 @@
             .install_trap_address(&mut bus, protected_word, second_protected_patch)
             .expect("second protected patch must install");
         bus.write_long(direct_entry, second_direct_patch);
-        dispatcher.pending_native_trap_calls.insert(
+        dispatcher.retain_native_trap_call(
             0xA975,
-            vec![NativeTrapCallState {
+            NativeTrapCallState {
                 return_pc: 0x0024_0000,
                 argument_sp: 0x003F_FE00,
                 os_dispatch_frame: None,
                 preserved_d_regs: [3; 5],
                 preserved_a_regs: [4; 5],
-            }],
+            },
         );
         dispatcher.current_trap_caller = Some(0x0024_1000);
 
@@ -3656,4 +3656,99 @@
                 capacity: 48,
             })
         );
+    }
+
+
+    #[test]
+    fn native_trap_watch_targets_preserve_duplicate_invocations_and_nested_removal() {
+        let (mut dispatcher, _cpu, _bus) = setup();
+        let targets: Vec<u32> = (0..64).map(|i| 0x0060_0000 + 4 * i).collect();
+        for i in 0..40_000 {
+            dispatcher.retain_native_trap_call(
+                0xA86E,
+                NativeTrapCallState {
+                    return_pc: targets[i % targets.len()],
+                    argument_sp: 0x0010_0000 - 4 * i as u32,
+                    os_dispatch_frame: None,
+                    preserved_d_regs: [0; 5],
+                    preserved_a_regs: [0; 5],
+                },
+            );
+        }
+        let started = std::time::Instant::now();
+        let mut watch = Vec::new();
+        for _ in 0..5_000 {
+            watch.clear();
+            watch.extend([0, targets[0]]);
+            dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+            assert_eq!(watch.len(), targets.len() + 1);
+            assert!(targets.iter().all(|target| watch.contains(target)));
+        }
+        eprintln!(
+            "native watch benchmark: retained=40000 targets=64 batches=5000 elapsed_us={}",
+            started.elapsed().as_micros()
+        );
+        assert_eq!(dispatcher.pending_native_trap_call_count(), 40_000);
+        for i in (0..40_000).rev() {
+            let call = dispatcher.take_latest_native_trap_call(0xA86E).unwrap();
+            assert_eq!(call.return_pc, targets[i % targets.len()]);
+            if i < targets.len() {
+                watch.clear();
+                watch.push(0);
+                dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+                assert_eq!(watch.len(), i + 1);
+                assert!(targets[..i].iter().all(|target| watch.contains(target)));
+                assert!(!watch.contains(&targets[i]));
+            }
+        }
+        assert_eq!(dispatcher.pending_native_trap_call_count(), 0);
+    }
+
+    #[test]
+    fn native_trap_watch_targets_follow_process_switch_and_teardown() {
+        let (mut dispatcher, _cpu, mut bus) = setup_with_trap_tables();
+        let make_call = |return_pc| NativeTrapCallState {
+            return_pc,
+            argument_sp: 0x003f_ff00,
+            os_dispatch_frame: None,
+            preserved_d_regs: [0; 5],
+            preserved_a_regs: [0; 5],
+        };
+        let first = 0x0060_0000;
+        let second = 0x0060_1000;
+        dispatcher.retain_native_trap_call(0xA039, make_call(first));
+        dispatcher.retain_native_trap_call(0xA975, make_call(first));
+        dispatcher.take_latest_native_trap_call(0xA039).unwrap();
+        let mut watch = vec![0];
+        dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+        assert_eq!(watch, vec![0, first]);
+
+        let fresh = dispatcher
+            .create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604)
+            .unwrap();
+        let first_context = dispatcher
+            .switch_trap_table_process_context(&mut bus, fresh)
+            .unwrap();
+        watch.clear();
+        dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+        assert!(watch.is_empty());
+        dispatcher.retain_native_trap_call(0xA039, make_call(second));
+        let second_context = dispatcher
+            .switch_trap_table_process_context(&mut bus, first_context)
+            .unwrap();
+        watch.clear();
+        dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+        assert_eq!(watch, vec![first]);
+        assert_eq!(dispatcher.pending_native_trap_call_count(), 1);
+        dispatcher
+            .switch_trap_table_process_context(&mut bus, second_context)
+            .unwrap();
+        watch.clear();
+        dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+        assert_eq!(watch, vec![second]);
+        dispatcher.teardown_trap_table_process_context();
+        watch.clear();
+        dispatcher.append_pending_native_trap_return_pcs(&mut watch);
+        assert!(watch.is_empty());
+        assert_eq!(dispatcher.pending_native_trap_call_count(), 0);
     }

@@ -1352,6 +1352,7 @@ pub(crate) struct TrapTableProcessContext {
     raw_exception_vectors: [u32; 2],
     default_exception_vectors: [u32; 2],
     pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
+    native_trap_return_counts: HashMap<u32, usize>,
     current_trap_caller: Option<u32>,
 }
 
@@ -2239,6 +2240,8 @@ pub struct TrapDispatcher {
     /// the outer invocation follows its saved daisy-chain link. Inside
     /// Macintosh: Operating System Utilities (1994), pp. 8-8 and 8-23--8-24.
     pub(crate) pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
+    // One reference per retained invocation, independent of nesting depth.
+    native_trap_return_counts: HashMap<u32, usize>,
     /// Re-entrancy guard for the CopyBits `grafProcs.bitsProc` bottleneck:
     /// `(bitsProc address, stack pointer at the tail call)`. A custom bitsProc
     /// normally reaches the real transfer by calling CopyBits again; without
@@ -4156,6 +4159,7 @@ impl TrapDispatcher {
             trap_table_profile: None,
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::default(),
+            native_trap_return_counts: HashMap::default(),
             bits_proc_reentry: None,
             picture_stream_stack: Vec::new(),
             picture_write_stack: Vec::new(),
@@ -7706,6 +7710,7 @@ impl TrapDispatcher {
             raw_exception_vectors: image.exception_vectors,
             default_exception_vectors: image.exception_vectors,
             pending_native_trap_calls: HashMap::default(),
+            native_trap_return_counts: HashMap::default(),
             current_trap_caller: None,
         })
     }
@@ -7735,6 +7740,7 @@ impl TrapDispatcher {
                     .trap_exception_vector_defaults
                     .expect("active trap profile must have exception-vector defaults"),
                 pending_native_trap_calls: std::mem::take(&mut self.pending_native_trap_calls),
+                native_trap_return_counts: std::mem::take(&mut self.native_trap_return_counts),
                 current_trap_caller: self.current_trap_caller.take(),
             }
         });
@@ -7759,6 +7765,7 @@ impl TrapDispatcher {
         bus.write_long(0x28, incoming.raw_exception_vectors[0]);
         bus.write_long(0x2C, incoming.raw_exception_vectors[1]);
         self.pending_native_trap_calls = incoming.pending_native_trap_calls;
+        self.native_trap_return_counts = incoming.native_trap_return_counts;
         self.current_trap_caller = incoming.current_trap_caller;
         self.trap_table_profile = Some(incoming.profile);
         self.trap_exception_vector_defaults = Some(incoming.default_exception_vectors);
@@ -7768,6 +7775,7 @@ impl TrapDispatcher {
     /// Discard the active application's trap context during process teardown.
     pub(crate) fn teardown_trap_table_process_context(&mut self) {
         self.pending_native_trap_calls.clear();
+        self.native_trap_return_counts.clear();
         self.current_trap_caller = None;
         self.trap_table_profile = None;
         self.trap_exception_vector_defaults = None;
@@ -7936,6 +7944,10 @@ impl TrapDispatcher {
     }
 
     fn retain_native_trap_call(&mut self, trap_word: u16, call: NativeTrapCallState) {
+        *self
+            .native_trap_return_counts
+            .entry(call.return_pc)
+            .or_default() += 1;
         self.pending_native_trap_calls
             .entry(trap_word)
             .or_default()
@@ -7954,6 +7966,16 @@ impl TrapDispatcher {
         if empty {
             self.pending_native_trap_calls.remove(&trap_word);
         }
+        if let Some(call) = &call {
+            let count = self
+                .native_trap_return_counts
+                .get_mut(&call.return_pc)
+                .expect("each retained native trap call has a watch reference");
+            *count -= 1;
+            if *count == 0 {
+                self.native_trap_return_counts.remove(&call.return_pc);
+            }
+        }
         call
     }
 
@@ -7967,9 +7989,12 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn append_pending_native_trap_return_pcs(&self, pcs: &mut Vec<u32>) {
-        for call in self.pending_native_trap_calls.values().flatten() {
-            if !pcs.contains(&call.return_pc) {
-                pcs.push(call.return_pc);
+        // Call stacks retain every invocation; batches need only the distinct
+        // return targets. Maintain their references when calls enter/leave so
+        // rebuilding a batch does not scan every retained nested invocation.
+        for &return_pc in self.native_trap_return_counts.keys() {
+            if !pcs.contains(&return_pc) {
+                pcs.push(return_pc);
             }
         }
     }
