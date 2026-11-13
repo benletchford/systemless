@@ -471,6 +471,7 @@ impl PpcLoadedApp {
             let PpcQ3SceneCommand::TriMesh(command) = command else {
                 continue;
             };
+            let normal_matrix = ppc_q3_software_normal_matrix(command.local_to_world);
             let fill_style = ppc_q3_software_fill_style(&command.material);
             if !extended && fill_style != PPC_Q3_FILL_STYLE_FILLED {
                 return None;
@@ -567,7 +568,7 @@ impl PpcLoadedApp {
                     .as_ref()
                     .and_then(|values| values.get(index).copied())
                     .and_then(|normal| {
-                        ppc_q3_software_transform_normal(normal, command.local_to_world)
+                        ppc_q3_software_transform_normal_by(normal, normal_matrix)
                     });
                 projected.specular_color = vertex_specular
                     .as_ref()
@@ -674,7 +675,7 @@ impl PpcLoadedApp {
                             normals
                                 .into_iter()
                                 .map(|normal| {
-                                    ppc_q3_software_transform_normal(normal, command.local_to_world)
+                                    ppc_q3_software_transform_normal_by(normal, normal_matrix)
                                 })
                                 .collect::<Option<Vec<_>>>()
                         }),
@@ -744,14 +745,14 @@ impl PpcLoadedApp {
                     .as_ref()
                     .and_then(|values| values.get(triangle.index).copied().flatten())
                     .and_then(|normal| {
-                        ppc_q3_software_transform_normal(normal, command.local_to_world)
+                        ppc_q3_software_transform_normal_by(normal, normal_matrix)
                     });
                 let geometric_normal = ppc_q3_software_geometric_normal(
                     triangle.points.map(|index| points[index]),
                     orientation_style,
                 )
                 .and_then(|normal| {
-                    ppc_q3_software_transform_normal(normal, command.local_to_world)
+                    ppc_q3_software_transform_normal_by(normal, normal_matrix)
                 });
                 for vertex in &mut triangle_vertices {
                     vertex.normal = vertex.normal.or(normal).or(geometric_normal);
@@ -788,7 +789,7 @@ impl PpcLoadedApp {
                     && ppc_q3_software_triangle_is_backfacing(
                         orientation_style,
                         command.camera,
-                        command.local_to_world,
+                        normal_matrix,
                         triangle_normals
                             .as_ref()
                             .and_then(|normals| normals.get(triangle.index))
@@ -1017,6 +1018,7 @@ impl PpcLoadedApp {
                 PpcQ3SceneCommand::TriMesh(command) => command,
                 PpcQ3SceneCommand::Submission(_) => continue,
             };
+            let normal_matrix = ppc_q3_software_normal_matrix(command.local_to_world);
             let Some(points) = self.q3_software_trimesh_points(&command) else {
                 continue;
             };
@@ -1123,7 +1125,7 @@ impl PpcLoadedApp {
                 for (projected, normal) in projected.iter_mut().zip(vertex_normals) {
                     if let Some(projected) = projected {
                         projected.normal =
-                            ppc_q3_software_transform_normal(normal, command.local_to_world);
+                            ppc_q3_software_transform_normal_by(normal, normal_matrix);
                     }
                 }
             }
@@ -1232,10 +1234,7 @@ impl PpcLoadedApp {
                                     normals
                                         .into_iter()
                                         .map(|normal| {
-                                            ppc_q3_software_transform_normal(
-                                                normal,
-                                                command.local_to_world,
-                                            )
+                                            ppc_q3_software_transform_normal_by(normal, normal_matrix)
                                         })
                                         .collect::<Option<Vec<_>>>()
                                 })
@@ -1292,7 +1291,7 @@ impl PpcLoadedApp {
                         .as_ref()
                         .and_then(|normals| normals.get(triangle.index).copied().flatten())
                         .and_then(|normal| {
-                            ppc_q3_software_transform_normal(normal, command.local_to_world)
+                            ppc_q3_software_transform_normal_by(normal, normal_matrix)
                         })
                     {
                         for vertex in &mut vertices {
@@ -1340,7 +1339,7 @@ impl PpcLoadedApp {
                             ppc_q3_software_orientation_style(&command.material),
                         )
                         .and_then(|normal| {
-                            ppc_q3_software_transform_normal(normal, command.local_to_world)
+                            ppc_q3_software_transform_normal_by(normal, normal_matrix)
                         });
                         for vertex in &mut vertices {
                             if vertex.normal.is_none() {
@@ -1366,7 +1365,7 @@ impl PpcLoadedApp {
                     && ppc_q3_software_triangle_is_backfacing(
                         orientation_style,
                         command.camera,
-                        command.local_to_world,
+                        normal_matrix,
                         triangle_normals.as_ref().and_then(|normals| normals.get(triangle.index)).copied().flatten(),
                         &clipped_points,
                     );
