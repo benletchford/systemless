@@ -1693,3 +1693,19 @@ fn architecture_archives_survive_compilation_and_select_default_port() {
     assert!(generated.contains(&format!("GameArchitecture::M68k, {classic_url:?}")));
     assert!(generated.contains(&format!("GameArchitecture::PowerPc, {ppc_url:?}")));
 }
+
+#[test]
+fn compute_default_survives_catalogue_serialization_and_requires_worker() {
+    let c = common::catalogue();
+    let mut entry = c.documents[0].entry.clone();
+    assert!(!entry.runtime.gpu_compute);
+    entry.runtime.gpu_compute = true;
+    let text = catalogue::serialize_document(&entry, "").unwrap();
+    let (roundtrip, _) = catalogue::parse_document(&text).unwrap();
+    assert!(roundtrip.runtime.gpu_compute);
+    entry.runtime.worker = false;
+    assert!(validate::entry(&entry)
+        .unwrap_err()
+        .to_string()
+        .contains("requires worker"));
+}
