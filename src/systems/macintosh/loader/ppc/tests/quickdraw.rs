@@ -7441,6 +7441,37 @@ fn draw_picture_reads_guest_get_pic_proc_until_end_without_overreading() {
 
 
 #[test]
+fn paintrect_not_pat_copy_paints_a_solid_pattern_in_the_background_color() {
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"PaintRect"),
+        PpcLoadConfig {
+            screen_depth: 8,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let rect = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    loaded.memory.write_u16_be(rect + 4, 2).unwrap();
+    loaded.memory.write_u16_be(rect + 6, 2).unwrap();
+    let front = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+        .unwrap()
+        .front_buffer;
+    for (mode, expected) in [(8, 255), (12, 0)] {
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (0, 0), 17);
+        loaded.cpu.gpr[3] = mode;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+            Some(expected),
+            "mode={mode}"
+        );
+    }
+}
+
+#[test]
 fn paintrect_uses_color_pen_pattern_clipping_modes_and_resets() {
     for depth in [8, 16] {
         let mut loaded = load_pef_application_with_config(
