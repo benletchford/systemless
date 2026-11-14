@@ -27779,7 +27779,6 @@ fn q3_reference_gpu_texture_from_software(
         rgba,
         wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
         wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
-        identity: None,
     })
 }
 
@@ -28224,43 +28223,4 @@ fn q3_gpu_texture_cache_observes_a_write_to_any_byte() {
             );
         }
     }
-}
-
-#[test]
-fn q3_gpu_texture_cache_gives_each_conversion_its_own_identity() {
-    const BASE: u32 = 0x1200;
-    let texture = PpcQ3SoftwareTexture {
-        image_base: BASE, valid_size: 32, image_offset: 0,
-        width: 4, height: 4, row_bytes: 8, pixel_type: PPC_Q3_PIXEL_TYPE_ARGB16,
-        byte_order: PPC_Q3_ENDIAN_BIG, pixel_bytes: 2,
-    };
-    let mut memory = PpcSectionMem::new();
-    memory.add_region(BASE, (0..32).map(|n| n * 7 + 1).collect());
-    // An uncached conversion has no identity.
-    assert_eq!(ppc_q3_gpu_texture_from_software(&mut memory, texture, None).unwrap().identity, None);
-    let mut cache = PpcQ3GpuTextureCache::default();
-    cache.begin_frame();
-    let first = cache.texture(&mut memory, texture, None).unwrap();
-    assert!(first.identity.is_some());
-    // A reused conversion keeps its identity and its bytes.
-    cache.begin_frame();
-    let reused = cache.texture(&mut memory, texture, None).unwrap();
-    assert_eq!((reused.identity, &reused.rgba), (first.identity, &first.rgba));
-    // A guest write gives new bytes a new identity.
-    memory.write_u8(BASE + 5, 0xff).unwrap();
-    cache.begin_frame();
-    let changed = cache.texture(&mut memory, texture, None).unwrap();
-    assert_ne!(changed.rgba, first.rgba);
-    assert!(changed.identity.is_some() && changed.identity != first.identity);
-    // Restoring the bytes converts again: identities are never reused.
-    memory.write_u8(BASE + 5, 5 * 7 + 1).unwrap();
-    cache.begin_frame();
-    let restored = cache.texture(&mut memory, texture, None).unwrap();
-    assert_eq!(restored.rgba, first.rgba);
-    assert!(restored.identity != first.identity && restored.identity != changed.identity);
-    // Another cache draws from the same identities.
-    let mut other = cache.clone();
-    other.begin_frame();
-    let cloned = other.texture(&mut memory, texture, None).unwrap();
-    assert!(![first.identity, changed.identity, restored.identity].contains(&cloned.identity));
 }

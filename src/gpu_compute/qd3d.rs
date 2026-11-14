@@ -23,29 +23,57 @@ pub struct Qd3dCompute {
     pipeline: wgpu::ComputePipeline,
     palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
     textures: std::cell::RefCell<ResidentTextures>,
+    resident_textures: std::cell::Cell<bool>,
 }
 
-/// The device texture buffer and the verified byte versions cached in it.
-/// Matching identities and bytes reuse an upload until the buffer is refilled;
-/// textures without an identity are written every frame.
+/// The device texture buffer and the byte versions written to it since the
+/// last refill. With residency on, a texture whose bytes are already resident
+/// reuses that upload; otherwise every frame writes all of its textures.
 #[derive(Default)]
 struct ResidentTextures {
     buffer: Option<wgpu::Buffer>,
     layout: ResidentLayout,
 }
 
-/// Word offsets and immutable byte snapshots written since the last refill.
-/// An identity is a lookup hint: public pixel vectors can change after cloning.
-/// Multiple byte versions of an identity may coexist within a frame.
+/// Word offsets and immutable byte snapshots written since the last refill,
+/// found by a key computed from the bytes and confirmed by comparing them in
+/// full, so a reuse never depends on anything but the pixels themselves.
 #[derive(Default, Clone)]
 struct ResidentLayout {
     words: std::collections::HashMap<u64, Vec<(Arc<[u8]>, u32)>>,
     used_words: u64,
 }
 
+/// Lookup key for texture bytes: the length and up to 64 evenly spaced 8-byte
+/// samples. Textures that differ only between samples share a key and are
+/// told apart by the full comparison.
+fn resident_key(rgba: &[u8]) -> u64 {
+    const SAMPLES: usize = 64;
+    let mut key = 0xcbf2_9ce4_8422_2325u64 ^ rgba.len() as u64;
+    let mut mix = |value: u64| {
+        key = (key ^ value).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(29);
+    };
+    let words = rgba.len() / 8;
+    if words <= SAMPLES {
+        for chunk in rgba.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            mix(u64::from_le_bytes(word));
+        }
+    } else {
+        for sample in 0..SAMPLES {
+            let at = sample * (words - 1) / (SAMPLES - 1) * 8;
+            mix(u64::from_le_bytes(rgba[at..at + 8].try_into().unwrap()));
+        }
+    }
+    key
+}
+
 impl ResidentLayout {
-    fn word(&self, identity: Option<u64>, rgba: &[u8]) -> Option<u32> {
-        self.words.get(&identity?)?.iter()
+    fn word(&self, rgba: &[u8]) -> Option<u32> {
+        self.words
+            .get(&resident_key(rgba))?
+            .iter()
             .find_map(|(bytes, word)| (bytes.as_ref() == rgba).then_some(*word))
     }
 
@@ -55,27 +83,35 @@ impl ResidentLayout {
     }
 
     /// The texture's word offset, and whether its bytes must be written there.
-    fn place(&mut self, identity: Option<u64>, rgba: &[u8]) -> (u32, bool) {
-        if let Some(word) = self.word(identity, rgba) {
+    fn place(&mut self, rgba: &[u8]) -> (u32, bool) {
+        if let Some(word) = self.word(rgba) {
             return (word, false);
         }
         let word = self.used_words as u32;
         self.used_words += rgba.len() as u64 / 4;
-        if let Some(identity) = identity {
-            self.words
-                .entry(identity)
-                .or_default()
-                .push((Arc::from(rgba), word));
-        }
+        self.words
+            .entry(resident_key(rgba))
+            .or_default()
+            .push((Arc::from(rgba), word));
         (word, true)
     }
 }
 
 impl Qd3dCompute {
-    /// Number of texture identities recorded as resident, for tests.
+    /// Keep converted textures on the device between frames, uploading only
+    /// bytes not already resident. Off by default, which writes every texture
+    /// every frame.
+    pub fn set_resident_textures(&self, enabled: bool) {
+        self.resident_textures.set(enabled);
+        if !enabled {
+            *self.textures.borrow_mut() = ResidentTextures::default();
+        }
+    }
+
+    /// Number of texture byte versions recorded as resident, for tests.
     #[doc(hidden)]
     pub fn resident_texture_count(&self) -> usize {
-        self.textures.borrow().layout.words.len()
+        self.textures.borrow().layout.words.values().map(Vec::len).sum()
     }
 
     pub async fn new(
@@ -109,6 +145,7 @@ impl Qd3dCompute {
             pipeline,
             palette: Default::default(),
             textures: Default::default(),
+            resident_textures: Default::default(),
         })
     }
 
@@ -158,9 +195,8 @@ impl Qd3dCompute {
         // Plan where each texture will sit without changing the resident
         // state or queueing a write: the frame can still be rejected below,
         // and a rejected frame is never submitted.
-        // Browser wire textures carry no identities. Keep their original
-        // one-upload-per-frame path instead of accumulating uncached entries.
-        let uncached_frame = frame.textures.iter().all(|texture| texture.identity.is_none());
+        // Without residency, keep the original single upload per frame.
+        let uncached_frame = !self.resident_textures.get();
         let (texture_buffer, texture_layout, textures) = {
             let resident = self.textures.borrow();
             let mut frame_bytes = 0u64;
@@ -176,7 +212,7 @@ impl Qd3dCompute {
                     return Err("invalid QD3D GPU texture".into());
                 }
                 frame_bytes += count;
-                if resident.layout.word(texture.identity, &texture.rgba).is_none() {
+                if uncached_frame || resident.layout.word(&texture.rgba).is_none() {
                     new_bytes += count;
                 }
             }
@@ -212,12 +248,20 @@ impl Qd3dCompute {
                 return Err("QD3D GPU texture storage exceeds limits".into());
             }
             let mut layout = if refill { ResidentLayout::default() } else { resident.layout.clone() };
+            // Without residency every texture, duplicates included, takes the
+            // next words of the single upload, exactly as before residency.
+            let mut next_word = 0u32;
             let textures: Vec<_> = frame
                 .textures
                 .iter()
                 .map(|texture| {
-                    let (word, write) =
-                        layout.place(texture.identity, &texture.rgba);
+                    let (word, write) = if uncached_frame {
+                        let word = next_word;
+                        next_word += (texture.rgba.len() / 4) as u32;
+                        (word, true)
+                    } else {
+                        layout.place(&texture.rgba)
+                    };
                     (word, write, texture)
                 })
                 .collect();
@@ -828,41 +872,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resident_layout_writes_each_identity_once_until_cleared() {
+    fn resident_layout_writes_each_byte_version_once_until_cleared() {
         let mut layout = ResidentLayout::default();
-        // New identities and uncached textures take the next free words.
-        assert_eq!(layout.place(Some(7), &[0; 64]), (0, true));
-        assert_eq!(layout.place(None, &[0; 16]), (16, true));
-        assert_eq!(layout.place(Some(9), &[0; 4]), (20, true));
-        // A written identity keeps its offset and is not written again; an
-        // uncached texture is written again at a new offset.
-        assert_eq!(layout.place(Some(7), &[0; 64]), (0, false));
-        assert_eq!(layout.place(Some(9), &[0; 4]), (20, false));
-        assert_eq!(layout.place(None, &[0; 16]), (21, true));
-        assert_eq!(layout.used_words, 25);
-        assert_eq!(layout.word(Some(9), &[0; 4]), Some(20));
-        assert_eq!(layout.word(Some(8), &[0; 4]), None);
-        assert_eq!(layout.word(None, &[0; 4]), None);
+        // New bytes take the next free words.
+        assert_eq!(layout.place(&[1; 64]), (0, true));
+        assert_eq!(layout.place(&[2; 16]), (16, true));
+        assert_eq!(layout.place(&[3; 4]), (20, true));
+        // Resident bytes keep their offset and are not written again.
+        assert_eq!(layout.place(&[1; 64]), (0, false));
+        assert_eq!(layout.place(&[3; 4]), (20, false));
+        assert_eq!(layout.used_words, 21);
+        assert_eq!(layout.word(&[2; 16]), Some(16));
+        assert_eq!(layout.word(&[4; 4]), None);
         // After a refill nothing is resident.
         layout.clear();
-        assert_eq!(layout.word(Some(7), &[0; 64]), None);
-        assert_eq!(layout.place(Some(9), &[0; 4]), (0, true));
-        assert_eq!(layout.place(Some(7), &[0; 64]), (1, true));
+        assert_eq!(layout.word(&[1; 64]), None);
+        assert_eq!(layout.place(&[3; 4]), (0, true));
+        assert_eq!(layout.place(&[1; 64]), (1, true));
     }
 
     #[test]
-    fn resident_layout_checks_bytes_when_an_identity_is_reused() {
+    fn resident_layout_tells_apart_bytes_that_share_a_key() {
+        // Long enough that the key samples only part of the bytes.
+        let base: Vec<u8> = (0..4096u32).map(|n| (n * 37) as u8).collect();
+        let mut between = base.clone();
+        between[12] ^= 0x40; // between two sampled words
+        assert_eq!(resident_key(&base), resident_key(&between));
         let mut layout = ResidentLayout::default();
-        assert_eq!(layout.place(Some(7), &[1; 16]), (0, true));
-        // Public pixels can be mutated, including on a clone sharing an ID.
-        assert_eq!(layout.word(Some(7), &[2; 16]), None);
-        assert_eq!(layout.place(Some(7), &[2; 16]), (4, true));
-        // Both versions can be drawn in one frame without aliasing.
-        assert_eq!(layout.place(Some(7), &[1; 16]), (0, false));
-        assert_eq!(layout.place(Some(7), &[2; 16]), (4, false));
-        assert_eq!(layout.place(Some(7), &[2; 32]), (8, true));
-        assert_eq!(layout.used_words, 16);
-        layout.clear();
-        assert_eq!(layout.word(Some(7), &[1; 16]), None);
+        assert_eq!(layout.place(&base), (0, true));
+        // Same key, different bytes: a new upload, not a reuse.
+        assert_eq!(layout.word(&between), None);
+        assert_eq!(layout.place(&between), (1024, true));
+        // Both versions stay resident and can be drawn in one frame.
+        assert_eq!(layout.place(&base), (0, false));
+        assert_eq!(layout.place(&between), (1024, false));
+        // A sampled byte changes the key.
+        let mut sampled = base.clone();
+        sampled[0] ^= 1;
+        assert_ne!(resident_key(&base), resident_key(&sampled));
+        // Short textures are keyed by every byte.
+        assert_ne!(resident_key(&[1, 2, 3, 4]), resident_key(&[1, 2, 3, 5]));
+        assert_ne!(resident_key(&[0; 8]), resident_key(&[0; 12]));
     }
 }

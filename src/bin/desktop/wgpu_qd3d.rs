@@ -130,6 +130,9 @@ impl State {
             .map_err(|e| e.to_string())?;
         let health = super::renderer_recovery::Health::install(&device, None);
         let core = pollster::block_on(Qd3dCompute::new(device, queue, health.clone()))?;
+        // Native frames come straight from guest memory each frame, so keep
+        // their converted textures on the device and upload only new bytes.
+        core.set_resident_textures(true);
         Ok(Self { health, core })
     }
 
@@ -510,7 +513,7 @@ mod tests {
             }
         };
         // One textured triangle per texture, side by side.
-        let frame = |textures: &[(Option<u64>, u8)]| {
+        let frame = |textures: &[u8]| {
             let draws = (0..textures.len())
                 .map(|index| {
                     let mut draw = triangle(0.5, [1., 1., 1., 1.]);
@@ -533,7 +536,7 @@ mod tests {
                 clear_color: None,
                 textures: textures
                     .iter()
-                    .map(|&(identity, seed)| PpcQ3GpuTexture {
+                    .map(|&seed| PpcQ3GpuTexture {
                         width: 2,
                         height: 2,
                         rgba: (0..16u8)
@@ -541,7 +544,6 @@ mod tests {
                             .collect(),
                         wrap_u: false,
                         wrap_v: false,
-                        identity,
                     })
                     .collect(),
                 draws,
@@ -549,32 +551,29 @@ mod tests {
         };
         let background = vec![0x801f; 32 * 24];
         let render = |frame: &PpcQ3RasterFrame| state.render(frame, &background).unwrap();
-        // Keep the oracle separate so it cannot clear the resident state
-        // between frames, including frames that mutate an existing identity.
+        // A separate renderer without residency writes every texture every
+        // frame: the oracle. It shares no resident state with `state`.
         let oracle = State::new().expect("GPU already initialized");
-        // A render without identities writes every texture: the oracle.
-        let fresh = |frame: &PpcQ3RasterFrame| {
-            let mut frame = frame.clone();
-            frame.textures.iter_mut().for_each(|texture| texture.identity = None);
-            oracle.render(&frame, &background).unwrap()
-        };
-        let base = u64::MAX - 100;
-        let mut steps: Vec<Vec<(Option<u64>, u8)>> = vec![
-            vec![(Some(base), 1)],
-            vec![(Some(base), 1)],
-            // A mutated clone keeps its identity; both versions may coexist.
-            vec![(Some(base), 91)],
-            vec![(Some(base), 1), (Some(base), 91)],
+        oracle.set_resident_textures(false);
+        let fresh = |frame: &PpcQ3RasterFrame| oracle.render(frame, &background).unwrap();
+        let mut steps: Vec<Vec<u8>> = vec![
+            vec![1],
+            vec![1],
+            // The same texture with changed pixels and unchanged dimensions,
+            // as a mutated clone would be; both versions may coexist.
+            vec![91],
+            vec![1, 91],
             // One resident texture and one new, then a duplicate in one frame
-            // beside an uncached texture.
-            vec![(Some(base), 1), (Some(base + 1), 2)],
-            vec![(Some(base + 1), 2), (Some(base + 1), 2), (None, 3)],
+            // beside a texture that differs in high bits, so a wrong offset
+            // shows in the 5-bit output.
+            vec![1, 2],
+            vec![2, 2, 130],
         ];
-        // New identities until the buffer must be refilled, then old ones.
-        steps.extend((2..10).map(|n| vec![(Some(base + n), n as u8 * 11), (Some(base), 1)]));
-        steps.push(vec![(Some(base + 1), 2), (Some(base), 1), (Some(base + 3), 33)]);
+        // New textures until the buffer must be refilled, then old ones.
+        steps.extend((2..10).map(|n| vec![n as u8 * 11, 1]));
+        steps.push(vec![2, 1, 33]);
         steps.push(Vec::new());
-        steps.push(vec![(None, 77), (Some(base), 1)]);
+        steps.push(vec![77, 1]);
         for (step, textures) in steps.iter().enumerate() {
             let frame = frame(textures);
             let expected = fresh(&frame);
@@ -595,11 +594,11 @@ mod tests {
         // A frame rejected after its textures were planned is never
         // submitted, so it must record nothing as resident.
         let resident = state.resident_texture_count();
-        let mut rejected = frame(&[(Some(base + 50), 9), (Some(base), 1)]);
+        let mut rejected = frame(&[9, 1]);
         rejected.draws[1].vertices[0].screen_x = f32::NAN;
         assert!(state.render(&rejected, &background).is_err());
         assert_eq!(state.resident_texture_count(), resident);
-        let accepted = frame(&[(Some(base + 50), 9), (Some(base), 1)]);
+        let accepted = frame(&[9, 1]);
         assert_eq!(render(&accepted), fresh(&accepted));
     }
 
@@ -1602,7 +1601,6 @@ mod tests {
                         rgba: vec![128, 255, 64, 128],
                         wrap_u: false,
                         wrap_v: false,
-                        identity: None,
                     }],
                     draws: vec![draw],
                 };
@@ -1861,7 +1859,6 @@ mod tests {
                     rgba: vec![255, 0, 0, 128],
                     wrap_u: false,
                     wrap_v: false,
-                    identity: None,
                 }],
                 draws: vec![draw],
             };
@@ -2023,7 +2020,6 @@ mod tests {
             rgba: vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255],
             wrap_u: false,
             wrap_v: false,
-            identity: None,
         };
         let mut first = triangle(0., [1.; 4]);
         first.texture = Some(0);
@@ -2090,7 +2086,6 @@ mod tests {
                         ],
                         wrap_u: wrap,
                         wrap_v: wrap,
-                        identity: None,
                     }],
                     draws: vec![draw],
                 };
