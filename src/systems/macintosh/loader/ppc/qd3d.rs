@@ -3306,54 +3306,117 @@ impl PpcQ3SoftwareDepthBuffer {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct PpcQ3SoftwarePointProjector {
+    local_to_world: [[f32; 4]; 4],
+    camera: Option<Option<([[f32; 4]; 4], [[f32; 4]; 4])>>,
+    camera_record: Option<PpcQ3CameraRecord>,
+    screen_left: f32,
+    screen_top: f32,
+    screen_width: f32,
+    screen_height: f32,
+    include_view_direction: bool,
+}
+
+impl PpcQ3SoftwarePointProjector {
+    pub fn new(
+        command: &PpcQ3SceneTriMeshCommand,
+        front_buffer: PpcFrontBuffer,
+        viewport: PpcQ3ViewportRect,
+        include_view_direction: bool,
+    ) -> Self {
+        let camera = command.camera.map(|camera| {
+            let world_to_view = ppc_q3_camera_world_to_view_matrix(camera.placement)?;
+            let view_to_frustum = ppc_q3_camera_raster_projection_matrix(&camera)?;
+            Some((world_to_view, view_to_frustum))
+        });
+        let screen_viewport = if command.camera.is_some() {
+            viewport
+        } else {
+            PpcQ3ViewportRect::full(front_buffer)
+        };
+        let max_x = screen_viewport.right.saturating_sub(1) as f32;
+        let max_y = screen_viewport.bottom.saturating_sub(1) as f32;
+        Self {
+            local_to_world: command.local_to_world,
+            camera,
+            camera_record: command.camera,
+            screen_left: screen_viewport.left as f32,
+            screen_top: screen_viewport.top as f32,
+            screen_width: (max_x - screen_viewport.left as f32).max(0.0),
+            screen_height: (max_y - screen_viewport.top as f32).max(0.0),
+            include_view_direction,
+        }
+    }
+
+    pub fn project(&self, point: (f32, f32, f32)) -> Option<PpcQ3SoftwareProjectedVertex> {
+        let world = ppc_q3_point3d_transform_values(point, self.local_to_world);
+        let view_direction = self
+            .include_view_direction
+            .then(|| ppc_q3_software_view_direction(self.camera_record, world))
+            .flatten();
+        let (projected, fog_depth, clip) = match self.camera {
+            Some(Some((world_to_view, view_to_frustum))) => {
+                let view = ppc_q3_point3d_transform_values(world, world_to_view);
+                let mut clip = ppc_q3_point3d_transform_4d_values(view, view_to_frustum);
+                // QuickDraw 3D exposes frustum depth in [-1, 0], with the hither
+                // plane at 0.  Keep that guest-visible matrix authentic, then remap
+                // depth to the software rasterizer's OpenGL-style [-1, 1] interval.
+                clip.2 = (-2.0_f32).mul_add(clip.2, -clip.3);
+                (
+                    ppc_q3_software_clip_to_projected(clip)?,
+                    -view.2,
+                    Some(clip),
+                )
+            }
+            Some(None) => return None,
+            None => (world, world.2, None),
+        };
+        if !ppc_q3_point_finite(projected) || !fog_depth.is_finite() {
+            return None;
+        }
+
+        let (normalized_x, normalized_y) = if let Some(camera) = self.camera_record {
+            let viewport_x = (projected.0 + 1.0) * 0.5;
+            let viewport_y = (projected.1 + 1.0) * 0.5;
+            (
+                camera.viewport_origin.0 + viewport_x * camera.viewport_width,
+                // QD3D camera viewport origins are the upper-left corner of the pane.
+                camera.viewport_origin.1 - camera.viewport_height
+                    + viewport_y * camera.viewport_height,
+            )
+        } else {
+            (projected.0, projected.1)
+        };
+        let screen_x = self.screen_left + (normalized_x + 1.0) * 0.5 * self.screen_width;
+        let screen_y = self.screen_top + (1.0 - ((normalized_y + 1.0) * 0.5)) * self.screen_height;
+        Some(PpcQ3SoftwareProjectedVertex {
+            x: screen_x,
+            y: screen_y,
+            z: projected.2,
+            clip,
+            world,
+            view_direction,
+            fog_depth,
+            uv: None,
+            diffuse: None,
+            ambient_coefficient: None,
+            normal: None,
+            specular_color: None,
+            specular_control: None,
+            highlight_state: None,
+            vertex_alpha: None,
+        })
+    }
+}
+
 pub fn ppc_q3_software_project_point(
     command: &PpcQ3SceneTriMeshCommand,
     front_buffer: PpcFrontBuffer,
     viewport: PpcQ3ViewportRect,
     point: (f32, f32, f32),
 ) -> Option<PpcQ3SoftwareProjectedVertex> {
-    let world = ppc_q3_point3d_transform_values(point, command.local_to_world);
-    let view_direction = ppc_q3_software_view_direction(command.camera, world);
-    let (projected, fog_depth, clip) = if let Some(camera) = command.camera {
-        let world_to_view = ppc_q3_camera_world_to_view_matrix(camera.placement)?;
-        let view_to_frustum = ppc_q3_camera_raster_projection_matrix(&camera)?;
-        let view = ppc_q3_point3d_transform_values(world, world_to_view);
-        let mut clip = ppc_q3_point3d_transform_4d_values(view, view_to_frustum);
-        // QuickDraw 3D exposes frustum depth in [-1, 0], with the hither
-        // plane at 0.  Keep that guest-visible matrix authentic, then remap
-        // depth to the software rasterizer's OpenGL-style [-1, 1] interval.
-        clip.2 = (-2.0_f32).mul_add(clip.2, -clip.3);
-        (
-            ppc_q3_software_clip_to_projected(clip)?,
-            -view.2,
-            Some(clip),
-        )
-    } else {
-        (world, world.2, None)
-    };
-    if !ppc_q3_point_finite(projected) || !fog_depth.is_finite() {
-        return None;
-    }
-
-    let (screen_x, screen_y) =
-        ppc_q3_software_projected_to_screen(projected, command.camera, front_buffer, viewport);
-    Some(PpcQ3SoftwareProjectedVertex {
-        x: screen_x,
-        y: screen_y,
-        z: projected.2,
-        clip,
-        world,
-        view_direction,
-        fog_depth,
-        uv: None,
-        diffuse: None,
-        ambient_coefficient: None,
-        normal: None,
-        specular_color: None,
-        specular_control: None,
-        highlight_state: None,
-        vertex_alpha: None,
-    })
+    PpcQ3SoftwarePointProjector::new(command, front_buffer, viewport, true).project(point)
 }
 
 pub fn ppc_q3_software_view_direction(
@@ -7978,7 +8041,9 @@ pub fn ppc_q3_camera_view_to_frustum_matrix(record: &PpcQ3CameraRecord) -> Optio
 // Keep the rasterizer's clip coordinates at w = -view_z. Its clipping
 // tolerances and interpolation already use this scale; guest API getters
 // separately preserve Apple's 1/yon normalization above.
-fn ppc_q3_camera_raster_projection_matrix(record: &PpcQ3CameraRecord) -> Option<[[f32; 4]; 4]> {
+pub(super) fn ppc_q3_camera_raster_projection_matrix(
+    record: &PpcQ3CameraRecord,
+) -> Option<[[f32; 4]; 4]> {
     if !ppc_q3_camera_record_valid(record) {
         return None;
     }
