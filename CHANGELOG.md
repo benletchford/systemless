@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.122.1](https://github.com/benletchford/systemless/compare/v0.122.0...v0.122.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **fonts:** preserve readable nine-point monospace text ([#6269](https://github.com/benletchford/systemless/issues/6269)) ([632c33b](https://github.com/benletchford/systemless/commit/632c33ba53eb4382ab4859753814e1f9ca3a91d8))
+* **text:** clear inverted copy character cells on repaint ([#6272](https://github.com/benletchford/systemless/issues/6272)) ([52be8e2](https://github.com/benletchford/systemless/commit/52be8e2fdd287e7294ca0e5cff3260c397f2230e))
+
 ## [0.122.0](https://github.com/benletchford/systemless/compare/v0.121.1...v0.122.0) (2026-11-14)
 
 
