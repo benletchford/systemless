@@ -14,6 +14,8 @@ use crate::managers::resource::ResourceFork;
 
 mod hfs;
 mod ndif;
+#[cfg(test)]
+pub(crate) use hfs::tests::volume_with_whole_and_split_data_forks;
 mod udif;
 
 use hfs::HfsVolume;

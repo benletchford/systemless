@@ -59,8 +59,17 @@ impl SharedImageRange {
     }
 
     fn bytes(&self) -> &[u8] {
+        #[cfg(test)]
+        IMAGE_RANGE_READS.set(IMAGE_RANGE_READS.get() + 1);
         &(*self.image).as_ref()[self.start..self.start + self.len]
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Reads of image-range bytes on this thread, so tests can show an
+    /// operation leaves an image unread.
+    pub(crate) static IMAGE_RANGE_READS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Owned bytes, or bytes still in a shared image. Writes and owned snapshots
@@ -208,6 +217,21 @@ impl ProcessForkBytes {
 
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0), Rc::clone(&self.1))
+    }
+
+    /// The bytes as an owned vector, moved out without copying when this is
+    /// their only owner.
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        match Rc::try_unwrap(self.0).map(UnsafeCell::into_inner) {
+            Ok(ForkBacking::Owned(bytes)) => {
+                Rc::try_unwrap(bytes).unwrap_or_else(|bytes| bytes.to_vec())
+            }
+            Ok(ForkBacking::Image(range)) => range.bytes().to_vec(),
+            Err(shared) => {
+                // SAFETY: as for Deref.
+                unsafe { (*shared.get()).bytes() }.to_vec()
+            }
+        }
     }
 
     /// Hash unchanged forks once, including across attached native/classic views.

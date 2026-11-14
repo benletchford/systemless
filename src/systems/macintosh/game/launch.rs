@@ -16,6 +16,7 @@ use crate::loader::ppc::{
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
+use crate::systems::macintosh::process_context::{ProcessForkBytes, SharedImageRange};
 use std::io::{Cursor, Read};
 use std::path::Component;
 use stuffit::{SitArchive, SitEntry};
@@ -336,12 +337,12 @@ fn read_host_file(path: &std::path::Path) -> Result<HostFileBytes, String> {
         if file.metadata().map_err(error)?.len() > 0 {
             // SAFETY: `Mmap::map` is unsafe because the mapped file can change
             // underneath the returned slice. The mapping is read-only. A disk
-            // image mounted from it keeps it for the session, serving
-            // contiguous file data from it, so borrows of the mapping can
-            // outlive the load. If another host process truncates or rewrites
-            // the image meanwhile, reads can observe changed bytes or fault
-            // (SIGBUS on Unix); a user replacing a disk image while it is in
-            // use is not supported.
+            // image launched or mounted from it can keep it for the session,
+            // serving contiguous file data from it, so borrows of the mapping
+            // can outlive the load. If another host process truncates or
+            // rewrites the image meanwhile, reads can observe changed bytes or
+            // fault (SIGBUS on Unix); a user replacing a disk image while it is
+            // in use is not supported.
             if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
                 return Ok(HostFileBytes::Mapped(map));
             }
@@ -372,9 +373,13 @@ pub fn load_game_from_path(
     if is_web_pack(&file_data)
         || is_stuffit_archive(&file_data)
         || crate::binhex::looks_like_binhex(&file_data)
-        || crate::disk_image::looks_like_dc42_or_hfs(&file_data)
-        || is_zip_archive(&file_data)
     {
+        return load_game(runner, &file_data);
+    }
+    if crate::disk_image::looks_like_dc42_or_hfs(&file_data) {
+        return load_shared_disk_image(runner, std::rc::Rc::new(file_data));
+    }
+    if is_zip_archive(&file_data) {
         return load_game(runner, &file_data);
     }
 
@@ -535,7 +540,7 @@ pub fn mount_locked_volume_from_path(
         .into_iter()
         .map(|file| crate::disk_image::DiskImageFile {
             path: prefix(&file.name),
-            data: file.data,
+            data: file.data.into_vec(),
             rsrc: file.rsrc,
             file_type: file.file_type,
             creator: file.creator,
@@ -579,28 +584,10 @@ fn mount_locked_volume_shared_image(
     runner: &mut FixtureRunner,
     image: std::rc::Rc<dyn AsRef<[u8]>>,
 ) -> Result<MountedVolume, String> {
-    let (contents, ranges) =
-        crate::disk_image::extract_dc42_or_hfs_deferring_data((*image).as_ref())?.ok_or_else(
-            || {
-                "not a supported disk image (DiskCopy 4.2, raw HFS or HFS+, Apple partition map, or UDIF)"
-                    .to_string()
-            },
-        )?;
-    let shared = ranges
-        .into_iter()
-        .map(|range| {
-            range
-                .map(|range| {
-                    crate::systems::macintosh::process_context::SharedImageRange::new(
-                        std::rc::Rc::clone(&image),
-                        range.start,
-                        range.len(),
-                    )
-                    .ok_or_else(|| format!("data fork range {range:?} lies outside the image"))
-                })
-                .transpose()
-        })
-        .collect::<Result<_, String>>()?;
+    let (contents, shared) = extract_shared_disk_image(image)?.ok_or_else(|| {
+        "not a supported disk image (DiskCopy 4.2, raw HFS or HFS+, Apple partition map, or UDIF)"
+            .to_string()
+    })?;
     mount_locked_volume_contents_with_shared_data(runner, contents, shared)
 }
 
@@ -617,7 +604,7 @@ fn mount_locked_volume_contents(
 fn mount_locked_volume_contents_with_shared_data(
     runner: &mut FixtureRunner,
     image: crate::disk_image::DiskImageContents,
-    shared_data: Vec<Option<crate::systems::macintosh::process_context::SharedImageRange>>,
+    shared_data: Vec<Option<SharedImageRange>>,
 ) -> Result<MountedVolume, String> {
     use crate::trap::dispatch::TrapDispatcher;
 
@@ -672,10 +659,7 @@ fn mount_locked_volume_contents_with_shared_data(
         }
         match shared {
             Some(range) => {
-                dispatcher.vfs.insert(
-                    path.clone(),
-                    crate::systems::macintosh::process_context::ProcessForkBytes::from(range),
-                );
+                dispatcher.vfs.insert(path.clone(), ProcessForkBytes::from(range));
             }
             None => {
                 dispatcher.vfs.insert(path.clone(), file.data);
@@ -955,9 +939,57 @@ fn no_executable_archive_error(skipped_disk_image_errors: &[String]) -> String {
 fn load_disk_image(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
     let image = crate::disk_image::extract_dc42_or_hfs(file_data)?
         .ok_or_else(|| "Not a DC42/raw HFS disk image".to_string())?;
+    load_disk_image_payload(runner, payload_from_disk_image(image, 1)?)
+}
 
+/// Load a disk image that stays alive for the session, as [`load_disk_image`]
+/// does, but serve each data fork held whole in one extent straight from
+/// `image` instead of copying it. A program that writes to one of those forks
+/// gets its own copy first.
+fn load_shared_disk_image(
+    runner: &mut FixtureRunner,
+    image: std::rc::Rc<dyn AsRef<[u8]>>,
+) -> Result<LoadedApp, String> {
+    let (contents, shared) = extract_shared_disk_image(image)?
+        .ok_or_else(|| "Not a DC42/raw HFS disk image".to_string())?;
+    load_disk_image_payload(
+        runner,
+        payload_from_disk_image_with_shared_data(contents, shared, 1)?,
+    )
+}
+
+/// Parse `image`, leaving each data fork held whole in one extent unread and
+/// returning, per file, the range of `image` that holds it.
+fn extract_shared_disk_image(
+    image: std::rc::Rc<dyn AsRef<[u8]>>,
+) -> Result<
+    Option<(
+        crate::disk_image::DiskImageContents,
+        Vec<Option<SharedImageRange>>,
+    )>,
+    String,
+> {
+    let Some((contents, ranges)) =
+        crate::disk_image::extract_dc42_or_hfs_deferring_data((*image).as_ref())?
+    else {
+        return Ok(None);
+    };
+    let shared = ranges
+        .into_iter()
+        .map(|range| {
+            range
+                .map(|range| {
+                    SharedImageRange::new(std::rc::Rc::clone(&image), range.start, range.len())
+                        .ok_or_else(|| format!("data fork range {range:?} lies outside the image"))
+                })
+                .transpose()
+        })
+        .collect::<Result<_, String>>()?;
+    Ok(Some((contents, shared)))
+}
+
+fn load_disk_image_payload(runner: &mut FixtureRunner, payload: Payload) -> Result<LoadedApp, String> {
     let mut executable_entry: Option<ExecutableCandidate> = None;
-    let payload = payload_from_disk_image(image, 1)?;
     reject_filter_suite_without_host(&payload, runner)?;
     insert_payload_into_vfs(runner, payload, &mut executable_entry);
     log_vfs(runner);
@@ -1359,12 +1391,13 @@ fn initial_web_pack_fork_capacity(len: usize) -> usize {
 fn insert_forks_into_vfs(
     runner: &mut FixtureRunner,
     name: &str,
-    data: Vec<u8>,
+    data: impl Into<ProcessForkBytes>,
     rsrc: Vec<u8>,
     file_type: [u8; 4],
     creator: [u8; 4],
     finder_flags: u16,
 ) {
+    let data = data.into();
     let normalized_name = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(name);
     // If data fork is empty but resource fork doesn't parse as a resource fork,
     // use resource fork bytes as data fork (some archives have forks swapped).
@@ -1511,7 +1544,7 @@ fn load_exported_host_tree(
         }
         None => payload.files.push(PayloadFile {
             name: app_rel.to_string(),
-            data: app_data,
+            data: app_data.into(),
             rsrc: app_rsrc,
             file_type: *b"APPL",
             creator: *b"????",
@@ -1650,7 +1683,7 @@ fn collect_host_directory(
         if containers == HostContainers::Preserve {
             payload.files.push(PayloadFile {
                 name: rel_name,
-                data,
+                data: data.into(),
                 rsrc,
                 file_type,
                 creator,
@@ -1782,7 +1815,8 @@ fn merge_payload(target: &mut Payload, source: Payload) {
 #[derive(Clone, Debug)]
 struct PayloadFile {
     name: String,
-    data: Vec<u8>,
+    /// Owned bytes, or a range of a launch image kept alive for the session.
+    data: ProcessForkBytes,
     rsrc: Vec<u8>,
     file_type: [u8; 4],
     creator: [u8; 4],
@@ -2211,7 +2245,7 @@ fn parse_macbinary_payload(
 
     Ok(PayloadFile {
         name,
-        data: file_data[128..data_end].to_vec(),
+        data: file_data[128..data_end].to_vec().into(),
         rsrc: file_data[rsrc_start..rsrc_end].to_vec(),
         file_type,
         creator,
@@ -2363,7 +2397,7 @@ fn expand_squz_payload_file(
                 }
                 return Ok(Some(PayloadFile {
                     name: name.to_string(),
-                    data: Vec::new(),
+                    data: ProcessForkBytes::default(),
                     rsrc: empty_resource_fork_bytes(),
                     file_type: target_type,
                     creator: target_creator,
@@ -2414,7 +2448,7 @@ fn expand_squz_payload_file(
 
     Ok(Some(PayloadFile {
         name: name.to_string(),
-        data,
+        data: data.into(),
         rsrc,
         file_type: target_type,
         creator: target_creator,
@@ -2574,13 +2608,14 @@ fn empty_resource_fork_bytes() -> Vec<u8> {
 
 fn payload_from_forks(
     name: &str,
-    data: Vec<u8>,
+    data: impl Into<ProcessForkBytes>,
     rsrc: Vec<u8>,
     file_type: [u8; 4],
     creator: [u8; 4],
     finder_flags: u16,
     executable_priority: u8,
 ) -> Result<Payload, String> {
+    let data = data.into();
     // An archive this loader cannot expand may be unrelated to the application.
     let mut skipped_disk_image_errors = Vec::new();
     if is_stuffit_archive(&data) {
@@ -2887,7 +2922,7 @@ fn expand_installer_maker_payload(
                     dirs: Vec::new(),
                     files: vec![PayloadFile {
                         name: embedded_name,
-                        data,
+                        data: data.into(),
                         rsrc,
                         file_type: entry.file_type,
                         creator: entry.creator,
@@ -3082,7 +3117,7 @@ fn expand_vise_payload(
                 entry.rsrc_unpacked_len,
                 "resource",
             )?;
-            (data, rsrc)
+            (data.into(), rsrc)
         };
         let embedded_name = format!("{name}/{}", entry.path);
         if crate::runner::trace_load_enabled() {
@@ -3262,6 +3297,19 @@ fn payload_from_disk_image(
     image: crate::disk_image::DiskImageContents,
     executable_priority: u8,
 ) -> Result<Payload, String> {
+    let shared = std::iter::repeat_with(|| None)
+        .take(image.files.len())
+        .collect();
+    payload_from_disk_image_with_shared_data(image, shared, executable_priority)
+}
+
+/// As [`payload_from_disk_image`], taking each file's data fork from the
+/// matching entry of `shared_data` where one is given.
+fn payload_from_disk_image_with_shared_data(
+    image: crate::disk_image::DiskImageContents,
+    shared_data: Vec<Option<SharedImageRange>>,
+    executable_priority: u8,
+) -> Result<Payload, String> {
     let crate::disk_image::DiskImageContents {
         volume_name,
         volume_info,
@@ -3275,10 +3323,14 @@ fn payload_from_disk_image(
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
-    for file in files {
+    for (file, shared) in files.into_iter().zip(shared_data) {
+        let data = shared.map_or_else(
+            || ProcessForkBytes::from(file.data),
+            ProcessForkBytes::from,
+        );
         let file_payload = payload_from_forks(
             &file.path,
-            file.data,
+            data,
             file.rsrc,
             file.file_type,
             file.creator,
@@ -4652,7 +4704,7 @@ pub(super) fn ppc_diagnostic_vfs(
             let metadata = dispatcher.vfs_metadata.get(path);
             PpcVfsFileRecord {
                 path: path.clone(),
-                data: (data.clone()).into(),
+                data: data.clone().into(),
                 creator: metadata.map_or(0, |value| value.creator),
                 file_type: metadata.map_or(0, |value| value.file_type),
                 finder_flags: metadata.map_or(0, |value| value.finder_flags),
@@ -4981,7 +5033,7 @@ mod tests {
     fn external_vise_test_file() -> PayloadFile {
         PayloadFile {
             name: "Disk 1/Readme".into(),
-            data: b"hello".to_vec(),
+            data: b"hello".to_vec().into(),
             rsrc: b"rsrc".to_vec(),
             file_type: *b"TEXT",
             creator: *b"ttxt",
@@ -5064,7 +5116,7 @@ mod tests {
             .unwrap_err()
             .contains("missing external"));
         let mut wrong = external_vise_test_file();
-        wrong.data.push(0);
+        wrong.data.with_mut(|data| data.push(0));
         assert!(expand_vise_payload("Disk 1/Install", &archive, 0, &[wrong])
             .unwrap_err()
             .contains("metadata"));
@@ -5163,7 +5215,7 @@ mod tests {
     fn installer_on_source_volume() -> Payload {
         let file = |name: &str| PayloadFile {
             name: name.into(),
-            data: b"hello".to_vec(),
+            data: b"hello".to_vec().into(),
             rsrc: b"rsrc".to_vec(),
             file_type: *b"TEXT",
             creator: *b"ttxt",
@@ -5191,7 +5243,7 @@ mod tests {
     fn bbkr_manifest_stages_multidisk_resources_beside_installed_application() {
         let file = |name: &str, file_type: [u8; 4]| PayloadFile {
             name: name.into(),
-            data: name.as_bytes().to_vec(),
+            data: name.as_bytes().to_vec().into(),
             rsrc: vec![1, 2, 3],
             file_type,
             creator: *b"TEST",
@@ -5820,7 +5872,7 @@ mod tests {
             dirs: Vec::new(),
             files: vec![PayloadFile {
                 name: "Bolo™ CD/Data".to_string(),
-                data: b"disc data".to_vec(),
+                data: b"disc data".to_vec().into(),
                 rsrc: Vec::new(),
                 file_type: *b"DATA",
                 creator: *b"TEST",
@@ -6044,7 +6096,7 @@ mod tests {
         for name in ["Suite/Filter One", "Suite/Filter Two"] {
             payload.files.push(PayloadFile {
                 name: name.into(),
-                data: Vec::new(),
+                data: ProcessForkBytes::default(),
                 rsrc: Vec::new(),
                 file_type: *b"8BFM",
                 creator: *b"FILT",
@@ -6054,7 +6106,7 @@ mod tests {
         }
         payload.files.push(PayloadFile {
             name: "Suite/Art Gallery/Viewer".into(),
-            data: Vec::new(),
+            data: ProcessForkBytes::default(),
             rsrc: Vec::new(),
             file_type: *b"APPL",
             creator: *b"VIEW",
@@ -6727,6 +6779,69 @@ mod tests {
         );
     }
 
+    /// Paths of the image from `volume_with_whole_and_split_data_forks`.
+    const WHOLE: &str = "Test/Whole";
+    const SPLIT: &str = "Test/Split";
+
+    fn write_whole_and_split_image(dir: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let image = crate::disk_image::volume_with_whole_and_split_data_forks(b"hello", &rsrc);
+        let path = dir.join("game.img");
+        std::fs::write(&path, &image).unwrap();
+        (path, image)
+    }
+
+    /// The image-backed state and bytes of the data forks of both files.
+    fn whole_and_split_data(runner: &FixtureRunner) -> [(bool, Vec<u8>); 2] {
+        [WHOLE, SPLIT].map(|path| {
+            let fork = runner.dispatcher().vfs.get_shared(path).expect("data fork");
+            (fork.is_image_backed(), fork.to_vec())
+        })
+    }
+
+    #[test]
+    fn launch_images_serve_whole_data_forks_from_the_image_until_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (path, image) = write_whole_and_split_image(dir.path());
+        let mut runner = new_runner();
+        load_game_from_path(&mut runner, &path).expect("game should load");
+        assert_eq!(runner.dispatcher().launched_app_path(), Some(WHOLE));
+
+        let split = [b'S'; 512].iter().chain(b"tail").copied().collect::<Vec<_>>();
+        assert_eq!(
+            whole_and_split_data(&runner),
+            [(true, b"hello".to_vec()), (false, split.clone())]
+        );
+        // Loading the same bytes without the file copies every fork, and the
+        // two VFS states compare equal.
+        let mut copied = new_runner();
+        load_game(&mut copied, &image).expect("game should load from bytes");
+        assert_eq!(
+            whole_and_split_data(&copied),
+            [(false, b"hello".to_vec()), (false, split)]
+        );
+        assert!(runner.dispatcher().vfs == copied.dispatcher().vfs);
+
+        runner
+            .dispatcher_mut()
+            .vfs
+            .with_entry_mut(WHOLE, |bytes| bytes[0] = b'j');
+        assert_eq!(whole_and_split_data(&runner)[0], (false, b"jello".to_vec()));
+        assert_eq!(std::fs::read(&path).unwrap(), image);
+    }
+
+    #[test]
+    fn mounted_volumes_serve_whole_data_forks_from_the_image() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (path, _) = write_whole_and_split_image(dir.path());
+        let mut runner = new_runner();
+        let mounted = mount_locked_volume_from_path(&mut runner, &path).expect("mount");
+        assert_eq!((mounted.name.as_str(), mounted.file_count), ("Test", 2));
+        let [whole, split] = whole_and_split_data(&runner);
+        assert_eq!(whole, (true, b"hello".to_vec()));
+        assert_eq!((split.0, split.1.len()), (false, 516));
+    }
+
     #[test]
     fn host_files_read_through_a_mapping_return_their_bytes() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7074,7 +7189,7 @@ mod tests {
             ("Demo/._..", orphan.as_slice()),
         ] {
             let file = payload.files.iter().find(|file| file.name == name).unwrap();
-            assert_eq!(file.data, expected);
+            assert_eq!(file.data.as_slice(), expected);
             assert!(file.rsrc.is_empty());
         }
     }
@@ -7791,7 +7906,7 @@ mod tests {
             directories: Vec::new(),
             files: vec![PpcVfsFileRecord {
                 path: "Volume/SDL".to_string(),
-                data: (pef.clone()).into(),
+                data: pef.clone().into(),
                 creator: 0,
                 file_type: 0,
                 finder_flags: 0,
@@ -7831,7 +7946,7 @@ mod tests {
                 make_library_cfrg(ARCH_POWERPC, USAGE_LIB, LOCATION_ON_DISK_FLAT, 0, WHOLE_FORK, name);
             files.push(PpcVfsFileRecord {
                 path: path.to_string(),
-                data: (pef.clone()).into(),
+                data: pef.clone().into(),
                 creator: 0,
                 file_type: 0,
                 finder_flags: 0,
@@ -8773,6 +8888,46 @@ mod tests {
         let error = mount_locked_volume_image(&mut runner, b"not a disk image")
             .expect_err("unsupported image");
         assert!(error.contains("not a supported disk image"), "{error}");
+    }
+
+    #[test]
+    fn the_volume_name_check_keeps_a_classic_hfs_volume_served_from_its_image() {
+        let media = tempfile::tempdir().expect("media dir");
+        let (image, _) = write_whole_and_split_image(media.path());
+
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        let mut runner = new_runner();
+        let (_, mounted) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&image])
+            .expect("load with a classic HFS volume");
+        assert_eq!(mounted[0].name, "Test");
+        // The check compared the volume's forks before and after the launch;
+        // the whole data fork is still served from the image.
+        let [whole, _] = whole_and_split_data(&runner);
+        assert_eq!(whole, (true, b"hello".to_vec()));
+        // The check's comparison of the volume's forks leaves the image
+        // unread: views of one image range compare equal without a read.
+        let forks = vfs_forks_on_volume(&runner, "Test");
+        let reads = crate::systems::macintosh::process_context::IMAGE_RANGE_READS.get();
+        assert!(vfs_forks_on_volume(&runner, "Test") == forks);
+        assert_eq!(
+            crate::systems::macintosh::process_context::IMAGE_RANGE_READS.get(),
+            reads,
+            "comparing the volume's forks read the image"
+        );
+
+        // Game media that replaces that fork under the same volume name is
+        // still caught.
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        std::fs::create_dir_all(game.path().join("Test")).unwrap();
+        std::fs::write(game.path().join("Test/Whole"), b"jello").unwrap();
+        let mut runner = new_runner();
+        let Err(error) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&image])
+        else {
+            panic!("game media replacing a ranged fork on a volume named alike");
+        };
+        assert!(error.contains("both use the volume name"), "{error}");
     }
 
     #[test]

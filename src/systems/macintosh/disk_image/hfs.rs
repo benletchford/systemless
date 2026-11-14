@@ -715,7 +715,7 @@ fn array_4(bytes: &[u8], offset: usize) -> Result<[u8; 4], String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const BLOCK_SIZE: usize = 512;
@@ -784,6 +784,122 @@ mod tests {
         // Inside Macintosh: Macintosh Toolbox Essentials, p. 7-47 defines
         // isInvisible as Finder flag bit 14 (0x4000).
         assert_eq!(extracted.finder_flags, 0x4000);
+    }
+
+    /// A classic HFS volume named "Test" holding the application `Whole`,
+    /// whose data fork `whole` lies in one extent and whose resource fork is
+    /// `rsrc`, and `Split`, whose data fork ends in a second extent.
+    pub(crate) fn volume_with_whole_and_split_data_forks(whole: &[u8], rsrc: &[u8]) -> Vec<u8> {
+        assert!(whole.len() <= BLOCK_SIZE && rsrc.len() <= BLOCK_SIZE);
+        let records = vec![
+            dir_record(ROOT_PARENT_CNID, b"Test", ROOT_CNID),
+            file_record(
+                ROOT_CNID,
+                b"Split",
+                21,
+                *b"DATA",
+                *b"TEST",
+                0,
+                BLOCK_SIZE as u32 + 4,
+                [extent(3, 1), extent(5, 1), Extent::default()],
+                0,
+                [Extent::default(); 3],
+            ),
+            file_record(
+                ROOT_CNID,
+                b"Whole",
+                20,
+                *b"APPL",
+                *b"TEST",
+                0,
+                whole.len() as u32,
+                [extent(2, 1), Extent::default(), Extent::default()],
+                rsrc.len() as u32,
+                [extent(4, 1), Extent::default(), Extent::default()],
+            ),
+        ];
+        let mut bytes = volume_fixture(records, Vec::new(), 8);
+        write_allocation_block(&mut bytes, 2, whole);
+        write_allocation_block(&mut bytes, 3, &[b'S'; BLOCK_SIZE]);
+        write_allocation_block(&mut bytes, 4, rsrc);
+        write_allocation_block(&mut bytes, 5, b"tail");
+        bytes
+    }
+
+    #[test]
+    fn contiguous_data_fork_ranges_cover_only_forks_held_in_one_extent() {
+        let bytes = volume_with_whole_and_split_data_forks(b"hello", b"rsrc");
+        let volume = HfsVolume::parse(&bytes).expect("synthetic HFS volume should parse");
+        let file = |name: &str| {
+            volume
+                .files
+                .iter()
+                .find(|file| file.rel_path == PathBuf::from(name))
+                .expect("file should be enumerated")
+        };
+
+        let whole = file("Whole");
+        let range = volume
+            .contiguous_data_fork_range(whole)
+            .expect("a fork in one extent has a range");
+        assert_eq!(range, ALLOCATION_START + 2 * BLOCK_SIZE..ALLOCATION_START + 2 * BLOCK_SIZE + 5);
+        assert_eq!(&bytes[range], volume.read_data_fork(whole).unwrap());
+        assert_eq!(volume.contiguous_data_fork_range(file("Split")), None);
+
+        // An extent that runs past the volume's allocation blocks is not
+        // served, even when the image holds bytes there, and neither is an
+        // empty fork.
+        let whole_index = volume
+            .files
+            .iter()
+            .position(|file| file.rel_path == PathBuf::from("Whole"))
+            .unwrap();
+        let mut padded = bytes.clone();
+        padded.extend_from_slice(&[0; BLOCK_SIZE]);
+        let mut altered = HfsVolume::parse(&padded).unwrap();
+        altered.files[whole_index].data_fork.extents[0] = extent(8, 1);
+        assert_eq!(altered.contiguous_data_fork_range(&altered.files[whole_index]), None);
+        altered.files[whole_index].data_fork.extents[0] = extent(2, 1);
+        // A malformed extent record is left to the reader, which rejects it.
+        altered.files[whole_index].data_fork.extents[2] = extent(6, 1);
+        assert_eq!(altered.contiguous_data_fork_range(&altered.files[whole_index]), None);
+        assert!(altered.read_data_fork(&altered.files[whole_index]).is_err());
+        altered.files[whole_index].data_fork.extents[2] = Extent::default();
+        altered.files[whole_index].data_fork.logical_size = 0;
+        assert_eq!(altered.contiguous_data_fork_range(&altered.files[whole_index]), None);
+    }
+
+    #[test]
+    fn deferred_extraction_reports_ranges_in_wrapped_image_coordinates() {
+        let volume = volume_with_whole_and_split_data_forks(b"hello", b"rsrc");
+        let mut wrapped = vec![0; 84];
+        wrapped[64..68].copy_from_slice(&(volume.len() as u32).to_be_bytes());
+        wrapped[82..84].copy_from_slice(&[0x01, 0x00]);
+        wrapped.extend_from_slice(&volume);
+
+        for image in [volume, wrapped] {
+            let copied = super::super::extract_dc42_or_hfs(&image)
+                .unwrap()
+                .expect("classic HFS image");
+            let (deferred, ranges) = super::super::extract_dc42_or_hfs_deferring_data(&image)
+                .unwrap()
+                .expect("classic HFS image");
+            assert_eq!(ranges.len(), deferred.files.len());
+            for ((copied, deferred), range) in copied.files.iter().zip(&deferred.files).zip(ranges) {
+                assert_eq!(copied.path, deferred.path);
+                assert_eq!(copied.rsrc, deferred.rsrc);
+                match range {
+                    Some(range) => {
+                        assert!(deferred.data.is_empty());
+                        assert_eq!(image[range], copied.data[..]);
+                    }
+                    None => {
+                        assert_eq!(deferred.path, "Test/Split");
+                        assert_eq!(deferred.data, copied.data);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
