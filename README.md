@@ -368,6 +368,7 @@ systemless --arrows-as-numpad path/to/game.sit
 systemless --display-scale 2 path/to/game.sit
 systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
+systemless --mount path/to/disc1.iso path/to/installed-game-folder
 ```
 
 On macOS, desktop windows open at the guest’s logical resolution: an 800×600
@@ -380,6 +381,25 @@ guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in 
 On systems where macOS selects direct scan-out for the fullscreen surface this
 measurably reduced pointer-to-screen latency in testing (see issue #1050); the
 benefit depends on the machine and compositor state and is not guaranteed.
+
+### Additional volumes and executable selection
+
+Some CD-ROM titles run from a copy installed on the hard disk and then look for
+their CD as a separate volume. Pass `--mount PATH` (repeatable) to mount a disk
+image or folder beside the game as its own locked volume, as a CD-ROM would be.
+DiskCopy 4.2, raw HFS/HFS+, Apple-partitioned (including hybrid ISO 9660/HFS
+CD) and UDIF images keep their volume name; a folder is named after itself.
+Files keep both forks and Finder metadata, archives and installers on the
+volume are not expanded, and File Manager writes there fail with `wPrErr`.
+The game argument remains the launch media: a folder or archive mounts on the
+writable startup disk, `MacintoshHD`, and a disk image as its own volume.
+Executables on mounted volumes are never launched, and a mounted volume may
+not share a name with the game's media or another mounted volume.
+
+When the game's media contains more than one application, the runner lists
+the candidates on stderr, marks the one it selected, and shows how to choose
+another. Set `SYSTEMLESS_LOAD_EXECUTABLE` to a listed path, for example
+`SYSTEMLESS_LOAD_EXECUTABLE=Titanic1/INSTALL_MAC/Titanic`, to launch it.
 
 The default `classic-system7` guest chrome uses classic Macintosh presentation,
 control geometry, and metrics. The optional Systemless theme remains available
@@ -596,7 +616,7 @@ Apple Inc.; classic font names identify compatibility requests only.
 
 | Variable | Effect |
 | -------- | ------ |
-| `SYSTEMLESS_LOAD_EXECUTABLE` | Selects an executable from a multi-app archive by substring. |
+| `SYSTEMLESS_LOAD_EXECUTABLE` | Selects an executable from a multi-app archive: an exact path from the candidates listed at launch, otherwise a path containing the value (case-sensitive). |
 | `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs. |
 | `SYSTEMLESS_TRACE_LOAD` | Logs archive, VFS, resource, and startup loading diagnostics. |
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |

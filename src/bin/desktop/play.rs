@@ -377,6 +377,7 @@ fn compare(frame: &RgbImage, path: &Path, tolerance: u8) -> Result<usize, String
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     archive: &Path,
+    mounts: &[std::path::PathBuf],
     script_path: &Path,
     output: &Path,
     reference: Option<&Path>,
@@ -419,7 +420,7 @@ pub(super) fn run(
             runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
         }
         runner.set_app_start_time(start_time);
-        let app = game::load_game_from_path(&mut runner, archive)
+        let app = super::load_launch_media(&mut runner, archive, mounts)
             .map_err(|e| format!("load {}: {e}", archive.display()))?;
         game::init_game_owned(&mut runner, app);
         runner.prepare_text_presentation();

@@ -107,6 +107,7 @@ pub fn new_runner_with_display(addressing_32_bit: bool, screen_depth: u16, scree
 /// Handles StuffIt archives (populates VFS with all entries, finds executable),
 /// MacBinary files, and macOS resource fork paths. Returns the LoadedApp on success.
 pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
+    runner.clear_executable_candidates();
     if is_web_pack(file_data) {
         load_web_pack(runner, file_data)
     } else if is_stuffit_archive(file_data) {
@@ -300,6 +301,7 @@ pub fn load_game_from_path(
     runner: &mut FixtureRunner,
     path: &std::path::Path,
 ) -> Result<LoadedApp, String> {
+    runner.clear_executable_candidates();
     // A directory is an extracted host tree: load the whole folder, taking
     // resource forks from macOS extended attributes (or sidecars) and decoding
     // any MacBinary members.
@@ -354,6 +356,267 @@ pub fn load_game_from_path(
 
     // Fall back to detecting MacBinary/raw resource-fork style payloads.
     load_game(runner, &file_data)
+}
+
+/// `ioVAtrb` bit 7: the volume is locked by hardware, as a CD-ROM is. File
+/// Manager mutations on such a volume fail with `wPrErr` rather than the
+/// software-lock `vLckdErr`. Inside Macintosh: Files (1992), pp. 2-127 and 2-144.
+const VOLUME_HARDWARE_LOCK: u16 = 0x0080;
+
+/// A volume mounted beside the launched application's own media.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MountedVolume {
+    /// Volume name reported by the File Manager and used in full pathnames.
+    pub name: String,
+    /// File Manager volume reference number (negative, unique per volume).
+    pub ref_num: i16,
+    /// Number of files mounted on the volume.
+    pub file_count: usize,
+}
+
+/// Load a game from `path` with additional media mounted as separate volumes.
+///
+/// Each entry of `volumes` is mounted, in order, as a hardware-locked volume
+/// with [`mount_locked_volume_from_path`] before the game is loaded, so both
+/// 68K and PowerPC File Managers see them. The game's own media is loaded and
+/// its executable chosen exactly as by [`load_game_from_path`]; applications on
+/// the additional volumes are never launch candidates. A volume whose name is
+/// also used by the game's media is rejected rather than merged.
+pub fn load_game_from_path_with_volumes<P: AsRef<std::path::Path>>(
+    runner: &mut FixtureRunner,
+    path: &std::path::Path,
+    volumes: &[P],
+) -> Result<(LoadedApp, Vec<MountedVolume>), String> {
+    let mut mounted = Vec::with_capacity(volumes.len());
+    for volume in volumes {
+        let volume = volume.as_ref();
+        let entry = mount_locked_volume_from_path(runner, volume)
+            .map_err(|error| format!("Cannot mount {}: {error}", volume.display()))?;
+        let forks = vfs_forks_on_volume(runner, &entry.name);
+        mounted.push((entry, forks));
+    }
+
+    let app = load_game_from_path(runner, path)?;
+
+    for (volume, forks) in &mounted {
+        let launched_from_volume = runner
+            .dispatcher()
+            .launched_app_path()
+            .is_some_and(|app| vfs_path_matches_remove(app, &volume.name));
+        if launched_from_volume || vfs_forks_on_volume(runner, &volume.name) != *forks {
+            return Err(format!(
+                "{} and an additional volume both use the volume name {:?}",
+                path.display(),
+                volume.name
+            ));
+        }
+    }
+    Ok((app, mounted.into_iter().map(|(volume, _)| volume).collect()))
+}
+
+/// Mount a disk image or host folder as an additional hardware-locked volume.
+///
+/// Disk images are those accepted by [`mount_locked_volume_image`]. A folder
+/// becomes a volume named after the folder; its files keep both forks and
+/// Finder metadata (read as for a folder passed to [`load_game_from_path`]),
+/// but archives, installers and disk images inside it are mounted as files,
+/// not expanded.
+pub fn mount_locked_volume_from_path(
+    runner: &mut FixtureRunner,
+    path: &std::path::Path,
+) -> Result<MountedVolume, String> {
+    if !path.is_dir() {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        return mount_locked_volume_image(runner, &bytes);
+    }
+
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
+    let name = canonical
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            format!(
+                "{} has no folder name to use as a volume name",
+                path.display()
+            )
+        })?;
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        installer_roots: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    collect_host_directory(path, path, &mut payload, HostContainers::Preserve)?;
+    let bytes: u64 = payload
+        .files
+        .iter()
+        .map(|file| (file.data.len() + file.rsrc.len()) as u64)
+        .sum();
+    // A folder has no volume header. Describe a full, read-only volume large
+    // enough for its contents, using allocation blocks that keep the 16-bit
+    // block count in range (Inside Macintosh: Files (1992), p. 2-144).
+    let allocation_block_size = u32::try_from(bytes.div_ceil(u64::from(u16::MAX)))
+        .unwrap_or(u32::MAX)
+        .max(512)
+        .next_multiple_of(512);
+    let info = crate::disk_image::DiskImageVolumeInfo {
+        attributes: VOLUME_HARDWARE_LOCK,
+        file_count: payload.files.len().min(usize::from(u16::MAX)) as u16,
+        allocation_block_count: bytes
+            .div_ceil(u64::from(allocation_block_size))
+            .min(u64::from(u16::MAX)) as u16,
+        allocation_block_size,
+        clump_size: allocation_block_size,
+        ..Default::default()
+    };
+    let prefix = |relative: &str| format!("{name}/{relative}");
+    let dirs = std::iter::once(name.clone())
+        .chain(payload.dirs.iter().map(|dir| prefix(dir)))
+        .collect();
+    let files = payload
+        .files
+        .into_iter()
+        .map(|file| crate::disk_image::DiskImageFile {
+            path: prefix(&file.name),
+            data: file.data,
+            rsrc: file.rsrc,
+            file_type: file.file_type,
+            creator: file.creator,
+            finder_flags: file.finder_flags,
+        })
+        .collect();
+    mount_locked_volume_contents(
+        runner,
+        crate::disk_image::DiskImageContents {
+            volume_name: name,
+            volume_info: info,
+            dirs,
+            files,
+        },
+    )
+}
+
+/// Mount a DiskCopy 4.2, raw HFS/HFS+, Apple-partitioned (including hybrid
+/// CD-ROM) or UDIF disk image as an additional hardware-locked volume.
+///
+/// The volume keeps its own name and header fields, and every file keeps both
+/// forks and its Finder metadata. Contents are mounted as they are on the
+/// disk: archives and installers are not expanded. The volume is reported
+/// locked by hardware whatever its header says, as for a mounted CD-ROM.
+pub fn mount_locked_volume_image(
+    runner: &mut FixtureRunner,
+    bytes: &[u8],
+) -> Result<MountedVolume, String> {
+    let image = crate::disk_image::extract_dc42_or_hfs(bytes)?.ok_or_else(|| {
+        "not a supported disk image (DiskCopy 4.2, raw HFS or HFS+, Apple partition map, or UDIF)"
+            .to_string()
+    })?;
+    mount_locked_volume_contents(runner, image)
+}
+
+fn mount_locked_volume_contents(
+    runner: &mut FixtureRunner,
+    image: crate::disk_image::DiskImageContents,
+) -> Result<MountedVolume, String> {
+    use crate::trap::dispatch::TrapDispatcher;
+
+    let crate::disk_image::DiskImageContents {
+        volume_name,
+        volume_info: info,
+        dirs,
+        files,
+    } = image;
+    let name = TrapDispatcher::normalize_vfs_path(&volume_name);
+    if name.is_empty() || name.contains('/') {
+        return Err(format!("invalid volume name {volume_name:?}"));
+    }
+    // Volumes are top-level VFS directories, so any existing volume, folder or
+    // file of the same name would merge with this one.
+    let dispatcher = runner.dispatcher();
+    let in_use = name.eq_ignore_ascii_case(TrapDispatcher::boot_volume_name())
+        || dispatcher.vfs_volume_by_name(&name).is_some()
+        || dispatcher
+            .vfs_directories
+            .iter()
+            .any(|directory| vfs_path_matches_remove(&directory.path, &name))
+        || !vfs_files_on_volume(runner, &name).is_empty();
+    if in_use {
+        return Err(format!("volume name {name:?} is already in use"));
+    }
+
+    let dispatcher = runner.dispatcher_mut();
+    for dir in &dirs {
+        dispatcher.ensure_vfs_directory(&TrapDispatcher::normalize_vfs_path(dir));
+    }
+    let ref_num = dispatcher.mount_vfs_volume(
+        &name,
+        info.attributes | VOLUME_HARDWARE_LOCK,
+        info.file_count,
+        info.allocation_block_count,
+        info.allocation_block_size,
+        info.clump_size,
+        info.free_blocks,
+        info.bitmap_start,
+        info.allocation_pointer,
+        info.allocation_start,
+        info.next_catalog_id,
+        info.created_date,
+        info.modified_date,
+    );
+    let file_count = files.len();
+    for file in files {
+        let path = TrapDispatcher::normalize_vfs_path(&file.path);
+        if !file.rsrc.is_empty() {
+            dispatcher.vfs_rsrc.insert(path.clone(), file.rsrc);
+        }
+        dispatcher.vfs.insert(path.clone(), file.data);
+        dispatcher.set_vfs_entry_metadata(&path, file.file_type, file.creator, file.finder_flags);
+    }
+    Ok(MountedVolume {
+        name,
+        ref_num,
+        file_count,
+    })
+}
+
+/// Normalized paths of every data or resource fork stored under `volume`.
+/// Both forks of every file on one volume, keyed by (is resource fork, path).
+type VolumeForks = std::collections::BTreeMap<
+    (bool, String),
+    crate::systems::macintosh::process_context::ProcessForkBytes,
+>;
+
+/// Snapshot both forks of every file on `volume`, keyed by fork and path.
+///
+/// Fork bytes share their backing store, so the snapshot is cheap. Comparing
+/// it after GAME loads catches a same-named volume whose files were replaced,
+/// not only one whose file set changed.
+fn vfs_forks_on_volume(runner: &FixtureRunner, volume: &str) -> VolumeForks {
+    let dispatcher = runner.dispatcher();
+    let data = dispatcher.vfs.iter().map(|(path, fork)| (false, path, fork));
+    let rsrc = dispatcher.vfs_rsrc.iter().map(|(path, fork)| (true, path, fork));
+    data.chain(rsrc)
+        .map(|(is_rsrc, path, fork)| {
+            let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path);
+            ((is_rsrc, path), fork.clone())
+        })
+        .filter(|((_, path), _)| vfs_path_matches_remove(path, volume))
+        .collect()
+}
+
+fn vfs_files_on_volume(runner: &FixtureRunner, volume: &str) -> std::collections::BTreeSet<String> {
+    let dispatcher = runner.dispatcher();
+    dispatcher
+        .vfs
+        .keys()
+        .chain(dispatcher.vfs_rsrc.keys())
+        .map(|path| crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path))
+        .filter(|path| vfs_path_matches_remove(path, volume))
+        .collect()
 }
 
 /// Initialize a runner after loading: run init_app then clear the
@@ -636,6 +899,7 @@ impl<'a> WebPackLoader<'a> {
         if !is_web_pack(file_data) {
             return Ok(None);
         }
+        runner.clear_executable_candidates();
 
         let mut offset = WEB_PACK_MAGIC.len();
         let has_volumes = file_data.starts_with(VOLUME_WEB_PACK_MAGIC);
@@ -761,7 +1025,7 @@ impl<'a> WebPackLoader<'a> {
                 let pending = self.pending.take().expect("complete web-pack entry");
                 self.filter_suite
                     .record(pending.file_type_code, pending.creator_code);
-                maybe_select_executable_with_preference(
+                if maybe_select_executable_with_preference(
                     &mut self.executable_entry,
                     &pending.name,
                     &pending.data,
@@ -772,7 +1036,9 @@ impl<'a> WebPackLoader<'a> {
                     1,
                     runner.prefers_powerpc_executables() || prefer_powerpc(),
                     runner.preferred_executable_path(),
-                );
+                ) {
+                    runner.record_executable_candidate(&pending.name);
+                }
                 insert_forks_into_vfs(
                     runner,
                     &pending.name,
@@ -1173,8 +1439,16 @@ fn payload_from_host_directory(root: &std::path::Path) -> Result<Payload, String
         installer_roots: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
-    collect_host_directory(root, root, &mut payload)?;
+    collect_host_directory(root, root, &mut payload, HostContainers::Expand)?;
     Ok(payload)
+}
+
+/// Whether archives, installers and disk images found in a host tree are
+/// expanded (launch media) or mounted as the files they are (a data volume).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostContainers {
+    Expand,
+    Preserve,
 }
 
 // Host paths use platform separators; payload paths always use `/`. Convert
@@ -1191,6 +1465,7 @@ fn collect_host_directory(
     root: &std::path::Path,
     dir: &std::path::Path,
     payload: &mut Payload,
+    containers: HostContainers,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|err| format!("read host directory {}: {}", dir.display(), err))?;
@@ -1214,7 +1489,7 @@ fn collect_host_directory(
             .map_err(|err| format!("stat host directory entry {}: {}", path.display(), err))?;
         if file_type.is_dir() {
             payload.dirs.push(rel_name.clone());
-            collect_host_directory(root, &path, payload)?;
+            collect_host_directory(root, &path, payload, containers)?;
             continue;
         }
         if !file_type.is_file() || exported_host_file_is_harness_artifact(&rel_name) {
@@ -1265,6 +1540,18 @@ fn collect_host_directory(
             );
         }
 
+        if containers == HostContainers::Preserve {
+            payload.files.push(PayloadFile {
+                name: rel_name,
+                data,
+                rsrc,
+                file_type,
+                creator,
+                finder_flags,
+                executable_priority: 0,
+            });
+            continue;
+        }
         let entry_payload =
             payload_from_forks(&rel_name, data, rsrc, file_type, creator, finder_flags, 1)?;
         merge_payload(payload, entry_payload);
@@ -3057,7 +3344,7 @@ fn insert_payload_into_vfs(
     for file in payload.files {
         let data_len = file.data.len();
         let is_appl = file.file_type == *b"APPL";
-        maybe_select_executable_with_preference(
+        if maybe_select_executable_with_preference(
             executable_entry,
             &file.name,
             &file.data,
@@ -3068,7 +3355,9 @@ fn insert_payload_into_vfs(
             file.executable_priority,
             runner.prefers_powerpc_executables() || prefer_powerpc(),
             runner.preferred_executable_path(),
-        );
+        ) {
+            runner.record_executable_candidate(&file.name);
+        }
         insert_forks_into_vfs(
             runner,
             &file.name,
@@ -3475,7 +3764,7 @@ fn maybe_select_executable_with_preference(
     executable_priority: u8,
     prefer_powerpc: bool,
     preferred_executable_path: Option<&str>,
-) {
+) -> bool {
     let executable_override = preferred_executable_path
         .map(str::to_owned)
         .or_else(executable_name_override);
@@ -3490,7 +3779,7 @@ fn maybe_select_executable_with_preference(
         executable_priority,
         executable_override.as_deref(),
         prefer_powerpc,
-    );
+    )
 }
 
 #[cfg(test)]
@@ -3530,14 +3819,14 @@ fn maybe_select_executable_with_override_and_preference(
     executable_priority: u8,
     executable_override: Option<&str>,
     prefer_powerpc: bool,
-) {
+) -> bool {
     if rsrc.is_empty() {
-        return;
+        return false;
     }
 
     let Some(kind) = classify_executable_with_preference(data, rsrc, is_appl, prefer_powerpc)
     else {
-        return;
+        return false;
     };
 
     // SYSTEMLESS_LOAD_EXECUTABLE: prefer an exact candidate path, then a
@@ -3577,6 +3866,7 @@ fn maybe_select_executable_with_override_and_preference(
     if take {
         *executable_entry = Some(candidate);
     }
+    true
 }
 
 pub(crate) fn select_installed_application(
@@ -7943,5 +8233,228 @@ mod tests {
 
         assert!(expanded.data.is_empty());
         assert!(ResourceFork::parse(&expanded.rsrc).is_some());
+    }
+
+    fn write_volume_test_game(dir: &std::path::Path, apps: &[&str]) {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        for app in apps {
+            std::fs::write(
+                dir.join(format!("{app}.bin")),
+                make_macbinary_application(app, b"application data", &rsrc),
+            )
+            .unwrap();
+        }
+    }
+
+    fn write_volume_test_image(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file("Data File", b"disc contents", 0o100644);
+        let path = dir.join(name);
+        std::fs::write(&path, builder.build()).unwrap();
+        path
+    }
+
+    fn mounted_volume_summary(runner: &FixtureRunner) -> Vec<(String, i16, u16)> {
+        runner
+            .dispatcher()
+            .vfs_volumes
+            .iter()
+            .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
+            .collect()
+    }
+
+    #[test]
+    fn additional_volumes_mount_locked_beside_the_game_volume() {
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        let media = tempfile::tempdir().expect("media dir");
+        let image = write_volume_test_image(media.path(), "disc1.img");
+        let folder = media.path().join("Disc Two");
+        let movie_rsrc = make_single_resource_fork_bytes(*b"moov", 128, &[7; 16]);
+        std::fs::create_dir_all(folder.join("Movies")).unwrap();
+        std::fs::write(
+            folder.join("Movies/Viewer.bin"),
+            make_macbinary_application("Viewer", b"viewer data", &movie_rsrc),
+        )
+        .unwrap();
+        // Containers on a data volume are files, not launch media to expand.
+        std::fs::copy(&image, folder.join("Nested.img")).unwrap();
+
+        let mut runner = new_runner();
+        let (_, mounted) =
+            load_game_from_path_with_volumes(&mut runner, game.path(), &[&image, &folder])
+                .expect("game and volumes should load");
+
+        assert_eq!(
+            mounted,
+            vec![
+                MountedVolume {
+                    name: "HFS+ Disk Image".into(),
+                    ref_num: -2,
+                    file_count: 1,
+                },
+                MountedVolume {
+                    name: "Disc Two".into(),
+                    ref_num: -3,
+                    file_count: 2,
+                },
+            ]
+        );
+        let dispatcher = runner.dispatcher();
+        for volume in &mounted {
+            let record = dispatcher.vfs_volume_by_name(&volume.name).unwrap();
+            assert_eq!(record.ref_num, volume.ref_num);
+            assert_ne!(
+                record.ref_num,
+                crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num()
+            );
+            assert_eq!(
+                record.attributes & VOLUME_HARDWARE_LOCK,
+                VOLUME_HARDWARE_LOCK,
+                "{} must be locked by hardware",
+                volume.name
+            );
+        }
+        assert!(dispatcher.vfs_path_is_read_only("HFS+ Disk Image/Data File"));
+        assert!(dispatcher.vfs_path_is_read_only("Disc Two/Movies/Viewer"));
+        assert!(!dispatcher.vfs_path_is_read_only("Game App"));
+        assert_eq!(
+            dispatcher.vfs.get("HFS+ Disk Image/Data File"),
+            Some(&b"disc contents".to_vec())
+        );
+        assert_eq!(
+            dispatcher.vfs.get("Disc Two/Movies/Viewer"),
+            Some(&b"viewer data".to_vec())
+        );
+        assert_eq!(
+            dispatcher.vfs_rsrc.get("Disc Two/Movies/Viewer"),
+            Some(&movie_rsrc)
+        );
+        let metadata = dispatcher
+            .vfs_metadata
+            .get("Disc Two/Movies/Viewer")
+            .unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(
+            dispatcher.vfs.get("Disc Two/Nested.img"),
+            Some(&std::fs::read(&image).unwrap())
+        );
+        // The game is the launch volume; data volumes supply no candidates.
+        assert_eq!(dispatcher.launched_app_path(), Some("Game App"));
+        assert_eq!(runner.executable_candidates(), ["Game App".to_string()]);
+        // Volumes mount before the game loads, so a PowerPC launch sees them.
+        let ppc_volumes: Vec<_> = ppc_diagnostic_vfs(&mut runner, None)
+            .volumes
+            .into_iter()
+            .map(|volume| (volume.name, volume.ref_num, volume.attributes & 0x0080))
+            .collect();
+        assert_eq!(
+            ppc_volumes,
+            [
+                ("HFS+ Disk Image".to_string(), -2, 0x0080),
+                ("Disc Two".to_string(), -3, 0x0080),
+            ]
+        );
+    }
+
+    #[test]
+    fn launch_without_additional_volumes_is_unchanged() {
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        let media = tempfile::tempdir().expect("media dir");
+        let image = write_volume_test_image(media.path(), "game.img");
+        std::fs::copy(&image, game.path().join("Game Disk.img")).unwrap();
+
+        let mut plain = new_runner();
+        load_game_from_path(&mut plain, game.path()).expect("plain load");
+        let mut with_none = new_runner();
+        let (_, mounted) = load_game_from_path_with_volumes::<std::path::PathBuf>(
+            &mut with_none,
+            game.path(),
+            &[],
+        )
+        .expect("load without volumes");
+
+        assert!(mounted.is_empty());
+        let keys = |runner: &FixtureRunner| {
+            let mut keys: Vec<_> = runner.dispatcher().vfs.keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(keys(&with_none), keys(&plain));
+        assert_eq!(
+            mounted_volume_summary(&with_none),
+            mounted_volume_summary(&plain)
+        );
+        assert_eq!(
+            mounted_volume_summary(&plain),
+            vec![("HFS+ Disk Image".to_string(), -2, 0)],
+            "nested media keeps its first volume reference and source lock state"
+        );
+        assert_eq!(
+            with_none.dispatcher().launched_app_path(),
+            plain.dispatcher().launched_app_path()
+        );
+    }
+
+    #[test]
+    fn additional_volume_names_must_not_collide() {
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        let media = tempfile::tempdir().expect("media dir");
+        let first = write_volume_test_image(media.path(), "first.img");
+        let second = write_volume_test_image(media.path(), "second.img");
+
+        let mut runner = new_runner();
+        let Err(error) =
+            load_game_from_path_with_volumes(&mut runner, game.path(), &[&first, &second])
+        else {
+            panic!("two volumes named alike");
+        };
+        assert!(error.contains("already in use"), "{error}");
+
+        // A game whose own media uses the name would merge into the locked disc.
+        std::fs::create_dir_all(game.path().join("HFS+ Disk Image")).unwrap();
+        std::fs::write(game.path().join("HFS+ Disk Image/Saved Game"), b"save").unwrap();
+        let mut runner = new_runner();
+        let Err(error) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&first])
+        else {
+            panic!("game media and volume named alike");
+        };
+        assert!(error.contains("both use the volume name"), "{error}");
+
+        // Overwriting only a path the disc already has leaves the file set
+        // unchanged, so the check must compare fork contents as well.
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        std::fs::create_dir_all(game.path().join("HFS+ Disk Image")).unwrap();
+        std::fs::write(game.path().join("HFS+ Disk Image/Data File"), b"replaced").unwrap();
+        let mut runner = new_runner();
+        let Err(error) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&first])
+        else {
+            panic!("game media replacing a file on a volume named alike");
+        };
+        assert!(error.contains("both use the volume name"), "{error}");
+
+        let mut runner = new_runner();
+        let error = mount_locked_volume_image(&mut runner, b"not a disk image")
+            .expect_err("unsupported image");
+        assert!(error.contains("not a supported disk image"), "{error}");
+    }
+
+    #[test]
+    fn executable_candidates_list_every_launchable_application() {
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Alpha", "Beta"]);
+
+        let mut runner = new_runner();
+        load_game_from_path(&mut runner, game.path()).expect("game should load");
+
+        let mut candidates = runner.executable_candidates().to_vec();
+        candidates.sort();
+        assert_eq!(candidates, ["Alpha", "Beta"]);
+        let launched = runner.dispatcher().launched_app_path().unwrap();
+        assert!(candidates.iter().any(|candidate| candidate == launched));
     }
 }

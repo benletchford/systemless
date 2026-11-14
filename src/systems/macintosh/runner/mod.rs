@@ -1809,6 +1809,8 @@ pub struct FixtureRunner {
     ppc_host_matte: Option<PpcHostMatte>,
     prefer_powerpc_executables: bool,
     preferred_executable_path: Option<String>,
+    /// Launchable applications seen while loading the current media, in load order.
+    executable_candidates: Vec<String>,
     installer_handoff_baseline: Option<BTreeSet<String>>,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
     /// Set to true when the application calls ExitToShell
@@ -2111,6 +2113,7 @@ impl FixtureRunner {
             ppc_host_mirror_capacity: 0,
             prefer_powerpc_executables: false,
             preferred_executable_path: None,
+            executable_candidates: Vec::new(),
             installer_handoff_baseline: None,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
             halted: false,
@@ -2201,6 +2204,25 @@ impl FixtureRunner {
 
     pub(crate) fn preferred_executable_path(&self) -> Option<&str> {
         self.preferred_executable_path.as_deref()
+    }
+
+    /// VFS paths of every launchable application found while loading the
+    /// current media, in load order. The launched one is
+    /// `dispatcher().launched_app_path()`; `SYSTEMLESS_LOAD_EXECUTABLE` or
+    /// [`Self::set_preferred_executable_path`] selects a different one.
+    pub fn executable_candidates(&self) -> &[String] {
+        &self.executable_candidates
+    }
+
+    pub(crate) fn clear_executable_candidates(&mut self) {
+        self.executable_candidates.clear();
+    }
+
+    pub(crate) fn record_executable_candidate(&mut self, path: &str) {
+        let path = TrapDispatcher::normalize_vfs_path(path);
+        if !self.executable_candidates.contains(&path) {
+            self.executable_candidates.push(path);
+        }
     }
 
     pub(crate) fn arm_installer_handoff(&mut self) {

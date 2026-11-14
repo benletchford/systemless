@@ -15,6 +15,7 @@ pub(super) struct RuntimeConfig {
     #[cfg(target_os = "macos")]
     pub native_preflight: bool,
     pub game_path: PathBuf,
+    pub mounts: Vec<PathBuf>,
     pub arrows_as_numpad: bool,
     pub native_integrations: bool,
     pub addressing_24_bit: bool,
@@ -76,6 +77,7 @@ impl RuntimeOwner {
                     config.ui_theme,
                 );
                 driver.gpu = config.gpu;
+                driver.mounts = config.mounts;
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         #[cfg(target_os = "macos")]
@@ -300,6 +302,7 @@ mod tests {
             #[cfg(target_os = "macos")]
             native_preflight: false,
             game_path: "owner-test".into(),
+            mounts: Vec::new(),
             arrows_as_numpad: false,
             native_integrations: false,
             addressing_24_bit: false,

@@ -65,6 +65,19 @@ impl MacintoshSession {
         Ok(app)
     }
 
+    /// Load a game from a path with additional media mounted as separate,
+    /// hardware-locked volumes. See [`game::load_game_from_path_with_volumes`].
+    pub fn load_path_with_volumes<P: AsRef<Path>>(
+        &mut self,
+        path: &Path,
+        volumes: &[P],
+    ) -> Result<(LoadedApp, Vec<game::MountedVolume>), String> {
+        self.loaded = false;
+        let loaded = game::load_game_from_path_with_volumes(&mut self.runner, path, volumes)?;
+        self.loaded = true;
+        Ok(loaded)
+    }
+
     /// Complete canonical post-load initialization after optional save import.
     pub fn initialize(&mut self, app: &LoadedApp) {
         game::init_game(&mut self.runner, app);

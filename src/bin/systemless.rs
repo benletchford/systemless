@@ -285,6 +285,11 @@ struct Cli {
     #[arg(value_name = "GAME")]
     game: PathBuf,
 
+    /// Mount a disk image or folder as an additional locked volume, like a
+    /// CD-ROM, beside GAME's own media (repeatable)
+    #[arg(long = "mount", value_name = "PATH")]
+    mounts: Vec<PathBuf>,
+
     /// Use wgpu for desktop presentation, drawing, text, and supported 3D rendering
     #[arg(long, conflicts_with = "renderer")]
     gpu: bool,
@@ -3492,6 +3497,7 @@ impl ApplicationHandler for App {
 
 fn run_gui(
     game_path: PathBuf,
+    mounts: Vec<PathBuf>,
     arrows_as_numpad: bool,
     native_integrations: bool,
     addressing_24_bit: bool,
@@ -3531,6 +3537,7 @@ fn run_gui(
         #[cfg(target_os = "macos")]
         native_preflight: native_integrations && !native_bundle::already_relaunched(),
         game_path: game_path.clone(),
+        mounts,
         arrows_as_numpad,
         native_integrations,
         addressing_24_bit,
@@ -3714,6 +3721,7 @@ fn wait_for_debug_resume(server: &mut debug_server::DebugServer, runner: &mut Fi
 
 fn run_headless(
     game_path: &std::path::Path,
+    mounts: &[PathBuf],
     max_instructions: usize,
     addressing_24_bit: bool,
     screen_depth: Option<u16>,
@@ -3738,7 +3746,10 @@ fn run_headless(
             .runner_mut()
             .set_quickdraw_gpu_renderer(Box::new(wgpu_quickdraw::QuickDrawRenderer::new()));
     }
-    let app = session.load_path(game_path).expect("Failed to load game");
+    let (app, mounted) = session
+        .load_path_with_volumes(game_path, mounts)
+        .expect("Failed to load game");
+    report_launch_media(session.runner(), &mounted);
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut())
         .expect("Failed to open desktop save store");
     eprintln!(
@@ -3869,6 +3880,48 @@ impl Cli {
     }
 }
 
+/// Load GAME with its `--mount` volumes, then report what was mounted and
+/// which executable was chosen.
+fn load_launch_media(
+    runner: &mut FixtureRunner,
+    game_path: &std::path::Path,
+    mounts: &[PathBuf],
+) -> Result<systemless::systems::macintosh::loader::LoadedApp, String> {
+    let (app, mounted) = game::load_game_from_path_with_volumes(runner, game_path, mounts)?;
+    report_launch_media(runner, &mounted);
+    Ok(app)
+}
+
+fn report_launch_media(runner: &FixtureRunner, mounted: &[game::MountedVolume]) {
+    for volume in mounted {
+        eprintln!(
+            "[SYSTEMLESS] Mounted locked volume \"{}\" (vRefNum {}, {} files)",
+            volume.name, volume.ref_num, volume.file_count
+        );
+    }
+    let launched = runner.dispatcher().launched_app_path();
+    let candidates = runner.executable_candidates();
+    if candidates.len() > 1 {
+        eprintln!("[SYSTEMLESS] Executable candidates:");
+        for candidate in candidates {
+            let marker = if Some(candidate.as_str()) == launched {
+                '*'
+            } else {
+                ' '
+            };
+            eprintln!("[SYSTEMLESS]  {marker} {candidate}");
+        }
+    }
+    if let Some(launched) = launched {
+        eprintln!("[SYSTEMLESS] Selected executable: {launched}");
+        if candidates.len() > 1 {
+            eprintln!(
+                "[SYSTEMLESS] Set SYSTEMLESS_LOAD_EXECUTABLE to a candidate path to launch another"
+            );
+        }
+    }
+}
+
 fn run_ppc_import_audit(game_path: &std::path::Path) {
     use game::ppc_import_audit::audit_ppc_imports_from_path;
 
@@ -3951,6 +4004,7 @@ fn main() {
             .unwrap_or_else(|| std::path::Path::new("play-output"));
         if let Err(error) = play::run(
             &game_path,
+            &cli.mounts,
             script,
             output,
             cli.play_reference.as_deref(),
@@ -3968,6 +4022,10 @@ fn main() {
 
     if !game_path.exists() {
         eprintln!("Error: Game file not found: {}", game_path.display());
+        std::process::exit(1);
+    }
+    if let Some(missing) = cli.mounts.iter().find(|path| !path.exists()) {
+        eprintln!("Error: Volume to mount not found: {}", missing.display());
         std::process::exit(1);
     }
 
@@ -4027,6 +4085,7 @@ fn main() {
         if timed {
             headless_time::run(
                 &game_path,
+                &cli.mounts,
                 cli.max_ticks.unwrap_or(600),
                 cli.headless_start_time.unwrap_or(3_871_497_600),
                 cli.addressing_24_bit,
@@ -4039,6 +4098,7 @@ fn main() {
         } else {
             run_headless(
                 &game_path,
+                &cli.mounts,
                 cli.max_instructions.unwrap_or(5_000_000),
                 cli.addressing_24_bit,
                 cli.screen_depth,
@@ -4055,6 +4115,7 @@ fn main() {
         }
         run_gui(
             game_path,
+            cli.mounts,
             arrows_as_numpad,
             native_integrations,
             cli.addressing_24_bit,
