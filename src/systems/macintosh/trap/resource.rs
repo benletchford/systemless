@@ -4397,7 +4397,7 @@ impl super::TrapDispatcher {
                     .working_directory_info(*self.app_wd_refnum)
                     .map(|wd| wd.dir_id)
                     .unwrap_or(*self.default_dir_id);
-                bus.write_long(pb + 48, dir_id); // ioWDDirID
+                bus.write_long(pb + 48, self.hfs_dir_id(volume_ref_num, dir_id)); // ioWDDirID
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -6408,11 +6408,12 @@ impl super::TrapDispatcher {
 
                         let app_spec_ptr = bus.read_long(info_ptr + 56);
                         if app_spec_ptr != 0 {
-                            bus.write_word(
-                                app_spec_ptr,
-                                super::TrapDispatcher::boot_volume_ref_num_u16(),
+                            let app_vref = self.volume_ref_num_for_vfs_path(&app.path);
+                            bus.write_word(app_spec_ptr, app_vref as u16);
+                            bus.write_long(
+                                app_spec_ptr + 2,
+                                self.hfs_dir_id(app_vref, app.parent_dir_id),
                             );
-                            bus.write_long(app_spec_ptr + 2, app.parent_dir_id);
                             Self::write_pstring(bus, app_spec_ptr + 6, &app_name);
                         }
 
@@ -6555,12 +6556,17 @@ impl super::TrapDispatcher {
                         let (spec_v_ref_num, spec_dir_id, spec_name, target_key) = if requested_name
                             .is_empty()
                         {
+                            let directory_path = self
+                                .directory_path_for_id(effective_dir_id)
+                                .map(str::to_string);
                             (
-                                resolved_v_ref_num,
+                                directory_path
+                                    .as_deref()
+                                    .and_then(|path| self.vfs_volume_for_path(path))
+                                    .map_or(resolved_v_ref_num, |volume| volume.ref_num),
                                 effective_dir_id,
                                 String::new(),
-                                self.directory_path_for_id(effective_dir_id)
-                                    .map(str::to_string),
+                                directory_path,
                             )
                         } else if let Some((target_vref, parent_dir_id, basename, key)) = self
                             .fsspec_parts_for_hfs_path(requested_v_ref_num, dir_id, &requested_name)
@@ -6590,7 +6596,12 @@ impl super::TrapDispatcher {
                         };
 
                         bus.write_word(spec_ptr, spec_v_ref_num as u16);
-                        bus.write_long(spec_ptr + 2, spec_dir_id);
+                        let spec_hfs_dir_id = if requested_name.is_empty() {
+                            self.hfs_dir_id(spec_v_ref_num, spec_dir_id)
+                        } else {
+                            spec_dir_id
+                        };
+                        bus.write_long(spec_ptr + 2, spec_hfs_dir_id);
                         let spec_name_bytes = encode_mac_roman_lossy(&spec_name);
                         let n = spec_name_bytes.len().min(63);
                         bus.write_byte(spec_ptr + 6, n as u8);
@@ -7484,7 +7495,7 @@ impl super::TrapDispatcher {
                         bus.write_word(pb + 22, wd_ref_num as u16);
                         bus.write_long(pb + 28, proc_id);
                         bus.write_word(pb + 32, volume_ref_num as u16);
-                        bus.write_long(pb + 48, effective_dir_id);
+                        bus.write_long(pb + 48, self.hfs_dir_id(volume_ref_num, effective_dir_id));
                         bus.write_word(pb + 16, 0);
                         cpu.write_reg(Register::D0, 0);
                     } else {
@@ -7571,7 +7582,13 @@ impl super::TrapDispatcher {
                         bus.write_word(pb + 22, returned_vref as u16);
                         bus.write_long(pb + 28, working_directory.proc_id);
                         bus.write_word(pb + 32, working_directory.volume_ref_num as u16);
-                        bus.write_long(pb + 48, working_directory.dir_id);
+                        bus.write_long(
+                            pb + 48,
+                            self.hfs_dir_id(
+                                working_directory.volume_ref_num,
+                                working_directory.dir_id,
+                            ),
+                        );
                         bus.write_word(pb + 16, 0);
                         cpu.write_reg(Register::D0, 0);
                     } else {
@@ -7764,7 +7781,7 @@ impl super::TrapDispatcher {
                         bus.write_long(pb + 48, current_pos); // ioFCBCrPs
                         bus.write_word(pb + 52, file_volume_ref as u16); // ioFCBVRefNum
                         bus.write_long(pb + 54, 0); // ioFCBClpSiz
-                        bus.write_long(pb + 58, parent_dir_id); // ioFCBParID
+                        bus.write_long(pb + 58, self.hfs_dir_id(file_volume_ref, parent_dir_id)); // ioFCBParID
                         eprintln!(
                             "[TRAP] FSDispatch PBGetFCBInfo -> name=\"{}\" len={} pos={} flags=${:04X} parentDirID={}",
                             base_name, file_len, current_pos, flags, parent_dir_id
@@ -7799,13 +7816,17 @@ impl super::TrapDispatcher {
                         .lookup_catalog_entry_for_hfs_lookup(vref, dir_id, &filename, fdir_index);
 
                     if let Some(entry) = lookup {
+                        // Directory IDs are scoped by volume, so the entry's IDs
+                        // are reported on, and ioVRefNum names, the volume that
+                        // holds it. Files 1992, 1-27 and 2-85.
+                        let entry_vref = self.volume_ref_num_for_vfs_path(&entry.path);
                         if entry.is_directory {
                             if let Some(directory) = self
                                 .vfs_directories
                                 .iter()
                                 .find(|directory| directory.path.eq_ignore_ascii_case(&entry.path))
                             {
-                                self.fill_directory_catalog_info(bus, pb, directory);
+                                self.fill_directory_catalog_info(bus, pb, entry_vref, directory);
                                 eprintln!(
                                     "[TRAP] FSDispatch PBGetCatInfo dir \"{}\" -> dirID={} parentDirID={}",
                                     entry.name, directory.dir_id, directory.parent_dir_id
@@ -7813,7 +7834,10 @@ impl super::TrapDispatcher {
                             }
                         } else if let Some(metadata) = self.vfs_file_metadata(&entry.path) {
                             self.fill_file_catalog_info(bus, pb, &entry.path, metadata);
-                            bus.write_long(pb + 100, metadata.parent_dir_id);
+                            bus.write_long(
+                                pb + 100,
+                                self.hfs_dir_id(entry_vref, metadata.parent_dir_id),
+                            );
                             eprintln!(
                                 "[TRAP] FSDispatch PBGetCatInfo file \"{}\" -> fileID={} parentDirID={}",
                                 entry.name, metadata.file_id, metadata.parent_dir_id
@@ -7823,7 +7847,7 @@ impl super::TrapDispatcher {
                             let name = Self::hfs_name_from_vfs_component(&entry.name);
                             Self::write_pstring(bus, name_ptr, &name);
                         }
-                        bus.write_word(pb + 22, resolved_vref as u16);
+                        bus.write_word(pb + 22, entry_vref as u16);
                         bus.write_word(pb + 16, 0);
                         cpu.write_reg(Register::D0, 0);
                     } else {
@@ -8353,6 +8377,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &mut MacMemoryBus,
         pb: u32,
+        vref: i16,
         directory: &super::dispatch::VfsDirectory,
     ) {
         bus.write_byte(pb + 30, 0x10); // kFolderBit
@@ -8364,7 +8389,7 @@ impl super::TrapDispatcher {
             directory.creator,
             directory.finder_flags,
         );
-        bus.write_long(pb + 48, directory.dir_id);
+        bus.write_long(pb + 48, self.hfs_dir_id(vref, directory.dir_id));
         let child_directory_count = self
             .vfs_directories
             .iter()
@@ -8383,9 +8408,9 @@ impl super::TrapDispatcher {
         bus.write_word(pb + 52, entry_count); // ioDrNmFls
         bus.write_long(pb + 72, 0);
         bus.write_long(pb + 76, 0);
-        // ioDrParID: parent directory ID.
-        // Files 1992, 2-192
-        bus.write_long(pb + 100, directory.parent_dir_id);
+        // ioDrParID: parent directory ID. A mounted volume's root reports
+        // fsRtParID. Files 1992, 1-27, 2-85 and 2-192
+        bus.write_long(pb + 100, self.hfs_directory_parent_id(vref, directory));
     }
 
     fn cat_search_volume_ref_num(&self, bus: &MacMemoryBus, pb: u32) -> Option<i16> {
@@ -8437,7 +8462,8 @@ impl super::TrapDispatcher {
                         .count(),
                 )
                 .min(u16::MAX as usize) as u16;
-            let name = if directory.parent_dir_id == 1 {
+            let parent_dir_id = self.hfs_directory_parent_id(volume_ref_num, directory);
+            let name = if parent_dir_id == 1 {
                 if volume_ref_num == Self::boot_volume_ref_num() {
                     Self::boot_volume_name().to_string()
                 } else {
@@ -8455,7 +8481,7 @@ impl super::TrapDispatcher {
             entries.push(CatSearchEntry {
                 name,
                 vref_num: volume_ref_num,
-                parent_dir_id: directory.parent_dir_id,
+                parent_dir_id,
                 is_directory: true,
                 locked: false,
                 finder_info,
@@ -8489,7 +8515,7 @@ impl super::TrapDispatcher {
             entries.push(CatSearchEntry {
                 name: Self::hfs_name_from_vfs_component(Self::vfs_basename(&path)),
                 vref_num: volume_ref_num,
-                parent_dir_id: metadata.parent_dir_id,
+                parent_dir_id: self.hfs_dir_id(volume_ref_num, metadata.parent_dir_id),
                 is_directory: false,
                 locked: self.locked_files.contains(&path),
                 finder_info,
@@ -8926,10 +8952,25 @@ impl super::TrapDispatcher {
         filename: &str,
     ) -> Option<(i16, u32, String, String)> {
         let target_key = self.vfs_key_for_fsspec(vref, dir_id, filename)?;
+        // The FSSpec names the volume that holds the target. A mounted
+        // volume's root is named by the volume name inside fsRtParID, and an
+        // item at that root has parent fsRtDirID. Files 1992, 1-27 and 2-85.
+        let volume_ref_num = self.volume_ref_num_for_vfs_path(&target_key);
+        if let Some(volume) =
+            self.directory_id_for_vfs_path(&target_key)
+                .and_then(|target_dir_id| {
+                    self.vfs_volumes
+                        .iter()
+                        .find(|volume| volume.root_dir_id == target_dir_id && target_dir_id != 2)
+                })
+        {
+            return Some((volume.ref_num, 1, volume.name.clone(), target_key));
+        }
         let parent_path = super::TrapDispatcher::vfs_parent_path(&target_key);
         let parent_dir_id = self.directory_id_for_vfs_path(parent_path)?;
+        let parent_dir_id = self.hfs_dir_id(volume_ref_num, parent_dir_id);
         Some((
-            self.resolve_volume_ref_num(vref),
+            volume_ref_num,
             parent_dir_id,
             super::TrapDispatcher::hfs_name_from_vfs_component(
                 super::TrapDispatcher::vfs_basename(&target_key),

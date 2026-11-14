@@ -122,6 +122,7 @@ pub(super) fn ppc_dispatch_file_manager(
                 vfs_resource_files,
                 default_dir_id,
                 last_resource_error,
+                vfs_volumes,
             );
             return PpcImportAction::ReturnPreserve;
         }
@@ -414,6 +415,7 @@ pub(super) fn ppc_dispatch_file_manager(
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             );
             ppc_p2cstr(cpu, memory);
             result

@@ -9,7 +9,7 @@ use super::{
     ppc_process_heap_alloc, ppc_quickdraw_read_pixel, ppc_quickdraw_write_raw_pixel,
     ppc_res_type_text, ppc_rgb555_to_clut_index, qd3d_collision_trace_enabled,
     qd3d_dump_frame_enabled, qd3d_text, qd3d_trace_enabled, qd3d_trimesh_trace_enabled, BLR,
-    PpcCpu, PpcImportAction, PpcSectionMem, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcCpu, PpcImportAction, PpcSectionMem, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsVolumeRecord,
     ppc_i16_result, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
 };
 use crate::memory::GuestWritableSpan;
@@ -10918,10 +10918,17 @@ pub(crate) fn ppc_q3_fsspec_storage_new(
     vfs_files: &[PpcVfsFileRecord],
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> u32 {
     let spec_ptr = cpu.gpr[3];
-    let Ok(path) = ppc_existing_path_for_fsspec(memory, vfs_directories, vfs_files, &[], spec_ptr)
-    else {
+    let Ok(path) = ppc_existing_path_for_fsspec(
+        memory,
+        vfs_directories,
+        vfs_files,
+        &[],
+        spec_ptr,
+        vfs_volumes,
+    ) else {
         *last_mem_error = PPC_NO_ERR;
         return 0;
     };

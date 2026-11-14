@@ -10,6 +10,7 @@ pub(super) struct PpcQuickTimeDispatchContext<'a> {
     pub(super) heap_cursor: &'a mut u32,
     pub(super) last_mem_error: &'a mut i16,
     pub(super) handles: &'a mut Vec<PpcHandleRecord>,
+    pub(super) vfs_volumes: &'a [PpcVfsVolumeRecord],
     pub(super) vfs_directories: &'a [PpcVfsDirectory],
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
@@ -32,6 +33,7 @@ pub(super) fn dispatch_quicktime_import(
         heap_cursor,
         last_mem_error,
         handles,
+        vfs_volumes,
         vfs_directories,
         vfs_files,
         vfs_resource_files,
@@ -88,6 +90,7 @@ pub(super) fn dispatch_quicktime_import(
                 vfs_directories,
                 vfs_files,
                 quicktime,
+                vfs_volumes,
             );
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_qt_record_error(quicktime, error),
@@ -238,7 +241,14 @@ pub(super) fn dispatch_quicktime_import(
             )))
         }
         PpcImportDispatcherTarget::QtOpenMovieFile => {
-            let error = ppc_qt_open_movie_file(cpu, memory, vfs_directories, vfs_files, quicktime);
+            let error = ppc_qt_open_movie_file(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                quicktime,
+                vfs_volumes,
+            );
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_qt_record_error(quicktime, error),
             )))

@@ -44,7 +44,8 @@ pub(super) fn dispatch(context: &mut PpcDispatchContext<'_>) -> Option<PpcImport
     }
     let flags = memory.read_u16_be(pb.wrapping_add(14)).unwrap_or(0);
     let spec = memory.read_u32_be(pb.wrapping_add(16)).unwrap_or(0);
-    let path = files::ppc_path_for_fsspec(memory, context.vfs_directories, spec);
+    let path =
+        files::ppc_path_for_fsspec(memory, context.vfs_directories, spec, context.vfs_volumes);
     let result = path.and_then(|path| {
         if !context
             .vfs_resource_files

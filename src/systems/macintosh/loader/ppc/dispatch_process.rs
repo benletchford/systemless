@@ -1,12 +1,14 @@
 //! Typed Process Manager dispatch for PowerPC imports.
 
 use super::*;
+use crate::process_context::process_hfs_dir_id;
 
 pub(super) struct PpcProcessDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
     pub(super) stack_top: u32,
+    pub(super) vfs_volumes: &'a [PpcVfsVolumeRecord],
     pub(super) vfs_directories: &'a [PpcVfsDirectory],
     pub(super) vfs_files: &'a [PpcVfsFileRecord],
     pub(super) vfs_resource_files: &'a [PpcVfsResourceFileRecord],
@@ -21,6 +23,7 @@ pub(super) fn dispatch_process_import(
         cpu,
         memory,
         stack_top,
+        vfs_volumes,
         vfs_directories,
         vfs_files,
         vfs_resource_files,
@@ -34,6 +37,7 @@ pub(super) fn dispatch_process_import(
         PpcImportDispatcherTarget::GetProcessBundleLocation => ppc_get_process_bundle_location(
             cpu,
             memory,
+            vfs_volumes,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -43,6 +47,7 @@ pub(super) fn dispatch_process_import(
             cpu,
             memory,
             stack_top,
+            vfs_volumes,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -135,6 +140,7 @@ fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
 fn ppc_get_process_bundle_location(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -161,11 +167,12 @@ fn ppc_get_process_bundle_location(
         .rsplit_once("/Contents/")
         .filter(|(_, inner)| inner.starts_with("MacOS"))
         .map_or(app.path.as_str(), |(bundle, _)| bundle);
-    let parent_dir_id = ppc_parent_dir_id_for_path(vfs_directories, bundle);
+    let vref = ppc_volume_ref_num_for_path(vfs_volumes, vfs_directories, bundle);
+    let parent_dir_id = ppc_hfs_parent_dir_id_for_path(vfs_volumes, vfs_directories, vref, bundle);
     if !super::dispatch_fsref::ppc_write_fsref_parts(
         memory,
         location,
-        PPC_BOOT_VOLUME_REF_NUM,
+        vref,
         parent_dir_id,
         &ppc_vfs_basename_bytes(bundle),
     ) {
@@ -178,6 +185,7 @@ fn ppc_get_process_information(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     stack_top: u32,
+    vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -216,12 +224,13 @@ fn ppc_get_process_information(
         return PPC_PARAM_ERR;
     }
     let app_spec_ptr = memory.read_u32_be(info_ptr + 56).unwrap_or(0);
+    let app_vref = ppc_volume_ref_num_for_path(vfs_volumes, vfs_directories, &app.path);
     if app_spec_ptr != 0
         && ppc_write_fsspec(
             memory,
             app_spec_ptr,
-            PPC_BOOT_VOLUME_REF_NUM,
-            app.parent_dir_id,
+            app_vref,
+            process_hfs_dir_id(vfs_volumes, app_vref, app.parent_dir_id),
             &app_name,
         )
         .is_none()

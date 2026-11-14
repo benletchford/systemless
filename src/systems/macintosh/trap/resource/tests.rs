@@ -9680,7 +9680,7 @@ fn pbsetvol_volume_name_selects_named_volume_root() {
 #[test]
 fn pbhgetvol_reports_the_selected_mounted_volume_and_root() {
     let (mut disp, mut cpu, mut bus) = setup();
-    let (volume_ref, root_dir_id) = mount_read_only_test_volume(&mut disp, "Selected Disk");
+    let (volume_ref, _) = mount_read_only_test_volume(&mut disp, "Selected Disk");
     let pb = 0x300000u32;
     let name_buf = 0x300100u32;
     cpu.write_reg(Register::A0, pb);
@@ -9695,7 +9695,9 @@ fn pbhgetvol_reports_the_selected_mounted_volume_and_root() {
     assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
     assert_eq!(bus.read_pstring(name_buf), b"Selected Disk");
     assert_eq!(bus.read_word(pb + 32), volume_ref as u16, "ioWDVRefNum");
-    assert_eq!(bus.read_long(pb + 48), root_dir_id, "ioWDDirID");
+    // The mounted volume's root is fsRtDirID on that volume.
+    // Inside Macintosh: Files (1992), pp. 1-27 and 2-85.
+    assert_eq!(bus.read_long(pb + 48), 2, "ioWDDirID");
 }
 
 #[test]
@@ -12215,4 +12217,243 @@ fn pbhgetfinfo_does_not_find_a_file_in_an_unrelated_directory() {
     call_trap_word(&mut disp, 0xA20C, &mut cpu, &mut bus).unwrap();
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!(bus.read_long(pb + 54), 3);
+}
+
+fn mount_spare_volume_with_titanic(disp: &mut super::super::TrapDispatcher) -> (i16, u32, u32) {
+    let volume_ref = disp.mount_vfs_volume("Spare", 0, 2, 1024, 512, 512, 900, 0, 0, 0, 0, 0, 0);
+    let root_dir_id = disp
+        .vfs_volume_for_ref_num(volume_ref)
+        .expect("mounted volume")
+        .root_dir_id;
+    let game_dir_id = disp.ensure_vfs_directory("Spare/Titanic");
+    disp.vfs.insert("Spare/Titanic/Titanic".to_string(), vec![]);
+    disp.vfs
+        .insert("Spare/Titanic/BOOTFILE".to_string(), vec![1, 2, 3]);
+    (volume_ref, root_dir_id, game_dir_id)
+}
+
+fn pbgetcatinfo_by_dir_id(
+    disp: &mut super::super::TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut crate::memory::MacMemoryBus,
+    vref: i16,
+    dir_id: u32,
+) -> (Vec<u8>, i16, u32, u32) {
+    let pb = 0x300000u32;
+    let name_ptr = setup_param_block(bus, cpu, pb, b"poison");
+    bus.write_word(pb + 22, vref as u16);
+    bus.write_word(pb + 28, (-1i16) as u16);
+    bus.write_long(pb + 48, dir_id);
+    bus.write_long(pb + 100, 0xDEAD_BEEF);
+    cpu.write_reg(Register::D0, 9);
+    call(disp, false, 0x60, cpu, bus).unwrap();
+    assert_eq!(
+        cpu.read_reg(Register::D0) as i32,
+        0,
+        "PBGetCatInfo dir {dir_id}"
+    );
+    assert_eq!(
+        bus.read_byte(pb + 30) & 0x10,
+        0x10,
+        "dir {dir_id} is a folder"
+    );
+    (
+        bus.read_pstring(name_ptr),
+        bus.read_word(pb + 22) as i16,
+        bus.read_long(pb + 48),
+        bus.read_long(pb + 100),
+    )
+}
+
+#[test]
+fn pbgetcatinfo_walks_from_a_mounted_folder_to_its_volume_root() {
+    // Inside Macintosh: Files (1992), pp. 1-27 and 2-85: every volume's root
+    // directory has dirID 2 (fsRtDirID), parent dirID 1 (fsRtParID) and the
+    // volume's name. A folder at a mounted volume's root therefore has parent
+    // dirID 2 on that volume, and walking up names the volume only once.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (volume_ref, _, game_dir_id) = mount_spare_volume_with_titanic(&mut disp);
+    disp.set_launched_app_path("Spare/Titanic/Titanic");
+
+    let (name, vref, dir_id, parent_dir_id) =
+        pbgetcatinfo_by_dir_id(&mut disp, &mut cpu, &mut bus, volume_ref, game_dir_id);
+    assert_eq!(name, b"Titanic");
+    assert_eq!(vref, volume_ref);
+    assert_eq!(dir_id, game_dir_id);
+    assert_eq!(
+        parent_dir_id, 2,
+        "a root-level folder's parent is fsRtDirID"
+    );
+
+    let (name, vref, dir_id, parent_dir_id) =
+        pbgetcatinfo_by_dir_id(&mut disp, &mut cpu, &mut bus, vref, parent_dir_id);
+    assert_eq!(name, b"Spare");
+    assert_eq!(vref, volume_ref);
+    assert_eq!(dir_id, 2, "the mounted root is fsRtDirID");
+    assert_eq!(parent_dir_id, 1, "the mounted root's parent is fsRtParID");
+
+    // The boot volume's root is unchanged.
+    let (name, vref, dir_id, parent_dir_id) = pbgetcatinfo_by_dir_id(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        super::super::dispatch::BOOT_VOLUME_REF_NUM,
+        2,
+    );
+    assert_eq!(name, super::super::dispatch::BOOT_VOLUME_NAME.as_bytes());
+    assert_eq!(vref, super::super::dispatch::BOOT_VOLUME_REF_NUM);
+    assert_eq!((dir_id, parent_dir_id), (2, 1));
+}
+
+#[test]
+fn mounted_volume_root_dir_id_two_selects_that_volume() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (volume_ref, _, game_dir_id) = mount_spare_volume_with_titanic(&mut disp);
+    let boot_dir_id = disp.ensure_vfs_directory("Boot Folder");
+
+    // PBGetCatInfo by name relative to the mounted root, dirID 2.
+    let pb = 0x300000u32;
+    setup_param_block(&mut bus, &mut cpu, pb, b"Titanic");
+    bus.write_word(pb + 22, volume_ref as u16);
+    bus.write_word(pb + 28, 0);
+    bus.write_long(pb + 48, 2);
+    cpu.write_reg(Register::D0, 9);
+    call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+    assert_eq!(bus.read_long(pb + 48), game_dir_id);
+    assert_eq!(bus.read_long(pb + 100), 2);
+    assert_eq!(bus.read_word(pb + 22) as i16, volume_ref);
+
+    // The same request on the boot volume still searches the boot root.
+    setup_param_block(&mut bus, &mut cpu, pb, b"Boot Folder");
+    bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+    bus.write_word(pb + 28, 0);
+    bus.write_long(pb + 48, 2);
+    cpu.write_reg(Register::D0, 9);
+    call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+    assert_eq!(bus.read_long(pb + 48), boot_dir_id);
+    assert_eq!(bus.read_long(pb + 100), 2);
+
+    // FSMakeFSSpec reports a root-level folder in fsRtDirID of its volume,
+    // and an empty name keeps the directory selected by dirID 2.
+    let spec_ptr = 0x300200u32;
+    let name_ptr = 0x300300u32;
+    for (name, expected_dir_id, expected_name) in [
+        (b"Titanic".as_slice(), 2, "Titanic"),
+        (b"".as_slice(), 2, ""),
+    ] {
+        write_pstring(&mut bus, name_ptr, name);
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, spec_ptr);
+        bus.write_long(sp + 4, name_ptr);
+        bus.write_long(sp + 8, 2);
+        bus.write_word(sp + 12, volume_ref as u16);
+        cpu.write_reg(Register::D0, 1);
+        call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+        let new_sp = cpu.read_reg(Register::A7);
+        assert_eq!(
+            bus.read_word(new_sp) as i16,
+            0,
+            "FSMakeFSSpec {expected_name}"
+        );
+        assert_eq!(bus.read_word(spec_ptr) as i16, volume_ref);
+        assert_eq!(bus.read_long(spec_ptr + 2), expected_dir_id);
+        assert_eq!(
+            crate::trap::types::read_fsspec_name(&bus, spec_ptr),
+            expected_name
+        );
+    }
+}
+
+#[test]
+fn mounted_volume_full_pathname_resolves_once_named() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (volume_ref, _, game_dir_id) = mount_spare_volume_with_titanic(&mut disp);
+
+    let pb = 0x300000u32;
+    setup_param_block(&mut bus, &mut cpu, pb, b"Spare:Titanic:bootfile");
+    bus.write_word(pb + 22, 0);
+    bus.write_word(pb + 28, 0);
+    bus.write_long(pb + 48, 0);
+    cpu.write_reg(Register::D0, 9);
+    call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+    assert_eq!(bus.read_byte(pb + 30) & 0x10, 0, "bootfile is a file");
+    assert_eq!(bus.read_long(pb + 100), game_dir_id);
+    assert_eq!(bus.read_word(pb + 22) as i16, volume_ref);
+
+    // The root-level folder's FSSpec reports the volume root as fsRtDirID.
+    let spec_ptr = 0x300200u32;
+    let name_ptr = 0x300300u32;
+    write_pstring(&mut bus, name_ptr, b"Spare:Titanic");
+    let sp = TEST_SP;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, spec_ptr);
+    bus.write_long(sp + 4, name_ptr);
+    bus.write_long(sp + 8, 0);
+    bus.write_word(sp + 12, 0);
+    cpu.write_reg(Register::D0, 1);
+    call(&mut disp, true, 0x252, &mut cpu, &mut bus).unwrap();
+    let new_sp = cpu.read_reg(Register::A7);
+    assert_eq!(bus.read_word(new_sp) as i16, 0);
+    assert_eq!(bus.read_word(spec_ptr) as i16, volume_ref);
+    assert_eq!(bus.read_long(spec_ptr + 2), 2);
+    assert_eq!(
+        crate::trap::types::read_fsspec_name(&bus, spec_ptr),
+        "Titanic"
+    );
+}
+
+#[test]
+fn an_app_on_a_mounted_volume_reports_its_folder_on_that_volume() {
+    // PBHGetVol and processAppSpec name the application's volume and report
+    // a mounted volume's root as fsRtDirID. Inside Macintosh: Files (1992),
+    // pp. 1-27, 2-85 and 2-160; Processes (1994), pp. 2-23 to 2-25.
+    for (app_path, game_folder) in [("Spare/Titanic/Titanic", true), ("Spare/Launcher", false)] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let (volume_ref, _, game_dir_id) = mount_spare_volume_with_titanic(&mut disp);
+        disp.vfs.insert(app_path.to_string(), vec![]);
+        disp.set_vfs_entry_metadata(app_path, *b"APPL", *b"GAME", 0);
+        disp.set_launched_app_path(app_path);
+        let expected_dir_id = if game_folder { game_dir_id } else { 2 };
+
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, 0);
+        call(&mut disp, false, 0x14, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(
+            bus.read_word(pb + 32) as i16,
+            volume_ref,
+            "{app_path} ioWDVRefNum"
+        );
+        assert_eq!(
+            bus.read_long(pb + 48),
+            expected_dir_id,
+            "{app_path} ioWDDirID"
+        );
+
+        let info_ptr = 0x2A0900u32;
+        let psn_ptr = 0x2A0A00u32;
+        let app_spec_ptr = 0x2A0C00u32;
+        bus.write_long(psn_ptr, 0);
+        bus.write_long(psn_ptr + 4, 2);
+        bus.write_word(info_ptr, 60);
+        bus.write_long(info_ptr + 4, 0);
+        bus.write_long(info_ptr + 56, app_spec_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x003A);
+        bus.write_long(TEST_SP + 2, info_ptr);
+        bus.write_long(TEST_SP + 6, psn_ptr);
+        call(&mut disp, true, 0x08F, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_word(TEST_SP + 10), 0, "{app_path} noErr");
+        assert_eq!(bus.read_word(app_spec_ptr) as i16, volume_ref, "{app_path}");
+        assert_eq!(
+            bus.read_long(app_spec_ptr + 2),
+            expected_dir_id,
+            "{app_path}"
+        );
+    }
 }

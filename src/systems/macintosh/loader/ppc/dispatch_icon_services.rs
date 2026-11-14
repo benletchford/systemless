@@ -218,6 +218,7 @@ pub(super) fn dispatch_icon_services_import(
     vfs_resources: &[PpcVfsResourceRecord],
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> Option<PpcImportAction> {
     let result = match binding.dispatcher_target {
         PpcImportDispatcherTarget::GetIconRefFromFile => {
@@ -229,7 +230,7 @@ pub(super) fn dispatch_icon_services_import(
             {
                 PPC_PARAM_ERR
             } else {
-                match ppc_path_for_fsspec(memory, vfs_directories, cpu.gpr[3]) {
+                match ppc_path_for_fsspec(memory, vfs_directories, cpu.gpr[3], vfs_volumes) {
                     Err(err) => err,
                     Ok(path) => {
                         let folder = ppc_directory_id_for_path(vfs_directories, &path).is_some();
