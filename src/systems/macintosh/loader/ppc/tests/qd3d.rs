@@ -25577,6 +25577,385 @@ fn q3_software_renderer_projects_orthographic_and_view_plane_cameras() {
 }
 
 #[test]
+fn q3_point_projector_matches_per_point_projection_and_gates_view_direction() {
+    fn reference_project(
+        command: &PpcQ3SceneTriMeshCommand,
+        front_buffer: PpcFrontBuffer,
+        viewport: PpcQ3ViewportRect,
+        point: (f32, f32, f32),
+    ) -> Option<PpcQ3SoftwareProjectedVertex> {
+        let world = ppc_q3_point3d_transform_values(point, command.local_to_world);
+        let view_direction = ppc_q3_software_view_direction(command.camera, world);
+        let (projected, fog_depth, clip) = if let Some(camera) = command.camera {
+            let world_to_view = ppc_q3_camera_world_to_view_matrix(camera.placement)?;
+            let view_to_frustum = ppc_q3_camera_raster_projection_matrix(&camera)?;
+            let view = ppc_q3_point3d_transform_values(world, world_to_view);
+            let mut clip = ppc_q3_point3d_transform_4d_values(view, view_to_frustum);
+            clip.2 = (-2.0_f32).mul_add(clip.2, -clip.3);
+            (
+                ppc_q3_software_clip_to_projected(clip)?,
+                -view.2,
+                Some(clip),
+            )
+        } else {
+            (world, world.2, None)
+        };
+        if !ppc_q3_point_finite(projected) || !fog_depth.is_finite() {
+            return None;
+        }
+        let (screen_x, screen_y) =
+            ppc_q3_software_projected_to_screen(projected, command.camera, front_buffer, viewport);
+        Some(PpcQ3SoftwareProjectedVertex {
+            x: screen_x,
+            y: screen_y,
+            z: projected.2,
+            clip,
+            world,
+            view_direction,
+            fog_depth,
+            uv: None,
+            diffuse: None,
+            ambient_coefficient: None,
+            normal: None,
+            specular_color: None,
+            specular_control: None,
+            highlight_state: None,
+            vertex_alpha: None,
+        })
+    }
+
+    fn bits_pair(pair: (f32, f32)) -> [u32; 2] {
+        [pair.0.to_bits(), pair.1.to_bits()]
+    }
+    fn bits_triple(triple: (f32, f32, f32)) -> [u32; 3] {
+        [triple.0.to_bits(), triple.1.to_bits(), triple.2.to_bits()]
+    }
+    fn bits_quad(quad: (f32, f32, f32, f32)) -> [u32; 4] {
+        [
+            quad.0.to_bits(),
+            quad.1.to_bits(),
+            quad.2.to_bits(),
+            quad.3.to_bits(),
+        ]
+    }
+    fn assert_vertex_bits_eq(
+        actual: Option<PpcQ3SoftwareProjectedVertex>,
+        expected: Option<PpcQ3SoftwareProjectedVertex>,
+    ) {
+        assert_eq!(actual.is_some(), expected.is_some());
+        let (Some(a), Some(e)) = (actual, expected) else {
+            return;
+        };
+        assert_eq!(a.x.to_bits(), e.x.to_bits());
+        assert_eq!(a.y.to_bits(), e.y.to_bits());
+        assert_eq!(a.z.to_bits(), e.z.to_bits());
+        assert_eq!(a.clip.map(bits_quad), e.clip.map(bits_quad));
+        assert_eq!(bits_triple(a.world), bits_triple(e.world));
+        assert_eq!(
+            a.view_direction.map(bits_triple),
+            e.view_direction.map(bits_triple)
+        );
+        assert_eq!(a.fog_depth.to_bits(), e.fog_depth.to_bits());
+        assert_eq!(a.uv.map(bits_pair), e.uv.map(bits_pair));
+    }
+
+    let view = PPC_Q3_OBJECT_BASE;
+    let front_buffer = PpcFrontBuffer {
+        base_addr: PPC_HEAP_BASE,
+        row_bytes: 320 * 2,
+        width: 320,
+        height: 240,
+        depth: 16,
+    };
+    let sub_viewport = PpcQ3ViewportRect {
+        left: 17,
+        top: 23,
+        right: 291,
+        bottom: 211,
+    };
+    let placement = PpcQ3CameraPlacement {
+        camera_location: (1.25, -0.75, 4.5),
+        point_of_interest: (-0.5, 0.25, -2.0),
+        up_vector: (0.1, 1.0, 0.05),
+    };
+    let perspective = PpcQ3CameraRecord {
+        camera: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE,
+        camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement,
+        range_hither: 0.5,
+        range_yon: 50.0,
+        viewport_origin: (-0.75, 0.85),
+        viewport_width: 1.5,
+        viewport_height: 1.6,
+        projection: PpcQ3CameraProjection::ViewAngleAspect {
+            fov: 1.1,
+            aspect_ratio_x_to_y: 4.0 / 3.0,
+        },
+    };
+    let orthographic = PpcQ3CameraRecord {
+        camera_type: PPC_Q3_CAMERA_TYPE_ORTHOGRAPHIC,
+        projection: PpcQ3CameraProjection::Orthographic {
+            left: -2.0,
+            top: 2.0,
+            right: 2.0,
+            bottom: -2.0,
+        },
+        ..perspective
+    };
+    let origin_perspective = PpcQ3CameraRecord {
+        placement: PpcQ3CameraPlacement {
+            camera_location: (0.0, 0.0, 0.0),
+            point_of_interest: (0.0, 0.0, -1.0),
+            up_vector: (0.0, 1.0, 0.0),
+        },
+        ..perspective
+    };
+    let degenerate_camera = PpcQ3CameraRecord {
+        placement: PpcQ3CameraPlacement {
+            camera_location: (1.0, 2.0, 3.0),
+            point_of_interest: (1.0, 2.0, 3.0),
+            up_vector: (0.0, 1.0, 0.0),
+        },
+        ..perspective
+    };
+    let transform = [
+        [1.25, -0.2, 0.1, 0.0],
+        [0.15, 0.9, -0.3, 0.0],
+        [-0.05, 0.25, 1.1, 0.0],
+        [0.4, -0.6, -3.2, 1.0],
+    ];
+    let sample_points = [
+        (0.0, 0.0, 0.0),
+        (-1.3, 0.7, -2.1),
+        (2.4, -1.9, 0.5),
+        // Exactly at camera location after identity transform for degenerate view test:
+        (1.25, -0.75, 4.5),
+        (f32::NAN, 0.0, -1.0),
+    ];
+
+    for local_to_world in [transform, ppc_q3_matrix4x4_identity()] {
+        for camera in [
+            Some(perspective),
+            Some(orthographic),
+            Some(origin_perspective),
+            Some(degenerate_camera),
+            None,
+        ] {
+            let command = PpcQ3SceneTriMeshCommand {
+                submission_index: 0,
+                view_state: PpcQ3ViewStateRecord::new(view),
+                camera,
+                geometry: PpcQ3SceneTriMeshGeometry {
+                    source: PpcQ3SceneTriMeshSource::DataPtr(0),
+                    data: Vec::new(),
+                    memory_regions: Vec::new(),
+                },
+                local_to_world,
+                material: PpcQ3SubmissionMaterialRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: 0,
+                    secondary: 0,
+                    shader: 0,
+                    illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                    styles: Vec::new(),
+                    fog_style: None,
+                    attributes: Vec::new(),
+                    shader_uv_transform: None,
+                    shader_boundary: None,
+                    texture_shader: None,
+                    mipmap_texture: None,
+                },
+                lights: PpcQ3SubmissionLightRecord {
+                    view,
+                    kind: PpcQ3SubmissionKind::TriMesh,
+                    primary: 0,
+                    secondary: 0,
+                    light_group: 0,
+                    lights: Vec::new(),
+                },
+            };
+            let with_view =
+                PpcQ3SoftwarePointProjector::new(&command, front_buffer, sub_viewport, true);
+            let without_view =
+                PpcQ3SoftwarePointProjector::new(&command, front_buffer, sub_viewport, false);
+            for point in sample_points {
+                let expected = reference_project(&command, front_buffer, sub_viewport, point);
+                if local_to_world == ppc_q3_matrix4x4_identity() {
+                    if point == (1.25, -0.75, 4.5)
+                        && (camera == Some(perspective) || camera == Some(orthographic))
+                    {
+                        assert_eq!(expected.unwrap().view_direction, Some((0.0, 0.0, 1.0)));
+                    }
+                    if point == (0.0, 0.0, 0.0) && camera == Some(origin_perspective) {
+                        assert!(expected.is_none());
+                    }
+                }
+                assert_vertex_bits_eq(with_view.project(point), expected);
+                assert_vertex_bits_eq(
+                    ppc_q3_software_project_point(&command, front_buffer, sub_viewport, point),
+                    expected,
+                );
+                let mut expected_no_view = expected;
+                if let Some(v) = &mut expected_no_view {
+                    v.view_direction = None;
+                }
+                assert_vertex_bits_eq(without_view.project(point), expected_no_view);
+            }
+        }
+    }
+
+    // Verify prepare_q3_gpu_frame handles untextured meshes without dummy UVs,
+    // preserves uv_transform evaluation on default (0, 0) UVs, and populates
+    // view_direction only when Phong specular attributes are active.
+    let trimesh_data = PPC_DATA_BASE + 0x1000;
+    let triangles_ptr = PPC_DATA_BASE + 0x1100;
+    let points_ptr = PPC_DATA_BASE + 0x1200;
+    let front_base = PPC_HEAP_BASE + 0x1000;
+    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(trimesh_data, vec![0; 0x400]);
+    loaded.memory.add_region(front_base, vec![0; 16 * 16 * 2]);
+    loaded.gworlds = vec![PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: PPC_MAIN_GWORLD,
+        pixmap_handle: 0,
+        pixmap: 0,
+        base_addr: front_base,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 16,
+        height: 16,
+        depth: 16,
+        row_bytes: 32,
+        pixels_locked: false,
+        pixels_no_purge: false,
+    }];
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
+    loaded
+        .memory
+        .write_u32_be(trimesh_data + PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(
+            trimesh_data + PPC_Q3_TRIMESH_TRIANGLES_OFFSET,
+            triangles_ptr,
+        )
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(trimesh_data + PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 3)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(trimesh_data + PPC_Q3_TRIMESH_POINTS_OFFSET, points_ptr)
+        .unwrap();
+    for (idx, pt) in [(-0.5, -0.5, 0.0), (-0.5, 0.5, 0.0), (0.5, -0.5, 0.0)]
+        .into_iter()
+        .enumerate()
+    {
+        ppc_write_q3_vector3d(&mut loaded.memory, points_ptr + idx as u32 * 12, pt).unwrap();
+        loaded
+            .memory
+            .write_u32_be(triangles_ptr + idx as u32 * 4, idx as u32)
+            .unwrap();
+    }
+    loaded.q3_views.push(PpcQ3ViewStateRecord::new(view));
+    loaded.q3_submissions.push(PpcQ3SubmissionRecord {
+        view,
+        kind: PpcQ3SubmissionKind::TriMesh,
+        primary: trimesh_data,
+        secondary: 0,
+    });
+    loaded
+        .q3_submission_transforms
+        .push(PpcQ3SubmissionTransformRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh_data,
+            secondary: 0,
+            local_to_world: ppc_q3_matrix4x4_identity(),
+        });
+    loaded
+        .q3_submission_materials
+        .push(PpcQ3SubmissionMaterialRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh_data,
+            secondary: 0,
+            shader: 0,
+            illumination_type: PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+            styles: Vec::new(),
+            fog_style: None,
+            attributes: Vec::new(),
+            shader_uv_transform: Some(PpcQ3ShaderUvTransformRecord {
+                shader: 0,
+                matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.25, 0.75, 1.0]],
+            }),
+            shader_boundary: None,
+            texture_shader: None,
+            mipmap_texture: None,
+        });
+    loaded
+        .q3_submission_lights
+        .push(PpcQ3SubmissionLightRecord {
+            view,
+            kind: PpcQ3SubmissionKind::TriMesh,
+            primary: trimesh_data,
+            secondary: 0,
+            light_group: 0,
+            lights: Vec::new(),
+        });
+
+    // Unlit/legacy transport accepts untextured mesh without UVs and still transforms (0, 0).
+    let base_commands = loaded.q3_scene_commands();
+    let transport_frame = loaded
+        .prepare_q3_gpu_frame(base_commands.clone(), false)
+        .expect("untextured mesh without vertex UVs should prepare on legacy GPU transport");
+    assert_eq!(transport_frame.draws[0].vertices[0].uv, [0.25, 0.75]);
+
+    // Lambert with active directional light omits view_direction; Phong populates it.
+    let mut lambert_commands = base_commands;
+    let PpcQ3SceneCommand::TriMesh(cmd) = &mut lambert_commands[0] else {
+        unreachable!()
+    };
+    cmd.camera = Some(perspective);
+    cmd.lights.lights.push(PpcQ3LightRecord {
+        light: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 3,
+        light_type: PPC_Q3_LIGHT_TYPE_DIRECTIONAL,
+        data: PpcQ3LightData {
+            is_on: 1,
+            brightness: 1.0,
+            color: (1.0, 1.0, 1.0),
+        },
+        kind: PpcQ3LightKind::Directional {
+            casts_shadows: 0,
+            direction: (0.0, 0.0, -1.0),
+        },
+    });
+    let lambert_frame = loaded
+        .prepare_q3_gpu_frame(lambert_commands.clone(), true)
+        .unwrap();
+    assert!(lambert_frame.draws[0]
+        .vertices
+        .iter()
+        .all(|v| v.shading.view_direction.is_none()));
+
+    let mut phong_commands = lambert_commands;
+    let PpcQ3SceneCommand::TriMesh(cmd) = &mut phong_commands[0] else {
+        unreachable!()
+    };
+    cmd.material.illumination_type = PPC_Q3_ILLUMINATION_TYPE_PHONG;
+    let phong_frame = loaded.prepare_q3_gpu_frame(phong_commands, true).unwrap();
+    assert!(phong_frame.draws[0]
+        .vertices
+        .iter()
+        .all(|v| v.shading.view_direction.is_some()));
+}
+
+#[test]
 fn hle_import_runner_records_q3_fog_style_submit_state() {
     let view = PPC_Q3_OBJECT_BASE;
     let fog_data_ptr = PPC_DATA_BASE + 0x1000;

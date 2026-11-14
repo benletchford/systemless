@@ -515,12 +515,11 @@ impl PpcLoadedApp {
             if points.is_empty() {
                 continue;
             }
-            let vertex_uvs = if material.texture.is_some() {
-                self.q3_software_trimesh_vertex_uvs(&command, points.len())
-            } else {
-                Some(vec![(0.0, 0.0); points.len()])
-            };
-            if !extended && vertex_uvs.is_none() {
+            let vertex_uvs = material
+                .texture
+                .and_then(|_| self.q3_software_trimesh_vertex_uvs(&command, points.len()));
+            let missing_texture_uvs = material.texture.is_some() && vertex_uvs.is_none();
+            if !extended && missing_texture_uvs {
                 return None;
             }
             // Software samples raw pixel (0, 0) when UVs are absent or unreadable.
@@ -528,7 +527,7 @@ impl PpcLoadedApp {
             // the shader transform/boundaries. Every draw, including expanded
             // degenerate edges, samples a 1x1 texture holding that pixel.
             let mut gpu_material = material;
-            if vertex_uvs.is_none() {
+            if missing_texture_uvs {
                 gpu_material.uv_transform = None;
             }
             let vertex_diffuse =
@@ -550,10 +549,14 @@ impl PpcLoadedApp {
             let triangle_diffuse = self.q3_software_trimesh_triangle_diffuse_colors(&command);
             let triangle_alpha = self.q3_software_trimesh_triangle_alphas(&command);
             let triangle_normals = self.q3_software_trimesh_triangle_normals(&command);
+            let uses_specular =
+                extended && ppc_q3_software_uses_specular_attributes(&material, &command.lights);
+            let projector =
+                PpcQ3SoftwarePointProjector::new(&command, front_buffer, viewport, uses_specular);
             let mut projected = points
                 .iter()
                 .copied()
-                .map(|point| ppc_q3_software_project_point(&command, front_buffer, viewport, point))
+                .map(|point| projector.project(point))
                 .collect::<Vec<_>>();
             for (index, projected) in projected.iter_mut().enumerate() {
                 let Some(projected) = projected else {
@@ -587,7 +590,7 @@ impl PpcLoadedApp {
             }
 
             let texture_index = match material.texture {
-                Some(texture) if vertex_uvs.is_none() => {
+                Some(texture) if missing_texture_uvs => {
                     // If even the first texel is unreadable, software leaves
                     // the material unmodulated. Retain the original material
                     // for transparency classification.
@@ -1070,10 +1073,16 @@ impl PpcLoadedApp {
             } else {
                 None
             };
+            let projector = PpcQ3SoftwarePointProjector::new(
+                &command,
+                front_buffer,
+                viewport,
+                uses_specular_attributes,
+            );
             let mut projected: Vec<Option<PpcQ3SoftwareProjectedVertex>> = points
                 .iter()
                 .copied()
-                .map(|point| ppc_q3_software_project_point(&command, front_buffer, viewport, point))
+                .map(|point| projector.project(point))
                 .collect();
             if let Some(vertex_uvs) = vertex_uvs {
                 for (projected, uv) in projected.iter_mut().zip(vertex_uvs) {
