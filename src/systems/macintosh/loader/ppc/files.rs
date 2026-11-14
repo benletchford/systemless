@@ -350,7 +350,9 @@ pub(super) fn ppc_pb_get_cat_info(
     if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &output_name) {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
-    if memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {
+    // ioVRefNum is input-only here: callers enumerating by index reuse the block
+    // with vRefNum 0 meaning the default directory.
+    if pathname_volume.is_some() && memory.write_u16_be(pb + 22, resolved_vref as u16).is_none() {
         return PPC_PARAM_ERR;
     }
     if ppc_hle_trace_enabled() {
@@ -4344,7 +4346,7 @@ pub(super) fn ppc_open_res_file(
         *last_resource_error = PPC_PARAM_ERR;
         return -1;
     };
-    let normalized_name = ppc_normalize_vfs_path(&decode_mac_roman(&name_bytes));
+    let normalized_name = crate::trap::TrapDispatcher::normalize_hfs_lookup_path(&decode_mac_roman(&name_bytes));
     if normalized_name.is_empty() {
         *last_resource_error = PPC_PARAM_ERR;
         return -1;
