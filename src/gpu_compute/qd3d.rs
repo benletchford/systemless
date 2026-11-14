@@ -23,9 +23,98 @@ pub struct Qd3dCompute {
     pipeline: wgpu::ComputePipeline,
     vertex_shade: wgpu::ComputePipeline,
     palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
+    textures: std::cell::RefCell<ResidentTextures>,
+    resident_textures: std::cell::Cell<bool>,
+}
+
+/// The device texture buffer and the byte versions written to it since the
+/// last refill. With residency on, a texture whose bytes are already resident
+/// reuses that upload; otherwise every frame writes all of its textures.
+#[derive(Default)]
+struct ResidentTextures {
+    buffer: Option<wgpu::Buffer>,
+    layout: ResidentLayout,
+}
+
+/// Word offsets and immutable byte snapshots written since the last refill,
+/// found by a key computed from the bytes and confirmed by comparing them in
+/// full, so a reuse never depends on anything but the pixels themselves.
+#[derive(Default, Clone)]
+struct ResidentLayout {
+    words: std::collections::HashMap<u64, Vec<(Arc<[u8]>, u32)>>,
+    used_words: u64,
+}
+
+/// Lookup key for texture bytes: the length and up to 64 evenly spaced 8-byte
+/// samples. Textures that differ only between samples share a key and are
+/// told apart by the full comparison.
+fn resident_key(rgba: &[u8]) -> u64 {
+    const SAMPLES: usize = 64;
+    let mut key = 0xcbf2_9ce4_8422_2325u64 ^ rgba.len() as u64;
+    let mut mix = |value: u64| {
+        key = (key ^ value).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(29);
+    };
+    let words = rgba.len() / 8;
+    if words <= SAMPLES {
+        for chunk in rgba.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            mix(u64::from_le_bytes(word));
+        }
+    } else {
+        for sample in 0..SAMPLES {
+            let at = sample * (words - 1) / (SAMPLES - 1) * 8;
+            mix(u64::from_le_bytes(rgba[at..at + 8].try_into().unwrap()));
+        }
+    }
+    key
+}
+
+impl ResidentLayout {
+    fn word(&self, rgba: &[u8]) -> Option<u32> {
+        self.words
+            .get(&resident_key(rgba))?
+            .iter()
+            .find_map(|(bytes, word)| (bytes.as_ref() == rgba).then_some(*word))
+    }
+
+    fn clear(&mut self) {
+        self.words.clear();
+        self.used_words = 0;
+    }
+
+    /// The texture's word offset, and whether its bytes must be written there.
+    fn place(&mut self, rgba: &[u8]) -> (u32, bool) {
+        if let Some(word) = self.word(rgba) {
+            return (word, false);
+        }
+        let word = self.used_words as u32;
+        self.used_words += rgba.len() as u64 / 4;
+        self.words
+            .entry(resident_key(rgba))
+            .or_default()
+            .push((Arc::from(rgba), word));
+        (word, true)
+    }
 }
 
 impl Qd3dCompute {
+    /// Keep converted textures on the device between frames, uploading only
+    /// bytes not already resident. Off by default, which writes every texture
+    /// every frame.
+    pub fn set_resident_textures(&self, enabled: bool) {
+        self.resident_textures.set(enabled);
+        if !enabled {
+            *self.textures.borrow_mut() = ResidentTextures::default();
+        }
+    }
+
+    /// Number of texture byte versions recorded as resident, for tests.
+    #[doc(hidden)]
+    pub fn resident_texture_count(&self) -> usize {
+        self.textures.borrow().layout.words.values().map(Vec::len).sum()
+    }
+
     pub async fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -65,6 +154,8 @@ impl Qd3dCompute {
             pipeline,
             vertex_shade,
             palette: Default::default(),
+            textures: Default::default(),
+            resident_textures: Default::default(),
         })
     }
 
@@ -111,22 +202,81 @@ impl Qd3dCompute {
         {
             return Err("invalid QD3D GPU framebuffer".into());
         }
-        let mut texture_bytes = Vec::new();
-        let mut textures = Vec::new();
-        for texture in &frame.textures {
-            let count = (u64::from(texture.width) * u64::from(texture.height))
-                .checked_mul(4)
-                .ok_or("GPU texture size overflow")?;
-            if count == 0
-                || count != texture.rgba.len() as u64
-                || texture_bytes.len() as u64 + count
-                    > limits.max_storage_buffer_binding_size.into()
-            {
-                return Err("invalid QD3D GPU texture".into());
+        // Plan where each texture will sit without changing the resident
+        // state or queueing a write: the frame can still be rejected below,
+        // and a rejected frame is never submitted.
+        // Without residency, keep the original single upload per frame.
+        let uncached_frame = !self.resident_textures.get();
+        let (texture_buffer, texture_layout, textures) = {
+            let resident = self.textures.borrow();
+            let mut frame_bytes = 0u64;
+            let mut new_bytes = 0u64;
+            for texture in &frame.textures {
+                let count = (u64::from(texture.width) * u64::from(texture.height))
+                    .checked_mul(4)
+                    .ok_or("GPU texture size overflow")?;
+                if count == 0
+                    || count != texture.rgba.len() as u64
+                    || frame_bytes + count > limits.max_storage_buffer_binding_size.into()
+                {
+                    return Err("invalid QD3D GPU texture".into());
+                }
+                frame_bytes += count;
+                if uncached_frame || resident.layout.word(&texture.rgba).is_none() {
+                    new_bytes += count;
+                }
             }
-            textures.push((texture_bytes.len() as u32 / 4, texture));
-            texture_bytes.extend_from_slice(&texture.rgba);
-        }
+            let frame_bytes = frame_bytes.max(4);
+            let capacity = resident.buffer.as_ref().map_or(0, wgpu::Buffer::size);
+            let mut refill = uncached_frame || resident.layout.used_words * 4 + new_bytes > capacity;
+            // A refill sizes the buffer for this frame with room for the next,
+            // up to the same limit the scratch map applies; asking for more
+            // would recreate a limit-sized buffer on every refill.
+            let limit = limits
+                .max_buffer_size
+                .min(u64::from(limits.max_storage_buffer_binding_size));
+            let size = if uncached_frame {
+                frame_bytes
+            } else if refill {
+                frame_bytes.saturating_mul(2).min(limit)
+            } else {
+                capacity
+            };
+            let buffer = self.buffers.get(
+                &self.device,
+                "3d-textures",
+                size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            );
+            refill |= resident.buffer.as_ref() != Some(&buffer);
+            let needed = if refill {
+                frame_bytes
+            } else {
+                resident.layout.used_words * 4 + new_bytes
+            };
+            if buffer.size() < needed {
+                return Err("QD3D GPU texture storage exceeds limits".into());
+            }
+            let mut layout = if refill { ResidentLayout::default() } else { resident.layout.clone() };
+            // Without residency every texture, duplicates included, takes the
+            // next words of the single upload, exactly as before residency.
+            let mut next_word = 0u32;
+            let textures: Vec<_> = frame
+                .textures
+                .iter()
+                .map(|texture| {
+                    let (word, write) = if uncached_frame {
+                        let word = next_word;
+                        next_word += (texture.rgba.len() / 4) as u32;
+                        (word, true)
+                    } else {
+                        layout.place(&texture.rgba)
+                    };
+                    (word, write, texture)
+                })
+                .collect();
+            (buffer, layout, textures)
+        };
         let mut light_bytes = Vec::new();
         let mut triangles = Vec::new();
         let mut deferred = Vec::new();
@@ -137,7 +287,7 @@ impl Qd3dCompute {
             }
             let (offset, width, height, wrap) = match draw.texture {
                 Some(index) => {
-                    let (offset, texture) =
+                    let (offset, _, texture) =
                         textures.get(index).ok_or("invalid GPU texture reference")?;
                     (
                         *offset,
@@ -439,15 +589,34 @@ impl Qd3dCompute {
         if triangles.is_empty() {
             triangles.resize(TRIANGLE_BYTES, 0);
         }
-        if texture_bytes.is_empty() {
-            texture_bytes.resize(4, 255);
+        // Every check has passed: write the textures that are not resident
+        // and record the layout. The borrow ends before any readback await.
+        {
+            let mut resident = self.textures.borrow_mut();
+            if uncached_frame {
+                let bytes: Vec<u8> = textures
+                    .iter()
+                    .flat_map(|(_, _, texture)| texture.rgba.iter().copied())
+                    .collect();
+                if !bytes.is_empty() {
+                    self.queue.write_buffer(&texture_buffer, 0, &bytes);
+                }
+            } else {
+                for (word, write, texture) in &textures {
+                    if *write {
+                        self.queue
+                            .write_buffer(&texture_buffer, u64::from(*word) * 4, &texture.rgba);
+                    }
+                }
+            }
+            resident.layout = texture_layout;
+            resident.buffer = Some(texture_buffer.clone());
         }
         let buffer = |role, bytes: &[u8], usage| {
             self.buffers
                 .upload(&self.device, &self.queue, role, bytes, usage)
         };
         let triangle_buffer = buffer("3d-triangles", &triangles, wgpu::BufferUsages::STORAGE);
-        let texture_buffer = buffer("3d-textures", &texture_bytes, wgpu::BufferUsages::STORAGE);
         let tile_buffer = buffer("3d-tiles", &tiles, wgpu::BufferUsages::STORAGE);
         let light_buffer = buffer("3d-lights", &light_bytes, wgpu::BufferUsages::STORAGE);
         // Live guest palettes can change between frames. Cache by all components,
@@ -729,4 +898,53 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
         && v.reciprocal_w > 0.
         && v.screen_x.abs() <= 32768.
         && v.screen_y.abs() <= 32768.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_layout_writes_each_byte_version_once_until_cleared() {
+        let mut layout = ResidentLayout::default();
+        // New bytes take the next free words.
+        assert_eq!(layout.place(&[1; 64]), (0, true));
+        assert_eq!(layout.place(&[2; 16]), (16, true));
+        assert_eq!(layout.place(&[3; 4]), (20, true));
+        // Resident bytes keep their offset and are not written again.
+        assert_eq!(layout.place(&[1; 64]), (0, false));
+        assert_eq!(layout.place(&[3; 4]), (20, false));
+        assert_eq!(layout.used_words, 21);
+        assert_eq!(layout.word(&[2; 16]), Some(16));
+        assert_eq!(layout.word(&[4; 4]), None);
+        // After a refill nothing is resident.
+        layout.clear();
+        assert_eq!(layout.word(&[1; 64]), None);
+        assert_eq!(layout.place(&[3; 4]), (0, true));
+        assert_eq!(layout.place(&[1; 64]), (1, true));
+    }
+
+    #[test]
+    fn resident_layout_tells_apart_bytes_that_share_a_key() {
+        // Long enough that the key samples only part of the bytes.
+        let base: Vec<u8> = (0..4096u32).map(|n| (n * 37) as u8).collect();
+        let mut between = base.clone();
+        between[12] ^= 0x40; // between two sampled words
+        assert_eq!(resident_key(&base), resident_key(&between));
+        let mut layout = ResidentLayout::default();
+        assert_eq!(layout.place(&base), (0, true));
+        // Same key, different bytes: a new upload, not a reuse.
+        assert_eq!(layout.word(&between), None);
+        assert_eq!(layout.place(&between), (1024, true));
+        // Both versions stay resident and can be drawn in one frame.
+        assert_eq!(layout.place(&base), (0, false));
+        assert_eq!(layout.place(&between), (1024, false));
+        // A sampled byte changes the key.
+        let mut sampled = base.clone();
+        sampled[0] ^= 1;
+        assert_ne!(resident_key(&base), resident_key(&sampled));
+        // Short textures are keyed by every byte.
+        assert_ne!(resident_key(&[1, 2, 3, 4]), resident_key(&[1, 2, 3, 5]));
+        assert_ne!(resident_key(&[0; 8]), resident_key(&[0; 12]));
+    }
 }
