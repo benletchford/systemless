@@ -573,10 +573,11 @@ impl Qd3dCompute {
         {
             let mut resident = self.textures.borrow_mut();
             if uncached_frame {
-                let bytes: Vec<u8> = textures
+                let bytes = textures
                     .iter()
-                    .flat_map(|(_, _, texture)| texture.rgba.iter().copied())
-                    .collect();
+                    .map(|(_, _, texture)| texture.rgba.as_slice())
+                    .collect::<Vec<_>>()
+                    .concat();
                 if !bytes.is_empty() {
                     self.queue.write_buffer(&texture_buffer, 0, &bytes);
                 }
