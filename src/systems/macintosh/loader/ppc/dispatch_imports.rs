@@ -4479,10 +4479,18 @@ mod agl_choose_tests {
 }
 
 fn ppc_dispatch_slot_compatibility(
-    _binding: &PpcImportBinding,
+    binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
+    if binding.symbol_name == "SReadPRAMRec" {
+        // FUNCTION SReadPRAMRec (spBlkPtr: SpBlockPtr): OSErr;
+        // Copies a slot's parameter RAM record to the caller's SPRAMRecord at
+        // spResult. No expansion cards are present, so report smEmptySlot and
+        // leave the caller's record untouched, matching the 68K _SlotManager path.
+        // Inside Macintosh: Devices (1994), Slot Manager.
+        return PpcImportAction::Return(ppc_i16_result(PPC_SM_EMPTY_SLOT_ERR));
+    }
     if cpu.gpr[3] != 0 {
         let _ = memory.write_u32_be(cpu.gpr[3], 0);
     }

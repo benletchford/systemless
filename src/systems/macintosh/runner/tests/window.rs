@@ -218,12 +218,13 @@ fn runner_window_snapshot_matches_classic_and_native_window_operations() {
     );
     assert_eq!(classic_created.visible, native_created.visible);
     assert_eq!(classic_created.active, native_created.active);
-    // Preserve the routes' existing initial-update policy: the classic
-    // NewWindow route invalidates its content immediately, while the native
-    // NewCWindow import currently does not. Snapshot unification must expose
-    // that difference without taking ownership of window-creation behavior.
+    // Both routes invalidate a visible new window's content immediately
+    // (Inside Macintosh Volume I, pp. I-281 to I-283). The classic route
+    // stores update regions in global coordinates and the native route in
+    // window-local coordinates; snapshot unification exposes that difference
+    // without taking ownership of window-creation behavior.
     assert_eq!(classic_created.update_region, Some((20, 10, 260, 330)));
-    assert_eq!(native_created.update_region, None);
+    assert_eq!(native_created.update_region, Some((0, 0, 240, 320)));
 
     configure_snapshot_window(&mut classic, classic_window, false);
     let classic_snapshot = classic.window_stack_snapshot();

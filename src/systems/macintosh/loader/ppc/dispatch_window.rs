@@ -466,6 +466,7 @@ pub(super) fn dispatch_window_import(
                     next_front,
                     tick_count,
                 );
+                ppc_post_new_visible_window_update(memory, event_queue, window, tick_count, input);
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -529,6 +530,7 @@ pub(super) fn dispatch_window_import(
                     next_front,
                     tick_count,
                 );
+                ppc_post_new_visible_window_update(memory, event_queue, window, tick_count, input);
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -2463,6 +2465,27 @@ pub(super) fn ppc_union_window_update_rect(
     );
 }
 
+/// A window created visible has its whole content added to updateRgn, and the
+/// application then receives an updateEvt for it, as in the shared 68K Window
+/// Manager. Applications may defer drawing until that event arrives.
+/// Inside Macintosh Volume I (1985), pp. I-281 to I-283.
+fn ppc_post_new_visible_window_update(
+    memory: &mut PpcSectionMem,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    window: u32,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    if window == 0 || !ppc_window_is_visible(memory, window) {
+        return;
+    }
+    let port_rect = ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET));
+    if let Some(port_rect) = port_rect {
+        ppc_invalidate_window_local_rect(memory, window, port_rect);
+    }
+    ppc_enqueue_window_update_event(event_queue, window, when, input);
+}
+
 pub(super) fn ppc_invalidate_window_local_rect(
     memory: &mut PpcSectionMem,
     window: u32,
@@ -3958,6 +3981,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     next_front,
                     when,
                 );
+                ppc_post_new_visible_window_update(memory, event_queue, window, when, input);
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -4201,6 +4225,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     next_front,
                     when,
                 );
+                ppc_post_new_visible_window_update(memory, event_queue, window, when, input);
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
