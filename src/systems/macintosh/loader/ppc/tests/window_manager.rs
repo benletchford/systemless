@@ -740,9 +740,18 @@ fn hle_import_runner_handles_new_cwindow_allocation() {
         ppc_read_rgn_bbox(&mut loaded.memory, clip_rgn),
         Some((i16::MIN, i16::MIN, i16::MAX, i16::MAX))
     );
+    // Inside Macintosh Volume I (1985), pp. I-281 to I-283: a window created
+    // visible has its whole content pending update.
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
-        Some((0, 0, 0, 0))
+        Some((0, 0, 240, 320))
+    );
+    assert!(
+        loaded
+            .event_queue()
+            .iter()
+            .any(|event| event.what == 6 && event.message == window),
+        "a visible new window must receive an update event",
     );
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
@@ -3091,6 +3100,10 @@ fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
         .memory
         .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
         .unwrap();
+    // Service the initial update for the newly visible window first.
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::BeginUpdate);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EndUpdate);
     let rect_ptr = scratch + 16;
     ppc_write_rect(&mut loaded.memory, rect_ptr, 4, 6, 40, 50).unwrap();
 
@@ -7958,11 +7971,20 @@ fn window_modality_activation_and_chain_traversal_commands_dispatch_with_canonic
             loaded.cpu.gpr[3] = win1;
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
-            // Initially update region has empty bounds
+            // A newly visible window starts with its content pending update.
+            assert_eq!(loaded.cpu.gpr[3], 1);
+
+            // Once serviced, no update is pending.
+            let update_rgn_handle = loaded.memory.read_u32_be(win1 + 122).unwrap();
+            ppc_set_empty_rgn(&mut loaded.memory, update_rgn_handle).unwrap();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = win1;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
             assert_eq!(loaded.cpu.gpr[3], 0);
 
             // Populate update region with non-empty bounds
-            let update_rgn_handle = loaded.memory.read_u32_be(win1 + 122).unwrap();
             let update_rgn_ptr = loaded.memory.read_u32_be(update_rgn_handle).unwrap();
             ppc_write_rect(&mut loaded.memory, update_rgn_ptr + 2, 10, 10, 50, 50).unwrap();
 
