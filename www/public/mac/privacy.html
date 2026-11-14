@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Systemless for Mac — Privacy</title>
+  <meta name="description" content="How Systemless for Mac handles local game files, optional catalogue requests and Apple-managed purchases.">
+  <link rel="canonical" href="https://systemless.org/mac/privacy">
+  <link rel="stylesheet" href="/mac/mac.css">
+  <link rel="icon" href="/assets/icons/favicon.png">
+</head>
+<body>
+  <header>
+    <a href="/"><img src="/assets/icons/systemless-icon.png" alt="">Systemless</a>
+    <nav aria-label="Mac help"><a href="/mac/support">Support</a><a href="/mac/privacy" aria-current="page">Privacy</a><a href="https://github.com/benletchford/systemless">Runtime source</a></nav>
+  </header>
+  <main>
+    <p class="eyebrow">Systemless for Mac · Updated 15 November 2026</p>
+    <h1>Your collection stays on your Mac.</h1>
+    <p class="intro">This notice covers the native Systemless Mac app, maintained by Ben Letchford. The browser-based Systemless website is a separate experience.</p>
+    <h2>Local files and settings</h2>
+    <p>Systemless stores your imported archives, local library, preferences and saved progress on your Mac. The app does not upload that collection or its contents to Systemless servers.</p>
+    <p>The Mac app has no Systemless account, advertising SDK or embedded usage-analytics SDK. It does not use your library to build an advertising profile.</p>
+    <h2>The optional catalogue</h2>
+    <p>When the catalogue is enabled, the app requests current catalogue information from <code>systemless.org</code>. Installing an optional title or loading its artwork requests the relevant files from <code>assets.systemless.org</code>.</p>
+    <p>Network requests disclose standard connection information, including the requesting IP address and requested resource, to the hosting services. Hosting providers may process operational and security logs to deliver and protect those services. These requests do not upload your imported archives, saved games or local library.</p>
+    <p>You can turn off the optional catalogue in Settings. Your installed titles and local imports remain available offline.</p>
+    <h2>Purchases</h2>
+    <p>Apple processes the optional Mac unlock and purchase restoration. The app uses StoreKit to verify whether your Apple Account has the unlock. Systemless does not receive your payment-card details or require a separate account. Apple’s handling of purchases is covered by <a href="https://www.apple.com/legal/privacy/">Apple’s privacy information</a>.</p>
+    <h2>Information you choose to send</h2>
+    <p>If you email for support, the email address, message and attachments you provide are used to respond to your request and investigate the issue. Avoid including personal files or information that are unnecessary for the request. Correspondence may be retained to resolve the issue and maintain support records.</p>
+    <h2>Deleting local data</h2>
+    <p>Use the library’s removal action to remove an imported title. Saved progress may be retained for later reimports.</p>
+    <p>To remove all local app data, quit Systemless and use Finder to remove its sandbox container at <code>~/Library/Containers/org.systemless/</code>. This also removes local settings, archives and progress in that container. Back up anything you want to keep first. An Apple-managed purchase is associated with your Apple Account and can be restored separately.</p>
+    <h2>Questions and requests</h2>
+    <p>For privacy questions or requests about support correspondence, contact Ben Letchford at <a href="mailto:ben@letchford.cloud">ben@letchford.cloud</a>.</p>
+  </main>
+  <footer><a href="/mac/support">Systemless for Mac support</a> · <a href="https://github.com/benletchford/systemless">Public runtime source</a></footer>
+</body>
+</html>
