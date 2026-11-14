@@ -3438,7 +3438,7 @@ impl super::TrapDispatcher {
                     bus,
                     tracking.reply_ptr,
                     vref,
-                    dir_id,
+                    self.hfs_dir_id(vref, dir_id),
                     &name,
                     replacing,
                 );
@@ -13812,7 +13812,12 @@ impl super::TrapDispatcher {
                                 .find_vfs_rsrc_file_in_directory(dir_id, &target_name)
                                 .is_some();
                         standard_file_put_reply_modern(
-                            bus, reply_ptr, vref, dir_id, &name, replacing,
+                            bus,
+                            reply_ptr,
+                            vref,
+                            self.hfs_dir_id(vref, dir_id),
+                            &name,
+                            replacing,
                         );
                     } else {
                         standard_file_put_reply_old(bus, reply_ptr, wd_ref, &name);
@@ -14772,7 +14777,10 @@ impl super::TrapDispatcher {
 
                         if let Some(found_dir_id) = found_dir_id {
                             bus.write_word(vref_ptr, found_volume_ref as u16);
-                            bus.write_long(dirid_ptr, found_dir_id);
+                            bus.write_long(
+                                dirid_ptr,
+                                self.hfs_dir_id(found_volume_ref, found_dir_id),
+                            );
                         }
                         // Pop 16 bytes params, leave 2-byte result
                         bus.write_word(
@@ -14868,8 +14876,12 @@ impl super::TrapDispatcher {
                                 metadata.map(|entry| entry.parent_dir_id).unwrap_or(2);
                             let name = encode_mac_roman_lossy(Self::vfs_basename(&found));
                             let name_len = name.len().min(63);
-                            bus.write_word(target_ptr, Self::boot_volume_ref_num_u16());
-                            bus.write_long(target_ptr + 2, parent_dir_id);
+                            let target_vref = self.volume_ref_num_for_vfs_path(&found);
+                            bus.write_word(target_ptr, target_vref as u16);
+                            bus.write_long(
+                                target_ptr + 2,
+                                self.hfs_dir_id(target_vref, parent_dir_id),
+                            );
                             bus.write_byte(target_ptr + 6, name_len as u8);
                             bus.write_bytes(target_ptr + 7, &name[..name_len]);
                             eprintln!("[ALIAS] ResolveAlias target='{}'", found);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::process_context::{process_hfs_dir_id, process_volume_dir_id};
 
 pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
@@ -144,15 +145,17 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_directories,
                 vfs_files,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FSpCreate => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_create(cpu, memory, vfs_directories, vfs_files),
+            ppc_fsp_create(cpu, memory, vfs_directories, vfs_files, vfs_volumes),
         ))),
         PpcImportDispatcherTarget::HCreate => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_h_create(
                 cpu, memory, vfs_directories, vfs_files, default_dir_id,
                 working_directories,
+                vfs_volumes,
             ),
         ))),
         PpcImportDispatcherTarget::HRename => {
@@ -167,6 +170,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::Rename => {
@@ -181,6 +185,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FSpRename => {
@@ -203,6 +208,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::PBHRenameSync | PpcImportDispatcherTarget::PBRenameSync => {
@@ -218,11 +224,19 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
-        PpcImportDispatcherTarget::Create => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_create(cpu, memory, vfs_directories, vfs_files, default_dir_id),
-        ))),
+        PpcImportDispatcherTarget::Create => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_create(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                default_dir_id,
+                vfs_volumes,
+            ))))
+        }
         PpcImportDispatcherTarget::FSpDelete => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_delete(
                 cpu,
@@ -234,6 +248,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 resource_files,
                 vfs_resources,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::DeleteByName(operation) => {
@@ -249,6 +264,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                vfs_volumes,
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -273,6 +289,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 last_resource_error,
+                vfs_volumes,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -285,6 +302,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 default_dir_id,
                 last_resource_error,
+                vfs_volumes,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -300,6 +318,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 next_file_ref_num,
                 current_resource_refnum,
                 last_resource_error,
+                vfs_volumes,
             ),
         ))),
         PpcImportDispatcherTarget::FSpOpenDF => {
@@ -311,6 +330,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 files,
                 writable_refnums,
                 next_file_ref_num,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FSpOpenRF => {
@@ -324,6 +344,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 files,
                 writable_refnums,
                 next_file_ref_num,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::PBOpen => {
@@ -732,9 +753,16 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 true,
             ))))
         }
-        PpcImportDispatcherTarget::FSpGetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_get_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
+        PpcImportDispatcherTarget::FSpGetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_get_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+            ))))
+        }
         PpcImportDispatcherTarget::GetFInfo => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_get_finfo(
                 cpu,
@@ -778,6 +806,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             );
             if c_string {
                 ppc_p2cstr(cpu, memory);
@@ -792,11 +821,19 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
-        PpcImportDispatcherTarget::FSpSetFInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_fsp_set_finfo(cpu, memory, vfs_directories, vfs_files, vfs_resource_files),
-        ))),
+        PpcImportDispatcherTarget::FSpSetFInfo => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_fsp_set_finfo(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+            ))))
+        }
         PpcImportDispatcherTarget::HSetFInfo => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_h_set_finfo(
                 cpu,
@@ -805,6 +842,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::PBResolveFileIDRef => Some(PpcImportAction::Return(ppc_i16_result(
@@ -839,6 +877,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             ),
         ))),
         PpcImportDispatcherTarget::DirCreate => {
@@ -848,6 +887,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_directories,
                 next_vfs_dir_id,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FSpDirCreate => {
@@ -857,12 +897,14 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_directories,
                 next_vfs_dir_id,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FSMakeFSSpec => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_fs_make_fsspec(
                 cpu,
                 memory,
+                vfs_volumes,
                 vfs_directories,
                 vfs_files,
                 vfs_resource_files,
@@ -881,6 +923,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 vfs_resources,
                 launched_app_path,
+                vfs_volumes,
             ),
         ))),
         PpcImportDispatcherTarget::FindFolder => {
@@ -910,15 +953,18 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
             } else {
                 0
             };
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_resolve_alias_file(
-                cpu,
-                memory,
-                vfs_directories,
-                vfs_files,
-                vfs_resource_files,
-                vfs_resources,
-                mount_flags,
-            ))))
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_resolve_alias_file(
+                    cpu,
+                    memory,
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    vfs_resources,
+                    mount_flags,
+                    vfs_volumes,
+                ),
+            )))
         }
         PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbDirCreateSync,
@@ -1003,6 +1049,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 handles,
                 aliases,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::FollowFinderAlias => {
@@ -1020,6 +1067,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_resource_files,
                 handles,
                 aliases,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::MatchAlias => Some(PpcImportAction::Return(ppc_i16_result(
@@ -1261,6 +1309,9 @@ fn ppc_open_working_directory(
     } else {
         requested_dir_id
     };
+    // fsRtDirID on a mounted volume selects that volume's root.
+    // Inside Macintosh: Files (1992), pp. 1-27 and 2-85.
+    let effective_dir_id = process_volume_dir_id(vfs_volumes, volume_ref_num, effective_dir_id);
     if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
         return Err(PPC_FNF_ERR);
     }
@@ -1369,7 +1420,14 @@ pub(super) fn ppc_dispatch_file_compatibility(
             let _ = memory.write_u16_be(pb + 22, working_directory.ref_num as u16);
             let _ = memory.write_u32_be(pb + 28, working_directory.proc_id);
             let _ = memory.write_u16_be(pb + 32, working_directory.volume_ref_num as u16);
-            let _ = memory.write_u32_be(pb + 48, working_directory.dir_id);
+            let _ = memory.write_u32_be(
+                pb + 48,
+                process_hfs_dir_id(
+                    vfs_volumes,
+                    working_directory.volume_ref_num,
+                    working_directory.dir_id,
+                ),
+            );
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, PPC_NO_ERR)))
         }
         PpcFileCompatibilityOperation::PbOpenWdSync => {
@@ -1429,7 +1487,10 @@ pub(super) fn ppc_dispatch_file_compatibility(
                 Ok((wd_ref_num, volume_ref_num, effective_dir_id)) => {
                     let _ = memory.write_u16_be(pb + 22, wd_ref_num as u16);
                     let _ = memory.write_u16_be(pb + 32, volume_ref_num as u16);
-                    let _ = memory.write_u32_be(pb + 48, effective_dir_id);
+                    let _ = memory.write_u32_be(
+                        pb + 48,
+                        process_hfs_dir_id(vfs_volumes, volume_ref_num, effective_dir_id),
+                    );
                     PPC_NO_ERR
                 }
                 Err(error) => error,
@@ -1474,7 +1535,10 @@ pub(super) fn ppc_dispatch_file_compatibility(
                 let _ = memory.write_u16_be(pb + 22, returned_ref_num as u16);
                 let _ = memory.write_u32_be(pb + 28, record.proc_id);
                 let _ = memory.write_u16_be(pb + 32, record.volume_ref_num as u16);
-                let _ = memory.write_u32_be(pb + 48, record.dir_id);
+                let _ = memory.write_u32_be(
+                    pb + 48,
+                    process_hfs_dir_id(vfs_volumes, record.volume_ref_num, record.dir_id),
+                );
                 PPC_NO_ERR
             } else {
                 PPC_RF_NUM_ERR
@@ -1528,6 +1592,10 @@ pub(super) fn ppc_dispatch_file_compatibility(
             } else {
                 requested_dir_id
             };
+            // fsRtDirID on a mounted volume selects that volume's root.
+            // Inside Macintosh: Files (1992), pp. 1-27 and 2-85.
+            let effective_dir_id =
+                process_volume_dir_id(vfs_volumes, volume_ref_num, effective_dir_id);
             let result = if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
                 PPC_FNF_ERR
             } else {
@@ -1681,7 +1749,14 @@ pub(super) fn ppc_hget_vol(
         let _ = memory.write_u16_be(vref_ptr, working_directory.ref_num as u16);
     }
     if dir_id_ptr != 0 {
-        let _ = memory.write_u32_be(dir_id_ptr, working_directory.dir_id);
+        let _ = memory.write_u32_be(
+            dir_id_ptr,
+            process_hfs_dir_id(
+                vfs_volumes,
+                working_directory.volume_ref_num,
+                working_directory.dir_id,
+            ),
+        );
     }
     PPC_NO_ERR
 }
@@ -1791,6 +1866,9 @@ pub(super) fn ppc_hset_vol(
     } else {
         requested_dir_id
     };
+    // fsRtDirID on a mounted volume selects that volume's root.
+    // Inside Macintosh: Files (1992), pp. 1-27 and 2-85.
+    let base_dir_id = process_volume_dir_id(vfs_volumes, volume_ref_num, base_dir_id);
     let target_dir_id = if name.is_empty() {
         base_dir_id
     } else {
@@ -1917,7 +1995,14 @@ pub(super) fn ppc_get_wd_info(
         return PPC_RF_NUM_ERR;
     };
     let _ = memory.write_u16_be(vref_ptr, working_directory.volume_ref_num as u16);
-    let _ = memory.write_u32_be(dir_id_ptr, working_directory.dir_id);
+    let _ = memory.write_u32_be(
+        dir_id_ptr,
+        process_hfs_dir_id(
+            vfs_volumes,
+            working_directory.volume_ref_num,
+            working_directory.dir_id,
+        ),
+    );
     let _ = memory.write_u32_be(proc_id_ptr, working_directory.proc_id);
     PPC_NO_ERR
 }

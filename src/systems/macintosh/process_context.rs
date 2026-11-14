@@ -1044,6 +1044,98 @@ pub(crate) struct PendingFileCompletion {
     pub(crate) result: i16,
 }
 
+/// fsRtParID: the parent directory ID of every volume's root directory.
+pub(crate) const HFS_ROOT_PARENT_DIR_ID: u32 = 1;
+/// fsRtDirID: the directory ID of every volume's root directory.
+pub(crate) const HFS_ROOT_DIR_ID: u32 = 2;
+
+// Directory IDs are scoped by volume: each volume's root directory is
+// fsRtDirID (2), its parent is fsRtParID (1), and it bears the volume's name.
+// Inside Macintosh: Files (1992), pp. 1-27 and 2-85.
+//
+// The process VFS stores every mounted (non-boot) volume as a top-level
+// folder of the shared root, so internally its root has a unique ID whose
+// parent is the boot root. These helpers convert between that internal ID
+// and the per-volume IDs that File Manager callers see.
+
+/// The internal root directory ID of a mounted (non-boot) volume.
+pub(crate) fn process_mounted_volume_root_dir_id(
+    volumes: &[ProcessVfsVolumeRecord],
+    volume_ref_num: i16,
+) -> Option<u32> {
+    volumes
+        .iter()
+        .find(|volume| volume.ref_num == volume_ref_num)
+        .map(|volume| volume.root_dir_id)
+        .filter(|&root_dir_id| root_dir_id != HFS_ROOT_DIR_ID)
+}
+
+/// The internal directory ID named by a caller's directory ID on a volume:
+/// fsRtDirID on a mounted volume selects that volume's root.
+pub(crate) fn process_volume_dir_id(
+    volumes: &[ProcessVfsVolumeRecord],
+    volume_ref_num: i16,
+    dir_id: u32,
+) -> u32 {
+    if dir_id == HFS_ROOT_DIR_ID {
+        if let Some(root_dir_id) = process_mounted_volume_root_dir_id(volumes, volume_ref_num) {
+            return root_dir_id;
+        }
+    }
+    dir_id
+}
+
+/// The caller-visible ID, on the given volume, of an internal directory ID:
+/// the volume's root is fsRtDirID. IDs reported with any other volume
+/// reference are unchanged.
+pub(crate) fn process_hfs_dir_id(
+    volumes: &[ProcessVfsVolumeRecord],
+    volume_ref_num: i16,
+    dir_id: u32,
+) -> u32 {
+    if process_mounted_volume_root_dir_id(volumes, volume_ref_num) == Some(dir_id) {
+        HFS_ROOT_DIR_ID
+    } else {
+        dir_id
+    }
+}
+
+/// The caller-visible parent ID, on the given volume, of a directory:
+/// fsRtParID for the volume's root, and fsRtDirID for an item at that root.
+pub(crate) fn process_hfs_directory_parent_id(
+    volumes: &[ProcessVfsVolumeRecord],
+    volume_ref_num: i16,
+    dir_id: u32,
+    parent_dir_id: u32,
+) -> u32 {
+    if process_mounted_volume_root_dir_id(volumes, volume_ref_num) == Some(dir_id) {
+        HFS_ROOT_PARENT_DIR_ID
+    } else {
+        process_hfs_dir_id(volumes, volume_ref_num, parent_dir_id)
+    }
+}
+
+/// The volume that holds a process VFS path, or `None` for the boot volume.
+pub(crate) fn process_volume_for_vfs_path<'a>(
+    volumes: &'a [ProcessVfsVolumeRecord],
+    directories: &[ProcessVfsDirectory],
+    path: &str,
+) -> Option<&'a ProcessVfsVolumeRecord> {
+    volumes.iter().find(|volume| {
+        directories
+            .iter()
+            .find(|directory| directory.dir_id == volume.root_dir_id)
+            .is_some_and(|root| {
+                !root.path.is_empty()
+                    && (path.eq_ignore_ascii_case(&root.path)
+                        || path.get(..root.path.len() + 1).is_some_and(|prefix| {
+                            prefix.ends_with('/')
+                                && prefix[..root.path.len()].eq_ignore_ascii_case(&root.path)
+                        }))
+            })
+    })
+}
+
 /// One open File Manager working directory for the process.
 ///
 /// Working-directory reference numbers are process-wide access paths, not

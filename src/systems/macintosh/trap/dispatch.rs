@@ -5417,7 +5417,52 @@ impl TrapDispatcher {
         Self::boot_volume_ref_num()
     }
 
+    /// The internal root directory of the mounted (non-boot) volume that a
+    /// volume or working-directory reference number names.
+    pub(crate) fn mounted_volume_root_dir_id(&self, vref: i16) -> Option<u32> {
+        let volume_ref_num = if self.vfs_volume_for_ref_num(vref).is_some() {
+            vref
+        } else {
+            self.working_directories.get(&vref)?.volume_ref_num
+        };
+        crate::process_context::process_mounted_volume_root_dir_id(
+            &self.vfs_volumes,
+            volume_ref_num,
+        )
+    }
+
+    /// The caller-visible ID, reported with `vref`, of an internal directory
+    /// ID: a mounted volume's root is fsRtDirID on that volume.
+    /// Files 1992, 1-27 and 2-85.
+    pub(crate) fn hfs_dir_id(&self, vref: i16, dir_id: u32) -> u32 {
+        crate::process_context::process_hfs_dir_id(&self.vfs_volumes, vref, dir_id)
+    }
+
+    /// The caller-visible parent ID, reported with `vref`, of a directory.
+    pub(crate) fn hfs_directory_parent_id(&self, vref: i16, directory: &VfsDirectory) -> u32 {
+        crate::process_context::process_hfs_directory_parent_id(
+            &self.vfs_volumes,
+            vref,
+            directory.dir_id,
+            directory.parent_dir_id,
+        )
+    }
+
+    /// The reference number of the volume that holds a VFS path.
+    pub(crate) fn volume_ref_num_for_vfs_path(&self, path: &str) -> i16 {
+        self.vfs_volume_for_path(path)
+            .map_or(Self::boot_volume_ref_num(), |volume| volume.ref_num)
+    }
+
     pub(crate) fn resolve_directory_id(&self, vref: i16, dir_id: u32) -> u32 {
+        // Directory IDs are scoped by volume, so fsRtDirID with a mounted
+        // volume's reference (or a working directory on it) selects that
+        // volume's root. Files 1992, 1-27 and 2-85.
+        if dir_id == 2 {
+            if let Some(root_dir_id) = self.mounted_volume_root_dir_id(vref) {
+                return root_dir_id;
+            }
+        }
         // HFS lookups treat WD refnums as an implicit directory selector when
         // ioDirID is 0 or 1, and they treat vRefNum=0 + ioDirID=0 as the
         // current default directory. Files 1992, 2-151 to 2-153.
@@ -6762,7 +6807,10 @@ impl TrapDispatcher {
         bus.write_long(fcb + 12, len);
         bus.write_long(fcb + 20, vcb);
         bus.write_long(fcb + 50, metadata.map_or(0, |file| file.file_type));
-        bus.write_long(fcb + 58, metadata.map_or(2, |file| file.parent_dir_id));
+        bus.write_long(
+            fcb + 58,
+            metadata.map_or(2, |file| self.hfs_dir_id(volume_ref, file.parent_dir_id)),
+        );
         let name = Self::hfs_name_from_vfs_component(Self::vfs_basename(path));
         Self::write_pstring(bus, fcb + 62, &name.chars().take(31).collect::<String>());
         Ok(refnum)

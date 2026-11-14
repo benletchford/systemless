@@ -26,7 +26,7 @@ use super::{
     ppc_read_rect, ppc_sound_codec, ppc_write_rect, qt_trace_enabled, PpcCpu, PpcDecodedAiffData,
     PpcDecodedAiffPlaybackRecord, PpcFileRecord, PpcFrontBuffer, PpcGWorldRecord, PpcHandleRecord,
     PpcImportAction, PpcProcessAllocatorView, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
-    PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsVolumeRecord,
     PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
     PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
@@ -1860,6 +1860,7 @@ pub(crate) fn ppc_qt_get_graphics_importer_for_file(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     quicktime: &mut PpcQuickTimeState,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
     let spec_ptr = cpu.gpr[3];
     let importer_out_ptr = cpu.gpr[4];
@@ -1879,8 +1880,14 @@ pub(crate) fn ppc_qt_get_graphics_importer_for_file(
         return PPC_NO_ERR;
     }
 
-    let Ok(path) = ppc_existing_path_for_fsspec(memory, vfs_directories, vfs_files, &[], spec_ptr)
-    else {
+    let Ok(path) = ppc_existing_path_for_fsspec(
+        memory,
+        vfs_directories,
+        vfs_files,
+        &[],
+        spec_ptr,
+        vfs_volumes,
+    ) else {
         return PPC_NO_ERR;
     };
     let Some(file) = vfs_files
@@ -4153,6 +4160,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     quicktime: &mut PpcQuickTimeState,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
     let spec_ptr = cpu.gpr[3];
     let ref_num_out_ptr = cpu.gpr[4];
@@ -4173,9 +4181,14 @@ pub(crate) fn ppc_qt_open_movie_file(
     let mut movie_file_audio_track = None;
     let mut movie_file_tracks = Vec::new();
     if spec_ptr != 0 {
-        if let Ok(path) =
-            ppc_existing_path_for_fsspec(memory, vfs_directories, vfs_files, &[], spec_ptr)
-        {
+        if let Ok(path) = ppc_existing_path_for_fsspec(
+            memory,
+            vfs_directories,
+            vfs_files,
+            &[],
+            spec_ptr,
+            vfs_volumes,
+        ) {
             if let Some(file) = vfs_files
                 .iter()
                 .find(|record| record.path.eq_ignore_ascii_case(&path))

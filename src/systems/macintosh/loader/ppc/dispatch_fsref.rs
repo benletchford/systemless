@@ -2,6 +2,7 @@
 //! CarbonLib), layered over the FSSpec-based File Manager emulation.
 
 use super::*;
+use crate::process_context::process_hfs_dir_id;
 use crate::trap::types::decode_mac_roman;
 
 /// FSRef is 80 opaque bytes (Files.h). This runtime stores a magic tag and
@@ -217,6 +218,18 @@ fn ppc_write_fsref(memory: &mut PpcSectionMem, ref_ptr: u32, object: &PpcFsRefOb
     )
 }
 
+/// Writes an object's FSSpec for the caller, with caller-visible IDs.
+fn ppc_write_fsref_guest_spec(
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    spec_ptr: u32,
+    object: &PpcFsRefObject,
+) -> bool {
+    let mut object = object.clone();
+    object.parent_dir_id = process_hfs_dir_id(vfs_volumes, object.vref, object.parent_dir_id);
+    ppc_write_fsref_spec(memory, spec_ptr, &object)
+}
+
 fn ppc_write_fsref_spec(
     memory: &mut PpcSectionMem,
     spec_ptr: u32,
@@ -317,7 +330,13 @@ fn ppc_fsref_resolve(
     ctx: &PpcFsRefContext,
     (vref, parent_dir_id, name): (i16, u32, Vec<u8>),
 ) -> Result<PpcFsRefObject, i16> {
-    let parent_dir_id = ppc_resolve_directory_id(vref, parent_dir_id, ctx.default_dir_id);
+    let parent_dir_id = ppc_resolve_volume_directory_id(
+        ctx.vfs_volumes,
+        None,
+        vref,
+        parent_dir_id,
+        ctx.default_dir_id,
+    );
     let vref = ppc_resolve_volume_ref_num(vref);
     if parent_dir_id == PPC_FS_RT_PAR_ID {
         let (root_dir_id, _) = ppc_fsref_volume_root(ctx.vfs_volumes, vref).ok_or(PPC_NSV_ERR)?;
@@ -481,9 +500,14 @@ fn ppc_fill_fs_catalog_info(
         ),
         None => ppc_finder_info_for_path(ctx.vfs_files, ctx.vfs_resource_files, &object.path),
     };
-    let node_id = object
-        .dir_id
-        .unwrap_or_else(|| ppc_synthetic_file_id(&object.path));
+    // A mounted volume's root is fsRtDirID on that volume, and an item at
+    // that root has parent fsRtDirID. Inside Macintosh: Files (1992),
+    // pp. 1-27 and 2-85.
+    let node_id = object.dir_id.map_or_else(
+        || ppc_synthetic_file_id(&object.path),
+        |dir_id| process_hfs_dir_id(ctx.vfs_volumes, object.vref, dir_id),
+    );
+    let parent_dir_id = process_hfs_dir_id(ctx.vfs_volumes, object.vref, object.parent_dir_id);
     let valence = object.dir_id.map_or(0, |dir_id| {
         ppc_vfs_directory_valence(
             ctx.vfs_directories,
@@ -513,7 +537,7 @@ fn ppc_fill_fs_catalog_info(
         memory.write_u16_be(info + 2, object.vref as u16)?;
     }
     if which & PPC_FS_CAT_INFO_PARENT_DIR_ID != 0 {
-        memory.write_u32_be(info + 4, object.parent_dir_id)?;
+        memory.write_u32_be(info + 4, parent_dir_id)?;
     }
     if which & PPC_FS_CAT_INFO_NODE_ID != 0 {
         memory.write_u32_be(info + 8, node_id)?;
@@ -583,7 +607,8 @@ fn ppc_fs_get_catalog_info(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
     {
         return Err(PPC_PARAM_ERR);
     }
-    if spec_out != 0 && !ppc_write_fsref_spec(ctx.memory, spec_out, &object) {
+    if spec_out != 0 && !ppc_write_fsref_guest_spec(ctx.memory, ctx.vfs_volumes, spec_out, &object)
+    {
         return Err(PPC_PARAM_ERR);
     }
     if parent_out != 0 {
@@ -695,6 +720,7 @@ fn ppc_fs_open_fork(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
             ctx.files,
             ctx.writable_refnums,
             ctx.next_file_ref_num,
+            ctx.vfs_volumes,
         )
     } else {
         ppc_fsp_open_df(
@@ -705,6 +731,7 @@ fn ppc_fs_open_fork(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
             ctx.files,
             ctx.writable_refnums,
             ctx.next_file_ref_num,
+            ctx.vfs_volumes,
         )
     })
 }
@@ -907,6 +934,7 @@ fn ppc_fs_delete_object(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
         ctx.vfs_resource_files,
         ctx.resource_files,
         ctx.vfs_resources,
+        ctx.vfs_volumes,
     ))
 }
 
@@ -937,7 +965,8 @@ fn ppc_fsref_write_created(
 ) -> Result<PpcFsRefObject, i16> {
     let object = ppc_fsref_resolve(ctx, (vref, parent_dir_id, name))?;
     ppc_fsref_write_output(ctx, ref_out, &object)?;
-    if spec_out != 0 && !ppc_write_fsref_spec(ctx.memory, spec_out, &object) {
+    if spec_out != 0 && !ppc_write_fsref_guest_spec(ctx.memory, ctx.vfs_volumes, spec_out, &object)
+    {
         return Err(PPC_PARAM_ERR);
     }
     Ok(object)
@@ -968,7 +997,13 @@ fn ppc_fs_create_file_unicode(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
     call.gpr[3] = spec;
     call.gpr[4] = creator;
     call.gpr[5] = file_type;
-    let result = ppc_fsp_create(&mut call, ctx.memory, ctx.vfs_directories, ctx.vfs_files);
+    let result = ppc_fsp_create(
+        &mut call,
+        ctx.memory,
+        ctx.vfs_directories,
+        ctx.vfs_files,
+        ctx.vfs_volumes,
+    );
     if result != PPC_NO_ERR {
         return Err(result);
     }
@@ -1000,6 +1035,7 @@ fn ppc_fs_create_directory_unicode(ctx: &mut PpcFsRefContext) -> Result<i16, i16
         ctx.vfs_directories,
         ctx.next_vfs_dir_id,
         ctx.default_dir_id,
+        ctx.vfs_volumes,
     );
     if result != PPC_NO_ERR {
         return Err(result);
@@ -1048,6 +1084,7 @@ fn ppc_fs_rename_unicode(ctx: &mut PpcFsRefContext) -> Result<i16, i16> {
         ctx.resource_files,
         ctx.vfs_resources,
         ctx.default_dir_id,
+        ctx.vfs_volumes,
     );
     if result != PPC_NO_ERR {
         return Err(result);

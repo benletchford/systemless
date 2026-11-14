@@ -410,6 +410,7 @@ pub(crate) fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
+            vfs_volumes,
             vfs_directories,
             vfs_files,
         },
@@ -600,6 +601,7 @@ pub(crate) fn dispatch_supported_import(
         vfs_resources,
         gworlds,
         *current_gworld,
+        vfs_volumes,
     ) {
         return Some(action);
     }
@@ -1091,6 +1093,7 @@ pub(crate) fn dispatch_supported_import(
             heap_cursor,
             last_mem_error,
             handles,
+            vfs_volumes,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
@@ -1455,6 +1458,7 @@ pub(crate) fn dispatch_supported_import(
             cpu,
             memory,
             stack_top,
+            vfs_volumes,
             vfs_directories,
             vfs_files,
             vfs_resource_files,
