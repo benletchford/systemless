@@ -1418,11 +1418,15 @@ impl ProcessFileSystemState {
     /// therefore do not participate in this compatibility pass. Files (1992),
     /// pp. 2-27--2-29 and 2-85.
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
-        let directories = (*self.vfs_directories).clone();
+        // This runs after every execution slice, so it must stay linear in the
+        // number of files: look parents up in one case-folded index rather than
+        // scanning every directory per file.
+        let parent_dir_ids = process_vfs_parent_dir_index(&self.vfs_directories);
+        let mut parent_key = String::new();
         // Publication needs metadata only; cloning records copies their fork bytes.
         let files = self.vfs_files.iter().map(|file| {
             (
-                file.path.clone(),
+                file.path.as_str(),
                 file.file_type,
                 file.creator,
                 file.finder_flags,
@@ -1431,39 +1435,39 @@ impl ProcessFileSystemState {
         });
         let resource_files = self.vfs_resource_files.iter().map(|file| {
             (
-                file.path.clone(),
+                file.path.as_str(),
                 file.file_type,
                 file.creator,
                 file.finder_flags,
                 file.dirty,
             )
         });
-        let records = files.chain(resource_files).collect::<Vec<_>>();
-        let deleted_paths = self.deleted_vfs_file_paths.clone();
-
-        for (path, file_type, creator, finder_flags, dirty) in records {
-            if path.is_empty() {
-                continue;
-            }
-            let parent_dir_id = process_vfs_parent_dir_id(&directories, &path);
-            self.classic_next_vfs_file_id.with_mut(|next_file_id| {
-                self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
-                    self.classic_vfs_metadata.with_mut(|metadata| {
+        self.classic_next_vfs_file_id.with_mut(|next_file_id| {
+            self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
+                self.classic_vfs_metadata.with_mut(|metadata| {
+                    for (path, file_type, creator, finder_flags, dirty) in files.chain(resource_files)
+                    {
+                        if path.is_empty() {
+                            continue;
+                        }
+                        let parent_dir_id =
+                            process_vfs_parent_dir_id(&parent_dir_ids, &mut parent_key, path);
                         publish_native_vfs_metadata(
                             metadata,
                             next_file_id,
                             next_timestamp,
-                            &path,
+                            path,
                             parent_dir_id,
                             file_type,
                             creator,
                             finder_flags,
                             dirty,
                         );
-                    });
+                    }
                 });
             });
-        }
+        });
+        let deleted_paths = self.deleted_vfs_file_paths.clone();
         for path in deleted_paths {
             // Delete removes the native records immediately. A queued host
             // notification must not delete a replacement created at that path.
@@ -1592,16 +1596,32 @@ impl ProcessFileSystemState {
     }
 }
 
-fn process_vfs_parent_dir_id(directories: &[ProcessVfsDirectory], path: &str) -> u32 {
+/// Directory IDs keyed by ASCII-lowercased path. Where several directories
+/// match one path case-insensitively, the first in table order wins, as a
+/// linear `eq_ignore_ascii_case` search would find.
+fn process_vfs_parent_dir_index(directories: &[ProcessVfsDirectory]) -> HashMap<String, u32> {
+    let mut index = HashMap::with_capacity(directories.len());
+    for directory in directories {
+        index
+            .entry(directory.path.to_ascii_lowercase())
+            .or_insert(directory.dir_id);
+    }
+    index
+}
+
+fn process_vfs_parent_dir_id(
+    parent_dir_ids: &HashMap<String, u32>,
+    key: &mut String,
+    path: &str,
+) -> u32 {
     let parent_path = path
         .rsplit_once('/')
         .map(|(parent, _)| parent)
         .unwrap_or("");
-    directories
-        .iter()
-        .find(|directory| directory.path.eq_ignore_ascii_case(parent_path))
-        .map(|directory| directory.dir_id)
-        .unwrap_or(2)
+    key.clear();
+    key.push_str(parent_path);
+    key.make_ascii_lowercase();
+    parent_dir_ids.get(key.as_str()).copied().unwrap_or(2)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1617,20 +1637,28 @@ fn publish_native_vfs_metadata(
     touch: bool,
 ) {
     let timestamp = *next_timestamp;
-    let entry = metadata.entry(path.to_string()).or_insert_with(|| {
+    // Look up before inserting: almost every call finds an existing entry, and
+    // `entry` would allocate an owned key for each one.
+    if !metadata.contains_key(path) {
         let file_id = *next_file_id;
         *next_file_id = next_file_id.saturating_add(1);
         *next_timestamp = next_timestamp.saturating_add(1);
-        ProcessVfsMetadata {
-            file_id,
-            parent_dir_id,
-            file_type,
-            creator,
-            finder_flags,
-            created_date: timestamp,
-            modified_date: timestamp,
-        }
-    });
+        metadata.insert(
+            path.to_string(),
+            ProcessVfsMetadata {
+                file_id,
+                parent_dir_id,
+                file_type,
+                creator,
+                finder_flags,
+                created_date: timestamp,
+                modified_date: timestamp,
+            },
+        );
+    }
+    let Some(entry) = metadata.get_mut(path) else {
+        return;
+    };
     entry.parent_dir_id = parent_dir_id;
     entry.file_type = file_type;
     entry.creator = creator;
@@ -14027,6 +14055,64 @@ mod tests {
             native.vfs_resource_files.fork("Shared").unwrap(),
             b"classic-resource"
         );
+    }
+
+    #[test]
+    fn native_catalogue_finds_parents_case_insensitively_with_the_first_match() {
+        let directory = |dir_id, path: &str| ProcessVfsDirectory {
+            dir_id,
+            parent_dir_id: 2,
+            path: path.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        };
+        let file = |path: &str, dirty| ProcessVfsFileRecord {
+            path: path.into(),
+            data: Vec::new().into(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty,
+        };
+        let mut state = ProcessFileSystemState::default();
+        state.vfs_directories.with_mut(|directories| {
+            directories.extend([
+                directory(20, "Disc/Data"),
+                // A second directory equal to the first ignoring case loses.
+                directory(21, "DISC/DATA"),
+                directory(22, "Disc/Data/Movies"),
+            ]);
+        });
+        for path in ["disc/data/Clip", "Disc/Data/MOVIES/Intro", "Loose", "Missing/File"] {
+            state.vfs_files.push(file(path, false));
+        }
+        state.vfs_files.push(file("Disc/Data/Saved", true));
+        state.publish_native_vfs_catalogue();
+
+        let parent = |state: &ProcessFileSystemState, path: &str| {
+            state.classic_vfs_metadata[path].parent_dir_id
+        };
+        assert_eq!(parent(&state, "disc/data/Clip"), 20);
+        assert_eq!(parent(&state, "Disc/Data/MOVIES/Intro"), 22);
+        assert_eq!(parent(&state, "Loose"), 2);
+        assert_eq!(parent(&state, "Missing/File"), 2);
+
+        // Republishing keeps file IDs and creation dates, and touches only
+        // dirty files.
+        let before = (*state.classic_vfs_metadata).clone();
+        state.publish_native_vfs_catalogue();
+        for (path, metadata) in state.classic_vfs_metadata.iter() {
+            let previous = &before[path];
+            assert_eq!(metadata.file_id, previous.file_id, "{path}");
+            assert_eq!(metadata.created_date, previous.created_date, "{path}");
+            if path == "Disc/Data/Saved" {
+                assert!(metadata.modified_date > previous.modified_date);
+            } else {
+                assert_eq!(metadata.modified_date, previous.modified_date, "{path}");
+            }
+        }
     }
 
     #[test]
