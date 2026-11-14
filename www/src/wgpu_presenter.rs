@@ -159,7 +159,9 @@ fn grown_buffer_capacity(required: u64, max_storage_bytes: u64) -> u64 {
     let floor = required.max(256).min(max_storage_bytes & !3);
     floor
         .checked_next_power_of_two()
-        .map_or(max_storage_bytes & !3, |pow| pow.min(max_storage_bytes & !3))
+        .map_or(max_storage_bytes & !3, |pow| {
+            pow.min(max_storage_bytes & !3)
+        })
         .max((required + 3) & !3)
 }
 
@@ -801,8 +803,7 @@ impl WebGpuPresenter {
             self.detail_capacity = cap;
             rebind = true;
         }
-        self.queue
-            .write_buffer(&self.cells_buffer, 0, cells_bytes);
+        self.queue.write_buffer(&self.cells_buffer, 0, cells_bytes);
         if !detail_bytes.is_empty() {
             self.queue
                 .write_buffer(&self.detail_buffer, 0, detail_bytes);
@@ -813,16 +814,7 @@ impl WebGpuPresenter {
         self.submit_frame(
             width,
             height,
-            [
-                MODE_COMPACT,
-                source_width,
-                scale,
-                output_scale,
-                0,
-                0,
-                0,
-                0,
-            ],
+            [MODE_COMPACT, source_width, scale, output_scale, 0, 0, 0, 0],
         )
     }
 
@@ -989,7 +981,9 @@ mod tests {
         )
         .is_err());
         // Unsupported outputScale (0, 5, non-integer, height mismatch) and storage cap.
-        assert!(validate_compact(10, 5, 2, 1, 2, 8192, max_storage, &ok_cells, &ok_detail).is_err());
+        assert!(
+            validate_compact(10, 5, 2, 1, 2, 8192, max_storage, &ok_cells, &ok_detail).is_err()
+        );
         assert!(validate_compact(3, 1, 2, 1, 2, 8192, max_storage, &ok_cells, &ok_detail).is_err());
         assert!(validate_compact(4, 3, 2, 1, 2, 8192, max_storage, &ok_cells, &ok_detail).is_err());
         assert!(validate_compact(4, 2, 2, 1, 2, 8192, 4, &ok_cells, &ok_detail).is_err());
@@ -1044,13 +1038,7 @@ mod tests {
                 for py in 0..height {
                     for px in 0..width {
                         let got = eval_wgsl_compact_pixel(
-                            v.width,
-                            v.scale,
-                            oscale,
-                            &v.cells,
-                            &v.detail,
-                            px,
-                            py,
+                            v.width, v.scale, oscale, &v.cells, &v.detail, px, py,
                         );
                         assert_eq!(got, out.argb[(py * width + px) as usize]);
                     }
