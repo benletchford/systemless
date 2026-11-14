@@ -714,6 +714,57 @@ fn ae_remove_event_handler_requires_the_installed_handler() {
     assert_eq!(loaded.apple_events.handlers.len(), 0);
 }
 
+#[test]
+fn ae_get_event_handler_reports_the_installed_handler() {
+    let pef = synthetic_pef_with_import(b"AEInstallEventHandler");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let (handler_tvector, handler_entry) = (scratch, scratch + 0x100);
+    let (handler_out, refcon_out) = (scratch + 0x80, scratch + 0x84);
+    loaded.memory.add_region(scratch, vec![0; 0x200]);
+    loaded
+        .memory
+        .write_u32_be(handler_tvector, handler_entry)
+        .unwrap();
+    loaded
+        .memory
+        .write_u32_be(handler_entry, 0x4e80_0020)
+        .unwrap();
+    let get_handler = |loaded: &mut PpcLoadedApp, is_system: u32| {
+        loaded.memory.write_u32_be(handler_out, 0xdead_beef).unwrap();
+        loaded.memory.write_u32_be(refcon_out, 0xdead_beef).unwrap();
+        loaded.cpu.gpr[3] = PPC_CORE_EVENT_CLASS;
+        loaded.cpu.gpr[4] = PPC_OPEN_APPLICATION_EVENT;
+        loaded.cpu.gpr[5] = handler_out;
+        loaded.cpu.gpr[6] = refcon_out;
+        loaded.cpu.gpr[7] = is_system;
+        run_test_import(loaded, PpcImportDispatcherTarget::AEGetEventHandler);
+        (
+            loaded.cpu.gpr[3],
+            loaded.memory.read_u32_be(handler_out).unwrap(),
+            loaded.memory.read_u32_be(refcon_out).unwrap(),
+        )
+    };
+
+    assert_eq!(get_handler(&mut loaded, 0), (ppc_i16_result(-1717), 0, 0));
+
+    loaded.cpu.gpr[3] = PPC_CORE_EVENT_CLASS;
+    loaded.cpu.gpr[4] = PPC_OPEN_APPLICATION_EVENT;
+    loaded.cpu.gpr[5] = handler_tvector;
+    loaded.cpu.gpr[6] = 0x1234_5678;
+    loaded.cpu.gpr[7] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::AEInstallEventHandler,
+    );
+
+    assert_eq!(
+        get_handler(&mut loaded, 0),
+        (ppc_i16_result(PPC_NO_ERR), handler_tvector, 0x1234_5678)
+    );
+    assert_eq!(get_handler(&mut loaded, 1), (ppc_i16_result(-1717), 0, 0));
+}
+
 fn self_addressed_send_fixture() -> (PpcLoadedApp, u32) {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AESend")).unwrap();
     let scratch = PPC_DATA_BASE + 0x5000;

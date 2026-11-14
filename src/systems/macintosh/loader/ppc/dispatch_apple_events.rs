@@ -843,6 +843,27 @@ pub(super) fn dispatch_apple_event_import(
                 PPC_ERR_AE_HANDLER_NOT_FOUND
             })))
         }
+        PpcImportDispatcherTarget::AEGetEventHandler => {
+            // Inside Macintosh: Interapplication Communication (1993), p. 4-63:
+            // AEGetEventHandler(class, ID, &handler, &refcon, isSysHandler).
+            let found = apple_events
+                .handlers
+                .get(cpu.gpr[7] & 0xff != 0, cpu.gpr[3], cpu.gpr[4]);
+            let (handler, refcon) = found.map_or((0, 0), |handler| {
+                (handler.procedure.original_pointer, handler.refcon)
+            });
+            if cpu.gpr[5] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[5], handler);
+            }
+            if cpu.gpr[6] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[6], refcon);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(if found.is_some() {
+                PPC_NO_ERR
+            } else {
+                PPC_ERR_AE_HANDLER_NOT_FOUND
+            })))
+        }
         PpcImportDispatcherTarget::AEProcessAppleEvent => {
             let guest_call_depth = toolbox_startup.execution.calls().depth();
             Some(ppc_process_apple_event(
