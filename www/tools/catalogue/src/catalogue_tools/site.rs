@@ -362,7 +362,7 @@ pub fn pages(
         }
     }
     let absolute = |p: &str| -> String { origin.join(p).expect("validated route").to_string() };
-    let default_image = absolute("/assets/icons/systemless-mascot.png");
+    let default_image = absolute("/assets/icons/systemless-icon.png");
     let mut files = BTreeMap::new();
     for (path, robots) in [("/", "index,follow"), ("/next", "noindex,nofollow")] {
         let mut home = format!(
