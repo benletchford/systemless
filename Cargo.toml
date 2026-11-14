@@ -108,6 +108,9 @@ debug = []
 # Debugger socket transport (Unix-domain sockets). Implies `debug`.
 debug-server = ["debug"]
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.9"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.54", optional = true, features = [
     "Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc",
