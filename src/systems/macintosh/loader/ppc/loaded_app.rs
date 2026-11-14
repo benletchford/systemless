@@ -91,6 +91,8 @@ pub struct PpcLoadedApp {
     pub q3_styles: Vec<PpcQ3StyleRecord>,
     pub q3_cameras: Vec<PpcQ3CameraRecord>,
     pub q3_lights: Vec<PpcQ3LightRecord>,
+    /// Retrace pacing of QuickDraw 3D window presents.
+    pub q3_present_pacing: PpcQ3PresentPacingState,
     pub input_sprocket: PpcInputSprocketState,
     pub input_sprocket_virtual_elements: Vec<PpcInputSprocketVirtualElementRecord>,
     pub toolbox_startup: PpcToolboxStartupState,

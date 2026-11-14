@@ -174,6 +174,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         q3_styles: Vec::new(),
         q3_cameras: Vec::new(),
         q3_lights: Vec::new(),
+        q3_present_pacing: Default::default(),
         input_sprocket: Default::default(),
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup: Default::default(),
@@ -444,4 +445,160 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
     let classic_file = runner.dispatcher().vfs.get_shared(prefs_path).unwrap();
     assert!(native_file.data.ptr_eq(classic_file));
     assert_eq!(native_file.data.as_slice(), b"prefs-native-classic");
+}
+
+/// A native loop that renders one QuickDraw 3D frame per iteration
+/// (StartRendering, EndRendering) to a double-buffered window draw context,
+/// run through the runner with present pacing on or off. A small `bl` loop
+/// keeps it free of every other import, and counts its frames in r31.
+fn q3_present_loop_runner(pacing: bool, audio_bytes: usize) -> FixtureRunner {
+    const VIEW: u32 = 0x0200_0100;
+    const CONTEXT: u32 = 0x0200_0200;
+    const LOOP: u32 = PPC_CODE_BASE + 0x1000;
+    const START_TRAP: u32 = PPC_IMPORT_TRAP_BASE;
+    const END_TRAP: u32 = PPC_IMPORT_TRAP_BASE + 4;
+    let branch = |from: u32, to: u32, link: bool| {
+        0x4800_0000 | (to.wrapping_sub(from) & 0x03ff_fffc) | u32::from(link)
+    };
+    let code = [
+        0x3c60_0000 | (VIEW >> 16),    // lis r3, VIEW@h
+        0x6063_0000 | (VIEW & 0xffff), // ori r3, r3, VIEW@l
+        branch(LOOP + 8, START_TRAP, true),
+        0x3c60_0000 | (VIEW >> 16),
+        0x6063_0000 | (VIEW & 0xffff),
+        branch(LOOP + 20, END_TRAP, true),
+        0x3bff_0001, // addi r31, r31, 1: frames rendered
+        branch(LOOP + 28, LOOP, false),
+    ];
+
+    let sound = PpcSoundState::default();
+    if audio_bytes > 0 {
+        sound.manager.play_buffer_command_for_architecture(
+            0x0500_1000,
+            (0..audio_bytes).map(|n| 0x80 ^ (n as u8 & 0x1f)).collect(),
+            OUTPUT_RATE << 16,
+            CallbackTaskArchitecture::M68k,
+        );
+    }
+    let mut app = halted_ppc_app_with_sound(sound);
+    let native = app.ppc.as_mut().unwrap();
+    native.memory.add_region(
+        LOOP,
+        code.into_iter().flat_map(u32::to_be_bytes).collect(),
+    );
+    native.memory.add_region(PPC_IMPORT_TRAP_BASE, vec![0; 16]);
+    native.cpu.pc = LOOP;
+    native.entry_pc = LOOP;
+    for (index, (symbol, target, trap)) in [
+        ("Q3View_StartRendering", PpcImportDispatcherTarget::Q3ViewStartRendering, START_TRAP),
+        ("Q3View_EndRendering", PpcImportDispatcherTarget::Q3ViewEndRendering, END_TRAP),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut binding = test_ppc_import_binding(index as u32, "QuickDraw3DLib", symbol);
+        binding.dispatcher_target = target;
+        binding.trap_pc = trap;
+        native.imports.push(binding);
+    }
+    native.import_count = native.imports.len() as u32;
+    let mut data = vec![0u8; PPC_Q3_MAC_DRAW_CONTEXT_DATA_SIZE as usize];
+    let state = PPC_Q3_DRAW_CONTEXT_DOUBLE_BUFFER_STATE_OFFSET as usize;
+    data[state..state + 4].copy_from_slice(&1u32.to_be_bytes());
+    let port = PPC_Q3_MAC_DRAW_CONTEXT_PORT_OFFSET as usize;
+    data[port..port + 4].copy_from_slice(&PPC_MAIN_GWORLD.to_be_bytes());
+    native.q3_draw_contexts.push(PpcQ3DrawContextRecord {
+        draw_context: CONTEXT,
+        draw_context_type: PPC_Q3_DRAW_CONTEXT_TYPE_MACINTOSH,
+        data,
+    });
+    native.q3_views.push(PpcQ3ViewStateRecord {
+        draw_context: CONTEXT,
+        ..PpcQ3ViewStateRecord::new(VIEW)
+    });
+    native.q3_present_pacing.enabled = pacing;
+
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    // Long enough for many frames of this loop per tick.
+    runner.set_instructions_per_tick(200_000);
+    runner
+}
+
+fn q3_present_loop_frames(runner: &FixtureRunner) -> u32 {
+    runner.native.application().unwrap().cpu.gpr[31]
+}
+
+fn q3_present_pacing_state(runner: &FixtureRunner) -> PpcQ3PresentPacingState {
+    runner.native.application().unwrap().q3_present_pacing.clone()
+}
+
+/// Off by default, presents are not paced: the loop completes many frames
+/// in a tick, and nothing waits.
+#[test]
+fn unpaced_q3_presents_run_many_frames_per_tick_through_the_runner() {
+    let mut runner = q3_present_loop_runner(false, 0);
+    let first = runner.guest_tick();
+    for _ in 0..4 {
+        let deadline = runner.guest_tick() + 1;
+        let (_, running) = runner.run_gui_slice_with_audio(1_000_000, deadline, 0);
+        assert!(running);
+    }
+    let ticks = runner.guest_tick() - first;
+    let state = q3_present_pacing_state(&runner);
+    assert!(ticks >= 4, "ticks {ticks}");
+    assert_eq!(state.parks, [0; 5]);
+    // A disabled model records nothing.
+    assert_eq!(state.presents, [0; 5]);
+    let frames = q3_present_loop_frames(&runner);
+    assert!(frames > 4 * ticks, "{frames} frames in {ticks} ticks");
+}
+
+/// With pacing on, a second present in a tick blocks in EndRendering by
+/// yielding to the runner. Each slice still ends at its tick deadline, the
+/// blocked import is re-entered and completes once per tick, host audio is
+/// mixed in every slice, and input pushed while the present is blocked is
+/// accepted and published.
+#[test]
+fn paced_q3_presents_yield_and_keep_ticks_audio_and_input_moving() {
+    const SAMPLES_PER_SLICE: usize = 64;
+    const SLICES: u32 = 12;
+    let mut runner = q3_present_loop_runner(true, SAMPLES_PER_SLICE * (SLICES as usize + 4));
+    let first = runner.guest_tick();
+    let mut audio = 0;
+    let mut blocked_slices = 0;
+    let mut key_pushed = false;
+    for slice in 0..SLICES {
+        let deadline = runner.guest_tick() + 1;
+        let (_, running) =
+            runner.run_gui_slice_with_audio(1_000_000, deadline, SAMPLES_PER_SLICE);
+        assert!(running, "slice {slice}");
+        assert_eq!(runner.guest_tick(), deadline, "slice {slice} missed its tick");
+        let mixed = runner.drain_audio().len();
+        assert!(mixed > 0, "slice {slice} mixed no audio");
+        audio += mixed;
+        let state = q3_present_pacing_state(&runner);
+        if state.waiting.is_some() {
+            blocked_slices += 1;
+            if !key_pushed {
+                // Space, between two slices of a blocked present.
+                runner.push_key_down(0x31, b' ');
+                let key_map = runner.bus.read_bytes(crate::memory::globals::addr::KEY_MAP_LM, 16);
+                assert_ne!(key_map[0x31 / 8] & (1 << (0x31 % 8)), 0);
+                key_pushed = true;
+            }
+        }
+    }
+    let ticks = runner.guest_tick() - first;
+    let state = q3_present_pacing_state(&runner);
+    let presents = state.presents_of(PpcQ3PresentKind::Window);
+    assert_eq!(ticks, SLICES);
+    assert!(key_pushed && blocked_slices > 0);
+    // One present per tick: never more, and the blocked one always resumes.
+    assert!(presents <= u64::from(ticks) + 1, "{presents} presents in {ticks} ticks");
+    assert!(presents + 1 >= u64::from(ticks), "{presents} presents in {ticks} ticks");
+    assert!(state.parks_of(PpcQ3PresentKind::Window) + 2 >= u64::from(ticks));
+    let frames = q3_present_loop_frames(&runner);
+    assert!(frames <= ticks + 1, "{frames} frames in {ticks} ticks");
+    assert!(audio >= SAMPLES_PER_SLICE * SLICES as usize / 2, "audio {audio}");
 }

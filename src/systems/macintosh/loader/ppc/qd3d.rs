@@ -14473,7 +14473,27 @@ pub fn dispatch_q3_view_end_rendering_import(
     current_gworld: u32,
     q3_error_state: &mut PpcQ3ErrorState,
     allow_idle_state_only_fast_forward: bool,
+    present_pacing: Option<PpcQ3PresentPacing<'_>>,
 ) -> PpcImportAction {
+    let view = cpu.gpr[3];
+    // Only the outermost EndRendering of an uncancelled frame presents.
+    let completes_frame = q3_views
+        .iter()
+        .find(|record| record.view == view)
+        .is_some_and(|record| record.rendering_depth == 1 && !record.cancelled);
+    let draw_context = view_draw_context(q3_views, view);
+    let present_pacing = present_pacing.filter(|_| completes_frame);
+    let present_kind = present_pacing.as_ref().map(|pacing| {
+        ppc_q3_present_kind(q3_views, q3_draw_contexts, view, pacing.is_window_port)
+    });
+    let mut present_pacing = present_pacing;
+    if let (Some(pacing), Some(kind)) = (present_pacing.as_mut(), present_kind) {
+        if let Some(wait) = ppc_q3_present_wait(pacing, draw_context, kind) {
+            // Block in EndRendering, before the frame is consumed: the
+            // runner re-enters this import when the clock resumes.
+            return PpcImportAction::Yield(wait);
+        }
+    }
     let completed_frames_before = q3_completed_frames.len();
     let state_only_batches_before = q3_state_only_completed_frame_batches.len();
     let state_only_last_batch_frames_before = q3_state_only_completed_frame_batches
@@ -14497,6 +14517,13 @@ pub fn dispatch_q3_view_end_rendering_import(
         current_gworld,
         q3_error_state,
     );
+    // Only a completed frame is a present; any other status leaves the frame
+    // unpresented.
+    if let (Some(pacing), Some(kind)) = (present_pacing, present_kind) {
+        if result == PPC_Q3_VIEW_STATUS_DONE {
+            ppc_q3_record_present(pacing, draw_context, kind);
+        }
+    }
     if result == PPC_Q3_VIEW_STATUS_DONE && q3_completed_frames.len() > completed_frames_before {
         // Complete the import, then let the host commit the frame before guest
         // code can dispose its resources, reuse immediate arrays, or read pixels.
@@ -14517,6 +14544,195 @@ pub fn dispatch_q3_view_end_rendering_import(
         PpcImportAction::ReturnWithExtraCycles(result, PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES)
     } else {
         PpcImportAction::Return(result)
+    }
+}
+
+fn view_draw_context(q3_views: &[PpcQ3ViewStateRecord], view: u32) -> u32 {
+    q3_views
+        .iter()
+        .find(|record| record.view == view)
+        .map(|record| record.draw_context)
+        .unwrap_or(0)
+}
+
+/// Offset of `doubleBufferState` in TQ3DrawContextData: clearImageMethod,
+/// clearImageColor (ARGB), pane, paneState, mask (TQ3Bitmap), maskState,
+/// doubleBufferState. QuickDraw 3D 1.5.4 Reference, "Draw Context Data".
+pub const PPC_Q3_DRAW_CONTEXT_DOUBLE_BUFFER_STATE_OFFSET: u32 = 64;
+
+/// How a view's draw context presents a completed frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PpcQ3PresentKind {
+    /// A double-buffered Macintosh draw context on a visible window or the
+    /// screen front buffer: EndRendering copies the back buffer to the screen.
+    Window,
+    /// A double-buffered Macintosh draw context on an offscreen port.
+    Offscreen,
+    /// A single-buffered Macintosh draw context.
+    SingleBuffered,
+    /// A pixmap draw context (always offscreen memory).
+    Pixmap,
+    /// No draw context, or one this model does not recognize.
+    Unknown,
+}
+
+impl PpcQ3PresentKind {
+    pub const ALL: [Self; 5] = [
+        Self::Window,
+        Self::Offscreen,
+        Self::SingleBuffered,
+        Self::Pixmap,
+        Self::Unknown,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Window => "window",
+            Self::Offscreen => "offscreen",
+            Self::SingleBuffered => "single",
+            Self::Pixmap => "pixmap",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// Per-process state for the "present waits for the next tick" model.
+///
+/// QuickDraw 3D itself defines no vertical-retrace wait: a double-buffered
+/// EndRendering updates the front buffer and only Q3View_Sync blocks
+/// (QuickDraw 3D 1.5.4 Reference, Q3View_EndRendering / Q3View_Sync). Guest
+/// time here advances by executed instructions while the renderer is host
+/// work, so an uncapped render loop completes several frames per tick. This
+/// state lets the runner model a retrace-locked accelerator instead: a
+/// window present to a draw context that already presented in the current
+/// tick blocks in EndRendering until the next tick, then presents. The model
+/// is opt-in: with `enabled` false (the default) EndRendering neither waits
+/// nor records presents.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PpcQ3PresentPacingState {
+    /// Whether window presents are paced. Set at launch from
+    /// `SYSTEMLESS_QD3D_PRESENT_VSYNC`.
+    pub enabled: bool,
+    /// Draw context and the tick of its most recent present.
+    pub last_present_ticks: Vec<(u32, u32)>,
+    /// Draw context whose present is blocked waiting for the next tick.
+    pub waiting: Option<u32>,
+    /// Completed presents by [`PpcQ3PresentKind`].
+    pub presents: [u64; 5],
+    /// Presents that waited for a tick boundary, by [`PpcQ3PresentKind`].
+    pub parks: [u64; 5],
+}
+
+impl PpcQ3PresentPacingState {
+    pub fn presents_of(&self, kind: PpcQ3PresentKind) -> u64 {
+        self.presents[kind.index()]
+    }
+
+    pub fn parks_of(&self, kind: PpcQ3PresentKind) -> u64 {
+        self.parks[kind.index()]
+    }
+}
+
+/// Clock and policy for one EndRendering call under present pacing.
+pub struct PpcQ3PresentPacing<'a> {
+    pub state: &'a mut PpcQ3PresentPacingState,
+    /// When false, presents are counted but never wait.
+    pub park_enabled: bool,
+    /// Virtual TickCount at this import.
+    pub tick: u32,
+    /// Guest cycles from this import to the next tick boundary.
+    pub cycles_until_next_tick: u64,
+    pub is_window_port: &'a dyn Fn(u32) -> bool,
+}
+
+pub fn ppc_q3_present_kind(
+    q3_views: &[PpcQ3ViewStateRecord],
+    q3_draw_contexts: &[PpcQ3DrawContextRecord],
+    view: u32,
+    is_window_port: &dyn Fn(u32) -> bool,
+) -> PpcQ3PresentKind {
+    let draw_context = view_draw_context(q3_views, view);
+    let Some(record) = q3_draw_contexts
+        .iter()
+        .find(|record| draw_context != 0 && record.draw_context == draw_context)
+    else {
+        return PpcQ3PresentKind::Unknown;
+    };
+    match record.draw_context_type {
+        PPC_Q3_DRAW_CONTEXT_TYPE_PIXMAP => PpcQ3PresentKind::Pixmap,
+        PPC_Q3_DRAW_CONTEXT_TYPE_MACINTOSH => {
+            let double_buffered = ppc_q3_read_u32_from_slice(
+                &record.data,
+                PPC_Q3_DRAW_CONTEXT_DOUBLE_BUFFER_STATE_OFFSET,
+            )
+            .is_some_and(|state| state != 0);
+            if !double_buffered {
+                return PpcQ3PresentKind::SingleBuffered;
+            }
+            match ppc_q3_read_u32_from_slice(&record.data, PPC_Q3_MAC_DRAW_CONTEXT_PORT_OFFSET) {
+                Some(port) if port != 0 && is_window_port(port) => PpcQ3PresentKind::Window,
+                Some(port) if port != 0 => PpcQ3PresentKind::Offscreen,
+                _ => PpcQ3PresentKind::Unknown,
+            }
+        }
+        _ => PpcQ3PresentKind::Unknown,
+    }
+}
+
+/// Returns the guest cycles a completing present must block before it may
+/// present, if any. Only a window present to a draw context that already
+/// presented in the current tick waits; the first present in a tick never
+/// does. The caller yields with the result: the runner ends the slice at the
+/// tick boundary (or earlier, at the slice limit) and re-enters the import,
+/// which asks again.
+pub fn ppc_q3_present_wait(
+    pacing: &mut PpcQ3PresentPacing<'_>,
+    draw_context: u32,
+    kind: PpcQ3PresentKind,
+) -> Option<u64> {
+    if !pacing.park_enabled || kind != PpcQ3PresentKind::Window {
+        return None;
+    }
+    let state = &mut *pacing.state;
+    let presented_this_tick = state
+        .last_present_ticks
+        .iter()
+        .any(|(context, tick)| *context == draw_context && *tick == pacing.tick);
+    if !presented_this_tick {
+        return None;
+    }
+    if state.waiting != Some(draw_context) {
+        state.waiting = Some(draw_context);
+        state.parks[kind.index()] = state.parks[kind.index()].saturating_add(1);
+    }
+    Some(pacing.cycles_until_next_tick.max(1))
+}
+
+/// Records one completed present.
+pub fn ppc_q3_record_present(
+    pacing: PpcQ3PresentPacing<'_>,
+    draw_context: u32,
+    kind: PpcQ3PresentKind,
+) {
+    let state = pacing.state;
+    state.presents[kind.index()] = state.presents[kind.index()].saturating_add(1);
+    if state.waiting == Some(draw_context) {
+        state.waiting = None;
+    }
+    if kind != PpcQ3PresentKind::Window {
+        return;
+    }
+    match state
+        .last_present_ticks
+        .iter_mut()
+        .find(|(context, _)| *context == draw_context)
+    {
+        Some(entry) => entry.1 = pacing.tick,
+        None => state.last_present_ticks.push((draw_context, pacing.tick)),
     }
 }
 

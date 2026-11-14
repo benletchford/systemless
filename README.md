@@ -602,6 +602,7 @@ Apple Inc.; classic font names identify compatibility requests only.
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |
 | `SYSTEMLESS_SOFTWARE_CURSOR` | Restores the composited guest cursor overlay instead of the hardware pointer (macOS). |
+| `SYSTEMLESS_QD3D_PRESENT_VSYNC` | Set to `1` to limit each QuickDraw 3D draw context to one window present per 60 Hz tick (PowerPC titles). Saves host work; games that draw several passes per frame or step animation per present may run slower. Off by default. |
 
 ## References & Documentation Conventions
 

@@ -1204,6 +1204,10 @@ fn load_pef_application_with_optional_disk_fragment(
         q3_styles: Vec::new(),
         q3_cameras: Vec::new(),
         q3_lights: Vec::new(),
+        q3_present_pacing: PpcQ3PresentPacingState {
+            enabled: qd3d_present_vsync_enabled(),
+            ..Default::default()
+        },
         input_sprocket: PpcInputSprocketState::default(),
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup,
