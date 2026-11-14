@@ -29,8 +29,10 @@ query parameters) to select the Rust/WASM wgpu presenter. It works with both
 localhost and a browser exposing WebGPU and OffscreenCanvas. The existing
 WebGL/Canvas2D selection remains the default.
 
-The presenter uploads complete RGBA guest frames to a reusable wgpu texture
-and renders them without filtering or an extra sRGB conversion. It holds frame
+The presenter accepts complete RGBA frames, 8-bit indexed frames with their
+256-entry palette, and compact retained-image frames, and expands the indexed
+and compact kinds on the GPU, so the worker no longer converts them to full
+RGBA first. It renders without filtering or an extra sRGB conversion. It holds frame
 credit until asynchronous GPU completion, retaining at most the current frame
 and one newest pending frame. Unsupported WebGPU, startup failure, device loss,
 and failed submissions use the existing Canvas2D recovery path without restarting
