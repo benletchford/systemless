@@ -3470,6 +3470,46 @@
         );
     }
 
+    fn inverted_text_repaint(chars: &[char]) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let globals = bus.read_long(cpu.read_reg(Register::A5));
+        let port = bus.read_long(globals);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.tx_font = 4;
+        d.tx_size = 9;
+        d.tx_mode = 4;
+        for &ch in chars {
+            d.pn_loc = (20, 24);
+            d.draw_char(&mut cpu, &mut bus, ch);
+        }
+        let base = bus.read_long(0x0824);
+        bus.read_bytes(base, 64 * 32)
+    }
+
+    #[test]
+    fn not_src_copy_repaint_replaces_old_digit_ink() {
+        assert_eq!(
+            inverted_text_repaint(&['8', '1']),
+            inverted_text_repaint(&['1']),
+            "Replacing a digit must not retain the old glyph's fringe pixels"
+        );
+    }
+
+    #[test]
+    fn not_src_copy_space_replaces_the_full_character_cell() {
+        let pixels = inverted_text_repaint(&[' ']);
+        for y in 0..32 {
+            for byte in 0..64 {
+                let expected = if (12..22).contains(&y) && byte == 3 {
+                    0xF8
+                } else {
+                    0
+                };
+                assert_eq!(pixels[y * 64 + byte], expected, "row={y} byte={byte}");
+            }
+        }
+    }
+
     #[test]
     fn plain_glyphs_paint_exactly_their_bitmap_pixels() {
         // Covers the tightened plain-glyph rect: every bitmap pixel (first

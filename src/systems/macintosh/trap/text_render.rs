@@ -830,8 +830,10 @@ impl super::TrapDispatcher {
                 );
             }
 
-            if self.tx_mode == 0 {
-                // srcCopy is opaque: clear the glyph bounds to background before drawing.
+            if matches!(self.tx_mode, 0 | 4) {
+                // Both copy modes replace the complete character cell, including
+                // spaces. notSrcCopy reverses the source mask, so its zero/white
+                // source pixels map to foreground rather than background.
                 let fbbdy = scaled_ascent + scaled_descent;
                 let copy_rect = Rect {
                     top: v - (fbbdy - scaled_descent),
@@ -842,7 +844,12 @@ impl super::TrapDispatcher {
                 if let Some(mut p) = bus.presentation.as_mut() {
                     p.erasing_text = true;
                 }
-                self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
+                let background_op = if self.tx_mode == 4 {
+                    ShapeOp::Fill([0xFF; 8])
+                } else {
+                    ShapeOp::Erase
+                };
+                self.draw_rect(cpu, bus, &copy_rect, background_op);
                 if let Some(mut p) = bus.presentation.as_mut() {
                     p.erasing_text = false;
                 }
