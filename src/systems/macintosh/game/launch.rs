@@ -393,18 +393,18 @@ pub fn load_game_from_path_with_volumes<P: AsRef<std::path::Path>>(
         let volume = volume.as_ref();
         let entry = mount_locked_volume_from_path(runner, volume)
             .map_err(|error| format!("Cannot mount {}: {error}", volume.display()))?;
-        let files = vfs_files_on_volume(runner, &entry.name);
-        mounted.push((entry, files));
+        let forks = vfs_forks_on_volume(runner, &entry.name);
+        mounted.push((entry, forks));
     }
 
     let app = load_game_from_path(runner, path)?;
 
-    for (volume, files) in &mounted {
+    for (volume, forks) in &mounted {
         let launched_from_volume = runner
             .dispatcher()
             .launched_app_path()
             .is_some_and(|app| vfs_path_matches_remove(app, &volume.name));
-        if launched_from_volume || vfs_files_on_volume(runner, &volume.name) != *files {
+        if launched_from_volume || vfs_forks_on_volume(runner, &volume.name) != *forks {
             return Err(format!(
                 "{} and an additional volume both use the volume name {:?}",
                 path.display(),
@@ -432,10 +432,10 @@ pub fn mount_locked_volume_from_path(
         return mount_locked_volume_image(runner, &bytes);
     }
 
-    let name = std::fs::canonicalize(path)
-        .ok()
-        .as_deref()
-        .and_then(std::path::Path::file_name)
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
+    let name = canonical
+        .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| {
             format!(
@@ -584,6 +584,30 @@ fn mount_locked_volume_contents(
 }
 
 /// Normalized paths of every data or resource fork stored under `volume`.
+/// Both forks of every file on one volume, keyed by (is resource fork, path).
+type VolumeForks = std::collections::BTreeMap<
+    (bool, String),
+    crate::systems::macintosh::process_context::ProcessForkBytes,
+>;
+
+/// Snapshot both forks of every file on `volume`, keyed by fork and path.
+///
+/// Fork bytes share their backing store, so the snapshot is cheap. Comparing
+/// it after GAME loads catches a same-named volume whose files were replaced,
+/// not only one whose file set changed.
+fn vfs_forks_on_volume(runner: &FixtureRunner, volume: &str) -> VolumeForks {
+    let dispatcher = runner.dispatcher();
+    let data = dispatcher.vfs.iter().map(|(path, fork)| (false, path, fork));
+    let rsrc = dispatcher.vfs_rsrc.iter().map(|(path, fork)| (true, path, fork));
+    data.chain(rsrc)
+        .map(|(is_rsrc, path, fork)| {
+            let path = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(path);
+            ((is_rsrc, path), fork.clone())
+        })
+        .filter(|((_, path), _)| vfs_path_matches_remove(path, volume))
+        .collect()
+}
+
 fn vfs_files_on_volume(runner: &FixtureRunner, volume: &str) -> std::collections::BTreeSet<String> {
     let dispatcher = runner.dispatcher();
     dispatcher
@@ -8397,6 +8421,19 @@ mod tests {
         let Err(error) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&first])
         else {
             panic!("game media and volume named alike");
+        };
+        assert!(error.contains("both use the volume name"), "{error}");
+
+        // Overwriting only a path the disc already has leaves the file set
+        // unchanged, so the check must compare fork contents as well.
+        let game = tempfile::tempdir().expect("game dir");
+        write_volume_test_game(game.path(), &["Game App"]);
+        std::fs::create_dir_all(game.path().join("HFS+ Disk Image")).unwrap();
+        std::fs::write(game.path().join("HFS+ Disk Image/Data File"), b"replaced").unwrap();
+        let mut runner = new_runner();
+        let Err(error) = load_game_from_path_with_volumes(&mut runner, game.path(), &[&first])
+        else {
+            panic!("game media replacing a file on a volume named alike");
         };
         assert!(error.contains("both use the volume name"), "{error}");
 
