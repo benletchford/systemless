@@ -278,10 +278,8 @@ pub(crate) fn ppc_get_named_resource(
     let index = if current_only || current_match.is_some() {
         current_match
     } else {
-        vfs_resources.iter().position(|record| {
-            record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
-                && record.res_type == res_type
-                && ppc_resource_name_eq(&record.name, &name)
+        ppc_resource_chain_position(vfs_resources, current_resource_refnum, |record| {
+            record.res_type == res_type && ppc_resource_name_eq(&record.name, &name)
         })
     };
     let Some(index) = index else {
@@ -845,10 +843,8 @@ pub(crate) fn ppc_vfs_resource_index(
     if current_only || current_match.is_some() {
         return current_match;
     }
-    vfs_resources.iter().position(|record| {
-        record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM
-            && record.path != SYSTEM_WCTB_PATH
-            && matches_id(record)
+    ppc_resource_chain_position(vfs_resources, current_resource_refnum, |record| {
+        record.path != SYSTEM_WCTB_PATH && matches_id(record)
     }).or_else(|| {
         // A cached System fallback cannot shadow an actual open resource or
         // become visible to Get1Resource through the application refnum alias.
@@ -856,6 +852,32 @@ pub(crate) fn ppc_vfs_resource_index(
             record.path == SYSTEM_WCTB_PATH && matches_id(record)
         })
     })
+}
+
+fn ppc_resource_chain_position(
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    matches: impl Fn(&PpcVfsResourceRecord) -> bool,
+) -> Option<usize> {
+    // Refnums rise with open order, so the highest one below the current file is
+    // the next file down the chain.
+    let is_match = |record: &PpcVfsResourceRecord| {
+        record.ref_num != PPC_CLOSED_RESOURCE_REF_NUM && matches(record)
+    };
+    let mut chain_match: Option<(usize, i16)> = None;
+    for (index, record) in vfs_resources.iter().enumerate() {
+        if is_match(record)
+            && record.ref_num < current_resource_refnum
+            && chain_match.is_none_or(|(_, ref_num)| record.ref_num > ref_num)
+        {
+            chain_match = Some((index, record.ref_num));
+        }
+    }
+    // Unlike the real chain, files opened after the current one remain visible
+    // as a fallback.
+    chain_match
+        .map(|(index, _)| index)
+        .or_else(|| vfs_resources.iter().position(is_match))
 }
 
 fn ppc_write_empty_pstring(memory: &mut PpcSectionMem, addr: u32) -> bool {
