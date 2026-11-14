@@ -1061,7 +1061,7 @@ fn ppc_pbh_copy_file(
                 let file = &vfs_resource_files[index];
                 let bytes = vfs_resource_files
                     .fork(&file.path)
-                    .cloned()
+                    .map(<[u8]>::to_vec)
                     .filter(|bytes| !bytes.is_empty())
                     .or_else(|| ppc_serialized_resource_fork(file, vfs_resources))
                     .unwrap_or_default();

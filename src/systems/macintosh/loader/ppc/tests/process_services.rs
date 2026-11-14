@@ -828,7 +828,7 @@ fn process_file_records_remain_canonical_during_native_execution_panic_cross_isa
         Some("Shared/Native.bin")
     );
     assert_eq!(
-        classic.vfs.get("Shared/Native.bin").map(Vec::as_slice),
+        classic.vfs.get("Shared/Native.bin").map(<[u8]>::as_ref),
         Some(b"native".as_slice())
     );
 

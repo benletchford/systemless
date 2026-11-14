@@ -7785,7 +7785,7 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, (-44i32) as u32);
                         return Some(Ok(()));
                     }
-                    let rsrc_data = self.vfs_rsrc.get(&vfs_key).unwrap().clone();
+                    let rsrc_data = self.vfs_rsrc.get(&vfs_key).unwrap().to_vec();
                     eprintln!(
                         "[TRAP] PBOpenRF: found rsrc fork for \"{}\" ({} bytes)",
                         vfs_key,

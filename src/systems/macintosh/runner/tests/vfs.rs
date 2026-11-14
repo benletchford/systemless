@@ -414,6 +414,6 @@ fn mounted_cd_volume_is_enumerated_locked_and_rejects_file_manager_writes() {
     assert!(runner.dispatcher.vfs.contains_key("Saved Game"));
     assert_eq!(
         runner.dispatcher.vfs.get("HFS+ Disk Image/Data File"),
-        Some(&b"disc contents".to_vec())
+        Some(&b"disc contents".to_vec()[..])
     );
 }

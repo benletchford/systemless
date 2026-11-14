@@ -3666,7 +3666,7 @@ pub(super) fn ppc_open_resource_fork_access(
     if ppc_vfs_file_index(vfs_files, &open_path).is_none() {
         let bytes = vfs_resource_files
             .fork(&path)
-            .cloned()
+            .map(<[u8]>::to_vec)
             .or_else(|| ppc_serialized_resource_fork(&vfs_resource_files[resource_index], vfs_resources))
             .unwrap_or_default();
         vfs_files.push(PpcVfsFileRecord {

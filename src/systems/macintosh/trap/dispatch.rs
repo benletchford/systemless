@@ -6926,7 +6926,7 @@ impl TrapDispatcher {
         vfs_key: &str,
         wants_write: bool,
     ) -> u16 {
-        let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().clone();
+        let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().to_vec();
         let fork = ResourceFork::parse(&rsrc_data);
         let mut map = fork
             .as_ref()

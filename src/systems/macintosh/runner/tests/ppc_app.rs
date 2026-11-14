@@ -330,7 +330,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
             .dispatcher()
             .vfs
             .get("System Folder/Preferences/Test App Prefs")
-            .map(Vec::as_slice),
+            .map(<[u8]>::as_ref),
         Some(b"prefs".as_slice())
     );
     let prefs_metadata = runner
@@ -408,7 +408,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
         )
         .unwrap()
         .as_slice(),
-        fork_bytes.as_slice()
+        &fork_bytes[..]
     );
     assert!(!runner.native.application().unwrap().vfs_files[0].dirty);
     assert!(!runner.native.application().unwrap().vfs_directories[0].dirty);

@@ -40,7 +40,55 @@ struct ProcessMemoryRegion {
 /// `shared_handle` is reserved for
 /// installing another index over the same process fork, such as the native
 /// File Manager record and the classic VFS path map.
-pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>, Rc<Cell<Option<u64>>>);
+pub struct ProcessForkBytes(Rc<UnsafeCell<ForkBacking>>, Rc<Cell<Option<u64>>>);
+
+/// A contiguous byte range of a shared, read-only image, such as a
+/// memory-mapped disk image whose files are served without copying them.
+#[derive(Clone)]
+pub struct SharedImageRange {
+    image: Rc<dyn AsRef<[u8]>>,
+    start: usize,
+    len: usize,
+}
+
+impl SharedImageRange {
+    /// `None` when the range does not lie inside the image.
+    pub fn new(image: Rc<dyn AsRef<[u8]>>, start: usize, len: usize) -> Option<Self> {
+        let end = start.checked_add(len)?;
+        ((*image).as_ref().len() >= end).then_some(Self { image, start, len })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &(*self.image).as_ref()[self.start..self.start + self.len]
+    }
+}
+
+/// Owned bytes, or bytes still in a shared image. Writes and owned snapshots
+/// copy an image range into owned bytes first.
+#[derive(Clone)]
+enum ForkBacking {
+    Owned(Rc<Vec<u8>>),
+    Image(SharedImageRange),
+}
+
+impl ForkBacking {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Image(range) => range.bytes(),
+        }
+    }
+
+    fn owned(&mut self) -> &mut Rc<Vec<u8>> {
+        if let Self::Image(range) = self {
+            *self = Self::Owned(Rc::new(range.bytes().to_vec()));
+        }
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Image(_) => unreachable!("image ranges were just copied"),
+        }
+    }
+}
 
 impl Default for ProcessForkBytes {
     fn default() -> Self {
@@ -53,7 +101,7 @@ impl Clone for ProcessForkBytes {
         // A new view cell keeps snapshots detached from live file indexes.
         // with_mut copies the backing bytes only if either snapshot is edited.
         // SAFETY: access is serialized by the runner, as for resource_snapshot.
-        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        let backing = unsafe { (*self.0.get()).clone() };
         Self(Rc::new(UnsafeCell::new(backing)), Rc::new(Cell::new(self.1.get())))
     }
 }
@@ -62,7 +110,7 @@ impl fmt::Debug for ProcessForkBytes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("ProcessForkBytes")
-            .field(&**self)
+            .field(&&**self)
             .finish()
     }
 }
@@ -95,7 +143,25 @@ impl Eq for ProcessForkBytes {}
 
 impl From<Vec<u8>> for ProcessForkBytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(Rc::new(UnsafeCell::new(Rc::new(bytes))), Rc::new(Cell::new(None)))
+        Self(
+            Rc::new(UnsafeCell::new(ForkBacking::Owned(Rc::new(bytes)))),
+            Rc::new(Cell::new(None)),
+        )
+    }
+}
+
+impl From<&[u8]> for ProcessForkBytes {
+    fn from(bytes: &[u8]) -> Self {
+        Self::from(bytes.to_vec())
+    }
+}
+
+impl From<SharedImageRange> for ProcessForkBytes {
+    fn from(range: SharedImageRange) -> Self {
+        Self(
+            Rc::new(UnsafeCell::new(ForkBacking::Image(range))),
+            Rc::new(Cell::new(None)),
+        )
     }
 }
 
@@ -106,16 +172,27 @@ impl AsRef<[u8]> for ProcessForkBytes {
 }
 
 impl std::ops::Deref for ProcessForkBytes {
-    type Target = Vec<u8>;
+    type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: process adapters are serialized by the runner, and normal
         // clones detach instead of creating an alias.
-        unsafe { &*self.0.get() }
+        unsafe { (*self.0.get()).bytes() }
     }
 }
 
 impl ProcessForkBytes {
+    pub fn as_slice(&self) -> &[u8] {
+        self
+    }
+
+    /// True while the bytes are still served from a shared image.
+    #[cfg(test)]
+    pub(crate) fn is_image_backed(&self) -> bool {
+        // SAFETY: as for Deref.
+        matches!(unsafe { &*self.0.get() }, ForkBacking::Image(_))
+    }
+
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0), Rc::clone(&self.1))
     }
@@ -139,8 +216,9 @@ impl ProcessForkBytes {
     /// detaches the backing buffer while all attached file views stay linked.
     pub(crate) fn resource_snapshot(&self) -> crate::managers::resource::ResourceBytes {
         // SAFETY: the runner serializes access, as for Deref and with_mut.
-        // Resource snapshots never mutate the shared backing buffer.
-        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        // Resource snapshots never mutate the shared backing buffer; an image
+        // range is copied once into owned bytes that attached views share.
+        let backing = unsafe { Rc::clone((*self.0.get()).owned()) };
         crate::managers::resource::ResourceBytes::from_shared(backing)
     }
 
@@ -151,7 +229,7 @@ impl ProcessForkBytes {
         self.1.set(None);
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference scoped to this operation.
-        unsafe { operation(Rc::make_mut(&mut *self.0.get())) }
+        unsafe { operation(Rc::make_mut((*self.0.get()).owned())) }
     }
 
     #[cfg(test)]
@@ -191,7 +269,7 @@ impl ProcessForkMap {
         self.0.insert(path, bytes.into())
     }
 
-    pub fn get<Q>(&self, path: &Q) -> Option<&Vec<u8>>
+    pub fn get<Q>(&self, path: &Q) -> Option<&[u8]>
     where
         String: std::borrow::Borrow<Q>,
         Q: Eq + Hash + ?Sized,
@@ -783,7 +861,7 @@ impl ProcessVfsResourceFileRecords {
         if self
             .resource_forks
             .get(&key)
-            .is_some_and(|current| current.as_slice() == bytes)
+            .is_some_and(|current| current[..] == bytes[..])
         {
             return;
         }
@@ -799,7 +877,7 @@ impl ProcessVfsResourceFileRecords {
         }
     }
 
-    pub(crate) fn fork(&self, path: &str) -> Option<&Vec<u8>> {
+    pub(crate) fn fork(&self, path: &str) -> Option<&[u8]> {
         self.resource_forks.get(path)
     }
 
@@ -14302,7 +14380,7 @@ mod tests {
         state.remove_classic_vfs_path(removed);
 
         assert!(state.vfs_files.data_forks.get(removed).is_none());
-        assert_eq!(state.vfs_files.data_forks.get(backing), Some(&b"fork".to_vec()));
+        assert_eq!(state.vfs_files.data_forks.get(backing), Some(&b"fork".to_vec()[..]));
     }
 
     #[test]

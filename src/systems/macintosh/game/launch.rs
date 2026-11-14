@@ -1332,7 +1332,7 @@ fn insert_forks_into_vfs(
                 .dispatcher()
                 .vfs
                 .get(&normalized_name)
-                .map_or(&[][..], |bytes| bytes.as_slice()),
+                .map_or(&[][..], |bytes| bytes.as_ref()),
         );
 
     if !rsrc.is_empty() {
@@ -1345,7 +1345,7 @@ fn insert_forks_into_vfs(
             .dispatcher()
             .vfs
             .get(&normalized_name)
-            .cloned()
+            .map(<[u8]>::to_vec)
             .unwrap_or_default();
         runner
             .dispatcher_mut()
@@ -3486,7 +3486,6 @@ pub(crate) fn load_application_from_vfs(
         .dispatcher()
         .vfs
         .get(path)
-        .map(Vec::as_slice)
         .unwrap_or(&[]);
     let kind = classify_executable_with_preference(data, resource, true, prefer_powerpc)
         .ok_or_else(|| format!("No executable application in {path:?}"))?;
@@ -3529,7 +3528,7 @@ fn load_selected_executable(
         .dispatcher()
         .vfs_rsrc
         .get(&executable.vfs_key)
-        .cloned()
+        .map(<[u8]>::to_vec)
         .ok_or_else(|| {
             format!(
                 "Selected executable resource fork missing: {}",
@@ -3552,7 +3551,7 @@ fn load_selected_executable(
                         .dispatcher()
                         .vfs
                         .get(&executable.vfs_key)
-                        .map_or(0, Vec::len),
+                        .map_or(0, <[u8]>::len),
                 ) {
                     let fragment_offset = u32::try_from(range.start).unwrap_or(u32::MAX);
                     let fragment_length = u32::try_from(range.len()).unwrap_or(u32::MAX);
@@ -3642,7 +3641,7 @@ fn load_powerpc_executable(
         .dispatcher()
         .vfs
         .get(&executable.vfs_key)
-        .cloned()
+        .map(<[u8]>::to_vec)
         .ok_or_else(|| format!("Selected executable data fork missing: {}", executable.name))?;
     install_native_opengl_extensions(runner);
     let ppc_vfs = ppc_diagnostic_vfs(runner, Some(&executable.name));
@@ -3749,7 +3748,7 @@ fn merge_launch_resource_companions(
             .dispatcher()
             .vfs_rsrc
             .get(&key)
-            .cloned()
+            .map(<[u8]>::to_vec)
             .unwrap_or_default();
         let fork = ResourceFork::parse(&rsrc)
             .ok_or_else(|| format!("Failed to parse launch resource companion {key}"))?;
@@ -5226,7 +5225,7 @@ mod tests {
         assert_eq!(&vers.data[..4], &[0x01, 0x20, 0x80, 0x00]);
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get(bundled),
-            Some(&vec![7]),
+            Some(&vec![7][..]),
             "an archive's own copy is kept"
         );
     }
@@ -5731,7 +5730,7 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Folder/Legacy"),
-            Some(&b"legacy".to_vec())
+            Some(&b"legacy".to_vec()[..])
         );
         let metadata = runner
             .dispatcher_mut()
@@ -5791,7 +5790,7 @@ mod tests {
         assert_eq!(volume.modified_date, 0x8765_4321);
         assert_eq!(
             runner.dispatcher().vfs.get("Bolo™ CD/Data"),
-            Some(&b"disc data".to_vec())
+            Some(&b"disc data".to_vec()[..])
         );
     }
 
@@ -5853,14 +5852,14 @@ mod tests {
         }
 
         assert_eq!(loader.loaded_entries(), 2);
-        assert_eq!(runner.dispatcher().vfs.get("Folder/Data"), Some(&data));
+        assert_eq!(runner.dispatcher().vfs.get("Folder/Data"), Some(&data[..]));
         assert_eq!(
             runner.dispatcher().vfs.get("Folder/Sidecar.rsrc"),
-            Some(&rsrc)
+            Some(&rsrc[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Folder/Sidecar.rsrc"),
-            Some(&rsrc)
+            Some(&rsrc[..])
         );
         let data_metadata = runner
             .dispatcher_mut()
@@ -5918,11 +5917,11 @@ mod tests {
         assert_eq!(loader.loaded_entries(), 3);
         assert_eq!(
             runner.dispatcher().vfs.get("Game/Game App"),
-            Some(&app_data)
+            Some(&app_data[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Game/Game App"),
-            Some(&app_rsrc)
+            Some(&app_rsrc[..])
         );
         assert!(!runner.dispatcher().vfs.contains_key("Game/Plug-Ins/MAGMA"));
         assert!(!runner
@@ -5931,7 +5930,7 @@ mod tests {
             .contains_key("Game/Plug-Ins/MAGMA"));
         assert_eq!(
             runner.dispatcher().vfs.get("Game/Plug-Ins/Keep"),
-            Some(&kept_data)
+            Some(&kept_data[..])
         );
     }
 
@@ -6625,11 +6624,11 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Self Opening App"),
-            Some(&data.to_vec())
+            Some(&data.to_vec()[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Self Opening App"),
-            Some(&rsrc)
+            Some(&rsrc[..])
         );
     }
 
@@ -6716,32 +6715,32 @@ mod tests {
         load_game_directory(&mut runner, dir.path()).expect("directory should load");
         assert_eq!(
             runner.dispatcher().vfs.get("Extras/Nested/Companion"),
-            Some(&b"nested".to_vec())
+            Some(&b"nested".to_vec()[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Extras/Nested/Companion"),
-            Some(&data_rsrc)
+            Some(&data_rsrc[..])
         );
 
         assert_eq!(
             runner.dispatcher().vfs.get("Game App"),
-            Some(&app_data.to_vec())
+            Some(&app_data.to_vec()[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Game App"),
-            Some(&app_rsrc)
+            Some(&app_rsrc[..])
         );
         assert_eq!(
             runner
                 .dispatcher()
                 .vfs
                 .get("Nova Files/Nova Data 1")
-                .map(Vec::len),
+                .map(<[u8]>::len),
             Some(0)
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Nova Files/Nova Data 1"),
-            Some(&data_rsrc)
+            Some(&data_rsrc[..])
         );
         assert_eq!(runner.dispatcher().launched_app_path(), Some("Game App"));
     }
@@ -6765,11 +6764,11 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Game App"),
-            Some(&app_rsrc)
+            Some(&app_rsrc[..])
         );
         assert_eq!(
             runner.dispatcher().vfs.get("Data/Level 1"),
-            Some(&b"level".to_vec())
+            Some(&b"level".to_vec()[..])
         );
         assert!(runner.dispatcher().vfs.get(".DS_Store").is_none());
         assert_eq!(runner.dispatcher().launched_app_path(), Some("Game App"));
@@ -6801,7 +6800,7 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Gridz™ Demo"),
-            Some(&data.to_vec())
+            Some(&data.to_vec()[..])
         );
     }
 
@@ -6823,7 +6822,7 @@ mod tests {
                 .dispatcher()
                 .vfs
                 .get("Original Installer/Installed Game"),
-            Some(&app_data.to_vec())
+            Some(&app_data.to_vec()[..])
         );
         assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
         assert_eq!(
@@ -6904,15 +6903,15 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Demo/Game App"),
-            Some(&app_data.to_vec())
+            Some(&app_data.to_vec()[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Demo/Game App"),
-            Some(&app_rsrc)
+            Some(&app_rsrc[..])
         );
         assert_eq!(
             runner.dispatcher().vfs.get("Demo/GAME.000"),
-            Some(&b"runtime companion".to_vec())
+            Some(&b"runtime companion".to_vec()[..])
         );
         let metadata = runner
             .dispatcher_mut()
@@ -6989,7 +6988,7 @@ mod tests {
                 load_web_pack(&mut runner, &packed).unwrap();
                 assert_eq!(
                     runner.dispatcher().vfs_rsrc.get("Demo/Game App"),
-                    Some(&app_rsrc)
+                    Some(&app_rsrc[..])
                 );
                 assert_eq!(
                     runner.dispatcher().launched_app_path(),
@@ -7207,9 +7206,9 @@ mod tests {
         let packed = pack_game_sources_for_web(&[&original, &companion], &[]).unwrap();
         let mut runner = new_runner();
         load_web_pack(&mut runner, &packed).unwrap();
-        assert_eq!(runner.dispatcher().vfs.get("Original Game"), Some(&data.to_vec()));
-        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Game"), Some(&rsrc));
-        assert_eq!(runner.dispatcher().vfs.get("README"), Some(&b"retain original terms".to_vec()));
+        assert_eq!(runner.dispatcher().vfs.get("Original Game"), Some(&data.to_vec()[..]));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Game"), Some(&rsrc[..]));
+        assert_eq!(runner.dispatcher().vfs.get("README"), Some(&b"retain original terms".to_vec()[..]));
         let metadata = runner.dispatcher_mut().vfs_file_metadata("Original Game").unwrap();
         assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
@@ -7271,11 +7270,11 @@ mod tests {
         let dispatcher = runner.dispatcher_mut();
         assert_eq!(
             dispatcher.vfs.get("Installer/Game"),
-            Some(&b"game".to_vec())
+            Some(&b"game".to_vec()[..])
         );
         assert_eq!(
             dispatcher.vfs_rsrc.get("Installer/Game"),
-            Some(&b"original resources".to_vec())
+            Some(&b"original resources".to_vec()[..])
         );
         for (bytes, rsrc, basename, flags) in [
             (b"first".as_slice(), b"rs1".as_slice(), "Component", 0x20u16),
@@ -7295,7 +7294,7 @@ mod tests {
             assert_eq!(matches.len(), 1);
             let path = &matches[0];
             assert_eq!(path.rsplit('/').next(), Some(basename));
-            assert_eq!(dispatcher.vfs_rsrc.get(path), Some(&rsrc.to_vec()));
+            assert_eq!(dispatcher.vfs_rsrc.get(path), Some(&rsrc.to_vec()[..]));
             assert_eq!(
                 dispatcher.vfs_file_metadata(path).unwrap().finder_flags,
                 flags
@@ -7317,8 +7316,8 @@ mod tests {
         let packed = pack_game_sources_for_web(&[&original, &companion], &["Original Installer"]).unwrap();
         let mut runner = new_runner();
         load_web_pack(&mut runner, &packed).unwrap();
-        assert_eq!(runner.dispatcher().vfs.get("Original Installer/Installed Game"), Some(&data.to_vec()));
-        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Installer/Installed Game"), Some(&rsrc));
+        assert_eq!(runner.dispatcher().vfs.get("Original Installer/Installed Game"), Some(&data.to_vec()[..]));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Installer/Installed Game"), Some(&rsrc[..]));
         assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
         assert!(!runner.dispatcher().vfs.contains_key("omit.txt"));
     }
@@ -7345,15 +7344,15 @@ mod tests {
         load_web_pack(&mut runner, &packed).unwrap();
         assert_eq!(
             runner.dispatcher().vfs.get("Original Game"),
-            Some(&data.to_vec())
+            Some(&data.to_vec()[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Original Game"),
-            Some(&rsrc)
+            Some(&rsrc[..])
         );
         assert_eq!(
             runner.dispatcher().vfs.get("README"),
-            Some(&b"retain original terms".to_vec())
+            Some(&b"retain original terms".to_vec()[..])
         );
         let metadata = runner
             .dispatcher_mut()
@@ -7377,14 +7376,14 @@ mod tests {
                 .dispatcher()
                 .vfs
                 .get("Original Installer/Installed Game"),
-            Some(&data.to_vec())
+            Some(&data.to_vec()[..])
         );
         assert_eq!(
             runner
                 .dispatcher()
                 .vfs_rsrc
                 .get("Original Installer/Installed Game"),
-            Some(&rsrc)
+            Some(&rsrc[..])
         );
         assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
     }
@@ -7572,11 +7571,11 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Folder/Runtime.rsrc"),
-            Some(&sidecar)
+            Some(&sidecar[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Folder/Runtime.rsrc"),
-            Some(&sidecar)
+            Some(&sidecar[..])
         );
     }
 
@@ -7597,11 +7596,11 @@ mod tests {
 
         assert_eq!(
             runner.dispatcher().vfs.get("Folder/Read Me"),
-            Some(&swapped)
+            Some(&swapped[..])
         );
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Folder/Read Me"),
-            Some(&swapped)
+            Some(&swapped[..])
         );
     }
 
@@ -8594,15 +8593,15 @@ mod tests {
         assert!(!dispatcher.vfs_path_is_read_only("Game App"));
         assert_eq!(
             dispatcher.vfs.get("HFS+ Disk Image/Data File"),
-            Some(&b"disc contents".to_vec())
+            Some(&b"disc contents".to_vec()[..])
         );
         assert_eq!(
             dispatcher.vfs.get("Disc Two/Movies/Viewer"),
-            Some(&b"viewer data".to_vec())
+            Some(&b"viewer data".to_vec()[..])
         );
         assert_eq!(
             dispatcher.vfs_rsrc.get("Disc Two/Movies/Viewer"),
-            Some(&movie_rsrc)
+            Some(&movie_rsrc[..])
         );
         let metadata = dispatcher
             .vfs_metadata
@@ -8612,7 +8611,7 @@ mod tests {
         assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
         assert_eq!(
             dispatcher.vfs.get("Disc Two/Nested.img"),
-            Some(&std::fs::read(&image).unwrap())
+            Some(&std::fs::read(&image).unwrap()[..])
         );
         // The game is the launch volume; data volumes supply no candidates.
         assert_eq!(dispatcher.launched_app_path(), Some("Game App"));

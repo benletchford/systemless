@@ -4256,7 +4256,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                let file_len = self.vfs.get(&filename).map_or(0, Vec::len);
+                let file_len = self.vfs.get(&filename).map_or(0, <[u8]>::len);
                 let cur_pos = usize::try_from(*self.file_positions.get(&ref_num).unwrap_or(&0))
                     .unwrap_or(usize::MAX);
                 let Ok(start) =
@@ -4315,7 +4315,7 @@ impl super::TrapDispatcher {
                 // OpenRFPerm/PBOpenRF reads the latest data (Mars Rising's
                 // installer copies its rsrc fork to a temp file then re-opens it).
                 if let Some(real_name) = Self::resource_fork_backing_path(&filename) {
-                    if let Some(buf) = self.vfs.get(&filename).cloned() {
+                    if let Some(buf) = self.vfs.get(&filename).map(<[u8]>::to_vec) {
                         self.vfs_rsrc.insert(real_name.to_string(), buf);
                     }
                 }
@@ -6777,7 +6777,7 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
 
-                        let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
+                        let rsrc_data = self.vfs_rsrc.get(&vfs_key).map(<[u8]>::to_vec).unwrap_or_default();
                         self.vfs.insert_if_absent(rsrc_key.clone(), rsrc_data);
                         let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, rsrc_key.clone());
