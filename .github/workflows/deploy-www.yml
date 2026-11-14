@@ -7,23 +7,53 @@ on:
         description: Release tag or commit to deploy
         required: true
         type: string
+      audit_only:
+        description: Inspect hosting log configuration without deploying or changing it
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       tag:
         description: Release-please tag whose commit will be deployed
         required: true
         type: string
+      audit_only:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   deployments: write
 
 concurrency:
-  group: deploy-www-production
+  group: ${{ inputs.audit_only && 'inspect-hosting-production' || 'deploy-www-production' }}
   cancel-in-progress: false
 
 jobs:
+  inspect-hosting:
+    if: inputs.audit_only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Inspect selected hosting settings
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node www/scripts/inspect-hosting.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hosting-config-audit
+          path: hosting-config-audit.json
   deploy:
+    if: ${{ !inputs.audit_only }}
     runs-on: ubuntu-latest
     environment: production
     steps:
