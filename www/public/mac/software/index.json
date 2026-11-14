@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "scope": "Native Mac app approved starter software only; guidance is an access restriction, not an official regional age-rating certification.",
+  "application_identifier": "ZTFF3TC82F.org.systemless",
+  "entries": [
+    {
+      "id": "diamonds-demo",
+      "title": "Diamonds 2.0 Demo",
+      "developer": "Varcon Systems",
+      "year": 1992,
+      "summary": "Guide a bouncing ball through Diamonds' colorful block puzzles.",
+      "edition": "Demo",
+      "limits": "Original Diamonds 2.0 demonstration. Keep the complete package and its original notices.",
+      "minimum_age_guidance": 4,
+      "content_guidance": "Abstract brick-breaking puzzle",
+      "archive_sha256": "dfec8d30230938fd08e6da101956a8cee7f1f7f2a64282a09275f1eea910d9be",
+      "archive_size_bytes": 184315,
+      "rights": {
+        "redistribution": "permitted",
+        "original": true,
+        "sources": [
+          "https://classicmacdemos.com/diamonds"
+        ],
+        "rights_holder": "Varcon Systems / das softwarehaus GmbH",
+        "permission": "The original Diamonds 2.0 Demo launcher states, \"Diese Demo-Version kann unbeschränkt kopiert und weitergegeben werden\" (this demo version may be copied and passed on without restriction). The archive contains only the demo application and its two background files.",
+        "notes": "Unchanged 184,315-byte StuffIt archive, SHA-256 dfec8d30230938fd08e6da101956a8cee7f1f7f2a64282a09275f1eea910d9be. The German demo splash credits das softwarehaus GmbH as its distributor."
+      },
+      "url": "https://systemless.org/mac/software/diamonds-demo"
+    },
+    {
+      "id": "wumpus",
+      "title": "Wumpus! 1.0",
+      "developer": "Joe Strout (Codenautics)",
+      "year": 1998,
+      "summary": "Explore caverns with a lantern, dynamite and a canary as you track down the legendary Wumpus in Joe Strout's graphical take on Hunt the Wumpus.",
+      "edition": "Freeware",
+      "limits": "Complete original freeware game. Preserve the application and its resources unchanged.",
+      "minimum_age_guidance": 12,
+      "content_guidance": "Fantasy peril and references to hunting a monster",
+      "archive_sha256": "d623afcbe9eac142bde1094025814ba50ace6095d3013226fa56cfcf0fb9db71",
+      "archive_size_bytes": 1065335,
+      "rights": {
+        "redistribution": "permitted",
+        "original": true,
+        "sources": [
+          "https://mirrors.nic.funet.fi/pub/mac/info-mac/game/adv/wumpus-10.hqx",
+          "https://github.com/benletchford/systemless/issues/5443"
+        ],
+        "license": "Original freeware distribution notice",
+        "rights_holder": "Joe Strout (Codenautics)",
+        "permission": "The author's Info-Mac submission says Wumpus is freeware and may be distributed at will, including on CD-ROM archives, as long as the program and its resources are not modified. Preserve the unchanged archive.",
+        "notes": "The archive contains only the PowerPC application."
+      },
+      "url": "https://systemless.org/mac/software/wumpus"
+    },
+    {
+      "id": "damage-incorporated",
+      "title": "Damage Incorporated",
+      "developer": "Paranoid Productions",
+      "year": 1997,
+      "summary": "Lead a fire team through close-quarters missions where every order competes with the next burst of gunfire.",
+      "edition": "Four-level demo",
+      "limits": "Three single-player levels and one network level. Distributed unchanged with the original Read This notice.",
+      "minimum_age_guidance": 18,
+      "content_guidance": "First-person shooter with violence; mature content",
+      "archive_sha256": "f899ad2b6cce7489975e9499e5a3faa1cbb74f786cf862b733b266a06013c4a3",
+      "archive_size_bytes": 18006011,
+      "rights": {
+        "redistribution": "permitted",
+        "original": true,
+        "sources": [
+          "https://info-mac.org/viewtopic.php?t=4329",
+          "https://ftp.lip6.fr/pub/mac/info-mac/_Game/arc/damage-inc-demo.hqx",
+          "https://www.paranoidproductions.com/damage/"
+        ],
+        "license": "Damage Incorporated demonstration redistribution grant",
+        "rights_holder": "MacSoft and WizardWorks Group, Inc.",
+        "permission": "The Info-Mac submission and bundled Read This document permit the demo to be distributed freely by any means and to anyone, provided it remains unaltered and the Read This file stays with it.",
+        "notes": "This unchanged 18,006,011-byte Info-Mac BinHex submission was retrieved independently on 2026-09-15. It has SHA-256 f899ad2b6cce7489975e9499e5a3faa1cbb74f786cf862b733b266a06013c4a3 and retains its distribution notice, original StuffIt archive, application, Read This document, maps, shapes, images, sounds and voices."
+      },
+      "url": "https://systemless.org/mac/software/damage-incorporated"
+    }
+  ]
+}
