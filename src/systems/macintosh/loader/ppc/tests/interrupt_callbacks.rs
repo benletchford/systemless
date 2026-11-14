@@ -1353,3 +1353,51 @@ fn dtinstall_runs_the_deferred_task_with_its_parameter() {
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(result), Some(0x1234_5678));
 }
+
+#[test]
+fn empty_os_event_polls_end_at_the_next_tick_after_the_threshold() {
+    let lr = 0x0103_4560;
+    let mut idle_poll = PpcOsEventIdlePollState::default();
+    let empty = PpcImportAction::Return(0);
+
+    for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        assert_eq!(
+            ppc_os_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
+            empty
+        );
+    }
+    assert_eq!(
+        ppc_os_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
+        PpcImportAction::ReturnWithExtraCycles(0, 499)
+    );
+    assert_eq!(
+        ppc_os_event_idle_poll_action(empty.clone(), lr, 43, 500, &mut idle_poll),
+        empty,
+        "the first poll of the next tick runs normally"
+    );
+
+    assert_eq!(
+        ppc_os_event_idle_poll_action(empty.clone(), lr + 0x40, 42, 500, &mut idle_poll),
+        empty,
+        "a different polling caller must restart detection"
+    );
+    assert_eq!(
+        ppc_os_event_idle_poll_action(empty.clone(), lr + 0x40, 43, 500, &mut idle_poll),
+        empty,
+        "a new tick must restart detection"
+    );
+
+    for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        ppc_os_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll);
+    }
+    assert_eq!(
+        ppc_os_event_idle_poll_action(PpcImportAction::Return(1), lr, 44, 500, &mut idle_poll),
+        PpcImportAction::Return(1),
+        "a delivered event is returned unchanged"
+    );
+    assert_eq!(
+        ppc_os_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll),
+        empty,
+        "a delivered event must restart detection"
+    );
+}

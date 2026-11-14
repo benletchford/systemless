@@ -274,6 +274,47 @@ pub(super) fn dispatch_tick_count_import(
     }
 }
 
+/// Consecutive empty `GetOSEvent` results from one call site within one tick.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct PpcOsEventIdlePollState {
+    context: Option<(u32, u32)>,
+    repeat_count: u32,
+}
+
+/// End a `GetOSEvent` busy-wait at the next tick boundary.
+///
+/// A program that waits for input by calling `GetOSEvent` in a tight loop,
+/// without `WaitNextEvent`, otherwise spins thousands of times per tick. Host
+/// input and the tick's VBL and sound work reach the guest only between
+/// execution slices, so once one call site has seen more than a few empty
+/// results within a tick, later calls in that tick cannot return anything new.
+/// Charging the cycles to the boundary ends the slice there instead.
+pub(super) fn ppc_os_event_idle_poll_action(
+    action: PpcImportAction,
+    lr: u32,
+    tick_count: u32,
+    cycles_until_boundary_or_limit: u64,
+    idle_poll: &mut PpcOsEventIdlePollState,
+) -> PpcImportAction {
+    if action != PpcImportAction::Return(0) || lr == 0 {
+        *idle_poll = PpcOsEventIdlePollState::default();
+        return action;
+    }
+    let context = (lr, tick_count);
+    if idle_poll.context != Some(context) {
+        idle_poll.context = Some(context);
+        idle_poll.repeat_count = 1;
+        return action;
+    }
+    idle_poll.repeat_count = idle_poll.repeat_count.saturating_add(1);
+    if idle_poll.repeat_count > PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        // The import itself costs one cycle, as for TickCount above.
+        PpcImportAction::ReturnWithExtraCycles(0, cycles_until_boundary_or_limit.saturating_sub(1))
+    } else {
+        action
+    }
+}
+
 pub(super) fn dispatch_getkeys_import(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,

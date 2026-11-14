@@ -220,7 +220,8 @@ use theme::*;
 use dispatch_event::{
     dispatch_button_import, dispatch_getkeys_import, dispatch_microseconds_import,
     dispatch_still_down_import, dispatch_tick_count_import, ppc_still_down_result,
-    ppc_wait_mouse_up_result, PpcTickCountIdlePollState,
+    ppc_os_event_idle_poll_action, ppc_wait_mouse_up_result, PpcOsEventIdlePollState,
+    PpcTickCountIdlePollState,
 };
 
 mod constants;
