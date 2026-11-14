@@ -301,7 +301,7 @@ fn runner_cfm_owns_native_connections_ids_and_library_seeds() {
     native.cfm.as_mut().unwrap().next_connection_id = 7;
     native.seed_cfm_library_fragments(vec![PpcCfmLibraryFragment {
         name: "seeded library".into(),
-        bytes: vec![1, 2, 3],
+        bytes: vec![1, 2, 3].into(),
     }]);
     app.ppc = Some(native);
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -323,7 +323,7 @@ fn runner_cfm_owns_native_connections_ids_and_library_seeds() {
     );
     assert_eq!(
         runner.process_context.cfm_mut().library_fragments[0].bytes,
-        vec![1, 2, 3]
+        crate::cfm::CfmFragmentBytes::from(vec![1, 2, 3])
     );
     let registry = runner.process_context.cfm_mut().clone();
     let native = runner.native.application_mut().unwrap();

@@ -145,7 +145,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         memory.add_region(0x9000, fragment.clone());
         let mut libraries = vec![PpcCfmLibraryFragment {
             name: "test".to_string(),
-            bytes: synthetic_pef_with_initializer(),
+            bytes: synthetic_pef_with_initializer().into(),
         }];
         let mut connections = Vec::new();
         let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
@@ -230,7 +230,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
         memory.add_region(0x5100, b"\x05inner".to_vec());
         libraries.push(PpcCfmLibraryFragment {
             name: "inner".to_string(),
-            bytes: fragment.clone(),
+            bytes: fragment.clone().into(),
         });
         let mut inner = request.clone();
         inner.gpr[if use_memory { 5 } else { 3 }] = 0x5100;
@@ -382,7 +382,7 @@ fn get_shared_library_keeps_disk_fragment_code_out_of_the_partition() {
         memory.add_region(0x8000, vec![0; 128]);
         let mut libraries = vec![PpcCfmLibraryFragment {
             name: "test".to_string(),
-            bytes: pef.clone(),
+            bytes: pef.clone().into(),
         }];
         let mut connections = Vec::new();
         let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
@@ -464,7 +464,7 @@ fn cfm_initializer_storage_is_released_when_load_outputs_become_readonly() {
         memory.add_region(0x5000, b"\x06nested".to_vec());
         let mut libraries = vec![PpcCfmLibraryFragment {
             name: "nested".to_string(),
-            bytes: fragment,
+            bytes: fragment.into(),
         }];
         memory.add_region(0x6000, vec![0; 64]);
         memory.add_region(0x7000, vec![0; 4]);
@@ -859,7 +859,7 @@ fn initial_application_imports_bind_bundled_library_data_and_tvectors() {
             None,
             vec![PpcCfmLibraryFragment {
                 name: "BundledLibrary".to_string(),
-                bytes: library.clone(),
+                bytes: library.clone().into(),
             }],
             None,
         )
@@ -901,11 +901,11 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
     let application = synthetic_pef_with_library_import(b"RootLibrary", b"Missing");
     let root = PpcCfmLibraryFragment {
         name: "RootLibrary".to_string(),
-        bytes: synthetic_pef_with_library_import(b"DependencyLibrary", b"SharedRoutine"),
+        bytes: synthetic_pef_with_library_import(b"DependencyLibrary", b"SharedRoutine").into(),
     };
     let dependency = PpcCfmLibraryFragment {
         name: "DependencyLibrary".to_string(),
-        bytes: synthetic_pef_with_single_export(b"SharedRoutine", 2, 0, 1),
+        bytes: synthetic_pef_with_single_export(b"SharedRoutine", 2, 0, 1).into(),
     };
 
     for fragments in [
@@ -969,7 +969,7 @@ fn bundled_gamesprockets_use_native_system_bindings() {
             None,
             vec![PpcCfmLibraryFragment {
                 name: library_name.to_string(),
-                bytes: vec![0; 40],
+                bytes: vec![0; 40].into(),
             }],
             None,
         )
@@ -1000,7 +1000,7 @@ fn initial_bundled_library_initializer_runs_before_application_main() {
         None,
         vec![PpcCfmLibraryFragment {
             name: "BundledInitializer".to_string(),
-            bytes: library,
+            bytes: library.into(),
         }],
         None,
     )
@@ -1029,7 +1029,7 @@ fn disk_backed_bundled_library_initializer_receives_file_locator() {
         bus.synthetic_reservation_range().unwrap(),
         vec![PpcCfmLibraryFragment {
             name: "BundledInitializer".to_string(),
-            bytes: library.clone(),
+            bytes: library.clone().into(),
         }],
         None,
         PpcDiskFragment {
@@ -1201,7 +1201,7 @@ fn get_shared_library_find_only_does_not_prepare_seeded_fragment() {
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.seed_cfm_library_fragments(vec![PpcCfmLibraryFragment {
         name: "SeededLibrary".to_string(),
-        bytes: synthetic_pef_with_exports(),
+        bytes: synthetic_pef_with_exports().into(),
     }]);
     let scratch = PPC_HEAP_BASE;
     loaded.memory.add_region(scratch, vec![0; 128]);
