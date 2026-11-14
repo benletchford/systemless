@@ -56,6 +56,7 @@ pub enum PpcSystemCompatibilityOperation {
     GetScriptManagerVariable,
     GetScriptVariable,
     GetSysBeepVolume,
+    GetSysPPtr,
     GetSysDirection,
     HiliteText,
     IuCompString,
@@ -729,6 +730,15 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         }
         PpcSystemCompatibilityOperation::LmGetSysFontFam => PpcImportAction::Return(0),
         PpcSystemCompatibilityOperation::LmGetSysFontSize => PpcImportAction::Return(12),
+        PpcSystemCompatibilityOperation::GetSysPPtr => {
+            // FUNCTION GetSysPPtr: SysPPtr;
+            // Returns the address of the 20-byte copy of parameter RAM (SysParam).
+            // The first byte, SPValid, is $A8 when the copy is valid. As on the
+            // 68K InitUtil path, only that stamp is set; the settings stay zero.
+            // Inside Macintosh: Operating System Utilities (1994), pp. 7-8 to 7-10.
+            let _ = memory.write_u8(PPC_IMPORT_SYS_PARAM, 0xA8);
+            PpcImportAction::Return(PPC_IMPORT_SYS_PARAM)
+        }
         PpcSystemCompatibilityOperation::GetSysBeepVolume => {
             let result = if memory.write_u32_be(cpu.gpr[3], 0x0100_0100).is_some() {
                 PPC_NO_ERR

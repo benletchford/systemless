@@ -6845,6 +6845,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysBeepVolume,
         ),
+        ("InterfaceLib", "GetSysPPtr") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetSysPPtr,
+        ),
         ("InterfaceLib" | "CarbonLib", "IUCompString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuCompString,
@@ -7298,7 +7301,7 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib",
             "SFindStruct" | "SGetBlock" | "SGetCString" | "SGetSRsrc" | "SGetTypeSRsrc"
-            | "SNextTypeSRsrc",
+            | "SNextTypeSRsrc" | "SReadPRAMRec",
         ) => PpcImportDispatcherTarget::SlotCompatibility,
         ("InterfaceLib", "CustomGetFile") => PpcImportDispatcherTarget::StandardFileCompatibility(
             PpcStandardFileOperation::CustomGetFile,

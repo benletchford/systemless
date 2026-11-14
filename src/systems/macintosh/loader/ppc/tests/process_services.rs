@@ -1929,6 +1929,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             "GetSysBeepVolume",
             PpcSystemCompatibilityOperation::GetSysBeepVolume,
         ),
+        ("GetSysPPtr", PpcSystemCompatibilityOperation::GetSysPPtr),
         (
             "GetSysDirection",
             PpcSystemCompatibilityOperation::GetSysDirection,

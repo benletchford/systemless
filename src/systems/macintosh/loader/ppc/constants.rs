@@ -25,6 +25,8 @@ pub(crate) const PPC_IMPORT_CF_ALLOCATOR_DEFAULT: u32 = PPC_IMPORT_DATA_BASE + 0
 pub(crate) const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 pub(crate) const PPC_IMPORT_STD_TM: u32 = PPC_IMPORT_DATA_BASE + 0xa80;
 pub(crate) const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
+/// The 20-byte SysParam record returned by GetSysPPtr.
+pub(crate) const PPC_IMPORT_SYS_PARAM: u32 = PPC_IMPORT_DATA_BASE + 0x940;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
 // for stdin, stdout, and stderr. Keep this zero-initialized storage in the
 // stable import-data page. The actual FILE fields are private to StdCLib, so
@@ -79,6 +81,7 @@ pub const PPC_OPEN_ERR: i16 = -23;
 pub const PPC_BD_NAM_ERR: i16 = -37;
 pub const PPC_PROC_NOT_FOUND_ERR: i16 = -600;
 pub const PPC_NOT_ENOUGH_HARDWARE_ERR: i16 = -201;
+pub(crate) const PPC_SM_EMPTY_SLOT_ERR: i16 = -300;
 pub(crate) const PPC_SM_NO_MORE_SRSRCS_ERR: i16 = -344;
 pub(crate) const PPC_NO_MPP_ERR: i16 = -3102;
 pub(crate) const PPC_ERR_AE_DESC_NOT_FOUND: i16 = -1701;
