@@ -79,11 +79,11 @@ pub fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
 pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
     if udif::recognizes(bytes) {
         let decoded = udif::decode(bytes)?;
-        return extract_uncompressed(&decoded)?
-            .map(Some)
+        return extract_uncompressed(&decoded, false)?
+            .map(|(contents, _)| Some(contents))
             .ok_or_else(|| "UDIF image contains no supported HFS filesystem".to_owned());
     }
-    extract_uncompressed(bytes)
+    extract_uncompressed(bytes, false).map(|image| image.map(|(contents, _)| contents))
 }
 
 /// Extract an image whose format may be described by its resource fork.
@@ -93,12 +93,37 @@ pub fn extract_forked_image(data: &[u8], rsrc: &[u8]) -> Result<Option<DiskImage
         return extract_dc42_or_hfs(data);
     };
     let decoded = ndif::decode(data, &bcem.data)?;
-    extract_uncompressed(&decoded)?
-        .map(Some)
+    extract_uncompressed(&decoded, false)?
+        .map(|(contents, _)| Some(contents))
         .ok_or_else(|| "NDIF image contains no supported HFS filesystem".to_owned())
 }
 
-fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
+/// Byte ranges, within the image passed in, of data forks left unread.
+pub type DeferredDataRanges = Vec<Option<std::ops::Range<usize>>>;
+
+/// Like [`extract_dc42_or_hfs`], but a classic HFS data fork held whole in one
+/// extent is left unread: its `data` is empty and the matching entry of the
+/// returned ranges (one per file) gives where its bytes lie in `bytes`. A
+/// caller that keeps `bytes` alive can then serve those forks without copying
+/// them. UDIF images are decoded into a new buffer, so they read every fork.
+pub fn extract_dc42_or_hfs_deferring_data(
+    bytes: &[u8],
+) -> Result<Option<(DiskImageContents, DeferredDataRanges)>, String> {
+    if udif::recognizes(bytes) {
+        return extract_dc42_or_hfs(bytes).map(|image| {
+            image.map(|contents| {
+                let ranges = vec![None; contents.files.len()];
+                (contents, ranges)
+            })
+        });
+    }
+    extract_uncompressed(bytes, true)
+}
+
+fn extract_uncompressed(
+    bytes: &[u8],
+    defer_data: bool,
+) -> Result<Option<(DiskImageContents, DeferredDataRanges)>, String> {
     if !looks_like_dc42_or_hfs(bytes) {
         return Ok(None);
     }
@@ -106,7 +131,10 @@ fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, Strin
     let filesystem = filesystem_payload(bytes);
     match raw_filesystem_signature(filesystem) {
         Some(HFS_PLUS_SIGNATURE | HFSX_SIGNATURE) => {
-            return extract_hfsplus(filesystem).map(Some);
+            return extract_hfsplus(filesystem).map(|contents| {
+                let ranges = vec![None; contents.files.len()];
+                Some((contents, ranges))
+            });
         }
         Some(HFS_SIGNATURE | MFS_SIGNATURE) => {}
         Some(_) | None => {}
@@ -126,15 +154,29 @@ fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, Strin
         }
     }
 
+    // `filesystem` is a sub-slice of `bytes`; deferred ranges are reported in
+    // `bytes` coordinates.
+    let filesystem_offset = filesystem.as_ptr() as usize - bytes.as_ptr() as usize;
     let mut files = Vec::with_capacity(volume.files.len());
+    let mut ranges = Vec::with_capacity(volume.files.len());
     for file in &volume.files {
         let Some(rel_path) = path_to_vfs_path(&file.rel_path) else {
             continue;
         };
         let path = prefixed_path(&volume_name, &rel_path);
-        let data = volume
-            .read_data_fork(file)
-            .map_err(|e| format!("failed to read HFS data fork for {path}: {e}"))?;
+        let range = defer_data
+            .then(|| volume.contiguous_data_fork_range(file))
+            .flatten();
+        let data = if range.is_some() {
+            Vec::new()
+        } else {
+            volume
+                .read_data_fork(file)
+                .map_err(|e| format!("failed to read HFS data fork for {path}: {e}"))?
+        };
+        ranges.push(range.map(|range| {
+            range.start + filesystem_offset..range.end + filesystem_offset
+        }));
         let rsrc = volume
             .read_rsrc_fork(file)
             .map_err(|e| format!("failed to read HFS resource fork for {path}: {e}"))?;
@@ -151,12 +193,15 @@ fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, Strin
 
     dirs.sort_unstable();
     dirs.dedup();
-    Ok(Some(DiskImageContents {
-        volume_name,
-        volume_info,
-        dirs,
-        files,
-    }))
+    Ok(Some((
+        DiskImageContents {
+            volume_name,
+            volume_info,
+            dirs,
+            files,
+        },
+        ranges,
+    )))
 }
 
 fn hfs_volume_info(bytes: &[u8], file_count: usize) -> DiskImageVolumeInfo {

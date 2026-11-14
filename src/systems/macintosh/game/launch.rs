@@ -309,6 +309,12 @@ enum HostFileBytes {
     Read(Vec<u8>),
 }
 
+impl AsRef<[u8]> for HostFileBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
 impl std::ops::Deref for HostFileBytes {
     type Target = [u8];
 
@@ -329,14 +335,13 @@ fn read_host_file(path: &std::path::Path) -> Result<HostFileBytes, String> {
         // An empty file cannot be mapped; read it instead.
         if file.metadata().map_err(error)?.len() > 0 {
             // SAFETY: `Mmap::map` is unsafe because the mapped file can change
-            // underneath the returned slice. The mapping is read-only, is
-            // owned by the caller's local `HostFileBytes`, and is dropped when
-            // the load returns; parsing copies every fork it keeps into owned
-            // VFS buffers, so no borrow of the mapping outlives it. If another
-            // host process truncates or rewrites the image during that window,
-            // reads can observe changed bytes or fault (SIGBUS on Unix); a
-            // user replacing a disk image while it is being opened is not
-            // supported.
+            // underneath the returned slice. The mapping is read-only. A disk
+            // image mounted from it keeps it for the session, serving
+            // contiguous file data from it, so borrows of the mapping can
+            // outlive the load. If another host process truncates or rewrites
+            // the image meanwhile, reads can observe changed bytes or fault
+            // (SIGBUS on Unix); a user replacing a disk image while it is in
+            // use is not supported.
             if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
                 return Ok(HostFileBytes::Mapped(map));
             }
@@ -476,8 +481,8 @@ pub fn mount_locked_volume_from_path(
     path: &std::path::Path,
 ) -> Result<MountedVolume, String> {
     if !path.is_dir() {
-        let bytes = read_host_file(path)?;
-        return mount_locked_volume_image(runner, &bytes);
+        let image: std::rc::Rc<dyn AsRef<[u8]>> = std::rc::Rc::new(read_host_file(path)?);
+        return mount_locked_volume_shared_image(runner, image);
     }
 
     let canonical = std::fs::canonicalize(path)
@@ -566,9 +571,53 @@ pub fn mount_locked_volume_image(
     mount_locked_volume_contents(runner, image)
 }
 
+/// Mount a disk image that stays alive for the session, as
+/// [`mount_locked_volume_image`] does, but serve each data fork held whole in
+/// one extent straight from `image` instead of copying it. The volume is
+/// locked, so those forks are only copied if a program writes to one anyway.
+fn mount_locked_volume_shared_image(
+    runner: &mut FixtureRunner,
+    image: std::rc::Rc<dyn AsRef<[u8]>>,
+) -> Result<MountedVolume, String> {
+    let (contents, ranges) =
+        crate::disk_image::extract_dc42_or_hfs_deferring_data((*image).as_ref())?.ok_or_else(
+            || {
+                "not a supported disk image (DiskCopy 4.2, raw HFS or HFS+, Apple partition map, or UDIF)"
+                    .to_string()
+            },
+        )?;
+    let shared = ranges
+        .into_iter()
+        .map(|range| {
+            range
+                .map(|range| {
+                    crate::systems::macintosh::process_context::SharedImageRange::new(
+                        std::rc::Rc::clone(&image),
+                        range.start,
+                        range.len(),
+                    )
+                    .ok_or_else(|| format!("data fork range {range:?} lies outside the image"))
+                })
+                .transpose()
+        })
+        .collect::<Result<_, String>>()?;
+    mount_locked_volume_contents_with_shared_data(runner, contents, shared)
+}
+
 fn mount_locked_volume_contents(
     runner: &mut FixtureRunner,
     image: crate::disk_image::DiskImageContents,
+) -> Result<MountedVolume, String> {
+    let shared = std::iter::repeat_with(|| None)
+        .take(image.files.len())
+        .collect();
+    mount_locked_volume_contents_with_shared_data(runner, image, shared)
+}
+
+fn mount_locked_volume_contents_with_shared_data(
+    runner: &mut FixtureRunner,
+    image: crate::disk_image::DiskImageContents,
+    shared_data: Vec<Option<crate::systems::macintosh::process_context::SharedImageRange>>,
 ) -> Result<MountedVolume, String> {
     use crate::trap::dispatch::TrapDispatcher;
 
@@ -616,12 +665,22 @@ fn mount_locked_volume_contents(
         info.modified_date,
     );
     let file_count = files.len();
-    for file in files {
+    for (file, shared) in files.into_iter().zip(shared_data) {
         let path = TrapDispatcher::normalize_vfs_path(&file.path);
         if !file.rsrc.is_empty() {
             dispatcher.vfs_rsrc.insert(path.clone(), file.rsrc);
         }
-        dispatcher.vfs.insert(path.clone(), file.data);
+        match shared {
+            Some(range) => {
+                dispatcher.vfs.insert(
+                    path.clone(),
+                    crate::systems::macintosh::process_context::ProcessForkBytes::from(range),
+                );
+            }
+            None => {
+                dispatcher.vfs.insert(path.clone(), file.data);
+            }
+        }
         dispatcher.set_vfs_entry_metadata(&path, file.file_type, file.creator, file.finder_flags);
     }
     Ok(MountedVolume {

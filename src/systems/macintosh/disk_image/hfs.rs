@@ -205,6 +205,36 @@ impl<'a> HfsVolume<'a> {
         })
     }
 
+    /// Byte range of `file`'s data fork within the volume, when its first
+    /// extent holds the whole fork, so the fork can be served from the image
+    /// without copying it. `None` for any record `read_data_fork` would
+    /// reject, so the caller's fallback read reports the same error.
+    pub(crate) fn contiguous_data_fork_range(
+        &self,
+        file: &HfsFileEntry,
+    ) -> Option<std::ops::Range<usize>> {
+        extent_block_count(&file.data_fork.extents).ok()?;
+        let logical_size = usize::try_from(file.data_fork.logical_size).ok()?;
+        let extent = file.data_fork.extents[0];
+        if logical_size == 0
+            || extent
+                .start_block
+                .checked_add(extent.block_count)
+                .is_none_or(|end| end > self.allocation_block_count)
+        {
+            return None;
+        }
+        let block_size = usize::try_from(self.allocation_block_size).ok()?;
+        if usize::from(extent.block_count).checked_mul(block_size)? < logical_size {
+            return None;
+        }
+        let start = usize::from(self.allocation_start)
+            .checked_mul(512)?
+            .checked_add(usize::from(extent.start_block).checked_mul(block_size)?)?;
+        let end = start.checked_add(logical_size)?;
+        (end <= self.bytes.len()).then_some(start..end)
+    }
+
     pub(crate) fn read_data_fork(&self, file: &HfsFileEntry) -> Result<Vec<u8>, String> {
         self.read_fork(file.cnid, DATA_FORK, &file.data_fork)
     }

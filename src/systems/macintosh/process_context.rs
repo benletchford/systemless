@@ -117,7 +117,20 @@ impl fmt::Debug for ProcessForkBytes {
 
 impl PartialEq for ProcessForkBytes {
     fn eq(&self, other: &Self) -> bool {
-        **self == **other
+        // SAFETY: as for Deref.
+        let (left, right) = unsafe { (&*self.0.get(), &*other.0.get()) };
+        // Views of one backing are equal without reading it, which keeps a
+        // comparison of image-backed forks from touching every page.
+        let same_backing = match (left, right) {
+            (ForkBacking::Owned(left), ForkBacking::Owned(right)) => Rc::ptr_eq(left, right),
+            (ForkBacking::Image(left), ForkBacking::Image(right)) => {
+                Rc::ptr_eq(&left.image, &right.image)
+                    && left.start == right.start
+                    && left.len == right.len
+            }
+            _ => false,
+        };
+        same_backing || **self == **other
     }
 }
 
@@ -11212,6 +11225,45 @@ impl ProcessContext {
 
 #[cfg(test)]
 mod tests {
+    use super::{ProcessForkBytes, SharedImageRange};
+    use std::rc::Rc;
+
+    /// An image that counts reads of its bytes.
+    struct CountingImage {
+        bytes: Vec<u8>,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl AsRef<[u8]> for CountingImage {
+        fn as_ref(&self) -> &[u8] {
+            self.reads.set(self.reads.get() + 1);
+            &self.bytes
+        }
+    }
+
+    #[test]
+    fn views_of_one_image_range_compare_equal_without_reading_it() {
+        let image = Rc::new(CountingImage {
+            bytes: b"abcdabcd".to_vec(),
+            reads: std::cell::Cell::new(0),
+        });
+        let shared: Rc<dyn AsRef<[u8]>> = image.clone();
+        let fork = |start, len| {
+            ProcessForkBytes::from(SharedImageRange::new(Rc::clone(&shared), start, len).unwrap())
+        };
+        let (first, same, later, shorter) = (fork(0, 4), fork(0, 4), fork(4, 4), fork(0, 3));
+        let reads = image.reads.get();
+        assert!(first == same);
+        assert!(first == first.clone());
+        assert_eq!(image.reads.get(), reads, "one range compares without reading");
+
+        // Other ranges, and owned bytes, are compared by their bytes.
+        assert!(first == later);
+        assert!(image.reads.get() > reads, "another range is read");
+        assert!(first != shorter);
+        assert!(first == ProcessForkBytes::from(b"abcd".to_vec()));
+    }
+
     #[test]
     fn fork_content_hash_tracks_attached_writes_and_detached_snapshots() {
         let fork = super::ProcessForkBytes::from(b"hello".to_vec());
