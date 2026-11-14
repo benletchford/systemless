@@ -8,7 +8,7 @@ The Systemless emulator and runtime code in this public repository is
 distributed under GPL-3.0-or-later. See [LICENSE](./LICENSE) for the full licence
 text.
 
-Bundled URW Core 35, Noto Sans Symbols 2 and Coppet fonts are distributed under the
+Bundled URW Core 35, Noto Sans Symbols 2, Noto Sans Mono and Coppet fonts are distributed under the
 SIL Open Font License 1.1. See their [URW source record](src/quickdraw/fonts/urw/README.md)
 and [Noto source record](src/quickdraw/fonts/noto/README.md), including the original
 copyright and licence notices.

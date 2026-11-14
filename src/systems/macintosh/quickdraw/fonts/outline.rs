@@ -55,6 +55,25 @@ pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
             data: ascii.data,
         }));
     }
+    // Monaco is a compact sans-serif screen face. The serif Courier fallback
+    // loses definition at nine points; use the OFL Noto monospace outlines for
+    // ASCII at that optical size, retaining the existing logical line metrics.
+    if size == 9 && font_id == FONT_MONACO {
+        let (ascii, _) = rasterize(
+            font_id,
+            size,
+            include_bytes!("noto/NotoSansMono-Regular.ttf"),
+            None,
+            super::compatibility::bundled_wid_max(font_id, size),
+        )?;
+        faces.0 = Box::leak(Box::new(FontFace {
+            font_id,
+            size,
+            metrics: faces.0.metrics,
+            glyphs: ascii.glyphs,
+            data: ascii.data,
+        }));
+    }
     cache.insert((font_id, size), faces);
     Some(faces)
 }
@@ -83,6 +102,52 @@ impl skrifa::outline::OutlinePen for OutlinePath {
     fn close(&mut self) {
         self.0.push(zeno::Command::Close);
     }
+}
+
+/// Threshold the guest's binary strike without dropping a thin stroke whose
+/// coverage is split across adjacent pixels. Already represented runs retain
+/// their exact mask. Runs with less than half a pixel of total ink stay empty.
+fn monochrome_mask_with_dropout(coverage: &[u8], width: usize, height: usize) -> Vec<u8> {
+    debug_assert_eq!(coverage.len(), width * height);
+    let mut mask: Vec<u8> = coverage
+        .iter()
+        .map(|&a| if a >= MONO_COVERAGE_THRESHOLD { 255 } else { 0 })
+        .collect();
+    for (lines, length, stride, line_stride) in
+        [(height, width, 1, width), (width, height, width, 1)]
+    {
+        for line in 0..lines {
+            let base = line * line_stride;
+            let mut position = 0;
+            while position < length {
+                let index = base + position * stride;
+                if coverage[index] == 0 {
+                    position += 1;
+                    continue;
+                }
+                let mut strongest = index;
+                let mut area = 0u32;
+                let mut has_ink = false;
+                while position < length {
+                    let index = base + position * stride;
+                    let alpha = coverage[index];
+                    if alpha == 0 {
+                        break;
+                    }
+                    if alpha > coverage[strongest] {
+                        strongest = index;
+                    }
+                    area += u32::from(alpha);
+                    has_ink |= mask[index] != 0;
+                    position += 1;
+                }
+                if !has_ink && area >= u32::from(MONO_COVERAGE_THRESHOLD) {
+                    mask[strongest] = 255;
+                }
+            }
+        }
+    }
+    mask
 }
 
 // Inside Macintosh: Text (1993), pp. 4-7–4-9 and 4-18–4-19:
@@ -162,13 +227,11 @@ pub(super) fn rasterize(
             result.height = u8::try_from(placement.height).ok()?;
             result.origin_x = i8::try_from(placement.left).ok()?;
             result.origin_y = i8::try_from(-placement.top).ok()?;
-            data.extend(coverage.iter().map(|&alpha| {
-                if alpha >= MONO_COVERAGE_THRESHOLD {
-                    255
-                } else {
-                    0
-                }
-            }));
+            data.extend(monochrome_mask_with_dropout(
+                &coverage,
+                placement.width as usize,
+                placement.height as usize,
+            ));
         }
         Some(result)
     };
@@ -348,13 +411,8 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         .origin(zeno::Origin::BottomLeft)
         .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
         .render_into(&mut pixels, None);
-    pixels.iter_mut().for_each(|p| {
-        *p = if *p >= MONO_COVERAGE_THRESHOLD {
-            255
-        } else {
-            0
-        }
-    });
+    let pixels =
+        monochrome_mask_with_dropout(&pixels, placement.width as usize, placement.height as usize);
     let data: &'static [u8] = Box::leak(pixels.into_boxed_slice());
     let glyph: &'static Glyph = Box::leak(Box::new(Glyph {
         width: placement.width.try_into().ok()?,
@@ -400,6 +458,36 @@ mod tests {
         assert_eq!(left.origin_x, right.origin_x);
         assert_eq!(left.origin_y, right.origin_y);
         assert_eq!(left.data_offset, right.data_offset);
+    }
+
+    #[test]
+    fn binary_strikes_retain_thin_vertical_and_horizontal_ink() {
+        // A vertical stem straddles two pixel columns. Neither column alone
+        // reaches 50% coverage, but the stroke must not disappear.
+        let coverage = [0, 116, 84, 0, 0, 116, 84, 0, 0, 116, 84, 0, 0, 116, 84, 0];
+        let mask = monochrome_mask_with_dropout(&coverage, 4, 4);
+        for row in mask.chunks(4) {
+            assert_eq!(row[1], 255);
+            assert_eq!(row[0], 0);
+            assert_eq!(row[3], 0);
+        }
+        // Transpose it: every column of a thin crossbar retains ink too.
+        let horizontal = [0, 0, 0, 0, 116, 116, 116, 116, 84, 84, 84, 84, 0, 0, 0, 0];
+        let mask = monochrome_mask_with_dropout(&horizontal, 4, 4);
+        for x in 0..4 {
+            assert!(mask[x + 4] != 0 || mask[x + 8] != 0);
+            assert_eq!(mask[x], 0);
+            assert_eq!(mask[x + 12], 0);
+        }
+    }
+
+    #[test]
+    fn dropout_repair_preserves_empty_counters_and_existing_binary_ink() {
+        let coverage = [255, 255, 255, 255, 0, 255, 255, 255, 255];
+        assert_eq!(monochrome_mask_with_dropout(&coverage, 3, 3), coverage);
+        assert_eq!(monochrome_mask_with_dropout(&[0; 9], 3, 3), [0; 9]);
+        // Insignificant antialias fringes are not promoted into isolated dots.
+        assert_eq!(monochrome_mask_with_dropout(&[1, 10, 1], 3, 1), [0; 3]);
     }
 
     #[test]
@@ -515,6 +603,38 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(bundled.metrics.wid_max, i16::from(expected_wid_max));
+    }
+
+    #[test]
+    fn monaco9_retains_layout_and_extended_art_while_preserving_ascii_stems() {
+        let (raw, raw_extended) = super::rasterize(
+            FONT_MONACO,
+            9,
+            super::bytes(FONT_MONACO).unwrap(),
+            None,
+            super::super::compatibility::bundled_wid_max(FONT_MONACO, 9),
+        )
+        .unwrap();
+        let (face, extended) = super::face(FONT_MONACO, 9).unwrap();
+        assert_eq!(face.metrics.ascent, raw.metrics.ascent);
+        assert_eq!(face.metrics.descent, raw.metrics.descent);
+        assert_eq!(face.metrics.leading, raw.metrics.leading);
+        assert_eq!(face.metrics.wid_max, raw.metrics.wid_max);
+        for (new, old) in face.glyphs.iter().zip(raw.glyphs) {
+            assert_eq!(new.advance, old.advance);
+        }
+        assert_eq!(extended.data, raw_extended.data);
+        let one = &face.glyphs[usize::from(b'1' - b' ')];
+        let ink = &face.data
+            [one.data_offset..one.data_offset + usize::from(one.width) * usize::from(one.height)];
+        assert!(one.height >= 7);
+        assert!(
+            ink.chunks(usize::from(one.width))
+                .all(|row| row.contains(&255)),
+            "The digit's vertical stem must survive between its top and foot"
+        );
+        let high = presentation_glyph(one, face.data, 4).unwrap();
+        assert!(high.pixels.iter().any(|&p| p != 0));
     }
 
     #[test]
