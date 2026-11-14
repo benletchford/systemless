@@ -18,7 +18,6 @@ mod popularity;
 mod presentation;
 mod renderer_bridge;
 mod save_store;
-#[cfg(target_arch = "wasm32")]
 mod wgpu_presenter;
 mod worker_runtime;
 

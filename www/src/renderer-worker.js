@@ -2,6 +2,7 @@
 // demand stay on the execution owner/host. The wgpu backend owns a separate Wasm instance.
 const RENDER_PROTOCOL = 5;
 const MAX_PIXELS = 16 * 1024 * 1024;
+const NATIVE_LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 4;
 let identity = null;
 let ownerPort = null;
 let canvas = null;
@@ -51,8 +52,9 @@ function sameIdentity(message) {
 function acceptFrame(message) {
   if (!Number.isSafeInteger(message.sequence) || message.sequence <= sequence) return;
   const { width, height, displayGeneration: mode, pixels } = message;
-  const indexed = message.kind === "indexed8" && gpu;
-  const compact = message.kind === "compact" && gpu;
+  const gpuCapable = Boolean(gpu || wgpu);
+  const indexed = message.kind === "indexed8" && gpuCapable;
+  const compact = message.kind === "compact" && gpuCapable;
   const validPixels = compact
     ? message.compact?.cells instanceof Uint32Array && message.compact.cells.buffer instanceof ArrayBuffer
       && message.compact.detail instanceof Uint32Array && message.compact.detail.buffer instanceof ArrayBuffer
@@ -101,6 +103,48 @@ function returnBuffers(type, frame, metrics = {}) {
     ...metrics, buffer, paletteBuffer, cursorBuffer, detailBuffer }, transfer);
 }
 
+function compactBytes(words) {
+  if (NATIVE_LITTLE_ENDIAN) return new Uint8Array(words.buffer, words.byteOffset, words.byteLength);
+  const bytes = new Uint8Array(words.byteLength);
+  const view = new DataView(bytes.buffer);
+  for (let i = 0; i < words.length; i++) view.setUint32(i * 4, words[i], true);
+  return bytes;
+}
+
+function paintWgpu(frame) {
+  if (frame.kind === "compact") {
+    const source = frame.compact;
+    if (frame.cursor || !Number.isSafeInteger(source.width) || !Number.isSafeInteger(source.height)
+        || !Number.isSafeInteger(source.scale) || source.width < 1 || source.height < 1
+        || source.scale < 1 || source.scale > 4) {
+      throw new Error("Invalid complete CompactPresentation");
+    }
+    wgpu.paint_compact(frame.width, frame.height, source.width, source.height, source.scale,
+      compactBytes(source.cells), compactBytes(source.detail));
+    return;
+  }
+  const cursor = frame.cursor;
+  if (cursor && (!Number.isSafeInteger(cursor.x) || !Number.isSafeInteger(cursor.y)
+      || !Number.isSafeInteger(cursor.width) || !Number.isSafeInteger(cursor.height)
+      || cursor.x < 0 || cursor.y < 0 || cursor.width < 1 || cursor.height < 1
+      || cursor.x + cursor.width > frame.width || cursor.y + cursor.height > frame.height
+      || cursor.width * cursor.height > 4096 || !(cursor.pixels instanceof Uint8Array)
+      || !(cursor.pixels.buffer instanceof ArrayBuffer)
+      || cursor.pixels.byteLength !== cursor.width * cursor.height * 4)) {
+    throw new Error("Invalid owned cursor patch");
+  }
+  if (frame.kind === "indexed8") {
+    wgpu.paint_indexed8(frame.width, frame.height, frame.stride, frame.pixels, frame.palette,
+      cursor ? cursor.x : 0, cursor ? cursor.y : 0, cursor ? cursor.width : 0, cursor ? cursor.height : 0,
+      cursor ? cursor.pixels : new Uint8Array(0));
+  } else if (cursor) {
+    wgpu.paint_rgba_cursor(frame.width, frame.height, frame.pixels,
+      cursor.x, cursor.y, cursor.width, cursor.height, cursor.pixels);
+  } else {
+    wgpu.paint(frame.width, frame.height, frame.pixels);
+  }
+}
+
 async function paint() {
   scheduled = null;
   if (awaitingBitmap || painting) return;
@@ -113,7 +157,7 @@ async function paint() {
     if (canvas.width !== frame.width) canvas.width = frame.width;
     if (canvas.height !== frame.height) canvas.height = frame.height;
     if (wgpu) {
-      wgpu.paint(frame.width, frame.height, frame.pixels);
+      paintWgpu(frame);
       let timeout;
       try {
         await Promise.race([wgpu.completed(), new Promise((_, reject) => {
@@ -193,7 +237,7 @@ self.onmessage = async ({ data }) => {
       }
       ready = true;
       reply({ type: "ready", backend: wgpu ? "offscreen-wgpu" : bitmapOutput ? "bitmap-webgl" : gpu ? "offscreen-webgl" : "offscreen-canvas2d", bitmap: bitmapOutput,
-        kinds: gpu ? ["rgba", "indexed8", "compact"] : ["rgba"] });
+        kinds: (gpu || wgpu) ? ["rgba", "indexed8", "compact"] : ["rgba"] });
       return;
     }
     if (!sameIdentity(data) || data.protocolVersion !== RENDER_PROTOCOL) return;

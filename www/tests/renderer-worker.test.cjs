@@ -21,7 +21,7 @@ function renderer(options = {}) {
       if (options.paintError) throw new Error('paint failed');
       paints.push([...image.data]);
     } }, addEventListener: (name, callback) => { listeners[name] = callback; } };
-  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, Uint32Array, ArrayBuffer, URL,
+  const context = vm.createContext({ Uint8Array, Uint8ClampedArray, Uint32Array, ArrayBuffer, DataView, URL,
     loadWgpu: async () => options.wgpuBindings,
     loadGpu: async url => {
       imports.push(url);
@@ -307,7 +307,7 @@ test('wgpu retains frame credit until completion, coalesces pending frames and s
   } });
   await w.initialized;
   assert.equal(w.messages[0].backend, 'offscreen-wgpu');
-  assert.deepEqual(w.messages[0].kinds, ['rgba']);
+  assert.deepEqual(w.messages[0].kinds, ['rgba', 'indexed8', 'compact']);
   await w.send(frame(1)); w.flush();
   await w.send(frame(2)); await w.send(frame(3));
   assert.deepEqual(painted, [1]);
@@ -359,4 +359,78 @@ test('stalled wgpu completion fails once and never returns successful frame cred
   assert.equal(errors.length, 1);
   assert.match(errors[0].message, /completion timed out/);
   assert.equal(disposed, 1);
+});
+
+test('wgpu routes indexed8, cursor patches, and compact little-endian byte views while returning all buffers', async () => {
+  const calls = [];
+  const w = renderer({ wgpuBindings: {
+    default: async () => {},
+    WebGpuPresenter: { create: async () => ({
+      paint: (width, height, pixels) => calls.push(['rgba', width, height, [...pixels]]),
+      paint_rgba_cursor: (width, height, pixels, cx, cy, cw, ch, cp) =>
+        calls.push(['rgba_cursor', width, height, [...pixels], [cx, cy, cw, ch], [...cp]]),
+      paint_indexed8: (width, height, stride, pixels, palette, cx, cy, cw, ch, cp) =>
+        calls.push(['indexed8', width, height, stride, [...pixels], palette.byteLength, [cx, cy, cw, ch], [...cp]]),
+      paint_compact: (width, height, sw, sh, scale, cells, detail) =>
+        calls.push(['compact', width, height, sw, sh, scale, [...cells], [...detail]]),
+      completed: async () => {},
+      check_health() {}, dispose() {}, free() {}
+    }) }
+  } });
+  await w.initialized;
+  const cursor = { x: 1, y: 0, width: 1, height: 1, pixels: new Uint8Array([9, 8, 7, 255]) };
+  const indexed = frame(1, { kind: 'indexed8', displayGeneration: 1, stride: 3,
+    pixels: new Uint8Array([5, 6, 99]), palette: new Uint8Array(1024), cursor });
+  await w.send(indexed); w.flush();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(indexed.pixels.byteLength, 0);
+  assert.equal(indexed.palette.byteLength, 0);
+  assert.equal(cursor.pixels.byteLength, 0);
+  assert.equal(w.messages.at(-1).paletteBuffer.byteLength, 1024);
+  assert.equal(w.messages.at(-1).cursorBuffer.byteLength, 4);
+
+  const rgbaCursor = { x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array([1, 2, 3, 255]) };
+  const rgba = frame(2, { displayGeneration: 2, cursor: rgbaCursor });
+  await w.send(rgba); w.flush();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rgbaCursor.pixels.byteLength, 0);
+  assert.equal(w.messages.at(-1).cursorBuffer.byteLength, 4);
+
+  const backing = new Uint32Array([0xdeadbeef, 0x80000000, 0x00112233]);
+  const compact = { width: 2, height: 1, scale: 1, cells: backing.subarray(1, 3), detail: new Uint32Array([0x00abcdef]) };
+  await w.send(frame(3, { kind: 'compact', displayGeneration: 3, width: 4, height: 2, pixels: undefined, compact }));
+  w.flush();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(backing.byteLength, 0);
+  assert.equal(compact.detail.byteLength, 0);
+  assert.equal(w.messages.at(-1).detailBuffer.byteLength, 4);
+
+  assert.deepEqual(calls, [
+    ['indexed8', 2, 1, 3, [5, 6, 99], 1024, [1, 0, 1, 1], [9, 8, 7, 255]],
+    ['rgba_cursor', 2, 1, [2, 2, 3, 255, 4, 5, 6, 255], [0, 0, 1, 1], [1, 2, 3, 255]],
+    ['compact', 4, 2, 2, 1, 1, [0, 0, 0, 0x80, 0x33, 0x22, 0x11, 0], [0xef, 0xcd, 0xab, 0]],
+  ]);
+});
+
+test('wgpu rejects malformed cursor patches and invalid compact metadata once', async () => {
+  const invalidPackets = [
+    frame(1, { cursor: { x: 2, y: 0, width: 1, height: 1, pixels: new Uint8Array(4) } }),
+    frame(1, { kind: 'compact', width: 2, height: 2, pixels: undefined,
+      compact: { width: 1, height: 1, scale: 5, cells: new Uint32Array([0]), detail: new Uint32Array(0) } }),
+    frame(1, { kind: 'compact', width: 2, height: 2, pixels: undefined,
+      cursor: { x: 0, y: 0, width: 1, height: 1, pixels: new Uint8Array(4) },
+      compact: { width: 1, height: 1, scale: 2, cells: new Uint32Array([0]), detail: new Uint32Array(0) } }),
+  ];
+  for (const bad of invalidPackets) {
+    let disposed = 0;
+    const w = renderer({ wgpuBindings: { default: async () => {}, WebGpuPresenter: { create: async () => ({
+      paint() {}, paint_rgba_cursor() {}, paint_indexed8() {}, paint_compact() {},
+      completed: async () => {}, check_health() {}, dispose() { disposed++; }, free() {}
+    }) } } });
+    await w.initialized;
+    await w.send(bad); w.flush();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(w.messages.filter(m => m.type === 'error').length, 1);
+    assert.equal(disposed, 1);
+  }
 });
