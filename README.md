@@ -1,5 +1,5 @@
 <h1 align="center">
-  <a href="https://systemless.org/"><img src=".github/assets/systemless-mascot-classic.png" alt="Systemless mascot" width="64" height="64" align="absmiddle"></a>
+  <a href="https://systemless.org/"><img src=".github/assets/systemless-icon.png" alt="Systemless" width="64" height="64" align="absmiddle"></a>
   systemless
 </h1>
 

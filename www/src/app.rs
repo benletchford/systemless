@@ -41,10 +41,10 @@ fn SystemlessMark() -> impl IntoView {
     view! {
         <img
             class="systemless-mark"
-            src="/assets/icons/systemless-mascot.png"
+            src="/assets/icons/systemless-icon.png"
             width="48"
             height="48"
-            alt="Systemless mascot: a smiling classic Macintosh spirit"
+            alt="Systemless"
         />
     }
 }
@@ -804,7 +804,7 @@ fn push_route(path: &str) {
 fn set_document_head_for_home() {
     let description = "Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation.";
     let canonical = absolute_url("/");
-    let image = absolute_url("/assets/icons/systemless-mascot.png");
+    let image = absolute_url("/assets/icons/systemless-icon.png");
     set_document_head(HeadMeta {
         title: "Systemless | Play classic 68K and PowerPC Mac games in your browser".to_string(),
         description: description.to_string(),
@@ -821,7 +821,7 @@ fn set_document_head_for_home() {
 fn set_document_head_for_next() {
     let description = "Play classic 68K and PowerPC Macintosh games in the browser with Systemless, a ROM-free classic Mac runtime for playable preservation.";
     let canonical = absolute_url(crate::catalogue::NEXT_LIBRARY_ROUTE);
-    let image = absolute_url("/assets/icons/systemless-mascot.png");
+    let image = absolute_url("/assets/icons/systemless-icon.png");
     set_document_head(HeadMeta {
         title: "Systemless | Play classic 68K and PowerPC Mac games in your browser".to_string(),
         description: description.to_string(),
@@ -836,7 +836,7 @@ fn set_document_head_for_game(game: &Game) {
     let canonical = absolute_url(&browser_path_for_route(&canonical_path_for_game(game), "/"));
     let image = crate::paths::optional_asset_path(game.assets.screenshot_path)
         .map(|path| absolute_url(&path))
-        .unwrap_or_else(|| absolute_url("/assets/icons/systemless-mascot.png"));
+        .unwrap_or_else(|| absolute_url("/assets/icons/systemless-icon.png"));
     set_document_head(HeadMeta {
         title: format!("{}{} ({}) | Systemless", if game.approved { "Play " } else { "" }, game.title, game.year),
         description: game.description.to_string(),
