@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.122.0](https://github.com/benletchford/systemless/compare/v0.121.1...v0.122.0) (2026-11-14)
+
+
+### Features
+
+* **launch:** mount additional disk images and folders as locked volumes ([#6250](https://github.com/benletchford/systemless/issues/6250)) ([aeb6199](https://github.com/benletchford/systemless/commit/aeb619989facf44af6b495cc1f6d61c97281620e))
+* **qd3d:** add opt-in pacing of window presents to the display tick ([#5993](https://github.com/benletchford/systemless/issues/5993)) ([8b2fa3e](https://github.com/benletchford/systemless/commit/8b2fa3e9e540578e9394b701b9c18ed19899c906))
+* replace the mascot with the orb brand icon ([#6267](https://github.com/benletchford/systemless/issues/6267)) ([d71a5b7](https://github.com/benletchford/systemless/commit/d71a5b7452ad3b579b5ac745e5abfb9a6331d902))
+
+
+### Bug Fixes
+
+* **ppc:** let NIH Image launch and draw its palettes ([#6266](https://github.com/benletchford/systemless/issues/6266)) ([b21859b](https://github.com/benletchford/systemless/commit/b21859be34b0456f5ea8596f362b86688e073671))
+
+
+### Performance Improvements
+
+* **qd3d:** shade gpu triangle vertices once before rasterization ([dc412f7](https://github.com/benletchford/systemless/commit/dc412f7cfb81d6006a9d8e220e47e245239b2ae1))
+* **web:** encode gpu compute requests from borrowed slices in bulk ([220b080](https://github.com/benletchford/systemless/commit/220b080d6adc36aec491316a7edf0f3e646ccd58))
+
 ## [0.121.1](https://github.com/benletchford/systemless/compare/v0.121.0...v0.121.1) (2026-11-13)
 
 
