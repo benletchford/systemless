@@ -2567,6 +2567,79 @@ fn nested_native_menu_select_preserves_outer_tracking_and_return() {
 }
 
 #[test]
+fn custom_mdef_at_menu_bottom_follows_the_full_menu_height() {
+    // A menu taller than the screen still scrolls: AtMenuBottom follows
+    // menuHeight, not the clipped on-screen height.
+    let pef = synthetic_pef_with_import(b"MenuSelect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let menu = install_test_menu(
+        &mut loaded,
+        PPC_DATA_BASE + 0x1000,
+        131,
+        b"Custom",
+        b"Opaque definition data",
+    );
+    let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+    loaded.memory.write_u16_be(menu_ptr + 2, 80).unwrap();
+    loaded.memory.write_u16_be(menu_ptr + 4, 2000).unwrap();
+    let mdef_handle = PPC_DATA_BASE + 0x7000;
+    let descriptor = PPC_DATA_BASE + 0x7100;
+    let tvector = PPC_DATA_BASE + 0x7180;
+    let callback_entry = PPC_CODE_BASE + 0x4000;
+    loaded.memory.add_region(mdef_handle, vec![0; 4]);
+    install_test_powerpc_callback(
+        &mut loaded,
+        descriptor,
+        tvector,
+        callback_entry,
+        PPC_DATA_BASE + 0x7300,
+        test_stack_proc_info(
+            PPC_PROCINFO_SIZE_NONE,
+            &[
+                PPC_PROCINFO_SIZE_TWO,
+                PPC_PROCINFO_SIZE_FOUR,
+                PPC_PROCINFO_SIZE_FOUR,
+                PPC_PROCINFO_SIZE_FOUR,
+                PPC_PROCINFO_SIZE_FOUR,
+            ],
+        ),
+        &[d_form_u(14, 8, 0, 2), d_form_u(44, 8, 7, 0), BLR],
+    );
+    loaded.memory.write_u32_be(mdef_handle, descriptor).unwrap();
+    loaded
+        .memory
+        .write_u32_be(menu_ptr + 6, mdef_handle)
+        .unwrap();
+
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = 0x1234_0000);
+    loaded
+        .current_gdevice
+        .with_mut(|current_gdevice| *current_gdevice = 0x1234_1000);
+    loaded.cpu.gpr[3] = (10u32 << 16) | 12;
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_button: true,
+        mouse_v: 28,
+        mouse_h: 20,
+        ..PpcInputSnapshot::default()
+    });
+
+    let tick = loaded.current_tick().wrapping_add(1);
+    loaded.set_tick_count(tick);
+    loaded.run_with_hle_imports(256);
+    let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
+    assert!(tracking.popup_height < 2000);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::AT_MENU_BOTTOM)
+            .map(|value| value as i16),
+        Some(tracking.content_top + 2000),
+    );
+}
+
+#[test]
 fn native_menu_select_retains_custom_mdef_draw_and_choose_until_release() {
     let pef = synthetic_pef_with_import(b"MenuSelect");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -2647,6 +2720,20 @@ fn native_menu_select_retains_custom_mdef_draw_and_choose_until_release() {
         Some(before.clone())
     );
     let tracking = loaded.toolbox_startup.execution.menu().snapshot().unwrap();
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::TOP_MENU_ITEM)
+            .map(|value| value as i16),
+        Some(tracking.content_top),
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(crate::memory::globals::addr::AT_MENU_BOTTOM)
+            .map(|value| value as i16),
+        Some(tracking.content_top + tracking.popup_height),
+    );
 
     loaded.set_input_snapshot(PpcInputSnapshot {
         mouse_button: false,

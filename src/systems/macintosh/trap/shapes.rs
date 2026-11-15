@@ -1397,7 +1397,11 @@ impl super::TrapDispatcher {
         }
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
-        let port = bus.read_long(global_ptr);
+        // A code resource called from a PowerPC process has no QuickDraw A5 world.
+        let port = match bus.read_long(global_ptr) {
+            0 => *self.current_port,
+            port => port,
+        };
 
         if trace_dialog_text_enabled()
             && matches!(op, ShapeOp::Glyph(_))
@@ -2734,6 +2738,32 @@ mod tests {
         lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
+
+    #[test]
+    fn drawing_without_an_a5_port_uses_the_current_port() {
+        use crate::cpu::{CpuOps, Register};
+        let (mut d, mut cpu, mut bus) = crate::trap::test_helpers::setup_with_port();
+        let globals = bus.read_long(cpu.read_reg(Register::A5));
+        let port = bus.read_long(globals);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        bus.write_long(globals, 0);
+        let base = bus.read_long(port + 2);
+        let row = (bus.read_word(port + 6) & 0x3FFF) as u32;
+        let rect = super::super::types::Rect {
+            top: 10,
+            left: 16,
+            bottom: 11,
+            right: 24,
+        };
+        bus.write_byte(base + 10 * row + 2, 0);
+        d.draw_rect(
+            &mut cpu,
+            &mut bus,
+            &rect,
+            super::super::types::ShapeOp::Fill([0xFF; 8]),
+        );
+        assert_eq!(bus.read_byte(base + 10 * row + 2), 0xFF);
+    }
 
     /// Write a ColorTable at `ctab` (handle at `handle`) with the given
     /// (value, rgb) ColorSpecs; `device` sets ctFlags' device bit.
