@@ -15,7 +15,7 @@ default_architecture: 68k
 category: FPS
 launch_enabled: true
 native:
-  enabled: true
+  enabled: false
   edition: "Four-level demo"
   limits: "Three single-player levels and one network level. Distributed unchanged with the original Read This notice."
 compatibility:
