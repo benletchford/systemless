@@ -16702,6 +16702,54 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert_ne!(bus.read_long(TEST_SP + 2), 0);
     }
 
+    #[test]
+    fn getpixpat_returns_independent_copy_that_survives_dispospixpat() {
+        // Imaging With QuickDraw (1994), pp. 4-88 and 4-103: GetPixPat
+        // returns a newly allocated pixel pattern that the caller releases
+        // with DisposePixPat. Apeiron fills its playfield with
+        // GetPixPat/FillCRect/DisposPixPat at the start of every life, so
+        // the second GetPixPat for the same ID must still see the pattern.
+        let (mut d, mut cpu, mut bus) = setup();
+        let template = make_raw_color_pixpat_handle(&mut bus);
+        let ppat_bytes = bus.read_bytes(bus.read_long(template), 128);
+        let resource_ptr = d.install_test_resource(&mut bus, *b"ppat", 130, &ppat_bytes);
+
+        macro_rules! get_pix_pat {
+            () => {{
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_word(TEST_SP, 130);
+                assert!(d.dispatch_quickdraw(true, 0x20C, &mut cpu, &mut bus).unwrap().is_ok());
+                bus.read_long(TEST_SP + 2)
+            }};
+        }
+
+        let first = get_pix_pat!();
+        assert_ne!(first, 0);
+        let first_record = bus.read_long(first);
+        assert_ne!(first_record, resource_ptr);
+        assert_eq!(bus.read_bytes(first_record, 128), ppat_bytes);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, first);
+        assert!(d.dispatch_quickdraw(true, 0x208, &mut cpu, &mut bus).unwrap().is_ok());
+
+        assert!(
+            bus.get_alloc_size(resource_ptr).is_some(),
+            "DisposPixPat must release the caller's copy, not the 'ppat' resource block"
+        );
+
+        let second = get_pix_pat!();
+        assert_ne!(second, 0);
+        let second_record = bus.read_long(second);
+        assert_ne!(second_record, 0);
+        assert_ne!(second_record, resource_ptr);
+        assert_eq!(
+            bus.read_bytes(second_record, 128),
+            ppat_bytes,
+            "DisposPixPat of the first pattern must not release the 'ppat' resource"
+        );
+    }
+
     // ==================== Color Icon Traps ====================
 
     fn make_test_cicn_resource(mask_byte: u8, bmap_byte: u8, pixel_byte: u8) -> Vec<u8> {
