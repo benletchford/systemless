@@ -384,6 +384,70 @@ fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
 }
 
 #[test]
+fn dialog_select_validates_the_dialog_it_redraws_for_an_update() {
+    // DialogSelect redraws between BeginUpdate and EndUpdate, so the update
+    // event must not recur after it handles one.
+    let pef = synthetic_pef_with_import(b"DialogSelect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let event_ptr = scratch;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded
+        .memory
+        .write_u16_be(PPC_MAIN_GWORLD + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+        .unwrap();
+    loaded.window_list.push(PPC_MAIN_GWORLD);
+    let items = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &[0xFF, 0xFF],
+    );
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items)
+        .unwrap();
+    let update_rgn = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &[0; 10],
+    );
+    ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 0, 0, 10, 10);
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_UPDATE_RGN_OFFSET, update_rgn)
+        .unwrap();
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 6,
+        message: PPC_MAIN_GWORLD,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+    ppc_write_event_record(&mut loaded.memory, event_ptr, 6, PPC_MAIN_GWORLD, 0, 0, 0, 0);
+    loaded.cpu.gpr[3] = event_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+
+    loaded.run_with_hle_imports(64);
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((0, 0, 0, 0))
+    );
+    assert!(!loaded.event_queue().iter().any(|queued| queued.what == 6));
+}
+
+#[test]
 fn find_dialog_item_returns_zero_based_index_and_minus_one_for_miss() {
     let pef = synthetic_pef_with_import(b"FindDialogItem");
     let mut loaded = load_pef_application(&pef).unwrap();
