@@ -3608,10 +3608,15 @@ pub(crate) fn ppc_begin_custom_menu_bar_tracking(
         Vec::new(),
     )?;
     // TopMenuItem and AtMenuBottom position the rows an MDEF draws and scrolls.
+    // AtMenuBottom follows the full menuHeight, not the on-screen height, so a
+    // menu taller than the screen still scrolls.
+    let full_height = memory
+        .read_u16_be(menu + 4)
+        .map_or(layout.height, |height| (height as i16).max(layout.height));
     ppc_write_menu_scrolling_bounds(
         memory,
         layout.content_top,
-        layout.content_top.saturating_add(layout.height),
+        layout.content_top.saturating_add(full_height),
     );
     state.definition = Some(MenuDefinitionTracking::begin_draw(
         menu_handle,
