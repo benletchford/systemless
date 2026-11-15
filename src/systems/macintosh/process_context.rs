@@ -1445,7 +1445,8 @@ impl ProcessFileSystemState {
         self.classic_next_vfs_file_id.with_mut(|next_file_id| {
             self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
                 self.classic_vfs_metadata.with_mut(|metadata| {
-                    for (path, file_type, creator, finder_flags, dirty) in files.chain(resource_files)
+                    for (path, file_type, creator, finder_flags, dirty) in
+                        files.chain(resource_files)
                     {
                         if path.is_empty() {
                             continue;
@@ -14085,7 +14086,12 @@ mod tests {
                 directory(22, "Disc/Data/Movies"),
             ]);
         });
-        for path in ["disc/data/Clip", "Disc/Data/MOVIES/Intro", "Loose", "Missing/File"] {
+        for path in [
+            "disc/data/Clip",
+            "Disc/Data/MOVIES/Intro",
+            "Loose",
+            "Missing/File",
+        ] {
             state.vfs_files.push(file(path, false));
         }
         state.vfs_files.push(file("Disc/Data/Saved", true));
@@ -14112,6 +14118,70 @@ mod tests {
             } else {
                 assert_eq!(metadata.modified_date, previous.modified_date, "{path}");
             }
+        }
+    }
+
+    #[test]
+    fn native_catalogue_parent_index_matches_the_linear_case_insensitive_search() {
+        // The index must agree with the linear `eq_ignore_ascii_case` search it
+        // replaced, including non-ASCII names, which neither folds, and paths
+        // that repeat across mounted volumes or differ only by case.
+        fn linear_parent_dir_id(directories: &[ProcessVfsDirectory], path: &str) -> u32 {
+            let parent_path = path
+                .rsplit_once('/')
+                .map(|(parent, _)| parent)
+                .unwrap_or("");
+            directories
+                .iter()
+                .find(|directory| directory.path.eq_ignore_ascii_case(parent_path))
+                .map(|directory| directory.dir_id)
+                .unwrap_or(2)
+        }
+        let directories = [
+            (30, ""),
+            (31, "Titanic"),
+            (32, "TITANIC"),
+            (33, "Titanic/Data"),
+            (34, "Spare/Data"),
+            (35, "Spare/Caf\u{e9}"),
+            (36, "Spare/CAF\u{c9}"),
+            (37, "Spare/\u{2022}Folder"),
+            (38, "Spare/Data"),
+            (39, "Spare/Mac Roman \u{a5}/Sub"),
+        ]
+        .map(|(dir_id, path)| ProcessVfsDirectory {
+            dir_id,
+            parent_dir_id: 2,
+            path: path.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let index = process_vfs_parent_dir_index(&directories);
+        let mut key = String::new();
+        for path in [
+            "Loose",
+            "/Rooted",
+            "titanic/File",
+            "TITANIC/File",
+            "Titanic/data/Clip",
+            "spare/DATA/Saved",
+            "Spare/Caf\u{e9}/Menu",
+            "Spare/caf\u{e9}/Menu",
+            "Spare/CAF\u{c9}/Menu",
+            "Spare/Caf\u{c9}/Menu",
+            "spare/\u{2022}folder/Item",
+            "SPARE/MAC ROMAN \u{a5}/SUB/Item",
+            "Spare/Mac Roman \u{a5}/Sub/",
+            "Missing/File",
+            "",
+        ] {
+            assert_eq!(
+                process_vfs_parent_dir_id(&index, &mut key, path),
+                linear_parent_dir_id(&directories, path),
+                "{path:?}"
+            );
         }
     }
 
