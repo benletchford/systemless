@@ -1,5 +1,9 @@
 ---
 id: gnu-chess-mac
+native:
+  enabled: true
+  edition: "Free software (GPLv2)"
+  limits: "Original GPLv2 Macintosh 4.0b5 package, 68K only. Select Options → Easy before playing. Preserve all notices; matching source is available below."
 kind: game
 title: GNU Chess Mac 4.0b5
 summary: >-

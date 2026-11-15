@@ -28,57 +28,101 @@
       "url": "https://systemless.org/mac/software/diamonds-demo"
     },
     {
-      "id": "wumpus",
-      "title": "Wumpus! 1.0",
-      "developer": "Joe Strout (Codenautics)",
-      "year": 1998,
-      "summary": "Explore caverns with a lantern, dynamite and a canary as you track down the legendary Wumpus in Joe Strout's graphical take on Hunt the Wumpus.",
-      "edition": "Freeware",
-      "limits": "Complete original freeware game. Preserve the application and its resources unchanged.",
-      "minimum_age_guidance": 12,
-      "content_guidance": "Fantasy peril and references to hunting a monster",
-      "archive_sha256": "d623afcbe9eac142bde1094025814ba50ace6095d3013226fa56cfcf0fb9db71",
-      "archive_size_bytes": 1065335,
+      "id": "gnu-chess-mac",
+      "title": "GNU Chess Mac 4.0b5",
+      "developer": "Dan Oetting and contributors",
+      "year": 1995,
+      "summary": "Play chess against the Macintosh port of GNU Chess, with an opening book, adjustable clocks and a move list.",
+      "edition": "Free software (GPLv2)",
+      "limits": "Original GPLv2 Macintosh 4.0b5 package, 68K only. Select Options → Easy before playing. Preserve all notices; matching source is available below.",
+      "minimum_age_guidance": 4,
+      "content_guidance": "Traditional chess board game; no wagering",
+      "archive_sha256": "346158a881746632ff6ec74eefab43bc0fc1afea503725645f32a712fed5f0e7",
+      "archive_size_bytes": 232547,
       "rights": {
         "redistribution": "permitted",
         "original": true,
         "sources": [
-          "https://mirrors.nic.funet.fi/pub/mac/info-mac/game/adv/wumpus-10.hqx",
-          "https://github.com/benletchford/systemless/issues/5443"
+          "https://www.tim-mann.org/gnuchess.html",
+          "https://www.tim-mann.org/gnuchess/gnuchessMAC40b5.hqx",
+          "https://www.gryphel.com/c/sw/games/chess/"
         ],
-        "license": "Original freeware distribution notice",
-        "rights_holder": "Joe Strout (Codenautics)",
-        "permission": "The author's Info-Mac submission says Wumpus is freeware and may be distributed at will, including on CD-ROM archives, as long as the program and its resources are not modified. Preserve the unchanged archive.",
-        "notes": "The archive contains only the PowerPC application."
+        "license": "GPL-2.0-only",
+        "rights_holder": "GNU Chess authors and Macintosh port contributors",
+        "permission": "The retained ReadMe explicitly identifies GNU licensing and free distribution; the complete original COPYING supplies GNU GPL version 2. Preserve the entire unchanged package, licence and notices. The complete matching original source archive is supplied as a managed supplement alongside this binary.",
+        "notes": "Original MD5 2a5accfbf4598956b4e07c173abac4b9. All retained binary and matching-source data/resource notices were reviewed. Independent production packing matches all five paths, ten forks and five Finder records against unar/lsar with strict end validation. The original fat executable has CODE 0-3, cfrg 0 and a PowerPC PEF data fork; only 68K is presently qualified."
       },
-      "url": "https://systemless.org/mac/software/wumpus"
+      "source_downloads": [
+        {
+          "id": "source-code",
+          "role": "supplement",
+          "format": "hqx",
+          "url": "https://assets.systemless.org/catalogue/objects/sha256/20/20883c771663d7c159aa764d9983371f70d3c08184e4a1839aff9a987f538fb2.hqx",
+          "sha256": "20883c771663d7c159aa764d9983371f70d3c08184e4a1839aff9a987f538fb2",
+          "size_bytes": 211850,
+          "rights": {
+            "redistribution": "permitted",
+            "original": true,
+            "sources": [
+              "https://www.tim-mann.org/gnuchess.html",
+              "https://www.tim-mann.org/gnuchess/gnuchessMAC-src-v40b5.hqx"
+            ],
+            "license": "GPL-2.0-only",
+            "rights_holder": "GNU Chess authors and Macintosh port contributors",
+            "permission": "Complete matching original Mac 4.0b5 source, including C sources, Macintosh UI, projects, bitmap resources and COPYING. Retain the unchanged archive alongside the binary. Source notices affirm GPL copying; source and binary COPYING documents are identical complete GPLv2 texts.",
+            "notes": "Original MD5 0fd91dbf63f9ea8a286a4fab3a1cb43a. Independent production packing matches all 39 source paths, 78 forks and 39 Finder records against unar/lsar, including resource-only project files, with strict end validation."
+          }
+        }
+      ],
+      "url": "https://systemless.org/mac/software/gnu-chess-mac"
     },
     {
-      "id": "damage-incorporated",
-      "title": "Damage Incorporated",
-      "developer": "Paranoid Productions",
-      "year": 1997,
-      "summary": "Lead a fire team through close-quarters missions where every order competes with the next burst of gunfire.",
-      "edition": "Four-level demo",
-      "limits": "Three single-player levels and one network level. Distributed unchanged with the original Read This notice.",
-      "minimum_age_guidance": 18,
-      "content_guidance": "First-person shooter with violence; mature content",
-      "archive_sha256": "f899ad2b6cce7489975e9499e5a3faa1cbb74f786cf862b733b266a06013c4a3",
-      "archive_size_bytes": 18006011,
+      "id": "macgnugo",
+      "title": "MacGnuGo",
+      "developer": "Jeremy Harris / GNU Go contributors",
+      "year": 2001,
+      "summary": "Play Go on a full-size board against the GNU Go 2.6 engine.",
+      "edition": "Free software (GPLv2)",
+      "limits": "Original GPLv2 MacGnuGo 0.5 GUI and GNU Go 2.6 package, 68K. This historical version has original gameplay limitations; Mac sources are included and matching engine source is available below.",
+      "minimum_age_guidance": 4,
+      "content_guidance": "Traditional Go board game; no wagering",
+      "archive_sha256": "650bfddebb912ff746a3ce63f2fab33f962c858ced3daa0bfab1725b06c293af",
+      "archive_size_bytes": 1417743,
       "rights": {
         "redistribution": "permitted",
         "original": true,
         "sources": [
-          "https://info-mac.org/viewtopic.php?t=4329",
-          "https://ftp.lip6.fr/pub/mac/info-mac/_Game/arc/damage-inc-demo.hqx",
-          "https://www.paranoidproductions.com/damage/"
+          "https://ftp.funet.fi/pub/mac/info-mac/game/brd/gnu-go-05.hqx",
+          "https://github.com/benletchford/systemless/issues/5829"
         ],
-        "license": "Damage Incorporated demonstration redistribution grant",
-        "rights_holder": "MacSoft and WizardWorks Group, Inc.",
-        "permission": "The Info-Mac submission and bundled Read This document permit the demo to be distributed freely by any means and to anyone, provided it remains unaltered and the Read This file stays with it.",
-        "notes": "This unchanged 18,006,011-byte Info-Mac BinHex submission was retrieved independently on 2026-09-15. It has SHA-256 f899ad2b6cce7489975e9499e5a3faa1cbb74f786cf862b733b266a06013c4a3 and retains its distribution notice, original StuffIt archive, application, Read This document, maps, shapes, images, sounds and voices."
+        "license": "GNU GPL version 2 and original Mac source-retention notice",
+        "rights_holder": "Jeremy Harris; GNU Go authors; retained third-party notices",
+        "permission": "The complete README_code explicitly permits distribution anywhere provided the code and message accompany the application. The original full COPYING supplies GPLv2. Preserve both original frontends, all MacCode sources, patches, resources and notices. The matching upstream GNU Go 2.6 source required by README_code is supplied as a managed supplement alongside it.",
+        "notes": "Original vers 128 identifies version 0.5, GNU Go engine 2.6, June 2001. Full 7392-byte README, 5318-byte README_code and 17977-byte COPYING reviewed. Source and resource notices are retained. Independent extraction matches all 37 paths, 74 forks and 37 Finder records, including resource-only apps and source resources. Strict KPK end 3413339, SHA-256 ec80ad1378b63564fcc5dbdf3c909e59de3d322c635e91102e2cbfec9462c4f8. Both original Go frontends remain in the archive; only the MacGnuGo GUI is verified, and this package is one game intake rather than two game counts."
       },
-      "url": "https://systemless.org/mac/software/damage-incorporated"
+      "source_downloads": [
+        {
+          "id": "engine-source",
+          "role": "supplement",
+          "format": "gz",
+          "url": "https://assets.systemless.org/catalogue/objects/sha256/75/75dbedf7f379d3e3d7ae2abc8a19e03f4a8ca632282817e298e7465e2e0d3c7d.gz",
+          "sha256": "75dbedf7f379d3e3d7ae2abc8a19e03f4a8ca632282817e298e7465e2e0d3c7d",
+          "size_bytes": 617161,
+          "rights": {
+            "redistribution": "permitted",
+            "original": true,
+            "sources": [
+              "https://ftp.gnu.org/gnu/gnugo/gnugo-2.6.tar.gz",
+              "https://github.com/benletchford/systemless/issues/5829"
+            ],
+            "license": "GNU GPL version 2",
+            "rights_holder": "GNU Go authors / Free Software Foundation",
+            "permission": "Complete unchanged GNU Go 2.6 base source, accompanying the original Mac source files, patches and resources retained in the game archive. Preserve the original GNU COPYING and notices; supply this source download alongside the binary under GPLv2. No source is compiled or game binary modified.",
+            "notes": "Official GNU HTTPS download matches the integrity pin. Gzip/tar parses with 148 members under gnugo-2.6; configure metadata identifies 2.6 and required engine/interface source files are present. README_code specifically names 2.6 and warns against substituting 2.7."
+          }
+        }
+      ],
+      "url": "https://systemless.org/mac/software/macgnugo"
     }
   ]
 }

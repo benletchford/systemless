@@ -1,5 +1,9 @@
 ---
 id: macgnugo
+native:
+  enabled: true
+  edition: "Free software (GPLv2)"
+  limits: "Original GPLv2 MacGnuGo 0.5 GUI and GNU Go 2.6 package, 68K. This historical version has original gameplay limitations; Mac sources are included and matching engine source is available below."
 kind: game
 title: MacGnuGo
 summary: Play Go on a full-size board against the GNU Go 2.6 engine.

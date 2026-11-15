@@ -2,7 +2,7 @@
 id: wumpus
 launch_enabled: true
 native:
-  enabled: true
+  enabled: false
   edition: "Freeware"
   limits: "Complete original freeware game. Preserve the application and its resources unchanged."
 kind: game
