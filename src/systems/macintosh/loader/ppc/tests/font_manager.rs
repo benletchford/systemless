@@ -140,6 +140,47 @@ fn hle_import_runner_handles_font_metrics() {
 }
 
 #[test]
+fn font_metrics_ignores_a_nil_record() {
+    let pef = synthetic_pef_with_import(b"FontMetrics");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let before = loaded.memory.read_u32_be(16);
+    loaded.cpu.gpr[3] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u32_be(16), before);
+}
+
+#[test]
+fn font_metrics_reuses_its_width_table_until_the_handle_is_emptied() {
+    let pef = synthetic_pef_with_import(b"FontMetrics");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let metrics_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(metrics_ptr, vec![0; 20]);
+    let font_metrics = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = metrics_ptr;
+        run_test_import(loaded, PpcImportDispatcherTarget::FontMetrics);
+        loaded.memory.read_u32_be(metrics_ptr + 16).unwrap()
+    };
+
+    let handle = font_metrics(&mut loaded);
+    assert_ne!(handle, 0);
+    assert_eq!(font_metrics(&mut loaded), handle);
+
+    // An emptied handle has a NIL master pointer; it must not be written through.
+    loaded.memory.write_u32_be(handle, 0).unwrap();
+    let read_low_memory = |loaded: &mut PpcLoadedApp| {
+        (0..0x430u32).step_by(4).map(|addr| loaded.memory.read_u32_be(addr)).collect::<Vec<_>>()
+    };
+    let low_memory = read_low_memory(&mut loaded);
+    let replacement = font_metrics(&mut loaded);
+    assert_ne!(replacement, handle);
+    assert_ne!(loaded.memory.read_u32_be(replacement), Some(0));
+    assert_eq!(read_low_memory(&mut loaded), low_memory);
+}
+
+#[test]
 fn hle_import_runner_handles_get_font_name() {
     let pef = synthetic_pef_with_import(b"GetFontName");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -486,45 +527,4 @@ fn ppc_src_copy_space_clears_cell_with_clip_and_scale() {
             }
         }
     }
-}
-
-#[test]
-fn font_metrics_ignores_a_nil_record() {
-    let pef = synthetic_pef_with_import(b"FontMetrics");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let before = loaded.memory.read_u32_be(16);
-    loaded.cpu.gpr[3] = 0;
-
-    let probe = loaded.run_with_hle_imports(64);
-
-    assert_eq!(probe.handled_import_count, 1);
-    assert_eq!(loaded.memory.read_u32_be(16), before);
-}
-
-#[test]
-fn font_metrics_reuses_its_width_table_until_the_handle_is_emptied() {
-    let pef = synthetic_pef_with_import(b"FontMetrics");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let metrics_ptr = PPC_DATA_BASE + 0x1000;
-    loaded.memory.add_region(metrics_ptr, vec![0; 20]);
-    let font_metrics = |loaded: &mut PpcLoadedApp| {
-        loaded.cpu.gpr[3] = metrics_ptr;
-        run_test_import(loaded, PpcImportDispatcherTarget::FontMetrics);
-        loaded.memory.read_u32_be(metrics_ptr + 16).unwrap()
-    };
-
-    let handle = font_metrics(&mut loaded);
-    assert_ne!(handle, 0);
-    assert_eq!(font_metrics(&mut loaded), handle);
-
-    // An emptied handle has a NIL master pointer; it must not be written through.
-    loaded.memory.write_u32_be(handle, 0).unwrap();
-    let read_low_memory = |loaded: &mut PpcLoadedApp| {
-        (0..0x430u32).step_by(4).map(|addr| loaded.memory.read_u32_be(addr)).collect::<Vec<_>>()
-    };
-    let low_memory = read_low_memory(&mut loaded);
-    let replacement = font_metrics(&mut loaded);
-    assert_ne!(replacement, handle);
-    assert_ne!(loaded.memory.read_u32_be(replacement), Some(0));
-    assert_eq!(read_low_memory(&mut loaded), low_memory);
 }
