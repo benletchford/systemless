@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.124.0](https://github.com/benletchford/systemless/compare/v0.123.0...v0.124.0) (2026-11-15)
+
+
+### Features
+
+* **www:** unify the website with the Mac support theme ([#6300](https://github.com/benletchford/systemless/issues/6300)) ([1708d2c](https://github.com/benletchford/systemless/commit/1708d2c7427bbeb9a905009619ae6d95b95c6fdf))
+
+
+### Bug Fixes
+
+* align Mac pages with the free puzzle and board game launch ([c84570d](https://github.com/benletchford/systemless/commit/c84570dc4245f679acdf87aaefd5a6e1269d55b7))
+* **sound:** restore Diamonds graphics initialization after MACE expansion ([7794592](https://github.com/benletchford/systemless/commit/77945926a591eb5659ac597fd1c704ebe84594ce))
+
 ## [0.123.0](https://github.com/benletchford/systemless/compare/v0.122.1...v0.123.0) (2026-11-15)
 
 
