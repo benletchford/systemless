@@ -1959,6 +1959,10 @@ pub struct TrapDispatcher {
     /// unchanged since, another fill would find them uniform and rewrite the
     /// same bytes.
     pub(crate) kiosk_letterbox_filled: std::cell::Cell<Option<(KioskLetterboxKey, crate::memory::presentation::ScreenMark)>>,
+    /// Light and dark pixel values of the last theme desktop fill. Desktop
+    /// pixels still holding them belong to the Window Manager even after a
+    /// palette change has moved the theme colours to other indices.
+    pub(crate) desktop_fill_indices: std::cell::Cell<Option<(u8, u8)>>,
     pub debug_scroll_rect_last_rect: (i16, i16, i16, i16),
     pub debug_scroll_rect_last_delta: (i16, i16),
     pub debug_scroll_rect_last_port: u32,
@@ -4063,6 +4067,7 @@ impl TrapDispatcher {
             debug_scroll_rect_changed_byte_count: 0,
             debug_scroll_rect_last_changed_bytes: 0,
             kiosk_letterbox_filled: std::cell::Cell::new(None),
+            desktop_fill_indices: std::cell::Cell::new(None),
             debug_scroll_rect_last_rect: (0, 0, 0, 0),
             debug_scroll_rect_last_delta: (0, 0),
             debug_scroll_rect_last_port: 0,

@@ -1076,6 +1076,112 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Pixel values the theme desktop fill writes for the clear and set bits
+    /// of the desktop pattern. A 1-bit screen draws the pattern itself, with
+    /// set bits black; Imaging With QuickDraw (1994), p. 4-10.
+    fn theme_desktop_pixel_indices(&self, bus: &MacMemoryBus) -> (u8, u8) {
+        if self.get_screen_params().4 == 1 {
+            return (0, 1);
+        }
+        let palette = self.ui_theme().palette();
+        (
+            self.theme_pixel_index(bus, palette.desktop_light),
+            self.theme_pixel_index(bus, palette.desktop_dark),
+        )
+    }
+
+    /// True when the application has painted over most of `desktop`.
+    ///
+    /// The Window Manager paints the desktop only when part of it is exposed
+    /// (Inside Macintosh Volume I, pp. I-282 and I-297; Macintosh Toolbox
+    /// Essentials (1992), pp. 4-113 to 4-119), so pixels an application draws
+    /// there persist until a window uncovers them. Games use this for a
+    /// full-screen backdrop: Color Dark Castle fills the whole screen with
+    /// black directly and paints its title art over it, behind a 512x342
+    /// window and a WDEF whose regions are empty.
+    ///
+    /// A pixel is the Window Manager's while it holds the desktop pattern in
+    /// either the current theme indices or those of the previous fill, which
+    /// remain on screen after a palette change until the next restore.
+    /// Anything else was drawn by the application. Stray fragments (the case
+    /// the chrome-pass restore repairs) cover a small part of the desktop; a
+    /// backdrop covers most of it.
+    fn desktop_painted_by_application(
+        &self,
+        bus: &MacMemoryBus,
+        desktop: &[(i16, i16, i16, i16)],
+    ) -> bool {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        if !matches!(pixel_size, 1 | 2 | 4 | 8) {
+            return false;
+        }
+        let current = self.theme_desktop_pixel_indices(bus);
+        let previous = self.desktop_fill_indices.get().unwrap_or(current);
+        let clamp = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+            (
+                top.clamp(0, screen_height),
+                left.clamp(0, screen_width),
+                bottom.clamp(0, screen_height),
+                right.clamp(0, screen_width),
+            )
+        };
+        let total: u64 = desktop
+            .iter()
+            .map(|&rect| {
+                let (top, left, bottom, right) = clamp(rect);
+                (bottom - top).max(0) as u64 * (right - left).max(0) as u64
+            })
+            .sum();
+        if total == 0 {
+            return false;
+        }
+        let majority = total / 2 + 1;
+        let mut painted = 0u64;
+        for &rect in desktop {
+            let (top, left, bottom, right) = clamp(rect);
+            for y in top..bottom {
+                let pattern =
+                    crate::window_manager::STANDARD_DESKTOP_PATTERN[y.rem_euclid(8) as usize];
+                let row = (pixel_size == 8)
+                    .then(|| {
+                        bus.untraced_ram_slice(
+                            screen_base + y as u32 * row_bytes + left as u32,
+                            (right - left).max(0) as usize,
+                        )
+                    })
+                    .flatten();
+                for x in left..right {
+                    let pixel = match row {
+                        Some(row) => row[(x - left) as usize],
+                        None => match Self::fb_get_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                        ) {
+                            Some(pixel) => pixel,
+                            None => continue,
+                        },
+                    };
+                    let set = (pattern >> (7 - x.rem_euclid(8))) & 1 != 0;
+                    let pick = |(light, dark): (u8, u8)| if set { dark } else { light };
+                    if pixel != pick(current) && pixel != pick(previous) {
+                        painted += 1;
+                        if painted >= majority {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn fill_theme_desktop_rect(
         &self,
         bus: &mut MacMemoryBus,
@@ -1089,6 +1195,8 @@ impl super::TrapDispatcher {
         // Preserve the Window Manager DeskPattern geometry, using the theme's
         // desktop colors when the framebuffer supports color.
         // Macintosh Toolbox Essentials (1992), pp. 4-112 to 4-113.
+        let (light, dark) = self.theme_desktop_pixel_indices(bus);
+        self.desktop_fill_indices.set(Some((light, dark)));
         if pixel_size == 1 {
             Self::fb_fill_pattern_rect(
                 bus,
@@ -1106,9 +1214,6 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let palette = self.ui_theme().palette();
-        let light = self.theme_pixel_index(bus, palette.desktop_light);
-        let dark = self.theme_pixel_index(bus, palette.desktop_dark);
         let top = top.max(0).min(screen_height);
         let left = left.max(0).min(screen_width);
         let bottom = bottom.max(0).min(screen_height);
@@ -2327,7 +2432,7 @@ impl super::TrapDispatcher {
                 .flat_map(|rect| Self::rect_difference_parts(rect, bounds))
                 .collect();
         }
-        if !saw_owned_surface {
+        if !saw_owned_surface || self.desktop_painted_by_application(bus, &desktop) {
             return;
         }
 
@@ -8892,6 +8997,12 @@ mod redraw_chrome_tests {
         let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
         bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.fill_theme_desktop_rect(&mut bus, 20, 0, screen_h as i16, screen_w as i16);
+        // Shufflepuck Cafe's stray fragments: narrow columns far outside its
+        // window, a small part of the desktop.
+        for y in 129u32..471 {
+            bus.fill_bytes(screen_base + y * row_bytes + 21, 52, 0x7E);
+        }
 
         disp.menu_bar_hidden = false;
         disp.fullscreen_locked = false;
@@ -8928,6 +9039,84 @@ mod redraw_chrome_tests {
             "desktop composition must leave the menu bar to the Menu Manager"
         );
         assert_eq!(screen_w, 800, "test assumes the default 800-wide screen");
+    }
+
+    #[test]
+    fn redraw_chrome_keeps_a_backdrop_the_application_painted_over_the_desktop() {
+        // Color Dark Castle paints the whole screen black directly and draws
+        // its title art over it, outside its 512x342 window, then waits for a
+        // click. The Window Manager repaints the desktop only where a window
+        // exposes it, so the backdrop must survive chrome composition.
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.fill_theme_desktop_rect(&mut bus, 20, 0, screen_h as i16, screen_w as i16);
+
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        disp.window_list.replace(vec![PORT_PTR]);
+        disp.window_bounds = (99, 144, 441, 656);
+        disp.window_proc_id = 1;
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        set_window_structure_rect(&mut bus, PORT_PTR, (91, 136, 449, 664));
+
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let desktop = disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light);
+        assert_ne!(black, desktop, "test needs a backdrop distinct from the desktop");
+        for y in 20u32..u32::from(screen_h) {
+            bus.fill_bytes(screen_base + y * row_bytes, u32::from(screen_w), black);
+        }
+        let art_probe = screen_base + 300 * row_bytes + 60;
+        bus.write_byte(art_probe, 0x24);
+
+        disp.redraw_chrome(&mut bus);
+
+        for &(x, y) in &[(10u32, 30u32), (60, 200), (700, 300), (790, 590)] {
+            assert_eq!(
+                bus.read_byte(screen_base + y * row_bytes + x),
+                black,
+                "application backdrop pixel ({x},{y}) must not be replaced by the desktop"
+            );
+        }
+        assert_eq!(bus.read_byte(art_probe), 0x24, "title art outside the window must persist");
+    }
+
+    #[test]
+    fn redraw_chrome_repaints_a_desktop_left_in_the_previous_palette() {
+        // After a palette change the desktop still holds the indices of the
+        // previous fill. Those pixels are the Window Manager's, not an
+        // application backdrop, so they are repainted in the new indices.
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_w, screen_h, _) = disp.screen_mode;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        disp.menu_bar_hidden = false;
+        disp.fullscreen_locked = false;
+        disp.front_window = PORT_PTR;
+        disp.window_list.replace(vec![PORT_PTR]);
+        disp.window_bounds = (99, 144, 441, 656);
+        disp.window_proc_id = 1;
+        disp.window_proc_ids.insert(PORT_PTR, 1);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 1);
+        set_window_structure_rect(&mut bus, PORT_PTR, (91, 136, 449, 664));
+
+        let desktop = disp.theme_pixel_index(&bus, disp.ui_theme().palette().desktop_light);
+        let stale = desktop.wrapping_add(1);
+        for y in 20u32..u32::from(screen_h) {
+            bus.fill_bytes(screen_base + y * row_bytes, u32::from(screen_w), stale);
+        }
+        disp.desktop_fill_indices.set(Some((stale, stale)));
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 300 * row_bytes + 700),
+            desktop,
+            "a desktop drawn in the previous palette's indices must be repainted"
+        );
+        assert_eq!(disp.desktop_fill_indices.get().map(|(light, _)| light), Some(desktop));
     }
 
     #[test]
@@ -9000,8 +9189,13 @@ mod redraw_chrome_tests {
             name_anchor: None,
         });
         bus.fill_bytes(screen_base, row_bytes * u32::from(screen_h), 0x7E);
+        disp.fill_theme_desktop_rect(&mut bus, 20, 0, screen_h as i16, 800);
+        for y in 199u32..461 {
+            bus.fill_bytes(screen_base + y * row_bytes + 7, 362, 0x7E);
+        }
         let put_probe = screen_base + 200 * row_bytes + 8;
         let desktop_probe = screen_base + 500 * row_bytes + 600;
+        bus.write_byte(desktop_probe, 0x7E);
         disp.redraw_chrome(&mut bus);
         assert_eq!(
             bus.read_byte(put_probe),
