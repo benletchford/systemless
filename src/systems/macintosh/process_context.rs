@@ -11370,7 +11370,7 @@ mod tests {
             }],
             library_fragments: vec![crate::cfm::CfmLibraryFragment {
                 name: "library".into(),
-                bytes: vec![1, 2],
+                bytes: vec![1, 2].into(),
             }],
             next_connection_id: 8,
         });

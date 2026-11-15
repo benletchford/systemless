@@ -491,8 +491,65 @@ impl CfmState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfmLibraryFragment {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: CfmFragmentBytes,
 }
+
+/// A fragment's container bytes: a range of a file's data fork, held as a
+/// detached snapshot of the fork so finding a library does not copy it.
+#[derive(Clone)]
+pub struct CfmFragmentBytes {
+    fork: crate::systems::macintosh::process_context::ProcessForkBytes,
+    range: std::ops::Range<usize>,
+}
+
+impl CfmFragmentBytes {
+    /// `None` when `range` does not lie inside `fork`.
+    pub(crate) fn from_fork_range(
+        fork: &crate::systems::macintosh::process_context::ProcessForkBytes,
+        range: std::ops::Range<usize>,
+    ) -> Option<Self> {
+        fork.get(range.clone())?;
+        Some(Self {
+            fork: fork.clone(),
+            range,
+        })
+    }
+}
+
+impl From<Vec<u8>> for CfmFragmentBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        let range = 0..bytes.len();
+        Self {
+            fork: bytes.into(),
+            range,
+        }
+    }
+}
+
+impl std::ops::Deref for CfmFragmentBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.fork[self.range.clone()]
+    }
+}
+
+impl std::fmt::Debug for CfmFragmentBytes {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CfmFragmentBytes")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl PartialEq for CfmFragmentBytes {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for CfmFragmentBytes {}
 
 impl CfmResourceCall {
     pub(crate) fn complete(
@@ -683,6 +740,22 @@ impl CfmLoadOperation {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fragment_bytes_are_detached_ranges_of_their_fork() {
+        use crate::systems::macintosh::process_context::ProcessForkBytes;
+
+        let mut fork = ProcessForkBytes::from(b"headPEFtail".to_vec());
+        assert!(CfmFragmentBytes::from_fork_range(&fork, 4..12).is_none());
+        let fragment = CfmFragmentBytes::from_fork_range(&fork, 4..7).expect("in range");
+        assert_eq!(*fragment, *b"PEF");
+        assert_eq!(fragment, CfmFragmentBytes::from(b"PEF".to_vec()));
+
+        // A later write to the file leaves the found fragment as it was.
+        fork.with_mut(|bytes| bytes[4] = b'X');
+        assert_eq!(fork[4..7], *b"XEF");
+        assert_eq!(*fragment, *b"PEF");
+    }
+
     #[test]
     fn disk_fragment_initializer_points_to_its_file_specification() {
         let block =

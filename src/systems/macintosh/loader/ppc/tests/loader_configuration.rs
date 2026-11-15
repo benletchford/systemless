@@ -1241,7 +1241,7 @@ fn ppc_loader_rejects_system_reservation_layout_collisions() {
             Some(initializers_reservation),
             vec![PpcCfmLibraryFragment {
                 name: "BundledInitializer".to_string(),
-                bytes: synthetic_pef_with_initializer(),
+                bytes: synthetic_pef_with_initializer().into(),
             }],
             None,
         )

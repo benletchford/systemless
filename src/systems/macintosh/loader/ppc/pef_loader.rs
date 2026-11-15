@@ -157,7 +157,7 @@ pub enum PpcLoadError {
 
 struct PpcInitialCfmLibraryPlan {
     library_name: String,
-    fragment_bytes: Vec<u8>,
+    fragment_bytes: crate::cfm::CfmFragmentBytes,
     plan: CfmFragmentPlan,
 }
 

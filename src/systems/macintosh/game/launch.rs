@@ -4340,7 +4340,7 @@ struct PpcCfmLibraryCandidate {
     path: String,
     fragment_index: usize,
     name: String,
-    bytes: Vec<u8>,
+    bytes: crate::cfm::CfmFragmentBytes,
     offset: u32,
     length: u32,
 }
@@ -4449,10 +4449,11 @@ pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
             let Some(length) = u32::try_from(range.len()).ok() else {
                 continue;
             };
-            let Some(bytes) = data_file.data.get(range) else {
+            let Some(bytes) = crate::cfm::CfmFragmentBytes::from_fork_range(&data_file.data, range)
+            else {
                 continue;
             };
-            let Some(pef_header) = parse_pef_header(bytes) else {
+            let Some(pef_header) = parse_pef_header(&bytes) else {
                 continue;
             };
             if pef_header.architecture != ARCH_POWERPC {
@@ -4462,7 +4463,7 @@ pub(super) fn discover_ppc_cfm_library_fragments_with_locations(
                 path: resource_file.path.clone(),
                 fragment_index,
                 name: fragment.name,
-                bytes: bytes.to_vec(),
+                bytes,
                 offset,
                 length,
             });
@@ -7780,7 +7781,7 @@ mod tests {
             fragments,
             vec![PpcCfmLibraryFragment {
                 name: "SDL".to_string(),
-                bytes: pef,
+                bytes: pef.into(),
             }]
         );
     }
@@ -7889,7 +7890,7 @@ mod tests {
         assert_eq!(names, ["InputSprocketDeferLib", "InputSprocketGlobals"]);
         assert!(fragments
             .iter()
-            .all(|fragment| fragment.bytes.as_slice() == pef.as_slice()));
+            .all(|fragment| *fragment.bytes == *pef));
         // CFM still permits an application's own sibling container to shadow
         // the installed runtime, without hiding either helper.
         assert_eq!(
@@ -8085,7 +8086,7 @@ mod tests {
         let fragments = discover_ppc_cfm_library_fragments(&vfs);
         assert_eq!(fragments.len(), 1);
         assert_eq!(fragments[0].name, "SDL");
-        assert_eq!(fragments[0].bytes, first_pef);
+        assert_eq!(*fragments[0].bytes, *first_pef);
     }
 
     #[test]
