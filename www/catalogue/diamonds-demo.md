@@ -18,6 +18,17 @@ native:
 compatibility:
   status: playable
   verified:
+  - date: "2026-11-15"
+    tester: Catalogue maintainer
+    systemless_version: c3b8417e8a9841f91047d011bc91009affc62e8f
+    architecture: 68k
+    environment: >-
+      Native structured playback of the unchanged StuffIt demo at 800 by 600.
+      Verified the restored illuminated border, score, level name, time bar, and
+      ball counter after fixing the Exp1to3 stack corruption during music loading.
+      The ball animates and responds to Left and Right; sampled audio is non-silent.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/6293
   - date: "2026-10-01"
     tester: Catalogue maintainer
     systemless_version: 694fca12 + local catalogue preview
@@ -67,22 +78,21 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: sha256
-    sha256: 58b43d60aa8e1f3bd3e5d4bf9852b6506e5f7d82646c77c2c02674233e9a81b6
-    size_bytes: 7595
+    type: incoming
+    path: catalogue/incoming/diamonds-demo/gameplay.png
   provenance:
     redistribution: permitted
     original: true
     content_only: true
     sources:
-    - https://github.com/benletchford/systemless/issues/3591
+    - https://github.com/benletchford/systemless/issues/6293
     permission: >-
       Fresh gameplay capture made from the original demonstration archive for this
       catalogue entry. The underlying game artwork remains its owners' property.
     notes: >-
-      638-by-458 browser capture of the live block board while Right Arrow was held.
-      The crop excludes website framing, Mac desktop, menu bar, and window frame. PNG
-      SHA-256 58b43d60aa8e1f3bd3e5d4bf9852b6506e5f7d82646c77c2c02674233e9a81b6, 7,595
+      638-by-458 native capture of the live board with its restored border and status
+      graphics. The crop excludes Mac desktop, menu bar, and window frame. PNG
+      SHA-256 744cb1d256ac1e87b09ba76d9a99c65939ebe76e5bdabe369fe41e3824e99afc, 8,469
       bytes.
 references:
 - https://classicmacdemos.com/diamonds
@@ -90,7 +100,8 @@ references:
 
 ## Diamonds in motion
 
-![Diamonds block board](https://assets.systemless.org/catalogue/media/sha256/58/58b43d60aa8e1f3bd3e5d4bf9852b6506e5f7d82646c77c2c02674233e9a81b6.png)
+![Diamonds block board](incoming/diamonds-demo/gameplay.png)
 
-Choose **Play** on the demo launcher. Use the arrow keys and Space to guide
-the bouncing ball through the colored block field.
+Choose **Play** on the demo launcher. Use **Left** and **Right** to guide
+the bouncing ball through the colored block field. Press **P** to pause,
+**R** to restart the level, or **Q** to end the current game.
