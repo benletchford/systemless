@@ -78,6 +78,7 @@ fn SiteHeader(
                     "systemless.org"
                 </a>
                 <nav class="site-header__nav" aria-label="Site navigation">
+                    <a class="mac-nav-link" href="/mac/">"Mac app"</a>
                     <button
                         class="theme-toggle"
                         type="button"
@@ -179,6 +180,22 @@ fn LibraryPage(
                         <p>"Play in your browser now. Nothing to install."</p>
                     </div>
                 </div>
+            </section>
+
+            <section class="mac-promo" aria-labelledby="mac-promo-title">
+                <div class="mac-promo__copy">
+                    <span class="eyebrow">"Systemless for Mac"</span>
+                    <h2 id="mac-promo-title">"Bring your classics home."</h2>
+                    <p>"A free Mac app for your classic collection. Import your software, find your favourites and keep your saves on your Mac."</p>
+                    <div class="mac-promo__actions">
+                        <a class="mac-promo__download" href="https://apps.apple.com/app/id6834700784">"Get the free Mac app ↗"</a>
+                        <a href="/mac/">"Explore Systemless for Mac →"</a>
+                    </div>
+                    <p class="mac-promo__requirements">"macOS 14 or later"</p>
+                </div>
+                <a class="mac-promo__preview" href="/mac/" aria-label="Explore the Systemless Mac app">
+                    <img src="/mac/images/library.png" width="1800" height="1296" loading="lazy" alt="Systemless for Mac showing a library of imported classic software"/>
+                </a>
             </section>
 
             <section class="cli-hint" aria-labelledby="cli-hint-title">

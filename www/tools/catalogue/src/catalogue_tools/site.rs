@@ -410,6 +410,7 @@ pub fn pages(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
     );
     writeln!(sitemap, "<url><loc>{}</loc></url>", escape(&absolute("/")))?;
+    writeln!(sitemap, "<url><loc>{}</loc></url>", escape(&absolute("/mac/")))?;
     for e in &c.entries {
         let canonical = absolute(&route(&e.path));
         let image = asset(e, ArtifactRole::Screenshot)
