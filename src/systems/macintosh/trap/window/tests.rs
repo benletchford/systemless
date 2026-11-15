@@ -3714,6 +3714,94 @@ fn hide_covered_window_preserves_foreground_pixels_with_and_without_save_under()
 }
 
 #[test]
+fn removing_covered_window_preserves_foreground_pixels_with_and_without_save_under() {
+    // CloseWindow/DisposeWindow expose only the part of the structure region
+    // that no window in front still covers. Glypha 3.0 disposes its splash
+    // window after showing a full-screen main window in front of it.
+    // Inside Macintosh Volume I (1985), pp. I-283 and I-296--I-297.
+    for trap in [0x12D, 0x114] {
+        for proc_id in [0, 2] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let (base, stride, _, _, _) = disp.screen_mode;
+            let background = bus.alloc(256);
+            disp.init_cgraf_window(
+                &mut bus, &mut cpu, background, base, 60, 60, 200, 260, "Background", proc_id,
+                true, true, false, 0,
+            );
+            let front = bus.alloc(256);
+            disp.init_cgraf_window(
+                &mut bus, &mut cpu, front, base, 90, 100, 160, 220, "Foreground", 2, true,
+                true, false, 0,
+            );
+            disp.window_list.replace(vec![front, background]);
+            disp.sync_window_list_links(&mut bus);
+            let (top, left, bottom, right) = disp.window_structure_rect(&bus, front).unwrap();
+            for y in top..bottom {
+                for x in left..right {
+                    bus.write_byte(base + y as u32 * stride + x as u32, 5);
+                }
+            }
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, background);
+            assert!(dispatch(&mut disp, trap, &mut cpu, &mut bus).unwrap().is_ok());
+            for y in top..bottom {
+                for x in left..right {
+                    assert_eq!(
+                        bus.read_byte(base + y as u32 * stride + x as u32),
+                        5,
+                        "foreground pixel ({x},{y}) changed by trap ${trap:03X} proc {proc_id}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn disposing_moved_window_does_not_restore_stale_save_under_pixels() {
+    // Glypha 3.0 opens its visible splash window at the WIND position, moves
+    // it to the centre, and later disposes it. The save-under snapshot taken
+    // at the original position no longer describes the screen there, so the
+    // disposal must not paste it back over the game's later drawing.
+    // Inside Macintosh Volume I (1985), pp. I-289 and I-296--I-297.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let (base, stride, _, _, _) = disp.screen_mode;
+    let splash = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, splash, base, 40, 40, 120, 160, "", 2, true, false, false, 0,
+    );
+    assert!(disp.window_saved_under_pixels.contains_key(&splash));
+
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 2, 300);
+    bus.write_word(sp + 4, 400);
+    bus.write_long(sp + 6, splash);
+    assert!(dispatch(&mut disp, 0x11B, &mut cpu, &mut bus).unwrap().is_ok());
+
+    // The application now draws over the splash window's former area.
+    for y in 30..130u32 {
+        for x in 30..170u32 {
+            bus.write_byte(base + y * stride + x, 9);
+        }
+    }
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, splash);
+    assert!(dispatch(&mut disp, 0x114, &mut cpu, &mut bus).unwrap().is_ok());
+
+    for y in 30..130u32 {
+        for x in 30..170u32 {
+            assert_eq!(
+                bus.read_byte(base + y * stride + x),
+                9,
+                "pixel ({x},{y}) at the splash window's former position was overwritten"
+            );
+        }
+    }
+}
+
+#[test]
 fn hide_covered_window_preserves_packed_edges_and_direct_colour_pixels() {
     for depth in [1, 2, 4, 8, 16, 32] {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -6903,19 +6991,49 @@ fn test_size_window() {
     assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 480, "visRgn.bottom");
     assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 640, "visRgn.right");
 
-    // clipRgn updated in local coords (top kept from existing region)
+    // clipRgn is application state; SizeWindow leaves it alone
+    // (Inside Macintosh Volume I, I-290).
     assert_eq!(bus.read_word(clip_rgn_data + 2) as i16, 40, "clipRgn.top");
     assert_eq!(bus.read_word(clip_rgn_data + 4) as i16, 0, "clipRgn.left");
     assert_eq!(
         bus.read_word(clip_rgn_data + 6) as i16,
-        480,
+        342,
         "clipRgn.bottom"
     );
     assert_eq!(
         bus.read_word(clip_rgn_data + 8) as i16,
-        640,
+        512,
         "clipRgn.right"
     );
+}
+
+#[test]
+fn size_window_keeps_wide_open_clip_for_negative_origin_drawing() {
+    // Glypha 3.0 enlarges its window to the screen with SizeWindow, then
+    // calls SetOrigin(-144,-129) and paints the margins black at negative
+    // local coordinates. SizeWindow must not shrink the default wide-open
+    // clipRgn to (0,0,h,w). Inside Macintosh Volume I (1985), I-166, I-290.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, disp.screen_mode.0, 0, 0, 342, 512, "", 2, true, false,
+        false, 0,
+    );
+    let clip = bus.read_long(window + 28);
+    let before = bus.read_bytes(bus.read_long(clip), 10);
+
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 2, 600);
+    bus.write_word(sp + 4, 800);
+    bus.write_long(sp + 6, window);
+    assert!(dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().is_ok());
+
+    assert_eq!(bus.read_bytes(bus.read_long(clip), 10), before);
+    assert!(super::super::TrapDispatcher::region_contains_point(
+        &bus, clip, 300, -144
+    ));
 }
 
 #[test]
