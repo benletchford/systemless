@@ -554,6 +554,36 @@ impl super::TrapDispatcher {
         bus.write_long(port + offset, handle);
     }
 
+    /// Copy a loaded 'ppat' resource into a caller-owned PixPat handle.
+    /// Imaging With QuickDraw (1994), pp. 4-88 and 4-103: GetPixPat hands
+    /// back a new pixel pattern whose lifetime is independent of the
+    /// Resource Manager's handle, so DisposePixPat cannot release the
+    /// resource itself.
+    fn copy_ppat_resource_to_new_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resource_ptr: u32,
+    ) -> u32 {
+        let size = bus.get_alloc_size(resource_ptr).unwrap_or(0);
+        if size == 0 {
+            return 0;
+        }
+        let record = bus.alloc(size);
+        if record == 0 {
+            return 0;
+        }
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            bus.free(record);
+            return 0;
+        }
+        let bytes = bus.read_bytes(resource_ptr, size as usize);
+        bus.write_bytes(record, &bytes);
+        bus.write_long(handle, record);
+        let _ = self.track_handle_ptr(record, handle);
+        handle
+    }
+
     fn dispose_color_compound_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) {
         self.owned_bit_pixpats.remove(&handle);
         if bus.get_alloc_size(handle) != Some(4) {
@@ -574,6 +604,9 @@ impl super::TrapDispatcher {
             Self::free_memory_handle(bus, bus.read_long(record + offset));
         }
         Self::free_pixmap_handle(bus, bus.read_long(record + 2));
+        if self.handle_for_ptr(record) == Some(handle) {
+            let _ = self.untrack_handle_ptr(record);
+        }
         bus.free(record);
         bus.write_long(handle, 0);
         bus.free(handle);
@@ -5212,38 +5245,29 @@ impl super::TrapDispatcher {
             // On the present-resource path BasiliskII allocates a
             // fresh 28-byte PixPat record initialised from the 'ppat'
             // resource bytes per IM:V V-46 layout. Systemless HLE
-            // returns the master pointer to the raw 'ppat' resource
-            // bytes wrapped in a handle via find_resource_any +
-            // get_or_create_resource_handle. Apps that call
-            // PenPixPat $AA0A / BackPixPat $AA0B / FillCRect $AA0E
-            // with the handle get the resource bytes directly
-            // (Systemless's PenPixPat / BackPixPat / FillCRect implems
-            // inspect the PixPat record's pat1Data field at offset
-            // +20 for the 8-byte pattern data — this works for ppat
-            // resources whose 1-bit pattern data is at the
-            // documented IM:V V-46 layout offset).
+            // allocates a fresh handle holding a private copy of the
+            // compiled 'ppat' resource, keeping its documented
+            // offset-based layout (PixPat, PixMap, image data and
+            // ColorTable) so PenPixPat $AA0A / BackPixPat $AA0B /
+            // FillCRect $AA0E consume it like the raw resource.
             //
-            // ## Status: Stub → Partial promotion
-            //
-            // Was previously a Stub returning NIL unconditionally.
-            // Promoted to Partial during the stub-with-substantive-body
-            // cleanup. New behavior matches
-            // the prior $A9B9 GetCursor / $A9B8 GetPattern / $A9BB
-            // GetIcon / $A9BC GetPicture / $AA1F GetCIcon Stub→Partial
-            // promotion pattern: route through find_resource_any +
-            // get_or_create_resource_handle for handle stability
-            // across repeated calls (apps cache the handle and reuse
-            // it).
+            // Imaging With QuickDraw (1994), pp. 4-88 and 4-103:
+            // GetPixPat returns a newly allocated pixel pattern that
+            // the caller releases with DisposePixPat. Returning the
+            // Resource Manager's own handle let DisposPixPat free the
+            // resource's master block; the next GetPixPat for the same
+            // ID then received a handle re-filled with that freed
+            // pointer. The PowerPC GetPixPat import already returns a
+            // copy for the same reason.
             //
             // Contract-test coverage in this file (mod tests):
             //   getpixpat_pascal_function_preserves_stack_across_five_missing_calls
+            //   getpixpat_returns_independent_copy_that_survives_dispospixpat
             (true, 0x20C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pat_id = bus.read_word(sp) as i16;
                 let handle = match self.find_or_load_resource_any(bus, *b"ppat", pat_id) {
-                    Some((_, data_ptr)) => {
-                        self.get_or_create_resource_handle(bus, *b"ppat", pat_id, data_ptr)
-                    }
+                    Some((_, data_ptr)) => self.copy_ppat_resource_to_new_handle(bus, data_ptr),
                     None => 0,
                 };
                 bus.write_long(sp + 2, handle);
