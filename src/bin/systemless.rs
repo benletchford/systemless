@@ -1084,6 +1084,16 @@ struct App {
 }
 
 impl App {
+    /// Apply launch options to the serial (non-threaded) runtime driver, the
+    /// default desktop path. The threaded runtime owner receives the same
+    /// options through `RuntimeConfig`.
+    fn configure_serial_driver(&mut self, gpu: bool, mounts: &[PathBuf]) {
+        if let Some(driver) = self.driver.as_mut() {
+            driver.gpu = gpu;
+            driver.mounts = mounts.to_vec();
+        }
+    }
+
     #[cfg(test)]
     fn new(
         game_path: PathBuf,
@@ -3561,9 +3571,7 @@ fn run_gui(
     app.use_software = use_software;
     app.gpu_fallback = gpu_fallback;
     app.wgpu_wake = Some(event_loop.create_proxy());
-    if let Some(driver) = app.driver.as_mut() {
-        driver.gpu = use_wgpu;
-    }
+    app.configure_serial_driver(use_wgpu, &config.mounts);
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
@@ -4941,6 +4949,18 @@ mod tests {
             queued_stereo_bytes: queued.clone(),
         }));
         (runner, queued)
+    }
+
+    /// `--mount` reaches the default (serial) desktop runtime, not only the
+    /// threaded one: without it a windowed launch loads GAME alone.
+    #[test]
+    fn serial_desktop_driver_receives_mount_volumes() {
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
+        let mounts = vec![PathBuf::from("/disc.iso"), PathBuf::from("/second disc")];
+        app.configure_serial_driver(true, &mounts);
+        let driver = app.driver.as_ref().expect("serial runtime driver");
+        assert_eq!(driver.mounts, mounts);
+        assert!(driver.gpu);
     }
 
     #[test]
