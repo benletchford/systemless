@@ -22,6 +22,7 @@ const UNICODE_TO_TEXT_INFO: u32 = 0x5445_4355; // 'TECU'
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcTextEncodingOperation {
     CreateEncoding,
+    GetEncodingFormat,
     CreateConverter,
     DisposeConverter,
     ConvertText,
@@ -39,6 +40,7 @@ impl PpcTextEncodingOperation {
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "CreateTextEncoding" => Self::CreateEncoding,
+            "GetTextEncodingFormat" => Self::GetEncodingFormat,
             "TECCreateConverter" => Self::CreateConverter,
             "TECDisposeConverter" => Self::DisposeConverter,
             "TECConvertText" => Self::ConvertText,
@@ -262,6 +264,7 @@ pub(crate) fn ppc_dispatch_text_encoding(
             ((cpu.gpr[3] & 0xffff) | ((cpu.gpr[4] & 0x3ff) << 16) | ((cpu.gpr[5] & 0xf) << 26))
                 as i32,
         ),
+        Op::GetEncodingFormat => status(((cpu.gpr[3] >> 26) & 0x3f) as i32),
         Op::CreateConverter => {
             if cpu.gpr[3] == 0 || memory.write_u32_be(cpu.gpr[3], 0).is_none() {
                 return status(i32::from(PPC_PARAM_ERR));

@@ -5286,6 +5286,45 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "AEInteractWithUser") => PpcImportDispatcherTarget::AEInteractWithUser,
         ("InterfaceLib", "AEManagerInfo") => PpcImportDispatcherTarget::AEManagerInfo,
+        // No SCSI bus: scCommErr. No Edition, Component or Translation managers: paramErr.
+        (
+            "InterfaceLib",
+            "SCSIGet" | "SCSISelect" | "SCSICmd" | "SCSIRead" | "SCSIRBlind" | "SCSIWrite"
+            | "SCSIWBlind" | "SCSIComplete" | "SCSIStat" | "SCSIAction",
+        ) => PpcImportDispatcherTarget::ReturnError(2),
+        (
+            "InterfaceLib",
+            "OpenEdition" | "CloseEdition" | "EditionHasFormat" | "ReadEdition"
+            | "SetEditionFormatMark" | "GetEditionInfo" | "GoToPublisherSection"
+            | "GetLastEditionContainerUsed" | "NewSection" | "RegisterSection"
+            | "UnRegisterSection" | "IsRegisteredSection" | "AssociateSection"
+            | "NewSubscriberDialog" | "SectionOptionsDialog" | "OpenComponentResFile"
+            | "GetCompressedPixMapInfo",
+        ) => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
+        (
+            "Translation",
+            "CanDocBeOpened" | "ExtendFileTypeList" | "GetFileTranslationPaths"
+            | "GetPathFromTranslationDialog" | "TranslateFile",
+        ) => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
+        // These Text Encoding Converter entry points have no conversion path: kTECNoConversionPathErr.
+        (
+            "TextCommon" | "UnicodeConverter" | "TextEncodingConverter" | "InterfaceLib",
+            "TECGetInfo" | "CreateTextToUnicodeInfo"
+            | "CreateUnicodeToTextInfo" | "TruncateForTextToUnicode" | "TruncateForUnicodeToText"
+            | "SetFallbackUnicodeToText",
+        ) => PpcImportDispatcherTarget::ReturnError(-8749),
+        // These return nil or zero results and ignore drawing.
+        (
+            "InterfaceLib",
+            "OpenComponent" | "RegisterComponentResource" | "CloseComponentResFile"
+            | "UnregisterComponent" | "GetNextFOND" | "GetMCInfo" | "DeltaPoint",
+        )
+        | ("QuickTimeLib", "MCIsPlayerEvent") => PpcImportDispatcherTarget::ReturnNoErr,
+        (
+            "InterfaceLib",
+            "PicComment" | "SpaceExtra" | "SysBreakStr" | "DisposeMCInfo" | "ResizePalette"
+            | "ColorBit",
+        ) => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib" | "CarbonLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
         ("InterfaceLib", "equalstring") => PpcImportDispatcherTarget::EqualCString,
