@@ -295,6 +295,56 @@ fn append_web_pack_files(out: &mut Vec<u8>, file_entries: Vec<PayloadFile>) -> R
     Ok(())
 }
 
+/// A host file's bytes, memory-mapped where the platform allows.
+///
+/// Disk images can be hundreds of megabytes. Their contents are copied into
+/// the VFS while they are parsed, so a heap copy of the whole image would only
+/// add a transient buffer the size of the image, which the allocator may keep
+/// resident after it is freed. Mapped pages are file-backed and clean, and
+/// leave with the mapping.
+enum HostFileBytes {
+    #[cfg(not(target_arch = "wasm32"))]
+    Mapped(memmap2::Mmap),
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    Read(Vec<u8>),
+}
+
+impl std::ops::Deref for HostFileBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Mapped(map) => map,
+            Self::Read(bytes) => bytes,
+        }
+    }
+}
+
+fn read_host_file(path: &std::path::Path) -> Result<HostFileBytes, String> {
+    let error = |e: std::io::Error| format!("Failed to read {}: {e}", path.display());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let file = std::fs::File::open(path).map_err(error)?;
+        // An empty file cannot be mapped; read it instead.
+        if file.metadata().map_err(error)?.len() > 0 {
+            // SAFETY: `Mmap::map` is unsafe because the mapped file can change
+            // underneath the returned slice. The mapping is read-only, is
+            // owned by the caller's local `HostFileBytes`, and is dropped when
+            // the load returns; parsing copies every fork it keeps into owned
+            // VFS buffers, so no borrow of the mapping outlives it. If another
+            // host process truncates or rewrites the image during that window,
+            // reads can observe changed bytes or fault (SIGBUS on Unix); a
+            // user replacing a disk image while it is being opened is not
+            // supported.
+            if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                return Ok(HostFileBytes::Mapped(map));
+            }
+        }
+    }
+    std::fs::read(path).map(HostFileBytes::Read).map_err(error)
+}
+
 /// Load a game from a file or an extracted host directory, trying explicit
 /// containers before macOS resource forks.
 pub fn load_game_from_path(
@@ -309,8 +359,7 @@ pub fn load_game_from_path(
         return load_game_directory(runner, path);
     }
 
-    let file_data =
-        std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let file_data = read_host_file(path)?;
 
     // Explicit containers in the data fork win over any host macOS resource
     // fork. DiskCopy images extracted by unar, for example, can carry a small
@@ -351,7 +400,7 @@ pub fn load_game_from_path(
                 app_rel
             );
         }
-        return load_exported_host_tree(runner, &root, &app_rel, file_data, rsrc_data);
+        return load_exported_host_tree(runner, &root, &app_rel, file_data.to_vec(), rsrc_data);
     }
 
     // Fall back to detecting MacBinary/raw resource-fork style payloads.
@@ -427,8 +476,7 @@ pub fn mount_locked_volume_from_path(
     path: &std::path::Path,
 ) -> Result<MountedVolume, String> {
     if !path.is_dir() {
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        let bytes = read_host_file(path)?;
         return mount_locked_volume_image(runner, &bytes);
     }
 
@@ -6501,6 +6549,24 @@ mod tests {
                 sample_rate_hz: 22_050
             }
         );
+    }
+
+    #[test]
+    fn host_files_read_through_a_mapping_return_their_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let image = dir.path().join("image.img");
+        let bytes = (0..10_000u32).map(|i| i as u8).collect::<Vec<_>>();
+        std::fs::write(&image, &bytes).unwrap();
+        let read = read_host_file(&image).expect("read image");
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(matches!(read, HostFileBytes::Mapped(_)));
+        assert_eq!(&*read, &bytes[..]);
+
+        // An empty file cannot be mapped and is read instead.
+        let empty = dir.path().join("empty");
+        std::fs::write(&empty, []).unwrap();
+        assert!(read_host_file(&empty).expect("read empty").is_empty());
+        assert!(read_host_file(&dir.path().join("missing")).is_err());
     }
 
     #[test]

@@ -4718,6 +4718,7 @@ dependencies = [
  "libc",
  "libm",
  "m68k",
+ "memmap2 0.9.10",
  "num-bigint",
  "num-rational",
  "num-traits",
