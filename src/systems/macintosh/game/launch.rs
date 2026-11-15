@@ -328,9 +328,15 @@ fn read_host_file(path: &std::path::Path) -> Result<HostFileBytes, String> {
         let file = std::fs::File::open(path).map_err(error)?;
         // An empty file cannot be mapped; read it instead.
         if file.metadata().map_err(error)?.len() > 0 {
-            // SAFETY: the mapping is read-only and lives only while this
-            // launch parses it. As with any reader, a host process that
-            // truncates the file meanwhile can fault the read.
+            // SAFETY: `Mmap::map` is unsafe because the mapped file can change
+            // underneath the returned slice. The mapping is read-only, is
+            // owned by the caller's local `HostFileBytes`, and is dropped when
+            // the load returns; parsing copies every fork it keeps into owned
+            // VFS buffers, so no borrow of the mapping outlives it. If another
+            // host process truncates or rewrites the image during that window,
+            // reads can observe changed bytes or fault (SIGBUS on Unix); a
+            // user replacing a disk image while it is being opened is not
+            // supported.
             if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
                 return Ok(HostFileBytes::Mapped(map));
             }
