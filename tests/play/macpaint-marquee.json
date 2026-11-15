@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 400,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 40,
+      "h": 58
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 40,
+      "h": 58
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 55,
+      "h": 95
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_move",
+      "v": 65,
+      "h": 121
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 75,
+      "h": 147
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 85,
+      "h": 173
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 95,
+      "h": 199
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 105,
+      "h": 225
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_up",
+      "v": 105,
+      "h": 225
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 150,
+      "y": 55,
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "timeout_ticks": 30
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 150,
+      "y": 55,
+      "rgb": [
+        0,
+        0,
+        0
+      ],
+      "timeout_ticks": 30
+    },
+    {
+      "type": "run_until_pixel",
+      "x": 150,
+      "y": 55,
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "timeout_ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "name": "marquee"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 150,
+      "y": 80,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}

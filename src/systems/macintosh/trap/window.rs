@@ -1189,6 +1189,7 @@ impl super::TrapDispatcher {
         bus.write_long(port_ptr + 104, 0); // grafProcs
         self.port_draw_states
             .insert(port_ptr, PortDrawState::default());
+        self.port_pen_patterns_written.remove(&port_ptr);
 
         self.window_manager_port = port_ptr;
         bus.write_long(Self::LOWMEM_WMGR_PORT, port_ptr);
@@ -4303,6 +4304,7 @@ impl super::TrapDispatcher {
                 );
                 self.port_draw_states
                     .insert(window_ptr, PortDrawState::default());
+                self.port_pen_patterns_written.remove(&window_ptr);
 
                 eprintln!(
                     "[WINDOW] GetNewWindow: window=${:08X} screen_base=${:08X}",
