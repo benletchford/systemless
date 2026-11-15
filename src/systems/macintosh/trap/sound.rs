@@ -77,6 +77,9 @@ fn sound_dispatch_param_bytes(selector: u32) -> u32 {
     }
 
     match selector {
+        // MACE expansion uses seven four-byte arguments and no result slot.
+        // These legacy selectors do not encode their Pascal parameter size.
+        0x0008_0010 | 0x0010_0010 => 28,
         // The Inside Macintosh VI selector table documents these SoundDispatch
         // selectors with a zero param-size byte even though the Pascal
         // routines have stack arguments. Some clients pass those literals.
@@ -599,6 +602,29 @@ impl super::TrapDispatcher {
                         "[SOUND] SoundDispatch selector=${:08X} routine=${:02X} param_bytes={}",
                         selector, routine, param_bytes
                     );
+                }
+                if matches!(selector, 0x0008_0010 | 0x0010_0010) {
+                    // Exp1to3 / Exp1to6, Inside Macintosh: Sound.
+                    // Dispatch the complete selector: the routine byte alone
+                    // aliases SndStopFilePlay / SndChannelStatus. Leaving these
+                    // 28 bytes on the stack corrupts the caller's saved registers.
+                    let compression = if selector == 0x0008_0010 {
+                        MaceCompression::ThreeToOne
+                    } else {
+                        MaceCompression::SixToOne
+                    };
+                    let args = MaceExpansion {
+                        input: bus.read_long(sp + 24),
+                        output: bus.read_long(sp + 20),
+                        packets: bus.read_long(sp + 16),
+                        input_state: bus.read_long(sp + 12),
+                        output_state: bus.read_long(sp + 8),
+                        channels: bus.read_long(sp + 4),
+                        channel: bus.read_long(sp),
+                    };
+                    expand_mace_guest(bus, compression, args);
+                    cpu.write_reg(Register::A7, sp + param_bytes);
+                    return Some(Ok(()));
                 }
                 if operation == Some(&MIDI_STOP_TIME_OPERATION_ROUTE) {
                     // MIDIStopTime
@@ -2552,6 +2578,108 @@ struct MaceChannelState {
     prev2: i32,
     previous: i32,
     level: i32,
+}
+
+struct MaceExpansion {
+    input: u32,
+    output: u32,
+    packets: u32,
+    input_state: u32,
+    output_state: u32,
+    channels: u32,
+    channel: u32,
+}
+
+fn expand_mace_guest(bus: &mut MacMemoryBus, compression: MaceCompression, args: MaceExpansion) {
+    // https://developer.apple.com/library/archive/documentation/mac/Sound/Sound-119.html
+    // Input is interleaved by packet, but the selected channel's
+    // six output samples per packet are contiguous. Callers interleave PCM.
+    let packet_bytes = (compression.packet_size_bits() / 8) as u32;
+    if args.packets == 0 || args.channels == 0 || !(1..=args.channels).contains(&args.channel) {
+        return;
+    }
+    let Some(stride) = args.channels.checked_mul(packet_bytes) else {
+        return;
+    };
+    let Some(input_len) = (args.packets - 1)
+        .checked_mul(stride)
+        .and_then(|size| size.checked_add(args.channel * packet_bytes))
+    else {
+        return;
+    };
+    let Some(output_len) = args.packets.checked_mul(6) else {
+        return;
+    };
+    let valid = |addr: u32, len: u32| {
+        addr != 0
+            && addr
+                .checked_add(len)
+                .is_some_and(|end| end <= bus.ram_size())
+    };
+    if !valid(args.input, input_len)
+        || !valid(args.output, output_len)
+        || (args.input_state != 0 && !valid(args.input_state, 128))
+        || (args.output_state != 0 && !valid(args.output_state, 128))
+    {
+        return;
+    }
+
+    // StateBlock is an opaque 128-byte caller-owned buffer, initially zero.
+    // Keep the predictor in guest memory so copying a state block, using it
+    // in-place, and continuing in a later call all have the same semantics.
+    let mut state = MaceChannelState::default();
+    if args.input_state != 0 {
+        let p = args.input_state;
+        state.index = i32::from(bus.read_word(p) as i16).max(0);
+        state.factor = i32::from(bus.read_word(p + 2) as i16);
+        state.prev2 = i32::from(bus.read_word(p + 4) as i16);
+        state.previous = i32::from(bus.read_word(p + 6) as i16);
+        state.level = i32::from(bus.read_word(p + 8) as i16);
+    }
+    for packet in 0..args.packets {
+        let input = args.input + packet * stride + (args.channel - 1) * packet_bytes;
+        let output = args.output + packet * 6;
+        let mut samples = [0; 6];
+        match compression {
+            MaceCompression::ThreeToOne => {
+                for byte in 0..2 {
+                    let value = bus.read_byte(input + byte);
+                    for (table, code) in [value & 7, (value >> 3) & 3, value >> 5]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        samples[byte as usize * 3 + table] = mace3_chomp(&mut state, code, table);
+                    }
+                }
+            }
+            MaceCompression::SixToOne => {
+                let value = bus.read_byte(input);
+                for (table, code) in [value >> 5, (value >> 3) & 3, value & 7]
+                    .into_iter()
+                    .enumerate()
+                {
+                    samples[table * 2..table * 2 + 2]
+                        .copy_from_slice(&mace6_chomp(&mut state, code, table));
+                }
+            }
+        }
+        bus.write_bytes(output, &samples);
+    }
+    if args.output_state != 0 {
+        bus.fill_bytes(args.output_state, 128, 0);
+        for (i, value) in [
+            state.index,
+            state.factor,
+            state.prev2,
+            state.previous,
+            state.level,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bus.write_word(args.output_state + i as u32 * 2, value as u16);
+        }
+    }
 }
 
 // MACE predictor tables, ported from FFmpeg's LGPL MACE decoder.

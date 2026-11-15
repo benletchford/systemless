@@ -2247,6 +2247,136 @@ fn decode_mace6_mono_expands_packet_to_unsigned_samples() {
 }
 
 #[test]
+fn sound_dispatch_mace_expansion_consumes_arguments_without_a_result_slot() {
+    // Exp1to3/Exp1to6 are procedures with seven LongInt/pointer arguments.
+    // Their routine bytes collide with file-play/status selectors, and their
+    // selector's high byte does not encode the argument size.
+    for selector in [0x0008_0010, 0x0010_0010] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let input = 0x260000;
+        let output = 0x261000;
+        bus.write_bytes(input, &[0, 0]);
+        bus.fill_bytes(output, 8, 0x55);
+        for (i, value) in [1, 1, 0, 0, 1, output, input].into_iter().enumerate() {
+            bus.write_long(TEST_SP + i as u32 * 4, value);
+        }
+        bus.write_long(TEST_SP + 28, 0xDEAD_BEEF); // caller's saved register
+        cpu.write_reg(Register::D7, 0x1234_5678);
+        cpu.write_reg(Register::D0, selector);
+        disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 28);
+        assert_eq!(bus.read_long(TEST_SP + 28), 0xDEAD_BEEF);
+        assert_eq!(cpu.read_reg(Register::D7), 0x1234_5678);
+        assert_eq!(
+            bus.ram_slice(output, 8),
+            &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x55, 0x55]
+        );
+    }
+}
+
+#[test]
+fn mace_expansion_selects_packets_and_continues_from_copied_or_in_place_state() {
+    use super::{expand_mace_guest, MaceCompression, MaceExpansion};
+    for compression in [MaceCompression::ThreeToOne, MaceCompression::SixToOne] {
+        let (_, _, mut bus) = setup();
+        let input = 0x260000;
+        let output = 0x261000;
+        let state = 0x262000;
+        let copy = 0x263000;
+        // Three channels, distinct packets. Select the middle channel.
+        let (compressed, mono): (&[u8], &[u8]) = match compression {
+            MaceCompression::ThreeToOne => (
+                &[0, 0, 0x27, 0xD3, 0, 0, 0, 0, 0x95, 0x4C, 0, 0],
+                &[0x27, 0xD3, 0x95, 0x4C],
+            ),
+            MaceCompression::SixToOne => (&[0, 0x27, 0, 0, 0xD3, 0], &[0x27, 0xD3]),
+        };
+        let expected = match compression {
+            MaceCompression::ThreeToOne => decode_mace3_mono_to_u8(mono),
+            MaceCompression::SixToOne => decode_mace6_mono_to_u8(mono),
+        };
+        assert!(expected.iter().any(|sample| *sample != 128));
+        bus.write_bytes(input, compressed);
+        bus.fill_bytes(output, 14, 0x55);
+        bus.fill_bytes(state - 1, 130, 0x55);
+        bus.fill_bytes(state, 128, 0);
+        expand_mace_guest(
+            &mut bus,
+            compression,
+            MaceExpansion {
+                input,
+                output,
+                packets: 1,
+                input_state: state,
+                output_state: state,
+                channels: 3,
+                channel: 2,
+            },
+        );
+        let state_bytes = bus.ram_slice(state, 128).to_vec();
+        bus.write_bytes(copy, &state_bytes);
+        bus.fill_bytes(state, 128, 0);
+        expand_mace_guest(
+            &mut bus,
+            compression,
+            MaceExpansion {
+                input: input + compressed.len() as u32 / 2,
+                output: output + 6,
+                packets: 1,
+                input_state: copy,
+                output_state: state,
+                channels: 3,
+                channel: 2,
+            },
+        );
+        assert_eq!(bus.ram_slice(output, 12), expected);
+        assert_eq!(bus.ram_slice(output + 12, 2), &[0x55; 2]);
+        assert_eq!(bus.read_byte(state - 1), 0x55);
+        assert_eq!(bus.read_byte(state + 128), 0x55);
+        assert_eq!(bus.ram_slice(copy, 128), state_bytes);
+    }
+}
+
+#[test]
+fn mace_expansion_rejects_invalid_ranges_without_writing_guest_memory() {
+    use super::{expand_mace_guest, MaceCompression, MaceExpansion};
+    for (packets, channels, channel, input, output, state) in [
+        (0, 1, 1, 0x260000, 0x261000, 0),
+        (1, 0, 1, 0x260000, 0x261000, 0),
+        (1, 1, 0, 0x260000, 0x261000, 0),
+        (1, 1, 2, 0x260000, 0x261000, 0),
+        (u32::MAX, 1, 1, 0x260000, 0x261000, 0),
+        (1, u32::MAX, 1, 0x260000, 0x261000, 0),
+        (1, 1, 1, u32::MAX, 0x261000, 0),
+        (1, 1, 1, 0, 0x261000, 0),
+        (1, 1, 1, 0x3FFFFF, 0x261000, 0),
+        (1, 1, 1, 0x260000, 0x3FFFFF, 0),
+        (1, 1, 1, 0x260000, 0x261000, 0x3FFFFF),
+    ] {
+        let (_, _, mut bus) = setup();
+        bus.fill_bytes(0x261000, 12, 0x55);
+        bus.write_byte(0x3FFFFF, 0x55);
+        expand_mace_guest(
+            &mut bus,
+            MaceCompression::ThreeToOne,
+            MaceExpansion {
+                input,
+                output,
+                packets,
+                input_state: state,
+                output_state: state,
+                channels,
+                channel,
+            },
+        );
+        assert_eq!(bus.ram_slice(0x261000, 12), &[0x55; 12]);
+        assert_eq!(bus.read_byte(0x3FFFFF), 0x55);
+    }
+}
+
+#[test]
 fn buffercmd_cmpsh_mace3_starts_buffer_playback() {
     let (mut disp, _cpu, mut bus) = setup();
     let chan_ptr = 0x250000;
