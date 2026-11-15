@@ -116,13 +116,20 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         // SysFontSize, using 12 points when that low-memory value is zero.
         // Systemless currently models the default system font at 12 points.
         PpcImportDispatcherTarget::GetDefFontSize => Some(PpcImportAction::Return(12)),
-        PpcImportDispatcherTarget::GetFontName => {
+        PpcImportDispatcherTarget::GetFontName | PpcImportDispatcherTarget::GetFontNameCString => {
             let font_id = cpu.gpr[3] as u16 as i16;
             let name = font_name_for_id(font_id)
                 .map(str::to_owned)
                 .or_else(|| ppc_vfs_font_name_for_id(vfs_resources, font_id))
                 .unwrap_or_default();
-            let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], name.as_bytes());
+            if binding.dispatcher_target == PpcImportDispatcherTarget::GetFontNameCString {
+                let mut bytes = name.into_bytes();
+                bytes.truncate(255);
+                bytes.push(0);
+                let _ = memory.write_bytes(cpu.gpr[4], &bytes);
+            } else {
+                let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], name.as_bytes());
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InitFonts => {
@@ -181,7 +188,13 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 char_extra,
             ))))
         }
-        PpcImportDispatcherTarget::StringWidth => {
+        PpcImportDispatcherTarget::StringWidth | PpcImportDispatcherTarget::StringWidthCString => {
+            // stringwidth converts the caller's C string to Pascal form in place
+            // for the call and back afterwards, like drawstring.
+            let c_string = binding.dispatcher_target == PpcImportDispatcherTarget::StringWidthCString;
+            if c_string {
+                ppc_c2pstr(cpu, memory);
+            }
             let text_font = ppc_current_text_font(memory, current_gworld);
             let text_face = ppc_current_text_style(memory, current_gworld);
             let width = ppc_read_pascal_string(memory, cpu.gpr[3])
@@ -199,6 +212,9 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                     .max(0) as u32
                 })
                 .unwrap_or(0);
+            if c_string {
+                ppc_p2cstr(cpu, memory);
+            }
             Some(PpcImportAction::Return(width))
         }
         PpcImportDispatcherTarget::CharWidth => {
@@ -537,9 +553,13 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetFNum => {
+        PpcImportDispatcherTarget::GetFNum | PpcImportDispatcherTarget::GetFNumCString => {
             // Inside Macintosh: Text (1993), 4-52: GetFNum maps a Str255 font
             // family name to its ID and returns zero when no family matches.
+            let c_string = binding.dispatcher_target == PpcImportDispatcherTarget::GetFNumCString;
+            if c_string {
+                ppc_c2pstr(cpu, memory);
+            }
             let font_id = ppc_read_pstring_bytes(memory, cpu.gpr[3])
                 .map(|name| decode_mac_roman(&name))
                 .and_then(|name| {
@@ -549,6 +569,9 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 .unwrap_or(0);
             if cpu.gpr[4] != 0 {
                 let _ = memory.write_u16_be(cpu.gpr[4], font_id as u16);
+            }
+            if c_string {
+                ppc_p2cstr(cpu, memory);
             }
             Some(PpcImportAction::ReturnPreserve)
         }

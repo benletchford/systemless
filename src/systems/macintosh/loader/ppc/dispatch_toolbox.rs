@@ -54,6 +54,19 @@ pub(super) fn dispatch_toolbox_import(
         PpcImportDispatcherTarget::EqualCString => {
             Some(PpcImportAction::Return(ppc_equal_c_string(cpu, memory)))
         }
+        PpcImportDispatcherTarget::RelCString => {
+            // short relstring(const char *, const char *, Boolean caseSens,
+            // Boolean diacSens): the C glue for RelString.
+            let left = ppc_read_bounded_c_string(memory, cpu.gpr[3])?;
+            let right = ppc_read_bounded_c_string(memory, cpu.gpr[4])?;
+            let result = crate::text_utils::evaluate_rel_string(
+                &left,
+                &right,
+                cpu.gpr[5] & 0xff != 0,
+                cpu.gpr[6] & 0xff != 0,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::RelString => {
             let left = ppc_read_pstring_bytes(memory, cpu.gpr[3])?;
             let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
