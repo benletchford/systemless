@@ -10,8 +10,10 @@ use std::{
 };
 
 use crate::mac_roman::decode_mac_roman;
+use crate::managers::resource::ResourceFork;
 
 mod hfs;
+mod ndif;
 mod udif;
 
 use hfs::HfsVolume;
@@ -82,6 +84,18 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
             .ok_or_else(|| "UDIF image contains no supported HFS filesystem".to_owned());
     }
     extract_uncompressed(bytes)
+}
+
+/// Extract an image whose format may be described by its resource fork.
+pub fn extract_forked_image(data: &[u8], rsrc: &[u8]) -> Result<Option<DiskImageContents>, String> {
+    let fork = ResourceFork::parse(rsrc);
+    let Some(bcem) = fork.as_ref().and_then(|fork| fork.get(*b"bcem", 128)) else {
+        return extract_dc42_or_hfs(data);
+    };
+    let decoded = ndif::decode(data, &bcem.data)?;
+    extract_uncompressed(&decoded)?
+        .map(Some)
+        .ok_or_else(|| "NDIF image contains no supported HFS filesystem".to_owned())
 }
 
 fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
