@@ -1607,7 +1607,10 @@ impl PpcQ3SoftwareFrontBufferSurface {
     ) -> bool {
         if self.front_buffer.depth != 8 {
             if let (Some(span), Some(offset)) = (self.span, self.pixel_relative_offset(point)) {
-                if run.words != 0 && run.first + run.words * 2 != offset {
+                if run.words != 0
+                    && (run.first + run.words * 2 != offset
+                        || run.words == PpcSectionMem::SPAN_REPORT_CHUNK_WORDS)
+                {
                     run.report(memory, span);
                 }
                 if memory
@@ -1619,6 +1622,7 @@ impl PpcQ3SoftwareFrontBufferSurface {
                 if run.words == 0 {
                     run.first = offset;
                 }
+                run.bytes[run.words * 2..run.words * 2 + 2].copy_from_slice(&color.to_be_bytes());
                 run.words += 1;
                 return true;
             }
@@ -1631,17 +1635,29 @@ impl PpcQ3SoftwareFrontBufferSurface {
 }
 
 /// Adjacent span words stored by a software primitive and not yet reported to
-/// the guest-memory observers.
-#[derive(Default)]
+/// the guest-memory observers, with the bytes stored. A run is reported once
+/// it reaches one observer report chunk, so its reports are the chunks
+/// `report_span_write` would make of the whole run.
 pub(crate) struct PpcQ3UnreportedRun {
     first: usize,
     words: usize,
+    bytes: [u8; PpcSectionMem::SPAN_REPORT_CHUNK_WORDS * 2],
+}
+
+impl Default for PpcQ3UnreportedRun {
+    fn default() -> Self {
+        Self {
+            first: 0,
+            words: 0,
+            bytes: [0; PpcSectionMem::SPAN_REPORT_CHUNK_WORDS * 2],
+        }
+    }
 }
 
 impl PpcQ3UnreportedRun {
     fn report(&mut self, memory: &mut PpcSectionMem, span: GuestWritableSpan) {
         if self.words != 0 {
-            memory.report_span_write(span, self.first, self.words);
+            memory.report_span_written_bytes(span, self.first, &self.bytes[..self.words * 2]);
             self.words = 0;
         }
     }
