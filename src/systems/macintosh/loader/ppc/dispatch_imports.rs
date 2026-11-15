@@ -1595,6 +1595,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TempTopMem
         | PpcImportDispatcherTarget::PurgeMem
         | PpcImportDispatcherTarget::PurgeMemSys
+        | PpcImportDispatcherTarget::LMSetMemErr
         | PpcImportDispatcherTarget::MemError => {
             unreachable!("memory imports return through dispatch_memory_import")
         }
@@ -2526,6 +2527,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::EqualString
         | PpcImportDispatcherTarget::EqualCString
         | PpcImportDispatcherTarget::UpperCString
+        | PpcImportDispatcherTarget::ScreenRes
         | PpcImportDispatcherTarget::RelString
         | PpcImportDispatcherTarget::InitEditionPackVersion
         | PpcImportDispatcherTarget::StuffHex

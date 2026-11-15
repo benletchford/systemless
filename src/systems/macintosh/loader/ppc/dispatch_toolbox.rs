@@ -51,6 +51,13 @@ pub(super) fn dispatch_toolbox_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ScreenRes => {
+            // void ScreenRes(short *scrnHRes, short *scrnVRes): the emulated
+            // display is 72 dpi in both directions.
+            let _ = memory.write_u16_be(cpu.gpr[3], 72);
+            let _ = memory.write_u16_be(cpu.gpr[4], 72);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::EqualCString => {
             Some(PpcImportAction::Return(ppc_equal_c_string(cpu, memory)))
         }

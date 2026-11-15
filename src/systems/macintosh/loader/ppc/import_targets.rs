@@ -83,6 +83,7 @@ pub enum PpcImportDispatcherTarget {
     LMGetCurMap,
     LMSetCurMap,
     LMSetResErr,
+    LMSetMemErr,
     UseResFile,
     CloseResFile,
     OpenResFile,
@@ -950,6 +951,8 @@ pub enum PpcImportDispatcherTarget {
     DrawCString,
     /// openresfile: OpenResFile with a C-string file name.
     OpenResFileCString,
+    /// ScreenRes: reports the display resolution in dots per inch.
+    ScreenRes,
     RelString,
     InitEditionPackVersion,
     StuffHex,
@@ -3201,6 +3204,23 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "HOpenResFile") => PpcImportDispatcherTarget::HOpenResFile,
         ("InterfaceLib", "ResError" | "LMGetResErr") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "LMSetResErr") => PpcImportDispatcherTarget::LMSetResErr,
+        ("InterfaceLib", "LMSetMemErr") => PpcImportDispatcherTarget::LMSetMemErr,
+        ("InterfaceLib", "ScreenRes") => PpcImportDispatcherTarget::ScreenRes,
+        ("InterfaceLib", "PBLockRangeSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbLockRangeSync,
+        ),
+        ("InterfaceLib", "PBUnlockRangeSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbUnlockRangeSync,
+        ),
+        ("InterfaceLib", "PBCreateFileIDRefSync") => PpcImportDispatcherTarget::FileCompatibility(
+            PpcFileCompatibilityOperation::PbCreateFileIdRefSync,
+        ),
+        // The preview pane is cosmetic; the arguments match CustomGetFile.
+        ("QuickTimeLib", "CustomGetFilePreview") => {
+            PpcImportDispatcherTarget::StandardFileCompatibility(
+                PpcStandardFileOperation::CustomGetFile,
+            )
+        }
         ("InterfaceLib", "SetResLoad" | "LMSetResLoad") => PpcImportDispatcherTarget::SetResLoad,
         ("InterfaceLib", "LMGetResLoad") => PpcImportDispatcherTarget::LMGetResLoad,
         ("InterfaceLib", "LoadResource") => PpcImportDispatcherTarget::LoadResource,
@@ -3849,7 +3869,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::GetWMgrPort
         }
         ("InterfaceLib", "SetPort") => PpcImportDispatcherTarget::SetPort,
-        ("InterfaceLib", "GetGDevice") => PpcImportDispatcherTarget::GetGDevice,
+        ("InterfaceLib", "GetGDevice" | "LMGetTheGDevice") => PpcImportDispatcherTarget::GetGDevice,
         ("InterfaceLib", "SetGDevice") => PpcImportDispatcherTarget::SetGDevice,
         ("InterfaceLib", "GDeviceChanged") => PpcImportDispatcherTarget::GDeviceChanged,
         ("InterfaceLib", "GetDeviceList") => PpcImportDispatcherTarget::GetDeviceList,
@@ -7132,7 +7152,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PBHGetVolParmsSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbHGetVolParmsSync,
         ),
-        ("InterfaceLib", "PBHGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
+        ("InterfaceLib", "PBHGetVolSync" | "PBGetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
             PpcFileCompatibilityOperation::PbHGetVolSync,
         ),
         ("InterfaceLib", "PBHSetVolSync") => PpcImportDispatcherTarget::FileCompatibility(
