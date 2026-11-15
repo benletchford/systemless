@@ -88,6 +88,17 @@ pub(crate) fn expand(bytes: &[u8], resources: &[u8]) -> Result<Option<Vec<File>>
     {
         return Ok(None);
     }
+    // Later installers store a CRC-checked Compact Pro directory at the start
+    // of the data fork; earlier ones use a fixed ten-byte header.
+    if let Some((count, records_start, end)) = compact_directory(bytes, 0) {
+        if count == 0 {
+            return Err("empty Smaller Installer directory".into());
+        }
+        let mut entries = Vec::new();
+        let mut position = records_start;
+        directory(bytes, &mut position, count, "", 0, &mut entries)?;
+        return expand_entries(bytes, entries, end, 0..end).map(Some);
+    }
     let mut position = 4;
     let count = word(take(bytes, &mut position, 2)?);
     take(bytes, &mut position, 4)?;
@@ -99,6 +110,26 @@ pub(crate) fn expand(bytes: &[u8], resources: &[u8]) -> Result<Option<Vec<File>>
     expand_entries(bytes, entries, position, 0..position).map(Some)
 }
 
+/// Locate a Compact Pro directory at `index` whose stored CRC matches.
+/// Returns its record count, first record offset, and end offset.
+fn compact_directory(bytes: &[u8], index: usize) -> Option<(usize, usize, usize)> {
+    if index.checked_add(7).is_none_or(|end| end > bytes.len()) {
+        return None;
+    }
+    let count = word(&bytes[index + 4..index + 6]);
+    let mut end = index + 7;
+    // The comment precedes the flattened directory records.
+    take(bytes, &mut end, bytes[index + 6] as usize).ok()?;
+    let records_start = end;
+    for _ in 0..count {
+        let size = take(bytes, &mut end, 1).ok()?[0];
+        take(bytes, &mut end, (size & 127) as usize).ok()?;
+        take(bytes, &mut end, if size & 128 != 0 { 2 } else { 45 }).ok()?;
+    }
+    let checksum = crc(bytes[index + 4..end].iter().copied());
+    (checksum == long(&bytes[index..]) as u32).then_some((count, records_start, end))
+}
+
 /// Recognize a normal Compact Pro container by its header and directory CRC.
 /// Check metadata before interpreting names, so arbitrary data forks are untouched.
 pub(crate) fn expand_compact_pro(bytes: &[u8]) -> Result<Option<Vec<File>>, String> {
@@ -106,30 +137,12 @@ pub(crate) fn expand_compact_pro(bytes: &[u8]) -> Result<Option<Vec<File>>, Stri
         return Ok(None);
     }
     let index = long(&bytes[4..8]);
-    if index < 8 || index.checked_add(7).is_none_or(|end| end > bytes.len()) {
+    if index < 8 {
         return Ok(None);
     }
-    let count = word(&bytes[index + 4..index + 6]);
-    let mut end = index + 7;
-    // The comment precedes the flattened directory records.
-    if take(bytes, &mut end, bytes[index + 6] as usize).is_err() {
+    let Some((count, records_start, end)) = compact_directory(bytes, index) else {
         return Ok(None);
-    }
-    let records_start = end;
-    for _ in 0..count {
-        let Ok(size) = take(bytes, &mut end, 1) else {
-            return Ok(None);
-        };
-        let size = size[0];
-        if take(bytes, &mut end, (size & 127) as usize).is_err()
-            || take(bytes, &mut end, if size & 128 != 0 { 2 } else { 45 }).is_err()
-        {
-            return Ok(None);
-        }
-    }
-    if crc(bytes[index + 4..end].iter().copied()) != long(&bytes[index..]) as u32 {
-        return Ok(None);
-    }
+    };
     if count == 0 {
         return Err("empty Compact Pro directory".into());
     }
@@ -632,6 +645,40 @@ mod tests {
             seal_directory(&mut bytes);
             assert!(expand_compact_pro(&bytes).is_err(), "fork offset {offset}");
         }
+    }
+    /// Ambrosia's Apeiron 1.0.2 installer begins with a Compact Pro directory:
+    /// CRC, record count, comment length and comment, then nested records.
+    fn compact_header_installer() -> Vec<u8> {
+        let mut bytes = vec![0, 0, 0, 0, 0, 2, 2, b'h', b'i'];
+        bytes.extend_from_slice(&[0x81, b'D', 0, 1]);
+        bytes.extend_from_slice(&fixture()[10..60]);
+        let fork = bytes.len() as u32;
+        bytes[19..23].copy_from_slice(&fork.to_be_bytes());
+        let checksum = crc(bytes[4..].iter().copied());
+        bytes[..4].copy_from_slice(&checksum.to_be_bytes());
+        bytes.push(b'A');
+        bytes
+    }
+    #[test]
+    fn installer_reads_crc_checked_compact_directory_header() {
+        let bytes = compact_header_installer();
+        let files = expand(&bytes, b"Smaller Installer").unwrap().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name, "D/Test");
+        assert_eq!(files[0].data, b"A");
+        assert_eq!(files[0].file_type, *b"TEXT");
+
+        // Without a matching directory CRC the legacy fixed header applies,
+        // which cannot parse this layout.
+        let mut corrupt = bytes.clone();
+        corrupt[0] ^= 1;
+        assert!(expand(&corrupt, b"Smaller Installer").is_err());
+        // Forks may not start inside the leading directory.
+        let mut overlapping = bytes;
+        overlapping[19..23].copy_from_slice(&4u32.to_be_bytes());
+        let checksum = crc(overlapping[4..63].iter().copied());
+        overlapping[..4].copy_from_slice(&checksum.to_be_bytes());
+        assert!(expand(&overlapping, b"Smaller Installer").is_err());
     }
     #[test]
     fn installer_checks_metadata_and_crc() {
