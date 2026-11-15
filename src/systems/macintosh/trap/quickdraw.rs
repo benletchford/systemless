@@ -10821,19 +10821,26 @@ impl super::TrapDispatcher {
             // follows that field (see region_recording_active).
             (true, 0x0DA) => {
                 let port = *self.current_port;
-                let save_port = if port != 0 && self.port_allows_draw_state_memory_sync(bus, port) {
+                let mut save_port = 0;
+                if port != 0 && self.port_allows_draw_state_memory_sync(bus, port) {
                     if self.region_save_handle == 0 {
+                        // A full heap leaves no save handle: rgnSave stays
+                        // untouched and the whole span is collected.
                         let ptr = bus.alloc(10);
-                        bus.write_word(ptr, 10);
-                        let handle = bus.alloc(4);
-                        bus.write_long(handle, ptr);
-                        self.region_save_handle = handle;
+                        let handle = if ptr != 0 { bus.alloc(4) } else { 0 };
+                        if handle != 0 {
+                            bus.write_word(ptr, 10);
+                            bus.write_long(handle, ptr);
+                            self.region_save_handle = handle;
+                        } else {
+                            bus.free(ptr);
+                        }
                     }
-                    bus.write_long(port + GRAF_PORT_RGN_SAVE_OFFSET, self.region_save_handle);
-                    port
-                } else {
-                    0
-                };
+                    if self.region_save_handle != 0 {
+                        bus.write_long(port + GRAF_PORT_RGN_SAVE_OFFSET, self.region_save_handle);
+                        save_port = port;
+                    }
+                }
                 self.recording_region = Some(super::dispatch::RegionRecording {
                     save_port,
                     ..Default::default()
@@ -16306,11 +16313,15 @@ impl super::TrapDispatcher {
     /// therefore pause collection by clearing rgnSave and resume it by
     /// putting the handle back. MacPaint 1.3's filled polygon does: it draws
     /// each side twice between OpenRgn and CloseRgn, the second time with
-    /// rgnSave cleared. A port whose memory is not mirrored keeps collecting
-    /// for the whole OpenRgn..CloseRgn span.
+    /// rgnSave cleared. A port whose memory is not mirrored, or an OpenRgn
+    /// that stored no save handle, keeps collecting for the whole
+    /// OpenRgn..CloseRgn span.
     pub(crate) fn region_recording_active(&self, bus: &MacMemoryBus) -> bool {
-        if self.recording_region.is_none() {
+        let Some(recording) = self.recording_region.as_ref() else {
             return false;
+        };
+        if recording.save_port == 0 {
+            return true;
         }
         let port = *self.current_port;
         if port == 0 || !self.port_allows_draw_state_memory_sync(bus, port) {

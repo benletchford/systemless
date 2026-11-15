@@ -12068,6 +12068,53 @@
     }
 
     #[test]
+    fn openrgn_on_a_full_heap_leaves_rgnsave_alone_and_still_collects() {
+        // With no room for the save handle, OpenRgn writes nothing at
+        // address zero, leaves rgnSave NIL and collects for the whole span.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000;
+        d.current_port
+            .with_mut(|current_port| *current_port = port);
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 0, 0, 0, 0);
+        for size in [1 << 16, 1 << 8, 4] {
+            while bus.alloc(size) != 0 {}
+        }
+        bus.write_long(0, 0x1234_5678);
+
+        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(port + 96), 0, "no save handle to publish");
+        assert_eq!(
+            bus.read_long(0),
+            0x1234_5678,
+            "nothing written at address zero"
+        );
+
+        // A rectangle: its region fits the 10 bytes dstRgn already has.
+        let vertices = [(10i16, 10i16), (10, 50), (50, 50), (50, 10)];
+        for index in 0..vertices.len() {
+            let (from, to) = (vertices[index], vertices[(index + 1) % vertices.len()]);
+            for (trap, (v, h)) in [(0x093, from), (0x091, to)] {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_word(TEST_SP, v as u16);
+                bus.write_word(TEST_SP + 2, h as u16);
+                d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+            }
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst);
+        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 20, 20));
+    }
+
+    #[test]
     fn lines_drawn_while_rgnsave_is_cleared_stay_out_of_the_open_region() {
         // MacPaint 1.3's filled polygon draws each side twice between OpenRgn
         // and CloseRgn, the second time with the port's rgnSave cleared.
