@@ -1267,6 +1267,9 @@ pub(crate) struct RegionRecording {
     pub filled_rows: BTreeMap<i16, Vec<i16>>,
     /// Mathematical bounds of all recorded input geometry.
     pub bbox: Option<(i16, i16, i16, i16)>,
+    /// Port whose rgnSave field OpenRgn set, or 0 when the port's memory is
+    /// not mirrored. CloseRgn clears the field again.
+    pub save_port: u32,
 }
 
 /// Small LRU cache for Color Manager inverse-table payloads.
@@ -2143,6 +2146,8 @@ pub struct TrapDispatcher {
     pub(crate) recording_polygon: Option<PolygonRecording>,
     /// Region recording state. Set by OpenRgn, consumed by CloseRgn.
     pub(crate) recording_region: Option<RegionRecording>,
+    /// Handle OpenRgn stores in the port's rgnSave field, allocated on first use.
+    pub(crate) region_save_handle: u32,
     /// Screen mode: (screen_base, row_bytes, width, height, pixel_size)
     /// Defaults to 800x600 8bpp.
     pub screen_mode: (u32, u32, u16, u16, u16),
@@ -4144,6 +4149,7 @@ impl TrapDispatcher {
             manual_cport_screen_witness: Vec::new(),
             recording_polygon: None,
             recording_region: None,
+            region_save_handle: 0,
             screen_mode: {
                 let profile = reference_machine_profile();
                 (

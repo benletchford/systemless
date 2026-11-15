@@ -13,7 +13,7 @@ SYSTEMLESS_SCREEN_WIDTH=512 SYSTEMLESS_SCREEN_HEIGHT=342 SYSTEMLESS_RAM_SIZE=419
   --play-output /tmp/macpaint-paste
 ```
 
-The bucket, lasso, copy, paste and FatBits scripts check drawing pixels;
+The bucket, lasso, copy, paste, FatBits and filled-polygon scripts check drawing pixels;
 reopened draws, saves, closes and reopens a picture and checks its pixels.
 Marquee selects a rectangle and waits for a point of its outline to turn white,
 black and white again: the dashes move.
