@@ -1807,6 +1807,8 @@ fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
         Some((38, 226, 58, 326))
     );
     assert_eq!(loaded.controls.records()[0].popup_menu_id, 300);
+    let menu_list = ppc_current_menu_list(&mut loaded.memory);
+    assert_ne!(ppc_get_menu_handle(&mut loaded.memory, menu_list, 300), 0);
     assert_eq!(
         loaded
             .memory
