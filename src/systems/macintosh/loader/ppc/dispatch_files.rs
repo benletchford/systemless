@@ -1265,13 +1265,16 @@ pub enum PpcFileCompatibilityOperation {
     OpenRf,
     PbCatSearchSync,
     PbCloseWdSync,
+    PbCreateFileIdRefSync,
     PbDirCreateSync,
     PbGetFPosSync,
     PbGetWdInfoSync,
     PbHGetVolParmsSync,
     PbHGetVolSync,
     PbHSetVolSync,
+    PbLockRangeSync,
     PbSetVolSync,
+    PbUnlockRangeSync,
     PbOpenWdSync,
 }
 
@@ -1652,6 +1655,15 @@ pub(super) fn ppc_dispatch_file_compatibility(
         PpcFileCompatibilityOperation::PbDirCreateSync => unreachable!("directory creation dispatch"),
         PpcFileCompatibilityOperation::PbCatSearchSync => PpcImportAction::Return(
             ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_FNF_ERR)),
+        ),
+        // A single process holds every byte range, so locks always succeed.
+        PpcFileCompatibilityOperation::PbLockRangeSync
+        | PpcFileCompatibilityOperation::PbUnlockRangeSync => PpcImportAction::Return(
+            ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR)),
+        ),
+        // File ID references are not modelled.
+        PpcFileCompatibilityOperation::PbCreateFileIdRefSync => PpcImportAction::Return(
+            ppc_i16_result(ppc_complete_pb(memory, cpu.gpr[3], PPC_PARAM_ERR)),
         ),
         PpcFileCompatibilityOperation::OpenDf
         | PpcFileCompatibilityOperation::OpenRf
