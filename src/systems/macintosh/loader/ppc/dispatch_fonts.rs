@@ -225,8 +225,40 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FontMetrics => {
+            if cpu.gpr[3] == 0 || !ppc_memory_can_write_bytes(memory, cpu.gpr[3], 20) {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
             let text_font = ppc_current_text_font(memory, current_gworld);
             ppc_font_metrics(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
+            let style = ppc_current_text_style(memory, current_gworld);
+            let table = ppc_width_table_bytes(text_font, *quickdraw_text_size, style);
+            let mut handle = memory.read_u32_be(PPC_WIDTH_TAB_HANDLE_ADDR).unwrap_or(0);
+            // Reuse the table only while it is still a live handle that holds it; a
+            // disposed, emptied or resized handle must not become a stray write.
+            let table_ptr = handles
+                .iter()
+                .any(|record| record.handle == handle && record.size >= table.len() as u32)
+                .then(|| memory.read_u32_be(handle))
+                .flatten()
+                .filter(|ptr| *ptr != 0 && ppc_memory_can_write_bytes(memory, *ptr, table.len() as u32));
+            if let Some(table_ptr) = table_ptr {
+                let _ = memory.write_bytes(table_ptr, &table);
+            } else {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                handle = ppc_allocator_view_allocate_handle_with_bytes(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    &table,
+                );
+                let _ = memory.write_u32_be(PPC_WIDTH_TAB_HANDLE_ADDR, handle);
+            }
+            let _ = memory.write_u32_be(cpu.gpr[3] + 16, handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DrawChar => {
@@ -581,14 +613,36 @@ fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, 
     );
 }
 
+const PPC_WIDTH_TAB_HANDLE_ADDR: u32 = 0x0B2A;
+
+/// A WidthTable: 256 Fixed character widths followed by the font it describes.
+/// The tabFont and fHand handles are left NIL.
+fn ppc_width_table_bytes(text_font: i16, text_size: i16, style: u8) -> Vec<u8> {
+    let mut table = vec![0; 0x430];
+    for ch in 0..=255u8 {
+        let width = i32::from(ppc_text_width_bytes(text_font, text_size, style, &[ch])) << 16;
+        table[usize::from(ch) * 4..][..4].copy_from_slice(&width.to_be_bytes());
+    }
+    table[1036..1038].copy_from_slice(&text_font.to_be_bytes());
+    table[1038..1040].copy_from_slice(&text_size.to_be_bytes());
+    table[1040..1042].copy_from_slice(&i16::from(style).to_be_bytes());
+    // inNumer and inDenom are 1:1 Points.
+    table[1044..1052].copy_from_slice(&[0, 1, 0, 1, 0, 1, 0, 1]);
+    table[1052..1054].copy_from_slice(&text_font.to_be_bytes());
+    // vOutput, hOutput, vFactor and hFactor are 8.8 Fixed 1.0; the font is not scaled.
+    table[1060..1068].copy_from_slice(&[1, 0, 1, 0, 1, 0, 1, 0]);
+    table[1068..1070].copy_from_slice(&text_size.to_be_bytes());
+    table[1070..1072].copy_from_slice(&0x430u16.to_be_bytes());
+    table
+}
+
 fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16, text_size: i16) {
     if metrics_ptr == 0 || !ppc_memory_can_write_bytes(memory, metrics_ptr, 20) {
         return;
     }
     // Inside Macintosh: Text (1993), pp. 4-54--4-55: FMetricRec stores
     // ascent, descent, leading, and maximum width as Fixed values, followed
-    // by a handle to the global width table. Systemless does not model that
-    // table, matching the 68k HLE by returning NIL for its handle.
+    // by a handle to the global width table, which the caller fills in.
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let metrics = face.metrics;
     let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
@@ -624,5 +678,18 @@ fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16
             denominator,
         )),
     );
-    let _ = memory.write_u32_be(metrics_ptr + 16, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn width_table_reports_actual_size_and_unit_scaling() {
+        let table = ppc_width_table_bytes(20, 12, 0);
+        assert_eq!(table.len(), 1072);
+        assert_eq!(&table[1060..1068], &[1, 0, 1, 0, 1, 0, 1, 0]);
+        assert_eq!(&table[1068..1070], &12i16.to_be_bytes());
+        assert_eq!(&table[1070..1072], &1072u16.to_be_bytes());
+    }
 }
