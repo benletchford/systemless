@@ -2341,7 +2341,8 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetSysFont
         | PpcImportDispatcherTarget::GetAppFont
         | PpcImportDispatcherTarget::GetDefFontSize
-        | PpcImportDispatcherTarget::GetFontName => {
+        | PpcImportDispatcherTarget::GetFontName
+        | PpcImportDispatcherTarget::GetFontNameCString => {
             unreachable!("Font Manager imports return through dispatch_font_import")
         }
         PpcImportDispatcherTarget::DMGetDisplayIDByGDevice
@@ -2526,6 +2527,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::EqualString
         | PpcImportDispatcherTarget::EqualCString
         | PpcImportDispatcherTarget::UpperCString
+        | PpcImportDispatcherTarget::RelCString
         | PpcImportDispatcherTarget::RelString
         | PpcImportDispatcherTarget::InitEditionPackVersion
         | PpcImportDispatcherTarget::StuffHex
@@ -2546,6 +2548,7 @@ pub(crate) fn dispatch_supported_import(
         PpcImportDispatcherTarget::TextWidth
         | PpcImportDispatcherTarget::TruncString
         | PpcImportDispatcherTarget::StringWidth
+        | PpcImportDispatcherTarget::StringWidthCString
         | PpcImportDispatcherTarget::CharWidth
         | PpcImportDispatcherTarget::GetFontInfo
         | PpcImportDispatcherTarget::StdText
@@ -2555,6 +2558,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FontMetrics
         | PpcImportDispatcherTarget::FMSwapFont
         | PpcImportDispatcherTarget::GetFNum
+        | PpcImportDispatcherTarget::GetFNumCString
         | PpcImportDispatcherTarget::FontToScript
         | PpcImportDispatcherTarget::SetPreserveGlyph
         | PpcImportDispatcherTarget::GetPreserveGlyph
