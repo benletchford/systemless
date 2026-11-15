@@ -437,6 +437,26 @@ pub(super) fn dispatch_mixed_mode_import(
                 Ok(selector) => selector,
                 Err(()) => return Some(None),
             };
+            // A 680x0 record may wrap another descriptor, whose `$AAFE` word
+            // would re-enter Mixed Mode immediately. Resolve it from here so a
+            // fragment resource can still be prepared.
+            if let Some(crate::guest_procedure::GuestProcedureResolution::Callable(wrapped)) =
+                crate::guest_procedure::inspect_guest_procedure(
+                    memory,
+                    cpu.gpr[3],
+                    cpu.gpr[2],
+                    selector,
+                    GuestIsa::PowerPc,
+                    raw_isa,
+                )
+            {
+                if wrapped.isa == GuestIsa::M68k
+                    && memory.read_u16_be(wrapped.entry)
+                        == Some(crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+                {
+                    cpu.gpr[3] = wrapped.entry;
+                }
+            }
             if let Some(crate::guest_procedure::GuestProcedureResolution::Prepare(request)) =
                 crate::guest_procedure::inspect_guest_procedure(
                     memory,

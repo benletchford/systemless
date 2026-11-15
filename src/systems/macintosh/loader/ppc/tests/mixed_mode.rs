@@ -1670,6 +1670,54 @@ fn hle_import_runner_call_universal_proc_rejects_m68k_only_descriptor() {
 }
 
 #[test]
+fn hle_import_runner_call_universal_proc_enters_descriptor_wrapped_by_m68k_record() {
+    let pef = synthetic_pef_with_import(b"CallUniversalProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let wrapper = PPC_HEAP_BASE + 0x1000;
+    let inner = wrapper + 0x40;
+    let vector = wrapper + 0x80;
+    let code = wrapper + 0x90;
+    let proc_info = test_stack_proc_info(PPC_PROCINFO_SIZE_FOUR, &[]);
+    loaded.memory.add_region(wrapper, vec![0; 0x100]);
+    for (descriptor, isa, target) in [
+        (wrapper, PPC_ROUTINE_RECORD_M68K_ISA, inner),
+        (inner, PPC_ROUTINE_RECORD_POWERPC_ISA, vector),
+    ] {
+        loaded
+            .memory
+            .write_u16_be(descriptor, PPC_MIXED_MODE_TRAP)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(descriptor + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        assert!(ppc_write_routine_record(
+            &mut loaded.memory,
+            descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+            proc_info,
+            isa,
+            0,
+            target,
+        ));
+    }
+    loaded.memory.write_u32_be(vector, code).unwrap();
+    loaded.memory.write_u32_be(vector + 4, PPC_DATA_BASE).unwrap();
+    loaded
+        .memory
+        .write_u32_be(code, d_form_u(14, 3, 0, 0x55))
+        .unwrap();
+    loaded.memory.write_u32_be(code + 4, BLR).unwrap();
+
+    loaded.cpu.gpr[3] = wrapper;
+    loaded.cpu.gpr[4] = proc_info;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0x55);
+}
+
+#[test]
 fn hle_import_runner_call_universal_proc_rejects_fake_trap_addresses() {
     // Inside Macintosh: PowerPC System Software (1994), pp. 1-67--1-68
     // and 2-42--2-43: CallUniversalProc accepts an actual universal
