@@ -175,6 +175,13 @@ pub(crate) enum GuestMemoryRoute {
     Mixed,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// While `Some`, every report to the observers of guest memory, in order.
+    pub(crate) static NOTE_WRITE_LOG: std::cell::RefCell<Option<Vec<(u32, Vec<u8>)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// A sparse guest address space that can be executed by either CPU backend.
 ///
 /// The region implementation remains private so loaders and runtime services
@@ -335,6 +342,12 @@ impl GuestAddressSpaceState {
     /// presentation mirror, and the generation behind writable-code tokens.
     #[inline]
     fn note_write(&mut self, addr: u32, bytes: &[u8]) {
+        #[cfg(test)]
+        NOTE_WRITE_LOG.with_borrow_mut(|log| {
+            if let Some(log) = log {
+                log.push((addr, bytes.to_vec()));
+            }
+        });
         self.presentation.write_bytes(addr, bytes);
         let start = u64::from(addr);
         let end = start.saturating_add(bytes.len() as u64);
@@ -2080,6 +2093,37 @@ impl GuestAddressSpace {
             .write_u16_be_in_span(span.span, relative_offset, value)
     }
 
+    /// Report `bytes`, just stored at `relative_offset` of a span by
+    /// [`Self::write_u16_be_in_span_unreported`], as one write, without
+    /// reading them back.
+    ///
+    /// The caller guarantees that `bytes` are exactly what the span now holds
+    /// at that offset: the values it stored, with nothing else writing there
+    /// since. This is not a way to report arbitrary bytes. The caller also
+    /// keeps each report within [`Self::SPAN_REPORT_CHUNK_WORDS`] words, so
+    /// the observers see the chunks [`Self::report_span_write`] would make.
+    pub(crate) fn report_span_written_bytes(
+        &mut self,
+        span: GuestWritableSpan,
+        relative_offset: usize,
+        bytes: &[u8],
+    ) {
+        debug_assert!(bytes.len() <= Self::SPAN_REPORT_CHUNK_WORDS * 2);
+        #[cfg(test)]
+        for (word, stored) in bytes.chunks_exact(2).enumerate() {
+            let held = self
+                .read_u16_be_in_span(span, relative_offset + word * 2)
+                .map(u16::to_be_bytes);
+            assert_eq!(held, Some([stored[0], stored[1]]), "reported bytes differ from the span");
+        }
+        if let Some(address) = span.address_of(relative_offset) {
+            self.state_mut().note_write(address, bytes);
+        }
+    }
+
+    /// Words per observer report of a span run.
+    pub(crate) const SPAN_REPORT_CHUNK_WORDS: usize = 64;
+
     /// Report `words` adjacent big-endian words of a span, starting at
     /// `relative_offset`, as written with the values they now hold. The
     /// observers work on ranges, so this is the report of each word in turn.
@@ -2089,7 +2133,7 @@ impl GuestAddressSpace {
         relative_offset: usize,
         words: usize,
     ) {
-        const CHUNK_WORDS: usize = 64;
+        const CHUNK_WORDS: usize = GuestAddressSpace::SPAN_REPORT_CHUNK_WORDS;
         let state = self.state_mut();
         let mut bytes = [0u8; CHUNK_WORDS * 2];
         let mut done = 0;

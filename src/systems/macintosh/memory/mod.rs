@@ -10,6 +10,8 @@ pub mod globals;
 pub use address_space::{GuestAddressSpace, GuestWritableSpan};
 #[cfg(test)]
 pub(crate) use address_space::write_log;
+#[cfg(test)]
+pub(crate) use address_space::NOTE_WRITE_LOG;
 pub(crate) use address_space::{
     flat_memory_route, GuestMemoryRoute, SharedGuestAddressSpace,
 };

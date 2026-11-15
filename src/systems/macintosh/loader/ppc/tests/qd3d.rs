@@ -28794,3 +28794,78 @@ fn q3_present_pacing_does_not_block_an_unfinished_nested_end_rendering() {
     assert_eq!(state.presents_of(PpcQ3PresentKind::Window), 1);
     assert_eq!(state.parks, [0; 5]);
 }
+
+/// Software span stores reported from the run that holds their bytes reach
+/// the guest-memory observers exactly as `report_span_write` would report the
+/// same stores: the same calls, addresses and bytes, in the same order.
+#[test]
+fn q3_span_runs_report_their_stored_bytes_as_report_span_write_would() {
+    use crate::memory::NOTE_WRITE_LOG;
+
+    const BASE: u32 = 0x0040_0000;
+    let front_buffer = PpcFrontBuffer {
+        base_addr: BASE,
+        row_bytes: 400,
+        width: 200,
+        height: 2,
+        depth: 16,
+    };
+    // A run longer than two report chunks, one interrupted by a gap, and one
+    // on the next row.
+    let runs: [(i32, std::ops::Range<i32>); 3] = [(0, 0..150), (0, 160..170), (1, 0..10)];
+    let color = |y: i32, x: i32| (y as u16) << 12 | x as u16;
+    let fresh = || {
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(BASE, vec![0; 800]);
+        memory
+    };
+    let logged = |memory: &mut PpcSectionMem, fill: &dyn Fn(&mut PpcSectionMem)| {
+        NOTE_WRITE_LOG.set(Some(Vec::new()));
+        fill(memory);
+        NOTE_WRITE_LOG.take().expect("log")
+    };
+
+    let mut stored = fresh();
+    let surface = PpcQ3SoftwareFrontBufferSurface::new(&mut stored, front_buffer, None);
+    let span = surface.span.expect("front-buffer span");
+    let reported = logged(&mut stored, &|memory| {
+        let mut run = PpcQ3UnreportedRun::default();
+        for (y, xs) in runs.clone() {
+            for x in xs {
+                assert!(surface.write_pixel_in_run(memory, (x, y), color(y, x), &mut run));
+            }
+        }
+        run.finish(memory, surface);
+    });
+
+    let mut read_back = fresh();
+    let expected = logged(&mut read_back, &|memory| {
+        for (y, xs) in runs.clone() {
+            let first = y as usize * 400 + xs.start as usize * 2;
+            for x in xs.clone() {
+                memory
+                    .write_u16_be_in_span_unreported(span, y as usize * 400 + x as usize * 2, color(y, x))
+                    .expect("span store");
+            }
+            memory.report_span_write(span, first, xs.len());
+        }
+    });
+
+    assert_eq!(
+        reported.iter().map(|(address, bytes)| (*address, bytes.len())).collect::<Vec<_>>(),
+        [
+            (BASE, 128),
+            (BASE + 128, 128),
+            (BASE + 256, 44),
+            (BASE + 320, 20),
+            (BASE + 400, 20)
+        ]
+    );
+    assert_eq!(reported, expected);
+    let bytes = |memory: &mut PpcSectionMem| {
+        let mut bytes = vec![0; 800];
+        memory.read_bytes_into(BASE, &mut bytes).expect("front buffer");
+        bytes
+    };
+    assert_eq!(bytes(&mut stored), bytes(&mut read_back));
+}
