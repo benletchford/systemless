@@ -1960,6 +1960,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::FSMakeFSSpec
         | PpcImportDispatcherTarget::PBGetFCBInfo
         | PpcImportDispatcherTarget::FindFolder
+        | PpcImportDispatcherTarget::GetAliasInfo
         | PpcImportDispatcherTarget::ResolveAliasFile
         | PpcImportDispatcherTarget::ResolveAliasFileWithMountFlags
         | PpcImportDispatcherTarget::GetIconRefFromFile

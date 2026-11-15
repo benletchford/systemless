@@ -129,7 +129,7 @@ pub(super) fn dispatch_resource_import(
                     *current_resource_refnum
                 );
             }
-            Some(PpcImportAction::Return(ppc_get_resource(
+            let handle = ppc_get_resource(
                 cpu,
                 process_memory_manager,
                 memory,
@@ -142,7 +142,8 @@ pub(super) fn dispatch_resource_import(
                 false,
                 resource_policy.res_load(),
                 last_resource_error,
-            )))
+            );
+            Some(PpcImportAction::Return(handle))
         }
         PpcImportDispatcherTarget::Get1Resource => {
             if ppc_hle_trace_enabled() {
@@ -903,4 +904,31 @@ fn ppc_get_icon_suite(
     *last_mem_error = PPC_NO_ERR;
     *last_resource_error = PPC_NO_ERR;
     PPC_NO_ERR
+}
+
+/// A FamRec with one 12-point association and no width, kerning or style tables.
+/// Every family gets the same fixed metrics rather than its built-in face's.
+pub(super) fn ppc_synthetic_fond_bytes(font_id: i16) -> Vec<u8> {
+    let mut fond = vec![0; 60];
+    fond[2..4].copy_from_slice(&font_id.to_be_bytes());
+    fond[6..8].copy_from_slice(&255i16.to_be_bytes());
+    fond[8..10].copy_from_slice(&0x0C00i16.to_be_bytes());
+    fond[10..12].copy_from_slice(&(-0x0400i16).to_be_bytes());
+    fond[14..16].copy_from_slice(&0x1000i16.to_be_bytes());
+    fond[50..52].copy_from_slice(&2i16.to_be_bytes());
+    fond[54..56].copy_from_slice(&12i16.to_be_bytes());
+    fond[58..60].copy_from_slice(&font_id.to_be_bytes());
+    fond
+}
+
+#[cfg(test)]
+mod synthetic_fond_tests {
+    #[test]
+    fn synthetic_fond_associates_the_family_with_one_strike() {
+        let fond = super::ppc_synthetic_fond_bytes(20);
+        let associations = crate::quickdraw::fonts::parse_fond_associations(20, &fond).unwrap();
+        assert_eq!(associations.len(), 1);
+        assert_eq!(associations[0].font_resource_id, 20);
+        assert_eq!(associations[0].size, 12);
+    }
 }

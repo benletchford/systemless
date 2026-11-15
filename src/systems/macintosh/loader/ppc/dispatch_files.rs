@@ -1070,6 +1070,9 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_volumes,
             ))))
         }
+        PpcImportDispatcherTarget::GetAliasInfo => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_get_alias_info(cpu, memory, vfs_directories, handles, aliases),
+        ))),
         PpcImportDispatcherTarget::MatchAlias => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_match_alias(cpu, memory, vfs_directories, handles, aliases),
         ))),
