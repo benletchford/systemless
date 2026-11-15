@@ -233,7 +233,17 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
             let style = ppc_current_text_style(memory, current_gworld);
             let table = ppc_width_table_bytes(text_font, *quickdraw_text_size, style);
             let mut handle = memory.read_u32_be(PPC_WIDTH_TAB_HANDLE_ADDR).unwrap_or(0);
-            if handle == 0 {
+            // Reuse the table only while it is still a live handle that holds it; a
+            // disposed, emptied or resized handle must not become a stray write.
+            let table_ptr = handles
+                .iter()
+                .any(|record| record.handle == handle && record.size >= table.len() as u32)
+                .then(|| memory.read_u32_be(handle))
+                .flatten()
+                .filter(|ptr| *ptr != 0 && ppc_memory_can_write_bytes(memory, *ptr, table.len() as u32));
+            if let Some(table_ptr) = table_ptr {
+                let _ = memory.write_bytes(table_ptr, &table);
+            } else {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
                 };
@@ -247,8 +257,6 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                     &table,
                 );
                 let _ = memory.write_u32_be(PPC_WIDTH_TAB_HANDLE_ADDR, handle);
-            } else if let Some(table_ptr) = memory.read_u32_be(handle) {
-                let _ = memory.write_bytes(table_ptr, &table);
             }
             let _ = memory.write_u32_be(cpu.gpr[3] + 16, handle);
             Some(PpcImportAction::ReturnPreserve)
