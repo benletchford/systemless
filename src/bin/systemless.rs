@@ -4912,7 +4912,16 @@ mod tests {
                 })
             );
         }
-        for value in ["640", "640x", "x480", "0x480", "640x0", "640x480x8", "-640x480", "65536x480"] {
+        for value in [
+            "640",
+            "640x",
+            "x480",
+            "0x480",
+            "640x0",
+            "640x480x8",
+            "-640x480",
+            "65536x480",
+        ] {
             let arg = format!("--screen-size={value}");
             let error = Cli::try_parse_from(["systemless", arg.as_str(), "game.sit"])
                 .expect_err("malformed screen size should be rejected");
