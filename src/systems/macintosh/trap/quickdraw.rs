@@ -857,6 +857,10 @@ impl super::TrapDispatcher {
                 bus.write_long(port_ptr + 76, 0); // spExtra = 0 (Fixed)
                 bus.write_long(port_ptr + 80, 0x00000021); // fgColor = blackColor
                 bus.write_long(port_ptr + 84, 0x0000001E); // bkColor = whiteColor
+                // IM:I I-163: colrBit and patStretch are zero; picSave,
+                // rgnSave, polySave and grafProcs are NIL. A stale grafProcs
+                // would route later drawing through garbage bottlenecks.
+                bus.write_bytes(port_ptr + 88, &[0; 20]);
 
                 self.port_draw_states
                     .insert(port_ptr, PortDrawState::default());
@@ -904,6 +908,7 @@ impl super::TrapDispatcher {
                     bus.write_long(port_ptr + 76, 0);
                     bus.write_long(port_ptr + 80, 0x00000021);
                     bus.write_long(port_ptr + 84, 0x0000001E);
+                    bus.write_bytes(port_ptr + 88, &[0; 20]);
 
                     // IM:I I-164: InitPort does everything OpenPort does
                     // except allocate visRgn/clipRgn. Reinitialize existing
