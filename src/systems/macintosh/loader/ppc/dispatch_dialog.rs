@@ -1864,6 +1864,14 @@ fn ppc_dispatch_dialog_compatibility(
                         current_resource_refnum,
                         dialog,
                     );
+                    // DialogSelect brackets its redraw with BeginUpdate and
+                    // EndUpdate, so the dialog is validated afterwards.
+                    // Macintosh Toolbox Essentials (1992), p. 6-128.
+                    let update_rgn = memory
+                        .read_u32_be(dialog.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+                        .unwrap_or(0);
+                    let _ = ppc_set_empty_rgn(memory, update_rgn);
+                    event_queue.retain(|event| !(event.what == 6 && event.message == dialog));
                     ppc_begin_dialog_callbacks(
                         cpu,
                         memory,

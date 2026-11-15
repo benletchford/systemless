@@ -25,7 +25,6 @@ fn select_window_preserves_classic_visible_region() {
     );
 }
 
-
 #[test]
 fn update_event_recurs_until_the_update_region_is_empty() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNextEvent")).unwrap();
