@@ -314,6 +314,32 @@ fn fs_open_fork_reads_the_data_fork_through_fs_read_fork() {
 }
 
 #[test]
+fn fs_create_directory_unicode_skips_existing_file_catalog_ids() {
+    let mut loaded = fsref_app();
+    let (folder, name, new_ref, new_spec, out_id) =
+        (BASE, BASE + 0x180, BASE + 0x200, BASE + 0x280, BASE + 0x300);
+    make_ref(
+        &mut loaded,
+        folder,
+        PPC_SYSTEM_FOLDER_DIR_ID,
+        b"Preferences",
+    );
+    loaded.next_vfs_dir_id.with_mut(|next| *next = 32);
+    let len = write_unichars(&mut loaded, name, "New Folder");
+    assert_eq!(
+        call(
+            &mut loaded,
+            PpcFsRefOperation::CreateDirectoryUnicode,
+            &[folder, len, name, 0, 0, new_ref, new_spec, out_id],
+        ),
+        PPC_NO_ERR
+    );
+    let file_id = loaded.process_file_system.classic_vfs_metadata[PREFS_FILE].file_id;
+    assert_ne!(loaded.memory.read_u32_be(out_id), Some(file_id));
+    assert_fsref(&mut loaded, new_ref, PPC_PREFERENCES_DIR_ID, b"New Folder");
+}
+
+#[test]
 fn fs_create_file_unicode_round_trips_through_fs_write_fork() {
     let mut loaded = fsref_app();
     let (folder, info, name, new_ref, new_spec) =
