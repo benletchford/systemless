@@ -1,43 +1,3 @@
-@font-face {
-  font-family: "IBM Plex Sans";
-  src: url("/assets/fonts/ibm-plex-sans-latin.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400 600;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "IBM Plex Mono";
-  src: url("/assets/fonts/ibm-plex-mono-regular-latin.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "IBM Plex Mono";
-  src: url("/assets/fonts/ibm-plex-mono-medium-latin.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Instrument Serif";
-  src: url("/assets/fonts/instrument-serif-regular-latin.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Instrument Serif";
-  src: url("/assets/fonts/instrument-serif-italic-latin.woff2") format("woff2");
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -47,20 +7,20 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
-  --bg: #dddddd;
-  --surface: #f5f5f5;
-  --ink: #171717;
-  --body: #3f3f3f;
-  --muted: #555555;
-  --faint: #616161;
-  --rule: #a3a3a3;
-  --rule-2: #c5c5c5;
-  --rule-strong: #858585;
-  --accent: #34348c;
+  --bg: #f8f5ee;
+  --surface: #fffdf8;
+  --ink: #272238;
+  --body: #494255;
+  --muted: #625c70;
+  --faint: #70677c;
+  --rule: #d8d1e2;
+  --rule-2: #e8e1ed;
+  --rule-strong: #b5a9c6;
+  --accent: #6451af;
   --on-accent: #ffffff;
-  --footer-bg: #d3d3d3;
-  --bg-blur: rgba(221, 221, 221, 0.88);
-  --screen: #171717;
+  --footer-bg: #eee8f2;
+  --bg-blur: rgba(248, 245, 238, 0.92);
+  --screen: #272238;
   --content-width: 640px;
   --game-width: 800px;
   --library-width: 1280px;
@@ -73,19 +33,19 @@
 }
 
 html[data-theme="dark"] {
-  --bg: #202020;
-  --surface: #2d2d2d;
-  --ink: #eeeeee;
-  --body: #d0d0d0;
-  --muted: #b8b8b8;
-  --faint: #a3a3a3;
-  --rule: #585858;
-  --rule-2: #404040;
-  --rule-strong: #707070;
-  --accent: #b2b2ed;
-  --on-accent: #202020;
-  --footer-bg: #252525;
-  --bg-blur: rgba(32, 32, 32, 0.9);
+  --bg: #191523;
+  --surface: #241e30;
+  --ink: #fff3dc;
+  --body: #e2d8e9;
+  --muted: #c2b8d0;
+  --faint: #8f849f;
+  --rule: #49405a;
+  --rule-2: #342b43;
+  --rule-strong: #726381;
+  --accent: #b7a7ff;
+  --on-accent: #191523;
+  --footer-bg: #211a2c;
+  --bg-blur: rgba(25, 21, 35, 0.92);
 }
 
 html, body {
@@ -93,7 +53,7 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   min-height: 100vh;
 }
 
@@ -154,7 +114,7 @@ input {
 
 .wordmark {
   color: var(--ink);
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 23px;
   letter-spacing: -0.01em;
   text-decoration: none;
@@ -185,7 +145,7 @@ input {
 
 .theme-toggle {
   padding: 7px 11px;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -225,7 +185,7 @@ input {
   border-left: 1px solid var(--rule-strong);
   background: var(--surface);
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   font-weight: 500;
 }
@@ -291,9 +251,9 @@ input {
 .library-hero h1 {
   max-width: 760px;
   margin: 0;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(34px, 3.4vw, 46px);
-  font-weight: 400;
+  font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.06;
   text-wrap: balance;
@@ -331,9 +291,9 @@ input {
 
 .cli-hint__intro h2 {
   margin: 0;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 30px;
-  font-weight: 400;
+  font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.05;
 }
@@ -370,7 +330,7 @@ input {
   border-radius: 2px;
   background: transparent;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.06em;
@@ -399,7 +359,7 @@ input {
 
 .cli-command > span {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -414,7 +374,7 @@ input {
   border-radius: 3px;
   background: var(--surface);
   color: var(--body);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 11.5px;
   line-height: 1.35;
   white-space: nowrap;
@@ -422,7 +382,7 @@ input {
 
 .eyebrow {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -449,7 +409,7 @@ input {
 .library-search__label,
 .library-search__count {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
 }
 
@@ -500,7 +460,7 @@ input {
 
 .library-filter-group__label {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -511,7 +471,7 @@ input {
   border: 1px solid var(--rule-strong);
   background: transparent;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   line-height: 1;
   cursor: pointer;
@@ -634,14 +594,14 @@ input {
   place-items: center;
   border: 2px solid currentColor;
   border-radius: 18%;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(28px, 8vw, 48px);
   line-height: 1;
 }
 
 .library-card__title {
   grid-column: 1;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 24px;
   letter-spacing: -0.015em;
   line-height: 1.14;
@@ -671,7 +631,7 @@ input {
   border: 1px solid var(--rule);
   border-radius: 999px;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 9.5px;
   letter-spacing: 0.02em;
   line-height: 1;
@@ -687,7 +647,7 @@ input {
   grid-row: 2;
   padding-top: 5px;
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 13px;
   text-align: right;
 }
@@ -714,7 +674,7 @@ input {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 11.5px;
   letter-spacing: 0.1em;
   text-decoration: none;
@@ -742,8 +702,8 @@ input {
 .game-title,
 .game-about h2,
 .site-footer__brand > span {
-  font-family: "Instrument Serif", Georgia, serif;
-  font-weight: 400;
+  font-family: Georgia, "Times New Roman", serif;
+  font-weight: 700;
 }
 
 .game-title {
@@ -756,7 +716,7 @@ input {
 .game-byline {
   margin: 0;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
   letter-spacing: 0.06em;
 }
@@ -793,7 +753,7 @@ input {
 .related-games > h2 {
   margin: 0;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.14em;
@@ -821,7 +781,7 @@ input {
   flex-direction: column;
   gap: 12px;
   color: var(--ink);
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 21px;
   line-height: 1.1;
   text-decoration: none;
@@ -860,7 +820,7 @@ input {
 
 .game-architecture__label {
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -899,8 +859,8 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #b8b8b8;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  color: #c2b8d0;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -955,7 +915,7 @@ input {
   border-radius: 0;
   background: transparent;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.1em;
@@ -1015,7 +975,7 @@ input {
 .plugin-panel__count {
   min-width: 0;
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   line-height: 1.5;
 }
@@ -1033,7 +993,7 @@ input {
 
 .plugin-section-title {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.12em;
@@ -1064,14 +1024,14 @@ input {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink);
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 17px;
   line-height: 1.1;
 }
 
 .plugin-selected-row__meta {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   white-space: nowrap;
 }
@@ -1126,7 +1086,7 @@ input {
 
 .plugin-row__title {
   color: var(--ink);
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 17px;
   line-height: 1.1;
 }
@@ -1137,7 +1097,7 @@ input {
 
 .plugin-row__meta {
   color: var(--faint);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
 }
 
@@ -1189,7 +1149,7 @@ input {
   border-radius: 3px;
   background: transparent;
   color: var(--ink);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   font-weight: 500;
   letter-spacing: 0.06em;
@@ -1251,7 +1211,7 @@ input {
   border-radius: 3px;
   background: var(--bg);
   color: var(--muted);
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 17px;
 }
 
@@ -1317,9 +1277,9 @@ input {
 
 .seo-fallback h1 {
   margin: 0 0 16px;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 48px;
-  font-weight: 400;
+  font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.05;
 }
@@ -1339,9 +1299,9 @@ input {
 
 .seo-cli-hint h2 {
   margin: 0 0 14px;
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: Georgia, "Times New Roman", serif;
   font-size: 28px;
-  font-weight: 400;
+  font-weight: 700;
 }
 
 .seo-cli-hint p {
@@ -1353,7 +1313,7 @@ input {
 }
 
 .seo-cli-hint code {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.88em;
 }
 
@@ -1495,7 +1455,7 @@ input {
 
 .build-crate__sha {
   color: var(--muted);
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   text-decoration: none;
 }
 
@@ -2095,4 +2055,15 @@ input {
   border: 1px solid var(--rule);
   padding: 6px 8px;
   font: inherit;
+}
+
+/* Shared visual language with /mac/support, including both appearance modes. */
+:root { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+.wordmark { font-family: system-ui, -apple-system, sans-serif; font-weight: 750; }
+.library-hero h1 { font-size: clamp(36px, 4vw, 58px); line-height: 1.12; }
+.library-hero p { font-size: 17px; line-height: 1.65; }
+a { text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 3px solid var(--accent); outline-offset: 4px;
 }
