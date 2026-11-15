@@ -1788,6 +1788,45 @@
         assert_ne!(*d.current_gdevice, 0);
     }
 
+    /// Spectre opens a GrafPort in uninitialized stack memory, then draws a
+    /// picture into it. Stale grafProcs must not become picture callbacks.
+    #[test]
+    fn open_port_clears_stale_bottlenecks_before_draw_picture() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let port_ptr = 0x300000u32;
+        bus.write_bytes(port_ptr, &[0xAA; 108]);
+        bus.write_long(port_ptr + 104, 0x350400);
+        bus.write_bytes(0x350400, &[0; 52]);
+        bus.write_long(0x350400 + 36, 0x360000); // getPicProc
+        bus.write_long(TEST_SP, port_ptr);
+        d.dispatch_quickdraw(true, 0x06F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        // IM:I I-163: colrBit, patStretch, picSave, rgnSave, polySave and
+        // grafProcs all start cleared.
+        let mut tail = [0xEE; 20];
+        for (i, byte) in tail.iter_mut().enumerate() {
+            *byte = bus.read_byte(port_ptr + 88 + i as u32);
+        }
+        assert_eq!(tail, [0; 20]);
+
+        let picture = [
+            0, 0, 0, 0, 0, 0, 0, 4, 0, 4, 0x11, 1, 0x1e, 0xa0, 0, 150, 0xff,
+        ];
+        bus.write_bytes(0x350100, &picture);
+        bus.write_long(0x350200, 0x350100);
+        bus.write_bytes(0x350300, &[0, 0, 0, 0, 0, 4, 0, 4]);
+        cpu.write_reg(Register::PC, 0x340002);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0x350300);
+        bus.write_long(TEST_SP + 4, 0x350200);
+        d.dispatch_quickdraw(true, 0x0F6, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), 0x340002);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+    }
+
     #[test]
     fn test_init_port() {
         let (mut d, mut cpu, mut bus) = setup();
