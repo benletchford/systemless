@@ -263,3 +263,20 @@ fn tec_unicode_preserves_scalar_boundaries_and_reports_conversion_errors() {
     );
     assert_eq!(loaded.memory.read_u32_be(base), Some(0));
 }
+
+#[test]
+fn get_text_encoding_format_extracts_the_format_field() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"GetTextEncodingFormat")).unwrap();
+    assert_eq!(
+        dispatcher_target_for_import("TextCommon", "GetTextEncodingFormat"),
+        PpcImportDispatcherTarget::TextEncoding(PpcTextEncodingOperation::GetEncodingFormat)
+    );
+    for (encoding, format) in [(0, 0), (0x0800_0100, 2), (0xfc00_0000, 0x3f)] {
+        loaded.cpu.gpr[3] = encoding;
+        assert_eq!(
+            tec(PpcTextEncodingOperation::GetEncodingFormat, &mut loaded),
+            format
+        );
+    }
+}
