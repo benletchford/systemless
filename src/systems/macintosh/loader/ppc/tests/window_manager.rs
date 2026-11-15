@@ -53,6 +53,26 @@ fn bring_to_front_leaves_the_front_window_regions_alone() {
     );
 }
 
+#[test]
+fn bring_to_front_on_the_front_window_still_raises_its_gworld() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"BringToFront")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let back = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    let front = create_test_cwindow(&mut loaded, scratch, (60, 70, 160, 270), 0, true, u32::MAX);
+    // The window list already has `back` in front, but the GWorld stack lags.
+    loaded.window_list.reorder(back, 0, true);
+    assert_eq!(loaded.gworlds.last().map(|record| record.port), Some(front));
+
+    loaded.cpu.gpr[3] = back;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
+    );
+
+    assert_eq!(loaded.gworlds.last().map(|record| record.port), Some(back));
+}
+
 pub(crate) fn create_test_cwindow(
     loaded: &mut PpcLoadedApp,
     bounds_ptr: u32,

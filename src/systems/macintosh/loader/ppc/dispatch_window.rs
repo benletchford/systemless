@@ -4425,11 +4425,14 @@ pub(super) fn ppc_dispatch_legacy_window(
             if let Some(params) = crate::window_manager::evaluate_bring_to_front_parameters(cpu.gpr[3]) {
                 let window = params.window_ptr();
                 // Palette layering calls this every idle pass for the front window.
-                if window_list.windows().first() == Some(&window) {
+                let already_front = window_list.front_window() == Some(window);
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
+                // Keep the GWorld stack in step even then: ppc_front_visible_window
+                // reads it, and it can lag the window list.
+                ppc_reorder_window(gworlds, window_list, window, 0, true);
+                if already_front {
                     return Some(PpcImportAction::ReturnPreserve);
                 }
-                let previous_front = ppc_front_visible_process_window(memory, window_list);
-                ppc_reorder_window(gworlds, window_list, window, 0, true);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
