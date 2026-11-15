@@ -798,6 +798,16 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         cpu.gpr[4] = 5;
         assert_eq!(ppc_get_alias_info(&cpu, &mut loaded.memory, &directories, &[], &aliases), PPC_NO_ERR);
         assert_eq!(ppc_read_pascal_string(&mut loaded.memory, out).as_deref(), Some(&b""[..]));
+
+        // theString is a Str63, even for a longer host folder name.
+        let long_name = "F".repeat(80);
+        let directories = [PpcVfsDirectory {
+            path: format!("Disk/{long_name}"),
+            ..directories[0].clone()
+        }];
+        cpu.gpr[4] = 1;
+        assert_eq!(ppc_get_alias_info(&cpu, &mut loaded.memory, &directories, &[], &aliases), PPC_NO_ERR);
+        assert_eq!(loaded.memory.read_u8(out), Some(63));
     }
 
     #[test]

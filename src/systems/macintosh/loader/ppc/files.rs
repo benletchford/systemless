@@ -6796,7 +6796,8 @@ pub(super) fn ppc_get_alias_info(
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    ppc_write_pstring_bytes(memory, out, &name);
+    // theString is a Str63.
+    ppc_write_pstring_bytes(memory, out, &name[..name.len().min(63)]);
     PPC_NO_ERR
 }
 

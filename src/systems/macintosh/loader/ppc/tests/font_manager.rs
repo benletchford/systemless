@@ -479,7 +479,6 @@ fn ppc_src_copy_space_clears_cell_with_clip_and_scale() {
     }
 }
 
-
 #[test]
 fn built_in_fond_reports_its_family_through_get_res_info() {
     let pef = synthetic_pef_with_import(b"GetResource");
@@ -514,4 +513,10 @@ fn built_in_fond_reports_its_family_through_get_res_info() {
         ppc_read_pascal_string(&mut loaded.memory, name_ptr),
         Some(b"Geneva".to_vec())
     );
+
+    // applFont has no FOND of its own.
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"FOND");
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetResource);
+    assert_eq!(loaded.cpu.gpr[3], 0);
 }

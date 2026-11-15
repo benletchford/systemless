@@ -180,12 +180,19 @@ pub(crate) fn ppc_get_resource(
                     }
                     ([b'F', b'O', b'N', b'D'], _) => {
                         // Built-in fonts have no resource file, but the real System's fonts have FONDs.
-                        crate::quickdraw::fonts::FONT_NAMES.iter().find(|(id, _)| *id == res_id).map(
-                            |(_, font_name)| {
+                        // applFont (1) is an alias for a real family and has no FOND of its own.
+                        crate::quickdraw::fonts::FONT_NAMES
+                            .iter()
+                            .find(|(id, _)| {
+                                *id == res_id && *id != crate::quickdraw::fonts::FONT_APPLICATION
+                            })
+                            .map(|(_, font_name)| {
                                 name = crate::mac_roman::encode_mac_roman_lossy(font_name);
-                                ("__system__/FOND", super::dispatch_resources::ppc_synthetic_fond_bytes(res_id))
-                            },
-                        )
+                                (
+                                    "__system__/FOND",
+                                    super::dispatch_resources::ppc_synthetic_fond_bytes(res_id),
+                                )
+                            })
                     }
                     _ => None,
                 }
