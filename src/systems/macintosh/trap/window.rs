@@ -2083,6 +2083,26 @@ impl super::TrapDispatcher {
         saved
     }
 
+    fn restore_pixels_above_window(bus: &mut MacMemoryBus, spans: Vec<PreservedWindowSpan>) {
+        for span in spans {
+            for (offset, &pixel) in span.pixels.iter().enumerate() {
+                let mask = if offset == 0 { span.first_mask } else { 0xFF }
+                    & if offset + 1 == span.pixels.len() {
+                        span.last_mask
+                    } else {
+                        0xFF
+                    };
+                let address = span.address + offset as u32;
+                let preserved = if mask == 0xFF {
+                    pixel
+                } else {
+                    (bus.read_byte(address) & !mask) | (pixel & mask)
+                };
+                bus.write_byte(address, preserved);
+            }
+        }
+    }
+
     fn restore_window_under_pixels(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) -> bool {
         let Some((top, left, width, height, pixels)) =
             self.window_saved_under_pixels.remove(&window_ptr)
@@ -2227,6 +2247,14 @@ impl super::TrapDispatcher {
         }
         let delta_v = v_global.wrapping_sub(old_port_rect.0);
         let delta_h = h_global.wrapping_sub(old_port_rect.1);
+        if delta_v != 0 || delta_h != 0 {
+            // The save-under snapshot holds the screen beneath the window's
+            // former structure region. MoveWindow repaints that area itself
+            // (PaintBehind), so restoring the snapshot when the window later
+            // closes would paste stale pixels at the old position.
+            // Inside Macintosh Volume I (1985), pp. I-289 and I-296--I-297.
+            self.window_saved_under_pixels.remove(&the_window);
+        }
 
         // MoveWindow changes the global position without changing the local
         // coordinate system, including a nonzero SetOrigin. Translate all
@@ -3347,11 +3375,17 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // CloseWindow exposes only the part of the structure region that no
+        // window in front still covers; PaintBehind starts with the window
+        // immediately behind it. Inside Macintosh Volume I (1985), pp. I-283
+        // and I-296--I-297.
+        let foreground = self.save_pixels_above_window(bus, window_ptr);
         if !self.restore_window_under_pixels(bus, window_ptr) {
             if let Some((top, left, bottom, right)) = self.window_structure_rect(bus, window_ptr) {
                 self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
             }
         }
+        Self::restore_pixels_above_window(bus, foreground);
         bus.write_byte(window_ptr + Self::WINDOW_VISIBLE_OFFSET, 0x00);
         self.set_window_vis_from_content(bus, window_ptr, false);
     }
@@ -4784,23 +4818,7 @@ impl super::TrapDispatcher {
                     // HideWindow exposes only pixels not covered by visible
                     // windows in front (IM:I I-286, I-296). Restore those
                     // foreground spans before any legitimate activation draw.
-                    for span in foreground {
-                        for (offset, &pixel) in span.pixels.iter().enumerate() {
-                            let mask = if offset == 0 { span.first_mask } else { 0xFF }
-                                & if offset + 1 == span.pixels.len() {
-                                    span.last_mask
-                                } else {
-                                    0xFF
-                                };
-                            let address = span.address + offset as u32;
-                            let preserved = if mask == 0xFF {
-                                pixel
-                            } else {
-                                (bus.read_byte(address) & !mask) | (pixel & mask)
-                            };
-                            bus.write_byte(address, preserved);
-                        }
-                    }
+                    Self::restore_pixels_above_window(bus, foreground);
                     if self.front_window == the_window {
                         // Find first visible window in the list (other
                         // than the one we just hid). window_list is
@@ -5042,7 +5060,7 @@ impl super::TrapDispatcher {
             // That's a superset of the strictly newly-uncovered area
             // but bbox-approx region storage can't represent the precise
             // diff anyway.
-            // SizeWindow ($A91D): Updates portRect, visRgn, clipRgn, and FindWindow hit-test bounds
+            // SizeWindow ($A91D): Updates portRect, visRgn, and FindWindow hit-test bounds; leaves clipRgn alone
             (true, 0x11D) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Pascal BOOLEAN in high byte (MPW C convention).
@@ -5098,16 +5116,11 @@ impl super::TrapDispatcher {
                         }
                     }
 
-                    // Update clipRgn in local coords
-                    let clip_rgn_handle = bus.read_long(the_window + 28);
-                    if clip_rgn_handle != 0 {
-                        let clip_rgn = bus.read_long(clip_rgn_handle);
-                        if clip_rgn != 0 {
-                            bus.write_word(clip_rgn + 4, 0u16);
-                            bus.write_word(clip_rgn + 6, h as u16);
-                            bus.write_word(clip_rgn + 8, w as u16);
-                        }
-                    }
+                    // clipRgn belongs to the application. SizeWindow
+                    // changes portRect and the window regions only, so a
+                    // port that later calls SetOrigin can still draw at
+                    // negative local coordinates. Inside Macintosh
+                    // Volume I (1985), pp. I-166 and I-290.
 
                     // Resizing changes the content and structure regions that
                     // determine occlusion for this window and every window
