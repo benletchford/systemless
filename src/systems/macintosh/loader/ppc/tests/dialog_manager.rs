@@ -8081,3 +8081,222 @@ fn param_text_is_applied_at_draw_time_without_changing_dialog_item_text() {
     );
     assert_ne!(edit.1, first.1, "edit text must not be substituted");
 }
+
+#[test]
+fn shorten_ditl_removing_the_active_edit_item_releases_the_dialog_text_record() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 16];
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&120i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let item_text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+        Some(item_text_handle)
+    );
+
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(
+            PpcDialogCompatibilityOperation::ShortenDitl,
+        ),
+    );
+
+    assert!(!test_handles!(loaded)
+        .iter()
+        .any(|record| record.handle == item_text_handle));
+    // The dialog's TERec must not keep borrowing the disposed item handle.
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    if let Some(te_ptr) = ppc_te_record_ptr(&mut loaded.memory, te_handle) {
+        assert_ne!(
+            loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+            Some(item_text_handle)
+        );
+    }
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET),
+        Some(0)
+    );
+
+    // A later AppendDITL opens its edit field instead of keeping the stale record.
+    let append_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &make_test_ditl(&[make_test_ditl_item_typed(
+            20,
+            32,
+            36,
+            120,
+            PPC_DIALOG_ITEM_EDIT_TEXT,
+            b"",
+        )]),
+    );
+    loaded.cpu.gpr[3] = dialog;
+    loaded.cpu.gpr[4] = append_handle;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DialogCompatibility(PpcDialogCompatibilityOperation::AppendDitl),
+    );
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(dialog + PPC_DIALOG_EDIT_OPEN_OFFSET),
+        Some(1)
+    );
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let field = loaded
+        .memory
+        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+        .unwrap();
+    let new_text_handle = loaded
+        .memory
+        .read_u32_be(items_ptr + 2 + u32::from(field) * 14)
+        .unwrap();
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+        Some(new_text_handle)
+    );
+}
+
+#[test]
+fn append_ditl_draws_its_items_only_in_a_visible_dialog() {
+    for visible in [true, false] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"GetNewDialog"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&200i16.to_be_bytes());
+        dlog[10] = u8::from(visible);
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let ditl = make_test_ditl(&[make_test_ditl_item_typed(
+            10,
+            10,
+            26,
+            160,
+            PPC_DIALOG_ITEM_STATIC_TEXT,
+            b"Note",
+        )]);
+        for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: *loaded.process_file_system.current_resource_file,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        let dialog = loaded.cpu.gpr[3];
+        if visible {
+            loaded.cpu.gpr[3] = dialog;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        }
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        // Every pixel of the appended edit field, including its outset frame.
+        let points: Vec<_> = (36..64)
+            .flat_map(|v| (6..84).map(move |h| (i32::from(bounds.1) + h, i32::from(bounds.0) + v)))
+            .collect();
+        let read = |loaded: &mut PpcLoadedApp| {
+            points
+                .iter()
+                .map(|&point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point))
+                .collect::<Vec<_>>()
+        };
+        let before = read(&mut loaded);
+
+        let append_handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            test_handles!(loaded),
+            &make_test_ditl(&[make_test_ditl_item_typed(
+                40,
+                10,
+                60,
+                80,
+                PPC_DIALOG_ITEM_EDIT_TEXT,
+                b"WWWWWW",
+            )]),
+        );
+        loaded.cpu.gpr[3] = dialog;
+        loaded.cpu.gpr[4] = append_handle;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::DialogCompatibility(
+                PpcDialogCompatibilityOperation::AppendDitl,
+            ),
+        );
+
+        assert_eq!(read(&mut loaded) != before, visible, "visible={visible}");
+    }
+}

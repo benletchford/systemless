@@ -2147,18 +2147,21 @@ fn ppc_dispatch_dialog_compatibility(
                     current_resource_refnum,
                     last_resource_error,
                 );
-                let _ = ppc_draw_dialog(
-                    window_list,
-                    param_text,
-                    memory,
-                    handles,
-                    controls,
-                    gworlds,
-                    screen_clut,
-                    vfs_resources,
-                    current_resource_refnum,
-                    params.dialog_ptr(),
-                );
+                // The native renderer targets the screen; a hidden dialog draws when shown.
+                if ppc_window_is_visible(memory, params.dialog_ptr()) {
+                    let _ = ppc_draw_dialog(
+                        window_list,
+                        param_text,
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        params.dialog_ptr(),
+                    );
+                }
             }
             PpcImportAction::ReturnPreserve
         }
@@ -2177,26 +2180,29 @@ fn ppc_dispatch_dialog_compatibility(
             let (retained, count_minus_one) =
                 crate::dialog_manager::shorten_ditl_counts(items.len(), params.number_items());
             // Removed items take their Dialog Manager-created controls with them.
+            let visible = ppc_window_is_visible(memory, params.dialog_ptr());
             for item in items.iter().skip(retained) {
                 let base_type = dialog_item_base_type(item.item_type);
-                let _ = ppc_paint_window_background_bounds(
-                    memory,
-                    gworlds,
-                    params.dialog_ptr(),
-                    // Edit text frames are drawn outside the item's rect.
-                    (
-                        item.rect.0.saturating_sub(4),
-                        item.rect.1.saturating_sub(4),
-                        item.rect.2.saturating_add(4),
-                        item.rect.3.saturating_add(4),
-                    ),
-                    // Assumes a white content color; a dctb that customizes it is not read.
-                    PpcRgbColor {
-                        red: 0xffff,
-                        green: 0xffff,
-                        blue: 0xffff,
-                    },
-                );
+                if visible {
+                    let _ = ppc_paint_window_background_bounds(
+                        memory,
+                        gworlds,
+                        params.dialog_ptr(),
+                        // Edit text frames are drawn outside the item's rect.
+                        (
+                            item.rect.0.saturating_sub(4),
+                            item.rect.1.saturating_sub(4),
+                            item.rect.2.saturating_add(4),
+                            item.rect.3.saturating_add(4),
+                        ),
+                        // Assumes a white content color; a dctb that customizes it is not read.
+                        PpcRgbColor {
+                            red: 0xffff,
+                            green: 0xffff,
+                            blue: 0xffff,
+                        },
+                    );
+                }
                 if matches!(
                     base_type,
                     DIALOG_ITEM_BUTTON
@@ -2221,6 +2227,36 @@ fn ppc_dispatch_dialog_compatibility(
                     );
                 }
             }
+            // The dialog's TERec borrows the active edit item's text handle;
+            // release it before that handle is disposed, as CloseDialog does.
+            let edit_field_ptr = params.dialog_ptr().wrapping_add(DIALOG_EDIT_FIELD_OFFSET);
+            if memory
+                .read_u16_be(edit_field_ptr)
+                .is_some_and(|field| field != u16::MAX && usize::from(field) >= retained)
+            {
+                let te_handle_ptr = params.dialog_ptr().wrapping_add(DIALOG_TEXT_HANDLE_OFFSET);
+                let te_handle = memory.read_u32_be(te_handle_ptr).unwrap_or(0);
+                if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
+                    let _ = memory.write_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET, 0);
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    ppc_te_dispose(
+                        Some(&mut allocator),
+                        None,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        te_handle,
+                    );
+                }
+                let _ = memory.write_u32_be(te_handle_ptr, 0);
+                let _ = memory.write_u16_be(edit_field_ptr, u16::MAX);
+                let _ = memory
+                    .write_u16_be(params.dialog_ptr().wrapping_add(DIALOG_EDIT_OPEN_OFFSET), 0);
+            }
             for item in items.iter().skip(retained) {
                 if crate::dialog_manager::is_dialog_item_disposable_text(item.item_type)
                     && item.handle != 0
@@ -2237,13 +2273,6 @@ fn ppc_dispatch_dialog_compatibility(
                         item.handle,
                     );
                 }
-            }
-            let edit_field_ptr = params.dialog_ptr() + DIALOG_EDIT_FIELD_OFFSET;
-            if memory
-                .read_u16_be(edit_field_ptr)
-                .is_some_and(|field| field != u16::MAX && usize::from(field) >= retained)
-            {
-                let _ = memory.write_u16_be(edit_field_ptr, u16::MAX);
             }
             let end = if retained == 0 {
                 2
