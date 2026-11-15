@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.123.0](https://github.com/benletchford/systemless/compare/v0.122.1...v0.123.0) (2026-11-15)
+
+
+### Features
+
+* add Mac app support and privacy pages ([3a6dc0d](https://github.com/benletchford/systemless/commit/3a6dc0d3ec6a00830a3460391cf2fd533e82ae14))
+* **desktop:** add --screen-size WIDTHxHEIGHT ([#6283](https://github.com/benletchford/systemless/issues/6283)) ([593a589](https://github.com/benletchford/systemless/commit/593a589f85c0c6740e350917e63495927716e222))
+* **ppc:** implement AEGetEventHandler over the installed handler table ([#6258](https://github.com/benletchford/systemless/issues/6258)) ([b186a04](https://github.com/benletchford/systemless/commit/b186a040f263898597714ce72ebd832dcbde9fa9))
+* publish the Mac starter software index ([9b4aa3a](https://github.com/benletchford/systemless/commit/9b4aa3a970f0d0ff8cfefcaf8d5ecbeed8d1ceb7))
+
+
+### Bug Fixes
+
+* **desktop:** pass --mount volumes to the default windowed runtime ([#6286](https://github.com/benletchford/systemless/issues/6286)) ([d28fdc1](https://github.com/benletchford/systemless/commit/d28fdc10413a67d9deb3a56ca17644076c85df94))
+* **fs:** report each mounted volume's root as directory 2 ([#6279](https://github.com/benletchford/systemless/issues/6279)) ([8b3ddb0](https://github.com/benletchford/systemless/commit/8b3ddb0a3604f48bc909b62c9792d8552dcf40c7))
+* **ppc:** honor notPatCopy for solid pen patterns in PaintRect ([#6256](https://github.com/benletchford/systemless/issues/6256)) ([ae9a66b](https://github.com/benletchford/systemless/commit/ae9a66b4d7ac1ba18d8c6cd138b44bae09637449))
+* **ppc:** implement LLastClick and pin LAutoScroll to the scroll range ([#6257](https://github.com/benletchford/systemless/issues/6257)) ([71054c2](https://github.com/benletchford/systemless/commit/71054c2aa047d0fee3219ab800b1a559e7994a7c))
+* **ppc:** resolve working directories and names in catalog and WD lookups ([#6260](https://github.com/benletchford/systemless/issues/6260)) ([03a2e38](https://github.com/benletchford/systemless/commit/03a2e38b0a6a9b0bfe84c39d08a39c859976c06c))
+* **ppc:** search the resource chain downward from the current file ([#6262](https://github.com/benletchford/systemless/issues/6262)) ([f0793ee](https://github.com/benletchford/systemless/commit/f0793ee9f4a51021dddb11fff6fdad4f233bbaae))
+* **ppc:** translate CopyBits through the current offscreen GWorld table ([#6264](https://github.com/benletchford/systemless/issues/6264)) ([5ca2bf0](https://github.com/benletchford/systemless/commit/5ca2bf0047ffdd5cf2b89d6218b84090a3cb04ae))
+
+
+### Performance Improvements
+
+* **launch:** memory-map disk images while parsing them ([#6289](https://github.com/benletchford/systemless/issues/6289)) ([3f23cb2](https://github.com/benletchford/systemless/commit/3f23cb22ea275072a375d5aa0fed9d3e2505bce6))
+* **ppc:** end GetOSEvent busy-waits at the next tick ([#6288](https://github.com/benletchford/systemless/issues/6288)) ([a359d9c](https://github.com/benletchford/systemless/commit/a359d9c8d244cc70c1d44f1e495d71c779ff8212))
+* **qd3d:** hoist camera projection setup per trimesh draw ([#6251](https://github.com/benletchford/systemless/issues/6251)) ([afcc667](https://github.com/benletchford/systemless/commit/afcc6672aaa9629670c81205ba6eb71d5f06fbbf))
+* **qd3d:** keep cached textures resident on the gpu ([#6056](https://github.com/benletchford/systemless/issues/6056)) ([915af91](https://github.com/benletchford/systemless/commit/915af91efc286ccc59b153098fd32f925cfe452c))
+* **vfs:** index directories once per catalogue publish ([#6290](https://github.com/benletchford/systemless/issues/6290)) ([0786453](https://github.com/benletchford/systemless/commit/0786453a9cc2aa377fe6b9e97ed74874afa4e13b))
+* **web:** present indexed and compact frames natively in the wgpu presenter ([#6252](https://github.com/benletchford/systemless/issues/6252)) ([a595f1d](https://github.com/benletchford/systemless/commit/a595f1d5a1db97917706a58fd5bbadfff000f80b))
+
 ## [0.122.1](https://github.com/benletchford/systemless/compare/v0.122.0...v0.122.1) (2026-11-14)
 
 
