@@ -13,8 +13,10 @@ category: Arcade
 launch_enabled: true
 native:
   enabled: true
-  edition: "Demo"
-  limits: "Original Diamonds 2.0 demonstration. Keep the complete package and its original notices."
+  edition: Demo
+  limits: >-
+    Original Diamonds 2.0 demonstration. Keep the complete package and its original
+    notices.
 compatibility:
   status: playable
   verified:
@@ -24,9 +26,9 @@ compatibility:
     architecture: 68k
     environment: >-
       Native structured playback of the unchanged StuffIt demo at 800 by 600.
-      Verified the restored illuminated border, score, level name, time bar, and
-      ball counter after fixing the Exp1to3 stack corruption during music loading.
-      The ball animates and responds to Left and Right; sampled audio is non-silent.
+      Verified the restored illuminated border, score, level name, time bar, and ball counter
+      after fixing the Exp1to3 stack corruption during music loading. The ball animates
+      and responds to Left and Right; sampled audio is non-silent.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/6293
   - date: "2026-10-01"
@@ -67,9 +69,9 @@ artifacts:
     rights_holder: Varcon Systems / das softwarehaus GmbH
     permission: >-
       The original Diamonds 2.0 Demo launcher states, "Diese Demo-Version kann
-      unbeschränkt kopiert und weitergegeben werden" (this demo version may be
-      copied and passed on without restriction). The archive contains only the
-      demo application and its two background files.
+      unbeschränkt kopiert und weitergegeben werden" (this demo version may be copied and
+      passed on without restriction). The archive contains only the demo application and
+      its two background files.
     notes: >-
       Unchanged 184,315-byte StuffIt archive, SHA-256
       dfec8d30230938fd08e6da101956a8cee7f1f7f2a64282a09275f1eea910d9be. The German demo splash credits das
@@ -78,8 +80,9 @@ artifacts:
   role: screenshot
   format: png
   source:
-    type: incoming
-    path: catalogue/incoming/diamonds-demo/gameplay.png
+    type: sha256
+    sha256: 744cb1d256ac1e87b09ba76d9a99c65939ebe76e5bdabe369fe41e3824e99afc
+    size_bytes: 8469
   provenance:
     redistribution: permitted
     original: true
@@ -91,16 +94,15 @@ artifacts:
       catalogue entry. The underlying game artwork remains its owners' property.
     notes: >-
       638-by-458 native capture of the live board with its restored border and status
-      graphics. The crop excludes Mac desktop, menu bar, and window frame. PNG
-      SHA-256 744cb1d256ac1e87b09ba76d9a99c65939ebe76e5bdabe369fe41e3824e99afc, 8,469
-      bytes.
+      graphics. The crop excludes Mac desktop, menu bar, and window frame. PNG SHA-256
+      744cb1d256ac1e87b09ba76d9a99c65939ebe76e5bdabe369fe41e3824e99afc, 8,469 bytes.
 references:
 - https://classicmacdemos.com/diamonds
 ---
 
 ## Diamonds in motion
 
-![Diamonds block board](incoming/diamonds-demo/gameplay.png)
+![Diamonds block board](https://assets.systemless.org/catalogue/media/sha256/74/744cb1d256ac1e87b09ba76d9a99c65939ebe76e5bdabe369fe41e3824e99afc.png)
 
 Choose **Play** on the demo launcher. Use **Left** and **Right** to guide
 the bouncing ball through the colored block field. Press **P** to pause,
