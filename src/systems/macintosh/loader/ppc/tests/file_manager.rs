@@ -2926,6 +2926,206 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         );
     }
 
+    fn standard_get_file_in_nested_folders() -> (PpcLoadedApp, (i16, i16, i16, i16)) {
+        let pef = synthetic_pef_with_import(b"StandardGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        for (dir_id, parent_dir_id, path) in [
+            (42, PPC_ROOT_DIR_ID, "Outer"),
+            (43, 42, "Outer/Inner"),
+        ] {
+            loaded.vfs_directories.push(PpcVfsDirectory {
+                dir_id,
+                parent_dir_id,
+                path: path.to_string(),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0xffff;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let bounds = loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .as_ref()
+            .unwrap()
+            .bounds;
+        (loaded, bounds)
+    }
+
+    fn standard_get_file_mouse(
+        loaded: &mut PpcLoadedApp,
+        what: u16,
+        when: u32,
+        where_v: i16,
+        where_h: i16,
+    ) {
+        loaded.set_event_queue([PpcQueuedEvent {
+            what,
+            message: 0,
+            when,
+            where_v,
+            where_h,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    }
+
+    fn standard_get_file_dir(loaded: &PpcLoadedApp) -> u32 {
+        loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .as_ref()
+            .unwrap()
+            .current_dir_id
+    }
+
+    #[test]
+    fn standard_get_file_double_click_opens_only_within_double_time() {
+        let (mut loaded, bounds) = standard_get_file_in_nested_folders();
+        let v = bounds.0 + PPC_STANDARD_FILE_GET_LIST_RECT.0 + 5;
+        let h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+        let slow = PPC_DEFAULT_DOUBLE_TIME_TICKS + 1;
+
+        standard_get_file_mouse(&mut loaded, 1, 100, v, h);
+        standard_get_file_mouse(&mut loaded, 1, 100 + slow, v, h);
+        assert_eq!(standard_get_file_dir(&loaded), PPC_ROOT_DIR_ID);
+
+        standard_get_file_mouse(&mut loaded, 1, 100 + slow + 5, v, h);
+        assert_eq!(standard_get_file_dir(&loaded), 42);
+    }
+
+    #[test]
+    fn standard_get_file_double_click_ignores_a_click_before_a_key_press() {
+        let (mut loaded, bounds) = standard_get_file_in_nested_folders();
+        let v = bounds.0 + PPC_STANDARD_FILE_GET_LIST_RECT.0 + 5;
+        let h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+
+        standard_get_file_mouse(&mut loaded, 1, 100, v, h);
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 0x7d << 8,
+            when: 101,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        standard_get_file_mouse(&mut loaded, 1, 102, v, h);
+        assert_eq!(standard_get_file_dir(&loaded), PPC_ROOT_DIR_ID);
+    }
+
+    #[test]
+    fn standard_get_file_double_click_in_a_scrolled_list_opens_the_first_selection() {
+        let (mut loaded, _) = standard_get_file_in_nested_folders();
+        for n in 0..12u32 {
+            loaded.vfs_directories.push(PpcVfsDirectory {
+                dir_id: 100 + n,
+                parent_dir_id: PPC_ROOT_DIR_ID,
+                path: format!("Folder {n:02}"),
+                creator: PPC_DIRECTORY_CREATOR,
+                file_type: PPC_DIRECTORY_FILE_TYPE,
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        // Reopen the dialog so it lists the new folders.
+        let reply = PPC_DATA_BASE + 0x1000;
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.take();
+        let bounds = tracking.unwrap().bounds;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0xffff;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+        loaded.run_with_hle_imports(64);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_mut();
+        let tracking = tracking.unwrap();
+        // Selecting index 9 scrolls the list so row 0 shows index 2.
+        tracking.selected = 9;
+        let expected = tracking.entries[7].dir_id;
+        let v = bounds.0
+            + PPC_STANDARD_FILE_GET_LIST_RECT.0
+            + 2
+            + 5 * PPC_STANDARD_FILE_GET_ROW_HEIGHT
+            + 4;
+        let h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+
+        standard_get_file_mouse(&mut loaded, 1, 100, v, h);
+        standard_get_file_mouse(&mut loaded, 1, 105, v, h);
+
+        assert_eq!(standard_get_file_dir(&loaded), expected);
+    }
+
+    #[test]
+    fn standard_get_file_folder_popup_navigates_to_enclosing_folders() {
+        let (mut loaded, bounds) = standard_get_file_in_nested_folders();
+        let list_v = bounds.0 + PPC_STANDARD_FILE_GET_LIST_RECT.0 + 5;
+        let list_h = bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1 + 10;
+        for when in [100, 105, 200, 205] {
+            standard_get_file_mouse(&mut loaded, 1, when, list_v, list_h);
+        }
+        assert_eq!(standard_get_file_dir(&loaded), 43);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_ref();
+        let chain = &tracking.unwrap().folder_chain;
+        assert_eq!(
+            chain.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [43, 42, PPC_ROOT_DIR_ID]
+        );
+        assert_eq!(chain[0].1, b"Inner".to_vec());
+
+        let button_v = bounds.0 + PPC_STANDARD_FILE_GET_VOLUME_RECT.0 + 5;
+        let button_h = bounds.1 + PPC_STANDARD_FILE_GET_VOLUME_RECT.1 + 5;
+        let row_v = |row: i16| {
+            bounds.0
+                + PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.0
+                + row * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT
+                + 4
+        };
+        let menu_h = bounds.1 + PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.1 + 10;
+
+        // A release left over from an earlier click must not close the menu.
+        let event = |what, where_v, where_h| PpcQueuedEvent {
+            what,
+            message: 0,
+            when: 300,
+            where_v,
+            where_h,
+            modifiers: 0,
+        };
+        loaded.set_event_queue([event(2, list_v, list_h), event(1, button_v, button_h)]);
+        loaded.run_with_hle_imports(64);
+        loaded.run_with_hle_imports(64);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_ref();
+        assert!(tracking.unwrap().folder_popup_open);
+
+        // Release on the button, then click a row.
+        standard_get_file_mouse(&mut loaded, 2, 301, button_v, button_h);
+        standard_get_file_mouse(&mut loaded, 1, 302, row_v(1), menu_h);
+        assert_eq!(standard_get_file_dir(&loaded), 42);
+
+        // Press on the button and release over a row.
+        standard_get_file_mouse(&mut loaded, 1, 400, button_v, button_h);
+        standard_get_file_mouse(&mut loaded, 2, 401, row_v(1), menu_h);
+        assert_eq!(standard_get_file_dir(&loaded), PPC_ROOT_DIR_ID);
+
+        // A click outside the menu closes it without navigating.
+        standard_get_file_mouse(&mut loaded, 1, 500, button_v, button_h);
+        standard_get_file_mouse(&mut loaded, 1, 501, list_v + 100, list_h + 300);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_ref();
+        assert!(!tracking.unwrap().folder_popup_open);
+        assert_eq!(standard_get_file_dir(&loaded), PPC_ROOT_DIR_ID);
+    }
+
     #[test]
     fn hle_import_runner_sf_get_file_gui_cancel_uses_legacy_reply_abi() {
         let pef = synthetic_pef_with_import(b"SFGetFile");

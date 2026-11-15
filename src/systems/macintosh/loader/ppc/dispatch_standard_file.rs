@@ -43,6 +43,10 @@ pub(super) struct PpcStandardFileGetTrackingState {
     pub(super) file_types: Option<Vec<u32>>,
     filter: Option<PpcStandardFileFilter>,
     pub(super) selected: usize,
+    /// Current folder first, then each enclosing folder up to the volume.
+    pub(super) folder_chain: Vec<(u32, Vec<u8>)>,
+    pub(super) folder_popup_open: bool,
+    last_list_click: Option<(u32, usize)>,
     pub(super) bounds: (i16, i16, i16, i16),
     pub(super) front_buffer: PpcFrontBuffer,
     pub(super) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
@@ -321,6 +325,8 @@ pub(super) const PPC_STANDARD_FILE_GET_SEPARATOR_RECT: (i16, i16, i16, i16) = (9
 pub(super) const PPC_STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
 pub(super) const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
 pub(super) const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
+pub(super) const PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT: (i16, i16, i16, i16) = (31, 90, 175, 250);
+pub(super) const PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT: i16 = 16;
 pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
 pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 148;
 pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
@@ -461,6 +467,81 @@ fn ppc_standard_file_get_entries(
             ))
     });
     entries
+}
+
+fn ppc_standard_file_folder_chain(
+    vfs_directories: &[PpcVfsDirectory],
+    dir_id: u32,
+) -> Vec<(u32, Vec<u8>)> {
+    let mut chain = Vec::new();
+    let mut current = dir_id;
+    while current != PPC_ROOT_DIR_ID && chain.len() < 32 {
+        let Some(directory) = vfs_directories
+            .iter()
+            .find(|directory| directory.dir_id == current)
+        else {
+            break;
+        };
+        chain.push((
+            current,
+            encode_mac_roman_lossy(ppc_vfs_basename(&directory.path))
+                .into_iter()
+                .take(63)
+                .collect(),
+        ));
+        current = directory.parent_dir_id;
+    }
+    chain.push((
+        PPC_ROOT_DIR_ID,
+        crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes().to_vec(),
+    ));
+    chain
+}
+
+/// Index into `folder_chain` of the popup row under a dialog-local point.
+fn ppc_standard_file_folder_menu_row(
+    tracking: &PpcStandardFileGetTrackingState,
+    local: (i16, i16),
+) -> Option<usize> {
+    let menu = PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT;
+    if !ppc_standard_file_point_in_rect(local, menu) {
+        return None;
+    }
+    let row = ((local.0 - menu.0) / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT) as usize;
+    (row < tracking.folder_chain.len()).then_some(row)
+}
+
+fn ppc_standard_file_draw_folder_menu(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFileGetTrackingState,
+) {
+    // Rows past the dialog's bottom edge are not shown; the menu does not scroll.
+    let rows = (PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.2 - PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.0)
+        / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
+    let rows = tracking.folder_chain.len().min(rows as usize) as i16;
+    let mut menu =
+        ppc_standard_file_global_rect(tracking.bounds, PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT);
+    menu.2 = menu
+        .0
+        .saturating_add(rows * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT);
+    let _ = ppc_fill_front_rect(memory, tracking.front_buffer, menu, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, tracking.front_buffer, menu, PPC_RGB_BLACK, 1);
+    for row in 0..rows {
+        let top = menu.0 + row * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
+        ppc_draw_dialog_text(
+            memory,
+            gworlds,
+            (
+                top.saturating_add(1),
+                menu.1.saturating_add(5),
+                top + PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT,
+                menu.3.saturating_sub(3),
+            ),
+            &tracking.folder_chain[row as usize].1,
+            PPC_RGB_BLACK,
+        );
+    }
 }
 
 pub(super) fn ppc_capture_saved_detail<T>(
@@ -993,7 +1074,16 @@ fn ppc_standard_file_draw_get_dialog(
         true,
         false,
     );
-    ppc_draw_dialog_text(memory, gworlds, volume_rect, b"Maci...", PPC_RGB_BLACK);
+    let folder = tracking
+        .folder_chain
+        .first()
+        .map_or(&[][..], |(_, name)| name.as_slice());
+    let label = if folder.len() > 7 {
+        [&folder[..4], b"..."].concat()
+    } else {
+        folder.to_vec()
+    };
+    ppc_draw_dialog_text(memory, gworlds, volume_rect, &label, PPC_RGB_BLACK);
     ppc_draw_dialog_text(
         memory,
         gworlds,
@@ -1048,6 +1138,9 @@ fn ppc_standard_file_draw_get_dialog(
         open_enabled,
         true,
     );
+    if tracking.folder_popup_open {
+        ppc_standard_file_draw_folder_menu(memory, gworlds, tracking);
+    }
 }
 
 fn ppc_standard_file_draw_put_dialog(
@@ -1486,17 +1579,47 @@ fn ppc_standard_file_get_service(
     }
     let event = event_queue
         .iter()
-        .position(|event| matches!(event.what, 1 | 3 | 5))
+        .position(|event| matches!(event.what, 1 | 2 | 3 | 5))
         .and_then(|index| event_queue.remove(index));
     let previous_dir_id = tracking.current_dir_id;
     let previous_selection = tracking.selected;
+    let previous_popup_open = tracking.folder_popup_open;
     let mut open = false;
     if let Some(event) = event {
-        if event.what == 1 {
+        if tracking.folder_popup_open {
             let local = (
                 event.where_v.saturating_sub(tracking.bounds.0),
                 event.where_h.saturating_sub(tracking.bounds.1),
             );
+            let row = matches!(event.what, 1 | 2)
+                .then(|| ppc_standard_file_folder_menu_row(&tracking, local))
+                .flatten();
+            if let Some(row) = row {
+                tracking.folder_popup_open = false;
+                let dir_id = tracking.folder_chain[row].0;
+                if dir_id != tracking.current_dir_id {
+                    tracking.current_dir_id = dir_id;
+                    tracking.entries = ppc_standard_file_get_entries(
+                        vfs_directories,
+                        vfs_files,
+                        vfs_resource_files,
+                        dir_id,
+                        tracking.file_types.as_deref(),
+                    );
+                    tracking.selected = 0;
+                }
+            } else if !(event.what == 2
+                && ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_VOLUME_RECT))
+            {
+                // Releasing on the popup button leaves the menu open for a second click.
+                tracking.folder_popup_open = false;
+            }
+        } else if event.what == 1 {
+            let local = (
+                event.where_v.saturating_sub(tracking.bounds.0),
+                event.where_h.saturating_sub(tracking.bounds.1),
+            );
+            let last_list_click = tracking.last_list_click.take();
             if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_CANCEL_RECT) {
                 return ppc_standard_file_finish_get(
                     memory,
@@ -1508,7 +1631,9 @@ fn ppc_standard_file_get_service(
                     false,
                 );
             }
-            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_DESKTOP_RECT) {
+            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_VOLUME_RECT) {
+                tracking.folder_popup_open = true;
+            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_DESKTOP_RECT) {
                 tracking.current_dir_id = PPC_ROOT_DIR_ID;
                 tracking.entries = ppc_standard_file_get_entries(
                     vfs_directories,
@@ -1528,8 +1653,16 @@ fn ppc_standard_file_get_service(
                     .max(0) as usize;
                 let first_visible = tracking.selected.saturating_sub(7);
                 let index = first_visible.saturating_add(row);
-                if index < tracking.entries.len() {
+                let double_time = memory
+                    .read_u32_be(crate::memory::globals::addr::DOUBLE_TIME)
+                    .unwrap_or(PPC_DEFAULT_DOUBLE_TIME_TICKS);
+                // The first click can scroll the list, so the second opens its selection.
+                open = last_list_click.is_some_and(|(when, last_row)| {
+                    last_row == row && event.when.wrapping_sub(when) <= double_time
+                });
+                if !open && index < tracking.entries.len() {
                     tracking.selected = index;
+                    tracking.last_list_click = Some((event.when, row));
                 }
             } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_SCROLL_RECT)
                 && !tracking.entries.is_empty()
@@ -1547,7 +1680,8 @@ fn ppc_standard_file_get_service(
                     (tracking.selected + 8).min(tracking.entries.len() - 1)
                 };
             }
-        } else {
+        } else if event.what != 2 {
+            tracking.last_list_click = None;
             let character = event.message as u8;
             let key_code = (event.message >> 8) as u8;
             if crate::dialog_manager::is_dialog_default_key(character, key_code) {
@@ -1599,6 +1733,8 @@ fn ppc_standard_file_get_service(
         }
     }
     if tracking.current_dir_id != previous_dir_id {
+        tracking.folder_chain =
+            ppc_standard_file_folder_chain(vfs_directories, tracking.current_dir_id);
         // CustomGetFile filters each displayed folder, not just the initial
         // listing. Inside Macintosh: Files (1992), pp. 3-20--3-21.
         tracking = match ppc_standard_file_begin_filtering(
@@ -1614,7 +1750,10 @@ fn ppc_standard_file_get_service(
             Err(tracking) => tracking,
         };
     }
-    if tracking.current_dir_id != previous_dir_id || tracking.selected != previous_selection {
+    if tracking.current_dir_id != previous_dir_id
+        || tracking.selected != previous_selection
+        || tracking.folder_popup_open != previous_popup_open
+    {
         ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
     }
     startup.standard_file_get_tracking = Some(tracking);
@@ -1770,6 +1909,9 @@ fn ppc_standard_file_get_start(
         file_types,
         filter,
         selected: 0,
+        folder_chain: ppc_standard_file_folder_chain(vfs_directories, current_dir_id),
+        folder_popup_open: false,
+        last_list_click: None,
         bounds,
         front_buffer,
         saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
