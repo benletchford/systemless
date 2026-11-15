@@ -25,6 +25,54 @@ fn select_window_preserves_classic_visible_region() {
     );
 }
 
+#[test]
+fn bring_to_front_leaves_the_front_window_regions_alone() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"BringToFront")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, false, u32::MAX);
+    loaded
+        .memory
+        .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0xFF)
+        .unwrap();
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, 1, 2, 3, 4);
+
+    loaded.cpu.gpr[3] = window;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
+    );
+
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+        Some((1, 2, 3, 4))
+    );
+}
+
+#[test]
+fn bring_to_front_on_the_front_window_still_raises_its_gworld() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"BringToFront")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let back = create_test_cwindow(&mut loaded, scratch, (40, 50, 140, 250), 0, true, u32::MAX);
+    let front = create_test_cwindow(&mut loaded, scratch, (60, 70, 160, 270), 0, true, u32::MAX);
+    // The window list already has `back` in front, but the GWorld stack lags.
+    loaded.window_list.reorder(back, 0, true);
+    assert_eq!(loaded.gworlds.last().map(|record| record.port), Some(front));
+
+    loaded.cpu.gpr[3] = back;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
+    );
+
+    assert_eq!(loaded.gworlds.last().map(|record| record.port), Some(back));
+}
+
 pub(crate) fn create_test_cwindow(
     loaded: &mut PpcLoadedApp,
     bounds_ptr: u32,
