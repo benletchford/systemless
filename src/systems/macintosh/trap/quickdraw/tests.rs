@@ -11571,6 +11571,56 @@
     }
 
     #[test]
+    fn framerect_draws_with_a_pattern_stored_in_the_ports_pnpat() {
+        // MacPaint 1.3 animates its selection rectangle by storing a new
+        // pattern in thePort^.pnPat each tick, without PenPat, then calling
+        // FrameRect. The port record is QuickDraw's pen (Inside Macintosh
+        // Volume I, I-150): the stored pattern draws.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000;
+        d.current_port
+            .with_mut(|current_port| *current_port = port);
+        d.process_quickdraw_port_state_attached = true;
+        let screen_base = bus.read_long(0x0824);
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 10, 16, 30, 48);
+        let mut frame = |d: &mut TrapDispatcher, cpu: &mut super::super::test_helpers::MockCpu, bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, rect);
+            d.dispatch_quickdraw(true, 0x0A1, cpu, bus).unwrap().unwrap();
+            bus.read_byte(screen_base + 10 * 64 + 3)
+        };
+
+        // PenNormal: a black pen, written to the port.
+        d.dispatch_quickdraw(true, 0x09E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame(&mut d, &mut cpu, &mut bus), 0xFF);
+
+        // The application stores stripes in pnPat itself.
+        bus.write_bytes(port + 58, &[0xAA; 8]);
+        assert_eq!(
+            frame(&mut d, &mut cpu, &mut bus),
+            0xAA,
+            "the top edge follows the stored pattern"
+        );
+
+        // The state cached as the port is left (SetPort), then black stored
+        // in pnPat directly: the stored pattern still wins over the cache.
+        d.save_current_port_draw_state();
+        bus.write_bytes(port + 58, &[0xFF; 8]);
+        assert_eq!(frame(&mut d, &mut cpu, &mut bus), 0xFF);
+
+        // Stripes stored again, then PenNormal: the pen is black again.
+        bus.write_bytes(port + 58, &[0xAA; 8]);
+        assert_eq!(frame(&mut d, &mut cpu, &mut bus), 0xAA);
+        d.dispatch_quickdraw(true, 0x09E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame(&mut d, &mut cpu, &mut bus), 0xFF);
+    }
+
+    #[test]
     fn closergn_preserves_framed_oval_and_round_rect_scanlines() {
         // Imaging With QuickDraw (1994), pp. 3-87--3-89: framed-shape
         // boundaries form closed loops in an open region, independent of the

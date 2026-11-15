@@ -16330,6 +16330,7 @@ impl super::TrapDispatcher {
         self.quickdraw_hilite_colors
             .remove_quickdraw_hilite_color(port);
         self.port_draw_states.insert(port, PortDrawState::default());
+        self.port_pen_patterns_written.remove(&port);
     }
 
     /// Allocate the main GDevice in guest memory if not yet done.
@@ -19253,6 +19254,7 @@ impl super::TrapDispatcher {
             self.manual_cport_screen_witness.clear();
         }
         self.port_draw_states.remove(&port);
+        self.port_pen_patterns_written.remove(&port);
         self.resolved_port_color_fields.remove(&port);
         self.quickdraw_op_colors.remove_quickdraw_op_color(port);
         self.quickdraw_hilite_colors
@@ -19607,6 +19609,7 @@ impl super::TrapDispatcher {
         for (i, byte) in snapshot.port_state_bytes.iter().copied().enumerate() {
             bus.write_byte(snapshot.port + 32 + i as u32, byte);
         }
+        self.note_port_pen_pattern_written(bus, snapshot.port);
         // The saved fgColor/bgColor words and their interpretation must travel
         // together. A user-item callback can resolve a legacy blackColor (33)
         // into a pixel; retaining that flag after restoring 33 would draw CLUT
@@ -19665,6 +19668,22 @@ impl super::TrapDispatcher {
             self.pn_size = state.pn_size;
             self.pn_mode = state.pn_mode;
             self.pn_pat = state.pn_pat;
+            // An application may store a pattern in thePort^.pnPat itself
+            // instead of calling PenPat: MacPaint 1.3 does for its selection
+            // rectangle, a new pattern each tick, then FrameRect. The port
+            // record is QuickDraw's pen (Inside Macintosh Volume I, I-150),
+            // so bytes that changed since they were last seen here win, and
+            // become what the port is known to hold.
+            if let Some(known) = self.port_pen_patterns_written.get(&port).copied() {
+                let stored = Self::classic_port_pen_pattern(bus, port);
+                if stored != known {
+                    self.pn_pat = stored;
+                    self.port_pen_patterns_written.insert(port, stored);
+                    if let Some(cached) = self.port_draw_states.get_mut(&port) {
+                        cached.pn_pat = stored;
+                    }
+                }
+            }
             self.pn_vis = state.pn_vis;
             self.tx_font = bus.read_word(port + 68) as i16;
             self.tx_face = decode_text_face_style(bus.read_word(port + 70));
@@ -20160,6 +20179,28 @@ impl super::TrapDispatcher {
         let state = self.current_draw_state();
         self.port_draw_states.insert(*self.current_port, state);
         self.sync_port_draw_state(bus, *self.current_port);
+        self.note_port_pen_pattern_written(bus, *self.current_port);
+    }
+
+    fn classic_port_pen_pattern(bus: &MacMemoryBus, port: u32) -> [u8; 8] {
+        let mut pattern = [0u8; 8];
+        for (i, byte) in pattern.iter_mut().enumerate() {
+            *byte = bus.read_byte(port + 58 + i as u32);
+        }
+        pattern
+    }
+
+    /// Remember the pnPat bytes a classic GrafPort holds once its pen state
+    /// has been written to guest memory (see `load_port_draw_state`).
+    fn note_port_pen_pattern_written(&mut self, bus: &MacMemoryBus, port: u32) {
+        if port == 0
+            || !self.port_allows_draw_state_memory_sync(bus, port)
+            || (bus.read_word(port + 6) & 0xC000) == 0xC000
+        {
+            return;
+        }
+        let stored = Self::classic_port_pen_pattern(bus, port);
+        self.port_pen_patterns_written.insert(port, stored);
     }
 
     pub(super) fn resolve_current_port_color_pixels(

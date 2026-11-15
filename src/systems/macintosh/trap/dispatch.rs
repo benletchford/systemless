@@ -2089,6 +2089,10 @@ pub struct TrapDispatcher {
     pub(crate) process_quickdraw_port_state_attached: bool,
     /// Per-port pen/color/text state restored by SetPort and SetGWorld.
     pub(crate) port_draw_states: FastHashMap<u32, PortDrawState>,
+    /// The pnPat bytes each classic GrafPort was last known to hold: written
+    /// there with its pen state, or read back since. A port whose bytes
+    /// differ had its pnPat stored directly by the application.
+    pub(crate) port_pen_patterns_written: FastHashMap<u32, [u8; 8]>,
     /// Bit 0/1 mark CGrafPort fgColor/bkColor fields that QuickDraw has
     /// resolved through a color-setting call. Once resolved, guest writes to
     /// those indexed pixel fields remain authoritative for drawing.
@@ -4105,6 +4109,7 @@ impl TrapDispatcher {
             quickdraw_hilite_colors: SharedProcessQuickDrawHiliteColors::default(),
             process_quickdraw_port_state_attached: false,
             port_draw_states: HashMap::default(),
+            port_pen_patterns_written: HashMap::default(),
             resolved_port_color_fields: HashMap::default(),
             gworld_devices: HashMap::default(),
             disposed_gworld_portbits: HashMap::default(),
