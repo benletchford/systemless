@@ -775,6 +775,7 @@ impl super::TrapDispatcher {
 
                 self.port_draw_states
                     .insert(port_ptr, PortDrawState::default());
+                self.port_pen_patterns_written.remove(&port_ptr);
                 self.set_current_port_state(bus, cpu, port_ptr, None);
                 eprintln!(
                     "[INITGRAF] qd.thePort=${:08X} (default screen port)",
@@ -860,6 +861,7 @@ impl super::TrapDispatcher {
 
                 self.port_draw_states
                     .insert(port_ptr, PortDrawState::default());
+                self.port_pen_patterns_written.remove(&port_ptr);
                 self.set_current_port_state(bus, cpu, port_ptr, None);
                 if trace_dialog_ports_enabled() {
                     eprintln!("[DIALOG-PORT] OpenPort port=${:08X}", port_ptr);
@@ -934,6 +936,7 @@ impl super::TrapDispatcher {
                 }
                 self.port_draw_states
                     .insert(port_ptr, PortDrawState::default());
+                self.port_pen_patterns_written.remove(&port_ptr);
                 self.set_current_port_state(bus, cpu, port_ptr, None);
                 if trace_dialog_ports_enabled() {
                     eprintln!(

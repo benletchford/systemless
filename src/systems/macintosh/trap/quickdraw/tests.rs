@@ -11621,6 +11621,43 @@
     }
 
     #[test]
+    fn initport_forgets_the_pattern_last_written_to_the_port() {
+        // InitPort resets the pen to black (Inside Macintosh Volume I,
+        // I-164). For a port record on the stack it leaves the record's
+        // bytes alone: whatever pnPat holds there is not a pattern the
+        // application stored after the reset.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000;
+        d.current_port
+            .with_mut(|current_port| *current_port = port);
+        d.process_quickdraw_port_state_attached = true;
+
+        // PenPat(stripes): written to the port and remembered.
+        let stripes = bus.alloc(8);
+        bus.write_bytes(stripes, &[0xAA; 8]);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, stripes);
+        d.dispatch_quickdraw(true, 0x09D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.pn_pat, [0xAA; 8]);
+
+        // The port is left (its state cached, as SetPort does), the record's
+        // pnPat cleared, then InitPort with the stack pointer next to the
+        // record.
+        d.save_current_port_draw_state();
+        d.current_port.with_mut(|current_port| *current_port = 0);
+        bus.write_bytes(port + 58, &[0x00; 8]);
+        let sp = port + 0x200;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, port);
+        d.dispatch_quickdraw(true, 0x06D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.pn_pat, [0xFF; 8], "InitPort leaves a black pen");
+    }
+
+    #[test]
     fn closergn_preserves_framed_oval_and_round_rect_scanlines() {
         // Imaging With QuickDraw (1994), pp. 3-87--3-89: framed-shape
         // boundaries form closed loops in an open region, independent of the
