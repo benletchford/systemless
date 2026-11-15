@@ -518,3 +518,68 @@ fn control_callback_return_bypasses_patched_control_dispatch_only_for_private_re
     );
     assert_eq!(f.cpu.read_reg(Register::A7), SP);
 }
+
+#[test]
+fn cdef_entry_receives_its_own_address_in_a0() {
+    // THINK C code resources save A0 on entry (RememberA0) and address their
+    // globals from it, relying on the Control Manager having called the
+    // dereferenced definition handle through A0.
+    const SAVED_A0: u32 = 0x190080;
+    let mut f = Fixture::new();
+    let words: [u16; 10] = [
+        0x4E56, 0, // LINK A6,#0
+        0x23C8, 0x0019, 0x0080, // MOVE.L A0,SAVED_A0
+        0x4E5E, // UNLK A6
+        0x205F, // MOVEA.L (SP)+,A0
+        0x4FEF, 0x000C, // LEA 12(SP),SP
+        0x4ED0, // JMP (A0)
+    ];
+    let code: Vec<u8> = words.into_iter().flat_map(u16::to_be_bytes).collect();
+    f.dispatcher
+        .install_test_resource(&mut f.bus, *b"CDEF", 400, &code);
+    let control = f.create((40, 40, 80, 120), true, true);
+    let def_handle = f.bus.read_long(f.bus.read_long(control) + 24);
+    let entry = f.bus.read_long(def_handle);
+    assert_eq!(f.bus.read_bytes(entry, code.len()), code);
+
+    f.bus.write_long(SAVED_A0, 0);
+    f.cpu.write_reg(Register::A0, 0x00DE_AD00);
+    f.draw_one(control);
+    assert_eq!(f.bus.read_long(SAVED_A0), entry);
+}
+
+#[test]
+fn fresh_controls_carry_the_four_entry_default_control_color_table() {
+    let mut f = Fixture::new();
+    let control = f.create((40, 40, 80, 120), true, false);
+    let aux = f
+        .dispatcher
+        .control_aux_state(control)
+        .expect("control has an auxiliary record");
+    let table = f
+        .bus
+        .read_long(f.bus.read_long(f.bus.read_long(aux.handle) + 8));
+    assert_eq!(f.bus.read_word(table + 6), 3, "ctSize");
+    let specs: Vec<[u16; 4]> = (0..4)
+        .map(|i| {
+            let spec = table + 8 + i * 8;
+            [0, 2, 4, 6].map(|offset| f.bus.read_word(spec + offset))
+        })
+        .collect();
+    assert_eq!(
+        specs,
+        [
+            [0, 0x0000, 0x0000, 0x0000], // cFrameColor
+            [1, 0xFFFF, 0xFFFF, 0xFFFF], // cBodyColor
+            [2, 0x0000, 0x0000, 0x0000], // cTextColor
+            [3, 0xFFFF, 0xFFFF, 0xFFFF], // cThumbColor
+        ]
+    );
+    let other = f.create((90, 40, 130, 120), true, false);
+    let other_aux = f.dispatcher.control_aux_state(other).unwrap();
+    assert_eq!(
+        f.bus.read_long(f.bus.read_long(other_aux.handle) + 8),
+        f.bus.read_long(f.bus.read_long(aux.handle) + 8),
+        "controls share the default table"
+    );
+}

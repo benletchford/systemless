@@ -1817,6 +1817,9 @@ pub struct TrapDispatcher {
     pub(crate) control_aux_records: FastHashMap<u32, ControlAuxRecordState>,
     /// Head of the guest-visible AuxCtlRec linked list (`AuxCtlHead`).
     pub(crate) control_aux_head: u32,
+    /// Shared default control colour table (`CCTabHandle`) installed in
+    /// fresh AuxCtlRecs; allocated on first use.
+    pub(crate) default_control_ctab: u32,
     /// Whether the current front window has a close box (goAwayFlag)
     pub(crate) go_away_flag: bool,
     /// Window list in front-to-back order.
@@ -2227,6 +2230,9 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
+    /// Bytes of `recording_picture` commands contributed by inline CopyBits
+    /// transfers; equal to the command length when nothing else was drawn.
+    pub(crate) recording_picture_bitmap_command_bytes: usize,
     /// Machine profile belonging to the currently installed process table.
     /// `None` means no application trap context is active.
     pub(crate) trap_table_profile: Option<TrapTableProfile>,
@@ -3998,6 +4004,7 @@ impl TrapDispatcher {
             window_saved_under_pixels: HashMap::default(),
             control_aux_records: HashMap::default(),
             control_aux_head: 0,
+            default_control_ctab: 0,
             go_away_flag: false,
             window_list: Default::default(),
             process_window_list_attached: false,
@@ -4156,6 +4163,7 @@ impl TrapDispatcher {
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,
+            recording_picture_bitmap_command_bytes: 0,
             trap_table_profile: None,
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::default(),

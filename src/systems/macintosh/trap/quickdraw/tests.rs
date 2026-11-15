@@ -8904,6 +8904,62 @@
     }
 
     #[test]
+    fn picture_recording_keeps_erase_copybits_and_lines_in_drawing_order() {
+        // OpenPicture hides the pen and saves each drawing call as an opcode
+        // (Inside Macintosh Volume I, I-189). A button image built from an
+        // EraseRect, a CopyBits label and LineTo bevels must replay all of
+        // them in order, not just the bitmap transfer.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.current_port.set(0x181000);
+        setup_copybits_through_port_bottleneck(&mut bus, 0);
+        bus.write_word(0x181000 + 12, 2); // two-row port
+        let frame = bus.alloc(8);
+        write_rect(&mut bus, frame, 0, 0, 2, 8);
+        bus.write_long(TEST_SP, frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus).unwrap().unwrap();
+        let handle = bus.read_long(TEST_SP + 4);
+
+        let erase = bus.alloc(8);
+        write_rect(&mut bus, erase, 0, 0, 2, 8);
+        bus.write_long(TEST_SP, erase);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0A3, &mut cpu, &mut bus).unwrap().unwrap();
+
+        setup_copybits_through_port_bottleneck(&mut bus, 0);
+        bus.write_word(0x181000 + 12, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus).unwrap().unwrap();
+
+        for (trap, h, v) in [(0x093, 0, 1), (0x091, 7, 1)] {
+            bus.write_word(TEST_SP, v);
+            bus.write_word(TEST_SP + 2, h);
+            cpu.write_reg(Register::A7, TEST_SP);
+            d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus).unwrap().unwrap();
+        }
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus).unwrap().unwrap();
+
+        let picture = bus.read_long(handle);
+        let size = bus.read_word(picture) as usize;
+        let data = bus.read_bytes(picture, size);
+        assert!(matches!(crate::trap::pict::picture_stream_progress(&data), crate::trap::pict::PictureStreamProgress::Complete(end) if end == size));
+        let find = |opcode: u16| {
+            (14..size - 1)
+                .step_by(2)
+                .find(|&i| u16::from_be_bytes([data[i], data[i + 1]]) == opcode)
+                .unwrap_or_else(|| panic!("opcode ${opcode:04X} missing"))
+        };
+        assert!(find(0x0032) < find(0x0098), "EraseRect precedes the transfer");
+
+        let screen = bus.alloc(2);
+        bus.write_bytes(screen, &[0x55, 0x55]);
+        let clut = *d.device_clut;
+        let (drawn, _) = crate::trap::pict::draw_picture(&mut bus, picture, 0, 0, 2, 8, (screen, 1, 8, 2, 1), &clut, 0, None);
+        assert!(drawn);
+        assert_eq!(bus.read_bytes(screen, 2), [0x80, 0xFF]);
+    }
+
+    #[test]
     fn copybits_recording_still_honors_an_empty_clip_region() {
         // Imaging With QuickDraw (1994), pp. 7-39--7-42: unlike visRgn,
         // clipRgn remains effective while drawing is recorded offscreen.

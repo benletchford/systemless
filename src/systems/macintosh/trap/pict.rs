@@ -18,6 +18,34 @@ pub(crate) fn recording_push_rect(commands: &mut Vec<u8>, opcode: u16, rect: (i1
     }
 }
 
+/// Line opcode $0020: pnLoc then newPt, both (v, h).
+pub(crate) fn recording_push_line(commands: &mut Vec<u8>, from: (i16, i16), to: (i16, i16)) {
+    recording_push_word(commands, 0x0020);
+    for value in [from.0, from.1, to.0, to.1] {
+        recording_push_word(commands, value as u16);
+    }
+}
+
+/// Append the transfer from a single-opcode bitmap picture (ten-byte header,
+/// one-byte v1 `PackBitsRect` opcode, its data, then the v1 end opcode) to a
+/// version 2 command stream. Version 2 opcodes are words and their data is
+/// padded to a word boundary. Returns the number of bytes appended.
+pub(crate) fn recording_push_bitmap_snapshot(commands: &mut Vec<u8>, snapshot: &[u8]) -> usize {
+    let Some(body) = snapshot.get(11..snapshot.len().saturating_sub(1)) else {
+        return 0;
+    };
+    if snapshot.get(10) != Some(&0x98) || snapshot.last() != Some(&0xFF) || body.is_empty() {
+        return 0;
+    }
+    let start = commands.len();
+    recording_push_word(commands, 0x0098);
+    commands.extend_from_slice(body);
+    if body.len() % 2 != 0 {
+        commands.push(0);
+    }
+    commands.len() - start
+}
+
 pub(crate) fn recording_push_round_rect(
     commands: &mut Vec<u8>,
     opcode: u16,

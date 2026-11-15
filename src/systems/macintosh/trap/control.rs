@@ -364,8 +364,13 @@ impl super::TrapDispatcher {
     ) {
         bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
         bus.write_word(tramp + 2, 0xF0F0);
-        bus.write_word(tramp + 4, 0x2F3C); // MOVE.L #result,-(SP)
-        bus.write_long(tramp + 6, 0);
+        bus.write_word(tramp + 4, 0x42A7); // CLR.L -(SP) ; function result
+        // The Toolbox calls a definition procedure through its dereferenced
+        // handle, so A0 holds the procedure's address on entry. THINK C code
+        // resources capture it with RememberA0 (SetUpA4.h) and address their
+        // globals through A4 from it.
+        bus.write_word(tramp + 6, 0x207A); // MOVEA.L (tramp+32)(PC),A0
+        bus.write_word(tramp + 8, 32 - 8);
         bus.write_word(tramp + 10, 0x3F3C); // MOVE.W #varCode,-(SP)
         bus.write_word(tramp + 12, variant as u16);
         bus.write_word(tramp + 14, 0x2F3C); // MOVE.L #theControl,-(SP)
@@ -1163,12 +1168,33 @@ impl super::TrapDispatcher {
         bus.write_long(Self::LOWMEM_AUX_CTL_HEAD, self.control_aux_head);
     }
 
+    /// The default control colour table: four ColorSpecs, ctSize 3, giving
+    /// cFrameColor black, cBodyColor white, cTextColor black and
+    /// cThumbColor white. Custom CDEFs index `acCTable` directly and fall
+    /// back to their own colours for parts the table does not define, so
+    /// it must not be the screen's 256-entry CLUT.
+    /// Inside Macintosh Volume V (1986), Control Manager, "The Control
+    /// Color Table".
     fn default_control_color_table_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        let gd_handle = self.ensure_main_gdevice(bus);
-        let gd_ptr = bus.read_long(gd_handle);
-        let gd_pixmap_handle = bus.read_long(gd_ptr + 22);
-        let gd_pixmap_ptr = bus.read_long(gd_pixmap_handle);
-        bus.read_long(gd_pixmap_ptr + 42)
+        if self.default_control_ctab != 0 && bus.read_long(self.default_control_ctab) != 0 {
+            return self.default_control_ctab;
+        }
+        const ENTRIES: [(u16, u16); 4] = [(0, 0x0000), (1, 0xFFFF), (2, 0x0000), (3, 0xFFFF)];
+        let table = bus.alloc(8 + 8 * ENTRIES.len() as u32);
+        bus.write_long(table, 0); // ctSeed
+        bus.write_word(table + 4, 0); // ctFlags
+        bus.write_word(table + 6, ENTRIES.len() as u16 - 1); // ctSize
+        for (index, (value, level)) in ENTRIES.into_iter().enumerate() {
+            let spec = table + 8 + 8 * index as u32;
+            bus.write_word(spec, value);
+            for component in 0..3 {
+                bus.write_word(spec + 2 + component * 2, level);
+            }
+        }
+        let handle = bus.alloc(4);
+        bus.write_long(handle, table);
+        self.default_control_ctab = handle;
+        handle
     }
 
     pub(crate) fn ensure_control_aux_record(

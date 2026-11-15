@@ -384,7 +384,7 @@ fn newcontrol_creates_auxiliary_record_on_direct_color_screens() {
         assert_eq!(bus.read_long(record + 4), handle);
         let table_handle = bus.read_long(record + 8);
         assert_ne!(table_handle, 0);
-        assert_eq!(bus.read_word(bus.read_long(table_handle) + 6), 0);
+        assert_eq!(bus.read_word(bus.read_long(table_handle) + 6), 3);
     }
 }
 
