@@ -2093,12 +2093,42 @@ pub fn ppc_q3_software_apply_texture_and_fog(
     vertex_alpha: Option<f32>,
     output: PpcQ3SoftwareMaterialOutput,
 ) -> PpcQ3SoftwareMaterialOutput {
+    ppc_q3_software_apply_texture_and_fog_in(
+        memory,
+        sample,
+        None,
+        uv,
+        fog_depth,
+        vertex_alpha,
+        output,
+    )
+}
+
+/// [`ppc_q3_software_apply_texture_and_fog`], reading texels through
+/// `texture_span` when the caller holds one from
+/// [`ppc_q3_software_texture_span`].
+pub fn ppc_q3_software_apply_texture_and_fog_in(
+    memory: &mut PpcSectionMem,
+    sample: &PpcQ3SoftwareMaterialSample,
+    texture_span: Option<GuestWritableSpan>,
+    uv: Option<(f32, f32)>,
+    fog_depth: f32,
+    vertex_alpha: Option<f32>,
+    output: PpcQ3SoftwareMaterialOutput,
+) -> PpcQ3SoftwareMaterialOutput {
     let texture_sample = sample.texture.and_then(|texture| {
         uv.and_then(|uv| ppc_q3_software_transform_uv(uv, sample.uv_transform))
             .and_then(|uv| {
-                ppc_q3_software_texture_sample(memory, texture, sample.shader_boundary, uv.0, uv.1)
+                ppc_q3_software_texture_sample_in(
+                    memory,
+                    texture,
+                    texture_span,
+                    sample.shader_boundary,
+                    uv.0,
+                    uv.1,
+                )
             })
-            .or_else(|| ppc_q3_software_texture_pixel_at(memory, texture, 0, 0))
+            .or_else(|| ppc_q3_software_texture_pixel_at_in(memory, texture, texture_span, 0, 0))
     });
     let color = texture_sample
         .map(|texture| {
@@ -2224,6 +2254,18 @@ pub fn ppc_q3_software_texture_sample(
     u: f32,
     v: f32,
 ) -> Option<PpcQ3SoftwareTextureSample> {
+    ppc_q3_software_texture_sample_in(memory, texture, None, shader_boundary, u, v)
+}
+
+/// [`ppc_q3_software_texture_sample`], reading through `texture_span` when given.
+pub fn ppc_q3_software_texture_sample_in(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    texture_span: Option<GuestWritableSpan>,
+    shader_boundary: Option<PpcQ3ShaderBoundaryRecord>,
+    u: f32,
+    v: f32,
+) -> Option<PpcQ3SoftwareTextureSample> {
     let u_boundary = shader_boundary
         .map(|record| record.u_boundary)
         .unwrap_or(PPC_Q3_SHADER_UV_BOUNDARY_WRAP);
@@ -2237,7 +2279,7 @@ pub fn ppc_q3_software_texture_sample(
     // edge of the standard pixmap parameterization.
     let y =
         (((1.0 - v) * texture.height as f32).floor() as u32).min(texture.height.saturating_sub(1));
-    ppc_q3_software_texture_pixel_at(memory, texture, x, y)
+    ppc_q3_software_texture_pixel_at_in(memory, texture, texture_span, x, y)
 }
 
 pub fn ppc_q3_software_texture_coordinate(value: f32, boundary: u32) -> Option<f32> {
@@ -2257,6 +2299,34 @@ pub fn ppc_q3_software_texture_pixel_at(
     x: u32,
     y: u32,
 ) -> Option<PpcQ3SoftwareTextureSample> {
+    ppc_q3_software_texture_pixel_at_in(memory, texture, None, x, y)
+}
+
+/// A span over `texture`'s whole storage, for texel reads during one
+/// primitive. `None` where a span may not be taken (an observed, shared or
+/// read-only range); readers then take the routed path. Regions can change
+/// between primitives, so a span is never kept beyond one.
+///
+/// Texels are only read through it, never written. A writable span is used
+/// because it is the span guest memory offers, and its conditions are stricter
+/// than a read needs: a range it accepts lies in one ordinary region, so a read
+/// through it returns the bytes the routed read would.
+pub fn ppc_q3_software_texture_span(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+) -> Option<GuestWritableSpan> {
+    memory.writable_span(texture.image_base, usize::try_from(texture.valid_size).ok()?)
+}
+
+/// [`ppc_q3_software_texture_pixel_at`], reading through `texture_span`, a
+/// span over the texture's storage, when given.
+pub fn ppc_q3_software_texture_pixel_at_in(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    texture_span: Option<GuestWritableSpan>,
+    x: u32,
+    y: u32,
+) -> Option<PpcQ3SoftwareTextureSample> {
     if x >= texture.width || y >= texture.height {
         return None;
     }
@@ -2270,10 +2340,28 @@ pub fn ppc_q3_software_texture_pixel_at(
     if pixel_end > texture.valid_size {
         return None;
     }
-    let pixel_ptr = texture.image_base.checked_add(storage_offset)?;
     let mut pixel = [0u8; 4];
     let pixel_bytes = usize::try_from(texture.pixel_bytes).ok()?;
-    memory.read_bytes_into(pixel_ptr, pixel.get_mut(..pixel_bytes)?)?;
+    if let Some(span) = texture_span {
+        // The span covers `0..valid_size`, which holds the whole pixel.
+        let offset = usize::try_from(storage_offset).ok()?;
+        let word = |offset| memory.read_u16_be_in_span(span, offset).map(u16::to_be_bytes);
+        match pixel_bytes {
+            2 => pixel[..2].copy_from_slice(&word(offset)?),
+            3 => {
+                pixel[..2].copy_from_slice(&word(offset)?);
+                pixel[2] = word(offset + 1)?[1];
+            }
+            4 => {
+                pixel[..2].copy_from_slice(&word(offset)?);
+                pixel[2..].copy_from_slice(&word(offset + 2)?);
+            }
+            _ => return None,
+        }
+    } else {
+        let pixel_ptr = texture.image_base.checked_add(storage_offset)?;
+        memory.read_bytes_into(pixel_ptr, pixel.get_mut(..pixel_bytes)?)?;
+    }
     ppc_q3_software_texture_pixel_color(texture.pixel_type, texture.byte_order, &pixel)
 }
 
@@ -4401,6 +4489,14 @@ pub fn ppc_q3_draw_software_triangle(
         None
     };
 
+    // Only the flat and vertex styles read texels through the span; the
+    // per-pixel style samples them inside its own shading.
+    let texture_span = match interpolation_style {
+        PPC_Q3_INTERPOLATION_STYLE_NONE | PPC_Q3_INTERPOLATION_STYLE_VERTEX => material
+            .texture
+            .and_then(|texture| ppc_q3_software_texture_span(memory, texture)),
+        _ => None,
+    };
     let mut pixels = 0usize;
     // Nothing between two pixels of this fill observes guest memory except
     // the fill's own reads, so adjacent stores are reported as one range.
@@ -4501,9 +4597,10 @@ pub fn ppc_q3_draw_software_triangle(
                 ),
             };
             let output = if needs_texture_and_fog {
-                ppc_q3_software_apply_texture_and_fog(
+                ppc_q3_software_apply_texture_and_fog_in(
                     memory,
                     material,
+                    texture_span,
                     write_point.uv,
                     write_point.fog_depth,
                     write_point.vertex_alpha,

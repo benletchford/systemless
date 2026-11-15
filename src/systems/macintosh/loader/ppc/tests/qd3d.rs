@@ -13491,6 +13491,82 @@ fn hle_import_runner_merges_q3_trimesh_attributes_with_group_material() {
 }
 
 #[test]
+fn q3_texels_read_through_a_span_match_routed_reads() {
+    let mut bytes = vec![0u8; 0x400];
+    let mut state = 0x9e37_79b9u32;
+    for byte in &mut bytes {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *byte = (state >> 24) as u8;
+    }
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x2000, bytes);
+    for (pixel_type, pixel_bytes) in [
+        (PPC_Q3_PIXEL_TYPE_RGB16, 2),
+        (PPC_Q3_PIXEL_TYPE_ARGB16, 2),
+        (PPC_Q3_PIXEL_TYPE_RGB16_565, 2),
+        (PPC_Q3_PIXEL_TYPE_RGB24, 3),
+        (PPC_Q3_PIXEL_TYPE_RGB32, 4),
+        (PPC_Q3_PIXEL_TYPE_ARGB32, 4),
+    ] {
+        for byte_order in [PPC_Q3_ENDIAN_BIG, PPC_Q3_ENDIAN_LITTLE] {
+            // An odd image offset and row stride put texels at odd addresses;
+            // the last texel ends exactly at the storage's valid size.
+            let (width, height, row_bytes, image_offset) = (7u32, 5u32, 7 * pixel_bytes + 3, 5u32);
+            let valid_size = image_offset + (height - 1) * row_bytes + width * pixel_bytes;
+            let texture = PpcQ3SoftwareTexture {
+                image_base: 0x2001,
+                valid_size,
+                image_offset,
+                width,
+                height,
+                row_bytes,
+                pixel_type,
+                byte_order,
+                pixel_bytes,
+            };
+            let span = ppc_q3_software_texture_span(&mut memory, texture);
+            assert!(span.is_some(), "plain guest memory takes a span");
+            for y in 0..=height {
+                for x in 0..=width {
+                    assert_eq!(
+                        ppc_q3_software_texture_pixel_at_in(&mut memory, texture, span, x, y),
+                        ppc_q3_software_texture_pixel_at(&mut memory, texture, x, y),
+                        "{pixel_type} {byte_order} ({x}, {y})"
+                    );
+                }
+            }
+        }
+    }
+    // Storage that straddles two regions takes no span; its texels are read
+    // through the routed fallback.
+    memory.add_region(0x4000, vec![0x12; 0x10]);
+    memory.add_region(0x4010, vec![0x34; 0x10]);
+    let texture = PpcQ3SoftwareTexture {
+        image_base: 0x4000,
+        valid_size: 0x20,
+        image_offset: 0,
+        width: 8,
+        height: 2,
+        row_bytes: 16,
+        pixel_type: PPC_Q3_PIXEL_TYPE_RGB16,
+        byte_order: PPC_Q3_ENDIAN_BIG,
+        pixel_bytes: 2,
+    };
+    let span = ppc_q3_software_texture_span(&mut memory, texture);
+    assert!(span.is_none(), "a range across two regions takes no span");
+    for (x, y) in [(0, 0), (7, 0), (0, 1), (7, 1)] {
+        let routed = ppc_q3_software_texture_pixel_at(&mut memory, texture, x, y);
+        assert!(routed.is_some(), "({x}, {y}) is readable");
+        assert_eq!(ppc_q3_software_texture_pixel_at_in(&mut memory, texture, span, x, y), routed);
+    }
+    assert_ne!(
+        ppc_q3_software_texture_pixel_at(&mut memory, texture, 0, 0),
+        ppc_q3_software_texture_pixel_at(&mut memory, texture, 0, 1),
+        "the rows come from different regions"
+    );
+}
+
+#[test]
 fn hle_import_runner_submits_q3_trimesh_before_stale_retained_memberships() {
     let view = PPC_Q3_OBJECT_BASE;
     let group = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
