@@ -1900,6 +1900,12 @@ impl super::TrapDispatcher {
                         }
                         rec.vertices.push((v, h));
                     }
+                } else if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    // OpenPicture hides the pen, so lines are saved in the
+                    // picture rather than drawn. Inside Macintosh Volume I,
+                    // I-189; Line opcode $20 in Imaging With QuickDraw (1994),
+                    // p. A-23.
+                    pict::recording_push_line(commands, (v0, h0), (v, h));
                 } else {
                     self.record_region_line(v0, h0, v, h);
                     if let Err(e) = self.draw_line(cpu, bus, h0, v0, h, v) {
@@ -1929,6 +1935,8 @@ impl super::TrapDispatcher {
                         }
                         rec.vertices.push((v1, h1));
                     }
+                } else if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_line(commands, (v0, h0), (v1, h1));
                 } else {
                     self.record_region_line(v0, h0, v1, h1);
                     if let Err(e) = self.draw_line(cpu, bus, h0, v0, h1, v1) {
@@ -3010,6 +3018,10 @@ impl super::TrapDispatcher {
                         r.top, r.left, r.bottom, r.right, port, port_base, self.screen_mode.0,
                     );
                 }
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_rect(commands, 0x0032, (r.top, r.left, r.bottom, r.right));
+                    return Some(Ok(()));
+                }
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
@@ -3465,6 +3477,13 @@ impl super::TrapDispatcher {
                         (dst_top, dst_left, dst_bottom, dst_right),
                         mode,
                     ) {
+                        // Keep the transfer in drawing order with the other
+                        // recorded opcodes, so a picture that mixes lines,
+                        // erases and CopyBits replays all of them.
+                        if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                            self.recording_picture_bitmap_command_bytes +=
+                                pict::recording_push_bitmap_snapshot(commands, &snapshot);
+                        }
                         if let Some(existing) = self.recording_picture_bitmap.as_mut() {
                             // Each encoded snapshot has its own ten-byte
                             // picture header and end opcode. Keep every band
@@ -9498,6 +9517,7 @@ impl super::TrapDispatcher {
                     Vec::new(),
                 ));
                 self.recording_picture_bitmap = None;
+                self.recording_picture_bitmap_command_bytes = 0;
 
                 eprintln!(
                     "[TRAP] OpenPicture: handle=${:08X} frame=({},{},{},{})",
@@ -9519,7 +9539,16 @@ impl super::TrapDispatcher {
                 if let Some((handle, top, left, bottom, right, commands)) =
                     self.recording_picture.take()
                 {
-                    let picture = if let Some(mut snapshot) = self.recording_picture_bitmap.take() {
+                    // A picture made only of CopyBits transfers keeps its
+                    // compact bitmap encoding. Once any other opcode has been
+                    // recorded, the command stream (which carries the same
+                    // transfers inline) preserves the full drawing order.
+                    let bitmap_only = commands.len()
+                        == std::mem::take(&mut self.recording_picture_bitmap_command_bytes);
+                    let bitmap_snapshot = self.recording_picture_bitmap.take();
+                    let picture = if let Some(mut snapshot) =
+                        bitmap_snapshot.filter(|_| bitmap_only)
+                    {
                         let size = u16::try_from(snapshot.len()).unwrap_or(0);
                         snapshot[0..2].copy_from_slice(&size.to_be_bytes());
                         for (index, value) in [top, left, bottom, right].into_iter().enumerate() {
