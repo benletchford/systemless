@@ -411,6 +411,7 @@ impl PpcLoadedApp {
         let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
         let mut idle_poll_counts = HashMap::<u32, u32>::new();
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
+        let mut os_event_idle_poll = PpcOsEventIdlePollState::default();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut interrupt_return_work = None;
         let mut fetch_observer = PpcHleFetchObserver {
@@ -2225,6 +2226,24 @@ impl PpcLoadedApp {
                             action,
                             ppc_import_extra_cycles_for_binding(binding),
                         );
+                        let action = if binding.dispatcher_target
+                            == PpcImportDispatcherTarget::GetOSEvent
+                        {
+                            ppc_os_event_idle_poll_action(
+                                action,
+                                cpu.lr,
+                                import_tick_count,
+                                ppc_cycles_until_next_tick(
+                                    clock_cycles_per_tick,
+                                    clock_cycle_phase,
+                                    elapsed,
+                                )
+                                .min(max_cycles.saturating_sub(elapsed)),
+                                &mut os_event_idle_poll,
+                            )
+                        } else {
+                            action
+                        };
                         if trace_imports {
                             if let (Some(action_name), Some(result)) = (
                                 ppc_draw_sprocket_action_name(&binding.dispatcher_target),
