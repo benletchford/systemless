@@ -366,6 +366,7 @@ Common runner options:
 systemless --headless --max-instructions 5000000 path/to/app.sit
 systemless --arrows-as-numpad path/to/game.sit
 systemless --display-scale 2 path/to/game.sit
+systemless --screen-size 640x480 path/to/game.sit
 systemless --ui-theme classic-system7 path/to/game.sit
 systemless --fullscreen path/to/game.sit
 systemless --mount path/to/disc1.iso path/to/installed-game-folder
@@ -377,7 +378,11 @@ display). Oversized windows shrink to fit the monitor. Other platforms use an
 automatic display-sized window. Games keep their aspect ratio, and windows
 remain manually resizable. Use `--display-scale` with an
 integer from 1 through 8 to override automatic sizing with an exact physical
-guest-to-host pixel ratio (`1` selects 1:1). `--fullscreen` starts the guest in a borderless fullscreen space.
+guest-to-host pixel ratio (`1` selects 1:1). `--screen-size WIDTHxHEIGHT`
+changes the size of the guest's own screen from 800×600, for example to
+640×480 for a game that centres a smaller fixed-size picture on the screen. It
+is the same as setting `SYSTEMLESS_SCREEN_WIDTH` and `SYSTEMLESS_SCREEN_HEIGHT`.
+`--fullscreen` starts the guest in a borderless fullscreen space.
 On systems where macOS selects direct scan-out for the fullscreen surface this
 measurably reduced pointer-to-screen latency in testing (see issue #1050); the
 benefit depends on the machine and compositor state and is not guaranteed.
