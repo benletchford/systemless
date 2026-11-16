@@ -2064,6 +2064,9 @@ fn apple_event_address_and_ids_survive_descriptor_copies_and_parameter_updates()
         ae(PpcAppleEventCompatibilityOperation::CreateDesc),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    let handle = loaded.memory.read_u32_be(address + 4).unwrap();
+    let data = loaded.memory.read_u32_be(handle).unwrap();
+    loaded.memory.write_bytes(data, b"LIVE").unwrap();
     loaded.cpu.gpr[3] = u32::from_be_bytes(*b"GURL");
     loaded.cpu.gpr[4] = u32::from_be_bytes(*b"GURL");
     loaded.cpu.gpr[5] = address;
@@ -2075,6 +2078,7 @@ fn apple_event_address_and_ids_survive_descriptor_copies_and_parameter_updates()
         ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32, 0);
+    loaded.memory.write_bytes(data, b"NEXT").unwrap();
     loaded.cpu.gpr[3] = address;
     run_test_import(
         &mut loaded,
@@ -2101,7 +2105,7 @@ fn apple_event_address_and_ids_survive_descriptor_copies_and_parameter_updates()
     assert_eq!(loaded.cpu.gpr[3] as i32, 0);
     for descriptor in [event, copied, duplicate] {
         for (key, kind, expected) in [
-            (*b"addr", *b"sign", b"TEST".to_vec()),
+            (*b"addr", *b"sign", b"LIVE".to_vec()),
             (*b"rtid", *b"shor", vec![0x12, 0x34]),
             (*b"tran", *b"long", vec![0x12, 0x34, 0x56, 0x78]),
         ] {
@@ -2520,4 +2524,562 @@ fn apple_event_integer_coercions_preserve_values_and_reject_overflow() {
     let handle = loaded.memory.read_u32_be(scratch + 20).unwrap();
     let ptr = loaded.memory.read_u32_be(handle).unwrap();
     assert_eq!(loaded.memory.read_u16_be(ptr), Some((-123i16) as u16));
+}
+
+#[test]
+fn apple_event_float_coercions_round_and_reject_invalid_values() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    let (source, result, data) = (scratch, scratch + 8, scratch + 32);
+    let create = dispatcher_target_for_import("InterfaceLib", "AECreateDesc");
+    let coerce_desc = dispatcher_target_for_import("InterfaceLib", "AECoerceDesc");
+    let coerce_ptr = dispatcher_target_for_import("InterfaceLib", "AECoercePtr");
+    for (value, expected) in [
+        (-2.5f64, -2i32),
+        (-1.5, -2),
+        (0.5, 0),
+        (1.5, 2),
+        (2.5, 2),
+        (2.9, 3),
+    ] {
+        loaded.memory.write_u64_be(data, value.to_bits()).unwrap();
+        loaded.cpu.gpr[3..7].copy_from_slice(&[u32::from_be_bytes(*b"doub"), data, 8, source]);
+        run_test_import(&mut loaded, create.clone());
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        loaded.cpu.gpr[3..6].copy_from_slice(&[source, u32::from_be_bytes(*b"long"), result]);
+        run_test_import(&mut loaded, coerce_desc.clone());
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(ptr), Some(expected as u32));
+    }
+    for value in [f64::NAN, f64::INFINITY, 2147483648.0] {
+        loaded.memory.write_u64_be(data, value.to_bits()).unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            u32::from_be_bytes(*b"doub"),
+            data,
+            8,
+            u32::from_be_bytes(*b"long"),
+            result,
+        ]);
+        run_test_import(&mut loaded, coerce_ptr.clone());
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+        assert_eq!(loaded.memory.read_u64_be(result), Some(0));
+    }
+    loaded
+        .memory
+        .write_u32_be(data, (-3.25f32).to_bits())
+        .unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"sing"),
+        data,
+        4,
+        u32::from_be_bytes(*b"doub"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce_ptr.clone());
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u64_be(ptr), Some((-3.25f64).to_bits()));
+    loaded
+        .memory
+        .write_u64_be(data, 1e300f64.to_bits())
+        .unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"doub"),
+        data,
+        8,
+        u32::from_be_bytes(*b"sing"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce_ptr);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(ptr),
+        Some(f32::INFINITY.to_bits())
+    );
+}
+
+#[test]
+fn apple_event_pointer_getters_coerce_numeric_values() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 256]);
+    let (address, event, data, actual_type, output, actual_size, list, keyword) = (
+        scratch,
+        scratch + 8,
+        scratch + 32,
+        scratch + 48,
+        scratch + 56,
+        scratch + 72,
+        scratch + 80,
+        scratch + 96,
+    );
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.memory.write_bytes(data, b"TEST").unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[u32::from_be_bytes(*b"sign"), data, 4, address]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    loaded.cpu.gpr[3..9].copy_from_slice(&[
+        u32::from_be_bytes(*b"aevt"),
+        u32::from_be_bytes(*b"test"),
+        address,
+        7,
+        0,
+        event,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.memory.write_u64_be(data, 2.5f64.to_bits()).unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"doub"),
+        data,
+        8,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamPtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3..10].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"long"),
+        actual_type,
+        output,
+        4,
+        actual_size,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetParamPtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(actual_type),
+        Some(u32::from_be_bytes(*b"long"))
+    );
+    assert_eq!(loaded.memory.read_u32_be(actual_size), Some(4));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(2));
+    loaded.cpu.gpr[3..10].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"rtid"),
+        u32::from_be_bytes(*b"doub"),
+        actual_type,
+        output,
+        8,
+        actual_size,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetAttributePtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u64_be(output), Some(7f64.to_bits()));
+    loaded.cpu.gpr[3..7].copy_from_slice(&[0, 0, 0, list]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateList),
+    );
+    loaded.cpu.gpr[3..8].copy_from_slice(&[list, 0, u32::from_be_bytes(*b"doub"), data, 8]);
+    run_test_import(&mut loaded, ae(PpcAppleEventCompatibilityOperation::PutPtr));
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3..11].copy_from_slice(&[
+        list,
+        1,
+        u32::from_be_bytes(*b"long"),
+        keyword,
+        actual_type,
+        output,
+        4,
+        actual_size,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetNthPtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(actual_type),
+        Some(u32::from_be_bytes(*b"long"))
+    );
+    assert_eq!(loaded.memory.read_u32_be(actual_size), Some(4));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(2));
+}
+
+#[test]
+fn apple_event_descriptor_getters_coerce_numeric_values() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 256]);
+    let (address, event, data, result, list, keyword) = (
+        scratch,
+        scratch + 8,
+        scratch + 32,
+        scratch + 48,
+        scratch + 64,
+        scratch + 80,
+    );
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.memory.write_bytes(data, b"TEST").unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[u32::from_be_bytes(*b"sign"), data, 4, address]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    loaded.cpu.gpr[3..9].copy_from_slice(&[
+        u32::from_be_bytes(*b"aevt"),
+        u32::from_be_bytes(*b"test"),
+        address,
+        7,
+        0,
+        event,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    loaded.memory.write_u64_be(data, 2.5f64.to_bits()).unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"doub"),
+        data,
+        8,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamPtr),
+    );
+    loaded.cpu.gpr[3..7].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"long"),
+        result,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetParamDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(result),
+        Some(u32::from_be_bytes(*b"long"))
+    );
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr), Some(2));
+    loaded.cpu.gpr[3..7].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"rtid"),
+        u32::from_be_bytes(*b"doub"),
+        result,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetAttributeDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u64_be(ptr), Some(7f64.to_bits()));
+    loaded.cpu.gpr[3..7].copy_from_slice(&[0, 0, 0, list]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateList),
+    );
+    loaded.cpu.gpr[3..8].copy_from_slice(&[list, 0, u32::from_be_bytes(*b"doub"), data, 8]);
+    run_test_import(&mut loaded, ae(PpcAppleEventCompatibilityOperation::PutPtr));
+    loaded.cpu.gpr[3..8].copy_from_slice(&[list, 1, u32::from_be_bytes(*b"long"), keyword, result]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetNthDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr), Some(2));
+}
+
+#[test]
+fn apple_event_magnitude_coercions_preserve_unsigned_values() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECoercePtr")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let (data, result) = (scratch, scratch + 16);
+    let coerce = dispatcher_target_for_import("InterfaceLib", "AECoercePtr");
+    loaded.memory.write_u32_be(data, u32::MAX).unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"magn"),
+        data,
+        4,
+        u32::from_be_bytes(*b"comp"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce.clone());
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u64_be(ptr), Some(u64::from(u32::MAX)));
+    loaded
+        .memory
+        .write_u64_be(data, (-1.0f64).to_bits())
+        .unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"doub"),
+        data,
+        8,
+        u32::from_be_bytes(*b"magn"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u64_be(result), Some(0));
+}
+
+#[test]
+fn apple_event_four_character_text_coercions_preserve_bytes() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECoercePtr")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let (data, result) = (scratch, scratch + 16);
+    let coerce = dispatcher_target_for_import("InterfaceLib", "AECoercePtr");
+    loaded
+        .memory
+        .write_bytes(data, &[0x80, b'A', b'B', b'C'])
+        .unwrap();
+    for code in [*b"type", *b"enum", *b"keyw", *b"prop"] {
+        for (source, destination) in [(*b"TEXT", code), (code, *b"TEXT")] {
+            loaded.cpu.gpr[3..8].copy_from_slice(&[
+                u32::from_be_bytes(source),
+                data,
+                4,
+                u32::from_be_bytes(destination),
+                result,
+            ]);
+            run_test_import(&mut loaded, coerce.clone());
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(
+                loaded.memory.read_u32_be(result),
+                Some(u32::from_be_bytes(destination))
+            );
+            let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+            let ptr = loaded.memory.read_u32_be(handle).unwrap();
+            assert_eq!(loaded.memory.read_u32_be(ptr), Some(0x80414243));
+        }
+    }
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"TEXT"),
+        data,
+        3,
+        u32::from_be_bytes(*b"type"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u64_be(result), Some(0));
+}
+
+#[test]
+fn apple_event_boolean_coercions_follow_classic_type_rules() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECoercePtr")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    let (data, result) = (scratch, scratch + 16);
+    let coerce = dispatcher_target_for_import("InterfaceLib", "AECoercePtr");
+    for (source, bytes, destination, expected) in [
+        (*b"true", &b""[..], *b"bool", &b"\x01"[..]),
+        (*b"fals", &b""[..], *b"bool", &b"\x00"[..]),
+        (*b"enum", &b"true"[..], *b"bool", &b"\x01"[..]),
+        (*b"enum", &b"fals"[..], *b"bool", &b"\x00"[..]),
+        (*b"shor", &b"\x00\x01"[..], *b"bool", &b"\x01"[..]),
+        (*b"bool", &b"\xff"[..], *b"shor", &b"\x00\x01"[..]),
+        (*b"bool", &b"\x00"[..], *b"enum", &b"fals"[..]),
+        (*b"bool", &b"\x01"[..], *b"enum", &b"true"[..]),
+    ] {
+        loaded.memory.write_bytes(data, bytes).unwrap();
+        loaded.cpu.gpr[3..8].copy_from_slice(&[
+            u32::from_be_bytes(source),
+            data,
+            bytes.len() as u32,
+            u32::from_be_bytes(destination),
+            result,
+        ]);
+        run_test_import(&mut loaded, coerce.clone());
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+        let ptr = loaded.memory.read_u32_be(handle).unwrap();
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, ptr, expected.len() as u32),
+            Some(expected.to_vec())
+        );
+    }
+    loaded.memory.write_u16_be(data, 2).unwrap();
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        u32::from_be_bytes(*b"shor"),
+        data,
+        2,
+        u32::from_be_bytes(*b"bool"),
+        result,
+    ]);
+    run_test_import(&mut loaded, coerce);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+}
+
+#[test]
+fn apple_event_list_coercions_preserve_items_and_ownership() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    let (data, source, list, result, count) = (
+        scratch,
+        scratch + 16,
+        scratch + 24,
+        scratch + 32,
+        scratch + 40,
+    );
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.memory.write_u16_be(data, 7).unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[u32::from_be_bytes(*b"shor"), data, 2, source]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[source, u32::from_be_bytes(*b"list"), list]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = source;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::DisposeDesc),
+    );
+    loaded.cpu.gpr[3..5].copy_from_slice(&[list, count]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CountItems),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.memory.read_u32_be(count), Some(1));
+    loaded.cpu.gpr[3..6].copy_from_slice(&[list, u32::from_be_bytes(*b"long"), result]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let handle = loaded.memory.read_u32_be(result + 4).unwrap();
+    let ptr = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr), Some(7));
+    loaded.cpu.gpr[3..8].copy_from_slice(&[list, 0, u32::from_be_bytes(*b"shor"), data, 2]);
+    run_test_import(&mut loaded, ae(PpcAppleEventCompatibilityOperation::PutPtr));
+    loaded.cpu.gpr[3..6].copy_from_slice(&[list, u32::from_be_bytes(*b"long"), result]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u64_be(result), Some(0));
+}
+
+#[test]
+fn apple_event_pointer_getter_does_not_claim_an_unflattened_list() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"AECreateDesc")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    let (address, event, data, output, actual_type, actual_size) = (
+        scratch,
+        scratch + 8,
+        scratch + 24,
+        scratch + 32,
+        scratch + 48,
+        scratch + 52,
+    );
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded.memory.write_bytes(data, b"TEST").unwrap();
+    loaded.cpu.gpr[3..7].copy_from_slice(&[u32::from_be_bytes(*b"sign"), data, 4, address]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    loaded.cpu.gpr[3..9].copy_from_slice(&[
+        u32::from_be_bytes(*b"aevt"),
+        u32::from_be_bytes(*b"test"),
+        address,
+        7,
+        0,
+        event,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    loaded.cpu.gpr[3..8].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"TEXT"),
+        data,
+        4,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamPtr),
+    );
+    loaded.memory.write_u32_be(output, 0x12345678).unwrap();
+    loaded.cpu.gpr[3..10].copy_from_slice(&[
+        event,
+        u32::from_be_bytes(*b"----"),
+        u32::from_be_bytes(*b"list"),
+        actual_type,
+        output,
+        16,
+        actual_size,
+    ]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::GetParamPtr),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0x12345678));
+    let list = scratch + 64;
+    loaded.cpu.gpr[3..7].copy_from_slice(&[0, 0, 0, list]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateList),
+    );
+    loaded.cpu.gpr[3..6].copy_from_slice(&[event, u32::from_be_bytes(*b"----"), list]);
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::PutParamDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    for desired in [u32::from_be_bytes(*b"list"), PPC_TYPE_WILDCARD] {
+        loaded.cpu.gpr[3..10].copy_from_slice(&[
+            event,
+            u32::from_be_bytes(*b"----"),
+            desired,
+            actual_type,
+            output,
+            16,
+            actual_size,
+        ]);
+        run_test_import(
+            &mut loaded,
+            ae(PpcAppleEventCompatibilityOperation::GetParamPtr),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+        assert_eq!(loaded.memory.read_u32_be(output), Some(0x12345678));
+    }
 }

@@ -2489,6 +2489,9 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("Desk Manager imports return through dispatch_desk_import")
         }
         PpcImportDispatcherTarget::AEInstallEventHandler
+        | PpcImportDispatcherTarget::AEInstallCoercionHandler
+        | PpcImportDispatcherTarget::AEGetCoercionHandler
+        | PpcImportDispatcherTarget::AERemoveCoercionHandler
         | PpcImportDispatcherTarget::AERemoveEventHandler
         | PpcImportDispatcherTarget::AEGetEventHandler
         | PpcImportDispatcherTarget::AEInstallSpecialHandler
