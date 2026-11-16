@@ -300,8 +300,8 @@ test('presenter recovery requests a fresh image without recreating the guest', a
   const w = worker();
   const calls = [];
   w.override({ runFrame: (...args) => { calls.push(args); return { running: false, guestTick: 100, lastSteps: 0 }; } });
-  await w.send('frame', { forceRender: true, outputScale: 2 });
-  assert.deepEqual(calls, [[-1, false, 2, true, false, false, false, 0]]);
+  await w.send('frame', { forceRender: true, outputScale: 2, deduplicateRgba: true });
+  assert.deepEqual(calls, [[-1, false, 2, true, false, false, false, 0, true]]);
   assert.equal(w.messages.filter(message => message.type === 'frame').length, 1);
 });
 
@@ -312,7 +312,7 @@ test('indexed owner packets transfer indices, palette and cursor together', asyn
   const calls = [];
   w.override({ runFrame: (...args) => { calls.push(args); return { running: true, guestTick: 100, lastSteps: 0, indexedFrame: packet }; } });
   await w.send('frame', { indexedRender: true, cursorScale: 1.5 });
-  assert.deepEqual(calls, [[-1, false, 1, false, true, false, false, 1.5]]);
+  assert.deepEqual(calls, [[-1, false, 1, false, true, false, false, 1.5, false]]);
   assert.equal(w.messages.find(message => message.type === 'frame').indexedFrame.palette.byteLength, 1024);
   assert.equal(packet.pixels.byteLength, 0); assert.equal(packet.palette.byteLength, 0);
   assert.equal(packet.cursor.pixels.byteLength, 0);
@@ -325,7 +325,7 @@ test('compact owner snapshots transfer cells and empty detail without guest rest
   const calls = [];
   w.override({ runFrame:(...args)=>{calls.push(args);return {running:true,guestTick:100,lastSteps:0,compactFrame:{compact}};} });
   await w.send('frame',{compactRender:true,measurePresentation:true});
-  assert.deepEqual(calls,[[-1,false,1,false,false,true,true,0]]);
+  assert.deepEqual(calls,[[-1,false,1,false,false,true,true,0,false]]);
   assert.equal(compact.cells.byteLength,0);
   assert.equal(w.messages.find(message=>message.type==='frame').compactFrame.compact.cells[0],0x123456);
 });

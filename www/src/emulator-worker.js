@@ -207,7 +207,7 @@ self.onmessage = async (event) => {
     }
 
     if (message.type === "frame") {
-      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender, !!message.measurePresentation, message.cursorScale ?? 0);
+      const result = machine.runFrame(message.queuedAudioSamples ?? -1, !!message.debug, message.outputScale ?? 1, !!message.forceRender, !!message.indexedRender, !!message.compactRender, !!message.measurePresentation, message.cursorScale ?? 0, !!message.deduplicateRgba);
       guestTick = result.guestTick >>> 0;
       uiTracking = !!result.uiTracking;
       if (result.lastSteps > 0 || !result.running) {

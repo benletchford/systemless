@@ -7,6 +7,7 @@ mod catalogue;
 mod compact_vectors;
 mod components;
 mod emulator;
+mod frame_dedup;
 #[cfg(target_arch = "wasm32")]
 mod gpu_compute_worker;
 mod gpu_proxy;
