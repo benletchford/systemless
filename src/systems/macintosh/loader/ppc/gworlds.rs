@@ -3515,11 +3515,8 @@ pub(crate) fn ppc_rect_dimensions(top: i16, left: i16, bottom: i16, right: i16) 
 }
 
 pub(crate) fn ppc_row_bytes(width: u32, depth: u32) -> Option<u32> {
-    let visible_row_bytes = width.checked_mul(depth)?.div_ceil(8);
-    visible_row_bytes
-        .checked_div(16)?
-        .checked_add(1)?
-        .checked_mul(16)
+    width.checked_mul(depth)?;
+    Some(TrapDispatcher::offscreen_row_bytes(width, depth))
 }
 
 pub(crate) fn ppc_u32_to_i16_saturating(value: u32) -> i16 {

@@ -7662,12 +7662,7 @@ impl super::TrapDispatcher {
                                 requested_right,
                             )
                         };
-                        // Keep offscreen scanlines 16-byte aligned without
-                        // adding padding when the visible width is already
-                        // aligned. Applications can copy complete scanlines
-                        // directly between GWorlds and the screen.
-                        let visible_row_bytes = (width * depth).div_ceil(8);
-                        let row_bytes = visible_row_bytes.div_ceil(16) * 16;
+                        let row_bytes = Self::offscreen_row_bytes(width, depth);
 
                         // IM:VI 21-13: noNewDevice uses the supplied GDevice's
                         // depth and color table; custom cTable requires an
@@ -7951,8 +7946,7 @@ impl super::TrapDispatcher {
                         let new_width = ((new_right as i32) - (new_left as i32)).max(1) as u32;
                         let new_height = ((new_bottom as i32) - (new_top as i32)).max(1) as u32;
 
-                        let visible_row_bytes = (new_width * depth).div_ceil(8);
-                        let new_row_bytes = visible_row_bytes.div_ceil(16) * 16;
+                        let new_row_bytes = Self::offscreen_row_bytes(new_width, depth);
                         let new_buf_size = new_row_bytes * new_height;
 
                         let mut result_flags: u32 = 0;
@@ -19965,6 +19959,17 @@ impl super::TrapDispatcher {
         }
         self.screen_mode = (color_screen_base, row_bytes, width, height, depth);
         true
+    }
+
+    /// Scanline stride of a NewGWorld/UpdateGWorld pixel buffer.
+    ///
+    /// NewGWorld long-aligns the visible scanline, adds four bytes of slop
+    /// and then aligns the stride to 16 bytes, so a 640-pixel 8-bit row is
+    /// 656 bytes, 74 pixels take 80 and 78 pixels take 96. Applications that
+    /// saved GWorld pixels at that stride and read them straight back into
+    /// a GWorld (Gridz) depend on the padding. PowerPC GWorlds share it.
+    pub(crate) fn offscreen_row_bytes(width: u32, depth: u32) -> u32 {
+        ((width * depth).div_ceil(8).next_multiple_of(4) + 4).next_multiple_of(16)
     }
 
     fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
