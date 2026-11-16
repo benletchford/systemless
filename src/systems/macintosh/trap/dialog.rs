@@ -15347,29 +15347,30 @@ impl super::TrapDispatcher {
                         // Returns the total height of the requested line range.
                         // FUNCTION TEGetHeight(endLine: LONGINT; startLine: LONGINT; hTE: TEHandle): LONGINT;
                         // Text 1993, 2-90
+                        //
+                        // The ROM's iTEGetHeight orders the two line numbers
+                        // as unsigned longs before pinning both to teNLines,
+                        // so TEGetHeight(0, 32767, hTE) measures the whole
+                        // record instead of 32767 lines.
                         let te_handle = bus.read_long(sp + 2);
-                        let mut start_line = bus.read_long(sp + 6) as i32;
-                        let mut end_line = bus.read_long(sp + 10) as i32;
+                        let first = bus.read_long(sp + 6);
+                        let second = bus.read_long(sp + 10);
+                        let (low, high) = if first <= second {
+                            (first, second)
+                        } else {
+                            (second, first)
+                        };
                         let te_ptr = Self::te_record_ptr(bus, te_handle);
                         let n_lines = if te_ptr != 0 {
-                            bus.read_word(te_ptr + Self::TE_N_LINES_OFFSET) as i32
+                            u32::from(bus.read_word(te_ptr + Self::TE_N_LINES_OFFSET)).max(1)
                         } else {
-                            0
+                            1
                         };
-                        if start_line > 0 {
-                            start_line -= 1;
-                        } else {
-                            start_line = 0;
-                        }
-                        end_line = end_line.min(n_lines);
-                        if end_line < 0 {
-                            end_line = 0;
-                        } else if end_line > 0 {
-                            end_line -= 1;
-                        }
-                        if start_line > end_line {
-                            std::mem::swap(&mut start_line, &mut end_line);
-                        }
+                        // Zero-based first line and exclusive one-based last line.
+                        let low = (low.max(1) - 1).min(n_lines);
+                        let high = high.max(1).min(n_lines);
+                        let start_line = low as i32;
+                        let mut end_line = high as i32 - 1;
 
                         let text_bytes = Self::te_text_bytes(bus, te_handle);
                         let line_starts = Self::te_line_starts(bus, te_handle);
