@@ -82,6 +82,23 @@ fn relstring_orders_c_strings_like_relstring() {
 }
 
 #[test]
+fn relstring_with_an_unterminated_string_returns_instead_of_halting() {
+    let pef = synthetic_pef_with_import(b"relstring");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let a = PPC_DATA_BASE + 0x1000;
+    let b = a + 0x200;
+    loaded.memory.add_region(a, vec![b'x'; 0x400]);
+    loaded.memory.write_bytes(b, b"x\0").unwrap();
+    loaded.cpu.gpr[3] = a;
+    loaded.cpu.gpr[4] = b;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
 fn getfnum_and_getfontname_use_c_strings() {
     let pef = synthetic_pef_with_import(b"getfnum");
     let mut loaded = load_pef_application(&pef).unwrap();

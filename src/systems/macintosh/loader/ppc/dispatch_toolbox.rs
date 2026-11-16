@@ -56,9 +56,14 @@ pub(super) fn dispatch_toolbox_import(
         }
         PpcImportDispatcherTarget::RelCString => {
             // short relstring(const char *, const char *, Boolean caseSens,
-            // Boolean diacSens): the C glue for RelString.
-            let left = ppc_read_bounded_c_string(memory, cpu.gpr[3])?;
-            let right = ppc_read_bounded_c_string(memory, cpu.gpr[4])?;
+            // Boolean diacSens): the C glue for RelString. An unreadable or
+            // unterminated string compares as equal, as equalstring treats it.
+            let (Some(left), Some(right)) = (
+                ppc_read_bounded_c_string(memory, cpu.gpr[3]),
+                ppc_read_bounded_c_string(memory, cpu.gpr[4]),
+            ) else {
+                return Some(PpcImportAction::Return(0));
+            };
             let result = crate::text_utils::evaluate_rel_string(
                 &left,
                 &right,
