@@ -288,10 +288,16 @@ use super::*;
                 .read_u16_be(main_table + 8 + 42 * 8 + 6)
                 .unwrap(),
         ];
+        // A colour absent from the standard palette, so the RGB remap has a
+        // single exact match instead of tying with the reserved black entry.
+        let marker = [0x1234, 0x5678, 0x9abc];
         for channel in 0..3u32 {
             loaded
                 .memory
-                .write_u16_be(main_table + 8 + 42 * 8 + 2 + channel * 2, 0)
+                .write_u16_be(
+                    main_table + 8 + 42 * 8 + 2 + channel * 2,
+                    marker[channel as usize],
+                )
                 .unwrap();
             loaded
                 .memory
@@ -343,7 +349,10 @@ use super::*;
                 .unwrap();
             loaded
                 .memory
-                .write_u16_be(main_table + 8 + 77 * 8 + 2 + channel * 2, 0)
+                .write_u16_be(
+                    main_table + 8 + 77 * 8 + 2 + channel * 2,
+                    marker[channel as usize],
+                )
                 .unwrap();
         }
         loaded.cpu.gpr[3] = gworld_out_ptr;

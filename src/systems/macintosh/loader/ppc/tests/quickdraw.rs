@@ -5054,6 +5054,61 @@ fn protected_ppc_clut_entries_are_unchanged_by_set_entries() {
 }
 
 #[test]
+fn black_stays_on_the_last_clut_entry_after_a_set_entries_fade_to_black() {
+    // Escape Velocity fades the 8-bit screen to black by calling SetEntries
+    // with every entry black, paints the screen black, and fades back in.
+    // Black must land on entry 255, not the first tied entry (white once
+    // the palette is restored). Imaging With QuickDraw (1994), p. 4-82.
+    let table = 0x2000;
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(table, vec![0; 256 * 8]);
+    let mut screen_clut = TrapDispatcher::standard_mac_8bpp_clut();
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(ppc_apply_set_entries(
+        &mut memory,
+        0,
+        255,
+        table,
+        0,
+        &mut screen_clut,
+        &[false; 256],
+        None,
+        true,
+        &mut startup,
+    ));
+    assert!(screen_clut.iter().all(|entry| *entry == [0; 3]));
+
+    assert_eq!(ppc_rgb_color_to_index_in_clut(PPC_RGB_BLACK, &screen_clut, 256), 255);
+    let bits = PpcPixMapBits {
+        base_addr: 0,
+        row_bytes: 1,
+        top: 0,
+        left: 0,
+        bottom: 1,
+        right: 1,
+        width: 1,
+        height: 1,
+        depth: 8,
+    };
+    assert_eq!(ppc_rgb_to_pixmap_pixel(bits, [0; 3], Some(&screen_clut)), Some(255));
+    // A 4-bit destination pins black to its own last entry.
+    assert_eq!(ppc_rgb_color_to_index_in_clut(PPC_RGB_BLACK, &screen_clut, 16), 15);
+
+    // With the standard palette back, white and black keep their reserved
+    // endpoints and other colours still match by distance.
+    let standard = TrapDispatcher::standard_mac_8bpp_clut();
+    assert_eq!(ppc_rgb_color_to_index_in_clut(PPC_RGB_WHITE, &standard, 256), 0);
+    assert_eq!(ppc_rgb_color_to_index_in_clut(PPC_RGB_BLACK, &standard, 256), 255);
+    let red = PpcRgbColor {
+        red: 0xffff,
+        green: 0,
+        blue: 0,
+    };
+    let red_index = ppc_rgb_color_to_index_in_clut(red, &standard, 256);
+    assert_eq!(standard[usize::from(red_index)], [0xffff, 0, 0]);
+}
+
+#[test]
 fn ppc_clut_entry_flags_ignore_invalid_indices_and_can_be_cleared() {
     let mut flags = [false; 256];
     ppc_set_clut_entry_flag(&mut flags, 3, true);

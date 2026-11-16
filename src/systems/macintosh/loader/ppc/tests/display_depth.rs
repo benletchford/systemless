@@ -36,6 +36,132 @@ fn hle_import_runner_init_cport_reuses_storage_and_current_device_clut() {
 }
 
 #[test]
+fn hle_import_runner_open_cport_initializes_stale_port_storage() {
+    // Escape Velocity's PowerPC slice opens CGrafPorts in storage from a
+    // non-clearing NewPtr, then draws a picture into them. Stale bytes left
+    // in grafProcs must not survive OpenCPort, or DrawPicture jumps through
+    // a garbage getPicProc. Imaging With QuickDraw (1994), pp. 4-64--4-66.
+    let pef = synthetic_pef_with_import(b"OpenCPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let port = PPC_DATA_BASE + 0x7000;
+    loaded
+        .memory
+        .add_region(port, vec![0xa5; PPC_CGRAF_PORT_SIZE as usize]);
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+
+    let memory = &mut loaded.memory;
+    // grafVars, chExtra and pnLocHFrac.
+    assert_eq!(memory.read_u32_be(port + PPC_CGRAF_PORT_GRAF_VARS_OFFSET), Some(0));
+    assert_eq!(memory.read_u16_be(port + PPC_CGRAF_PORT_CH_EXTRA_OFFSET), Some(0));
+    assert_eq!(memory.read_u16_be(port + 14), Some(0x8000));
+    // bkPixPat, pnLoc, pnPixPat, fillPixPat and pnVis.
+    assert_eq!(memory.read_u32_be(port + PPC_CGRAF_PORT_BK_PIXPAT_OFFSET), Some(0));
+    assert_eq!(memory.read_u32_be(port + PPC_CGRAF_PORT_PN_LOC_OFFSET), Some(0));
+    assert_eq!(memory.read_u32_be(port + 58), Some(0));
+    assert_eq!(memory.read_u32_be(port + 62), Some(0));
+    assert_eq!(memory.read_u16_be(port + PPC_CGRAF_PORT_PN_VIS_OFFSET), Some(0));
+    // spExtra, fgColor = blackColor and bkColor = whiteColor.
+    assert_eq!(memory.read_u32_be(port + 76), Some(0));
+    assert_eq!(memory.read_u32_be(port + 80), Some(0x21));
+    assert_eq!(memory.read_u32_be(port + 84), Some(0x1e));
+    // colrBit, patStretch, picSave, rgnSave, polySave and grafProcs.
+    assert_eq!(memory.read_u16_be(port + 88), Some(0));
+    assert_eq!(memory.read_u16_be(port + 90), Some(0));
+    assert_eq!(memory.read_u32_be(port + 92), Some(0));
+    assert_eq!(memory.read_u32_be(port + PPC_CGRAF_PORT_RGN_SAVE_OFFSET), Some(0));
+    assert_eq!(memory.read_u32_be(port + 100), Some(0));
+    assert_eq!(memory.read_u32_be(port + 104), Some(0));
+    // OpenCPort owns only the 108-byte CGrafPort; bytes past it belong to
+    // the caller.
+    assert_eq!(memory.read_u32_be(port + 108), Some(0xa5a5_a5a5));
+    // The fields OpenCPort already set are still in place.
+    assert_eq!(memory.read_u16_be(port + 6), Some(0xc000));
+    assert_ne!(memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET), Some(0));
+    assert_ne!(memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET), Some(0));
+    assert_eq!(
+        memory.read_u16_be(port + PPC_CGRAF_PORT_PN_MODE_OFFSET),
+        Some(PPC_QD_PEN_MODE_PAT_COPY as u16)
+    );
+}
+
+#[test]
+fn device_flagged_port_table_copy_matches_colors_through_its_live_device() {
+    // Escape Velocity HandToHands the screen's ColorTable into a CGrafPort's
+    // pmTable while the screen is faded to black, then draws its main menu
+    // into that port after fading back in. The copy keeps the device bit
+    // (ctFlags high bit), so its pixels are screen indices and QuickDraw
+    // matches colours through the GDevice's live table, not the stale copy.
+    // Imaging With QuickDraw (1994), pp. 4-81--4-82; IM V (1986), p. V-135.
+    let pef = synthetic_pef_with_import(b"OpenCPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let port = PPC_DATA_BASE + 0x7000;
+    loaded
+        .memory
+        .add_region(port, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+    let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(pixmap + 42), Some(PPC_MAIN_CTABLE_HANDLE));
+
+    // An all-black copy of the device table, as captured mid-fade.
+    let mut copy = ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE)
+        .unwrap();
+    assert_eq!(u16::from_be_bytes([copy[4], copy[5]]) & 0x8000, 0x8000);
+    for entry in copy[8..].chunks_exact_mut(8) {
+        entry[2..8].fill(0);
+    }
+    let copy_handle = PPC_DATA_BASE + 0x9000;
+    let copy_table = copy_handle + 16;
+    loaded
+        .memory
+        .add_region(copy_handle, vec![0; 16 + copy.len()]);
+    loaded.memory.write_u32_be(copy_handle, copy_table).unwrap();
+    for (offset, byte) in copy.iter().enumerate() {
+        loaded.memory.write_u8(copy_table + offset as u32, *byte).unwrap();
+    }
+    loaded.memory.write_u32_be(pixmap + 42, copy_handle).unwrap();
+
+    let red = PpcRgbColor {
+        red: 0xffff,
+        green: 0,
+        blue: 0,
+    };
+    let device_clut = ppc_read_ctable_clut(
+        &mut loaded.memory,
+        PPC_MAIN_CTABLE_HANDLE,
+        &TrapDispatcher::standard_mac_8bpp_clut(),
+    )
+    .unwrap();
+    let device_red = ppc_rgb_color_to_index_in_clut(red, &device_clut, 256);
+    assert_eq!(device_clut[usize::from(device_red)], [0xffff, 0, 0]);
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, port),
+        Some(PPC_MAIN_CTABLE_HANDLE)
+    );
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(surface.ctable_handle, Some(PPC_MAIN_CTABLE_HANDLE));
+    assert_eq!(
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, red),
+        Some(u16::from(device_red))
+    );
+
+    // A PixMap's own image table (no device bit) still maps colours itself.
+    loaded
+        .memory
+        .write_u16_be(copy_table + 4, u16::from_be_bytes([copy[4], copy[5]]) & 0x7fff)
+        .unwrap();
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, port),
+        Some(copy_handle)
+    );
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(surface.ctable_handle, Some(copy_handle));
+}
+
+#[test]
 fn hle_import_runner_handles_test_device_attribute() {
     let pef = synthetic_pef_with_import(b"TestDeviceAttribute");
     let mut loaded = load_pef_application(&pef).unwrap();
