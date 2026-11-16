@@ -1,6 +1,1283 @@
 use super::*;
 
 #[test]
+fn powerpc_dispose_control_releases_classic_auxiliary_handle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DisposeControl")).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    loaded.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    bus.attach_guest_address_space(loaded.memory.shared_view());
+    context.attach_classic_memory_bus(&mut bus);
+    let heap = bus.shared_ram_region(0x0020_0000, 0x0020_0000).unwrap();
+    context.attach_memory(0x0020_0000, heap, &mut loaded.memory);
+    let control = bus.alloc(4);
+    let record = bus.alloc(PPC_CONTROL_RECORD_SIZE);
+    bus.write_long(control, record);
+    bus.write_long(record + PPC_CONTROL_OWNER_OFFSET, PPC_MAIN_GWORLD);
+    loaded
+        .memory
+        .write_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET, control)
+        .unwrap();
+    let aux = classic.ensure_control_aux_record(&mut bus, control);
+    let aux_ptr = bus.read_long(aux);
+    with_test_controls!(loaded, |controls| controls.push(PpcControlRecord {
+        handle: control,
+        pointer: record,
+        ..Default::default()
+    }));
+    let colors = bus.alloc(4);
+    let colors_ptr = bus.alloc(40);
+    bus.write_long(colors, colors_ptr);
+    loaded.cpu.gpr[3] = control;
+    loaded.cpu.gpr[4] = colors;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(bus.read_long(aux_ptr + 8), colors);
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(aux));
+    let classic_colors = bus.alloc(4);
+    let classic_colors_ptr = bus.alloc(16);
+    bus.write_long(classic_colors, classic_colors_ptr);
+    bus.write_word(classic_colors_ptr + 6, 0);
+    bus.write_word(classic_colors_ptr + 8, 1);
+    bus.write_word(classic_colors_ptr + 10, 0);
+    bus.write_word(classic_colors_ptr + 12, 0);
+    bus.write_word(classic_colors_ptr + 14, 0);
+    bus.write_word(record + 12, 20);
+    bus.write_word(record + 14, 50);
+    bus.write_byte(record + PPC_CONTROL_VISIBLE_OFFSET, 255);
+    let sp = 0x300100;
+    let mut cpu = crate::trap::test_helpers::MockCpu::new();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, classic_colors);
+    bus.write_long(sp + 4, control);
+    assert!(classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_long(aux_ptr + 8), classic_colors);
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        PPC_RGB_WHITE,
+        None
+    ));
+    assert!(ppc_draw_control(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        control
+    ));
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+        Some(black)
+    );
+    let heap = bus.shared_classic_heap_allocator();
+    assert!(heap.allocation_size(aux).is_some());
+    assert!(heap.allocation_size(aux_ptr).is_some());
+    loaded.cpu.gpr[3] = control;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    assert!(heap.allocation_size(aux).is_none());
+    assert!(heap.allocation_size(aux_ptr).is_none());
+    let out = bus.alloc(4);
+    let sp = 0x300100;
+    let mut cpu = crate::trap::test_helpers::MockCpu::new();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, out);
+    bus.write_long(sp + 4, control);
+    assert!(classic
+        .dispatch_quickdraw(true, 0x244, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_ne!(bus.read_long(out), aux);
+    classic.release_control_aux_record(&mut bus, control);
+    assert!(classic.control_aux_state(control).is_none());
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+}
+
+#[test]
+fn classic_get_aux_ctl_finds_powerpc_created_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    loaded.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    bus.attach_guest_address_space(loaded.memory.shared_view());
+    context.attach_classic_memory_bus(&mut bus);
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 20, 50).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+    let aux = ppc_find_control_aux(&mut loaded.memory, control)
+        .flatten()
+        .unwrap();
+    let out = bus.alloc(4);
+    let sp = 0x300100;
+    let mut cpu = crate::trap::test_helpers::MockCpu::new();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, out);
+    bus.write_long(sp + 4, control);
+    bus.write_word(sp + 8, 0);
+    assert!(classic
+        .dispatch_quickdraw(true, 0x244, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_long(out), aux);
+    assert_eq!(bus.read_word(sp + 8), 0x0100);
+    let manager = loaded.process_memory_manager.0.clone();
+    let colors = manager
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    assert_ne!(colors, 0);
+    let colors_ptr = loaded.memory.read_u32_be(colors).unwrap();
+    loaded.memory.write_u16_be(colors_ptr + 6, 0).unwrap();
+    loaded.memory.write_u16_be(colors_ptr + 8, 1).unwrap();
+    loaded.memory.write_u16_be(colors_ptr + 10, 0x1234).unwrap();
+    loaded.memory.write_u16_be(colors_ptr + 12, 0x5678).unwrap();
+    loaded.memory.write_u16_be(colors_ptr + 14, 0x9abc).unwrap();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, colors);
+    bus.write_long(sp + 4, control);
+    assert!(classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    let aux_ptr = loaded.memory.read_u32_be(aux).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(aux));
+    assert_eq!(loaded.memory.read_u32_be(aux_ptr + 8), Some(colors));
+    let control_ptr = loaded.memory.read_u32_be(control).unwrap();
+    assert_eq!(
+        classic.control_part_color(&bus, control_ptr, 1),
+        Some((0x1234, 0x5678, 0x9abc))
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(aux_ptr),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    let screen = bus.alloc(64 * 64);
+    bus.write_bytes(screen, &vec![0; 64 * 64]);
+    classic.set_screen_mode_for_test(screen, 64, 64, 64, 8);
+    classic.device_clut.replace([[0xffff; 3]; 256]);
+    classic.device_clut.set_entry(42, [0x1234, 0x5678, 0x9abc]);
+    classic.device_clut.set_entry(255, [0; 3]);
+    let port = bus.alloc(108);
+    bus.write_long(port + 2, screen);
+    bus.write_word(port + 6, 64);
+    bus.write_word(port + 12, 64);
+    bus.write_word(port + 14, 64);
+    bus.write_word(port + 20, 64);
+    bus.write_word(port + 22, 64);
+    let globals = bus.alloc(4);
+    let a5 = bus.alloc(4);
+    bus.write_long(a5, globals);
+    cpu.write_reg(Register::A5, a5);
+    classic.set_current_port_state(&mut bus, &mut cpu, port, None);
+    bus.write_long(control_ptr + PPC_CONTROL_OWNER_OFFSET, port);
+    bus.write_byte(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255);
+    classic.draw_control(&mut cpu, &mut bus, control_ptr);
+    assert_eq!(
+        bus.read_byte(screen + 10 * 64 + 10),
+        42,
+        "68k redraw uses PPC table"
+    );
+    bus.write_byte(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 0);
+    bus.write_long(control_ptr + PPC_CONTROL_OWNER_OFFSET, PPC_MAIN_GWORLD);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_long(sp + 4, control);
+    assert!(classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(
+        loaded.memory.read_u32_be(aux_ptr + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+    bus.write_long(control_ptr + PPC_CONTROL_OWNER_OFFSET, port);
+    bus.write_byte(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255);
+    bus.write_bytes(screen, &vec![42; 64 * 64]);
+    classic.draw_control(&mut cpu, &mut bus, control_ptr);
+    assert_eq!(
+        bus.read_byte(screen + 10 * 64 + 10),
+        0,
+        "reset restores standard body"
+    );
+    assert_eq!(
+        bus.read_byte(screen + 10 * 64),
+        255,
+        "reset restores standard frame"
+    );
+    bus.write_byte(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 0);
+    bus.write_long(control_ptr + PPC_CONTROL_OWNER_OFFSET, PPC_MAIN_GWORLD);
+    assert!(manager.borrow().native_allocation(control).is_some());
+    assert!(manager.borrow().native_allocation(aux).is_some());
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, control);
+    assert!(classic
+        .dispatch_control(true, 0x155, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert!(manager.borrow().native_allocation(control).is_none());
+    assert!(manager.borrow().native_allocation(aux).is_none());
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    let aux = ppc_find_control_aux(&mut loaded.memory, control)
+        .flatten()
+        .unwrap();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, PPC_MAIN_GWORLD);
+    assert!(classic
+        .dispatch_control(true, 0x156, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert!(manager.borrow().native_allocation(control).is_none());
+    assert!(manager.borrow().native_allocation(aux).is_none());
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+}
+
+#[test]
+fn powerpc_standard_color_uses_classic_created_sentinel() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlColor")).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    loaded.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    bus.attach_guest_address_space(loaded.memory.shared_view());
+    context.attach_classic_memory_bus(&mut bus);
+    let heap = bus.shared_ram_region(0x0020_0000, 0x0020_0000).unwrap();
+    context.attach_memory(0x0020_0000, heap, &mut loaded.memory);
+    loaded.memory.write_u32_be(0x0cd4, 0).unwrap();
+    let classic_table = bus.alloc(4);
+    let sp = 0x300100;
+    let mut cpu = crate::trap::test_helpers::MockCpu::new();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, classic_table);
+    bus.write_long(sp + 4, 0);
+    classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let sentinel = bus.read_long(0x0cd4);
+    let sentinel_ptr = bus.read_long(sentinel);
+    assert_ne!(sentinel, PPC_DEFAULT_AUX_CONTROL_HANDLE);
+    let standard = bus.alloc(4);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = standard;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(bus.read_long(sentinel_ptr + 8), standard);
+    let output = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "GetAuxiliaryControlRecord"),
+    );
+    assert_eq!(loaded.memory.read_u32_be(output), Some(sentinel));
+    let mut last_mem_error = 0;
+    let control = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        b"",
+        false,
+        0,
+        0,
+        1,
+        0,
+        0,
+    ));
+    assert_ne!(control, 0);
+    let aux = ppc_find_control_aux(&mut loaded.memory, control)
+        .flatten()
+        .unwrap();
+    let aux_ptr = loaded.memory.read_u32_be(aux).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(aux_ptr + 8), Some(standard));
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(
+        bus.read_long(sentinel_ptr + 8),
+        PPC_DEFAULT_CONTROL_CTABLE_HANDLE
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(aux_ptr + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+}
+
+#[test]
+fn classic_control_inherits_powerpc_standard_control_color() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlColor")).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    loaded.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    bus.attach_guest_address_space(loaded.memory.shared_view());
+    context.attach_classic_memory_bus(&mut bus);
+    let table = loaded
+        .process_memory_manager
+        .0
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    assert_ne!(table, 0);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = table;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    let control = bus.alloc(4);
+    let record = bus.alloc(PPC_CONTROL_RECORD_SIZE);
+    bus.write_long(control, record);
+    let aux = classic.ensure_control_aux_record(&mut bus, control);
+    assert_eq!(bus.read_long(bus.read_long(aux) + 8), table);
+    let replacement = bus.alloc(4);
+    let sp = 0x300100;
+    let mut cpu = crate::trap::test_helpers::MockCpu::new();
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, replacement);
+    bus.write_long(sp + 4, 0);
+    classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_DEFAULT_AUX_CONTROL + 8),
+        Some(replacement)
+    );
+    assert_eq!(bus.read_long(bus.read_long(aux) + 8), replacement);
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0);
+    bus.write_long(sp + 4, 0);
+    classic
+        .dispatch_control(true, 0x243, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_DEFAULT_AUX_CONTROL + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+    assert_eq!(
+        bus.read_long(bus.read_long(aux) + 8),
+        PPC_DEFAULT_CONTROL_CTABLE_HANDLE
+    );
+}
+
+#[test]
+fn classic_control_creation_preserves_existing_powerpc_auxiliary_list() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let mut classic = TrapDispatcher::new();
+    let mut context = ProcessContext::default();
+    loaded.attach_unconverted_process_services(&mut context);
+    classic.attach_unconverted_process_services(&mut context);
+    let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+    bus.attach_guest_address_space(loaded.memory.shared_view());
+    context.attach_classic_memory_bus(&mut bus);
+    let heap = bus.shared_ram_region(0x0020_0000, 0x0020_0000).unwrap();
+    context.attach_memory(0x0020_0000, heap, &mut loaded.memory);
+    let previous_head = loaded.memory.read_u32_be(0x0cd4).unwrap();
+    assert_eq!(bus.read_long(0x0cd4), previous_head);
+    let aux = classic.ensure_control_aux_record(&mut bus, 0x1234);
+    assert_ne!(aux, 0);
+    let record = bus.read_long(aux);
+    assert_eq!(bus.read_long(record), previous_head);
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(aux));
+    assert_eq!(
+        ppc_find_control_aux(&mut loaded.memory, 0x1234),
+        Some(Some(aux))
+    );
+    let output = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(output, vec![0; 4]);
+    loaded.cpu.gpr[3] = 0x1234;
+    loaded.cpu.gpr[4] = output;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "GetAuxiliaryControlRecord"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 1);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(aux));
+    let ppc_aux = PPC_DATA_BASE + 0x2000;
+    let ppc_record = ppc_aux + 4;
+    loaded.memory.add_region(ppc_aux, vec![0; 26]);
+    loaded.memory.write_u32_be(ppc_aux, ppc_record).unwrap();
+    loaded.memory.write_u32_be(ppc_record, aux).unwrap();
+    loaded.memory.write_u32_be(ppc_record + 4, 0x5678).unwrap();
+    loaded.memory.write_u32_be(0x0cd4, ppc_aux).unwrap();
+    classic.release_control_aux_record(&mut bus, 0x1234);
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(ppc_aux));
+    assert_eq!(loaded.memory.read_u32_be(ppc_record), Some(previous_head));
+}
+
+#[test]
+fn nil_control_color_changes_standard_without_overwriting_custom_controls() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlColor")).unwrap();
+    let mut last_mem_error = 0;
+    let mut controls_created = Vec::new();
+    for _ in 0..2 {
+        let control = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            PPC_MAIN_GWORLD,
+            (0, 0, 20, 50),
+            b"",
+            false,
+            0,
+            0,
+            1,
+            0,
+            0,
+        ));
+        assert_ne!(control, 0);
+        controls_created.push(control);
+    }
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReturnNoErr);
+    let manager = loaded.process_memory_manager.0.clone();
+    let custom = manager
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    let standard = manager
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    let standard_ptr = loaded.memory.read_u32_be(standard).unwrap();
+    loaded.memory.write_u16_be(standard_ptr + 6, 2).unwrap();
+    for (offset, value) in [
+        (8, 0),
+        (10, 0xffff),
+        (12, 0xffff),
+        (14, 0xffff),
+        (16, 1),
+        (18, 0),
+        (20, 0),
+        (22, 0),
+        (24, 2),
+        (26, 0xffff),
+        (28, 0xffff),
+        (30, 0xffff),
+    ] {
+        loaded
+            .memory
+            .write_u16_be(standard_ptr + offset, value)
+            .unwrap();
+    }
+    loaded.cpu.gpr[3] = controls_created[1];
+    loaded.cpu.gpr[4] = custom;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = standard;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_DEFAULT_AUX_CONTROL + 8),
+        Some(standard)
+    );
+    let control_ptr = loaded.memory.read_u32_be(controls_created[0]).unwrap();
+    loaded
+        .memory
+        .write_u8(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255)
+        .unwrap();
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        PPC_RGB_WHITE,
+        None,
+    ));
+    assert!(ppc_draw_control(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        controls_created[0],
+    ));
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+        Some(black)
+    );
+    for (control, expected) in [
+        (controls_created[0], standard),
+        (controls_created[1], custom),
+    ] {
+        let aux = ppc_find_control_aux(&mut loaded.memory, control)
+            .flatten()
+            .unwrap();
+        let ptr = loaded.memory.read_u32_be(aux).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(ptr + 8), Some(expected));
+    }
+    loaded.cpu.gpr[3] = controls_created[1];
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    let aux = ppc_find_control_aux(&mut loaded.memory, controls_created[1])
+        .flatten()
+        .unwrap();
+    let ptr = loaded.memory.read_u32_be(aux).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr + 8), Some(standard));
+    let new_control = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        b"",
+        false,
+        0,
+        0,
+        1,
+        0,
+        0,
+    ));
+    assert_ne!(new_control, 0);
+    let aux = ppc_find_control_aux(&mut loaded.memory, new_control)
+        .flatten()
+        .unwrap();
+    let ptr = loaded.memory.read_u32_be(aux).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(ptr + 8), Some(standard));
+}
+
+#[test]
+fn get_auxiliary_control_returns_standard_record_for_nil_and_missing_controls() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"GetAuxiliaryControlRecord")).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0; 4]);
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_DEFAULT_AUX_CONTROL + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+    for (control, expected) in [(0, 1), (0x1234, 0)] {
+        loaded.cpu.gpr[3] = control;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "GetAuxiliaryControlRecord"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], expected);
+        assert_eq!(
+            loaded.memory.read_u32_be(output),
+            Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+        );
+    }
+}
+
+#[test]
+fn set_control_color_does_not_create_aux_for_stale_control_metadata() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetControlColor")).unwrap();
+    let stale = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(stale, vec![0; 4]);
+    with_test_controls!(loaded, |controls| controls.push(PpcControlRecord {
+        handle: stale,
+        ..Default::default()
+    }));
+    let original_allocations = loaded
+        .process_memory_manager
+        .0
+        .borrow()
+        .native_handle_records()
+        .len();
+    loaded.cpu.gpr[3] = stale;
+    loaded.cpu.gpr[4] = PPC_DEFAULT_CONTROL_CTABLE_HANDLE;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    assert_eq!(
+        loaded
+            .process_memory_manager
+            .0
+            .borrow()
+            .native_handle_records()
+            .len(),
+        original_allocations
+    );
+}
+
+#[test]
+fn native_new_control_rolls_back_when_auxiliary_allocation_fails() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 20, 50).unwrap();
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ReturnNoErr);
+    let manager = loaded.process_memory_manager.0.clone();
+    let original_allocations = {
+        let mut manager = manager.borrow_mut();
+        let count = manager.native_handle_records().len();
+        manager.mutate_native_allocator(|allocator| {
+            let size = ppc_heap_allocation_sequence_size(&[4, PPC_CONTROL_RECORD_SIZE]).unwrap();
+            allocator.heap.heap_limit = allocator.heap.heap_cursor + size + 16;
+            allocator.free_handle_blocks.clear();
+            allocator.free_ptr_blocks.clear();
+        });
+        count
+    };
+    let old_head = loaded
+        .memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET);
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.last_mem_error(), PPC_MEM_FULL_ERR);
+    assert_eq!(
+        manager.borrow().native_handle_records().len(),
+        original_allocations
+    );
+    let allocator = manager.borrow().native_allocator_snapshot().unwrap();
+    assert!(!allocator.free_handle_blocks.is_empty());
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+        old_head
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    assert!(loaded.controls.is_empty());
+}
+
+#[test]
+fn get_new_control_color_resource_follows_current_file_then_fallback() {
+    for current_has_color in [false, true] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_import(b"GetNewControl")).unwrap();
+        let current = *loaded.process_file_system.current_resource_file;
+        let other = if current == 7 { 8 } else { 7 };
+        let mut cntl = vec![0; 23];
+        cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+        let color_table = |red: u16| {
+            let mut data = vec![0; 40];
+            data[6..8].copy_from_slice(&3u16.to_be_bytes());
+            data[8..10].copy_from_slice(&1u16.to_be_bytes());
+            data[10..12].copy_from_slice(&red.to_be_bytes());
+            data
+        };
+        let mut resources = vec![
+            (current, u32::from_be_bytes(*b"CNTL"), cntl),
+            (other, u32::from_be_bytes(*b"cctb"), color_table(0x1111)),
+        ];
+        if current_has_color {
+            resources.push((current, u32::from_be_bytes(*b"cctb"), color_table(0x2222)));
+        }
+        for (ref_num, res_type, data) in resources {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num,
+                    path: String::new(),
+                    res_type,
+                    res_id: 129,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.cpu.gpr[3] = 129;
+        loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
+        );
+        let control = loaded.cpu.gpr[3];
+        assert_ne!(control, 0);
+        let aux = ppc_find_control_aux(&mut loaded.memory, control)
+            .flatten()
+            .unwrap();
+        let ptr = loaded.memory.read_u32_be(aux).unwrap();
+        let table = loaded.memory.read_u32_be(ptr + 8).unwrap();
+        assert_eq!(
+            ppc_control_table_color(&mut loaded.memory, table, 1),
+            Some([if current_has_color { 0x2222 } else { 0x1111 }, 0, 0])
+        );
+    }
+}
+
+#[test]
+fn get_new_control_uses_matching_control_color_resource() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNewControl")).unwrap();
+    let mut cntl = vec![0; 23];
+    cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+    let mut cctb = vec![0; 40];
+    cctb[6..8].copy_from_slice(&3u16.to_be_bytes());
+    cctb[8..10].copy_from_slice(&1u16.to_be_bytes());
+    cctb[10..12].copy_from_slice(&0x1234u16.to_be_bytes());
+    let ref_num = *loaded.process_file_system.current_resource_file;
+    for (res_type, res_id, data) in [
+        (u32::from_be_bytes(*b"CNTL"), 128, cntl),
+        (u32::from_be_bytes(*b"cctb"), 129, vec![0; 40]),
+        (u32::from_be_bytes(*b"cctb"), 128, cctb),
+    ] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num,
+                path: String::new(),
+                res_type,
+                res_id,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+    let aux = ppc_find_control_aux(&mut loaded.memory, control)
+        .flatten()
+        .unwrap();
+    let ptr = loaded.memory.read_u32_be(aux).unwrap();
+    let table = loaded.memory.read_u32_be(ptr + 8).unwrap();
+    assert_ne!(table, PPC_DEFAULT_CONTROL_CTABLE_HANDLE);
+    assert_eq!(
+        ppc_control_table_color(&mut loaded.memory, table, 1),
+        Some([0x1234, 0, 0])
+    );
+    loaded.cpu.gpr[3] = control;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
+    );
+    assert_ne!(loaded.memory.read_u32_be(table), Some(0));
+}
+
+#[test]
+fn new_control_rolls_back_when_auxiliary_allocation_fails() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = 0;
+    let cursor = *loaded.process_memory_manager.heap_cursor_mut();
+    let heap_limit =
+        cursor + ppc_heap_allocation_sequence_size(&[4, PPC_CONTROL_RECORD_SIZE]).unwrap();
+    let original_handles = test_handle_records!(loaded).len();
+    let original_head = loaded
+        .memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET);
+    let handle = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        heap_limit,
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        b"",
+        false,
+        0,
+        0,
+        1,
+        0,
+        0,
+    ));
+    assert_eq!(handle, 0);
+    assert_eq!(last_mem_error, PPC_MEM_FULL_ERR);
+    assert_eq!(test_handle_records!(loaded).len(), original_handles);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_CONTROL_LIST_OFFSET),
+        original_head
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(0x0cd4),
+        Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+    );
+    assert!(loaded.controls.is_empty());
+}
+
+#[test]
+fn set_control_color_creates_and_updates_a_single_auxiliary_record() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 20, 50).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+    let default_aux = loaded.memory.read_u32_be(0x0cd4).unwrap();
+    assert_ne!(default_aux, 0);
+    let default_ptr = loaded.memory.read_u32_be(default_aux).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(default_ptr + 4), Some(control));
+    assert_eq!(
+        loaded.memory.read_u32_be(default_ptr + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+    loaded.cpu.gpr[3] = control;
+    loaded.cpu.gpr[4] = scratch + 16;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "GetAuxiliaryControlRecord"),
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(default_aux));
+    let manager = loaded.process_memory_manager.0.clone();
+    let colors = manager
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    let replacement = manager
+        .borrow_mut()
+        .new_native_handle(&mut loaded.memory, 40, true);
+    let table_ptr = loaded.memory.read_u32_be(colors).unwrap();
+    loaded.memory.write_u16_be(table_ptr + 6, 2).unwrap();
+    for (offset, value) in [
+        (8, 0),
+        (10, 0xffff),
+        (12, 0xffff),
+        (14, 0xffff),
+        (16, 1),
+        (18, 0),
+        (20, 0),
+        (22, 0),
+        (24, 2),
+        (26, 0xffff),
+        (28, 0xffff),
+        (30, 0xffff),
+    ] {
+        loaded
+            .memory
+            .write_u16_be(table_ptr + offset, value)
+            .unwrap();
+    }
+    let control_ptr = loaded.memory.read_u32_be(control).unwrap();
+    loaded
+        .memory
+        .write_u8(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255)
+        .unwrap();
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        PPC_RGB_WHITE,
+        None,
+    ));
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    for table in [colors, replacement] {
+        loaded.cpu.gpr[3] = control;
+        loaded.cpu.gpr[4] = table;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+        );
+        if table == colors {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+                Some(black)
+            );
+        }
+        let aux = loaded.memory.read_u32_be(0x0cd4).unwrap();
+        let ptr = loaded.memory.read_u32_be(aux).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(ptr),
+            Some(PPC_DEFAULT_AUX_CONTROL_HANDLE)
+        );
+        assert_eq!(loaded.memory.read_u32_be(ptr + 4), Some(control));
+        assert_eq!(loaded.memory.read_u32_be(ptr + 8), Some(table));
+        loaded.cpu.gpr[3] = control;
+        loaded.cpu.gpr[4] = scratch + 16;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "GetAuxiliaryControlRecord"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(aux));
+        if table == colors {
+            loaded.memory.write_u32_be(ptr + 18, 0x1234_5678).unwrap();
+            let control_ptr = loaded.memory.read_u32_be(control).unwrap();
+            loaded
+                .memory
+                .write_u8(control_ptr + PPC_CONTROL_VISIBLE_OFFSET, 255)
+                .unwrap();
+            let surface =
+                ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                    .unwrap();
+            assert!(ppc_paint_rect_bounds(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+                (0, 0, 20, 50),
+                PPC_RGB_WHITE,
+                None,
+            ));
+            assert!(ppc_draw_control(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                &loaded.controls.records(),
+                &loaded.gworlds,
+                &loaded.process_file_system.vfs_resources,
+                *loaded.process_file_system.current_resource_file,
+                control,
+            ));
+            let black =
+                ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK)
+                    .unwrap();
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+                Some(black)
+            );
+            loaded
+                .memory
+                .write_u8(control_ptr + PPC_CONTROL_HILITE_OFFSET, 1)
+                .unwrap();
+            assert!(ppc_draw_control(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                &loaded.controls.records(),
+                &loaded.gworlds,
+                &loaded.process_file_system.vfs_resources,
+                *loaded.process_file_system.current_resource_file,
+                control,
+            ));
+            let white =
+                ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE)
+                    .unwrap();
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+                Some(white)
+            );
+            with_test_controls!(loaded, |controls| {
+                controls
+                    .iter_mut()
+                    .find(|record| record.handle == control)
+                    .unwrap()
+                    .active = false;
+            });
+            assert!(ppc_draw_control(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                &loaded.controls.records(),
+                &loaded.gworlds,
+                &loaded.process_file_system.vfs_resources,
+                *loaded.process_file_system.current_resource_file,
+                control,
+            ));
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (10, 10)),
+                Some(black)
+            );
+        } else {
+            assert_eq!(loaded.memory.read_u32_be(ptr + 18), Some(0x1234_5678));
+        }
+    }
+    let aux = loaded.memory.read_u32_be(0x0cd4).unwrap();
+    let ptr = loaded.memory.read_u32_be(aux).unwrap();
+    loaded.cpu.gpr[3] = control;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(ptr + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+    for (part, expected) in [
+        (0, [0, 0, 0]),
+        (1, [0xffff, 0xffff, 0xffff]),
+        (2, [0, 0, 0]),
+        (3, [0xffff, 0xffff, 0xffff]),
+    ] {
+        assert_eq!(
+            ppc_control_table_color(&mut loaded.memory, PPC_DEFAULT_CONTROL_CTABLE_HANDLE, part),
+            Some(expected)
+        );
+    }
+    loaded.memory.write_u32_be(ptr, aux).unwrap();
+    loaded.memory.write_u32_be(ptr + 4, 0x1234).unwrap();
+    loaded.cpu.gpr[3] = control;
+    loaded.cpu.gpr[4] = colors;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetControlColor"),
+    );
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(aux));
+    assert_eq!(loaded.memory.read_u32_be(ptr), Some(aux));
+    assert_eq!(
+        loaded.memory.read_u32_be(ptr + 8),
+        Some(PPC_DEFAULT_CONTROL_CTABLE_HANDLE)
+    );
+}
+
+#[test]
+fn native_dispose_control_releases_auxiliary_handle_but_not_color_table() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewControl")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 64]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 20, 50).unwrap();
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 1;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+    );
+    let control = loaded.cpu.gpr[3];
+    assert_ne!(control, 0);
+    let manager = loaded.process_memory_manager.0.clone();
+    let (aux, colors) = {
+        let mut manager = manager.borrow_mut();
+        (
+            manager.new_native_handle(&mut loaded.memory, 22, true),
+            manager.new_native_handle(&mut loaded.memory, 40, true),
+        )
+    };
+    assert_ne!(aux, 0);
+    assert_ne!(colors, 0);
+    let aux_ptr = loaded.memory.read_u32_be(aux).unwrap();
+    loaded.memory.write_u32_be(0x0cd4, aux).unwrap();
+    loaded.memory.write_u32_be(aux_ptr + 4, control).unwrap();
+    loaded.memory.write_u32_be(aux_ptr + 8, colors).unwrap();
+    loaded.cpu.gpr[3] = control;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisposeControl),
+    );
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(0));
+    let manager = manager.borrow();
+    assert!(manager.native_allocation(aux).is_none());
+    assert!(manager.native_allocation(colors).is_some());
+}
+
+#[test]
+fn disposing_control_unlinks_and_disposes_only_its_auxiliary_record() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let mut free_handle_blocks = loaded.free_handle_blocks();
+    let control = with_test_controls!(loaded, |controls| ppc_new_control_record_values(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        PPC_MAIN_GWORLD,
+        (0, 0, 20, 50),
+        b"",
+        true,
+        0,
+        0,
+        1,
+        0,
+        0,
+    ));
+    let mut new_handle = |size| {
+        ppc_alloc_handle(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            test_handles!(loaded),
+            size,
+            true,
+        )
+    };
+    let first = new_handle(22);
+    let second = new_handle(22);
+    let colors = new_handle(40);
+    let first_ptr = loaded.memory.read_u32_be(first).unwrap();
+    let second_ptr = loaded.memory.read_u32_be(second).unwrap();
+    loaded.memory.write_u32_be(0x0cd4, first).unwrap();
+    loaded.memory.write_u32_be(first_ptr, second).unwrap();
+    loaded.memory.write_u32_be(first_ptr + 4, 0x1234).unwrap();
+    loaded.memory.write_u32_be(second_ptr + 4, control).unwrap();
+    loaded.memory.write_u32_be(second_ptr + 8, colors).unwrap();
+
+    with_test_controls!(loaded, |controls| ppc_dispose_control(
+        None,
+        Some(&mut free_handle_blocks),
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        controls,
+        control,
+    ));
+    assert_eq!(loaded.memory.read_u32_be(0x0cd4), Some(first));
+    assert_eq!(loaded.memory.read_u32_be(first_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u32_be(second), Some(0));
+    assert_ne!(loaded.memory.read_u32_be(colors), Some(0));
+}
+
+#[test]
+fn control_color_table_uses_part_identifiers_and_rejects_truncated_entries() {
+    let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+    let address = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        32,
+        true,
+    );
+    loaded.memory.write_u32_be(address, address + 4).unwrap();
+    loaded.memory.write_u16_be(address + 10, 1).unwrap();
+    for (offset, value) in [
+        (12, 2),
+        (14, 0x1111),
+        (16, 0x2222),
+        (18, 0x3333),
+        (20, 0),
+        (22, 0x4444),
+        (24, 0x5555),
+        (26, 0x6666),
+    ] {
+        loaded.memory.write_u16_be(address + offset, value).unwrap();
+    }
+    assert_eq!(
+        ppc_control_table_color(&mut loaded.memory, address, 0),
+        Some([0x4444, 0x5555, 0x6666])
+    );
+    assert_eq!(
+        ppc_control_table_color(&mut loaded.memory, address, 1),
+        None
+    );
+    loaded.memory.write_u32_be(address, u32::MAX - 4).unwrap();
+    assert_eq!(
+        ppc_control_table_color(&mut loaded.memory, address, 0),
+        None
+    );
+}
+
+#[test]
 fn scrollbar_tracking_without_action_leaves_arrow_and_page_values_to_the_caller() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TrackControl")).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
