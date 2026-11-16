@@ -1593,19 +1593,20 @@ fn ppc_release_dialog_storage(
             te_handle,
         );
 
-        let style_handle = memory
-            .read_u32_be(window_list.dialog_private_address(dialog, PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET))
-            .unwrap_or(0);
-        if style_handle != 0 {
-            let _ = allocator.dispose_handle(
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                style_handle,
-            );
-            let _ = memory.write_u32_be(window_list.dialog_private_address(dialog, PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET), 0);
+        for offset in [PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET, PPC_DIALOG_COLOR_TABLE_HANDLE_OFFSET] {
+            let slot = window_list.dialog_private_address(dialog, offset);
+            let handle = memory.read_u32_be(slot).unwrap_or(0);
+            if handle != 0 {
+                let _ = allocator.dispose_handle(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    handle,
+                );
+                let _ = memory.write_u32_be(slot, 0);
+            }
         }
 
         ppc_dispose_window(
@@ -3490,6 +3491,29 @@ fn ppc_get_new_dialog(
     )
     .is_some();
     if dialog != 0 && has_color_table {
+        // The dctb becomes the dialog window's color table; its content
+        // entry colors the dialog surface. Keep a dialog-owned copy.
+        if let Some(index) = ppc_vfs_resource_index(
+            vfs_resources,
+            current_resource_refnum,
+            u32::from_be_bytes(*b"dctb"),
+            dialog_id,
+            false,
+        ) {
+            let bytes = vfs_resources[index].data.to_vec();
+            let color_table = ppc_process_alloc_handle_with_bytes(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                &bytes,
+            );
+            let _ = memory.write_u32_be(
+                window_list.dialog_private_address(dialog, PPC_DIALOG_COLOR_TABLE_HANDLE_OFFSET),
+                color_table,
+            );
+        }
         if let Some(index) = ppc_vfs_resource_index(
             vfs_resources,
             current_resource_refnum,
@@ -4700,6 +4724,8 @@ pub(super) fn ppc_frame_front_round_rect(
 // Macintosh Toolbox Essentials (1992), pp. 6-161--6-164: ictb text styles.
 // Dialog-owned item color table, addressed through its private storage.
 const PPC_DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = crate::dialog_manager::DIALOG_ITEM_STYLE_HANDLE_OFFSET;
+const PPC_DIALOG_COLOR_TABLE_HANDLE_OFFSET: u32 =
+    crate::dialog_manager::DIALOG_COLOR_TABLE_HANDLE_OFFSET;
 
 #[derive(Clone, Copy, Debug)]
 struct PpcDialogItemTextStyle {

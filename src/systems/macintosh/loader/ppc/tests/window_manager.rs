@@ -3761,6 +3761,78 @@ fn show_window_does_not_read_dialog_edit_state_as_a_color_table() {
     );
 }
 
+/// Shows a hidden window of `proc_id` (a dialog when `dialog_kind`) over a
+/// black probe pixel with `import`, and returns the probe pixel afterwards.
+fn reveal_hidden_window_over_black(import: &[u8], proc_id: u32, dialog_kind: bool) -> Option<u16> {
+    let pef = synthetic_pef_with_import(import);
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 60, 40, 160, 200).unwrap();
+    let mut window_cpu = loaded.cpu.clone();
+    window_cpu.gpr[3] = 0;
+    window_cpu.gpr[4] = bounds_ptr;
+    window_cpu.gpr[6] = 0;
+    window_cpu.gpr[7] = proc_id;
+    window_cpu.gpr[8] = u32::MAX;
+    let window = ppc_new_cwindow(
+        &window_cpu,
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        &mut loaded.gworlds,
+        &mut loaded.window_list,
+        *loaded.current_gdevice,
+    );
+    assert_ne!(window, 0);
+    if dialog_kind {
+        loaded
+            .memory
+            .write_u16_be(
+                window + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+                crate::dialog_manager::DIALOG_WINDOW_KIND,
+            )
+            .unwrap();
+    }
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (120, 110), PPC_RGB_BLACK);
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 1;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(
+        loaded.memory.read_u8(window + PPC_CWINDOW_VISIBLE_OFFSET),
+        Some(1)
+    );
+    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 110))
+}
+
+#[test]
+fn show_window_erases_a_revealed_movable_modal_dialog_without_a_color_table() {
+    // Macintosh Toolbox Essentials (1992), pp. 4-91 and 4-115: ShowWindow
+    // reveals the window through PaintOne, which erases its content region
+    // with the window's content color (white without a color table).
+    // Super Othello builds its movable-modal "Enter code" dialog hidden and
+    // shows it; the board behind it must not show through the dialog.
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    assert_eq!(reveal_hidden_window_over_black(b"ShowWindow", 5, true), white);
+    assert_eq!(reveal_hidden_window_over_black(b"ShowWindow", 0, false), white);
+}
+
+#[test]
+fn show_hide_erases_a_revealed_window_without_a_color_table() {
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 5, true), white);
+    assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 4, false), white);
+}
+
 #[test]
 fn legacy_window_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [

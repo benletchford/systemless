@@ -7737,6 +7737,93 @@ fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose()
 
 
 #[test]
+fn show_window_paints_a_revealed_dialog_with_its_dctb_content_color() {
+    // Macintosh Toolbox Essentials (1992), pp. 4-91 and 6-159: a dctb with
+    // the DLOG's ID becomes the dialog's window color table, and PaintOne
+    // erases the revealed content with its wContentColor entry. Pro Pinball
+    // shows a hidden plainDBox language dialog whose dctb content is #DDDDDD.
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"GetNewDialog"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[0..2].copy_from_slice(&60i16.to_be_bytes());
+    dlog[2..4].copy_from_slice(&40i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&160i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&240i16.to_be_bytes());
+    dlog[8..10].copy_from_slice(&2i16.to_be_bytes());
+    dlog[10] = 0; // hidden until ShowWindow
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 20];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&22i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 4;
+    ditl[16..20].copy_from_slice(b"Text");
+    let dctb = vec![
+        0, 0, 0, 0, // ctSeed
+        0, 0, // ctFlags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd,
+    ];
+    for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl), (*b"dctb", dctb)] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: *loaded.process_file_system.current_resource_file,
+                path: String::new(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    let color_table = loaded
+        .memory
+        .read_u32_be(loaded.window_list.dialog_private_address(
+            dialog,
+            crate::dialog_manager::DIALOG_COLOR_TABLE_HANDLE_OFFSET,
+        ))
+        .unwrap();
+    assert_ne!(color_table, 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let probe = (i32::from(bounds.1) + 150, i32::from(bounds.0) + 70);
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, probe, PPC_RGB_BLACK);
+
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+
+    let gray = 0xddu16 >> 3;
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, probe),
+        Some((gray << 10) | (gray << 5) | gray)
+    );
+    loaded.cpu.gpr[3] = dialog;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+    assert!(!test_handle_records!(loaded)
+        .iter()
+        .any(|record| record.handle == color_table));
+}
+
+#[test]
 fn select_dialog_item_text_highlights_only_in_a_visible_dialog() {
     for visible in [true, false] {
         let mut loaded = load_pef_application_with_config(

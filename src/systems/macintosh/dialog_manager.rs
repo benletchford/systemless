@@ -65,6 +65,9 @@ pub const DIALOG_FILTER_PROC_OFFSET: u32 = 208;
 #[allow(dead_code)]
 pub const DIALOG_SHEET_PARENT_OFFSET: u32 = 212;
 pub const DIALOG_ITEM_STYLE_HANDLE_OFFSET: u32 = 216;
+/// Copy of the dialog's `dctb`, its window color table (the AuxWinRec
+/// awCTable of a color dialog). Macintosh Toolbox Essentials (1992), p. 6-159.
+pub const DIALOG_COLOR_TABLE_HANDLE_OFFSET: u32 = 220;
 
 /// Default cursor tracking state (false = off per Macintosh Toolbox Essentials, p. 6-166).
 #[allow(dead_code)]
