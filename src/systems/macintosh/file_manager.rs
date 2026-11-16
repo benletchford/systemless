@@ -51,7 +51,10 @@ mod tests {
     fn newline_mode_ends_after_the_first_newline() {
         assert_eq!(
             read_extent(b"[Section]\rKEY=VALUE\r\r", 500, RETURN_NEWLINE_MODE),
-            ReadExtent { len: 10, eof: false }
+            ReadExtent {
+                len: 10,
+                eof: false
+            }
         );
     }
 
