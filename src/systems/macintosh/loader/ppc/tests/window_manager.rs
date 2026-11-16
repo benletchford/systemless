@@ -2831,6 +2831,57 @@ fn hle_import_runner_handles_get_new_cwindow() {
 }
 
 #[test]
+fn get_new_cwindow_uses_a_loaded_template_the_application_edited() {
+    let pef = synthetic_pef_with_import(b"GetNewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let storage_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(storage_ptr, vec![0xaa; PPC_CGRAF_PORT_SIZE as usize]);
+    let file_template = test_wind_resource((48, 16, 528, 656), 4, false, false, 0, b"Atlas");
+    // The application loaded the 'WIND' with GetResource and sized its
+    // bounds to the screen before calling GetNewCWindow.
+    let handle = PPC_DATA_BASE + 0x2000;
+    let master = handle + 0x10;
+    let mut edited = file_template.clone();
+    edited[..8].copy_from_slice(&[0, 0, 0, 0, 0x01, 0xe0, 0x02, 0x80]);
+    loaded.memory.add_region(handle, vec![0; 0x100]);
+    loaded.memory.write_u32_be(handle, master).unwrap();
+    loaded.memory.write_bytes(master, &edited).unwrap();
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: "Test App".to_string(),
+        res_type: u32::from_be_bytes(*b"WIND"),
+        res_id: 1999,
+        name: Vec::new(),
+        data: file_template.into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle,
+    });
+    loaded.cpu.gpr[3] = 1999;
+    loaded.cpu.gpr[4] = storage_ptr;
+    loaded.cpu.gpr[5] = u32::MAX;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], storage_ptr);
+    let record = loaded
+        .gworlds
+        .iter()
+        .find(|record| record.port == storage_ptr)
+        .unwrap();
+    assert_eq!((record.width, record.height), (640, 480));
+    assert_eq!(
+        ppc_window_global_content_bounds(&mut loaded.memory, &loaded.gworlds, storage_ptr),
+        Some((0, 0, 480, 640))
+    );
+}
+
+#[test]
 fn hle_import_runner_get_new_cwindow_rejects_missing_and_malformed_wind_atomically() {
     let pef = synthetic_pef_with_import(b"GetNewCWindow");
     for (label, resource, expected_error) in [
