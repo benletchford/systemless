@@ -3282,3 +3282,35 @@ fn callback_commands_validate_v2_comment_padding_and_following_shapes() {
     assert_eq!(commands[2].opcode, 0x31);
     assert_eq!(commands[2].data, [0, 1, 0, 2, 0, 6, 0, 7]);
 }
+
+#[test]
+fn v1_fg_color_selects_quickdraw_colors_from_cmy_plane_bits() {
+    // 500 Cards draws its heart and diamond pips as 1-bit srcOr BitsRect
+    // pictures after FgColor 197 ($C5: normal + yellow + magenta + blue bit).
+    // ForeColor (QDUtil.a) selects QuickDraw red from the CMY plane bits; the
+    // picture must not paint standard CLUT entry 197 (green).
+    let clut = TrapDispatcher::standard_mac_8bpp_clut();
+    for (fg_color, expected_rgb) in [
+        (197u32, (0xDD6B, 0x08C2, 0x06A2)),
+        (205, (0xDD6B, 0x08C2, 0x06A2)),
+        (341, (0x0000, 0x8000, 0x11B0)),
+        (69, (0xFC00, 0xF37D, 0x052F)),
+    ] {
+        let mut commands = vec![0x0E];
+        commands.extend_from_slice(&fg_color.to_be_bytes());
+        commands.push(0x90); // BitsRect
+        commands.extend_from_slice(&2u16.to_be_bytes()); // rowBytes
+        for _ in 0..3 {
+            for value in [0i16, 0, 2, 2] {
+                commands.extend_from_slice(&value.to_be_bytes());
+            }
+        }
+        commands.extend_from_slice(&1u16.to_be_bytes()); // srcOr
+        commands.extend_from_slice(&[0xC0, 0x00, 0xC0, 0x00]);
+        let pixels = render_text_picture(&finish_v1_picture((0, 0, 2, 2), &commands), 2, 2);
+
+        let expected = super::closest_clut_index(expected_rgb.0, expected_rgb.1, expected_rgb.2, &clut);
+        assert_ne!(expected, 197);
+        assert_eq!(pixels, vec![expected; 4], "FgColor {fg_color}");
+    }
+}

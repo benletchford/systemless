@@ -793,13 +793,13 @@ pub fn draw_picture(
                 // FgColor (4 bytes) — map legacy QD colors into the active
                 // destination palette.
                 let c = bus.read_long(pos);
-                fg_idx = pict_qd_color_to_clut_index(c, fg_idx, black_idx, white_idx);
+                fg_idx = pict_qd_color_to_clut_index(c, black_idx, white_idx, device_clut);
                 pos += 4;
             }
             0x0F => {
                 // BkColor (4 bytes) — same mapping as FgColor.
                 let c = bus.read_long(pos);
-                bg_idx = pict_qd_color_to_clut_index(c, bg_idx, black_idx, white_idx);
+                bg_idx = pict_qd_color_to_clut_index(c, black_idx, white_idx, device_clut);
                 pos += 4;
             }
             0x10 => {
@@ -3324,23 +3324,23 @@ fn indexed_destination_clut(device_clut: &[[u16; 3]; 256], pixel_size: u16) -> [
     clut
 }
 
-/// Map a legacy Mac Pascal QuickDraw color constant to a destination CLUT
-/// index. Inside Macintosh Volume I, I-172 defines the 8 canonical colors.
-/// `default_idx` is returned for color = 0 (Pascal sentinel for "no color
-/// change"). Unknown constants fall through to `color & 0xFF` so apps passing
-/// custom CLUT indices via FgColor still address the intended slot.
-fn pict_qd_color_to_clut_index(color: u32, default_idx: u8, black_idx: u8, white_idx: u8) -> u8 {
-    match color {
-        0 => default_idx,
-        30 => white_idx,
-        33 => black_idx,
-        205 => 35,  // redColor → red slot on std Mac 8bpp CLUT
-        341 => 173, // greenColor
-        409 => 210, // blueColor
-        69 => 17,   // yellowColor
-        137 => 137, // magentaColor
-        273 => 69,  // cyanColor
-        _ => (color & 0xFF) as u8,
+/// Resolve a PICT FgColor/BkColor (0x0E/0x0F) planar color value. Playback
+/// applies these through ForeColor/BackColor, which select one of the eight
+/// QuickDraw colors; Color QuickDraw then matches that RGB in the destination
+/// color table.
+fn pict_qd_color_to_clut_index(
+    color: u32,
+    black_idx: u8,
+    white_idx: u8,
+    device_clut: &[[u16; 3]; 256],
+) -> u8 {
+    match super::quickdraw::legacy_qd_color_plane_index(color) {
+        0 => black_idx,
+        7 => white_idx,
+        index => {
+            let (r, g, b) = super::quickdraw::LEGACY_QD_COLOR_RGB[index];
+            closest_clut_index(r, g, b, device_clut)
+        }
     }
 }
 

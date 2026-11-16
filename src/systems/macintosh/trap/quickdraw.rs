@@ -519,6 +519,35 @@ struct ScrollRows {
     background: [u8; 8],
 }
 
+/// Canonical RGB values of the eight classic QuickDraw colors, in `QDColors`
+/// order: black, yellow, magenta, red, cyan, green, blue, white. Color
+/// QuickDraw uses these rather than pure primaries; green uses 0x8000 to match
+/// the System 7.5.3 ROM `clut` 127 rather than Executor's diverging 0x64AF.
+pub(crate) const LEGACY_QD_COLOR_RGB: [(u16, u16, u16); 8] = [
+    (0x0000, 0x0000, 0x0000), // blackColor (33)
+    (0xFC00, 0xF37D, 0x052F), // yellowColor (69)
+    (0xF2D7, 0x0856, 0x84EC), // magentaColor (137)
+    (0xDD6B, 0x08C2, 0x06A2), // redColor (205)
+    (0x0241, 0xAB54, 0xEAFF), // cyanColor (273)
+    (0x0000, 0x8000, 0x11B0), // greenColor (341)
+    (0x0000, 0x0000, 0xD400), // blueColor (409)
+    (0xFFFF, 0xFFFF, 0xFFFF), // whiteColor (30)
+];
+
+/// Map a classic planar color value (`xxxC MYBr gbwb`, Inside Macintosh I-158)
+/// to its `QDColors` index the way Color QuickDraw's ForeColor/BackColor do
+/// (QDUtil.a): a clear normal bit (bit 0) means white, otherwise the cyan,
+/// magenta and yellow plane bits 8..6 select the entry. Other bits are ignored,
+/// so non-canonical values such as 139 (magenta) or 197 (red) resolve to a
+/// QuickDraw color rather than an unrelated CLUT entry.
+pub(crate) fn legacy_qd_color_plane_index(color: u32) -> usize {
+    if color & 1 == 0 {
+        7
+    } else {
+        ((color >> 6) & 7) as usize
+    }
+}
+
 impl super::TrapDispatcher {
     /// Install a basic QuickDraw bit pattern in a color port without changing
     /// the caller-owned color PixPat that was previously installed there.
@@ -24115,28 +24144,7 @@ impl super::TrapDispatcher {
     /// Convert classic ForeColor/BackColor constants to RGB.
     /// Inside Macintosh Volume I (1985), pp. I-173 to I-174.
     fn legacy_qd_color_to_rgb(color: u32) -> (u16, u16, u16) {
-        match color {
-            30 => (0xFFFF, 0xFFFF, 0xFFFF), // whiteColor
-            33 => (0, 0, 0),                // blackColor
-            // Color QuickDraw uses canonical RGB values for the classic
-            // ForeColor/BackColor constants rather than pure primaries.
-            // greenColor (341) uses 0x8000 for green to match System 7.5.3
-            // ROM rather than Executor's diverging 0x64AF.
-            69 => (0xFC00, 0xF37D, 0x052F), // yellowColor
-            // System 7.5.3 normalizes 139 to the same cGrafPort fgColor and
-            // rgbFgColor as the documented magentaColor constant 137. The
-            // extra legacy color-plane bit must not turn into CLUT index 139.
-            137 | 139 => (0xF2D7, 0x0856, 0x84EC), // magentaColor
-            205 => (0xDD6B, 0x08C2, 0x06A2),       // redColor
-            273 => (0x0241, 0xAB54, 0xEAFF),       // cyanColor
-            341 => (0x0000, 0x8000, 0x11B0),       // greenColor
-            409 => (0x0000, 0x0000, 0xD400),       // blueColor
-            _ => {
-                let idx = (color as usize) & 0xFF;
-                let [r, g, b] = Self::standard_mac_8bpp_clut()[idx];
-                (r, g, b)
-            }
-        }
+        LEGACY_QD_COLOR_RGB[legacy_qd_color_plane_index(color)]
     }
 
     fn set_entries_request_in_range(

@@ -16654,6 +16654,35 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn fore_and_back_color_select_quickdraw_colors_from_cmy_plane_bits() {
+        // Color QuickDraw's ForeColor/BackColor (QDUtil.a) ignore every bit
+        // of the planar value except normal (bit 0) and cyan/magenta/yellow
+        // (bits 8..6). 500 Cards' heart and diamond PICTs record FgColor 197
+        // (normal + yellow + magenta + blue bit), which is red, not CLUT 197.
+        let cases = [
+            (197u32, (0xDD6B, 0x08C2, 0x06A2)), // red planes + stray blue bit
+            (0x0001, (0x0000, 0x0000, 0x0000)), // normal, no planes: black
+            (0x0000, (0xFFFF, 0xFFFF, 0xFFFF)), // normal bit clear: white
+            (0x0155, (0x0000, 0x8000, 0x11B0)), // greenColor
+            (0x0141, (0x0000, 0x8000, 0x11B0)), // green planes only
+            (0x01C1, (0xFFFF, 0xFFFF, 0xFFFF)), // all CMY planes: white entry
+        ];
+        for (color, rgb) in cases {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            bus.write_long(TEST_SP, color);
+            let result = d.dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(d.fg_color, rgb, "ForeColor({color})");
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, color);
+            let result = d.dispatch_quickdraw(true, 0x063, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(d.bg_color, rgb, "BackColor({color})");
+        }
+    }
+
+    #[test]
     fn fore_color_resolves_the_cgrafport_foreground_pixel() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port = 0x181000u32;
