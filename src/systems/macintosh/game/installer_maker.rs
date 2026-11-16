@@ -81,8 +81,10 @@ pub fn parse_installer_maker(data: &[u8]) -> Option<InstallerMakerContainer<'_>>
 
 // Some STi2/STi3 installers retain stale aggregate folder lengths. Their
 // markers delimit a checksummed sequence, with the header counting root files.
-// Keep this fallback separate from the extent-based parser. STi2 end labels
-// may name a parent (or be empty); depth and bounds remain authoritative.
+// Keep this fallback separate from the extent-based parser. End labels may
+// name a parent (or be empty); depth and bounds remain authoritative. Some
+// STi3 headers overcount root files, so a mismatched STi3 count is accepted
+// only once every fork decodes to its recorded CRC16.
 fn parse_marked_result<'a>(
     data: &'a [u8],
     magic: &[u8; 4],
@@ -114,11 +116,9 @@ fn parse_marked_result<'a>(
         }
         let rsrc_method = record[ST46_RSRC_METHOD_OFFSET];
         let data_method = record[ST46_DATA_METHOD_OFFSET];
-        let unnamed_sti2_end = magic == STI2_MAGIC
-            && rsrc_method == ST46_FOLDER_END
-            && data_method == ST46_FOLDER_END;
+        let unnamed_end = rsrc_method == ST46_FOLDER_END && data_method == ST46_FOLDER_END;
         let name_len = usize::from(record[ST46_NAME_LEN_OFFSET]);
-        if (name_len == 0 && !unnamed_sti2_end) || name_len > 31 {
+        if (name_len == 0 && !unnamed_end) || name_len > 31 {
             return Err(format!("invalid {kind} entry name length"));
         }
         let local_name = decode_mac_roman(&record[3..3 + name_len]);
@@ -131,9 +131,13 @@ fn parse_marked_result<'a>(
             continue;
         }
         if rsrc_method == ST46_FOLDER_END && data_method == ST46_FOLDER_END {
-            let open = folders.pop();
-            if open.is_none()
-                || (magic != STI2_MAGIC && open.as_deref() != Some(local_name.as_str()))
+            let Some(open) = folders.pop() else {
+                return Err(format!("unmatched {kind} folder end marker"));
+            };
+            if magic != STI2_MAGIC
+                && !local_name.is_empty()
+                && open != local_name
+                && !folders.contains(&local_name)
             {
                 return Err(format!("unmatched {kind} folder end marker"));
             }
@@ -200,10 +204,43 @@ fn parse_marked_result<'a>(
         });
         offset = next;
     }
-    if !folders.is_empty() || roots != expected_roots {
-        return Err("STi3 folder balance or root file count mismatch".to_string());
+    if !folders.is_empty() {
+        return Err(format!("unbalanced {kind} folder markers"));
+    }
+    if roots != expected_roots {
+        if magic != STI3_MAGIC {
+            return Err(format!("{kind} root file count mismatch"));
+        }
+        verify_marked_fork_crcs(&entries)
+            .map_err(|error| format!("STi3 root file count mismatch: {error}"))?;
     }
     Ok(InstallerMakerContainer { entries })
+}
+
+fn verify_marked_fork_crcs(entries: &[InstallerMakerEntry<'_>]) -> Result<(), String> {
+    for entry in entries {
+        for (fork, method, packed, unpacked_len, expected) in [
+            (
+                "resource",
+                entry.rsrc_method,
+                entry.rsrc_packed,
+                entry.rsrc_unpacked_len,
+                entry.rsrc_crc16,
+            ),
+            (
+                "data",
+                entry.data_method,
+                entry.data_packed,
+                entry.data_unpacked_len,
+                entry.data_crc16,
+            ),
+        ] {
+            decode_installer_fork(method, packed, unpacked_len)
+                .and_then(|bytes| validate_installer_fork_crc(&bytes, expected))
+                .map_err(|error| format!("{}/{fork} fork: {error}", entry.name))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_installer_maker_st65_result(
@@ -436,6 +473,24 @@ pub(super) fn installer_crc16(data: &[u8]) -> u16 {
         }
     }
     crc
+}
+
+/// Decode one fork of an STi2/STi3/ST65 entry to its original bytes.
+pub(super) fn decode_installer_fork(
+    method: u8,
+    packed: &[u8],
+    unpacked_len: usize,
+) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    match method {
+        0 if packed.len() == unpacked_len => Ok(std::borrow::Cow::Borrowed(packed)),
+        0 => Err(format!(
+            "stored length {} != declared {unpacked_len}",
+            packed.len()
+        )),
+        13 => decode_installer_method13(packed, unpacked_len).map(Into::into),
+        14 => decode_installer_method14(packed, unpacked_len).map(Into::into),
+        other => Err(format!("unsupported method {other}")),
+    }
 }
 
 pub(super) fn validate_installer_fork_crc(data: &[u8], expected: u16) -> Result<(), String> {
@@ -1242,6 +1297,147 @@ mod tests {
         bad[file + 96..file + 100].copy_from_slice(&u32::MAX.to_be_bytes());
         let crc = installer_crc16(&bad[file..file + 110]);
         bad[file + 110..file + 112].copy_from_slice(&crc.to_be_bytes());
+        assert!(parse_installer_maker(&bad).is_none());
+    }
+
+    // Mirrors Mega Math Blaster's installer: the inner folder's end marker
+    // names its parent, and the header counts one more root file than it has.
+    fn parent_labelled_sti3_archive(root_count: u16) -> Vec<u8> {
+        fn record(name: &[u8], method: u8, rsrc: &[u8], data: &[u8], packed: &[u8]) -> Vec<u8> {
+            let mut h = vec![0u8; ST46_ENTRY_HEADER_LEN];
+            h[0] = if method == 13 { 0 } else { method };
+            h[1] = method;
+            h[2] = name.len() as u8;
+            h[3..3 + name.len()].copy_from_slice(name);
+            h[66..70].copy_from_slice(b"APPL");
+            h[70..74].copy_from_slice(b"TEST");
+            if method == ST46_FOLDER_START || method == ST46_FOLDER_END {
+                h[96..100].copy_from_slice(&u32::MAX.to_be_bytes());
+            } else {
+                h[84..88].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+                h[88..92].copy_from_slice(&(data.len() as u32).to_be_bytes());
+                h[92..96].copy_from_slice(&(rsrc.len() as u32).to_be_bytes());
+                h[96..100].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+                h[100..102].copy_from_slice(&installer_crc16(rsrc).to_be_bytes());
+                h[102..104].copy_from_slice(&installer_crc16(data).to_be_bytes());
+            }
+            let crc = installer_crc16(&h[..110]);
+            h[110..112].copy_from_slice(&crc.to_be_bytes());
+            h.extend_from_slice(rsrc);
+            h.extend_from_slice(packed);
+            h
+        }
+        let prefs = b"player preferences ".repeat(8);
+        let mut archive = stuffit::SitArchive::new();
+        archive.add_entry(stuffit::SitEntry {
+            name: "DEFAULT.MB1".into(),
+            data_fork: prefs.clone(),
+            ..Default::default()
+        });
+        let serialized = archive.serialize_compressed().unwrap();
+        let parsed = stuffit::SitArchive::parse(&serialized).unwrap();
+        let compressed = &parsed.entries[0].data_fork;
+        let mut data = vec![0u8; ST65_HEADER_LEN];
+        data[..4].copy_from_slice(STI3_MAGIC);
+        data[4..6].copy_from_slice(&root_count.to_be_bytes());
+        data[10..14].copy_from_slice(b"rLau");
+        data.extend(record(b"Game", 0, b"rs", b"game", b"game"));
+        data.extend(record(b"Davidson", ST46_FOLDER_START, b"", b"", b""));
+        data.extend(record(
+            b"Mega Math Blaster",
+            ST46_FOLDER_START,
+            b"",
+            b"",
+            b"",
+        ));
+        data.extend(record(b"DEFAULT.MB1", 13, b"", &prefs, compressed));
+        data.extend(record(b"Davidson", ST46_FOLDER_END, b"", b"", b""));
+        data.extend(record(b"Davidson", ST46_FOLDER_END, b"", b"", b""));
+        let len = data.len() as u32;
+        data[6..10].copy_from_slice(&len.to_be_bytes());
+        data
+    }
+
+    fn relabel_sti3_end(data: &mut [u8], end: usize, label: &[u8]) {
+        let record = &mut data[end..end + ST46_ENTRY_HEADER_LEN];
+        record[2..35].fill(0);
+        record[2] = label.len() as u8;
+        record[3..3 + label.len()].copy_from_slice(label);
+        let crc = installer_crc16(&record[..110]);
+        record[110..112].copy_from_slice(&crc.to_be_bytes());
+    }
+
+    #[test]
+    fn sti3_markers_accept_parent_named_and_empty_end_labels() {
+        let data = parent_labelled_sti3_archive(1);
+        let parsed = parse_installer_maker(&data).expect("parent-named STi3 end label");
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.entries[0].name, "Game");
+        assert_eq!(
+            parsed.entries[1].name,
+            "Davidson/Mega Math Blaster/DEFAULT.MB1"
+        );
+        let first_end = data.len() - ST46_ENTRY_HEADER_LEN * 2;
+        let mut empty = data.clone();
+        relabel_sti3_end(&mut empty, first_end, b"");
+        assert!(parse_installer_maker(&empty).is_some());
+        // Labels that name neither the folder nor an ancestor stay rejected.
+        for label in [b"Elsewhere".as_slice(), b"DEFAULT.MB1"] {
+            let mut bad = data.clone();
+            relabel_sti3_end(&mut bad, first_end, label);
+            assert!(parse_installer_maker(&bad).is_none());
+        }
+        // The outer end cannot name the inner folder, which is already closed.
+        let mut bad = data;
+        relabel_sti3_end(
+            &mut bad,
+            first_end + ST46_ENTRY_HEADER_LEN,
+            b"Mega Math Blaster",
+        );
+        assert!(parse_installer_maker(&bad).is_none());
+    }
+
+    #[test]
+    fn sti3_root_count_is_advisory_once_every_fork_crc_verifies() {
+        let exact_data = parent_labelled_sti3_archive(1);
+        let exact = parse_installer_maker(&exact_data).unwrap();
+        let data = parent_labelled_sti3_archive(2);
+        let parsed = parse_installer_maker(&data).expect("all STi3 fork CRCs verify");
+        assert_eq!(parsed.entries.len(), exact.entries.len());
+        for (entry, original) in parsed.entries.iter().zip(&exact.entries) {
+            assert_eq!(entry.name, original.name);
+            assert_eq!(entry.rsrc_packed, original.rsrc_packed);
+            assert_eq!(entry.data_packed, original.data_packed);
+        }
+        // Unbalanced markers and short payloads are not rescued by fork CRCs.
+        for len in 0..data.len() {
+            assert!(parse_installer_maker(&data[..len]).is_none());
+        }
+        let mut bad = data;
+        bad[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert!(parse_installer_maker(&bad).is_none());
+    }
+
+    #[test]
+    fn sti3_advisory_root_count_rejects_any_fork_crc_mismatch() {
+        let original = parent_labelled_sti3_archive(2);
+        let game = ST65_HEADER_LEN + ST46_ENTRY_HEADER_LEN;
+        let prefs = game + 6 + ST46_ENTRY_HEADER_LEN * 2;
+        let compressed_mid = prefs
+            + ST46_ENTRY_HEADER_LEN
+            + read_u32_be(&original, prefs + 96, "test packed length").unwrap() as usize / 2;
+        // Stored resource and data forks, then the method 13 data fork.
+        for byte in [game, game + 2, compressed_mid] {
+            let mut bad = original.clone();
+            bad[byte] ^= 1;
+            assert!(parse_installer_maker(&bad).is_none(), "byte {byte}");
+        }
+        // A header CRC that matches a corrupted fork CRC field is still caught.
+        let mut bad = original;
+        let header = ST65_HEADER_LEN;
+        bad[header + 103] ^= 1;
+        let crc = installer_crc16(&bad[header..header + 110]);
+        bad[header + 110..header + 112].copy_from_slice(&crc.to_be_bytes());
         assert!(parse_installer_maker(&bad).is_none());
     }
 

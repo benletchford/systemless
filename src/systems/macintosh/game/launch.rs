@@ -3192,33 +3192,11 @@ fn decode_installer_fork(
     packed: &[u8],
     unpacked_len: usize,
 ) -> Result<Vec<u8>, String> {
-    match method {
-        0 => {
-            if packed.len() != unpacked_len {
-                return Err(format!(
-                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: stored length {} != declared {}",
-                    packed.len(),
-                    unpacked_len
-                ));
-            }
-            Ok(packed.to_vec())
-        }
-        13 => crate::game::installer_maker::decode_installer_method13(packed, unpacked_len)
-            .map_err(|error| {
-                format!(
-                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: {error}"
-                )
-            }),
-        14 => crate::game::installer_maker::decode_installer_method14(packed, unpacked_len)
-            .map_err(|error| {
-                format!(
-                    "InstallerMaker {container_name}/{entry_name} {fork_name} fork: {error}"
-                )
-            }),
-        other => Err(format!(
-            "InstallerMaker {container_name}/{entry_name} {fork_name} fork: unsupported method {other}"
-        )),
-    }
+    crate::game::installer_maker::decode_installer_fork(method, packed, unpacked_len)
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|error| {
+            format!("InstallerMaker {container_name}/{entry_name} {fork_name} fork: {error}")
+        })
 }
 
 fn payload_from_disk_image(
