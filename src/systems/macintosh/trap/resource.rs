@@ -4124,19 +4124,12 @@ impl super::TrapDispatcher {
                             Ok(start) => {
                                 let start = start.min(file_len);
                                 let avail = file_len - start;
-                                let max_read = request_count.min(avail);
-                                let newline_mode = (pos_mode & 0x0080) != 0;
-                                let newline_char = (pos_mode >> 8) as u8;
-                                let newline_offset = if newline_mode {
-                                    file_buf[start..start + max_read]
-                                        .iter()
-                                        .position(|&byte| byte == newline_char)
-                                } else {
-                                    None
-                                };
-                                let bytes_read =
-                                    newline_offset.map(|offset| offset + 1).unwrap_or(max_read);
-                                let stopped_at_newline = newline_offset.is_some();
+                                let extent = crate::file_manager::read_extent(
+                                    &file_buf[start..start + avail],
+                                    request_count,
+                                    pos_mode,
+                                );
+                                let bytes_read = extent.len;
 
                                 bus.write_bytes(buffer, &file_buf[start..start + bytes_read]);
 
@@ -4151,7 +4144,7 @@ impl super::TrapDispatcher {
                                     bytes_read,
                                 });
 
-                                if !stopped_at_newline && bytes_read < request_count {
+                                if extent.eof {
                                     eprintln!(
                                         "[TRAP] PBRead -> eofErr (read {} of {} from pos {})",
                                         bytes_read, request_count, start

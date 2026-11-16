@@ -148,6 +148,94 @@ fn carbonlib_pb_read_async_queues_completion_after_successful_read() {
     assert!(loaded.pending_file_completions.is_empty());
 }
 
+/// Run one `PBReadSync` of `requested` bytes at the mark of an open file
+/// holding `data`, returning (result, ioActCount, ioPosOffset, bytes read).
+fn pb_read_sync_at_mark(
+    loaded: &mut PpcLoadedApp,
+    requested: u32,
+    pos_mode: u16,
+) -> (i16, u32, u32, Vec<u8>) {
+    let pb = PPC_DATA_BASE + 0x1000;
+    let buffer = pb + 0x80;
+    loaded
+        .memory
+        .write_u16_be(pb + 24, PPC_FIRST_FILE_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u32_be(pb + 32, buffer).unwrap();
+    loaded.memory.write_u32_be(pb + 36, requested).unwrap();
+    loaded.memory.write_u16_be(pb + 44, pos_mode).unwrap();
+    loaded.memory.write_u32_be(pb + 46, 0).unwrap();
+    loaded.cpu.gpr[3] = pb;
+    loaded.cpu.pc = loaded.entry_pc;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert_eq!(probe.unsupported_import_index, None);
+    let actual = loaded.memory.read_u32_be(pb + 40).unwrap();
+    (
+        loaded.memory.read_u16_be(pb + 16).unwrap() as i16,
+        actual,
+        loaded.memory.read_u32_be(pb + 46).unwrap(),
+        ppc_memory_read_bytes(&mut loaded.memory, buffer, actual).unwrap(),
+    )
+}
+
+fn load_pb_read_sync_with_open_file(data: &[u8]) -> PpcLoadedApp {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBReadSync")).unwrap();
+    loaded
+        .memory
+        .add_region(PPC_DATA_BASE + 0x1000, vec![0; 0x400]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Prefs/roster.ini".to_string(),
+        data: data.to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.push_test_open_file(PpcFileRecord {
+        ref_num: PPC_FIRST_FILE_REF_NUM,
+        path: "Prefs/roster.ini".to_string(),
+        position: 0,
+    });
+    loaded
+}
+
+#[test]
+fn pb_read_newline_mode_returns_one_line_per_read() {
+    let mut loaded = load_pb_read_sync_with_open_file(b"[Section]\rKEY=VALUE\r\r");
+
+    // Return-delimited newline mode at the mark, as a line-by-line reader asks.
+    assert_eq!(
+        pb_read_sync_at_mark(&mut loaded, 500, 0x0D80),
+        (PPC_NO_ERR, 10, 10, b"[Section]\r".to_vec())
+    );
+    assert_eq!(
+        pb_read_sync_at_mark(&mut loaded, 500, 0x0D80),
+        (PPC_NO_ERR, 10, 20, b"KEY=VALUE\r".to_vec())
+    );
+    // The final newline is the file's last byte: still not end of file.
+    assert_eq!(
+        pb_read_sync_at_mark(&mut loaded, 500, 0x0D80),
+        (PPC_NO_ERR, 1, 21, b"\r".to_vec())
+    );
+    assert_eq!(
+        pb_read_sync_at_mark(&mut loaded, 500, 0x0D80),
+        (PPC_EOF_ERR, 0, 21, Vec::new())
+    );
+}
+
+#[test]
+fn pb_read_newline_mode_returns_eof_without_delimiter() {
+    let mut loaded = load_pb_read_sync_with_open_file(b"tail");
+
+    assert_eq!(
+        pb_read_sync_at_mark(&mut loaded, 16, 0x0D80),
+        (PPC_EOF_ERR, 4, 4, b"tail".to_vec())
+    );
+}
+
 #[test]
 fn pb_read_async_returns_from_sound_doubleback_before_its_completion() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PBReadAsync")).unwrap();

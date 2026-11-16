@@ -79,6 +79,7 @@ pub(crate) use systems::macintosh::event_queue;
 pub(crate) use systems::macintosh::execution_kernel;
 pub(crate) use systems::macintosh::execution_m68k;
 pub(crate) use systems::macintosh::execution_native;
+pub(crate) use systems::macintosh::file_manager;
 pub(crate) use systems::macintosh::game;
 pub(crate) use systems::macintosh::gestalt_manager;
 pub(crate) use systems::macintosh::guest_call;
