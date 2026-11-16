@@ -12936,3 +12936,46 @@ fn h_open_df_still_finds_a_unique_file_by_name() {
     assert_eq!(loaded.files.len(), 1);
     assert_eq!(loaded.files[0].path, "Disc/Data File");
 }
+
+#[test]
+fn pbh_open_df_on_a_mounted_volume_ignores_a_boot_folder_of_the_same_name() {
+    const DISC_VREF: i16 = -2;
+    let mut loaded = load_folder_named_like_a_file(b"PBHOpenDFSync");
+    loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+        ref_num: DISC_VREF,
+        name: "Disc".into(),
+        root_dir_id: PPC_FIRST_DYNAMIC_DIR_ID + 1,
+        attributes: 0,
+        file_count: 1,
+        allocation_block_count: 1,
+        allocation_block_size: 512,
+        clump_size: 512,
+        free_blocks: 0,
+        bitmap_start: 0,
+        allocation_pointer: 0,
+        allocation_start: 0,
+        next_catalog_id: 100,
+        created_date: 0,
+        modified_date: 0,
+    }]);
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 64;
+    write_ppc_pstring(&mut loaded.memory, name, b"Game");
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, DISC_VREF as u16)
+        .unwrap();
+    loaded.memory.write_u8(pb + 27, 1).unwrap(); // fsRdPerm
+    loaded
+        .memory
+        .write_u32_be(pb + 48, PPC_ROOT_DIR_ID)
+        .unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBHOpenDF);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.files.len(), 1);
+    assert_eq!(loaded.files[0].path, "Disc/Game");
+}

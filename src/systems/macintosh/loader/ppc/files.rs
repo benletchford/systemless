@@ -3854,6 +3854,7 @@ pub(super) fn ppc_pbh_open_df(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
+    vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_files: &mut [PpcVfsFileRecord],
     files: &mut Vec<PpcFileRecord>,
     writable_refnums: &mut HashSet<u16>,
@@ -3873,6 +3874,11 @@ pub(super) fn ppc_pbh_open_df(
     let Some(dir_id) = memory.read_u32_be(pb + 48) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
+    let Some(vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    // A mounted volume's root (dirID 2) is its own directory, not the boot root.
+    let dir_id = process_volume_dir_id(vfs_volumes, vref, dir_id);
     let Some(raw_permission) = memory.read_u8(pb + 27) else {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     };
