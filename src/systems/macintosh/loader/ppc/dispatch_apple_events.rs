@@ -972,6 +972,36 @@ fn ppc_coerce_ae_integer(source_type: u32, bytes: &[u8], destination_type: u32) 
     }
 }
 
+/// Coerces an Apple event to `typeAppParameters`, the launch parameters an
+/// application passes to `LaunchApplication` so the launched process receives
+/// the event first. The record is `AppParameters` (Universal Interfaces,
+/// Processes.h): a high-level `EventRecord` (`what` = kHighLevelEvent, the
+/// event class in `message`, the event ID in `where`), `eventRefCon`, and
+/// `messageLength` followed by the event's message bytes. Systemless does not
+/// yet deliver launch events, so the message buffer is empty.
+fn ppc_coerce_ae_app_parameters(
+    source_type: u32,
+    bytes: &[u8],
+    destination_type: u32,
+) -> Option<Vec<u8>> {
+    const HIGH_LEVEL_EVENT: u16 = 23;
+    if source_type != u32::from_be_bytes(*b"aevt")
+        || destination_type != u32::from_be_bytes(*b"appa")
+    {
+        return None;
+    }
+    let (event_class, event_id) = (bytes.get(..4)?, bytes.get(4..8)?);
+    let mut parameters = Vec::with_capacity(24);
+    parameters.extend_from_slice(&HIGH_LEVEL_EVENT.to_be_bytes());
+    parameters.extend_from_slice(event_class);
+    parameters.extend_from_slice(&0u32.to_be_bytes()); // when
+    parameters.extend_from_slice(event_id); // where
+    parameters.extend_from_slice(&0u16.to_be_bytes()); // modifiers
+    parameters.extend_from_slice(&0u32.to_be_bytes()); // eventRefCon
+    parameters.extend_from_slice(&0u32.to_be_bytes()); // messageLength
+    Some(parameters)
+}
+
 fn ppc_write_ae_desc(
     memory: &mut PpcSectionMem,
     result: u32,
@@ -1755,6 +1785,13 @@ pub(super) fn ppc_dispatch_apple_event_compatibility(
                         let destination_type = to_type.unwrap();
                         if let Some(bytes) =
                             ppc_coerce_ae_integer(value.desc_type, &value.data, destination_type)
+                                .or_else(|| {
+                                    ppc_coerce_ae_app_parameters(
+                                        value.desc_type,
+                                        &value.data,
+                                        destination_type,
+                                    )
+                                })
                         {
                             ppc_create_process_owned_ae_desc(
                                 process_memory_manager,
