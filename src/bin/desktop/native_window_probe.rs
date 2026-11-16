@@ -430,7 +430,12 @@ impl Probe {
                     self.app.guest_state.warp.is_none(),
                     "warp packet not consumed"
                 );
-                assert_eq!(self.app.mouse_guest_offset, (0, 0), "native warp fell back");
+                assert_eq!(
+                    self.app
+                        .host_mouse_to_mac(self.app.mouse_physical.0, self.app.mouse_physical.1),
+                    target,
+                    "native warp did not retain its guest coordinates"
+                );
                 self.expected_cursor = Some(self.app.mouse_physical);
                 self.advance("frame delivery continues after focus return");
             }
