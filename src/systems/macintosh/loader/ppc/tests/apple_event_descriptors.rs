@@ -2521,3 +2521,73 @@ fn apple_event_integer_coercions_preserve_values_and_reject_overflow() {
     let ptr = loaded.memory.read_u32_be(handle).unwrap();
     assert_eq!(loaded.memory.read_u16_be(ptr), Some((-123i16) as u16));
 }
+
+#[test]
+fn apple_event_coerces_to_launch_application_parameters() {
+    // Applications launch a helper with an Open Documents event by coercing
+    // the event to typeAppParameters for LaunchApplication.
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"AECreateAppleEvent")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let (address, event, parameters, text) = (scratch, scratch + 8, scratch + 16, scratch + 0x40);
+    let ae = PpcImportDispatcherTarget::AppleEventCompatibility;
+    loaded
+        .memory
+        .write_bytes(text, &[0, 0, 0, 0, 0, 0, 0, 2])
+        .unwrap();
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"psn ");
+    loaded.cpu.gpr[4] = text;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = address;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"aevt");
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"odoc");
+    loaded.cpu.gpr[5] = address;
+    loaded.cpu.gpr[6] = 0xffff;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = event;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CreateAppleEvent),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    loaded.cpu.gpr[3] = event;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"appa");
+    loaded.cpu.gpr[5] = parameters;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(parameters),
+        Some(u32::from_be_bytes(*b"appa"))
+    );
+    let handle = loaded.memory.read_u32_be(parameters + 4).unwrap();
+    let record = loaded.memory.read_u32_be(handle).unwrap();
+    let mut expected = vec![0, 23];
+    expected.extend_from_slice(b"aevt");
+    expected.extend_from_slice(&[0; 4]);
+    expected.extend_from_slice(b"odoc");
+    expected.extend_from_slice(&[0; 10]);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, record, 24),
+        Some(expected)
+    );
+
+    // Other descriptors still fail to coerce to launch parameters.
+    loaded.cpu.gpr[3] = address;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"appa");
+    loaded.cpu.gpr[5] = parameters;
+    run_test_import(
+        &mut loaded,
+        ae(PpcAppleEventCompatibilityOperation::CoerceDesc),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_ERR_AE_COERCION_FAIL));
+}
