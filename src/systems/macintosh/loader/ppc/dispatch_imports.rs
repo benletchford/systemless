@@ -2533,6 +2533,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NumToString
         | PpcImportDispatcherTarget::NumToCString
         | PpcImportDispatcherTarget::StringToNum
+        | PpcImportDispatcherTarget::CStringToNum
         | PpcImportDispatcherTarget::Random
         | PpcImportDispatcherTarget::SetQDGlobalsRandomSeed
         | PpcImportDispatcherTarget::GetQDGlobalsRandomSeed

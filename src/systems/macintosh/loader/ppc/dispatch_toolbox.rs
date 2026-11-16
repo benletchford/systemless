@@ -135,6 +135,10 @@ pub(super) fn dispatch_toolbox_import(
             ppc_string_to_num(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::CStringToNum => {
+            ppc_c_string_to_num(cpu, memory);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetQDGlobalsRandomSeed => {
             // Quickdraw.h: long GetQDGlobalsRandomSeed(void). A query must
             // preserve all seed bits and must not advance Random's state.
@@ -185,6 +189,23 @@ pub(crate) fn ppc_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
         return;
     }
     let Some(bytes) = ppc_read_pstring_bytes(memory, string_ptr) else {
+        return;
+    };
+    let value = crate::text_utils::evaluate_string_to_num(&bytes);
+    let _ = memory.write_u32_be(number_ptr, value as u32);
+}
+
+/// `void stringtonum(char *theString, long *theNum)`: the C-string glue for
+/// StringToNum. NumberFormatting.h lists it for InterfaceLib 7.1 and later and
+/// not for Carbon; older interfaces declare it in TextUtils.h. Parsing rules
+/// are StringToNum's.
+pub(crate) fn ppc_c_string_to_num(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+    let string_ptr = cpu.gpr[3];
+    let number_ptr = cpu.gpr[4];
+    if string_ptr == 0 || number_ptr == 0 || !ppc_memory_can_write_bytes(memory, number_ptr, 4) {
+        return;
+    }
+    let Some(bytes) = ppc_read_bounded_c_string(memory, string_ptr) else {
         return;
     };
     let value = crate::text_utils::evaluate_string_to_num(&bytes);
