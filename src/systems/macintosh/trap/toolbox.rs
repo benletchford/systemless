@@ -12398,6 +12398,60 @@ impl super::TrapDispatcher {
                         Ok(())
                     }
 
+                    // LAddColumn (selector 4 / $04)
+                    // Inserts columns into the list and returns the first added
+                    // column. Columns at and after colNum shift right; a colNum
+                    // outside dataBounds adds the columns after the last one.
+                    // FUNCTION LAddColumn(count, colNum: INTEGER; lHandle: ListHandle): INTEGER;
+                    // Inside Macintosh Volume IV, IV-271
+                    // Stack at entry: sel(2) + lHandle(4) + colNum(2) +
+                    // count(2) + result(2) = 12.
+                    0x04 => {
+                        let list_handle = bus.read_long(sp + 2);
+                        let col = bus.read_word(sp + 6) as i16;
+                        let count = bus.read_word(sp + 8) as i16;
+                        let result_addr = sp + 10;
+
+                        let mut result_col = col;
+                        self.list_states.with_record_mut(list_handle, |state| {
+                            let col = col.clamp(state.data_bounds.1, state.data_bounds.3);
+                            result_col = col;
+
+                            if count > 0 {
+                                let shift = |cell_col: i16| {
+                                    if cell_col >= col {
+                                        cell_col + count
+                                    } else {
+                                        cell_col
+                                    }
+                                };
+                                state.cells = state
+                                    .cells
+                                    .drain()
+                                    .map(|((cell_row, cell_col), data)| {
+                                        ((cell_row, shift(cell_col)), data)
+                                    })
+                                    .collect();
+                                state.selected = state
+                                    .selected
+                                    .iter()
+                                    .map(|&(cell_row, cell_col)| (cell_row, shift(cell_col)))
+                                    .collect();
+                                state.data_bounds.3 += count;
+                                state.visible = Self::compute_list_visible_rect(
+                                    state.view_rect,
+                                    state.data_bounds,
+                                    state.cell_size,
+                                );
+                                Self::sync_list_state_to_guest(bus, list_handle, state);
+                            }
+                        });
+
+                        bus.write_word(result_addr, result_col as u16);
+                        cpu.write_reg(Register::A7, result_addr);
+                        Ok(())
+                    }
+
                     // LAddRow (selector 8 / $08)
                     // Inserts rows into the list and returns the first added row.
                     // FUNCTION LAddRow(count, rowNum: INTEGER; lHandle: ListHandle): INTEGER;

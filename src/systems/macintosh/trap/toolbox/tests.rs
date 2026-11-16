@@ -8199,6 +8199,111 @@ fn pack0_laddrow_returns_insert_row_and_extends_databounds_bottom() {
     assert_eq!(data_bounds_bottom, 3);
 }
 
+// Pack0 / List Manager ($A9E7) — LAddColumn selector $0004
+// IM:IV 1986 p. IV-271: inserts columns at colNum, shifting later columns
+// right, or after the last column when colNum is outside dataBounds; returns
+// the first added column. Spin Doctor builds its one-column score list this
+// way and stores each score in the added column with LSetCell.
+#[test]
+fn pack0_laddcolumn_inserts_columns_that_accept_cell_data() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let view_rect_ptr = 0x351000u32;
+    let data_bounds_ptr = 0x351100u32;
+    let data_ptr = 0x351200u32;
+    let out_ptr = 0x351210u32;
+    let len_ptr = 0x351220u32;
+
+    bus.write_word(view_rect_ptr, 0);
+    bus.write_word(view_rect_ptr + 2, 0);
+    bus.write_word(view_rect_ptr + 4, 40);
+    bus.write_word(view_rect_ptr + 6, 80);
+    bus.write_word(data_bounds_ptr, 0);
+    bus.write_word(data_bounds_ptr + 2, 0);
+    bus.write_word(data_bounds_ptr + 4, 1);
+    bus.write_word(data_bounds_ptr + 6, 1);
+
+    bus.write_word(sp, 0x0044); // LNew
+    bus.write_word(sp + 2, 0);
+    bus.write_word(sp + 4, 0);
+    bus.write_word(sp + 6, 0);
+    bus.write_word(sp + 8, 0);
+    bus.write_long(sp + 10, 0x210000);
+    bus.write_word(sp + 14, 0);
+    bus.write_word(sp + 16, 10);
+    bus.write_word(sp + 18, 40);
+    bus.write_long(sp + 20, data_bounds_ptr);
+    bus.write_long(sp + 24, view_rect_ptr);
+    bus.write_long(sp + 28, 0);
+    disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let list_handle = bus.read_long(sp + 28);
+
+    let set_cell = |disp: &mut TrapDispatcher,
+                    cpu: &mut MockCpu,
+                    bus: &mut MacMemoryBus,
+                    row: u16,
+                    col: u16,
+                    bytes: &[u8]| {
+        bus.write_bytes(data_ptr, bytes);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0058); // LSetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, row);
+        bus.write_word(sp + 8, col);
+        bus.write_word(sp + 10, bytes.len() as u16);
+        bus.write_long(sp + 12, data_ptr);
+        disp.dispatch_toolbox(true, 0x1E7, cpu, bus).unwrap().unwrap();
+    };
+    let get_cell = |disp: &mut TrapDispatcher,
+                    cpu: &mut MockCpu,
+                    bus: &mut MacMemoryBus,
+                    row: u16,
+                    col: u16| {
+        bus.write_word(len_ptr, 8);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0038); // LGetCell
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, row);
+        bus.write_word(sp + 8, col);
+        bus.write_long(sp + 10, len_ptr);
+        bus.write_long(sp + 14, out_ptr);
+        disp.dispatch_toolbox(true, 0x1E7, cpu, bus).unwrap().unwrap();
+        bus.read_bytes(out_ptr, bus.read_word(len_ptr) as usize)
+    };
+    let add_columns = |disp: &mut TrapDispatcher,
+                       cpu: &mut MockCpu,
+                       bus: &mut MacMemoryBus,
+                       count: u16,
+                       col: u16| {
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0004); // LAddColumn
+        bus.write_long(sp + 2, list_handle);
+        bus.write_word(sp + 6, col);
+        bus.write_word(sp + 8, count);
+        bus.write_word(sp + 10, 0xBEEF); // INTEGER result slot
+        disp.dispatch_toolbox(true, 0x1E7, cpu, bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        bus.read_word(sp + 10)
+    };
+
+    set_cell(&mut disp, &mut cpu, &mut bus, 0, 0, b"A");
+
+    // Past the last column: append.
+    assert_eq!(add_columns(&mut disp, &mut cpu, &mut bus, 1, 99), 1);
+    // Before column 0: shift the existing cell right.
+    assert_eq!(add_columns(&mut disp, &mut cpu, &mut bus, 1, 0), 0);
+
+    let list_ptr = bus.read_long(list_handle);
+    assert_eq!(bus.read_word(list_ptr + 78), 3); // dataBounds.right
+    assert_eq!(get_cell(&mut disp, &mut cpu, &mut bus, 0, 0), b"");
+    assert_eq!(get_cell(&mut disp, &mut cpu, &mut bus, 0, 1), b"A");
+
+    set_cell(&mut disp, &mut cpu, &mut bus, 0, 2, b"score");
+    assert_eq!(get_cell(&mut disp, &mut cpu, &mut bus, 0, 2), b"score");
+}
+
 // Pack0 / List Manager ($A9E7) — LAddToCell selector $000C
 // IM:IV 1986 p. IV-272: append bytes into an existing cell; invalid cells are ignored.
 #[test]
