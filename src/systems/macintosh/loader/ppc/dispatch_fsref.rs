@@ -24,7 +24,6 @@ const PPC_FS_CATALOG_INFO_SIZE: u32 = 144;
 const PPC_RESOURCE_FORK_NAME: &str = "RESOURCE_FORK";
 
 // Files.h result codes.
-const PPC_NOT_A_FILE_ERR: i16 = -1302;
 const PPC_ERR_FS_NOT_A_FOLDER: i16 = -1407;
 const PPC_ERR_FS_FORK_NOT_FOUND: i16 = -1409;
 const PPC_ERR_FS_REFS_DIFFERENT: i16 = -1420;

@@ -12815,3 +12815,124 @@ fn get_process_information_reports_an_app_on_a_mounted_volume() {
         );
     }
 }
+
+/// A root folder "Game" beside a mounted-media file "Disc/Game": opening the
+/// folder's name at the root must not open the unrelated file.
+fn load_folder_named_like_a_file(import: &[u8]) -> PpcLoadedApp {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).unwrap();
+    let mut directories = initial_ppc_vfs_directories();
+    for (offset, path) in ["Game", "Disc"].into_iter().enumerate() {
+        directories.push(PpcVfsDirectory {
+            dir_id: PPC_FIRST_DYNAMIC_DIR_ID + offset as u32,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: path.to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+    }
+    loaded.seed_vfs_directories(directories, PPC_ROOT_DIR_ID, PPC_FIRST_DYNAMIC_DIR_ID + 2);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Disc/Game".to_string(),
+        data: b"installer".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.memory.add_region(PPC_DATA_BASE + 0x1000, vec![0; 128]);
+    loaded
+}
+
+#[test]
+fn h_open_df_of_a_folder_is_not_a_file() {
+    let mut loaded = load_folder_named_like_a_file(b"HOpenDF");
+    let name = PPC_DATA_BASE + 0x1000;
+    let ref_num_out = name + 64;
+    write_ppc_pstring(&mut loaded.memory, name, b"Game");
+    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+    loaded.cpu.gpr[5] = name;
+    loaded.cpu.gpr[6] = 1; // fsRdPerm
+    loaded.cpu.gpr[7] = ref_num_out;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HOpen);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NOT_A_FILE_ERR));
+    assert!(loaded.files.is_empty());
+}
+
+#[test]
+fn pbh_open_df_of_a_folder_is_not_a_file() {
+    let mut loaded = load_folder_named_like_a_file(b"PBHOpenDFSync");
+    let pb = PPC_DATA_BASE + 0x1000;
+    let name = pb + 64;
+    write_ppc_pstring(&mut loaded.memory, name, b"Game");
+    loaded.memory.write_u32_be(pb + 18, name).unwrap();
+    loaded
+        .memory
+        .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+        .unwrap();
+    loaded.memory.write_u8(pb + 27, 1).unwrap(); // fsRdPerm
+    loaded.memory.write_u32_be(pb + 48, PPC_ROOT_DIR_ID).unwrap();
+    loaded.cpu.gpr[3] = pb;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PBHOpenDF);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NOT_A_FILE_ERR));
+    assert_eq!(
+        loaded.memory.read_u16_be(pb + 16),
+        Some(PPC_NOT_A_FILE_ERR as u16)
+    );
+    assert!(loaded.files.is_empty());
+}
+
+#[test]
+fn fsp_open_df_of_a_root_folder_is_not_a_file() {
+    let mut loaded = load_folder_named_like_a_file(b"FSpOpenDF");
+    let spec = PPC_DATA_BASE + 0x1000;
+    let ref_num_out = spec + 80;
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Game",
+    );
+    loaded.cpu.gpr[3] = spec;
+    loaded.cpu.gpr[4] = 1; // fsRdPerm
+    loaded.cpu.gpr[5] = ref_num_out;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FSpOpenDF);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NOT_A_FILE_ERR));
+    assert!(loaded.files.is_empty());
+}
+
+#[test]
+fn h_open_df_still_finds_a_unique_file_by_name() {
+    let mut loaded = load_folder_named_like_a_file(b"HOpenDF");
+    let name = PPC_DATA_BASE + 0x1000;
+    let ref_num_out = name + 64;
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Disc/Data File".to_string(),
+        data: b"data".to_vec().into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        dirty: false,
+    });
+    write_ppc_pstring(&mut loaded.memory, name, b"Data File");
+    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[4] = PPC_ROOT_DIR_ID;
+    loaded.cpu.gpr[5] = name;
+    loaded.cpu.gpr[6] = 1; // fsRdPerm
+    loaded.cpu.gpr[7] = ref_num_out;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HOpen);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(loaded.files.len(), 1);
+    assert_eq!(loaded.files[0].path, "Disc/Data File");
+}
