@@ -4495,20 +4495,183 @@ fn ppc_begin_dialog_callbacks(
     ppc_next_dialog_callback(cpu, memory, dialog_callback_stack)
 }
 
-pub(super) fn ppc_fill_front_rect(
+/// A decoded dialog icon: `width * height` pixels in row order, `None`
+/// where the icon's mask leaves the destination untouched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcDialogIconImage {
+    pub(super) width: usize,
+    pub(super) height: usize,
+    pub(super) pixels: Vec<Option<PpcRgbColor>>,
+}
+
+/// Resolve a dialog `iconItem` the way the Color Dialog Manager does: a
+/// 'cicn' with the item's resource ID is preferred, otherwise the 1-bit
+/// 'ICON' is used (Macintosh Toolbox Essentials (1992), pp. 6-29--6-30 and
+/// 6-153), falling back to the System file icons Systemless supplies.
+/// Absent resources draw nothing, as PlotIcon/PlotCIcon would with no icon.
+pub(super) fn ppc_dialog_icon_item_image(
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    resource_id: i16,
+) -> Option<PpcDialogIconImage> {
+    let find = |kind: [u8; 4]| {
+        ppc_vfs_resource_index(
+            vfs_resources,
+            current_resource_refnum,
+            u32::from_be_bytes(kind),
+            resource_id,
+            false,
+        )
+        .map(|index| vfs_resources[index].data.as_slice())
+    };
+    if let Some(image) = find(*b"cicn").and_then(ppc_decode_dialog_cicn) {
+        return Some(image);
+    }
+    let icon = find(*b"ICON").or_else(|| {
+        crate::dialog_manager::system_icon_bitmap(resource_id).map(|bitmap| &bitmap[..])
+    })?;
+    // Inside Macintosh Volume I, I-205: an ICON is a 32x32 1-bit bitmap
+    // with 4-byte rows. Set bits draw in black; clear bits leave the
+    // dialog's white background as it is.
+    if icon.len() < 128 {
+        return None;
+    }
+    let pixels = (0..32 * 32)
+        .map(|index| {
+            let (row, col) = (index / 32, index % 32);
+            (icon[row * 4 + col / 8] & (0x80 >> (col % 8)) != 0).then_some(PPC_RGB_BLACK)
+        })
+        .collect();
+    Some(PpcDialogIconImage {
+        width: 32,
+        height: 32,
+        pixels,
+    })
+}
+
+/// Decode a compiled 'cicn' resource. Imaging With QuickDraw (1994),
+/// p. 4-106: a 50-byte PixMap, 14-byte mask BitMap, 14-byte 1-bit BitMap
+/// and 4-byte iconData handle are followed by the mask bits, the 1-bit
+/// image, the ColorTable and finally the PixMap's pixel data.
+fn ppc_decode_dialog_cicn(data: &[u8]) -> Option<PpcDialogIconImage> {
+    let word = |offset: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            data.get(offset..offset + 2)?.try_into().ok()?,
+        ))
+    };
+    let pm_row_bytes = usize::from(word(4)? & 0x3FFF);
+    let height = i32::from(word(10)? as i16) - i32::from(word(6)? as i16);
+    let width = i32::from(word(12)? as i16) - i32::from(word(8)? as i16);
+    let pixel_size = word(32)?;
+    let mask_row_bytes = usize::from(word(54)? & 0x3FFF);
+    let bmap_row_bytes = usize::from(word(68)? & 0x3FFF);
+    if width <= 0 || height <= 0 || pm_row_bytes == 0 || mask_row_bytes == 0 {
+        return None;
+    }
+    if !matches!(pixel_size, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let (width, height) = (width as usize, height as usize);
+    let mask_start = 82usize;
+    let bmap_start = mask_start.checked_add(mask_row_bytes.checked_mul(height)?)?;
+    let ctab_start = bmap_start.checked_add(bmap_row_bytes.checked_mul(height)?)?;
+    let ct_flags = word(ctab_start + 4)?;
+    let ct_size = usize::from(word(ctab_start + 6)?);
+    let pixel_start = ctab_start.checked_add(8 + (ct_size + 1) * 8)?;
+    let mask = data.get(mask_start..bmap_start)?;
+    let pixel_data =
+        data.get(pixel_start..pixel_start.checked_add(pm_row_bytes.checked_mul(height)?)?)?;
+    // ColorSpec.value names the source index unless ctFlags marks the table
+    // as a device table, whose entries are indexed by position.
+    let mut colors: [Option<PpcRgbColor>; 256] = [None; 256];
+    for ordinal in 0..=ct_size {
+        let entry = ctab_start + 8 + ordinal * 8;
+        let value = if ct_flags & 0x8000 != 0 {
+            ordinal
+        } else {
+            usize::from(word(entry)?)
+        };
+        if let Some(slot) = colors.get_mut(value) {
+            slot.get_or_insert(PpcRgbColor {
+                red: word(entry + 2)?,
+                green: word(entry + 4)?,
+                blue: word(entry + 6)?,
+            });
+        }
+    }
+    let depth = usize::from(pixel_size);
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            let masked = mask
+                .get(y * mask_row_bytes + x / 8)
+                .is_some_and(|byte| byte & (0x80 >> (x % 8)) != 0);
+            if !masked {
+                pixels.push(None);
+                continue;
+            }
+            let bit = x * depth;
+            let byte = *pixel_data.get(y * pm_row_bytes + bit / 8)?;
+            let index = (byte >> (8 - depth - bit % 8)) & ((1u16 << depth) - 1) as u8;
+            pixels.push(Some(colors[usize::from(index)].unwrap_or(PPC_RGB_BLACK)));
+        }
+    }
+    Some(PpcDialogIconImage {
+        width,
+        height,
+        pixels,
+    })
+}
+
+/// Draw a decoded icon scaled into `rect`, leaving masked-out pixels alone.
+pub(super) fn ppc_draw_front_icon_image(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     rect: (i16, i16, i16, i16),
-    color: PpcRgbColor,
+    icon: &PpcDialogIconImage,
 ) -> bool {
-    let top = i32::from(rect.0).max(0).min(front.height as i32);
-    let left = i32::from(rect.1).max(0).min(front.width as i32);
-    let bottom = i32::from(rect.2).max(0).min(front.height as i32);
-    let right = i32::from(rect.3).max(0).min(front.width as i32);
-    if top >= bottom || left >= right {
+    let width = i32::from(rect.3) - i32::from(rect.1);
+    let height = i32::from(rect.2) - i32::from(rect.0);
+    if width <= 0 || height <= 0 || icon.width == 0 || icon.height == 0 {
         return false;
     }
-    let pixel = match front.depth {
+    let mut resolved: Vec<(PpcRgbColor, u16)> = Vec::new();
+    let mut wrote = false;
+    for dy in 0..height {
+        let sy = (dy as usize * icon.height) / height as usize;
+        for dx in 0..width {
+            let sx = (dx as usize * icon.width) / width as usize;
+            let Some(color) = icon.pixels[sy * icon.width + sx] else {
+                continue;
+            };
+            let pixel = match resolved.iter().find(|(known, _)| *known == color) {
+                Some(&(_, pixel)) => pixel,
+                None => {
+                    let Some(pixel) = ppc_front_rgb_pixel(memory, front, color) else {
+                        return wrote;
+                    };
+                    resolved.push((color, pixel));
+                    pixel
+                }
+            };
+            wrote |= ppc_quickdraw_write_raw_pixel(
+                memory,
+                front,
+                (i32::from(rect.1) + dx, i32::from(rect.0) + dy),
+                pixel,
+            );
+        }
+    }
+    wrote
+}
+
+/// The raw front-buffer pixel nearest to `color`.
+fn ppc_front_rgb_pixel(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    color: PpcRgbColor,
+) -> Option<u16> {
+    Some(match front.depth {
         depth @ (1 | 2 | 4 | 8) => {
             let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
                 .map(|(clut, _)| clut)
@@ -4525,7 +4688,25 @@ pub(super) fn ppc_fill_front_rect(
             ))
         }
         16 => ppc_rgb_color_to_rgb555(color),
-        _ => return false,
+        _ => return None,
+    })
+}
+
+pub(super) fn ppc_fill_front_rect(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+) -> bool {
+    let top = i32::from(rect.0).max(0).min(front.height as i32);
+    let left = i32::from(rect.1).max(0).min(front.width as i32);
+    let bottom = i32::from(rect.2).max(0).min(front.height as i32);
+    let right = i32::from(rect.3).max(0).min(front.width as i32);
+    if top >= bottom || left >= right {
+        return false;
+    }
+    let Some(pixel) = ppc_front_rgb_pixel(memory, front, color) else {
+        return false;
     };
     let mut wrote = false;
     for y in top..bottom {
@@ -5205,8 +5386,11 @@ fn ppc_draw_dialog_items(
                 }
             }
             DIALOG_ITEM_ICON => {
-                let _ =
-                    ppc_frame_front_rect(memory, front, rect, ppc_theme_rgb(palette.frame_dark), 1);
+                if let Some(icon) = item.resource_id().and_then(|id| {
+                    ppc_dialog_icon_item_image(vfs_resources, current_resource_refnum, id)
+                }) {
+                    let _ = ppc_draw_front_icon_image(memory, front, rect, &icon);
+                }
             }
             DIALOG_ITEM_RESOURCE_CONTROL => {
                 let _ = ppc_draw_control_inner(
