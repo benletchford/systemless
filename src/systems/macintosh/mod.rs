@@ -24,6 +24,7 @@ pub(crate) mod event_queue;
 pub(crate) mod execution_kernel;
 pub(crate) mod execution_m68k;
 pub(crate) mod execution_native;
+pub(crate) mod file_manager;
 pub mod game;
 pub(crate) mod drag_manager;
 pub(crate) mod gestalt_manager;

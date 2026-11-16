@@ -4125,7 +4125,9 @@ pub(super) fn ppc_pb_read(
         return ppc_complete_pb(memory, pb, PPC_POS_ERR);
     }
     let requested_len = usize::try_from(requested_count).unwrap_or(usize::MAX);
-    let read_len = requested_len.min(vfs_file.data.len().saturating_sub(start));
+    let extent =
+        crate::file_manager::read_extent(&vfs_file.data[start..], requested_len, position_mode);
+    let read_len = extent.len;
     if read_len != 0
         && (buffer_ptr == 0 || !ppc_memory_can_write_bytes(memory, buffer_ptr, read_len as u32))
     {
@@ -4144,11 +4146,7 @@ pub(super) fn ppc_pb_read(
     files[file_index].position = new_position;
     let _ = memory.write_u32_be(pb + 40, read_len as u32);
     let _ = memory.write_u32_be(pb + 46, new_position);
-    let result = if read_len < requested_len {
-        PPC_EOF_ERR
-    } else {
-        PPC_NO_ERR
-    };
+    let result = if extent.eof { PPC_EOF_ERR } else { PPC_NO_ERR };
     if std::env::var_os("SYSTEMLESS_PPC_FILE_TRACE").is_some() {
         eprintln!("[PPC-FILE-TRACE] PBRead path=\"{}\" start={} requested={} read={} result={}", vfs_file.path, start, requested_len, read_len, result);
     }
