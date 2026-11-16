@@ -100,6 +100,7 @@ fn pb_dt_get_appl_finds_an_application_by_creator() {
     let pb = PPC_DATA_BASE + 0x1000;
     let name = pb + 0x100;
     loaded.memory.add_region(pb, vec![0; 0x200]);
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
     loaded.push_test_vfs_file(PpcVfsFileRecord {
         path: "Viewer".to_string(),
         data: b"code".to_vec().into(),
@@ -127,6 +128,7 @@ fn pb_dt_get_appl_finds_an_application_by_creator() {
 
     let mut loaded = load_pef_application(&pef).unwrap();
     loaded.memory.add_region(pb, vec![0; 0x200]);
+    loaded.memory.write_u16_be(pb + 24, 0x7f00).unwrap();
     loaded
         .memory
         .write_u32_be(pb + 52, u32::from_be_bytes(*b"NONE"))
