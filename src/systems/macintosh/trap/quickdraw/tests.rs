@@ -22630,7 +22630,37 @@ fn copy_bits_converts_between_direct_color_depths() {
         let gworld = bus.read_long(gworld_ptr_ptr);
         let pixmap_handle = bus.read_long(gworld + 2);
         let pixmap = bus.read_long(pixmap_handle);
-        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 640);
+        // NewGWorld pads even 16-byte-aligned scanlines. Gridz stores its
+        // 640x460 title image at this 656-byte stride and reads it straight
+        // into the GWorld; a 640-byte stride shears the board into stripes.
+        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 656);
+    }
+
+    #[test]
+    fn offscreen_row_bytes_pad_long_aligned_rows_to_sixteen_bytes() {
+        // Strides Gridz stored for its GWorld images (8-bit) and Angel Egg's
+        // 384-pixel 8- and 16-bit rows.
+        for (width, depth, expected) in [
+            (13, 8, 32),
+            (18, 8, 32),
+            (31, 8, 48),
+            (33, 8, 48),
+            (45, 8, 64),
+            (74, 8, 80),
+            (78, 8, 96),
+            (84, 8, 96),
+            (144, 8, 160),
+            (640, 8, 656),
+            (384, 8, 400),
+            (384, 16, 784),
+            (100, 1, 32),
+        ] {
+            assert_eq!(
+                TrapDispatcher::offscreen_row_bytes(width, depth),
+                expected,
+                "{width}x{depth}"
+            );
+        }
     }
 
     #[test]
