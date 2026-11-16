@@ -4317,11 +4317,35 @@ pub(crate) fn ppc_qt_append_movie_resource(
             if let Some((start, end)) = data_movie_range {
                 movie_file_data.drain(start..end);
             }
+            ppc_qt_close_open_ended_atom(movie_file_data);
             movie_file_data.extend_from_slice(&resource_data);
             return Some(res_id);
         }
     }
     None
+}
+
+/// A top-level atom whose size is zero extends to the end of the file
+/// (QuickTime File Format, "Atoms"). A movie whose `moov` lives in the
+/// resource fork commonly ends its data fork with such an `mdat`. Give that
+/// atom its explicit length before anything is appended after it, so the
+/// appended movie atom stays a separate top-level atom.
+fn ppc_qt_close_open_ended_atom(data: &mut [u8]) {
+    let mut offset = 0usize;
+    while offset.saturating_add(8) <= data.len() {
+        let Some((_, _, atom_end)) = ppc_qt_atom_range(data, offset, data.len()) else {
+            return;
+        };
+        if atom_end == data.len() {
+            if data[offset..offset + 4] == [0; 4] {
+                if let Ok(size) = u32::try_from(data.len() - offset) {
+                    data[offset..offset + 4].copy_from_slice(&size.to_be_bytes());
+                }
+            }
+            return;
+        }
+        offset = atom_end;
+    }
 }
 
 fn ppc_qt_top_level_atom_offsets(data: &[u8], expected_type: &[u8; 4]) -> Option<(usize, usize)> {
