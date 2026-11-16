@@ -10,8 +10,6 @@ const PPC_BAD_MOV_ERR: i16 = -122;
 const PPC_VOL_ON_LIN_ERR: i16 = -55;
 /// nsDrvErr: no such drive.
 const PPC_NS_DRV_ERR: i16 = -56;
-/// notAFileErr: the catalog entry is a directory.
-const PPC_NOT_A_FILE_ERR: i16 = -1302;
 /// diffVolErr: the two specifications name different volumes.
 const PPC_DIFF_VOL_ERR: i16 = -1303;
 

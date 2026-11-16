@@ -382,6 +382,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 cpu,
                 memory,
                 vfs_directories,
+                vfs_volumes,
                 vfs_files,
                 files,
                 writable_refnums,
