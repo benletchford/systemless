@@ -8366,3 +8366,93 @@ fn append_ditl_draws_its_items_only_in_a_visible_dialog() {
         assert_eq!(read(&mut loaded) != before, visible, "visible={visible}");
     }
 }
+
+#[test]
+fn draw_dialog_clips_picture_items_to_the_dialog_port() {
+    // Candy Crisis's shareware notice places its header picture at local
+    // left -84; DrawPicture clips to the dialog port, so only the part
+    // inside the window may reach the screen.
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+    dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 18];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&(-30i16).to_be_bytes());
+    ditl[10..12].copy_from_slice(&20i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&30i16.to_be_bytes());
+    ditl[14] = crate::dialog_manager::DIALOG_ITEM_PICTURE;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(&128i16.to_be_bytes());
+    // Version 1 picture: frame (0,0)-(10,60), PaintRect over the frame.
+    let mut pict = vec![0, 0];
+    for value in [0i16, 0, 10, 60] {
+        pict.extend_from_slice(&value.to_be_bytes());
+    }
+    pict.extend_from_slice(&[0x11, 0x01, 0x31]);
+    for value in [0i16, 0, 10, 60] {
+        pict.extend_from_slice(&value.to_be_bytes());
+    }
+    pict.push(0xFF);
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl), (*b"PICT", pict)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.run_with_hle_imports(128);
+    let dialog = loaded.cpu.gpr[3];
+
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_fill_front_rect(
+        &mut loaded.memory,
+        front,
+        (40, 0, 140, 260),
+        PPC_RGB_WHITE,
+    ));
+    assert!(ppc_draw_dialog(
+        &loaded.window_list,
+        &loaded.param_text,
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.screen_clut,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        dialog,
+    ));
+
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (70, 55)),
+        Some(black),
+        "picture item did not draw inside the dialog"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (50, 55)),
+        Some(white),
+        "picture item drew outside the dialog's port"
+    );
+}
