@@ -1796,6 +1796,9 @@ pub struct TrapDispatcher {
     /// position the application never requested invents pixels the Mac would
     /// not have shown.
     pub(crate) windows_placed_offscreen: FastHashSet<u32>,
+    /// Full-screen windows created invisible. Creation fills a visible
+    /// full-screen window's stage; these receive that erase when revealed.
+    pub(crate) hidden_fullscreen_windows: FastHashSet<u32>,
     /// Aux-window handles keyed by WindowPtr. BasiliskII/System 7.5.3 gives
     /// each freshly created window a non-NIL AuxWin record, and SetWinColor
     /// mutates that record in place instead of allocating the first one on
@@ -4007,6 +4010,7 @@ impl TrapDispatcher {
             window_proc_id: 0,
             window_proc_ids: HashMap::default(),
             windows_placed_offscreen: std::collections::HashSet::default(),
+            hidden_fullscreen_windows: std::collections::HashSet::default(),
             window_aux_records: HashMap::default(),
             window_original_pixmaps: HashMap::default(),
             window_saved_under_pixels: HashMap::default(),

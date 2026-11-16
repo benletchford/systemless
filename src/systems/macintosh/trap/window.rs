@@ -3298,6 +3298,7 @@ impl super::TrapDispatcher {
         self.window_proc_ids.remove(&window_ptr);
         self.window_theme_brushes.remove(&window_ptr);
         self.windows_placed_offscreen.remove(&window_ptr);
+        self.hidden_fullscreen_windows.remove(&window_ptr);
         self.window_aux_records.remove(&window_ptr);
         self.window_original_pixmaps.remove(&window_ptr);
         self.window_saved_under_pixels.remove(&window_ptr);
@@ -3826,11 +3827,16 @@ impl super::TrapDispatcher {
         self.ensure_window_aux_record(bus, window_ptr, gd_ctab_handle);
         self.go_away_flag = go_away_flag;
 
-        let fullscreen_visible = visible
-            && wind_top <= 0
+        let fullscreen = wind_top <= 0
             && wind_left <= 0
             && wind_bottom >= screen_h as i16
             && wind_right >= screen_w as i16;
+        if fullscreen && !visible {
+            self.hidden_fullscreen_windows.insert(window_ptr);
+        } else {
+            self.hidden_fullscreen_windows.remove(&window_ptr);
+        }
+        let fullscreen_visible = visible && fullscreen;
         if fullscreen_visible {
             // Real full-screen game windows start from an erased content area
             // using the Window Manager desktop/background. In Systemless's
@@ -3964,13 +3970,59 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
-        let (_, _, screen_width, screen_height, _) = self.screen_mode;
-        if top <= 0 && left <= 0 && bottom >= screen_height as i16 && right >= screen_width as i16 {
+        if self.window_covers_screen(bus, window_ptr) {
             return;
         }
+        self.erase_window_port_content(bus, cpu, window_ptr, None);
+    }
 
+    fn window_covers_screen(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
+        let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        top <= 0 && left <= 0 && bottom >= screen_height as i16 && right >= screen_width as i16
+    }
+
+    /// ShowWindow and ShowHide reveal a hidden window through PaintOne, which
+    /// erases its content (Inside Macintosh Volume I, pp. I-285, I-296).
+    /// Window creation only fills a full-screen window's stage when the
+    /// window starts visible, so a full-screen backdrop created hidden (such
+    /// as MegaPong's WIND 1005) is erased here when first revealed. Kiosk
+    /// mode keeps its black stage.
+    fn paint_revealed_window_content<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window_ptr: u32,
+    ) {
+        if !self.window_original_pixmaps.contains_key(&window_ptr) {
+            return;
+        }
+        let created_hidden_fullscreen = self.hidden_fullscreen_windows.remove(&window_ptr);
+        let mut below_menu_bar = None;
+        if self.window_covers_screen(bus, window_ptr) {
+            if !created_hidden_fullscreen || self.menu_bar_hidden {
+                return;
+            }
+            // GrayRgn, and with it the window's visRgn, starts below the
+            // menu bar (Inside Macintosh Volume V, V-245).
+            let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+            let (global_top, _, _, _) = self.window_global_port_rect(bus, window_ptr);
+            let (local_top, _, _, _) = self.window_port_rect(bus, window_ptr);
+            below_menu_bar =
+                Some(local_top.saturating_add(menu_bar_height.saturating_sub(global_top).max(0)));
+        }
+        self.erase_window_port_content(bus, cpu, window_ptr, below_menu_bar);
+    }
+
+    fn erase_window_port_content<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window_ptr: u32,
+        min_local_top: Option<i16>,
+    ) {
         let (top, left, bottom, right) = self.window_port_rect(bus, window_ptr);
+        let top = min_local_top.map_or(top, |min_top| top.max(min_top));
         let old_port = *self.current_port;
         let old_gdevice = *self.current_gdevice;
         self.set_current_port_state(bus, cpu, window_ptr, None);
@@ -4661,7 +4713,7 @@ impl super::TrapDispatcher {
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
                         self.save_window_under_pixels(bus, the_window);
-                        self.paint_new_window_content(bus, cpu, the_window, true);
+                        self.paint_revealed_window_content(bus, cpu, the_window);
                     }
                     if !was_visible {
                         if was_front {
@@ -5613,6 +5665,17 @@ impl super::TrapDispatcher {
                 // the new A7 address. The second byte is unused stack padding.
                 let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
+                if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
+                    eprintln!(
+                        "[INVAL] ShowHide pc=${:08X} window=${:08X} show={} visible={} structure={:?} tick={}",
+                        cpu.read_reg(Register::PC).wrapping_sub(2),
+                        the_window,
+                        show_flag,
+                        the_window != 0 && self.window_visible(bus, the_window),
+                        self.window_structure_rect(bus, the_window),
+                        self.current_tick()
+                    );
+                }
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     if !show_flag {
@@ -5634,7 +5697,7 @@ impl super::TrapDispatcher {
                     if show_flag {
                         if !was_visible {
                             self.save_window_under_pixels(bus, the_window);
-                            self.paint_new_window_content(bus, cpu, the_window, true);
+                            self.paint_revealed_window_content(bus, cpu, the_window);
                         }
                         if self.front_window == 0 || !self.window_visible(bus, self.front_window) {
                             // ShowHide deliberately leaves z-order and
