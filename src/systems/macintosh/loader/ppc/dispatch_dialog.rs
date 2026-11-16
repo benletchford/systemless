@@ -5173,7 +5173,26 @@ fn ppc_draw_dialog_items(
                 }
             }
             DIALOG_ITEM_PICTURE => {
-                if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
+                let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) else {
+                    continue;
+                };
+                // DrawPicture clips to the dialog port's clipRgn and visRgn
+                // like any QuickDraw drawing (Imaging With QuickDraw (1994),
+                // pp. 2-20--2-21); a picture item rectangle may extend
+                // past the window's content.
+                if let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, dialog) {
+                    let dst_clip = ppc_picture_port_clip(memory, dialog, surface);
+                    let _ = ppc_draw_pict_bytes_clipped(
+                        memory,
+                        surface.front_buffer,
+                        &bytes,
+                        surface.local_rect_i16(item.rect),
+                        screen_clut,
+                        0,
+                        false,
+                        Some(&dst_clip),
+                    );
+                } else {
                     let _ = ppc_draw_pict_bytes_to_16bpp(
                         memory,
                         front,

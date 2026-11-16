@@ -477,6 +477,39 @@ fn draw_raw_quilt_frame(
     true
 }
 
+mod matte;
+
+/// The frame-to-destination transform `draw_picture` applies to picture
+/// coordinates: `dst = (pic - frame) * scale + dst_origin`.
+struct PictureMapping {
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    dst_top: i16,
+    dst_left: i16,
+}
+
+impl PictureMapping {
+    fn to_destination(&self, pic_y: i32, pic_x: i32) -> (i32, i32) {
+        (
+            ((pic_y - i32::from(self.frame_top)) as f64 * self.scale_y) as i32
+                + i32::from(self.dst_top),
+            ((pic_x - i32::from(self.frame_left)) as f64 * self.scale_x) as i32
+                + i32::from(self.dst_left),
+        )
+    }
+
+    fn to_picture(&self, y: i32, x: i32) -> (i32, i32) {
+        (
+            (f64::from(y - i32::from(self.dst_top)) / self.scale_y).floor() as i32
+                + i32::from(self.frame_top),
+            (f64::from(x - i32::from(self.dst_left)) / self.scale_x).floor() as i32
+                + i32::from(self.frame_left),
+        )
+    }
+}
+
 /// Parse and render a PICT from guest memory.
 /// `pic_ptr` points to the Picture record (picSize + picFrame + opcodes).
 /// `dst_rect` is the destination rectangle from DrawPicture parameters.
@@ -610,6 +643,9 @@ pub fn draw_picture(
     let mut tx_mode: i16 = 1;
 
     let mut is_v2 = false;
+    // Matte from an UncompressedQuickTime opcode ($8201), applied to the
+    // bits opcode that follows it.
+    let mut pending_matte: Option<matte::PictureMatte> = None;
 
     loop {
         if opcount > 10000 {
@@ -633,6 +669,23 @@ pub fn draw_picture(
             let op = bus.read_byte(pos) as u16;
             pos += 1;
             op
+        };
+
+        let matte_backdrop = if is_v2 && matches!(opcode, 0x90 | 0x91 | 0x98 | 0x99 | 0x9A | 0x9B) {
+            pending_matte.take().and_then(|matte| {
+                let mapping = PictureMapping {
+                    frame_top,
+                    frame_left,
+                    scale_x,
+                    scale_y,
+                    dst_top,
+                    dst_left,
+                };
+                matte::MatteBackdrop::save(bus, matte, &mapping, screen_mode)
+                    .map(|backdrop| (backdrop, mapping))
+            })
+        } else {
+            None
         };
 
         match opcode {
@@ -1556,6 +1609,16 @@ pub fn draw_picture(
                 // Version (v2, 2 bytes)
                 pos += 2;
             }
+            0x8201 => {
+                // UncompressedQuickTime: a matte for the bits opcode that
+                // follows. Inside Macintosh: QuickTime (1993), Table 3-1.
+                pending_matte = matte::parse_uncompressed_quicktime_matte(bus, pos);
+                let data_len = bus.read_long(pos);
+                let Some(next) = checked_skip_pict_data(pos, 4, data_len) else {
+                    break;
+                };
+                pos = next;
+            }
             0x8200 => {
                 // CompressedQuickTime. QuickTime 1993, Table 3-1:
                 // fixed opcode header, optional matte/mask data, an
@@ -1634,6 +1697,10 @@ pub fn draw_picture(
                     break;
                 }
             }
+        }
+
+        if let Some((backdrop, mapping)) = matte_backdrop {
+            backdrop.composite(bus, &mapping, screen_mode, device_clut, dst_clip);
         }
     }
 
