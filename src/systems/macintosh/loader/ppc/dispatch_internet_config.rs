@@ -524,6 +524,67 @@ pub(super) fn dispatch_internet_config_import(
             }
             PPC_NO_ERR
         })()),
+        // ICLaunchURL(ICInstance, ConstStr255Param hint, Ptr data, long len,
+        // long *selStart, long *selEnd) parses the URL exactly as ICParseURL
+        // does, returning the URL's bounds in the selection, then asks the
+        // helper named by the `Helper•<scheme>` preference to open it.
+        // Internet Config Programmer's Kit 2.0, ICLaunchURL; ICKeys.h
+        // kICHelper. No helper application can be launched here, so the call
+        // reports the missing helper rather than claiming the URL opened.
+        PpcImportDispatcherTarget::ICLaunchURL => i32::from((|| {
+            const IC_PREF_NOT_FOUND_ERR: i16 = -666;
+            const FNF_ERR: i16 = -43;
+            let hint = if cpu.gpr[4] == 0 {
+                Vec::new()
+            } else if let Some(hint) = ppc_read_pascal_string(memory, cpu.gpr[4]) {
+                hint
+            } else {
+                return PPC_PARAM_ERR;
+            };
+            let length = cpu.gpr[6];
+            let start_ptr = cpu.gpr[7];
+            let end_ptr = cpu.gpr[8];
+            if !state.instances.contains_key(&cpu.gpr[3])
+                || cpu.gpr[5] == 0
+                || (length as i32) <= 0
+                || start_ptr == 0
+                || end_ptr == 0
+                || !ppc_memory_can_write_bytes(memory, start_ptr, 4)
+                || !ppc_memory_can_write_bytes(memory, end_ptr, 4)
+            {
+                return PPC_PARAM_ERR;
+            }
+            let Some(data) = ppc_memory_read_bytes(memory, cpu.gpr[5], length) else {
+                return PPC_PARAM_ERR;
+            };
+            let mut start = memory.read_u32_be(start_ptr).unwrap() as usize;
+            let mut end = memory.read_u32_be(end_ptr).unwrap() as usize;
+            let parsed = parse_url_bytes(&data, &hint, &mut start, &mut end);
+            let _ = memory.write_u32_be(start_ptr, start as u32);
+            let _ = memory.write_u32_be(end_ptr, end as u32);
+            let url = match parsed {
+                Ok(url) => url,
+                Err(error) => return error,
+            };
+            let Some(scheme) = url
+                .iter()
+                .position(|byte| *byte == b':')
+                .map(|colon| &url[..colon])
+                .filter(|scheme| !scheme.is_empty())
+            else {
+                return IC_PREF_NOT_FOUND_ERR;
+            };
+            // "Helper" followed by the Mac Roman bullet (0xA5).
+            let mut key = b"Helper\xA5".to_vec();
+            key.extend_from_slice(scheme);
+            let path = &state.instances[&cpu.gpr[3]].path;
+            ensure_config_file(vfs_files, vfs_resource_files, path);
+            ppc_materialize_resource_records_for_path(vfs_resource_files, vfs_resources, path);
+            match preference_bytes(vfs_resources, path, &key) {
+                Ok(_) => FNF_ERR,
+                Err(_) => IC_PREF_NOT_FOUND_ERR,
+            }
+        })()),
         PpcImportDispatcherTarget::ICGetComponentInstance => {
             let output = cpu.gpr[4];
             if !state.instances.contains_key(&cpu.gpr[3])
