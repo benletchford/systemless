@@ -667,7 +667,6 @@ fn absent_manager_imports_return_their_documented_errors() {
         ("InterfaceLib", "OpenComponent"),
         ("InterfaceLib", "RegisterComponentResource"),
         ("InterfaceLib", "GetNextFOND"),
-        ("InterfaceLib", "DeltaPoint"),
         ("QuickTimeLib", "MCIsPlayerEvent"),
     ] {
         assert_eq!(
@@ -689,5 +688,22 @@ fn absent_manager_imports_return_their_documented_errors() {
             PpcImportDispatcherTarget::NoOpPreserve,
             "{symbol}"
         );
+    }
+}
+
+#[test]
+fn delta_point_subtracts_each_coordinate_into_its_own_word() {
+    let mut loaded = loaded_with(b"DeltaPoint");
+    for (pt_a, pt_b, delta) in [
+        (0x000a_0003, 0x0004_0005, 0x0006_fffe),
+        (0x0004_0005, 0x000a_0003, 0xfffa_0002),
+    ] {
+        loaded.cpu.gpr[3] = pt_a;
+        loaded.cpu.gpr[4] = pt_b;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "DeltaPoint"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], delta);
     }
 }

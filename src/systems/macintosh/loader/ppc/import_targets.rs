@@ -532,6 +532,7 @@ pub enum PpcImportDispatcherTarget {
     EqualPt,
     AddPt,
     SubPt,
+    DeltaPoint,
     LocalToGlobal,
     GlobalToLocal,
     PtInRect,
@@ -3654,6 +3655,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
+        ("InterfaceLib", "DeltaPoint") => PpcImportDispatcherTarget::DeltaPoint,
         ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MenuKey" | "menukey") => {
             PpcImportDispatcherTarget::MenuKey
         }
@@ -5317,7 +5319,7 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib",
             "OpenComponent" | "RegisterComponentResource" | "CloseComponentResFile"
-            | "UnregisterComponent" | "GetNextFOND" | "GetMCInfo" | "DeltaPoint",
+            | "UnregisterComponent" | "GetNextFOND" | "GetMCInfo",
         )
         | ("QuickTimeLib", "MCIsPlayerEvent") => PpcImportDispatcherTarget::ReturnNoErr,
         (
