@@ -104,50 +104,188 @@ impl skrifa::outline::OutlinePen for OutlinePath {
     }
 }
 
-/// Threshold the guest's binary strike without dropping a thin stroke whose
-/// coverage is split across adjacent pixels. Already represented runs retain
-/// their exact mask. Runs with less than half a pixel of total ink stay empty.
-fn monochrome_mask_with_dropout(coverage: &[u8], width: usize, height: usize) -> Vec<u8> {
-    debug_assert_eq!(coverage.len(), width * height);
-    let mut mask: Vec<u8> = coverage
-        .iter()
-        .map(|&a| if a >= MONO_COVERAGE_THRESHOLD { 255 } else { 0 })
-        .collect();
-    for (lines, length, stride, line_stride) in
-        [(height, width, 1, width), (width, height, width, 1)]
-    {
-        for line in 0..lines {
-            let base = line * line_stride;
-            let mut position = 0;
-            while position < length {
-                let index = base + position * stride;
-                if coverage[index] == 0 {
-                    position += 1;
-                    continue;
+/// The guest's one-bit strike of a hinted outline.
+pub(super) struct BinaryStrike {
+    /// `width * height` bytes, 0 or 255, top row first.
+    pub mask: Vec<u8>,
+    pub width: usize,
+    pub height: usize,
+    /// Column of the mask's left edge and row of its top edge, in pixels
+    /// from the glyph origin (the top edge counts upwards).
+    pub left: i32,
+    pub top: i32,
+}
+
+/// Scan-convert `path` (pixel units, y up) the way a TrueType rasterizer makes
+/// a bitmap: a pixel is on when its centre is inside the outline, and dropout
+/// control turns on one pixel wherever a span of ink passes between two
+/// adjacent centres, along a row or a column, so a stroke thinner than a
+/// pixel never breaks. Stubs, where the stroke ends before the next scanline,
+/// are left out. Thresholding area coverage instead loses the thinner of
+/// two strokes that share a run of pixels, such as the apex of an "A".
+pub(super) fn scan_convert(path: &[zeno::Command]) -> Option<BinaryStrike> {
+    // Hinted TrueType outlines are lines and quadratics; cubics come from
+    // other outline formats. A fixed tolerance keeps crossings well within a
+    // pixel at every strike size.
+    const TOLERANCE: f32 = 0.02;
+    let mut segments: Vec<[f32; 4]> = Vec::new();
+    let (mut start, mut pen) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
+    let mut line = |from: (f32, f32), to: (f32, f32)| {
+        if from != to {
+            segments.push([from.0, from.1, to.0, to.1]);
+        }
+    };
+    for command in path {
+        match *command {
+            zeno::Command::MoveTo(to) => {
+                line(pen, start);
+                start = (to.x, to.y);
+                pen = start;
+            }
+            zeno::Command::LineTo(to) => {
+                line(pen, (to.x, to.y));
+                pen = (to.x, to.y);
+            }
+            zeno::Command::QuadTo(control, to) => {
+                let bend = ((pen.0 - 2.0 * control.x + to.x).abs())
+                    .max((pen.1 - 2.0 * control.y + to.y).abs());
+                let steps = ((bend / (4.0 * TOLERANCE)).sqrt().ceil() as usize).clamp(1, 64);
+                let from = pen;
+                for step in 1..=steps {
+                    let t = step as f32 / steps as f32;
+                    let u = 1.0 - t;
+                    let next = (
+                        u * u * from.0 + 2.0 * u * t * control.x + t * t * to.x,
+                        u * u * from.1 + 2.0 * u * t * control.y + t * t * to.y,
+                    );
+                    line(pen, next);
+                    pen = next;
                 }
-                let mut strongest = index;
-                let mut area = 0u32;
-                let mut has_ink = false;
-                while position < length {
-                    let index = base + position * stride;
-                    let alpha = coverage[index];
-                    if alpha == 0 {
-                        break;
-                    }
-                    if alpha > coverage[strongest] {
-                        strongest = index;
-                    }
-                    area += u32::from(alpha);
-                    has_ink |= mask[index] != 0;
-                    position += 1;
+            }
+            zeno::Command::CurveTo(first, second, to) => {
+                let bend = ((pen.0 - 2.0 * first.x + second.x).abs())
+                    .max((pen.1 - 2.0 * first.y + second.y).abs())
+                    .max((first.x - 2.0 * second.x + to.x).abs())
+                    .max((first.y - 2.0 * second.y + to.y).abs());
+                let steps = ((3.0 * bend / (4.0 * TOLERANCE)).sqrt().ceil() as usize).clamp(1, 96);
+                let from = pen;
+                for step in 1..=steps {
+                    let t = step as f32 / steps as f32;
+                    let u = 1.0 - t;
+                    let next = (
+                        u * u * u * from.0
+                            + 3.0 * u * u * t * first.x
+                            + 3.0 * u * t * t * second.x
+                            + t * t * t * to.x,
+                        u * u * u * from.1
+                            + 3.0 * u * u * t * first.y
+                            + 3.0 * u * t * t * second.y
+                            + t * t * t * to.y,
+                    );
+                    line(pen, next);
+                    pen = next;
                 }
-                if !has_ink && area >= u32::from(MONO_COVERAGE_THRESHOLD) {
-                    mask[strongest] = 255;
-                }
+            }
+            zeno::Command::Close => {
+                line(pen, start);
+                pen = start;
             }
         }
     }
-    mask
+    line(pen, start);
+    if segments.is_empty() {
+        return None;
+    }
+    let bound = |pick: fn(&[f32; 4]) -> (f32, f32)| {
+        segments.iter().fold((f32::MAX, f32::MIN), |(low, high), segment| {
+            let (a, b) = pick(segment);
+            (low.min(a).min(b), high.max(a).max(b))
+        })
+    };
+    let (x_min, x_max) = bound(|s| (s[0], s[2]));
+    let (y_min, y_max) = bound(|s| (s[1], s[3]));
+    let (left, right) = (x_min.floor() as i32, x_max.ceil() as i32);
+    let (bottom, top) = (y_min.floor() as i32, y_max.ceil() as i32);
+    let (width, height) = ((right - left).max(1) as usize, (top - bottom).max(1) as usize);
+    let mut mask = vec![0u8; width * height];
+    let mut set = |x: i32, y: i32| {
+        if x >= left && x < right && y >= bottom && y < top {
+            mask[(top - 1 - y) as usize * width + (x - left) as usize] = 255;
+        }
+    };
+    // Spans of ink (non-zero winding) along the line where `along` is fixed:
+    // rows when `rows` is set, columns otherwise.
+    let spans = |rows: bool, at: f32, out: &mut Vec<(f32, f32)>| {
+        let mut crossings: Vec<(f32, i32)> = segments
+            .iter()
+            .filter_map(|&[x0, y0, x1, y1]| {
+                let (a0, b0, a1, b1) = if rows { (y0, x0, y1, x1) } else { (x0, y0, x1, y1) };
+                ((a0 <= at) != (a1 <= at))
+                    .then(|| (b0 + (at - a0) * (b1 - b0) / (a1 - a0), if a1 > a0 { 1 } else { -1 }))
+            })
+            .collect();
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.clear();
+        let (mut winding, mut from) = (0, 0.0);
+        for (position, direction) in crossings {
+            if winding == 0 {
+                from = position;
+            }
+            winding += direction;
+            // Hinting can squeeze a stem to no width at all. Its two edges
+            // still bound a span, which dropout control keeps.
+            if winding == 0 {
+                out.push((from, position));
+            }
+        }
+    };
+    // Dropout control leaves out stubs, as scan type 1 asks: a span between two
+    // centres that is thinner than half a pixel is kept only where the stroke
+    // carries on to the scanlines on both sides. The tip of a serif or
+    // terminal that ends between two scanlines would otherwise grow into a
+    // full pixel.
+    let continues = |lines: &[Vec<(f32, f32)>], index: usize, span: (f32, f32)| {
+        if span.1 - span.0 >= 0.5 {
+            return true;
+        }
+        let meets = |line: Option<&Vec<(f32, f32)>>| {
+            line.is_some_and(|line| line.iter().any(|&(from, to)| from <= span.1 + 1.0 && to >= span.0 - 1.0))
+        };
+        meets(index.checked_sub(1).and_then(|index| lines.get(index))) && meets(lines.get(index + 1))
+    };
+    let mut scratch = Vec::new();
+    let mut rows = Vec::with_capacity(height);
+    for y in bottom..top {
+        spans(true, y as f32 + 0.5, &mut scratch);
+        rows.push(scratch.clone());
+    }
+    let mut columns = Vec::with_capacity(width);
+    for x in left..right {
+        spans(false, x as f32 + 0.5, &mut scratch);
+        columns.push(scratch.clone());
+    }
+    for (index, y) in (bottom..top).enumerate() {
+        for &(from, to) in &rows[index] {
+            // Pixels whose centres lie in [from, to).
+            let (first, last) = ((from - 0.5).ceil() as i32, (to - 0.5).ceil() as i32 - 1);
+            if first <= last {
+                (first..=last).for_each(|x| set(x, y));
+            } else if continues(&rows, index, (from, to)) {
+                set(((from + to) / 2.0).floor() as i32, y);
+            }
+        }
+    }
+    for (index, x) in (left..right).enumerate() {
+        for &(from, to) in &columns[index] {
+            // Centres along a column were already tested by the row pass.
+            if (from - 0.5).ceil() as i32 > (to - 0.5).ceil() as i32 - 1
+                && continues(&columns, index, (from, to))
+            {
+                set(x, ((from + to) / 2.0).floor() as i32);
+            }
+        }
+    }
+    Some(BinaryStrike { mask, width, height, left, top })
 }
 
 // Inside Macintosh: Text (1993), pp. 4-7–4-9 and 4-18–4-19:
@@ -215,23 +353,12 @@ pub(super) fn rasterize(
             origin_y: 0,
             data_offset: data.len(),
         };
-        if !path.0.is_empty() {
-            let mut coverage = Vec::new();
-            let placement = zeno::Mask::new(path.0.as_slice())
-                .origin(zeno::Origin::BottomLeft)
-                .inspect(|format, width, height| {
-                    coverage.resize(format.buffer_size(width, height), 0)
-                })
-                .render_into(&mut coverage, None);
-            result.width = u8::try_from(placement.width).ok()?;
-            result.height = u8::try_from(placement.height).ok()?;
-            result.origin_x = i8::try_from(placement.left).ok()?;
-            result.origin_y = i8::try_from(-placement.top).ok()?;
-            data.extend(monochrome_mask_with_dropout(
-                &coverage,
-                placement.width as usize,
-                placement.height as usize,
-            ));
+        if let Some(strike) = scan_convert(path.0.as_slice()) {
+            result.width = u8::try_from(strike.width).ok()?;
+            result.height = u8::try_from(strike.height).ok()?;
+            result.origin_x = i8::try_from(strike.left).ok()?;
+            result.origin_y = i8::try_from(-strike.top).ok()?;
+            data.extend(strike.mask);
         }
         Some(result)
     };
@@ -407,22 +534,16 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         .unwrap_or(0.0)
         .round()
         .clamp(0.0, 255.0) as u8;
-    let mut pixels = Vec::new();
-    let placement = zeno::Mask::new(path.0.as_slice())
-        .origin(zeno::Origin::BottomLeft)
-        .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
-        .render_into(&mut pixels, None);
-    let pixels =
-        monochrome_mask_with_dropout(&pixels, placement.width as usize, placement.height as usize);
-    let data: &'static [u8] = Box::leak(pixels.into_boxed_slice());
+    let strike = scan_convert(path.0.as_slice())?;
     let glyph: &'static Glyph = Box::leak(Box::new(Glyph {
-        width: placement.width.try_into().ok()?,
-        height: placement.height.try_into().ok()?,
-        origin_x: placement.left.try_into().ok()?,
-        origin_y: (-placement.top).try_into().ok()?,
+        width: strike.width.try_into().ok()?,
+        height: strike.height.try_into().ok()?,
+        origin_x: strike.left.try_into().ok()?,
+        origin_y: (-strike.top).try_into().ok()?,
         advance,
         data_offset: 0,
     }));
+    let data: &'static [u8] = Box::leak(strike.mask.into_boxed_slice());
     SOURCES.lock().ok()?.insert(
         glyph as *const Glyph as usize,
         Source {
@@ -461,34 +582,107 @@ mod tests {
         assert_eq!(left.data_offset, right.data_offset);
     }
 
-    #[test]
-    fn binary_strikes_retain_thin_vertical_and_horizontal_ink() {
-        // A vertical stem straddles two pixel columns. Neither column alone
-        // reaches 50% coverage, but the stroke must not disappear.
-        let coverage = [0, 116, 84, 0, 0, 116, 84, 0, 0, 116, 84, 0, 0, 116, 84, 0];
-        let mask = monochrome_mask_with_dropout(&coverage, 4, 4);
-        for row in mask.chunks(4) {
-            assert_eq!(row[1], 255);
-            assert_eq!(row[0], 0);
-            assert_eq!(row[3], 0);
-        }
-        // Transpose it: every column of a thin crossbar retains ink too.
-        let horizontal = [0, 0, 0, 0, 116, 116, 116, 116, 84, 84, 84, 84, 0, 0, 0, 0];
-        let mask = monochrome_mask_with_dropout(&horizontal, 4, 4);
-        for x in 0..4 {
-            assert!(mask[x + 4] != 0 || mask[x + 8] != 0);
-            assert_eq!(mask[x], 0);
-            assert_eq!(mask[x + 12], 0);
-        }
+    fn closed(points: &[(f32, f32)]) -> Vec<zeno::Command> {
+        let mut path = vec![zeno::Command::MoveTo(points[0].into())];
+        path.extend(points[1..].iter().map(|&point| zeno::Command::LineTo(point.into())));
+        path.push(zeno::Command::Close);
+        path
+    }
+
+    fn rows(strike: &BinaryStrike) -> Vec<String> {
+        strike
+            .mask
+            .chunks(strike.width)
+            .map(|row| row.iter().map(|&p| if p != 0 { '#' } else { '.' }).collect())
+            .collect()
     }
 
     #[test]
-    fn dropout_repair_preserves_empty_counters_and_existing_binary_ink() {
-        let coverage = [255, 255, 255, 255, 0, 255, 255, 255, 255];
-        assert_eq!(monochrome_mask_with_dropout(&coverage, 3, 3), coverage);
-        assert_eq!(monochrome_mask_with_dropout(&[0; 9], 3, 3), [0; 9]);
-        // Insignificant antialias fringes are not promoted into isolated dots.
-        assert_eq!(monochrome_mask_with_dropout(&[1, 10, 1], 3, 1), [0; 3]);
+    fn binary_strikes_light_pixels_whose_centres_are_inside_the_outline() {
+        // A 3 x 2 rectangle from (0.4, 0.4): centres at 0.5..2.5 by 0.5..1.5
+        // are inside; the column at 3.5 and the row at 2.5 are not.
+        let strike =
+            scan_convert(&closed(&[(0.4, 0.4), (3.4, 0.4), (3.4, 2.4), (0.4, 2.4)])).unwrap();
+        assert_eq!((strike.left, strike.top), (0, 3));
+        assert_eq!(rows(&strike), ["....", "###.", "###."]);
+        assert!(scan_convert(&[]).is_none());
+    }
+
+    #[test]
+    fn binary_strikes_treat_a_centre_on_the_right_edge_as_outside() {
+        // Ink from 0.5 to 2.5 holds the centres at 0.5 and 1.5; the centre
+        // at 2.5 sits on the far edge and belongs to the next span over.
+        let strike =
+            scan_convert(&closed(&[(0.5, 0.0), (2.5, 0.0), (2.5, 1.0), (0.5, 1.0)])).unwrap();
+        assert_eq!(rows(&strike), ["##."]);
+    }
+
+    #[test]
+    fn binary_strikes_fill_where_contours_overlap() {
+        // Two boxes wound the same way share the column from 2 to 3, as the
+        // overlapping strokes of a glyph drawn in several contours do.
+        // Non-zero winding keeps the shared part inked.
+        let mut path = closed(&[(0.0, 0.0), (3.0, 0.0), (3.0, 2.0), (0.0, 2.0)]);
+        path.extend(closed(&[(2.0, 0.0), (5.0, 0.0), (5.0, 2.0), (2.0, 2.0)]));
+        let strike = scan_convert(&path).unwrap();
+        assert_eq!(rows(&strike), ["#####", "#####"]);
+    }
+
+    #[test]
+    fn binary_strikes_retain_strokes_that_pass_between_pixel_centres() {
+        // A vertical stem 0.6 pixels wide covers no pixel centre, yet every
+        // row keeps one pixel of it, in the column that holds the stem.
+        let stem = scan_convert(&closed(&[(1.55, 0.0), (2.15, 0.0), (2.15, 4.0), (1.55, 4.0)])).unwrap();
+        assert_eq!(rows(&stem), ["#.", "#.", "#.", "#."]);
+        assert_eq!(stem.left, 1);
+        // Transposed: a thin crossbar keeps one pixel in every column.
+        let bar = scan_convert(&closed(&[(0.0, 2.55), (4.0, 2.55), (4.0, 3.15), (0.0, 3.15)])).unwrap();
+        assert_eq!(rows(&bar), ["....", "####"]);
+        assert_eq!(bar.top, 4);
+    }
+
+    #[test]
+    fn binary_strikes_leave_out_the_stub_ends_of_hairlines() {
+        // A stroke thinner than half a pixel keeps a pixel on each scanline
+        // it runs through, but not on its first and last, where it ends
+        // before reaching the next scanline: a serif tip must not grow.
+        let hairline = scan_convert(&closed(&[(1.6, 0.0), (1.9, 0.0), (1.9, 4.0), (1.6, 4.0)])).unwrap();
+        assert_eq!(rows(&hairline), [".", "#", "#", "."]);
+    }
+
+    #[test]
+    fn binary_strikes_keep_the_thinner_of_two_strokes_in_one_run() {
+        // Two strokes meet at an apex, like an "A": a thick one whose pixels
+        // pass the centre test and, touching it, a hairline that passes
+        // between centres. Thresholding area coverage lit only the thick one.
+        let thick = closed(&[(2.0, 0.0), (3.2, 0.0), (3.2, 4.0), (2.0, 4.0)]);
+        let hairline = closed(&[(1.6, 0.0), (1.9, 0.0), (1.9, 4.0), (1.6, 4.0)]);
+        let strike = scan_convert(&[thick, hairline].concat()).unwrap();
+        // Columns 1 to 3: the hairline (without its stub ends), the thick
+        // stroke, and the column whose centre (3.5) the thick stroke does not
+        // reach.
+        assert_eq!(rows(&strike), [".#.", "##.", "##.", ".#."]);
+    }
+
+    #[test]
+    fn binary_strikes_keep_a_stem_hinted_to_no_width() {
+        // Both edges of the stem lie on x = 1.7: a span of zero width that
+        // still marks where the stroke is.
+        let strike =
+            scan_convert(&closed(&[(1.7, 0.0), (1.7, 3.0), (1.7, 0.0), (3.0, 0.0), (3.0, -1.0), (1.7, -1.0)]))
+                .unwrap();
+        // The stem keeps column 1 below its stub end; the foot below it
+        // covers only the centre of column 2.
+        assert_eq!(rows(&strike), ["..", "#.", "#.", ".#"]);
+    }
+
+    #[test]
+    fn binary_strikes_keep_counters_open() {
+        // A ring: the inner contour runs the other way, so the middle is out.
+        let mut path = closed(&[(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0)]);
+        path.extend(closed(&[(1.2, 1.2), (1.2, 3.8), (3.8, 3.8), (3.8, 1.2)]));
+        let strike = scan_convert(&path).unwrap();
+        assert_eq!(rows(&strike), ["#####", "#...#", "#...#", "#...#", "#####"]);
     }
 
     #[test]
