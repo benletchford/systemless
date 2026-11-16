@@ -369,6 +369,110 @@ fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
 }
 
 #[test]
+fn use_window_font_variants_draw_and_hit_as_standard_controls() {
+    // Bubbles' PowerPlant LStdCheckBox/LStdButton add useWFont (8) to
+    // checkBoxProc and pushButProc when they have text traits. procIDs 8-10
+    // fell through to the generic framed-rectangle fallback, so its
+    // checkboxes drew as square buttons with centred titles.
+    fn render(proc_id: i16, port_font: Option<(u16, u8, u16)>) -> (Vec<Option<u16>>, Option<i16>) {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        if let Some((font, face, size)) = port_font {
+            let port = PPC_MAIN_GWORLD;
+            loaded
+                .memory
+                .write_u16_be(port + PPC_CGRAF_PORT_TX_FONT_OFFSET, font)
+                .unwrap();
+            loaded
+                .memory
+                .write_u8(port + PPC_CGRAF_PORT_TX_FACE_OFFSET, face)
+                .unwrap();
+            loaded
+                .memory
+                .write_u16_be(port + PPC_CGRAF_PORT_TX_SIZE_OFFSET, size)
+                .unwrap();
+        }
+        let mut last_mem_error = loaded.last_mem_error();
+        let handle = with_test_controls!(
+            loaded,
+            |controls| ppc_new_control_record_values(
+                None,
+                &mut loaded.memory,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                &mut last_mem_error,
+                test_handles!(loaded),
+                controls,
+                PPC_MAIN_GWORLD,
+                (10, 20, 30, 180),
+                b"Never ask me again.",
+                true,
+                1,
+                0,
+                1,
+                proc_id,
+                0,
+            )
+        );
+        assert_ne!(handle, 0);
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 200),
+            PPC_RGB_WHITE,
+            None,
+        ));
+        assert!(ppc_draw_control(
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            &loaded.controls.records(),
+            &loaded.gworlds,
+            &loaded.process_file_system.vfs_resources,
+            *loaded.process_file_system.current_resource_file,
+            handle,
+        ));
+        let front = surface.front_buffer;
+        let pixels = (0..40)
+            .flat_map(|y| (0..200).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point))
+            .collect();
+        let part = ppc_control_part_at_point(
+            &mut loaded.memory,
+            &loaded.controls.records(),
+            handle,
+            20,
+            25,
+        );
+        (pixels, part)
+    }
+
+    for (standard, use_w_font, part) in [(0, 8, 10), (1, 9, 11), (2, 10, 11)] {
+        // With the port's font left at the system font the variant is
+        // pixel-identical to the plain standard control and reports its part.
+        let (expected, expected_part) = render(standard, None);
+        let (actual, actual_part) = render(use_w_font, None);
+        assert_eq!(expected_part, Some(part), "procID {standard} part");
+        assert_eq!(actual_part, Some(part), "procID {use_w_font} part");
+        assert!(
+            expected == actual,
+            "procID {use_w_font} did not draw as procID {standard}"
+        );
+        // A window font (Geneva 9 here) changes only the title, which the
+        // plain control keeps in the system font.
+        let (plain_geneva, _) = render(standard, Some((3, 0, 9)));
+        let (window_geneva, _) = render(use_w_font, Some((3, 0, 9)));
+        assert_eq!(plain_geneva, expected, "procID {standard} follows the port font");
+        assert!(
+            window_geneva != expected,
+            "procID {use_w_font} title ignored the window font"
+        );
+    }
+}
+
+#[test]
 fn checkbox_title_stops_at_control_right_edge() {
     let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
     let mut last_mem_error = loaded.last_mem_error();

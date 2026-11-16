@@ -1048,6 +1048,7 @@ pub(super) fn ppc_dispatch_legacy_control(
                         .iter()
                         .find(|record| record.handle == cpu.gpr[3])
                         .map_or(-1, |record| record.proc_id);
+                    let (proc_id, _) = crate::control_manager::standard_control_kind(proc_id);
                     if let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, owner) {
                         let (left, top) = surface.local_point((0, 0));
                         (v, h) = crate::control_manager::standard_button_tracking_start_point(
@@ -2713,10 +2714,12 @@ pub(super) fn ppc_control_part_at_point(
     if v < top || v >= bottom || h < left || h >= right {
         return None;
     }
-    let proc_id = controls
-        .iter()
-        .find(|record| record.handle == handle)
-        .map_or(0, |record| record.proc_id);
+    let (proc_id, _) = crate::control_manager::standard_control_kind(
+        controls
+            .iter()
+            .find(|record| record.handle == handle)
+            .map_or(0, |record| record.proc_id),
+    );
     match proc_id {
         0 => Some(10),
         1 | 2 => Some(11),
@@ -3336,7 +3339,8 @@ pub(super) fn ppc_draw_control_inner(
         record.native_definition_draws.borrow_mut().push(sequence);
         return true;
     }
-    let proc_id = record.map_or(0, |record| record.proc_id);
+    let (proc_id, use_window_font) =
+        crate::control_manager::standard_control_kind(record.map_or(0, |record| record.proc_id));
     // Appearance Manager DeactivateControl dims a control without touching
     // contrlHilite. Draw its frame and title with the same 50% blend the 68K
     // control manager uses for an inactive title, so a non-hittable control
@@ -3796,10 +3800,24 @@ pub(super) fn ppc_draw_control_inner(
                 }
             })
             .collect::<Vec<_>>();
-        let title_style = ppc_control_title_style(
-            proc_id,
-            record.and_then(|record| record.font_style.as_ref()),
-        );
+        let font_style = record.and_then(|record| record.font_style.as_ref());
+        let mut title_style = ppc_control_title_style(proc_id, font_style);
+        if use_window_font && font_style.is_none() {
+            // useWFont titles use the owning port's text font, size and
+            // face at draw time (PowerPlant sets them from a Txtr first).
+            title_style.font = memory
+                .read_u16_be(owner + PPC_CGRAF_PORT_TX_FONT_OFFSET)
+                .unwrap_or(0) as i16;
+            title_style.face = memory
+                .read_u8(owner + PPC_CGRAF_PORT_TX_FACE_OFFSET)
+                .unwrap_or(0);
+            let size = memory
+                .read_u16_be(owner + PPC_CGRAF_PORT_TX_SIZE_OFFSET)
+                .unwrap_or(0) as i16;
+            if size > 0 {
+                title_style.size = size;
+            }
+        }
         let advance =
             ppc_text_width_bytes(title_style.font, title_style.size, title_style.face, &title);
         let metrics = get_font_metrics(title_style.font, title_style.size);

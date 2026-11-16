@@ -1,5 +1,20 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+/// Split a standard-CDEF procID into its control kind and `useWFont` flag.
+/// Adding `useWFont` (8) to pushButProc (0), checkBoxProc (1) or
+/// radioButProc (2) keeps the control kind and only draws the title in the
+/// owning window's font rather than the system font. Inside Macintosh
+/// Volume I (1985), Control Manager, "Controls and Windows"; MPW Universal
+/// Headers `Controls.h` kControlUsesOwningWindowsFontVariant = 1 << 3.
+pub(crate) fn standard_control_kind(proc_id: i16) -> (i16, bool) {
+    const USE_W_FONT: i16 = 8;
+    if matches!(proc_id, 8..=10) {
+        (proc_id - USE_W_FONT, true)
+    } else {
+        (proc_id, false)
+    }
+}
+
 /// Accept a global start point from legacy callers only when it is exactly
 /// the live, held mouse over a standard button. Correct local points retain
 /// their ordinary meaning. Executor ctlMouse.cpp documents a GetMouse fallback
