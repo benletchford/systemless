@@ -4681,6 +4681,22 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         resident_segments: &[i16],
     ) {
+        self.bind_code_handles(bus, resident_segments, false);
+    }
+
+    /// Bind the CODE handle of a segment the guest's LoadSeg call is loading.
+    /// Unlike the launch-time binding, the guest may already have loaded and
+    /// locked this resource itself, so that handle is left alone.
+    pub(crate) fn bind_loaded_segment_code_handle(&mut self, bus: &mut MacMemoryBus, segment: i16) {
+        self.bind_code_handles(bus, &[segment], true);
+    }
+
+    fn bind_code_handles(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resident_segments: &[i16],
+        keep_guest_locked_resources: bool,
+    ) {
         let mut segments: Vec<_> = self
             .segment_map
             .iter()
@@ -4706,6 +4722,29 @@ impl TrapDispatcher {
                 .and_then(|file| file.loaded.get(&(*b"CODE", id)))
                 .copied()
                 .unwrap_or(0);
+            // The guest may already hold this CODE resource, loaded and locked
+            // through GetResource. A locked block never moves, and LoadSeg
+            // gets the segment with GetResource, which returns a resource that
+            // is already in memory unchanged (Inside Macintosh Volume I, I-119;
+            // Volume II, II-58). Code that cached the dereferenced pointer
+            // keeps calling into it, so leave that handle and its block alone
+            // and keep executing the segment from the image as before. At
+            // launch no guest code has run yet: a CODE resource that is
+            // already loaded then was preloaded through its attributes, and
+            // its handle must describe the image the application executes.
+            if keep_guest_locked_resources && old_ptr != 0 && old_ptr != ptr {
+                let guest_locked = self
+                    .resource_handles_by_key
+                    .get(&key)
+                    .copied()
+                    .is_some_and(|handle| {
+                        bus.read_long(handle) == old_ptr
+                            && self.handle_state_bits(handle).unwrap_or(0) & 0x80 != 0
+                    });
+                if guest_locked {
+                    continue;
+                }
+            }
             let handle = self.get_or_create_resource_handle_in_file(bus, *b"CODE", id, old_ptr, 0);
             bus.adopt_reserved_allocation(ptr, size);
             if old_ptr != 0 && old_ptr != ptr {

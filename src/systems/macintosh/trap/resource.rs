@@ -717,7 +717,7 @@ impl super::TrapDispatcher {
                 && bus.get_alloc_size(seg_addr).is_none()
                 && image_allocation
             {
-                self.bind_application_code_handles(bus, &[seg_num]);
+                self.bind_loaded_segment_code_handle(bus, seg_num);
             }
 
             let segment_header =
