@@ -1139,6 +1139,65 @@ fn quicktime_movie_resource_selection_honors_requested_id() {
 }
 
 #[test]
+fn quicktime_movie_resource_follows_an_open_ended_media_atom() {
+    let movie = test_quicktime_tkhd_movie(320, 240);
+    let moov = ppc_qt_top_level_atom(&movie, b"moov").unwrap().to_vec();
+    // The data fork holds only media in an `mdat` whose size field is zero:
+    // it extends to the end of the file.
+    let mut data_fork = vec![0, 0, 0, 0];
+    data_fork.extend_from_slice(b"mdat");
+    data_fork.extend_from_slice(&[0x5a; 24]);
+    let resource_fork = serialize_resource_fork(&[ResourceForkEntry {
+        res_type: *b"moov",
+        id: 128,
+        name: Vec::new(),
+        data: moov.clone(),
+        attrs: 0,
+    }])
+    .unwrap();
+    let resource_files = [PpcVfsResourceFileRecord {
+        path: "Movies/Logo".to_string(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"MooV"),
+        finder_flags: 0,
+        resource_len: u32::try_from(resource_fork.len()).unwrap(),
+        raw_data: Some(resource_fork.into()),
+        map_attrs: 0,
+        dirty: false,
+    }];
+
+    let mut movie_file_data = data_fork.clone();
+    assert_eq!(
+        ppc_qt_append_movie_resource(
+            &mut movie_file_data,
+            &resource_files,
+            &[],
+            "Movies/Logo",
+            Some(0),
+        ),
+        Some(128)
+    );
+
+    assert_eq!(&movie_file_data[..4], &32u32.to_be_bytes());
+    assert_eq!(&movie_file_data[4..32], &data_fork[4..]);
+    assert_eq!(&movie_file_data[32..], &moov[..]);
+    assert_eq!(ppc_qt_movie_bounds(&movie_file_data), Some((0, 0, 240, 320)));
+
+    // The open-ended atom need not be the first: a leading `wide` atom is
+    // common before `mdat`.
+    let mut widened = vec![0, 0, 0, 8];
+    widened.extend_from_slice(b"wide");
+    widened.extend_from_slice(&data_fork);
+    assert_eq!(
+        ppc_qt_append_movie_resource(&mut widened, &resource_files, &[], "Movies/Logo", Some(0)),
+        Some(128)
+    );
+    assert_eq!(&widened[8..12], &32u32.to_be_bytes());
+    assert_eq!(&widened[40..], &moov[..]);
+    assert_eq!(ppc_qt_movie_bounds(&widened), Some((0, 0, 240, 320)));
+}
+
+#[test]
 fn quicktime_movie_audio_decoder_downmixes_twos_16_bit_first_chunk() {
     let mut movie_file_data = vec![0; 12];
     movie_file_data.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0xc0, 0x00]);
