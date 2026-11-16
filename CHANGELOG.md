@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.125.0](https://github.com/benletchford/systemless/compare/v0.124.0...v0.125.0) (2026-11-16)
+
+
+### Features
+
+* **disk:** extract NDIF disk images ([#6315](https://github.com/benletchford/systemless/issues/6315)) ([344b57e](https://github.com/benletchford/systemless/commit/344b57eb388e1674ad8ec86d40a6aa760ddff4ef))
+* **ppc:** add GetAliasInfo and FOND resources for built-in fonts ([#6327](https://github.com/benletchford/systemless/issues/6327)) ([aee9743](https://github.com/benletchford/systemless/commit/aee9743c5b4f8db91fb88df0a2a5d86195af8043))
+* **ppc:** open folders by double-click and add the folder popup to Standard File ([#6321](https://github.com/benletchford/systemless/issues/6321)) ([b072340](https://github.com/benletchford/systemless/commit/b072340b1c488ecc29ca15b304f2d654e6969871))
+* **ppc:** return a width table from FontMetrics ([#6335](https://github.com/benletchford/systemless/issues/6335)) ([a8c4c3b](https://github.com/benletchford/systemless/commit/a8c4c3b06b650e40cb2501d0e02fc8fa4a11c094))
+* **vise:** parse 0x8001030A packed catalogs ([#6341](https://github.com/benletchford/systemless/issues/6341)) ([925a29c](https://github.com/benletchford/systemless/commit/925a29c9079a7230db4235ed6e0813d9025e5d38))
+
+
+### Bug Fixes
+
+* **apple-events:** coerce an Apple event to LaunchApplication parameters ([#6381](https://github.com/benletchford/systemless/issues/6381)) ([035eb57](https://github.com/benletchford/systemless/commit/035eb57b2d27e56ca58311fd0e9b9fdcec9b65fc))
+* **archives:** keep undecodable archives as files and fail on unparseable headers ([#6311](https://github.com/benletchford/systemless/issues/6311)) ([f18362b](https://github.com/benletchford/systemless/commit/f18362b8fd04d56e480a1a61cd15879dfe9ff767))
+* clear GrafPort bottlenecks and save handles in OpenPort ([#6307](https://github.com/benletchford/systemless/issues/6307)) ([7ca7639](https://github.com/benletchford/systemless/commit/7ca7639b3e2d28ade59b3309a609f332d2c1e922))
+* composite QuickTime picture mattes and clip PPC dialog pictures to the port ([#6362](https://github.com/benletchford/systemless/issues/6362)) ([cbb9dc8](https://github.com/benletchford/systemless/commit/cbb9dc87c05099b5a2547ed5c4d46d5cdc42f04d))
+* erase a full-screen window created hidden when it is first shown ([#6355](https://github.com/benletchford/systemless/issues/6355)) ([bfcb4e9](https://github.com/benletchford/systemless/commit/bfcb4e92359df51b9e990db63383c66d637fa54a))
+* expand Smaller Installer payloads with a leading Compact Pro directory ([#6306](https://github.com/benletchford/systemless/issues/6306)) ([5fb06a4](https://github.com/benletchford/systemless/commit/5fb06a41774a264d451c608a3dad34693827b306))
+* **file-manager:** honour PBRead newline mode on PowerPC ([#6359](https://github.com/benletchford/systemless/issues/6359)) ([4d93d92](https://github.com/benletchford/systemless/commit/4d93d92ad2d05c194977890822b743122cd7c423))
+* **file-manager:** refuse PowerPC data-fork opens of folders ([#6360](https://github.com/benletchford/systemless/issues/6360)) ([9e6f847](https://github.com/benletchford/systemless/commit/9e6f8473784644c342172e774146c7a9921dc5a6))
+* give custom CDEFs their entry address and default control colours ([#6349](https://github.com/benletchford/systemless/issues/6349)) ([7f72fb7](https://github.com/benletchford/systemless/commit/7f72fb708976c25a396c277262ef32320dbd6bda))
+* **installer-maker:** accept STi3 parent-named folder ends and an advisory root count ([#6369](https://github.com/benletchford/systemless/issues/6369)) ([3b6468f](https://github.com/benletchford/systemless/commit/3b6468f7010475400f492db6e559d2b9069f2faf))
+* keep a backdrop the application paints over the desktop ([#6353](https://github.com/benletchford/systemless/issues/6353)) ([24dc313](https://github.com/benletchford/systemless/commit/24dc3137dcb2135c3cdeb5c238d2c50bfc49e07a))
+* **load:** rank bonus content below other applications ([#6313](https://github.com/benletchford/systemless/issues/6313)) ([36f8776](https://github.com/benletchford/systemless/commit/36f877610642411c3e91dd6ff74d95b2e3ac31af))
+* **load:** treat filters beneath an application's folder as its plug-ins ([#6333](https://github.com/benletchford/systemless/issues/6333)) ([0df8876](https://github.com/benletchford/systemless/commit/0df8876db40b44835246130c9e2a98350cf69199))
+* map legacy QuickDraw colors through their CMY plane bits like Color QuickDraw ([#6366](https://github.com/benletchford/systemless/issues/6366)) ([1a042d0](https://github.com/benletchford/systemless/commit/1a042d0d792b302f0852cb251f5f0b85de2cbf9d))
+* pad GWorld scanlines like QuickDraw so stored images keep their stride ([#6364](https://github.com/benletchford/systemless/issues/6364)) ([d446f8a](https://github.com/benletchford/systemless/commit/d446f8acec10c4a100db7767f5860dac1b8a2509))
+* **ppc:** create GetNewCWindow windows from the loaded WIND template ([#6377](https://github.com/benletchford/systemless/issues/6377)) ([b8e9e1a](https://github.com/benletchford/systemless/commit/b8e9e1abc62fae6d551dfe3b4d6f363a66fa0e4c))
+* **ppc:** draw classic MDEFs through the current port with live menu bounds ([#6339](https://github.com/benletchford/systemless/issues/6339)) ([daed888](https://github.com/benletchford/systemless/commit/daed8887efc9711516ae63e1d4b8a83d4d7a8f7e))
+* **ppc:** keep dialog text, controls and selection in step with DITL changes ([#6317](https://github.com/benletchford/systemless/issues/6317)) ([3eb790b](https://github.com/benletchford/systemless/commit/3eb790b0b1642dcadd81264b5f89d10a8c3ca3cf))
+* **ppc:** pop-up controls, TrackControl release and patched CDEFs ([#6319](https://github.com/benletchford/systemless/issues/6319)) ([b8d3e45](https://github.com/benletchford/systemless/commit/b8d3e454cb7829f479ea712594ef58b843ed5584))
+* **ppc:** repeat update events until the window is validated ([#6329](https://github.com/benletchford/systemless/issues/6329)) ([7cc7109](https://github.com/benletchford/systemless/commit/7cc7109c0f70d43a264f48aa656539b060b7d3d4))
+* **ppc:** resolve routine descriptors wrapped by a 68k record ([#6323](https://github.com/benletchford/systemless/issues/6323)) ([38bc848](https://github.com/benletchford/systemless/commit/38bc848565a815a54efd83b52880399a95ebd478))
+* preserve clipRgn in SizeWindow and windows in front when closing a window ([#6345](https://github.com/benletchford/systemless/issues/6345)) ([64987c0](https://github.com/benletchford/systemless/commit/64987c05e3089092a2e6cf21bb2483a28f0ecf19))
+* **quickdraw:** draw guest check mark and command bytes at default size ([#6337](https://github.com/benletchford/systemless/issues/6337)) ([a78270a](https://github.com/benletchford/systemless/commit/a78270acaf23ceacd4f3bf173664e80a479cbf79))
+* **quickdraw:** draw with a pattern the application stored in the port's pnPat ([#6309](https://github.com/benletchford/systemless/issues/6309)) ([2458570](https://github.com/benletchford/systemless/commit/2458570d427fcf1b549a969d4e9d4e160e39856b))
+* **quicktime:** keep a movie resource separate from an open-ended mdat ([#6378](https://github.com/benletchford/systemless/issues/6378)) ([3b992ed](https://github.com/benletchford/systemless/commit/3b992ed72cd8fe5640d9458a259a1432b082cf5a))
+* return a private pixel pattern copy from GetPixPat ([#6343](https://github.com/benletchford/systemless/issues/6343)) ([1aa0ab2](https://github.com/benletchford/systemless/commit/1aa0ab21ce8bf21a0b88d6eeab66be06aaadd403))
+* **vise:** merge the US folder of an installer into its shared resources ([#6331](https://github.com/benletchford/systemless/issues/6331)) ([27aa406](https://github.com/benletchford/systemless/commit/27aa406cfb08f799bb3119ee0382e07a03d5e708))
+
+
+### Performance Improvements
+
+* **cfm:** keep found library fragments as ranges of their files ([#6346](https://github.com/benletchford/systemless/issues/6346)) ([4ff8be8](https://github.com/benletchford/systemless/commit/4ff8be87702258122e2b0ba2346d7df1c59224e5))
+* **ppc:** skip region recalculation for BringToFront on the front window ([#6325](https://github.com/benletchford/systemless/issues/6325)) ([0852b4f](https://github.com/benletchford/systemless/commit/0852b4fe57bd80f66729293a083654b187b82ad5))
+* **qd3d:** read software texels through a span per triangle ([#6351](https://github.com/benletchford/systemless/issues/6351)) ([1e42be2](https://github.com/benletchford/systemless/commit/1e42be2594bb6ec77f0e74e1dc65a7e659b03ece))
+* **qd3d:** report software span runs with the bytes they stored ([#6350](https://github.com/benletchford/systemless/issues/6350)) ([9638de0](https://github.com/benletchford/systemless/commit/9638de01501f7cbd75203d115b9e1db7b2ac6b74))
+
 ## [0.124.0](https://github.com/benletchford/systemless/compare/v0.123.0...v0.124.0) (2026-11-15)
 
 
