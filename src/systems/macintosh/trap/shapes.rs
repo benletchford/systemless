@@ -514,15 +514,121 @@ fn invert_indexed_pixel(old: u8) -> u8 {
     255 - old
 }
 
+#[cfg(test)]
 fn apply_boolean_transfer_1(old: bool, mode: i16, source_is_black: bool) -> bool {
+    apply_colorized_transfer_1(old, mode, source_is_black, OneBitInks::BLACK_ON_WHITE)
+}
+
+/// The bits Color QuickDraw writes for the foreground and background when
+/// a port draws into a one-bit destination (`ColorMap`, QDUtil.a). The
+/// port's colours still apply there, so `ForeColor(whiteColor)` paints white
+/// bits rather than black ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OneBitInks {
+    foreground: bool,
+    background: bool,
+}
+
+impl OneBitInks {
+    const BLACK_ON_WHITE: Self = Self {
+        foreground: true,
+        background: false,
+    };
+
+    /// A basic GrafPort (`remapOld1bit`): starting from black on white, with
+    /// `colrBit` zero the foreground is cleared when the classic fgColor's
+    /// normal bit (bit 0) is clear and the background is set when bkColor's
+    /// normal bit is set. Only whiteColor clears that bit, and it is the only
+    /// classic value that resolves to RGB white. A negative `colrBit` keeps
+    /// the defaults; positive values select the planar separation the ROM
+    /// performs for colour printing, which this does not model. Inside
+    /// Macintosh Volume I (1985), pp. I-158 and I-173.
+    fn for_basic_port(colr_bit: i16, fg_color: (u16, u16, u16), bg_color: (u16, u16, u16)) -> Self {
+        const WHITE: (u16, u16, u16) = (0xFFFF, 0xFFFF, 0xFFFF);
+        if colr_bit != 0 {
+            return Self::BLACK_ON_WHITE;
+        }
+        Self {
+            foreground: fg_color != WHITE,
+            background: bg_color != WHITE,
+        }
+    }
+
+    /// A CGrafPort's fgColor and bkColor already hold pixels resolved for its
+    /// one-bit table, so `ColorMap` (QDUtil.a, `DoOneBit`) inks with their low
+    /// bits. When two different colours resolve to the same pixel it first
+    /// replaces the foreground with the index of the inverted foreground
+    /// colour, so the two stay distinguishable.
+    fn for_color_port(
+        fg_pixel: u8,
+        bg_pixel: u8,
+        fg_color: (u16, u16, u16),
+        bg_color: (u16, u16, u16),
+        clut: &[[u16; 3]; 256],
+    ) -> Self {
+        let mut fg_pixel = fg_pixel;
+        if fg_pixel & 1 == bg_pixel & 1 && fg_color != bg_color {
+            let (r, g, b) = fg_color;
+            fg_pixel = shape_palette_index_for_rgb([!r, !g, !b], 1, clut);
+        }
+        Self {
+            foreground: fg_pixel & 1 != 0,
+            background: bg_pixel & 1 != 0,
+        }
+    }
+
+    /// The bit a solid pattern leaves under `patCopy`: the foreground ink
+    /// where the pattern is black, the background ink where it is white.
+    fn solid_row_op(self, op: BitRowOp) -> BitRowOp {
+        let ink = match op {
+            BitRowOp::Set => self.foreground,
+            BitRowOp::Clear => self.background,
+            BitRowOp::Toggle => return op,
+        };
+        if ink {
+            BitRowOp::Set
+        } else {
+            BitRowOp::Clear
+        }
+    }
+}
+
+/// `apply_boolean_transfer_1` with the port's colours applied the way
+/// Color QuickDraw's 1-bit blitters use FCOLOR and BCOLOR: copy modes write
+/// the foreground or background ink, or modes write the foreground where the
+/// source is black, bic modes write the background there, and xor modes
+/// ignore colour. With black-on-white inks this is the classic transfer.
+fn apply_colorized_transfer_1(
+    old: bool,
+    mode: i16,
+    source_is_black: bool,
+    inks: OneBitInks,
+) -> bool {
     let mode = normalize_boolean_transfer_mode(mode);
     let source_is_black = source_is_black ^ (mode & 4 != 0);
     match mode & 3 {
-        0 => source_is_black,
-        1 => old || source_is_black,
+        0 => {
+            if source_is_black {
+                inks.foreground
+            } else {
+                inks.background
+            }
+        }
+        1 => {
+            if source_is_black {
+                inks.foreground
+            } else {
+                old
+            }
+        }
         2 => old ^ source_is_black,
-        3 => old && !source_is_black,
-        _ => source_is_black,
+        _ => {
+            if source_is_black {
+                inks.background
+            } else {
+                old
+            }
+        }
     }
 }
 
@@ -1664,7 +1770,8 @@ impl super::TrapDispatcher {
         let fg_idx;
         let bg_idx;
         let mut indexed_clut = None;
-        if matches!(pixel_size, 2 | 4 | 8) {
+        let mut one_bit_inks = OneBitInks::BLACK_ON_WHITE;
+        if matches!(pixel_size, 2 | 4 | 8) || (pixel_size == 1 && is_color) {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
@@ -1736,9 +1843,25 @@ impl super::TrapDispatcher {
                 is_color && (resolved_color_fields & 0x02) != 0,
                 generated_back_rgb.is_some(),
             );
+            if pixel_size == 1 {
+                one_bit_inks = OneBitInks::for_color_port(
+                    fg_idx,
+                    bg_idx,
+                    effective_fg_color,
+                    effective_bg_color,
+                    &port_clut,
+                );
+            }
         } else {
             fg_idx = 255;
             bg_idx = 0;
+            if pixel_size == 1 {
+                one_bit_inks = OneBitInks::for_basic_port(
+                    bus.read_word(port.wrapping_add(88)) as i16,
+                    self.fg_color,
+                    self.bg_color,
+                );
+            }
         }
 
         let installed_raw_pixpat = if pixel_size == 8 && is_color {
@@ -1797,7 +1920,12 @@ impl super::TrapDispatcher {
                             return (!old) & mask;
                         }
                         match pixel_size {
-                            1 => u32::from(apply_boolean_transfer_1(old != 0, mode, bit != 0)),
+                            1 => u32::from(apply_colorized_transfer_1(
+                                old != 0,
+                                mode,
+                                bit != 0,
+                                one_bit_inks,
+                            )),
                             2 | 4 | 8 => {
                                 u32::from(apply_boolean_transfer_8(
                                     old as u8,
@@ -2038,7 +2166,8 @@ impl super::TrapDispatcher {
                     solid_bit_row_op(self.pn_pat)
                 }
                 _ => None,
-            };
+            }
+            .map(|bit_op| one_bit_inks.solid_row_op(bit_op));
             if let Some(bit_op) = bit_op {
                 let top = r.top.max(clip_top);
                 let left = r.left.max(clip_left);
@@ -2215,7 +2344,12 @@ impl super::TrapDispatcher {
                                 {
                                     0
                                 }
-                                1 => u32::from(apply_boolean_transfer_1(old != 0, mode, bit != 0)),
+                                1 => u32::from(apply_colorized_transfer_1(
+                                    old != 0,
+                                    mode,
+                                    bit != 0,
+                                    one_bit_inks,
+                                )),
                                 2 | 4 | 8 => {
                                     u32::from(apply_boolean_transfer_8(
                                         old as u8,
@@ -2667,7 +2801,7 @@ impl super::TrapDispatcher {
                     {
                         false
                     } else {
-                        apply_boolean_transfer_1(old, mode, source_is_black)
+                        apply_colorized_transfer_1(old, mode, source_is_black, one_bit_inks)
                     };
 
                     if val {
@@ -2733,9 +2867,10 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, ctab_rgb_for_value,
-        ctab_uses_noncanonical_black, fg_bg_low_contrast, indexed_shape_color_index,
-        lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
+        apply_boolean_transfer_1, apply_boolean_transfer_8, apply_colorized_transfer_1, blend_rgb,
+        ctab_rgb_for_value, ctab_uses_noncanonical_black, fg_bg_low_contrast,
+        indexed_shape_color_index, lighten_stem_alpha, normalize_boolean_transfer_mode,
+        shape_palette_index_for_rgb, OneBitInks,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -2926,6 +3061,55 @@ mod tests {
     fn apply_boolean_transfer_8_pat_bic_uses_background_and_preserves_white_source() {
         assert_eq!(apply_boolean_transfer_8(77, 11, true, 255, 0), 0);
         assert_eq!(apply_boolean_transfer_8(77, 11, false, 255, 0), 77);
+    }
+
+    #[test]
+    fn colorized_one_bit_transfer_writes_the_inks_each_mode_selects() {
+        let white_on_black = OneBitInks {
+            foreground: false,
+            background: true,
+        };
+        for old in [false, true] {
+            // Copy: foreground where the source is black, background elsewhere.
+            assert!(!apply_colorized_transfer_1(old, 8, true, white_on_black));
+            assert!(apply_colorized_transfer_1(old, 8, false, white_on_black));
+            // Or: foreground where the source is black, destination elsewhere.
+            assert!(!apply_colorized_transfer_1(old, 9, true, white_on_black));
+            assert_eq!(
+                apply_colorized_transfer_1(old, 9, false, white_on_black),
+                old
+            );
+            // Xor ignores colour.
+            assert_eq!(
+                apply_colorized_transfer_1(old, 10, true, white_on_black),
+                !old
+            );
+            // Bic: background where the source is black, destination elsewhere.
+            assert!(apply_colorized_transfer_1(old, 11, true, white_on_black));
+            assert_eq!(
+                apply_colorized_transfer_1(old, 11, false, white_on_black),
+                old
+            );
+        }
+    }
+
+    #[test]
+    fn one_bit_inks_separate_colours_that_resolve_to_the_same_pixel() {
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        // Dark grey and black both resolve to black (pixel 1); QDUtil.a
+        // ColorMap then inks with the pixel of the inverted foreground.
+        let inks = OneBitInks::for_color_port(1, 1, (0x2000, 0x2000, 0x2000), (0, 0, 0), &clut);
+        assert_eq!(
+            inks,
+            OneBitInks {
+                foreground: false,
+                background: true
+            }
+        );
+        // Identical colours keep their shared pixel.
+        let inks = OneBitInks::for_color_port(1, 1, (0, 0, 0), (0, 0, 0), &clut);
+        assert!(inks.foreground && inks.background);
     }
 
     #[test]
