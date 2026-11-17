@@ -3438,8 +3438,12 @@ impl super::TrapDispatcher {
             bus.write_byte(closed_window + Self::WINDOW_HILITED_OFFSET, 0x00);
         }
 
+        // Only a visible window can become the active window. When every
+        // remaining window is hidden (for example a THINK Class Library
+        // clipboard window), nothing is highlighted or activated
+        // (Inside Macintosh Volume I, I-283 and I-286).
         let new_front = self.front_window;
-        if new_front != 0 {
+        if self.window_visible(bus, new_front) {
             bus.write_byte(new_front + Self::WINDOW_HILITED_OFFSET, 0xFF);
             self.queue_window_activation_event(bus, new_front, true);
             self.draw_single_window_chrome_inline(bus, new_front, true);

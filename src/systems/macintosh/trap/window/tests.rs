@@ -2740,6 +2740,53 @@ fn disposewindow_front_promotion_highlights_next_visible_and_queues_activate_eve
 }
 
 #[test]
+fn disposewindow_front_promotion_skips_hidden_remaining_window() {
+    // IM:I I-283: only a visible window behind the closed front window is
+    // highlighted and activated. THINK Class Library applications keep a
+    // hidden clipboard window; activating it moves TCL's gGopher away from
+    // the next document window (Fluffy's Adventure 1.2 never starts its
+    // first scene).
+    let (mut disp, mut cpu, mut bus) = setup();
+    let front = 0x200040u32;
+    let hidden = 0x200140u32;
+    disp.window_list.replace(vec![front, hidden]);
+    disp.front_window = front;
+    disp.current_port
+        .with_mut(|current_port| *current_port = front);
+    for &base in &[front, hidden] {
+        bus.write_word(base + 16, 10);
+        bus.write_word(base + 18, 10);
+        bus.write_word(base + 20, 50);
+        bus.write_word(base + 22, 100);
+    }
+    bus.write_byte(front + 110u32, 0xFF);
+    bus.write_byte(front + 111u32, 0xFF);
+    bus.write_byte(hidden + 110u32, 0x00);
+    bus.write_byte(hidden + 111u32, 0x00);
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, front);
+
+    let result = dispatch(&mut disp, 0x114, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    assert_eq!(disp.window_list, vec![hidden]);
+    assert_eq!(
+        bus.read_byte(hidden + 111u32),
+        0x00,
+        "a hidden window must not be highlighted when the front window is disposed"
+    );
+    assert!(
+        !disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 8 && event.message == hidden),
+        "a hidden window must not receive an activate event when the front window is disposed"
+    );
+}
+
+#[test]
 fn disposewindow_erases_visible_window_from_screen() {
     // IM:I I-284: DisposeWindow calls CloseWindow; IM:I I-283 says
     // CloseWindow removes the window from the screen and window list.
