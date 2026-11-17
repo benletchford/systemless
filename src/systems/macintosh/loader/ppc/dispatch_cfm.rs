@@ -859,6 +859,7 @@ pub(super) fn ppc_is_explicit_hle_cfm_library(library_name: &str) -> bool {
             | "DisplayLib"
             | "DrawSprocketLib"
             | "3DfxGlideLib2.x"
+            | "DragLib"
             | "CodeFragmentMgr"
             | "CarbonCore.vlib"
             | "CFMPriv_CarbonCore"

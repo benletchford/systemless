@@ -956,6 +956,30 @@ fn initial_bundled_libraries_bind_dependencies_in_deterministic_order() {
 }
 
 #[test]
+fn get_shared_library_connects_drag_lib_to_the_runtime_drag_manager() {
+    let pef = synthetic_pef_with_import(b"GetSharedLibrary");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_HEAP_BASE;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    write_ppc_pstring(&mut loaded.memory, scratch, b"DragLib");
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"pwpc");
+    loaded.cpu.gpr[5] = 1; // kLoadLib
+    loaded.cpu.gpr[6] = scratch + 32;
+    loaded.cpu.gpr[7] = scratch + 36;
+    loaded.cpu.gpr[8] = scratch + 40;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch + 32),
+        Some(PPC_FIRST_CFM_CONNECTION_ID)
+    );
+}
+
+#[test]
 fn bundled_gamesprockets_use_native_system_bindings() {
     for (library_name, symbol_name) in [
         ("DrawSprocketLib", "DSpStartup"),
