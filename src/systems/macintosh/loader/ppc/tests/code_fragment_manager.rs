@@ -2131,6 +2131,61 @@ fn fragment_after_an_exempted_dependency_uses_the_raised_allocation_limit() {
 }
 
 #[test]
+fn bundled_gamesprockets_stay_native_for_runtime_loaded_fragments() {
+    for (library_name, symbol_name) in [
+        ("DrawSprocketLib", "DSpStartup"),
+        ("InputSprocketLib", "ISpGetVersion"),
+    ] {
+        let fragment =
+            synthetic_pef_with_library_import(library_name.as_bytes(), symbol_name.as_bytes());
+        // Not a loadable PEF: connecting it would fail the load.
+        let library = PpcCfmLibraryFragment {
+            name: library_name.to_string(),
+            bytes: vec![0; 40].into(),
+        };
+        let calls = SharedGuestCallStack::default();
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x100000);
+        let mut manager = owner.0.borrow_mut();
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x5000, fragment.clone());
+        memory.add_region(0x6000, vec![0; 0x200]);
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x100000]);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = 0x5000;
+        cpu.gpr[4] = fragment.len() as u32;
+        cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+        cpu.gpr[7] = 0x6000;
+        cpu.gpr[8] = 0x6004;
+        cpu.gpr[9] = 0x6010;
+        let mut connections = Vec::new();
+        let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+        let mut cursor = PPC_HEAP_BASE;
+
+        let action = ppc_get_mem_fragment(
+            &mut cpu,
+            &calls,
+            &mut manager,
+            &mut memory,
+            &mut cursor,
+            PPC_HEAP_BASE + 0x100000,
+            PPC_STACK_BASE,
+            &mut connections,
+            &[library],
+            &mut next_connection,
+            &mut PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout()),
+            None,
+            None,
+        );
+
+        assert_eq!(action, PpcImportAction::Return(0));
+        assert_eq!(connections.len(), 1);
+        assert!(connections
+            .iter()
+            .all(|connection| connection.library_name != library_name));
+    }
+}
+
+#[test]
 fn code_fragment_manager_namespace_exports_the_fragment_loaders() {
     for library in ["CodeFragmentMgr", "CarbonCore.vlib", "InterfaceLib"] {
         assert_eq!(

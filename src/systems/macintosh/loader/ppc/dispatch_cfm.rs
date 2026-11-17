@@ -793,10 +793,11 @@ fn ppc_connect_fragment_dependencies(
             }
             continue;
         }
-        let Some(library) = cfm_library_fragments
-            .iter()
-            .find(|library| library.name.eq_ignore_ascii_case(&import.library_name))
-        else {
+        // Bundled GameSprockets stay native, as when the application launches.
+        let Some(library) = cfm_library_fragments.iter().find(|library| {
+            library.name.eq_ignore_ascii_case(&import.library_name)
+                && !ppc_is_native_gamesprocket_library(&library.name)
+        }) else {
             continue;
         };
         let id = *next_cfm_connection_id;
@@ -871,6 +872,13 @@ fn ppc_connect_fragment_dependencies(
         }
     }
     Ok(())
+}
+
+/// GameSprockets are system libraries implemented by the native dispatcher,
+/// so CFM binds them instead of a copy shipped beside the application.
+pub(super) fn ppc_is_native_gamesprocket_library(library_name: &str) -> bool {
+    library_name.eq_ignore_ascii_case("DrawSprocketLib")
+        || library_name.eq_ignore_ascii_case("InputSprocketLib")
 }
 
 /// Exempting a dependency from the partition raises the allocation limit the
