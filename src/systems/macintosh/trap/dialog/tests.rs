@@ -11081,6 +11081,106 @@
     }
 
     #[test]
+    fn bulk_draw_during_user_item_update_pass_keeps_modal_snapshot_open() {
+        // Inside Macintosh Volume I, I-405: ModalDialog's update pass calls
+        // every userItem procedure in turn. Galactic Frontiers draws a
+        // picture in its first userItem and its popup menus in later ones;
+        // finalizing the snapshot after that picture let the next frame
+        // restore it over the popups before they had all been drawn.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc((64 * 64) as u32);
+        bus.write_bytes(screen_base, &vec![0x00; 64 * 64]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+
+        let dialog_ptr = 0x200000u32;
+        let bounds = (10, 10, 30, 30);
+        let snapshot_width = (bounds.3 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let snapshot_height =
+            (bounds.2 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN * 2) as usize;
+        let items = vec![
+            DialogItem {
+                item_type: 0,
+                rect: (2, 2, 8, 8),
+                proc_ptr: 0x300000,
+                ..Default::default()
+            },
+            DialogItem {
+                item_type: 0,
+                rect: (10, 2, 16, 16),
+                proc_ptr: 0x300000,
+                ..Default::default()
+            },
+        ];
+        disp.front_window = dialog_ptr;
+        disp.dialog_items.insert(dialog_ptr, items.clone());
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        disp.dialog_tracking = Some(crate::trap::dispatch::DialogTrackingState {
+            dialog_ptr,
+            bounds,
+            title: String::new(),
+            proc_id: 1,
+            items,
+            default_item: 0,
+            cancel_item: 0,
+            edit_text: String::new(),
+            edit_item: 0,
+            saved_pixels: Default::default(),
+            stack_ptr: TEST_SP,
+            item_hit_ptr: 0,
+            rendered_pixels: vec![0x00; snapshot_width * snapshot_height].into(),
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_item: 0,
+            edit_text_modified: false,
+            draw_proc_queue: VecDeque::from([(0x300000, 2)]),
+            draw_procs_done: false,
+            rendered_pixels_final: false,
+            filter_presentation_epoch: None,
+            filter_proc: 0,
+            game_managed: false,
+            last_filter_event: None,
+            popup_draws: Vec::new(),
+            active_popup: None,
+            active_button: None,
+            active_user_item: None,
+        });
+
+        // The first userItem draws a picture.
+        bus.write_byte(screen_base + 13 * 64 + 13, 0x44);
+        disp.refresh_visible_dialog_snapshot_after_bulk_port_draw(
+            &bus,
+            dialog_ptr,
+            (12, 12, 18, 18),
+        );
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(
+            !tracking.rendered_pixels_final,
+            "a picture drawn by one userItem must not finalize the snapshot while later userItems are queued"
+        );
+        let bulk_index = (13 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (13 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(tracking.rendered_pixels[bulk_index], 0x44);
+
+        // The second userItem draws its popup frame, then the pass finishes.
+        let popup_probe = screen_base + 20 * 64 + 14;
+        bus.write_byte(popup_probe, 0xFF);
+        disp.dialog_tracking.as_mut().unwrap().draw_proc_queue.clear();
+        disp.finalize_dialog_draw_procs_if_idle(&mut bus);
+        let tracking = disp.dialog_tracking.as_ref().unwrap();
+        assert!(tracking.draw_procs_done);
+        assert!(tracking.rendered_pixels_final);
+        let popup_index = (20 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (14 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(
+            tracking.rendered_pixels[popup_index], 0xFF,
+            "the final snapshot must include every userItem's output"
+        );
+    }
+
+    #[test]
     fn updtdialog_pops_eight_bytes() {
         // Inside Macintosh Volume I, I-415: UpdtDialog is a Pascal
         // procedure taking theDialog and updateRgn.
