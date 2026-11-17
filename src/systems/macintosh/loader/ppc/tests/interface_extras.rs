@@ -502,6 +502,30 @@ fn lowercase_numtostring_writes_a_c_string() {
 }
 
 #[test]
+fn lowercase_stringtonum_parses_a_c_string() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"stringtonum")).unwrap();
+    let string_ptr = PPC_DATA_BASE + 0x1000;
+    let number_ptr = PPC_DATA_BASE + 0x1100;
+    loaded.memory.add_region(string_ptr, vec![0; 0x200]);
+    let target = dispatcher_target_for_import("InterfaceLib", "stringtonum");
+    assert_eq!(target, PpcImportDispatcherTarget::CStringToNum);
+    // Read as a Pascal string, "7" would be a length byte (0x37) followed by
+    // no digits, and "2147483647" would lose its first digit.
+    for (text, expected) in [
+        (&b"7\0"[..], 7i32),
+        (b"2147483647\0", i32::MAX),
+        (b" -12345x\0", -12345),
+    ] {
+        loaded.memory.write_bytes(string_ptr, text).unwrap();
+        loaded.memory.write_u32_be(number_ptr, 0xaaaa_aaaa).unwrap();
+        loaded.cpu.gpr[3] = string_ptr;
+        loaded.cpu.gpr[4] = number_ptr;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.memory.read_u32_be(number_ptr), Some(expected as u32));
+    }
+}
+
+#[test]
 fn uprtext_uses_mac_roman_uppercase_conversion() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"UprText")).unwrap();
     let text = PPC_DATA_BASE + 0x1000;

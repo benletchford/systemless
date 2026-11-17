@@ -958,6 +958,7 @@ pub enum PpcImportDispatcherTarget {
     NumToString,
     NumToCString,
     StringToNum,
+    CStringToNum,
     Random,
     SetQDGlobalsRandomSeed,
     GetQDGlobalsRandomSeed,
@@ -5288,6 +5289,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
         ("InterfaceLib", "numtostring") => PpcImportDispatcherTarget::NumToCString,
         ("InterfaceLib" | "CarbonLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
+        ("InterfaceLib", "stringtonum") => PpcImportDispatcherTarget::CStringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
         ("InterfaceLib" | "CarbonLib", "GetQDGlobalsRandomSeed" | "getqdglobalsrandomseed") => {
             PpcImportDispatcherTarget::GetQDGlobalsRandomSeed
