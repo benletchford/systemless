@@ -1758,6 +1758,31 @@ fn bundled_imports_bind_by_name_when_symbol_classes_differ() {
 }
 
 #[test]
+fn get_shared_library_accepts_null_main_address() {
+    let pef = synthetic_pef_with_import(b"GetSharedLibrary");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_HEAP_BASE;
+    loaded.memory.add_region(scratch, vec![0xAA; 128]);
+    write_ppc_pstring(&mut loaded.memory, scratch, b"InterfaceLib");
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"pwpc");
+    loaded.cpu.gpr[5] = PPC_CFM_LOAD_LIB;
+    loaded.cpu.gpr[6] = scratch + 32;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch + 32),
+        Some(PPC_FIRST_CFM_CONNECTION_ID)
+    );
+    assert_eq!(loaded.memory.read_u32_be(scratch + 36), Some(0xAAAA_AAAA));
+}
+
+#[test]
 fn get_mem_fragment_accepts_null_main_address_and_error_name() {
     let pef = synthetic_pef_with_import(b"GetMemFragment");
     let mut loaded = load_pef_application(&pef).unwrap();
