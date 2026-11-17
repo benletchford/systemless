@@ -758,6 +758,18 @@ fn file_and_lowmem_aliases_bind_and_behave() {
     );
     assert_eq!(loaded.memory.read_u16_be(SCRATCH), Some(72));
     assert_eq!(loaded.memory.read_u16_be(SCRATCH + 2), Some(72));
+    {
+        // ScreenRes reports the ScrHRes and ScrVRes globals.
+        use crate::memory::globals::addr;
+        loaded.memory.write_u16_be(addr::SCR_H_RES, 96).unwrap();
+        loaded.memory.write_u16_be(addr::SCR_V_RES, 80).unwrap();
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "ScreenRes"),
+        );
+        assert_eq!(loaded.memory.read_u16_be(SCRATCH), Some(96));
+        assert_eq!(loaded.memory.read_u16_be(SCRATCH + 2), Some(80));
+    }
 
     let mut loaded = loaded_with(b"LMSetMemErr");
     loaded.cpu.gpr[3] = ppc_i16_result(-108);
