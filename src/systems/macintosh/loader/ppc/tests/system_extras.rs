@@ -386,6 +386,65 @@ fn replace_gestalt_value_requires_an_existing_selector() {
 }
 
 #[test]
+fn peerless_interprocess_imports_succeed() {
+    let mut loaded = loaded_with(b"PPCInit");
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "ReserveMemSys"),
+        dispatcher_target_for_import("InterfaceLib", "ReserveMem")
+    );
+    for symbol in ["PPCInit", "AEInstallCoercionHandler"] {
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        assert_eq!(loaded.cpu.gpr[3], 0, "{symbol}");
+    }
+}
+
+#[test]
+fn ppc_open_and_close_complete_their_parameter_blocks() {
+    let mut loaded = loaded_with(b"PPCOpenSync");
+    let pb = SCRATCH;
+    for symbol in ["PPCOpenSync", "PPCCloseSync"] {
+        loaded.memory.write_u16_be(pb + 16, 0xffff).unwrap();
+        loaded.cpu.gpr[3] = pb;
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        assert_eq!(loaded.cpu.gpr[3], 0, "{symbol}");
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(0), "{symbol}");
+        if symbol == "PPCOpenSync" {
+            assert_ne!(loaded.memory.read_u16_be(pb + 38), Some(0));
+        }
+    }
+}
+
+#[test]
+fn peerless_high_level_event_lookups_report_no_port_or_process() {
+    let mut loaded = loaded_with(b"GetSpecificHighLevelEvent");
+    loaded.memory.write_u16_be(SCRATCH, 0).unwrap();
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[5] = SCRATCH;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "GetSpecificHighLevelEvent"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u16_be(SCRATCH), Some((-903i16) as u16));
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "GetPortNameFromProcessSerialNumber"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PROC_NOT_FOUND_ERR));
+}
+
+#[test]
+fn icon_id_to_rgn_reports_failure_instead_of_leaving_the_region_stale() {
+    let mut loaded = loaded_with(b"IconIDToRgn");
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "IconIDToRgn"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
+
+#[test]
 fn imperialism_low_memory_getters_read_current_values() {
     use crate::memory::globals::addr;
     let mut loaded = loaded_with(b"LMGetFSFCBLen");
