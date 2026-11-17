@@ -62,7 +62,15 @@ pub(super) fn dispatch_picture_import(
                 } else {
                     0
                 };
-                let target = (callback != 0)
+                // SetStdCProcs installs StdGetPic, which reads the picture
+                // handle exactly as the built-in path does.
+                let standard = ppc_logical_trap_address(
+                    memory,
+                    dispatch_quickdraw::PPC_STD_GET_PIC_TRAP,
+                    true,
+                )
+                .is_some_and(|std_get_pic| std_get_pic == callback);
+                let target = (callback != 0 && !standard)
                     .then(|| ppc_resolve_callback_target(memory, callback, cpu.gpr[2], None))
                     .flatten();
                 target.and_then(|target| {

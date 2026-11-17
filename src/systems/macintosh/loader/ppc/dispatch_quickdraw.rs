@@ -3367,9 +3367,51 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        PpcQuickDrawCompatibilityOperation::SetStdCProcs
-        | PpcQuickDrawCompatibilityOperation::SetStdProcs
-        | PpcQuickDrawCompatibilityOperation::Exp1To3
+        PpcQuickDrawCompatibilityOperation::SetStdCProcs => {
+            ppc_set_std_procs(memory, cpu.gpr[3], true);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::SetStdProcs => {
+            ppc_set_std_procs(memory, cpu.gpr[3], false);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickDrawCompatibilityOperation::Exp1To3
         | PpcQuickDrawCompatibilityOperation::Exp1To6 => PpcImportAction::ReturnPreserve,
+    }
+}
+
+/// Bottleneck traps in QDProcs order (IM:I I-197): textProc, lineProc,
+/// rectProc, rRectProc, ovalProc, arcProc, polyProc, rgnProc, bitsProc,
+/// commentProc, txMeasProc, getPicProc and putPicProc. CQDProcs appends
+/// opcodeProc (StdOpcodeProc) after them (IM:V V-91; IWQD 4-60..4-61).
+const PPC_STD_QD_PROC_TRAPS: [u16; 14] = [
+    0xA882, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1, 0xA8ED,
+    0xA8EE, 0xA8F0, 0xABF8,
+];
+/// StdGetPic, the getPicProc default that DrawPicture reads through itself.
+pub(super) const PPC_STD_GET_PIC_TRAP: u16 = 0xA8EE;
+
+/// SetStdProcs / SetStdCProcs fill every bottleneck slot of the caller's
+/// QDProcs / CQDProcs with the standard routines (IM:I I-197; IM:V V-77).
+/// Callers pass uninitialised stack records and replace only the slots they
+/// customise, so leaving the rest untouched lets DrawPicture jump through a
+/// garbage getPicProc. Match the 68K trap: the live trap-table entries for
+/// the 14 named bottlenecks, `_Unimplemented` for newProc1 (StdPix has no
+/// A-line identity) and NIL for the five reserved slots.
+pub(super) fn ppc_set_std_procs(memory: &mut PpcSectionMem, procs: u32, color: bool) {
+    if procs == 0 {
+        return;
+    }
+    let named = if color { 14 } else { 13 };
+    for (index, trap) in PPC_STD_QD_PROC_TRAPS[..named].iter().enumerate() {
+        let address = ppc_logical_trap_address(memory, *trap, true).unwrap_or(0);
+        let _ = memory.write_u32_be(procs + index as u32 * 4, address);
+    }
+    if color {
+        let std_pix = ppc_logical_trap_address(memory, 0xA89F, true).unwrap_or(0);
+        let _ = memory.write_u32_be(procs + 14 * 4, std_pix);
+        for index in 15..20u32 {
+            let _ = memory.write_u32_be(procs + index * 4, 0);
+        }
     }
 }
