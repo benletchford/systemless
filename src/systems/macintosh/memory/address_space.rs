@@ -182,6 +182,69 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// A small direct-mapped cache of pages that no store can make the
+/// presentation change: off the screen, with no offscreen detail page bit.
+/// Almost every guest store lands on such a page, and the presentation's own
+/// test costs a borrow and several range checks per store.
+///
+/// A page stops being quiet only when a presentation is installed or an
+/// offscreen page bit is set; both bump `observed_page_events`, which empties
+/// the cache. Glyph and erase state cannot make a quiet page observed:
+/// `PresentationSlot::write_bytes` ignores stores outside the screen and the
+/// offscreen pages whatever they are.
+#[derive(Clone, Copy, Debug)]
+struct QuietPresentationPages {
+    /// Page number plus one per slot; zero is empty.
+    pages: [u32; QUIET_PRESENTATION_SLOTS],
+    events: u64,
+}
+
+const QUIET_PRESENTATION_SLOTS: usize = 64;
+const QUIET_PRESENTATION_PAGE_SHIFT: u32 = super::presentation::STORE_FILTER_PAGE_SHIFT;
+
+impl Default for QuietPresentationPages {
+    fn default() -> Self {
+        Self {
+            pages: [0; QUIET_PRESENTATION_SLOTS],
+            events: 0,
+        }
+    }
+}
+
+impl QuietPresentationPages {
+    /// The single page `addr..addr + len` lies in, when it does.
+    #[inline]
+    fn page(addr: u32, len: usize) -> Option<u32> {
+        let last = addr.checked_add((len as u32).checked_sub(1)?)?;
+        let page = addr >> QUIET_PRESENTATION_PAGE_SHIFT;
+        (last >> QUIET_PRESENTATION_PAGE_SHIFT == page).then_some(page)
+    }
+
+    #[inline]
+    fn contains(&self, addr: u32, len: usize) -> bool {
+        let Some(page) = Self::page(addr, len) else {
+            return false;
+        };
+        self.events == super::observed_page_events()
+            && self.pages[page as usize % QUIET_PRESENTATION_SLOTS] == page + 1
+    }
+
+    #[inline(never)]
+    fn learn(&mut self, presentation: &super::presentation::PresentationSlot, addr: u32, len: usize) {
+        let Some(page) = Self::page(addr, len) else {
+            return;
+        };
+        let events = super::observed_page_events();
+        if self.events != events {
+            self.pages = [0; QUIET_PRESENTATION_SLOTS];
+            self.events = events;
+        }
+        if !presentation.page_may_be_observed(page << QUIET_PRESENTATION_PAGE_SHIFT) {
+            self.pages[page as usize % QUIET_PRESENTATION_SLOTS] = page + 1;
+        }
+    }
+}
+
 /// A sparse guest address space that can be executed by either CPU backend.
 ///
 /// The region implementation remains private so loaders and runtime services
@@ -191,6 +254,9 @@ thread_local! {
 struct GuestAddressSpaceState {
     quickdraw_gpu_renderer: crate::quickdraw::gpu::QuickDrawGpuSlot,
     presentation: super::presentation::PresentationSlot,
+    /// Pages a store cannot make the presentation change, so `note_write`
+    /// skips it there. See `QuietPresentationPages`.
+    quiet_presentation_pages: QuietPresentationPages,
     regions: PpcSectionMem,
     ordinary_regions: Vec<OrdinaryRegionMapping>,
     shared_regions: Vec<SharedRegionMapping>,
@@ -348,7 +414,11 @@ impl GuestAddressSpaceState {
                 log.push((addr, bytes.to_vec()));
             }
         });
-        self.presentation.write_bytes(addr, bytes);
+        if !self.quiet_presentation_pages.contains(addr, bytes.len()) {
+            self.presentation.write_bytes(addr, bytes);
+            self.quiet_presentation_pages
+                .learn(&self.presentation, addr, bytes.len());
+        }
         let start = u64::from(addr);
         let end = start.saturating_add(bytes.len() as u64);
         if self.executed_pages.may_overlap(start, end) {
@@ -1149,7 +1219,10 @@ impl SharedGuestAddressSpace {
     }
 
     pub(crate) fn set_presentation(&self, slot: super::presentation::PresentationSlot) {
-        self.with_state_mut(|state| state.presentation = slot);
+        self.with_state_mut(|state| {
+            state.presentation = slot;
+            state.quiet_presentation_pages = QuietPresentationPages::default();
+        });
     }
     fn new(memory: &GuestAddressSpace) -> Self {
         Self(Rc::clone(&memory.0))
@@ -1350,6 +1423,7 @@ impl Clone for GuestAddressSpace {
         Self(Rc::new(UnsafeCell::new(GuestAddressSpaceState {
             regions: state.regions.clone(),
             presentation: Default::default(),
+            quiet_presentation_pages: QuietPresentationPages::default(),
             quickdraw_gpu_renderer: Default::default(),
             ordinary_regions: state.ordinary_regions.clone(),
             shared_bounds: state.shared_bounds.clone(),
