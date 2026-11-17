@@ -17463,6 +17463,22 @@ impl super::TrapDispatcher {
                 continue;
             }
             let device_index = index & 0xFF;
+            if device_index == 0 || device_index == 255 {
+                // Color QuickDraw requires white at index 0 and black at
+                // index 255. The Palette Manager keeps those endpoints for
+                // itself: an explicit entry there names the endpoint, and
+                // activation restores white and black rather than installing
+                // the entry's color. WarCraft II remaps its art so 255 is
+                // black while its PC-derived palette still lists white there.
+                // Inside Macintosh Volume V (1986), V-162; Volume VI (1991),
+                // 20-13.
+                updated_clut[device_index] = if device_index == 0 { [0xFFFF; 3] } else { [0; 3] };
+                claimed[device_index] = true;
+                installed[device_index] = true;
+                self.palette_device_indices
+                    .insert((palette_handle, index as u16), device_index as u8);
+                continue;
+            }
             updated_clut[device_index] = [
                 bus.read_word(color_info),
                 bus.read_word(color_info + 2),
@@ -17654,6 +17670,11 @@ impl super::TrapDispatcher {
         }
 
         let device_index = (entry as usize) & 0xFF;
+        // The white (0) and black (255) endpoints are never animated; see
+        // apply_palette_to_active_device.
+        if device_index == 0 || device_index == 255 {
+            return;
+        }
         self.device_clut.set_entry(device_index, rgb);
         self.color_manager_clut.set_entry(device_index, rgb);
 
