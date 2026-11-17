@@ -4644,6 +4644,52 @@ fn test_setitem_syncs_guest_memory_text() {
     assert_eq!(bus.read_byte(menu_ptr + 22), b'w');
 }
 
+// IM:I I-358: GetItem returns the item text as the Str255 the menu holds.
+// Item text is stored one char per Mac Roman byte, so "Save As\xC9"
+// ("Save As…") must come back as eight bytes, not UTF-8 ("\xC3\x89").
+#[test]
+fn getitem_returns_mac_roman_item_bytes() {
+    let (mut disp, mut cpu, mut bus) = setup();
+
+    let title_ptr = 0x304000u32;
+    bus.write_pstring(title_ptr, b"File");
+    bus.write_long(TEST_SP, title_ptr);
+    bus.write_word(TEST_SP + 4, 129);
+    assert!(disp
+        .dispatch_menu(true, 0x131, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok()); // NewMenu
+    let handle = bus.read_long(cpu.read_reg(Register::A7));
+
+    let data_ptr = 0x304100u32;
+    bus.write_pstring(data_ptr, b"Save As\xC9");
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, data_ptr);
+    bus.write_long(TEST_SP + 4, handle);
+    assert!(disp
+        .dispatch_menu(true, 0x133, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok()); // AppendMenu
+
+    let out_ptr = 0x304200u32;
+    bus.write_bytes(out_ptr, &[0xEE; 16]);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, out_ptr);
+    bus.write_word(TEST_SP + 4, 1);
+    bus.write_long(TEST_SP + 6, handle);
+    assert!(disp
+        .dispatch_menu(true, 0x146, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok()); // GetItem
+
+    assert_eq!(bus.read_pstring(out_ptr), b"Save As\xC9");
+    assert_eq!(
+        bus.read_byte(out_ptr + 9),
+        0xEE,
+        "GetItem must not overrun the item text"
+    );
+}
+
 // DeleteMenuItem must sync the guest-memory MENU record so CountMItems
 // doesn't still see the deleted item via the guest-memory path.
 #[test]
