@@ -804,26 +804,7 @@ pub(super) fn dispatch_window_import(
                     tick_count,
                 );
                 if !was_visible {
-                    if let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(16)) {
-                        ppc_invalidate_window_local_rect(memory, window, port_rect);
-                    }
-                    // Macintosh Toolbox Essentials (1992), Window Manager,
-                    // PaintOne: newly exposed content uses its window color table.
-                    let content_color = ppc_window_color_table_handle(memory, window)
-                        .and_then(|handle| ppc_window_content_color(memory, handle))
-                        .or_else(|| {
-                            (ppc_window_proc_id(memory, window) == 3).then(|| {
-                                ppc_theme_rgb(
-                                    ppc_ui_theme(gworlds).provider().palette().window_background,
-                                )
-                            })
-                        });
-                    if let (Some(rect), Some(color)) = (
-                        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET)),
-                        content_color,
-                    ) {
-                        let _ = ppc_paint_window_background_bounds(memory, gworlds, window, rect, color);
-                    }
+                    ppc_paint_revealed_window_content(memory, gworlds, window_list, handles, window);
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
                             memory,
@@ -969,6 +950,7 @@ pub(super) fn dispatch_window_import(
                     input,
                 );
                 if visible && !was_visible {
+                    ppc_paint_revealed_window_content(memory, gworlds, window_list, handles, window);
                     if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                         ppc_draw_existing_window_frame(
                             memory,
@@ -978,6 +960,7 @@ pub(super) fn dispatch_window_import(
                             toolbox_startup.host_menu_bar_hidden,
                         );
                     }
+                    ppc_enqueue_window_update_event(event_queue, window, tick_count, input);
                 }
                 if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
@@ -3730,6 +3713,51 @@ fn ppc_window_is_dialog(memory: &mut PpcSectionMem, window: u32) -> bool {
     window != 0
         && memory.read_u16_be(window.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
             == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
+}
+
+/// Macintosh Toolbox Essentials (1992), pp. 4-91 and 4-115: a window that
+/// ShowWindow or ShowHide reveals is painted by PaintOne, which erases the
+/// whole content region with the window's content color and adds it to the
+/// update region. Without a WCTab, the content color is the default white
+/// (the theme's window background). The erase uses the Window Manager port's
+/// clipping, so the application's clipRgn does not limit it.
+fn ppc_paint_revealed_window_content(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    window: u32,
+) {
+    let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+    else {
+        return;
+    };
+    ppc_invalidate_window_local_rect(memory, window, port_rect);
+    // A dialog's color table is the dctb GetNewDialog copied for it.
+    let color_table = if ppc_window_is_dialog(memory, window) {
+        memory
+            .read_u32_be(window_list.dialog_private_address(
+                window,
+                crate::dialog_manager::DIALOG_COLOR_TABLE_HANDLE_OFFSET,
+            ))
+            .filter(|handle| handles.iter().any(|record| record.handle == *handle))
+    } else {
+        ppc_window_color_table_handle(memory, window)
+    };
+    // Only the standard document and dialog WDEFs (IDs 0 and 1, procIDs
+    // 0-15) have content regions Systemless computes; a custom WDEF defines
+    // its own, so without a WCTab its content is left to the application.
+    let Some(color) = color_table
+        .and_then(|handle| ppc_window_content_color(memory, handle))
+        .or_else(|| {
+            (0..16).contains(&ppc_window_proc_id(memory, window)).then(|| {
+                ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background)
+            })
+        })
+    else {
+        return;
+    };
+    let _ = ppc_paint_window_background_bounds(memory, gworlds, window, port_rect, color);
 }
 
 fn ppc_window_color_table_handle(memory: &mut PpcSectionMem, window: u32) -> Option<u32> {
