@@ -737,9 +737,8 @@ impl CfmLoadOperation {
             }
         };
         if result.is_err() && self.created_connection {
-            connections.retain(|connection| {
-                !(self.first_created_id..=self.id.0).contains(&connection.id)
-            });
+            connections
+                .retain(|connection| !(self.first_created_id..=self.id.0).contains(&connection.id));
         }
         result
     }
@@ -1650,5 +1649,4 @@ mod tests {
         assert!(!published);
         assert_eq!(connections[0].references, u32::MAX);
     }
-
 }

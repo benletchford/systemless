@@ -515,7 +515,10 @@ pub(super) fn ppc_get_mem_fragment(
         disk_container_size,
         disk_file_name,
     );
-    if !matches!(action, PpcImportAction::Continue | PpcImportAction::Return(0)) {
+    if !matches!(
+        action,
+        PpcImportAction::Continue | PpcImportAction::Return(0)
+    ) {
         // Every id from first_created_id on is gone, so a retry can reuse them.
         // Failed loads keep their heap and import slots, as single-fragment failures do.
         cfm_connections.retain(|connection| connection.id < first_created_id);
@@ -784,10 +787,11 @@ fn ppc_connect_fragment_dependencies(
 ) -> Result<(), i16> {
     let imports = resolve_pef_imports(fragment).ok_or(PPC_FRAG_CORRUPT_ERR)?;
     for import in imports {
-        if let Some(connection) = cfm_connections
-            .iter()
-            .find(|connection| connection.library_name.eq_ignore_ascii_case(&import.library_name))
-        {
+        if let Some(connection) = cfm_connections.iter().find(|connection| {
+            connection
+                .library_name
+                .eq_ignore_ascii_case(&import.library_name)
+        }) {
             if guest_calls.is_cfm_load_pending(CfmLoadId(connection.id)) {
                 return Err(PPC_FRAG_INIT_LOOP);
             }
@@ -805,7 +809,8 @@ fn ppc_connect_fragment_dependencies(
             return Err(PPC_FRAG_LIB_CONN_ERR);
         }
         let size = u32::try_from(library.bytes.len()).map_err(|_| PPC_FRAG_NO_MEM)?;
-        let address = ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
+        let address =
+            ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, size, false);
         if address == 0 || memory.write_bytes(address, &library.bytes).is_none() {
             return Err(PPC_FRAG_NO_MEM);
         }
@@ -884,9 +889,9 @@ pub(super) fn ppc_is_native_gamesprocket_library(library_name: &str) -> bool {
 /// Exempting a dependency from the partition raises the allocation limit the
 /// caller captured before the load began.
 fn ppc_current_allocation_limit(manager: &ProcessNativeMemoryManager, fallback: u32) -> u32 {
-    manager
-        .native_heap_state()
-        .map_or(fallback, |heap| manager.native_allocation_limit(heap.heap_limit))
+    manager.native_heap_state().map_or(fallback, |heap| {
+        manager.native_allocation_limit(heap.heap_limit)
+    })
 }
 
 /// Builds a guest routine that calls each initializer in order, stopping at
@@ -904,8 +909,13 @@ fn ppc_chained_initializer(
         .collect::<Vec<_>>();
     let code_size = u32::try_from(ppc_chained_initializer_words(&calls).len() * 4)
         .map_err(|_| PPC_FRAG_NO_MEM)?;
-    let address =
-        ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, code_size + 8, false);
+    let address = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        code_size + 8,
+        false,
+    );
     if address == 0 {
         return Err(PPC_FRAG_NO_MEM);
     }
@@ -959,11 +969,11 @@ fn ppc_chained_initializer_words(initializers: &[(u32, u32)]) -> Vec<u32> {
             0x6063_0000 | (block & 0xffff),
             0x3d80_0000 | (descriptor >> 16),
             0x618c_0000 | (descriptor & 0xffff),
-            0x800c_0000, // lwz r0, 0(r12)
-            0x804c_0004, // lwz r2, 4(r12)
-            0x7c09_03a6, // mtctr r0
-            0x4e80_0421, // bctrl
-            0x2c03_0000, // cmpwi r3, 0
+            0x800c_0000,               // lwz r0, 0(r12)
+            0x804c_0004,               // lwz r2, 4(r12)
+            0x7c09_03a6,               // mtctr r0
+            0x4e80_0421,               // bctrl
+            0x2c03_0000,               // cmpwi r3, 0
             0x4082_0000 | exit_offset, // bne epilogue
         ]);
     }

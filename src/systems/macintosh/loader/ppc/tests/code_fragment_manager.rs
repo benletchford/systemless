@@ -1977,7 +1977,10 @@ fn failed_mem_fragment_load_removes_dependencies_it_connected() {
         None,
     );
 
-    assert!(!matches!(action, PpcImportAction::Continue | PpcImportAction::Return(0)));
+    assert!(!matches!(
+        action,
+        PpcImportAction::Continue | PpcImportAction::Return(0)
+    ));
     assert!(connections.is_empty());
     assert_eq!(next_connection, PPC_FIRST_CFM_CONNECTION_ID);
 }
@@ -2036,8 +2039,13 @@ fn dependency_and_fragment_initializer_blocks_share_one_released_scratch() {
     assert_eq!(action, PpcImportAction::Continue);
     assert_eq!(connections.len(), 2);
     assert_eq!(manager.native_ptr_records().len(), 1);
-    let ids = connections.iter().map(|connection| connection.id).collect::<Vec<_>>();
-    assert!(ids.iter().all(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
+    let ids = connections
+        .iter()
+        .map(|connection| connection.id)
+        .collect::<Vec<_>>();
+    assert!(ids
+        .iter()
+        .all(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
     // A nested load importing the pending dependency must not bind to it.
     let mut nested = request.clone();
     assert_eq!(
@@ -2061,19 +2069,16 @@ fn dependency_and_fragment_initializer_blocks_share_one_released_scratch() {
     assert_eq!(connections.len(), 2);
     cpu.pc = PPC_GUEST_CALL_RETURN_PC;
     cpu.gpr[3] = 0;
-    assert!(calls.complete_powerpc_resuming_load(
-        &mut cpu,
-        &mut manager,
-        |operation, result| ppc_complete_cfm_load(
-            operation,
-            result,
-            &mut memory,
-            &mut connections
-        )
-    ));
+    assert!(
+        calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, |operation, result| {
+            ppc_complete_cfm_load(operation, result, &mut memory, &mut connections)
+        })
+    );
     assert_eq!(cpu.gpr[3], 0);
     assert!(manager.native_ptr_records().is_empty());
-    assert!(!ids.iter().any(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
+    assert!(!ids
+        .iter()
+        .any(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
 }
 
 #[test]
