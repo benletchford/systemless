@@ -1470,6 +1470,16 @@ pub(super) fn ppc_window_structure_bounds(
     let border: i16 = if proc_id == 2 { 1 } else { 6 };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
+    } else if proc_id == 3 {
+        // altDBoxProc: a one-pixel frame around the content plus a two-pixel
+        // drop shadow below and to the right, with no gap band.
+        // Inside Macintosh Volume I (1985), pp. I-273 and I-299.
+        (
+            content.0.saturating_sub(1),
+            content.1.saturating_sub(1),
+            content.2.saturating_add(3),
+            content.3.saturating_add(3),
+        )
     } else {
         (
             content.0.saturating_sub(border),
