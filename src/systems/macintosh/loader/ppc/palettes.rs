@@ -866,6 +866,20 @@ pub(crate) fn ppc_activate_window_palette(
         ppc_write_device_color_table(memory, gdevice, &device_clut, toolbox_startup);
         return true;
     }
+    if gdevice == current_gdevice {
+        // The Palette Manager matches and assigns palette colors against the
+        // device's ColorTable (gdPMap^^.pmTable) and changes the hardware
+        // CLUT through SetEntries only for the cells it reassigns. A game may
+        // write that table directly without SetEntries (HeartQuest restores
+        // its saved colors there while the screen stays faded), so the table,
+        // not the displayed CLUT, is the activation's starting point.
+        // Inside Macintosh Volume VI (1991), pp. 20-15--20-16, 20-20.
+        if let Some(table_clut) = ppc_gdevice_ctable_handle(memory, gdevice)
+            .and_then(|handle| ppc_read_ctable_clut(memory, handle, screen_clut))
+        {
+            device_clut = table_clut;
+        }
+    }
     let previous_device_clut = device_clut;
     let applied_to_device = ppc_apply_palette(
         memory,
@@ -881,9 +895,9 @@ pub(crate) fn ppc_activate_window_palette(
         .active_device_palettes
         .insert(gdevice, palette_handle);
     if gdevice == current_gdevice {
-        *screen_clut = device_clut;
         for index in 0..256 {
             if device_clut[index] != previous_device_clut[index] {
+                screen_clut[index] = device_clut[index];
                 color_manager_clut[index] = device_clut[index];
             }
         }
