@@ -345,7 +345,7 @@ impl<Data: AsRef<[u8]> + From<Vec<u8>>> ResourceFork<Data> {
                 };
                 let name = name_bytes
                     .as_deref()
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+                    .map(crate::mac_roman::decode_mac_roman);
 
                 // Get resource data
                 let abs_data_offset = data_offset + res_data_offset;
