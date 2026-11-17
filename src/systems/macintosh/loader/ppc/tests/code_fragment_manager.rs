@@ -2131,6 +2131,91 @@ fn fragment_after_an_exempted_dependency_uses_the_raised_allocation_limit() {
 }
 
 #[test]
+fn chained_dependency_initializer_runs_before_the_fragment_and_stops_on_failure() {
+    const MARK: u32 = 0x4800_0000;
+    for dependency_result in [0u16, 0xffff] {
+        // DepLib's initializer stores 1 at MARK; the fragment's copies MARK
+        // to MARK + 4, so the copy shows which ran first.
+        let mut library = synthetic_pef_with_initializer();
+        let code = parse_pef_sections(&library).unwrap()[0].container_offset as usize;
+        for (index, word) in [
+            d_form_u(15, 5, 0, (MARK >> 16) as u16), // lis r5, MARK@h
+            d_form_u(14, 6, 0, 1),                   // li r6, 1
+            d_form_u(36, 6, 5, 0),                   // stw r6, 0(r5)
+            d_form_u(14, 3, 0, dependency_result),   // li r3, result
+            BLR,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_u32(&mut library, code + index * 4, word);
+        }
+        let mut fragment = synthetic_pef_with_library_import(b"DepLib", b"TestImport");
+        write_i32(&mut fragment, 0x80 + 8, 1);
+        write_u32(&mut fragment, 0x80 + 12, 0);
+        let code = parse_pef_sections(&fragment).unwrap()[0].container_offset as usize;
+        for (index, word) in [
+            d_form_u(15, 5, 0, (MARK >> 16) as u16), // lis r5, MARK@h
+            d_form_u(32, 6, 5, 0),                   // lwz r6, 0(r5)
+            d_form_u(36, 6, 5, 4),                   // stw r6, 4(r5)
+            d_form_u(14, 3, 0, 0),                   // li r3, 0
+            BLR,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_u32(&mut fragment, code + index * 4, word);
+        }
+
+        let pef = synthetic_pef_with_import(b"GetMemFragment");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_cfm_library_fragments(vec![PpcCfmLibraryFragment {
+            name: "DepLib".to_string(),
+            bytes: library.into(),
+        }]);
+        loaded.memory.add_region(MARK, vec![0; 8]);
+        let fragment_addr = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            fragment.len() as u32,
+            false,
+        );
+        loaded.memory.write_bytes(fragment_addr, &fragment).unwrap();
+        let outputs = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            16,
+            true,
+        );
+        loaded.cpu.gpr[3] = fragment_addr;
+        loaded.cpu.gpr[4] = fragment.len() as u32;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+        loaded.cpu.gpr[7] = outputs;
+        loaded.cpu.gpr[8] = outputs + 4;
+        loaded.cpu.gpr[9] = outputs + 8;
+
+        let probe = loaded.run_with_hle_imports(512);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(MARK), Some(1));
+        let connections = &loaded.cfm.as_ref().unwrap().connections;
+        if dependency_result == 0 {
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(MARK + 4), Some(1));
+            assert_eq!(connections.len(), 2);
+            assert!(connections.iter().any(|item| item.library_name == "DepLib"));
+        } else {
+            assert_ne!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(MARK + 4), Some(0));
+            assert!(connections.is_empty());
+        }
+    }
+}
+
+#[test]
 fn bundled_gamesprockets_stay_native_for_runtime_loaded_fragments() {
     for (library_name, symbol_name) in [
         ("DrawSprocketLib", "DSpStartup"),
