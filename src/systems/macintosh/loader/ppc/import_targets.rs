@@ -5384,6 +5384,9 @@ pub(crate) fn dispatcher_target_for_import(
             "PicComment" | "SpaceExtra" | "SysBreakStr" | "DisposeMCInfo" | "ResizePalette"
             | "ColorBit",
         ) => PpcImportDispatcherTarget::NoOpPreserve,
+        // void InitPack(short packID) / void InitAllPacks(void): Inside Macintosh
+        // Volume I (1985), p. I-483. Packages load on first call; nothing to do.
+        ("InterfaceLib", "InitPack" | "InitAllPacks") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib" | "CarbonLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
         ("InterfaceLib", "equalstring") => PpcImportDispatcherTarget::EqualCString,
