@@ -2939,6 +2939,7 @@ pub(super) fn ppc_get_new_cwindow(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     };
+    ppc_apply_wind_position(memory, gworlds, &bytes, bounds_ptr);
     let mut window_cpu = cpu.clone();
     window_cpu.gpr[3] = storage_ptr;
     window_cpu.gpr[4] = bounds_ptr;
@@ -4226,6 +4227,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 *last_resource_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::Return(0));
             };
+            ppc_apply_wind_position(memory, gworlds, &bytes, bounds);
             let mut window_cpu = cpu.clone();
             window_cpu.gpr[3] = params.storage_ptr();
             window_cpu.gpr[4] = bounds;
@@ -6334,6 +6336,65 @@ pub(super) fn ppc_set_window_title(
             .is_some();
     *last_mem_error = if wrote { PPC_NO_ERR } else { PPC_PARAM_ERR };
     wrote
+}
+
+/// The optional System 7 positioning word that follows a WIND template's
+/// word-aligned title, or zero when the template predates it.
+pub(super) fn ppc_wind_position_word(bytes: &[u8]) -> u16 {
+    let Some(&title_len) = bytes.get(18) else {
+        return 0;
+    };
+    let offset = (19 + usize::from(title_len) + 1) & !1;
+    bytes
+        .get(offset..offset + 2)
+        .map_or(0, |word| u16::from_be_bytes([word[0], word[1]]))
+}
+
+/// System 7 WIND templates may append a positioning word after the
+/// word-aligned title; GetNewWindow and GetNewCWindow place the window with
+/// it the same way the Dialog Manager places DLOG templates.
+/// Inside Macintosh: Macintosh Toolbox Essentials (1992), Window Manager.
+fn ppc_apply_wind_position(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    bytes: &[u8],
+    bounds_ptr: u32,
+) {
+    let position = ppc_wind_position_word(bytes);
+    if position == 0 || bytes.len() < 10 {
+        return;
+    }
+    let proc_id = i16::from_be_bytes([bytes[8], bytes[9]]);
+    if let Some(bounds) = ppc_read_rect(memory, bounds_ptr) {
+        let (top, left, bottom, right) =
+            ppc_position_window_template_bounds(memory, gworlds, bounds, position, proc_id);
+        let _ = ppc_write_rect(memory, bounds_ptr, top, left, bottom, right);
+    }
+}
+
+fn ppc_position_window_template_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    bounds: (i16, i16, i16, i16),
+    position: u16,
+    proc_id: i16,
+) -> (i16, i16, i16, i16) {
+    let screen = gworlds.iter().find(|record| record.port == PPC_MAIN_GWORLD);
+    let screen_width = screen.map_or(ppc_main_screen_width(), |record| record.width) as i32;
+    let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
+    let menu_bar_height =
+        i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16).max(0);
+    let parent = ppc_front_visible_window(memory, gworlds)
+        .and_then(|window| ppc_window_global_content_bounds(memory, gworlds, window));
+    crate::dialog_manager::evaluate_dialog_position_bounds(
+        bounds,
+        position,
+        Some(ppc_window_structure_bounds(proc_id, bounds)),
+        parent,
+        screen_width,
+        screen_height,
+        menu_bar_height,
+    )
 }
 
 pub(super) fn ppc_materialize_window_resource_parameters(

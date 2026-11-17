@@ -2762,6 +2762,65 @@ fn new_cwindow_leaves_bytes_after_caller_cwindow_record_untouched() {
 }
 
 #[test]
+fn get_new_cwindow_applies_wind_positioning_word() {
+    let pef = synthetic_pef_with_import(b"GetNewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let storage_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(storage_ptr, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+    let mut wind =
+        test_wind_resource((46, 56, 466, 576), 4, false, false, 0, b"Super Othello");
+    // "Super Othello" is 13 bytes, so the title already ends word-aligned.
+    assert_eq!(wind.len() % 2, 0);
+    wind.extend_from_slice(&0x280Au16.to_be_bytes());
+    assert_eq!(ppc_wind_position_word(&wind), 0x280A);
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: "Test App".to_string(),
+        res_type: u32::from_be_bytes(*b"WIND"),
+        res_id: 200,
+        name: Vec::new(),
+        data: wind.into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    });
+    loaded.cpu.gpr[3] = 200;
+    loaded.cpu.gpr[4] = storage_ptr;
+    loaded.cpu.gpr[5] = u32::MAX;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], storage_ptr);
+    let content_rgn = loaded
+        .memory
+        .read_u32_be(storage_ptr + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .unwrap();
+    let (top, left, bottom, right) =
+        ppc_read_rgn_bbox(&mut loaded.memory, content_rgn).unwrap();
+    assert_eq!((bottom - top, right - left), (420, 520));
+    // kWindowCenterMainScreen centres the structure (frame and shadow
+    // included) horizontally.
+    let structure = ppc_window_structure_bounds(4, (top, left, bottom, right));
+    let screen_width = ppc_main_screen_width() as i16;
+    assert!((structure.1 - (screen_width - structure.3)).abs() <= 1);
+    assert_ne!((top, left), (46, 56));
+    let title_handle = loaded
+        .memory
+        .read_u32_be(storage_ptr + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
+        .unwrap();
+    let title = loaded.memory.read_u32_be(title_handle).unwrap();
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, title),
+        Some(b"Super Othello".to_vec())
+    );
+}
+
+#[test]
 fn hle_import_runner_handles_get_new_cwindow() {
     let pef = synthetic_pef_with_import(b"GetNewCWindow");
     let mut loaded = load_pef_application(&pef).unwrap();
