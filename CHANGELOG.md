@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.126.0](https://github.com/benletchford/systemless/compare/v0.125.0...v0.126.0) (2026-11-17)
+
+
+### Features
+
+* **ppc:** add relstring, getfnum, getfontname and stringwidth C-string imports ([#6433](https://github.com/benletchford/systemless/issues/6433)) ([ed5093a](https://github.com/benletchford/systemless/commit/ed5093af1b0b56ec4ad03a5c6d00457e3da04f4b))
+* **ppc:** add screen resolution, top map, zone and font scaling low-memory accessors ([#6431](https://github.com/benletchford/systemless/issues/6431)) ([0370b0f](https://github.com/benletchford/systemless/commit/0370b0f755f7cccf44b7d441d454f2664a456ce1))
+* **ppc:** add ScreenRes, LMSetMemErr and file manager import aliases ([#6436](https://github.com/benletchford/systemless/issues/6436)) ([1b9f5cd](https://github.com/benletchford/systemless/commit/1b9f5cdbe7f344dc494f76dff8335013bdd61aa7))
+* **ppc:** return documented errors from imports of absent managers ([#6432](https://github.com/benletchford/systemless/issues/6432)) ([1cc70f3](https://github.com/benletchford/systemless/commit/1cc70f3e7cdac347c6d52acf837b675aee58fd13))
+* **ppc:** succeed PPC Toolbox and high-level event imports without peers ([#6399](https://github.com/benletchford/systemless/issues/6399)) ([617972e](https://github.com/benletchford/systemless/commit/617972e69edffffd90bcff71508e6a987589d94e))
+
+
+### Bug Fixes
+
+* **cfm:** accept a NULL mainAddr when connecting a fragment ([#6391](https://github.com/benletchford/systemless/issues/6391)) ([cb8ad4c](https://github.com/benletchford/systemless/commit/cb8ad4cc5778dd0a314b9e0af96a5e57cd850eed))
+* **cfm:** connect bundled dependencies of dynamically loaded fragments ([#6389](https://github.com/benletchford/systemless/issues/6389)) ([983ed76](https://github.com/benletchford/systemless/commit/983ed76d41d422ea405dcfccd120c3e311fdbba2))
+* **cfm:** connect DragLib to the runtime Drag Manager ([#6395](https://github.com/benletchford/systemless/issues/6395)) ([d53988c](https://github.com/benletchford/systemless/commit/d53988ce71f4c581dd4c467a919634429bd438f6))
+* **fonts:** scan-convert binary strikes at pixel centres with dropout control ([#6417](https://github.com/benletchford/systemless/issues/6417)) ([8af7769](https://github.com/benletchford/systemless/commit/8af77698683169d48c8c588e1bf5a1fdddc8b645))
+* keep a locked CODE resource the guest loaded when LoadSeg binds the segment image ([#6368](https://github.com/benletchford/systemless/issues/6368)) ([926b0cd](https://github.com/benletchford/systemless/commit/926b0cdc06be117c17ac20c867e13322ca90a653))
+* **list-manager:** insert columns with LAddColumn on 68K ([#6371](https://github.com/benletchford/systemless/issues/6371)) ([cfe1536](https://github.com/benletchford/systemless/commit/cfe1536619c2d8308ad50a9738fadc095428b272))
+* **menu-manager:** keep MenuSelect tracking the held pointer when its start point misses every title ([#6438](https://github.com/benletchford/systemless/issues/6438)) ([7ebaaa6](https://github.com/benletchford/systemless/commit/7ebaaa630ebe336359a9375ff31307cf3f28c9cd))
+* **menu-manager:** resolve MenuEvent through the 68K _MenuDispatch trap ([#6425](https://github.com/benletchford/systemless/issues/6425)) ([681138d](https://github.com/benletchford/systemless/commit/681138d3c1bef9ab95a9aaefcf2326b001cf86f5))
+* **ppc:** bind class 0 system imports through transition vectors ([#6393](https://github.com/benletchford/systemless/issues/6393)) ([ab142c1](https://github.com/benletchford/systemless/commit/ab142c1c796de0946814e776966903063fc2c952))
+* **ppc:** bind ICLaunchURL so weak-linked callers no longer branch to address zero ([#6410](https://github.com/benletchford/systemless/issues/6410)) ([0d421c7](https://github.com/benletchford/systemless/commit/0d421c7077c47fb72c55a083cc1a6c8055724a01))
+* **ppc:** draw and hit-test useWFont controls as standard buttons, checkboxes and radio buttons ([#6411](https://github.com/benletchford/systemless/issues/6411)) ([874a6e0](https://github.com/benletchford/systemless/commit/874a6e007ad84c360994ef29a936651b0e28bc46))
+* **ppc:** draw dialog icon items from their cicn or ICON resources ([#6385](https://github.com/benletchford/systemless/issues/6385)) ([b301805](https://github.com/benletchford/systemless/commit/b30180549fc05ba20509f29dd59baa292feeb2b9))
+* **ppc:** erase revealed windows with their content color so dialogs stop showing the screen behind them ([#6413](https://github.com/benletchford/systemless/issues/6413)) ([96ec703](https://github.com/benletchford/systemless/commit/96ec7039eee254a090a96b74a50b83e2d1b86206))
+* **ppc:** fill QuickDraw bottleneck records in SetStdProcs and SetStdCProcs ([#6448](https://github.com/benletchford/systemless/issues/6448)) ([b8b7036](https://github.com/benletchford/systemless/commit/b8b7036085568ffda47fb1dc55af565c21cdf8b9))
+* **ppc:** frame altDBoxProc windows with a one-pixel border and two-pixel shadow ([#6442](https://github.com/benletchford/systemless/issues/6442)) ([4916f64](https://github.com/benletchford/systemless/commit/4916f64ba0055ad3cc373623113c2857fc9db683))
+* **ppc:** implement the lowercase stringtonum C-string glue ([#6419](https://github.com/benletchford/systemless/issues/6419)) ([f8cf539](https://github.com/benletchford/systemless/commit/f8cf539cae18716a2fb9df15223dc993f293ece9))
+* **ppc:** let Escape Velocity reach and draw its main menu like Color QuickDraw ([#6373](https://github.com/benletchford/systemless/issues/6373)) ([04a8364](https://github.com/benletchford/systemless/commit/04a83649cb0ce21b989c9fdec97a93016d8872b1))
+* **ppc:** place GetNewWindow and GetNewCWindow windows with the WIND positioning word ([#6429](https://github.com/benletchford/systemless/issues/6429)) ([5f9fc4f](https://github.com/benletchford/systemless/commit/5f9fc4fece1e9235f44b43b035d7d5fc1fe01f2f))
+* **ppc:** resolve tune player imports with a bad component instance result ([#6401](https://github.com/benletchford/systemless/issues/6401)) ([142e5d3](https://github.com/benletchford/systemless/commit/142e5d303ba7dbb8dbe5d05b3a49c2de8b17b473))
+* **ppc:** return from InitPack and InitAllPacks instead of halting ([#6441](https://github.com/benletchford/systemless/issues/6441)) ([24e9e31](https://github.com/benletchford/systemless/commit/24e9e31b8dc51ea82926a5a6d851aecbe39956e3))
+* **ppc:** stop NewCWindow clearing past caller-supplied window storage ([#6428](https://github.com/benletchford/systemless/issues/6428)) ([50806e2](https://github.com/benletchford/systemless/commit/50806e2f4e3274aee0e8fd05677bd057cea52bc9))
+* **quickdraw:** fill MakeRGBPat patterns with their color after ForeColor resolves the port ([#6435](https://github.com/benletchford/systemless/issues/6435)) ([0f677d2](https://github.com/benletchford/systemless/commit/0f677d2517d31100dfefb54501349fbf421ca68b))
+* **quickdraw:** ink 1-bit shapes with the port colours like Color QuickDraw ([#6415](https://github.com/benletchford/systemless/issues/6415)) ([df348e9](https://github.com/benletchford/systemless/commit/df348e97d4a5960a063cd3f82572584cfcea9996))
+* **resource-manager:** keep classic resource names as mac roman bytes ([#6450](https://github.com/benletchford/systemless/issues/6450)) ([b954b49](https://github.com/benletchford/systemless/commit/b954b49c47524fbfe937ceeaaaef3506e7250231))
+* **textedit:** sort TEGetHeight line numbers before pinning them like the ROM ([#6383](https://github.com/benletchford/systemless/issues/6383)) ([b01d3ad](https://github.com/benletchford/systemless/commit/b01d3ad47e12d6aa15917882607976f85112fb65))
+* **window-manager:** erase a revealed window's whole content regardless of its clipRgn ([#6387](https://github.com/benletchford/systemless/issues/6387)) ([c89340e](https://github.com/benletchford/systemless/commit/c89340e17ba3eec50fe6d85a52334d957370967f))
+
 ## [0.125.0](https://github.com/benletchford/systemless/compare/v0.124.0...v0.125.0) (2026-11-16)
 
 
