@@ -1912,6 +1912,54 @@ impl super::TrapDispatcher {
         Some(0xa800 | trap_num)
     }
 
+    /// MenuKey's selection: searches the current menu list for `ch`, leaves
+    /// the chosen menu ID in TheMenu and redraws the bar so the title
+    /// highlight follows. Shared by MenuKey ($A93E) and MenuEvent
+    /// (`_MenuDispatch` $A825 selector $0C), which Mac OS 8 implements by
+    /// handing the event's character to the same MenuKey search.
+    fn menu_key_selection_result(&mut self, bus: &mut MacMemoryBus, ch: u8) -> u32 {
+        let selection = self.current_menu_list(bus).and_then(|menu_list| {
+            menu_list.menu_key_selection(ch, |menu_handle| {
+                menu_key_menu_from_memory(bus, menu_handle)
+            })
+        });
+        let result = selection.map_or(0, |selection| selection.packed_result());
+        // The selected submenu ID remains in TheMenu while the
+        // shared hierarchy resolver redraws its owning regular title.
+        // A miss clears any prior command-key highlight, matching the
+        // native PowerPC gateway.
+        let (selected_menu_id, _) = crate::menu_manager::unpack_menu_choice(result);
+        bus.write_word(addr::THE_MENU, selected_menu_id as u16);
+        if !self.menus.is_empty() {
+            self.draw_menu_bar_to_fb(bus);
+        }
+
+        if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
+            eprintln!(
+                "[MENUKEY] MenuKey ch=${:02X} '{}' -> ${:08X}",
+                ch,
+                if ch.is_ascii_graphic() {
+                    ch as char
+                } else {
+                    '.'
+                },
+                result
+            );
+            for menu in &self.menus {
+                eprintln!(
+                    "[MENUKEY]   menu {} \"{}\" in_bar={} visible={} enabled={} items={}",
+                    menu.id,
+                    menu.title,
+                    menu.in_menu_bar,
+                    menu.visible_in_menu_bar,
+                    menu.enabled,
+                    menu.items.len()
+                );
+            }
+        }
+        result
+    }
+
     fn dispatch_menu_body<C: CpuOps>(
         &mut self, is_tool: bool, trap_num: u16, cpu: &mut C, bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
@@ -3075,6 +3123,37 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
+            // _MenuDispatch ($A825)
+            // Mac OS 8 Menu Manager dispatcher: D0's low byte is the
+            // selector and its high byte the parameter size in words.
+            // FUNCTION MenuEvent(inEvent: EventRecord): UInt32;
+            // Menus.h: THREEWORDINLINE(0x303C, 0x020C, 0xA825).
+            // Stack: SP+0 event pointer (4), SP+4 result (4). Pop 4.
+            // MenuEvent returns MenuKey's packed result for a keyDown or
+            // autoKey event with cmdKey held, and 0 for any other event.
+            (true, 0x025) if cpu.read_reg(Register::D0) & 0xFFFF == 0x020C => {
+                let sp = cpu.read_reg(Register::A7);
+                let result = match crate::menu_manager::evaluate_menu_event_parameters(
+                    bus.read_long(sp),
+                ) {
+                    Some(params) => {
+                        let event = params.event_ptr();
+                        match crate::menu_manager::evaluate_menu_event_candidate(
+                            bus.read_word(event),
+                            bus.read_long(event + 2),
+                            bus.read_word(event + 14),
+                        ) {
+                            Some(ch) => self.menu_key_selection_result(bus, ch),
+                            None => 0,
+                        }
+                    }
+                    None => 0,
+                };
+                bus.write_long(sp + 4, result);
+                cpu.write_reg(Register::A7, sp + 4);
+                Ok(())
+            }
+
             // MenuKey ($A93E)
             // Determines which menu item corresponds to a given keyboard equivalent.
             // FUNCTION MenuKey(ch: CHAR): LONGINT;
@@ -3087,48 +3166,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let params =
                     crate::menu_manager::evaluate_menu_key_parameters(bus.read_word(sp) as u32);
-                let ch = params.key_char();
-
-                let selection = self.current_menu_list(bus).and_then(|menu_list| {
-                    menu_list.menu_key_selection(ch, |menu_handle| {
-                        menu_key_menu_from_memory(bus, menu_handle)
-                    })
-                });
-                let result = selection.map_or(0, |selection| selection.packed_result());
-                // The selected submenu ID remains in TheMenu while the
-                // shared hierarchy resolver redraws its owning regular title.
-                // A miss clears any prior command-key highlight, matching the
-                // native PowerPC gateway.
-                let (selected_menu_id, _) = crate::menu_manager::unpack_menu_choice(result);
-                bus.write_word(addr::THE_MENU, selected_menu_id as u16);
-                if !self.menus.is_empty() {
-                    self.draw_menu_bar_to_fb(bus);
-                }
-
-                if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
-                    eprintln!(
-                        "[MENUKEY] MenuKey ch=${:02X} '{}' -> ${:08X}",
-                        ch,
-                        if ch.is_ascii_graphic() {
-                            ch as char
-                        } else {
-                            '.'
-                        },
-                        result
-                    );
-                    for menu in &self.menus {
-                        eprintln!(
-                            "[MENUKEY]   menu {} \"{}\" in_bar={} visible={} enabled={} items={}",
-                            menu.id,
-                            menu.title,
-                            menu.in_menu_bar,
-                            menu.visible_in_menu_bar,
-                            menu.enabled,
-                            menu.items.len()
-                        );
-                    }
-                }
-
+                let result = self.menu_key_selection_result(bus, params.key_char());
                 bus.write_long(sp + 2, result);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())

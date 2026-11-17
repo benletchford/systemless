@@ -294,7 +294,7 @@
     DefaultTrapRoute::new(0xA822, TrapAdapterId::Resource.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA823, TrapAdapterId::Toolbox.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA824, TrapAdapterId::Nonterminal.mask()),
-    DefaultTrapRoute::new(0xA825, TrapAdapterId::Nonterminal.mask()),
+    DefaultTrapRoute::new(0xA825, TrapAdapterId::Menu.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA826, TrapAdapterId::Menu.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA827, TrapAdapterId::Dialog.mask() | TrapAdapterId::Nonterminal.mask()),
     DefaultTrapRoute::new(0xA828, TrapAdapterId::Dialog.mask() | TrapAdapterId::Nonterminal.mask()),

@@ -3775,6 +3775,84 @@ fn menukey_duplicate_shortcuts_prefer_rightmost_menu() {
     );
 }
 
+fn menu_event_result_and_stack(
+    disp: &mut super::super::TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut crate::memory::MacMemoryBus,
+    what: u16,
+    key: u8,
+    modifiers: u16,
+) -> (u32, u32) {
+    // EventRecord: what (2), message (4), when (4), where (4), modifiers (2).
+    const EVENT: u32 = 0x306E00;
+    bus.write_word(EVENT, what);
+    bus.write_long(EVENT + 2, 0x0000_2D00 | u32::from(key));
+    bus.write_long(EVENT + 6, 0);
+    bus.write_long(EVENT + 10, 0);
+    bus.write_word(EVENT + 14, modifiers);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, 0x020C);
+    bus.write_long(TEST_SP, EVENT);
+    bus.write_long(TEST_SP + 4, 0xDEAD_BEEF);
+    assert!(
+        disp.dispatch_menu(true, 0x025, cpu, bus).unwrap().is_ok(),
+        "MenuEvent should succeed"
+    );
+    (bus.read_long(TEST_SP + 4), cpu.read_reg(Register::A7))
+}
+
+// Menus.h: MenuEvent is _MenuDispatch ($A825) selector $020C. Mac OS 8
+// apps such as Turtle Dice route Command-key events through it once
+// Gestalt reports the Appearance Manager; it must resolve like MenuKey.
+#[test]
+fn menu_event_resolves_command_key_down_like_menu_key() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 220, 0x306700, "File");
+    append_menu_data(
+        &mut disp,
+        &mut cpu,
+        &mut bus,
+        menu,
+        0x306800,
+        "New/N;Open/O",
+    );
+    insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+
+    let (result, sp) = menu_event_result_and_stack(&mut disp, &mut cpu, &mut bus, 3, b'O', 0x0100);
+    assert_eq!(
+        result,
+        (220u32 << 16) | 2,
+        "Cmd-O keyDown selects File/Open"
+    );
+    assert_eq!(sp, TEST_SP + 4, "MenuEvent pops only the event pointer");
+    assert_eq!(
+        bus.read_word(crate::memory::globals::addr::THE_MENU),
+        220,
+        "title highlight like MenuKey"
+    );
+
+    let (result, _) = menu_event_result_and_stack(&mut disp, &mut cpu, &mut bus, 5, b'N', 0x0100);
+    assert_eq!(
+        result,
+        (220u32 << 16) | 1,
+        "autoKey with cmdKey also resolves"
+    );
+}
+
+#[test]
+fn menu_event_ignores_events_without_command_key() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 221, 0x306900, "File");
+    append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x306A00, "New/N");
+    insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+
+    let (result, sp) = menu_event_result_and_stack(&mut disp, &mut cpu, &mut bus, 3, b'N', 0);
+    assert_eq!(result, 0, "plain keyDown is not a menu equivalent");
+    assert_eq!(sp, TEST_SP + 4);
+    let (result, _) = menu_event_result_and_stack(&mut disp, &mut cpu, &mut bus, 1, b'N', 0x0100);
+    assert_eq!(result, 0, "mouseDown is never a menu equivalent");
+}
+
 // IM:I I-355: only enabled items in the current menu list are eligible.
 #[test]
 fn menukey_ignores_uninserted_menu_items() {
