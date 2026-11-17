@@ -1711,6 +1711,10 @@ pub struct TrapDispatcher {
     /// HLE keeps the source RGB so color fills can resolve it for the current
     /// destination depth at draw time.
     pub(crate) makergbpat_colors: FastHashMap<u32, (u16, u16, u16)>,
+    /// Requested color of the MakeRGBPat pattern a FillC* call is currently
+    /// drawing with. Like a generated pen pattern, it supplies the fill's
+    /// pixel instead of the port's resolved fgColor/bkColor fields.
+    pub(crate) generated_fill_rgb: Option<(u16, u16, u16)>,
     /// Bit-pattern PixPats allocated by PenPat and BackPat for color ports.
     pub(crate) owned_bit_pixpats: FastHashSet<u32>,
     /// Extra horizontal pixels added to each non-space character
@@ -3980,6 +3984,7 @@ impl TrapDispatcher {
             pm_fg_color: None,
             pm_bg_color: None,
             makergbpat_colors: HashMap::default(),
+            generated_fill_rgb: None,
             owned_bit_pixpats: Default::default(),
             char_extra: 0,
             bk_pat: [0x00; 8],
