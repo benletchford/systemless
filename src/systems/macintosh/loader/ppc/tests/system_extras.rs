@@ -749,3 +749,17 @@ fn delta_point_subtracts_each_coordinate_into_its_own_word() {
         assert_eq!(loaded.cpu.gpr[3], delta);
     }
 }
+
+#[test]
+fn init_pack_imports_return_without_halting_the_application() {
+    // Domain's PowerPC slice calls InitPack during startup; an unsupported
+    // import halted it before the first frame.
+    for symbol in ["InitPack", "InitAllPacks"] {
+        let target = dispatcher_target_for_import("InterfaceLib", symbol);
+        assert_eq!(target, PpcImportDispatcherTarget::NoOpPreserve, "{symbol}");
+        let mut loaded = loaded_with(symbol.as_bytes());
+        loaded.cpu.gpr[3] = 6;
+        run_test_import(&mut loaded, target);
+        assert_eq!(loaded.cpu.gpr[3], 6, "{symbol}");
+    }
+}
