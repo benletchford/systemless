@@ -13674,10 +13674,18 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp + 4);
                 let aux_ptr = bus.read_long(sp);
-                let aux_handle = self
-                    .control_aux_state(ctrl_handle)
-                    .map(|state| state.handle)
-                    .unwrap_or(0);
+                let aux_handle = match self.control_aux_state(ctrl_handle) {
+                    Some(state) => state.handle,
+                    // A native (PowerPC) process creates its controls in its
+                    // own heap, so they were never tracked here. A 68K CDEF
+                    // it calls through Mixed Mode still asks for their
+                    // AuxCtlRec (WarCraft II's tab and button CDEFs) and
+                    // must see one, as for any System 7 control.
+                    None if self.is_native_process_control(bus, ctrl_handle) => {
+                        self.ensure_control_aux_record(bus, ctrl_handle)
+                    }
+                    None => 0,
+                };
                 if aux_ptr != 0 {
                     bus.write_long(aux_ptr, aux_handle);
                 }
@@ -18595,6 +18603,25 @@ impl super::TrapDispatcher {
             && info.base != 0
             && info.row_bytes != 0;
         is_pixmap.then_some(info)
+    }
+
+    /// Whether `ctrl_handle` names a control record a native (PowerPC)
+    /// process built in its own heap. Such controls carry no classic
+    /// allocation records, so only the heap bounds identify them.
+    fn is_native_process_control(&self, bus: &MacMemoryBus, ctrl_handle: u32) -> bool {
+        // The fixed part of a ControlRecord ends at contrlTitle (offset 40).
+        const CONTROL_RECORD_HEADER_SIZE: u32 = 40;
+        if ctrl_handle == 0 || !Self::guest_range_in_ram(bus, ctrl_handle, 4) {
+            return false;
+        }
+        let ctrl_ptr = bus.read_long(ctrl_handle);
+        if ctrl_ptr == 0 || !Self::guest_range_in_ram(bus, ctrl_ptr, CONTROL_RECORD_HEADER_SIZE) {
+            return false;
+        }
+        let memory_manager = self.process_memory_manager();
+        let memory_manager = memory_manager.borrow();
+        memory_manager.native_heap_contains(ctrl_handle, 4)
+            && memory_manager.native_heap_contains(ctrl_ptr, CONTROL_RECORD_HEADER_SIZE)
     }
 
     fn copy_bitmap_from_pixmap_fields(bus: &MacMemoryBus, pm_ptr: u32) -> CachedCopyBitmapInfo {

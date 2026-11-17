@@ -23864,6 +23864,55 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn get_aux_ctl_gives_a_native_process_control_an_aux_record() {
+        // WarCraft II's 68K tab CDEF calls GetAuxCtl on controls the PowerPC
+        // application created in its native heap, and reads acCTable from
+        // the handle it gets back.
+        let (mut d, mut cpu, mut bus) = setup();
+        let heap_base = bus.alloc(0x200);
+        let ctrl_handle = heap_base;
+        let ctrl_ptr = heap_base + 0x10;
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        let aux_out = bus.alloc(4);
+        let get_aux_ctl = |d: &mut TrapDispatcher,
+                           cpu: &mut super::super::test_helpers::MockCpu,
+                           bus: &mut MacMemoryBus| {
+            let sp = 0x300100;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, aux_out);
+            bus.write_long(sp + 4, ctrl_handle);
+            bus.write_word(sp + 8, 0xFFFF);
+            assert!(d.dispatch_quickdraw(true, 0x244, cpu, bus).unwrap().is_ok());
+            (bus.read_long(aux_out), bus.read_word(sp + 8))
+        };
+
+        // Outside any native heap the handle is unknown: NIL and FALSE.
+        assert_eq!(get_aux_ctl(&mut d, &mut cpu, &mut bus), (0, 0));
+
+        d.process_memory_manager().borrow_mut().publish_native_allocator(
+            crate::process_context::ProcessNativeHeapState {
+                heap_base,
+                heap_cursor: heap_base + 0x100,
+                heap_limit: heap_base + 0x200,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let (aux_handle, result) = get_aux_ctl(&mut d, &mut cpu, &mut bus);
+        assert_ne!(aux_handle, 0);
+        assert_eq!(result, 0x0100);
+        let aux_ptr = bus.read_long(aux_handle);
+        assert_eq!(bus.read_long(aux_ptr + 4), ctrl_handle, "acOwner");
+        assert_ne!(bus.read_long(aux_ptr + 8), 0, "acCTable");
+        // Later calls return the same record.
+        assert_eq!(get_aux_ctl(&mut d, &mut cpu, &mut bus), (aux_handle, 0x0100));
+    }
+
+    #[test]
     fn resolve_copy_bitmap_direct_pixmap_dereferences_offscreen_base_handle() {
         let (d, _cpu, mut bus) = setup();
         let pm_ptr = bus.alloc(64);
