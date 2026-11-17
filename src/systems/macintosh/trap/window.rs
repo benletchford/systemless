@@ -3205,8 +3205,9 @@ impl super::TrapDispatcher {
         // parameter is applied. If that parameter moves it behind existing
         // windows, its freshly drawn pixels have clobbered the windows that
         // remain in front. Add the overlap to each affected window's update
-        // region so its application can repaint the exposed content.
-        if let Some(rect) = covered_rect {
+        // region so its application can repaint the exposed content. A window
+        // created hidden drew nothing, so it clobbered nothing.
+        if let Some(rect) = covered_rect.filter(|_| self.window_visible(bus, window_ptr)) {
             let windows = self.window_list.to_vec();
             for &window in &windows {
                 if window == window_ptr {
