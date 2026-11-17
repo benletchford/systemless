@@ -2224,6 +2224,20 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+        // Moving a visible window runs PaintBehind on the area it leaves:
+        // every other window whose visible part grows has the newly exposed
+        // content erased (when PaintWhite is set) and added to its update
+        // region. Record what each could see before the move.
+        // Inside Macintosh Volume I, I-289 and I-296--I-297.
+        let mut others_visibility_before_move: Vec<(u32, u32)> = Vec::new();
+        if old_structure.is_some() {
+            for window in self.window_list.to_vec() {
+                if window != the_window && self.window_visible(bus, window) {
+                    let visible = self.snapshot_window_visibility(bus, window);
+                    others_visibility_before_move.push((window, visible));
+                }
+            }
+        }
         let local_content_rect = self
             .window_content_rect(bus, the_window)
             .unwrap_or_else(|| self.window_port_rect(bus, the_window));
@@ -2378,6 +2392,17 @@ impl super::TrapDispatcher {
                     tracking.saved_pixels = background;
                 }
             }
+        }
+        let erase_exposed_content = bus.read_word(0x09DC) != 0;
+        for (window, visible_before) in others_visibility_before_move {
+            self.paint_newly_exposed_window(
+                bus,
+                cpu,
+                window,
+                visible_before,
+                true,
+                erase_exposed_content,
+            );
         }
         if let Some((top, left, width, height, pixels)) = moved_pixels {
             self.restore_screen_rect_pixels(

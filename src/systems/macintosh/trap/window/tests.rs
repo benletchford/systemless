@@ -7243,6 +7243,95 @@ fn move_window_reveals_and_invalidates_background_content() {
     );
 }
 
+#[test]
+fn move_window_erases_exposed_background_content_when_paint_white_is_set() {
+    // With PaintWhite set (the default), PaintBehind erases the content a
+    // moved window uncovers in the windows behind before their update events
+    // (Inside Macintosh Volume I, I-289, I-296 to I-297). Apps that repaint
+    // only part of a pane on update, such as THINK Class Library status
+    // panes, otherwise keep the moved window's pixels.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(320 * 240);
+    bus.write_long(0x0824, screen_base);
+    disp.screen_mode = (screen_base, 320, 320, 240, 8);
+    disp.menu_bar_hidden = true;
+    bus.write_word(0x09DC, 1);
+
+    let back = bus.alloc(256);
+    let front = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        back,
+        screen_base,
+        20,
+        20,
+        220,
+        300,
+        "Back",
+        0,
+        true,
+        false,
+        false,
+        0,
+    );
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        front,
+        screen_base,
+        50,
+        60,
+        130,
+        180,
+        "Front",
+        0,
+        true,
+        false,
+        false,
+        0,
+    );
+    let back_vis = bus.read_long(back + 24);
+    assert!(
+        !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+        "precondition: the front structure occludes the back window"
+    );
+    disp.validate_window_rect(&mut bus, back, (0, 0, 200, 280));
+    disp.validate_window_rect(&mut bus, front, (0, 0, 80, 120));
+
+    let exposed_pixel = screen_base + 80 * 320 + 100;
+    bus.write_byte(exposed_pixel, 173);
+
+    disp.move_window_to_global(&mut bus, &mut cpu, front, 190, 140, true);
+
+    assert!(
+        super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+        "the back visRgn must expose the front window's former location"
+    );
+    assert_ne!(
+        bus.read_byte(exposed_pixel),
+        173,
+        "content uncovered in the back window must be erased when PaintWhite is set"
+    );
+    let back_update = bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
+    assert!(
+        super::super::TrapDispatcher::region_contains_point(&bus, back_update, 80, 100),
+        "the newly exposed back content must be invalidated"
+    );
+    assert!(
+        disp.event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == back),
+        "the back window must receive an update event"
+    );
+    assert!(
+        disp.event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == front),
+        "the moved window must redraw any newly visible content"
+    );
+}
+
 // ---------------------------------------------------------------
 // 20. SizeWindow (0x11D) -- resizes window, updates portRect & regions
 //     Stack: SP+0=fUpdate(2), SP+2=h(2), SP+4=w(2), SP+6=theWindow(4)
