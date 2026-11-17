@@ -8456,3 +8456,168 @@ fn draw_dialog_clips_picture_items_to_the_dialog_port() {
         "picture item drew outside the dialog's port"
     );
 }
+
+/// Build a 60x80 dialog holding one icon item at local (10,20)-(42,52) and
+/// draw it over a white screen, returning the loaded app and dialog.
+fn draw_dialog_with_icon_item(
+    icon_id: i16,
+    resources: Vec<([u8; 4], i16, Vec<u8>)>,
+) -> (PpcLoadedApp, u32) {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+    dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&140i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 18];
+    for (offset, value) in [(6, 10i16), (8, 20), (10, 42), (12, 52)] {
+        ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    ditl[14] = PPC_DIALOG_ITEM_ICON | crate::dialog_manager::DIALOG_ITEM_DISABLED_FLAG;
+    ditl[15] = 2;
+    ditl[16..18].copy_from_slice(&icon_id.to_be_bytes());
+    let mut all = vec![(*b"DLOG", 128, dlog), (*b"DITL", 128, ditl)];
+    all.extend(resources);
+    for (res_type, res_id, data) in all {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.run_with_hle_imports(128);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_fill_front_rect(
+        &mut loaded.memory,
+        front,
+        (40, 60, 100, 140),
+        PPC_RGB_WHITE,
+    ));
+    assert!(ppc_draw_dialog(
+        &loaded.window_list,
+        &loaded.param_text,
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        &loaded.controls.records(),
+        &loaded.gworlds,
+        &loaded.screen_clut,
+        &loaded.process_file_system.vfs_resources,
+        *loaded.process_file_system.current_resource_file,
+        dialog,
+    ));
+    (loaded, dialog)
+}
+
+fn dialog_icon_pixel(loaded: &mut PpcLoadedApp, dialog: u32, local: (i32, i32)) -> u16 {
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    // The dialog's content origin is global (60, 40); item rect is local.
+    ppc_quickdraw_read_pixel(
+        &mut loaded.memory,
+        surface.front_buffer,
+        (60 + local.0, 40 + local.1),
+    )
+    .unwrap()
+}
+
+fn dialog_color_pixel(loaded: &mut PpcLoadedApp, dialog: u32, color: PpcRgbColor) -> u16 {
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, color).unwrap()
+}
+
+#[test]
+fn draw_dialog_plots_icon_items_from_their_icon_resource() {
+    // Meteor Storm's display-change alert names ICON 1; its registration
+    // dialog names colour cicn items. Icon items must show the resource,
+    // not an empty placeholder frame.
+    let mut icon = vec![0u8; 128];
+    for row in 0..32 {
+        icon[row * 4] = 0xF0; // columns 0-3 set
+    }
+    let (mut loaded, dialog) = draw_dialog_with_icon_item(300, vec![(*b"ICON", 300, icon)]);
+    let black = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_BLACK);
+    let white = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_WHITE);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (22, 20)), black);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (22, 41)), black);
+    // Clear bits, including the item rect's edge, stay unframed and white.
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (40, 20)), white);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (51, 30)), white);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (35, 10)), white);
+}
+
+#[test]
+fn draw_dialog_prefers_a_masked_cicn_for_icon_items() {
+    // 16x16 8-bit cicn, every pixel index 1 (pure red), mask on the left half.
+    let (width, height) = (16usize, 16usize);
+    let mut cicn = vec![0u8; 82];
+    cicn[4..6].copy_from_slice(&(0x8000u16 | width as u16).to_be_bytes());
+    cicn[10..12].copy_from_slice(&(height as u16).to_be_bytes());
+    cicn[12..14].copy_from_slice(&(width as u16).to_be_bytes());
+    cicn[32..34].copy_from_slice(&8u16.to_be_bytes());
+    cicn[54..56].copy_from_slice(&2u16.to_be_bytes()); // mask rowBytes
+    cicn[68..70].copy_from_slice(&2u16.to_be_bytes()); // 1-bit bitmap rowBytes
+    for _ in 0..height {
+        cicn.extend_from_slice(&[0xFF, 0x00]); // mask
+    }
+    cicn.extend(std::iter::repeat_n(0xFF, 2 * height)); // 1-bit bitmap
+    cicn.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]); // ctSeed, ctFlags, ctSize=1
+    cicn.extend_from_slice(&[0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    cicn.extend_from_slice(&[0, 1, 0xFF, 0xFF, 0, 0, 0, 0]);
+    cicn.extend(std::iter::repeat_n(1u8, width * height));
+    let mut icon = vec![0u8; 128];
+    icon.fill(0xFF);
+    let (mut loaded, dialog) =
+        draw_dialog_with_icon_item(2005, vec![(*b"ICON", 2005, icon), (*b"cicn", 2005, cicn)]);
+    let red = dialog_color_pixel(
+        &mut loaded,
+        dialog,
+        PpcRgbColor {
+            red: 0xFFFF,
+            green: 0,
+            blue: 0,
+        },
+    );
+    let white = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_WHITE);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (22, 12)), red);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (35, 40)), red);
+    // The mask, not the all-black ICON, governs the right half.
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (40, 12)), white);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (51, 40)), white);
+}
+
+#[test]
+fn draw_dialog_falls_back_to_the_system_note_icon() {
+    // No application ICON 1: the Resource Manager would find the System
+    // file's Note icon. Its second row is 0x807FFFFF: column 8 is clear and
+    // column 9 set, which no placeholder frame could produce.
+    let (mut loaded, dialog) = draw_dialog_with_icon_item(1, Vec::new());
+    let black = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_BLACK);
+    let white = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_WHITE);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (29, 11)), black);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (40, 11)), black);
+    assert_eq!(dialog_icon_pixel(&mut loaded, dialog, (28, 11)), white);
+}
+
+#[test]
+fn draw_dialog_leaves_missing_icon_items_blank() {
+    let (mut loaded, dialog) = draw_dialog_with_icon_item(2012, Vec::new());
+    let white = dialog_color_pixel(&mut loaded, dialog, PPC_RGB_WHITE);
+    for point in [(20, 10), (51, 10), (20, 41), (35, 25)] {
+        assert_eq!(dialog_icon_pixel(&mut loaded, dialog, point), white);
+    }
+}
