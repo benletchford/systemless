@@ -259,6 +259,7 @@ pub(super) fn dispatch_gworld_import(
             gworlds.retain(|gworld| gworld.port == PPC_MAIN_GWORLD || gworld.port != port);
             if let Some(record) = disposed {
                 quickdraw_fore_indices.remove(&port);
+                toolbox_startup.port_palettes.remove(&port);
                 quickdraw_op_colors.remove_quickdraw_op_color(port);
                 quickdraw_hilite_colors.remove_quickdraw_hilite_color(port);
                 let allocation = toolbox_startup.gworld_allocations.remove(&port);
@@ -594,6 +595,7 @@ pub(super) fn dispatch_gworld_import(
             if let Some(pixmap_handle) = closed_pixmap_handle {
                 toolbox_startup.indexed_screen_ctables.remove(&pixmap_handle);
                 quickdraw_fore_indices.remove(&port);
+                toolbox_startup.port_palettes.remove(&port);
             }
             quickdraw_op_colors.remove_quickdraw_op_color(port);
             quickdraw_hilite_colors.remove_quickdraw_hilite_color(port);

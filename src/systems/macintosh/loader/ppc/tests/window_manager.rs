@@ -3088,15 +3088,11 @@ fn hle_import_runner_get_new_cwindow_associates_matching_palette() {
     let probe = loaded.run_with_hle_imports(64);
 
     assert_eq!(probe.unsupported_import_index, None);
-    let palette_handle = loaded
-        .memory
-        .read_u32_be(storage_ptr + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET)
+    let palette_handle = loaded.toolbox_startup.port_palettes.get(&storage_ptr).map(|entry| entry.0)
         .unwrap();
     assert_ne!(palette_handle, 0);
     assert_eq!(
-        loaded
-            .memory
-            .read_u16_be(storage_ptr + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
+        loaded.toolbox_startup.port_palettes.get(&storage_ptr).map(|entry| entry.1),
         Some(1)
     );
     let palette = loaded.memory.read_u32_be(palette_handle).unwrap();

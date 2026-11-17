@@ -426,15 +426,11 @@ use super::*;
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded
-                .memory
-                .read_u32_be(window_ptr + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
+            loaded.toolbox_startup.port_palettes.get(&window_ptr).map(|entry| entry.0),
             Some(palette_handle)
         );
         assert_eq!(
-            loaded
-                .memory
-                .read_u16_be(window_ptr + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
+            loaded.toolbox_startup.port_palettes.get(&window_ptr).map(|entry| entry.1),
             Some(0x1234)
         );
 
@@ -443,13 +439,7 @@ use super::*;
         loaded
             .memory
             .add_region(window_ptr, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
-        loaded
-            .memory
-            .write_u32_be(
-                window_ptr + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(window_ptr, (palette_handle, 0));
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -457,6 +447,32 @@ use super::*;
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], palette_handle);
+    }
+
+    #[test]
+    fn palette_association_leaves_bytes_after_window_record_alone() {
+        let pef = synthetic_pef_with_import(b"NSetPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let window_ptr = PPC_DATA_BASE + 0x1000;
+        let tail = window_ptr + PPC_CWINDOW_RECORD_SIZE;
+        let mut storage = vec![0; PPC_CWINDOW_RECORD_SIZE as usize];
+        storage.extend_from_slice(&[0xaa; 8]);
+        loaded.memory.add_region(window_ptr, storage);
+        loaded.cpu.gpr[3] = window_ptr;
+        loaded.cpu.gpr[4] = PPC_DATA_BASE + 0x2000;
+        loaded.cpu.gpr[5] = 0x1234;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let trailing: Vec<u8> = (0..8)
+            .map(|offset| loaded.memory.read_u8(tail + offset).unwrap())
+            .collect();
+        assert_eq!(trailing, vec![0xaa; 8]);
+        assert_eq!(
+            ppc_window_palette_handle(&loaded.toolbox_startup, window_ptr),
+            PPC_DATA_BASE + 0x2000
+        );
     }
 
     #[test]
@@ -519,7 +535,7 @@ use super::*;
             }
         );
         assert_eq!(
-            loaded.toolbox_startup.dialog_palettes.get(&dialog),
+            loaded.toolbox_startup.port_palettes.get(&dialog),
             Some(&(palette, 1))
         );
 
@@ -807,10 +823,7 @@ use super::*;
             loaded.memory.write_u16_be(palette + 18, color[1]).unwrap();
             loaded.memory.write_u16_be(palette + 20, color[2]).unwrap();
             loaded.memory.write_u16_be(palette + 22, 0x0002).unwrap();
-            loaded
-                .memory
-                .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, handle)
-                .unwrap();
+            loaded.toolbox_startup.port_palettes.insert(window, (handle, 0));
         }
         fn run_target(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget) {
             loaded.cpu.pc = loaded.entry_pc;
@@ -944,10 +957,7 @@ use super::*;
         )
         .unwrap();
         loaded.memory.write_u16_be(palette + 38, 0x000c).unwrap();
-        loaded
-            .memory
-            .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, handle)
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(window, (handle, 0));
         loaded.gworlds.push(PpcGWorldRecord {
             ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
             port: window,
@@ -1020,13 +1030,7 @@ use super::*;
             loaded.memory.write_u16_be(info + 4, rgb[2]).unwrap();
             loaded.memory.write_u16_be(info + 6, 0x0002).unwrap();
         }
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                0x1234,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (0x1234, 0));
         loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
         loaded.cpu.gpr[4] = palette_handle;
         loaded.cpu.gpr[5] = 1;
@@ -1100,13 +1104,7 @@ use super::*;
                 .write_u16_be(info_ptr + 4, palette_rgb.blue)
                 .unwrap();
             loaded.memory.write_u16_be(info_ptr + 6, usage).unwrap();
-            loaded
-                .memory
-                .write_u32_be(
-                    PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                    palette_handle,
-                )
-                .unwrap();
+            loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
             loaded.cpu.gpr[3] = 1;
 
             let probe = loaded.run_with_hle_imports(64);
@@ -1146,10 +1144,7 @@ use super::*;
             .active_device_palettes
             .insert(PPC_MAIN_GDEVICE, handle);
         loaded.toolbox_startup.application_palette = 0;
-        loaded
-            .memory
-            .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, 0)
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (0, 0));
         let expected_fore = loaded.quickdraw_fore_color;
         let expected_back = loaded.quickdraw_back_color;
         loaded.cpu.gpr[3] = 0;
@@ -1215,10 +1210,7 @@ use super::*;
             .active_device_palettes
             .insert(PPC_MAIN_GDEVICE, handle);
         loaded.toolbox_startup.application_palette = 0;
-        loaded
-            .memory
-            .write_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, 0)
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (0, 0));
         let original = ppc_read_rgb_color(&mut loaded.memory, palette + 16).unwrap();
         loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
         loaded.cpu.gpr[4] = ctable_handle;
@@ -1266,13 +1258,7 @@ use super::*;
         loaded.memory.write_u16_be(info_ptr + 2, 0xf331).unwrap();
         loaded.memory.write_u16_be(info_ptr + 4, 0xcccc).unwrap();
         loaded.memory.write_u16_be(info_ptr + 6, 0x000c).unwrap();
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
         loaded.cpu.gpr[3] = u32::from(entry);
 
         let probe = loaded.run_with_hle_imports(64);
@@ -1450,13 +1436,7 @@ use super::*;
             loaded.memory.write_u16_be(info_ptr + 4, rgb[2]).unwrap();
             loaded.memory.write_u16_be(info_ptr + 6, 0x0002).unwrap();
         }
-        loaded
-            .memory
-            .write_u32_be(
-                window_ptr + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(window_ptr, (palette_handle, 0));
         loaded
             .memory
             .write_u8(window_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
@@ -1502,10 +1482,7 @@ use super::*;
         let back_window = PPC_DATA_BASE + 0x4000;
         loaded.memory.add_region(back_window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
         loaded.memory.write_u8(back_window + PPC_CWINDOW_VISIBLE_OFFSET, 1).unwrap();
-        loaded.memory.write_u32_be(
-            back_window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-            palette_handle,
-        ).unwrap();
+        loaded.toolbox_startup.port_palettes.insert(back_window, (palette_handle, 0));
         loaded.window_list.push(back_window);
         loaded.event_queue.clear();
         loaded.cpu.gpr[3] = palette_handle;
@@ -1570,13 +1547,7 @@ use super::*;
         .unwrap();
         loaded.memory.write_u16_be(palette + 22, 0x0002).unwrap();
         for window in [background, offscreen] {
-            loaded
-                .memory
-                .write_u32_be(
-                    window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                    palette_handle,
-                )
-                .unwrap();
+            loaded.toolbox_startup.port_palettes.insert(window, (palette_handle, 0));
         }
         let original = *loaded.screen_clut;
 
@@ -2337,10 +2308,7 @@ use super::*;
             &other_clut,
             &mut loaded.toolbox_startup,
         );
-        loaded
-            .memory
-            .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, current)
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(window, (current, 0));
         let mappings = (1..=254)
             .map(|index| PpcPaletteEntryMapping::AnimatedReserved(index))
             .collect::<Vec<_>>();
@@ -2710,13 +2678,7 @@ use super::*;
             .memory
             .write_u16_be(ctable + 14, animated[2])
             .unwrap();
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (handle, 0));
 
         assert!(with_test_screen_clut!(
             loaded,
@@ -2920,13 +2882,7 @@ use super::*;
                 .write_u16_be(ctable + 8 + entry * 8, entry as u16)
                 .unwrap();
         }
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (handle, 0));
         let linked = ppc_copy_bits_palette_index_map(
             &mut loaded.memory,
             ctable_handle,
@@ -3079,13 +3035,7 @@ use super::*;
                 &mut loaded.toolbox_startup,
             )
         ));
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (handle, 0));
         loaded.cpu.gpr[3] = 0;
         loaded.run_with_hle_imports(64);
         assert_eq!(
@@ -3125,13 +3075,7 @@ use super::*;
         loaded.memory.write_u32_be(palette_handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 1).unwrap();
         loaded.memory.write_u16_be(palette + 22, 0x0004).unwrap();
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
         loaded
             .memory
             .write_u32_be(other_gdevice, other_device)
@@ -3218,10 +3162,7 @@ use super::*;
             pixels_no_purge: false,
         });
         for port in [PPC_MAIN_GWORLD, window] {
-            loaded
-                .memory
-                .write_u32_be(port + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, old_palette)
-                .unwrap();
+            loaded.toolbox_startup.port_palettes.insert(port, (old_palette, 0));
         }
         loaded
             .toolbox_startup
@@ -3258,10 +3199,7 @@ use super::*;
                 .memory
                 .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
                 .unwrap();
-            loaded
-                .memory
-                .write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, palette)
-                .unwrap();
+            loaded.toolbox_startup.port_palettes.insert(window, (palette, 0));
             loaded.gworlds.push(PpcGWorldRecord {
                 ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
                 port: window,
@@ -3436,13 +3374,7 @@ use super::*;
             loaded.memory.write_u16_be(spec + 4, rgb[1]).unwrap();
             loaded.memory.write_u16_be(spec + 6, rgb[2]).unwrap();
         }
-        loaded
-            .memory
-            .write_u32_be(
-                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
-                palette_handle,
-            )
-            .unwrap();
+        loaded.toolbox_startup.port_palettes.insert(PPC_MAIN_GWORLD, (palette_handle, 0));
         let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
         loaded
             .memory
