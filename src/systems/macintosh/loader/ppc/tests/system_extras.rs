@@ -710,6 +710,7 @@ fn absent_manager_imports_return_their_documented_errors() {
         ("InterfaceLib", "GetNextFOND"),
         ("QuickTimeLib", "MCIsPlayerEvent"),
         ("Translation", "GetFileTranslationPaths"),
+        ("InterfaceLib", "SCSIStat"),
     ] {
         assert_eq!(
             dispatcher_target_for_import(library, symbol),
