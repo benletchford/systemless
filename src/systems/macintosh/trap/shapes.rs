@@ -1610,6 +1610,13 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+        // FillC* calls with a MakeRGBPat pattern likewise fill with the
+        // pattern's requested color, not the port's resolved fgColor pixel.
+        let generated_fill_rgb = if is_color && matches!(op, ShapeOp::Fill(_)) {
+            self.generated_fill_rgb
+        } else {
+            None
+        };
         let effective_pn_pat = if generated_pen_rgb.is_some() {
             [0xFF; 8]
         } else {
@@ -1622,9 +1629,11 @@ impl super::TrapDispatcher {
         };
         let effective_fg_color = generated_pen_rgb
             .or(generated_back_rgb)
+            .or(generated_fill_rgb)
             .unwrap_or(self.fg_color);
         let effective_bg_color = generated_pen_rgb
             .or(generated_back_rgb)
+            .or(generated_fill_rgb)
             .unwrap_or(self.bg_color);
 
         if trace_menu_redraw_enabled()
@@ -1833,7 +1842,7 @@ impl super::TrapDispatcher {
                 pixel_size,
                 &port_clut,
                 is_color && (resolved_color_fields & 0x01) != 0,
-                generated_pen_rgb.is_some(),
+                generated_pen_rgb.is_some() || generated_fill_rgb.is_some(),
             );
             bg_idx = indexed_shape_color_index(
                 bus.read_long(port + 84),
@@ -1841,7 +1850,7 @@ impl super::TrapDispatcher {
                 pixel_size,
                 &port_clut,
                 is_color && (resolved_color_fields & 0x02) != 0,
-                generated_back_rgb.is_some(),
+                generated_back_rgb.is_some() || generated_fill_rgb.is_some(),
             );
             if pixel_size == 1 {
                 one_bit_inks = OneBitInks::for_color_port(

@@ -18670,6 +18670,51 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn makergbpat_fill_ignores_port_resolved_foreground_pixel() {
+        // IM:V V-73: a MakeRGBPat pattern approximates its requested color
+        // whatever the port's colors are. Lose Your Marbles! sets ForeColor
+        // to black (resolving fgColor) and then fills its Help tabs with a
+        // gray MakeRGBPat pattern; those fills must stay gray, not black.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+        let requested = (0xCCCD, 0xCCCD, 0xCCCD);
+        d.device_clut.replace([[0xFFFF, 0xFFFF, 0xFFFF]; 256]);
+        d.device_clut.set_entry(7, [requested.0, requested.1, requested.2]);
+        d.device_clut.set_entry(255, [0, 0, 0]);
+        let port = *d.current_port;
+        bus.write_long(port + 80, 255);
+        bus.write_long(port + 84, 0);
+        d.resolved_port_color_fields.insert(port, 0x03);
+
+        let color_ptr = bus.alloc(6);
+        bus.write_word(color_ptr, requested.0);
+        bus.write_word(color_ptr + 2, requested.1);
+        bus.write_word(color_ptr + 4, requested.2);
+        let rect_ptr = bus.alloc(8);
+        for (trap, top) in [(0x20E, 10), (0x20F, 30)] {
+            let pp_handle =
+                make_pixpat_handle(&mut bus, [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, color_ptr);
+            bus.write_long(TEST_SP + 4, pp_handle);
+            assert!(d.dispatch_quickdraw(true, 0x20D, &mut cpu, &mut bus).unwrap().is_ok());
+
+            write_rect(&mut bus, rect_ptr, top, 10, top + 16, 26);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pp_handle);
+            bus.write_long(TEST_SP + 4, rect_ptr);
+            assert!(d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(
+                read_surface_pixel(&bus, screen_base, row_bytes, 18, top as u32 + 8),
+                7,
+                "trap ${trap:03X} must fill with the MakeRGBPat color, not the port's black fgColor"
+            );
+        }
+        assert_eq!(bus.read_long(port + 80), 255, "the port's fgColor is untouched");
+        assert!(d.generated_fill_rgb.is_none());
+    }
+
+    #[test]
     fn makergbpat_constructs_documented_rgb_pattern_backing() {
         // IM:V V-73: an RGB PixPat has an 8-by-8 patMap with rowBytes=2
         // and color backing that remains valid until DisposPixPat.

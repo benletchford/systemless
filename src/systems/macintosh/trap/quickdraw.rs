@@ -11243,6 +11243,7 @@ impl super::TrapDispatcher {
                                         self.fg_color = rgb;
                                         self.bg_color = rgb;
                                     }
+                                    self.generated_fill_rgb = rgb;
                                 }
                             } else {
                                 bus.read_bytes_into(port + 40, &mut pattern);
@@ -11258,6 +11259,7 @@ impl super::TrapDispatcher {
                     0x0BD => self.draw_arc(cpu, bus, &r, previous_argument, last_argument, op),
                     _ => self.draw_rect(cpu, bus, &r, op),
                 }
+                self.generated_fill_rgb = None;
                 self.fg_color = saved_fg;
                 self.bg_color = saved_bg;
                 Ok(())
@@ -13924,7 +13926,9 @@ impl super::TrapDispatcher {
                     let saved_bg = self.bg_color;
                     self.fg_color = rgb;
                     self.bg_color = rgb;
+                    self.generated_fill_rgb = Some(rgb);
                     self.draw_rect(cpu, bus, &r, ShapeOp::Fill([0xFF; 8]));
+                    self.generated_fill_rgb = None;
                     self.fg_color = saved_fg;
                     self.bg_color = saved_bg;
                     true
@@ -14023,7 +14027,9 @@ impl super::TrapDispatcher {
                         self.fg_color = rgb;
                         self.bg_color = rgb;
                     }
+                    self.generated_fill_rgb = generated_rgb;
                     self.draw_oval(cpu, bus, &r, ShapeOp::Fill(pat));
+                    self.generated_fill_rgb = None;
                     self.fg_color = saved_fg;
                     self.bg_color = saved_bg;
                 }
@@ -14076,7 +14082,9 @@ impl super::TrapDispatcher {
                         self.fg_color = rgb;
                         self.bg_color = rgb;
                     }
+                    self.generated_fill_rgb = generated_rgb;
                     self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Fill(pat));
+                    self.generated_fill_rgb = None;
                     self.fg_color = saved_fg;
                     self.bg_color = saved_bg;
                 }
@@ -14131,7 +14139,9 @@ impl super::TrapDispatcher {
                         self.fg_color = rgb;
                         self.bg_color = rgb;
                     }
+                    self.generated_fill_rgb = generated_rgb;
                     self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Fill(pat));
+                    self.generated_fill_rgb = None;
                     self.fg_color = saved_fg;
                     self.bg_color = saved_bg;
                 }
@@ -14183,7 +14193,9 @@ impl super::TrapDispatcher {
                             self.fg_color = rgb;
                             self.bg_color = rgb;
                         }
+                        self.generated_fill_rgb = generated_rgb;
                         self.draw_rgn(cpu, bus, rgn_handle, ShapeOp::Fill(pat));
+                        self.generated_fill_rgb = None;
                         self.fg_color = saved_fg;
                         self.bg_color = saved_bg;
                     }
@@ -14235,7 +14247,9 @@ impl super::TrapDispatcher {
                         self.fg_color = rgb;
                         self.bg_color = rgb;
                     }
+                    self.generated_fill_rgb = generated_rgb;
                     self.draw_poly(cpu, bus, poly_handle, ShapeOp::Fill(pat));
+                    self.generated_fill_rgb = None;
                     self.fg_color = saved_fg;
                     self.bg_color = saved_bg;
                 }
