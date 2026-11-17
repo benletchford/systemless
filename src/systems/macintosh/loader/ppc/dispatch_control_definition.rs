@@ -69,7 +69,8 @@ pub(super) fn ppc_control_definition_resource(
     resource_file: i16,
     record: &PpcControlRecord,
 ) -> Option<usize> {
-    if matches!(record.proc_id, 0 | 1 | 2 | 16) || (1008..=1023).contains(&record.proc_id) {
+    let (kind, _) = crate::control_manager::standard_control_kind(record.proc_id);
+    if matches!(kind, 0 | 1 | 2 | 16) || (1008..=1023).contains(&record.proc_id) {
         return None;
     }
     let handle = memory.read_u32_be(record.pointer + 24).unwrap_or(0);
