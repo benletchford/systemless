@@ -411,7 +411,6 @@ impl PpcLoadedApp {
         let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
         let mut idle_poll_counts = HashMap::<u32, u32>::new();
         let mut tick_count_idle_poll = PpcTickCountIdlePollState::default();
-        let mut os_event_idle_poll = PpcOsEventIdlePollState::default();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut interrupt_return_work = None;
         let mut fetch_observer = PpcHleFetchObserver {
@@ -2226,10 +2225,14 @@ impl PpcLoadedApp {
                             action,
                             ppc_import_extra_cycles_for_binding(binding),
                         );
-                        let action = if binding.dispatcher_target
-                            == PpcImportDispatcherTarget::GetOSEvent
-                        {
-                            ppc_os_event_idle_poll_action(
+                        let action = if matches!(
+                            binding.dispatcher_target,
+                            PpcImportDispatcherTarget::GetOSEvent
+                                | PpcImportDispatcherTarget::GetNextEvent(
+                                    PpcEventPollOperation::GetNextEvent
+                                )
+                        ) {
+                            ppc_event_idle_poll_action(
                                 action,
                                 cpu.lr,
                                 import_tick_count,
@@ -2239,7 +2242,7 @@ impl PpcLoadedApp {
                                     elapsed,
                                 )
                                 .min(max_cycles.saturating_sub(elapsed)),
-                                &mut os_event_idle_poll,
+                                &mut toolbox_startup.event_idle_poll,
                             )
                         } else {
                             action
