@@ -2921,18 +2921,9 @@ pub(super) fn ppc_get_new_cwindow(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
-    // The template is loaded as a resource (Inside Macintosh I-283), and
-    // GetResource returns the existing handle for a loaded resource (I-119),
-    // so a 'WIND' the application has already loaded supplies its handle's
-    // current bytes: applications commonly size the template to the screen
+    // Applications commonly size an already-loaded 'WIND' to the screen
     // before creating the window.
-    let bytes = (resource.handle != 0)
-        .then(|| memory.read_u32_be(resource.handle))
-        .flatten()
-        .filter(|ptr| *ptr != 0)
-        .and_then(|ptr| ppc_memory_read_bytes(memory, ptr, resource.data.len() as u32))
-        .map(Into::into)
-        .unwrap_or_else(|| resource.data.clone());
+    let bytes = ppc_vfs_resource_current_bytes(memory, resource);
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
     };
@@ -4220,7 +4211,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 *last_resource_error = PPC_RES_NOT_FOUND_ERR;
                 return Some(PpcImportAction::Return(0));
             };
-            let bytes = vfs_resources[index].data.clone();
+            let bytes = ppc_vfs_resource_current_bytes(memory, &vfs_resources[index]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
