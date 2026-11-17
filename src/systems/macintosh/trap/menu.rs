@@ -2768,7 +2768,26 @@ impl super::TrapDispatcher {
                     // supplied by the application; the Menu Manager uses it
                     // to choose the initial menu before it owns the tracking
                     // loop. Inside Macintosh Volume I, I-355.
-                    if let Some(menu_idx) = self.current_menu_title_hit_test(bus, pt_h) {
+                    //
+                    // A start point outside every title does not end the
+                    // call: the ROM's MSLoop (MenuMgr.a) leaves no menu down,
+                    // then keeps reading GetMouse while WaitMouseUp reports
+                    // the button held. Mahjong passes (0,0) for a click on
+                    // a title, so take the live pointer that loop would see.
+                    let live_title_hit = if self.menu_tracking_button_down(bus) {
+                        let (mouse_v, mouse_h) = self.menu_tracking_mouse_pos(bus);
+                        let mbar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+                        if (0..mbar_height).contains(&mouse_v) {
+                            self.current_menu_title_hit_test(bus, mouse_h)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(menu_idx) =
+                        self.current_menu_title_hit_test(bus, pt_h).or(live_title_hit)
+                    {
                         self.record_menuselect_input_trace(
                             "start",
                             Some((pt_v, pt_h)),
