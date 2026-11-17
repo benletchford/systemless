@@ -1487,7 +1487,7 @@ impl super::TrapDispatcher {
 
         let name = (name_ptr != 0)
             .then(|| bus.read_pstring(name_ptr))
-            .and_then(|name| String::from_utf8(name).ok())
+            .map(|name| decode_mac_roman(&name))
             .filter(|name| !name.is_empty());
         let inserted = self.with_resource_manager_mut(|resource_manager| {
             let Some(resources) = resource_manager.resources.as_mut() else {
@@ -2975,7 +2975,7 @@ impl super::TrapDispatcher {
                 for (i, byte) in name_bytes.iter_mut().enumerate() {
                     *byte = bus.read_byte(name_ptr + 1 + i as u32);
                 }
-                let name = String::from_utf8_lossy(&name_bytes).to_string();
+                let name = decode_mac_roman(&name_bytes);
                 eprintln!("[TRAP] Get1NamedResource('{}', \"{}\")", type_str, name);
 
                 // Look up by (type, name) in the named resources index
@@ -3262,7 +3262,10 @@ impl super::TrapDispatcher {
                         bus.write_long(type_ptr, u32::from_be_bytes(res_type));
                     }
                     if name_ptr != 0 {
-                        bus.write_pstring(name_ptr, name.as_deref().unwrap_or("").as_bytes());
+                        bus.write_pstring(
+                            name_ptr,
+                            &encode_mac_roman_lossy(name.as_deref().unwrap_or("")),
+                        );
                     }
                     bus.write_word(0x0A60, 0);
                 } else {
@@ -3515,7 +3518,7 @@ impl super::TrapDispatcher {
                         let home_refnum = self.resource_handle_files.get(&handle).copied();
                         let new_name = (name_ptr != 0)
                             .then(|| bus.read_pstring(name_ptr))
-                            .and_then(|bytes| String::from_utf8(bytes).ok())
+                            .map(|bytes| decode_mac_roman(&bytes))
                             .filter(|name| !name.is_empty());
                         let moved_data = self.with_resource_manager_mut(|resource_manager| {
                             // Update the resource ID in loaded_handles for the live
@@ -3642,7 +3645,7 @@ impl super::TrapDispatcher {
                     let refnum = self.current_resource_refnum();
                     let name = (name_ptr != 0)
                         .then(|| bus.read_pstring(name_ptr))
-                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .map(|bytes| decode_mac_roman(&bytes))
                         .filter(|name| !name.is_empty());
                     self.with_resource_manager_mut(|resource_manager| {
                         // Register in loaded_handles and resource_handle_files

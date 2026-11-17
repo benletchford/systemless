@@ -10474,7 +10474,7 @@ impl super::TrapDispatcher {
                 for (i, byte) in name_bytes.iter_mut().enumerate() {
                     *byte = bus.read_byte(name_ptr + 1 + i as u32);
                 }
-                let name = String::from_utf8_lossy(&name_bytes).to_string();
+                let name = super::types::decode_mac_roman(&name_bytes);
                 eprintln!("[TRAP] GetNamedResource('{}', \"{}\")", type_str, name);
 
                 let handle = self
@@ -15624,7 +15624,10 @@ impl super::TrapDispatcher {
                             bus.write_word(res_id_ptr, selected_id as u16);
                         }
                         if res_name_ptr != 0 {
-                            bus.write_pstring(res_name_ptr, selected_name.as_bytes());
+                            bus.write_pstring(
+                                res_name_ptr,
+                                &super::types::encode_mac_roman_lossy(&selected_name),
+                            );
                         }
                         if data_ref_changed_ptr != 0 {
                             bus.write_byte(data_ref_changed_ptr, 0);

@@ -3256,6 +3256,83 @@ fn get_res_info_preserves_duplicate_resource_names_by_id() {
     }
 }
 
+/// Single-resource fork whose reference carries the raw Pascal `name` bytes.
+fn make_named_single_resource_fork_bytes(
+    res_type: [u8; 4],
+    res_id: i16,
+    name: &[u8],
+    data: &[u8],
+) -> Vec<u8> {
+    let mut bytes = make_single_resource_fork_bytes(res_type, res_id, data);
+    let map_offset = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let name_list_offset = (bytes.len() - map_offset) as u16;
+    let map_length = u32::from(name_list_offset) + 1 + name.len() as u32;
+    for header in [0, map_offset] {
+        bytes[header + 12..header + 16].copy_from_slice(&map_length.to_be_bytes());
+    }
+    bytes[map_offset + 26..map_offset + 28].copy_from_slice(&name_list_offset.to_be_bytes());
+    let ref_list_start = map_offset + 40;
+    bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0u16.to_be_bytes());
+    bytes.push(name.len() as u8);
+    bytes.extend_from_slice(name);
+    bytes
+}
+
+// More Macintosh Toolbox (1993), 1-75 and 1-81: resource names are Str255
+// byte strings. Armor Alley passes the name it gave GetNamedResource back to
+// GetResInfo as the VAR name buffer; "New Game\xC9" ("New Game…") is nine
+// Mac Roman bytes, so writing it back as UTF-8 overran the buffer into the
+// adjacent "Difficulty" string and the game quit with "A resource is missing".
+#[test]
+fn get_res_info_round_trips_mac_roman_resource_names_in_place() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let name = b"New Game\xC9";
+    let bytes = make_named_single_resource_fork_bytes(*b"DLOG", 133, name, &[0x5A; 4]);
+    let fork = crate::managers::resource::ResourceFork::parse(&bytes).unwrap();
+    disp.load_resources(&fork, &mut bus);
+
+    let name_ptr = 0x200000u32;
+    bus.write_pstring(name_ptr, name);
+    let next_ptr = name_ptr + 1 + name.len() as u32;
+    bus.write_pstring(next_ptr, b"Difficulty");
+
+    bus.write_long(TEST_SP, name_ptr);
+    bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"DLOG"));
+    bus.write_long(TEST_SP + 8, 0);
+    call_trap_word(&mut disp, 0xA9A1, &mut cpu, &mut bus).unwrap(); // GetNamedResource
+    let handle = bus.read_long(TEST_SP + 8);
+    assert_ne!(handle, 0, "GetNamedResource must match the Mac Roman name");
+
+    cpu.write_reg(Register::A7, TEST_SP);
+    let type_ptr = 0x200100u32;
+    let id_ptr = 0x200104u32;
+    bus.write_long(TEST_SP, name_ptr);
+    bus.write_long(TEST_SP + 4, type_ptr);
+    bus.write_long(TEST_SP + 8, id_ptr);
+    bus.write_long(TEST_SP + 12, handle);
+    call_trap_word(&mut disp, 0xA9A8, &mut cpu, &mut bus).unwrap(); // GetResInfo
+
+    assert_eq!(bus.read_word(0x0A60), 0);
+    assert_eq!(bus.read_word(id_ptr) as i16, 133);
+    assert_eq!(bus.read_long(type_ptr), u32::from_be_bytes(*b"DLOG"));
+    assert_eq!(bus.read_pstring(name_ptr), name);
+    assert_eq!(bus.read_pstring(next_ptr), b"Difficulty");
+
+    // Another high-bit byte ("New GameÈ") is a different name; a lossy
+    // UTF-8 decode folded both to U+FFFD and matched them.
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_pstring(next_ptr, b"New Game\xE9");
+    bus.write_long(TEST_SP, next_ptr);
+    bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"DLOG"));
+    bus.write_long(TEST_SP + 8, 0xFFFF_FFFF);
+    call_trap_word(&mut disp, 0xA820, &mut cpu, &mut bus).unwrap(); // Get1NamedResource
+    assert_eq!(
+        bus.read_long(TEST_SP + 8),
+        0,
+        "a different name must not match"
+    );
+}
+
 // ================================================================
 // 7c. GetResInfo (0x1A8) — unnamed resource clears stale Str255
 // ================================================================
