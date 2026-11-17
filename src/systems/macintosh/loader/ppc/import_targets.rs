@@ -954,6 +954,14 @@ pub enum PpcImportDispatcherTarget {
     DrawCString,
     /// openresfile: OpenResFile with a C-string file name.
     OpenResFileCString,
+    /// relstring: RelString with C-string arguments.
+    RelCString,
+    /// getfnum: GetFNum with a C-string family name.
+    GetFNumCString,
+    /// getfontname: GetFontName writing a C string.
+    GetFontNameCString,
+    /// stringwidth: StringWidth with a C-string argument.
+    StringWidthCString,
     RelString,
     InitEditionPackVersion,
     StuffHex,
@@ -5362,6 +5370,10 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "upperstring") => PpcImportDispatcherTarget::UpperCString,
         ("InterfaceLib", "drawstring") => PpcImportDispatcherTarget::DrawCString,
         ("InterfaceLib", "openresfile") => PpcImportDispatcherTarget::OpenResFileCString,
+        ("InterfaceLib", "relstring") => PpcImportDispatcherTarget::RelCString,
+        ("InterfaceLib", "getfnum") => PpcImportDispatcherTarget::GetFNumCString,
+        ("InterfaceLib", "getfontname") => PpcImportDispatcherTarget::GetFontNameCString,
+        ("InterfaceLib", "stringwidth") => PpcImportDispatcherTarget::StringWidthCString,
         ("InterfaceLib" | "CarbonLib", "RelString") => PpcImportDispatcherTarget::RelString,
         ("InterfaceLib", "InitEditionPackVersion") => {
             PpcImportDispatcherTarget::InitEditionPackVersion

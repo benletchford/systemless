@@ -11,6 +11,10 @@ fn c_string_glue_and_ppostevent_bind_to_dispatchers() {
         ("upperstring", PpcImportDispatcherTarget::UpperCString),
         ("drawstring", PpcImportDispatcherTarget::DrawCString),
         ("openresfile", PpcImportDispatcherTarget::OpenResFileCString),
+        ("relstring", PpcImportDispatcherTarget::RelCString),
+        ("getfnum", PpcImportDispatcherTarget::GetFNumCString),
+        ("getfontname", PpcImportDispatcherTarget::GetFontNameCString),
+        ("stringwidth", PpcImportDispatcherTarget::StringWidthCString),
     ] {
         assert_eq!(dispatcher_target_for_import("InterfaceLib", symbol), target);
     }
@@ -57,6 +61,86 @@ fn upperstring_uppercases_a_c_string_in_place() {
     let mut out = [0u8; 10];
     loaded.memory.read_bytes_into(s, &mut out).unwrap();
     assert_eq!(&out, b"E1L1.MAP\0x");
+}
+
+#[test]
+fn relstring_orders_c_strings_like_relstring() {
+    let pef = synthetic_pef_with_import(b"relstring");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let a = PPC_DATA_BASE + 0x1000;
+    let b = a + 0x100;
+    loaded.memory.add_region(a, vec![0; 0x200]);
+    loaded.memory.write_bytes(a, b"apple\0").unwrap();
+    loaded.memory.write_bytes(b, b"banana\0").unwrap();
+    loaded.cpu.gpr[3] = a;
+    loaded.cpu.gpr[4] = b;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+}
+
+#[test]
+fn relstring_with_an_unterminated_string_returns_instead_of_halting() {
+    let pef = synthetic_pef_with_import(b"relstring");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let a = PPC_DATA_BASE + 0x1000;
+    let b = a + 0x200;
+    loaded.memory.add_region(a, vec![b'x'; 0x400]);
+    loaded.memory.write_bytes(b, b"x\0").unwrap();
+    loaded.cpu.gpr[3] = a;
+    loaded.cpu.gpr[4] = b;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn getfnum_and_getfontname_use_c_strings() {
+    let pef = synthetic_pef_with_import(b"getfnum");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let name = PPC_DATA_BASE + 0x1000;
+    let out = name + 0x100;
+    loaded.memory.add_region(name, vec![0xff; 0x200]);
+    loaded.memory.write_bytes(name, b"Geneva\0").unwrap();
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.memory.read_u16_be(out), Some(3));
+    let mut restored = [0u8; 7];
+    loaded.memory.read_bytes_into(name, &mut restored).unwrap();
+    assert_eq!(&restored, b"Geneva\0");
+
+    let pef = synthetic_pef_with_import(b"getfontname");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(out, vec![0xff; 0x40]);
+    loaded.cpu.gpr[3] = 3;
+    loaded.cpu.gpr[4] = out;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    let mut written = [0u8; 7];
+    loaded.memory.read_bytes_into(out, &mut written).unwrap();
+    assert_eq!(&written, b"Geneva\0");
+}
+
+#[test]
+fn stringwidth_measures_a_c_string_and_restores_it() {
+    let pef = synthetic_pef_with_import(b"stringwidth");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, vec![0; 0x40]);
+    loaded.memory.write_bytes(text, b"Width\0").unwrap();
+    loaded.cpu.gpr[3] = text;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.cpu.gpr[3] > 0);
+    let mut restored = [0u8; 6];
+    loaded.memory.read_bytes_into(text, &mut restored).unwrap();
+    assert_eq!(&restored, b"Width\0");
 }
 
 #[test]
