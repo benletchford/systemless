@@ -4025,6 +4025,12 @@ impl super::TrapDispatcher {
         let top = min_local_top.map_or(top, |min_top| top.max(min_top));
         let old_port = *self.current_port;
         let old_gdevice = *self.current_gdevice;
+        // PaintOne erases the content region from the Window Manager port,
+        // so the application's clipRgn (often still sized for an earlier
+        // portRect) must not narrow the erase. boot3 WindowMgr.a, PaintOneGuts.
+        let old_clip = bus.read_long(window_ptr + 28);
+        let content_clip = Self::alloc_rect_region_handle(bus, Some((top, left, bottom, right)));
+        bus.write_long(window_ptr + 28, content_clip);
         self.set_current_port_state(bus, cpu, window_ptr, None);
         self.draw_rect(
             cpu,
@@ -4037,7 +4043,11 @@ impl super::TrapDispatcher {
             },
             ShapeOp::Erase,
         );
+        bus.write_long(window_ptr + 28, old_clip);
         self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
+        let pointer = bus.read_long(content_clip);
+        bus.free(pointer);
+        bus.free(content_clip);
     }
 
     /// Capture visibility from the stacking geometry, independently of any

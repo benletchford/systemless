@@ -4311,6 +4311,49 @@ fn showhide_true_keeps_kiosk_stage_for_full_screen_window_created_hidden() {
     );
 }
 
+#[test]
+fn show_window_erases_whole_content_despite_a_narrower_application_clip() {
+    // Spin Doctor builds its alert hidden, clips to the window's first
+    // 66-pixel portRect, grows it with SizeWindow and then shows it. PaintOne
+    // erases the content region from the Window Manager port, so the stale
+    // application clipRgn must not leave the lower content unerased.
+    // boot3 WindowMgr.a, PaintOneGuts; Inside Macintosh Volume I, I-285.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, screen_base, 40, 235, 124, 564, "", 1, false, true, false, 0,
+    );
+    let clip = bus.read_long(window + 28);
+    super::super::TrapDispatcher::write_region_handle_rect(&mut bus, clip, Some((0, 0, 66, 329)));
+    let inside_clip = screen_base + (40 + 30) * 800 + 300;
+    let below_clip = screen_base + (40 + 75) * 800 + 300;
+    let outside_window = screen_base + (124 + 20) * 800 + 300;
+    for probe in [inside_clip, below_clip, outside_window] {
+        bus.write_byte(probe, 0x42);
+    }
+
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, window);
+    dispatch(&mut disp, 0x115, &mut cpu, &mut bus).unwrap().unwrap();
+
+    assert_eq!(bus.read_byte(inside_clip), 0x00);
+    assert_eq!(
+        bus.read_byte(below_clip),
+        0x00,
+        "ShowWindow must erase content below the application's clipRgn"
+    );
+    assert_eq!(bus.read_byte(outside_window), 0x42, "the erase stays inside the content");
+    assert_eq!(bus.read_long(window + 28), clip, "the application keeps its clipRgn handle");
+    assert_eq!(
+        super::super::TrapDispatcher::region_handle_rect(&bus, clip),
+        Some((0, 0, 66, 329)),
+        "the application's clip region is left unchanged"
+    );
+}
+
 // IM:I I-285: ShowHide(FALSE) makes the target window invisible but does
 // not reorder windows or generate activate events.
 #[test]
