@@ -9775,6 +9775,64 @@ fn menuselect_title_hit_enters_tracking_without_immediate_stack_pop() {
     assert!(trace.contains("tracking=menu:active"));
 }
 
+// MenuMgr.a MSLoop: a startPt outside every title leaves no menu down,
+// but MenuSelect keeps polling GetMouse while the button is held. Mahjong
+// passes (0,0) for a click on its File title; the held pointer must open it.
+#[test]
+fn menuselect_off_title_start_point_tracks_held_pointer_in_menu_bar() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    disp.enable_input_trace_capture();
+    disp.menu_bar_hidden = false;
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+    let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 521, 0x30B900, "File");
+    append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x30B940, "Open/O");
+    insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+    cpu.write_reg(Register::A7, TEST_SP);
+    assert!(disp
+        .dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    let regions = disp.menu_title_regions();
+    let title_mid_h = (regions[0].0 + regions[0].1) / 2;
+    assert!(regions[0].0 > 0, "(0,0) must lie outside the File title");
+
+    // Held below the menu bar: still no title, so MenuSelect returns 0.
+    disp.input_state
+        .set_mouse_position_for_test((40, title_mid_h));
+    disp.input_state.set_mouse_button_for_test(true);
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, 0);
+    bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+    assert!(disp
+        .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+    assert_eq!(bus.read_long(TEST_SP + 4), 0);
+    assert!(disp.menu_tracking.is_none());
+
+    // Held on the title: tracking opens File even though startPt missed.
+    disp.input_state
+        .set_mouse_position_for_test((10, title_mid_h));
+    cpu.write_reg(Register::A7, TEST_SP);
+    bus.write_long(TEST_SP, 0);
+    bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+    assert!(disp
+        .step_menu_fixture(true, 0x13D, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(
+        cpu.read_reg(Register::A7),
+        TEST_SP,
+        "MenuSelect keeps tracking instead of returning"
+    );
+    assert!(
+        disp.menu_tracking.is_some(),
+        "the held pointer's title opens"
+    );
+    assert!(disp.input_trace_text().contains("outcome=open_tracking"));
+}
+
 // IM:I I-355: MenuSelect tracks until mouse-up, then returns the
 // selected enabled menu item as menuID in the high word and item number
 // in the low word after the menu flash completes.
