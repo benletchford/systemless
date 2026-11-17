@@ -8312,3 +8312,96 @@ fn opening_ports_publishes_current_port_to_qd_globals() {
         assert_eq!(loaded.memory.read_u32_be(globals), Some(port));
     }
 }
+
+#[test]
+fn set_std_cprocs_fills_standard_bottlenecks_so_draw_picture_reads_the_handle() {
+    // Doom's PowerPC title code calls SetStdCProcs on an uninitialised stack
+    // CQDProcs, replaces only bitsProc, installs the record as grafProcs and
+    // calls DrawPicture. SetStdCProcs must fill every bottleneck with the
+    // standard routine (IM:V V-77, V-91) so DrawPicture reads the picture
+    // through StdGetPic instead of jumping through stack garbage.
+    let pef = synthetic_pef_with_import(b"SetStdCProcs");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    const GATEWAY_BASE: u32 = 0x00f0_0000;
+    let table = ppc_raw_trap_table_entry(0xA800, true);
+    let mut entries = Vec::with_capacity(0x400 * 4);
+    for index in 0..0x400u32 {
+        entries.extend_from_slice(&(GATEWAY_BASE + index * 8).to_be_bytes());
+    }
+    loaded.memory.add_region(table, entries);
+    let gateway = |trap: u16| GATEWAY_BASE + u32::from(trap & 0x3ff) * 8;
+
+    let procs = PPC_DATA_BASE + 0x6000;
+    loaded.memory.add_region(procs, vec![0xa5; 88]);
+    loaded.cpu.gpr[3] = procs;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetStdCProcs,
+        ),
+    );
+    for (slot, trap) in [
+        0xA882u16, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1,
+        0xA8ED, 0xA8EE, 0xA8F0, 0xABF8,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            loaded.memory.read_u32_be(procs + slot as u32 * 4),
+            Some(gateway(trap)),
+            "slot {slot}"
+        );
+    }
+    assert_eq!(loaded.memory.read_u32_be(procs + 56), Some(gateway(0xA89F)));
+    for slot in 15..20u32 {
+        assert_eq!(loaded.memory.read_u32_be(procs + slot * 4), Some(0));
+    }
+    // CQDProcs is 80 bytes; the caller's following bytes are untouched.
+    assert_eq!(loaded.memory.read_u32_be(procs + 80), Some(0xa5a5_a5a5));
+
+    // SetStdProcs fills only the 13 QDProcs slots.
+    let classic = PPC_DATA_BASE + 0x6100;
+    loaded.memory.add_region(classic, vec![0xa5; 56]);
+    loaded.cpu.gpr[3] = classic;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::SetStdProcs,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u32_be(classic + 44), Some(gateway(0xA8EE)));
+    assert_eq!(loaded.memory.read_u32_be(classic + 48), Some(gateway(0xA8F0)));
+    assert_eq!(loaded.memory.read_u32_be(classic + 52), Some(0xa5a5_a5a5));
+
+    // A custom bitsProc beside the standard getPicProc still draws the
+    // picture from its handle without calling into the guest.
+    loaded.memory.write_u32_be(procs + 32, PPC_DATA_BASE + 0x6200).unwrap();
+    loaded.memory.write_u32_be(PPC_MAIN_GWORLD + 104, procs).unwrap();
+    let pict = test_v1_one_bit_packbits_pict();
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &pict,
+    );
+    assert_ne!(handle, 0);
+    let rect_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 5, 6, 6, 14).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = rect_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawPicture);
+    assert!(loaded.picture_callback_stack.is_empty());
+    assert!(loaded.guest_calls().is_empty());
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 5)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (7, 5)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+    );
+}
