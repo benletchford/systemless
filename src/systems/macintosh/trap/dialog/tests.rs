@@ -18300,6 +18300,155 @@
     }
 
     #[test]
+    fn teupdate_erases_redrawn_line_strip_but_not_space_below_text() {
+        // Apple TextEdit.a: TEUpdate -> Refresh -> DoDraw runs DoErase on
+        // each line it redraws (ChkBounds widens the line rect to
+        // UnboundLeft..UnboundRight; StdEntry clips to viewRect), so stale
+        // glyphs from previous text never show through. The area below the
+        // last line is not erased (IM I-387). Expert Backgammon erases only
+        // below TEGetPoint(teLength) and relies on this to replace its
+        // status line.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HI");
+        // setup_with_port's 1-bit port bitmap.
+        let screen_base = bus.read_long(0x181000 + 2);
+        let row_bytes = u32::from(bus.read_word(0x181000 + 6) & 0x3FFF);
+        // Old pixels everywhere inside the 160-pixel-wide viewRect.
+        for row in 0..60 {
+            for byte in 0..20 {
+                bus.write_byte(screen_base + row * row_bytes + byte, 0xFF);
+            }
+        }
+
+        bus.write_long(TEST_SP, te_handle);
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 0);
+        bus.write_word(rect_ptr + 2, 0);
+        bus.write_word(rect_ptr + 4, 60);
+        bus.write_word(rect_ptr + 6, 160);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let result = disp.dispatch_dialog(true, 0x1D3, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+
+        // Right of "HI" on the first line: erased to the white background.
+        for row in 1..8 {
+            for byte in 10..20 {
+                assert_eq!(
+                    bus.read_byte(screen_base + row * row_bytes + byte),
+                    0,
+                    "line strip row {row} byte {byte} should be erased"
+                );
+            }
+        }
+        // The glyphs themselves are drawn after the erase.
+        let drew_glyph = (0..8).any(|row| {
+            (0..3).any(|byte| bus.read_byte(screen_base + row * row_bytes + byte) != 0)
+        });
+        assert!(drew_glyph, "TEUpdate should redraw the text after erasing");
+        // Below the only line: untouched.
+        for row in 40..60 {
+            for byte in 0..20 {
+                assert_eq!(
+                    bus.read_byte(screen_base + row * row_bytes + byte),
+                    0xFF,
+                    "row {row} byte {byte} below the text must not be erased"
+                );
+            }
+        }
+    }
+
+    /// Fill setup_with_port's 1-bit port with black inside the 160x60 TE
+    /// viewRect, run TEUpdate over that rect, and return (base, rowBytes).
+    fn teupdate_over_black_view(
+        disp: &mut TrapDispatcher,
+        cpu: &mut MockCpu,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+    ) -> (u32, u32) {
+        let screen_base = bus.read_long(0x181000 + 2);
+        let row_bytes = u32::from(bus.read_word(0x181000 + 6) & 0x3FFF);
+        for row in 0..60 {
+            for byte in 0..20 {
+                bus.write_byte(screen_base + row * row_bytes + byte, 0xFF);
+            }
+        }
+        bus.write_long(TEST_SP, te_handle);
+        let rect_ptr = bus.alloc(8);
+        bus.write_word(rect_ptr, 0);
+        bus.write_word(rect_ptr + 2, 0);
+        bus.write_word(rect_ptr + 4, 60);
+        bus.write_word(rect_ptr + 6, 160);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = disp.dispatch_dialog(true, 0x1D3, cpu, bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        (screen_base, row_bytes)
+    }
+
+    #[test]
+    fn teupdate_empty_record_erases_nothing() {
+        // TextEdit.a PrepLine: DoDraw leaves its line loop before DoErase
+        // when there are no characters to draw. Gold Digger's empty order-form
+        // fields overlap labels drawn underneath them.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let (base, row_bytes) =
+            teupdate_over_black_view(&mut disp, &mut cpu, &mut bus, te_handle);
+        for row in 0..60 {
+            for byte in 0..20 {
+                assert_eq!(
+                    bus.read_byte(base + row * row_bytes + byte),
+                    0xFF,
+                    "row {row} byte {byte} must not be erased for an empty record"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn teupdate_leaves_erase_to_a_replacement_rect_proc() {
+        // DoErase's EraseRect goes through grafProcs.rectProc (IM:I I-197).
+        // Warlords II installs one so its marble backdrop survives TEUpdate.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HI");
+        let procs = bus.alloc(52);
+        bus.write_long(procs + 8, 0x0020_0000);
+        bus.write_long(0x181000 + 104, procs);
+        let (base, row_bytes) =
+            teupdate_over_black_view(&mut disp, &mut cpu, &mut bus, te_handle);
+        for row in 1..8 {
+            for byte in 10..20 {
+                assert_eq!(
+                    bus.read_byte(base + row * row_bytes + byte),
+                    0xFF,
+                    "row {row} byte {byte} belongs to the custom rectProc"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn teupdate_standard_rect_proc_still_erases_line_strip() {
+        // SetStdProcs fills rectProc with the StdRect gateway: the standard
+        // bottleneck, so TEUpdate erases as usual.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HI");
+        let procs = bus.alloc(52);
+        let std_rect = bus.get_or_create_system_trap_gateway(0xA8A0);
+        bus.write_long(procs + 8, std_rect);
+        bus.write_long(0x181000 + 104, procs);
+        let (base, row_bytes) =
+            teupdate_over_black_view(&mut disp, &mut cpu, &mut bus, te_handle);
+        for row in 1..8 {
+            for byte in 10..20 {
+                assert_eq!(bus.read_byte(base + row * row_bytes + byte), 0);
+            }
+        }
+    }
+
+    #[test]
     fn teupdate_systemless_theme_routes_active_caret_through_provider() {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let classic_te_handle = make_te_with_text(&mut classic, &mut classic_bus, b"");

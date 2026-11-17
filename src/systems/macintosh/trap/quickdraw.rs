@@ -20495,7 +20495,7 @@ impl super::TrapDispatcher {
         !Self::looks_like_68k_entry_point(bus, port)
     }
 
-    fn guest_range_in_ram(bus: &MacMemoryBus, addr: u32, len: u32) -> bool {
+    pub(super) fn guest_range_in_ram(bus: &MacMemoryBus, addr: u32, len: u32) -> bool {
         addr.checked_add(len)
             .is_some_and(|end| end <= bus.ram_size())
     }
