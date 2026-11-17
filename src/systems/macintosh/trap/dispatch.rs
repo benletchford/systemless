@@ -2334,6 +2334,9 @@ pub struct TrapDispatcher {
     pub(crate) dialog_saved_pixels: FastHashMap<u32, SavedPixels>,
     /// Areas that a behind-window picture could not draw until this dialog is exposed.
     pub(crate) dialog_clipped_background_damage: FastHashMap<u32, (i16, i16, i16, i16)>,
+    /// Scratch (view rectangle, clip ∩ view) regions that TextEdit drawing
+    /// installs as the port clip, as StdEntry does; allocated on first use.
+    pub(crate) te_view_clip_regions: Option<(u32, u32)>,
     /// Rendered front-dialog pixels retained after a visible dialog draw,
     /// including first-show shells and ModalDialog returns before DisposDialog
     /// closes the window.
@@ -4215,6 +4218,7 @@ impl TrapDispatcher {
             dialog_filter_result_addr: 0,
             dialog_saved_pixels: HashMap::default(),
             dialog_clipped_background_damage: HashMap::default(),
+            te_view_clip_regions: None,
             dialog_visible_snapshots: HashMap::default(),
             dialog_modal_entered: std::collections::HashSet::default(),
             dialog_cdef_draw_pending_snapshot: HashSet::default(),

@@ -23070,7 +23070,7 @@ impl super::TrapDispatcher {
         Some(new_ptr)
     }
 
-    fn write_region(
+    pub(super) fn write_region(
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
         bbox: Option<(i16, i16, i16, i16)>,
