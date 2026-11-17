@@ -20770,6 +20770,36 @@
         assert_eq!(runs[1].style.face, 1);
     }
 
+    /// Spin Doctor sizes its alerts with TEGetHeight(0, 32767, hTE). The ROM's
+    /// iTEGetHeight sorts the two line numbers before pinning both to
+    /// teNLines, so the reversed range measures every line of the record.
+    #[test]
+    fn te_get_height_sorts_reversed_line_numbers_before_pinning() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te = make_te_with_text(&mut disp, &mut bus, b"one\rtwo\rthree");
+        let ptr = bus.read_long(te);
+        assert_eq!(bus.read_word(ptr + TrapDispatcher::TE_N_LINES_OFFSET), 3);
+        let line_height = u32::from(bus.read_word(ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET));
+        assert!(line_height > 0);
+
+        let mut get_height = |end_line: u32, start_line: u32| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x0009);
+            bus.write_long(TEST_SP + 2, te);
+            bus.write_long(TEST_SP + 6, start_line);
+            bus.write_long(TEST_SP + 10, end_line);
+            assert!(disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus).unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
+            bus.read_long(TEST_SP + 14)
+        };
+
+        assert_eq!(get_height(32767, 0), 3 * line_height);
+        assert_eq!(get_height(0, 32767), 3 * line_height);
+        assert_eq!(get_height(2, 3), 2 * line_height);
+        assert_eq!(get_height(3, 2), 2 * line_height);
+        assert_eq!(get_height(32767, 32767), 0);
+    }
+
     #[test]
     fn te_dispatch_continuous_style_returns_unstyled_record_style() {
         let (mut disp, mut cpu, mut bus) = setup();
