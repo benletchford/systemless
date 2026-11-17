@@ -21055,6 +21055,41 @@
         assert_eq!(runs[1].style.face, 1);
     }
 
+    /// Apple TextEdit.a iTEGetPoint returns teSelRect.bottom, the bottom of
+    /// the offset's line, and pins offsets at or past teLength to the line of
+    /// the last character. Gold Digger rules its order form under each line
+    /// from this point; the baseline put the rules through the text.
+    #[test]
+    fn te_get_point_returns_line_bottom_not_baseline() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te = make_te_with_text(&mut disp, &mut bus, b"one\rtwo\rthree");
+        let ptr = bus.read_long(te);
+        let top = bus.read_word(ptr + TrapDispatcher::TE_DEST_RECT_OFFSET) as i16;
+        let line_height = bus.read_word(ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+        assert!(line_height > 0);
+
+        let get_point = |disp: &mut TrapDispatcher,
+                         cpu: &mut MockCpu,
+                         bus: &mut MacMemoryBus,
+                         offset: i16| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x0008);
+            bus.write_long(TEST_SP + 2, te);
+            bus.write_word(TEST_SP + 6, offset as u16);
+            assert!(disp.dispatch_dialog(true, 0x03D, cpu, bus).unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+            bus.read_word(TEST_SP + 8) as i16
+        };
+
+        assert_eq!(get_point(&mut disp, &mut cpu, &mut bus, 0), top + line_height);
+        assert_eq!(get_point(&mut disp, &mut cpu, &mut bus, 5), top + 2 * line_height);
+        assert_eq!(get_point(&mut disp, &mut cpu, &mut bus, 13), top + 3 * line_height);
+        assert_eq!(get_point(&mut disp, &mut cpu, &mut bus, 500), top + 3 * line_height);
+
+        disp.te_set_text_contents(&mut bus, te, b"one\r");
+        assert_eq!(get_point(&mut disp, &mut cpu, &mut bus, 4), top + line_height);
+    }
+
     /// Spin Doctor sizes its alerts with TEGetHeight(0, 32767, hTE). The ROM's
     /// iTEGetHeight sorts the two line numbers before pinning both to
     /// teNLines, so the reversed range measures every line of the record.
