@@ -686,6 +686,57 @@ mod tests {
     }
 
     #[test]
+    fn binary_strikes_keep_thin_strokes_of_bundled_glyphs_joined() {
+        // #6416: thresholding area coverage split Times "A" at its apex and
+        // dropped the bottom bar of "E" at 9 pixels per em. Each glyph here
+        // has one outer contour, so its ink must be one 8-connected piece.
+        let pieces = |glyph: &Glyph, data: &[u8]| {
+            let (w, h) = (usize::from(glyph.width), usize::from(glyph.height));
+            let mut ink: Vec<bool> = data[glyph.data_offset..glyph.data_offset + w * h]
+                .iter()
+                .map(|&v| v != 0)
+                .collect();
+            let mut count = 0;
+            for start in 0..ink.len() {
+                if !ink[start] {
+                    continue;
+                }
+                count += 1;
+                let mut stack = vec![start];
+                ink[start] = false;
+                while let Some(i) = stack.pop() {
+                    let (x, y) = ((i % w) as isize, (i / w) as isize);
+                    for (dx, dy) in (-1..=1).flat_map(|dx| (-1..=1).map(move |dy| (dx, dy))) {
+                        let (nx, ny) = (x + dx, y + dy);
+                        if (0..w as isize).contains(&nx) && (0..h as isize).contains(&ny) {
+                            let n = ny as usize * w + nx as usize;
+                            if ink[n] {
+                                ink[n] = false;
+                                stack.push(n);
+                            }
+                        }
+                    }
+                }
+            }
+            count
+        };
+        let mut broken = Vec::new();
+        for size in 9..=14 {
+            let (face, _) = super::face(FONT_TIMES, size).unwrap();
+            for ch in "AEFHKMNVWXYZkvwxyz".bytes() {
+                let glyph = &face.glyphs[usize::from(ch - b' ')];
+                if pieces(glyph, face.data) != 1 {
+                    broken.push((size, char::from(ch)));
+                }
+            }
+        }
+        assert!(
+            broken.is_empty(),
+            "strikes in more than one piece: {broken:?}"
+        );
+    }
+
+    #[test]
     fn geneva9_compatibility_component_has_exact_ofl_advance_bytes() {
         assert_eq!(*GENEVA9_ADVANCES, EXPECTED_GENEVA9_ADVANCES);
         assert_eq!(GENEVA9_ADVANCES.len(), usize::from(0x7eu8 - 0x20 + 1));
