@@ -5305,8 +5305,8 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
         (
             "Translation",
-            "CanDocBeOpened" | "ExtendFileTypeList" | "GetFileTranslationPaths"
-            | "GetPathFromTranslationDialog" | "TranslateFile",
+            "CanDocBeOpened" | "ExtendFileTypeList" | "GetPathFromTranslationDialog"
+            | "TranslateFile",
         ) => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
         // These Text Encoding Converter entry points have no conversion path: kTECNoConversionPathErr.
         (
@@ -5321,7 +5321,9 @@ pub(crate) fn dispatcher_target_for_import(
             "OpenComponent" | "RegisterComponentResource" | "CloseComponentResFile"
             | "UnregisterComponent" | "GetNextFOND" | "GetMCInfo",
         )
-        | ("QuickTimeLib", "MCIsPlayerEvent") => PpcImportDispatcherTarget::ReturnNoErr,
+        | ("QuickTimeLib", "MCIsPlayerEvent")
+        // short GetFileTranslationPaths(...) returns a path count, not an OSErr.
+        | ("Translation", "GetFileTranslationPaths") => PpcImportDispatcherTarget::ReturnNoErr,
         (
             "InterfaceLib",
             "PicComment" | "SpaceExtra" | "SysBreakStr" | "DisposeMCInfo" | "ResizePalette"

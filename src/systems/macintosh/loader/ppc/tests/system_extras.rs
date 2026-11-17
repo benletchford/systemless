@@ -668,6 +668,7 @@ fn absent_manager_imports_return_their_documented_errors() {
         ("InterfaceLib", "RegisterComponentResource"),
         ("InterfaceLib", "GetNextFOND"),
         ("QuickTimeLib", "MCIsPlayerEvent"),
+        ("Translation", "GetFileTranslationPaths"),
     ] {
         assert_eq!(
             dispatcher_target_for_import(library, symbol),
