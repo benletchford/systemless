@@ -305,6 +305,80 @@ fn internet_config_parse_url_updates_selection_and_resizes_owned_handle() {
 }
 
 #[test]
+fn internet_config_launch_url_binds_and_reports_missing_helper() {
+    // Candy Crisis (CarbonLib) weak-links ICLaunchURL and calls it after a
+    // successful ICStart from its "Register Now" button. An unbound import
+    // left a nil transition vector, so the guest branched to address zero.
+    for library in ["CarbonLib", "InterfaceLib", "ICAp;InternetConfigLib"] {
+        assert_eq!(
+            dispatcher_target_for_import(library, "ICLaunchURL"),
+            PpcImportDispatcherTarget::ICLaunchURL
+        );
+    }
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![PefResolvedImport {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: "CarbonLib".into(),
+            symbol_name: "ICLaunchURL".into(),
+            class: 2,
+            weak: true,
+        }],
+        1,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+    assert_ne!(bindings[0].address, 0);
+    assert_eq!(
+        bindings[0].dispatcher_target,
+        PpcImportDispatcherTarget::ICLaunchURL
+    );
+
+    let pef = synthetic_pef_with_library_import(b"CarbonLib", b"ICStart");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 512]);
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = u32::from_be_bytes(*b"Crsi");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ICStart);
+    let instance = loaded.memory.read_u32_be(scratch).unwrap();
+    let text = b"See <URL:http://example.test/a> now";
+    loaded.memory.write_bytes(scratch + 32, text).unwrap();
+    let launch = |loaded: &mut PpcLoadedApp, start: u32, end: u32| {
+        loaded.memory.write_u32_be(scratch + 12, start).unwrap();
+        loaded.memory.write_u32_be(scratch + 16, end).unwrap();
+        loaded.cpu.gpr[3] = instance;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = scratch + 32;
+        loaded.cpu.gpr[6] = text.len() as u32;
+        loaded.cpu.gpr[7] = scratch + 12;
+        loaded.cpu.gpr[8] = scratch + 16;
+        run_test_import(loaded, PpcImportDispatcherTarget::ICLaunchURL);
+        loaded.cpu.gpr[3]
+    };
+    // No Helper•http preference: icPrefNotFoundErr, with the selection
+    // widened to the URL just as ICParseURL reports it.
+    assert_eq!(launch(&mut loaded, 12, 12), ppc_i16_result(-666));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 12), Some(4));
+    assert_eq!(
+        loaded.memory.read_u32_be(scratch + 16),
+        Some((text.len() - 4) as u32)
+    );
+    // Text without a URL reports icNoURLErr; a reversed selection paramErr.
+    assert_eq!(launch(&mut loaded, 0, 3), ppc_i16_result(-673));
+    assert_eq!(launch(&mut loaded, 40, 12), ppc_i16_result(PPC_PARAM_ERR));
+    // A stale instance is rejected without touching the selection.
+    loaded.memory.write_u32_be(scratch + 12, 7).unwrap();
+    loaded.cpu.gpr[3] = instance ^ 0x10;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ICLaunchURL);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(loaded.memory.read_u32_be(scratch + 12), Some(7));
+}
+
+#[test]
 fn internet_config_reads_active_profile_from_guest_resources_with_truncation() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"ICStart")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1000;

@@ -1092,6 +1092,7 @@ pub enum PpcImportDispatcherTarget {
     ICGetSeed,
     ICGetComponentInstance,
     ICParseURL,
+    ICLaunchURL,
     ICGetPref,
     ICCountMapEntries,
     ICGetIndMapEntry,
@@ -5503,6 +5504,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICParseURL") => {
             PpcImportDispatcherTarget::ICParseURL
+        }
+        ("InterfaceLib" | "ICAp;InternetConfigLib" | "InternetConfigLib", "ICLaunchURL") => {
+            PpcImportDispatcherTarget::ICLaunchURL
         }
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
