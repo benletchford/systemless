@@ -6217,7 +6217,7 @@ impl super::TrapDispatcher {
         // items. DrawDialog must still render those items (MTE 1992, 6-142).
         if !skip_pictures && !user_item_backups.is_empty() {
             for item in items {
-                if item.is_picture() && item.resource_id != 0 {
+                if item.is_picture() {
                     self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
                 }
             }
@@ -6908,7 +6908,7 @@ impl super::TrapDispatcher {
                 DIALOG_ITEM_PICTURE => {
                     // Items reaching here overlap the dialog rect (the
                     // fully-outside clip happens above the match).
-                    if !skip_pictures && item.resource_id != 0 {
+                    if !skip_pictures {
                         self.draw_dialog_picture_item(bus, bounds, item, dialog_ptr);
                     }
                 }
