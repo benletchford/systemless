@@ -51,6 +51,19 @@ pub(super) fn dispatch_toolbox_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ScreenRes => {
+            // void ScreenRes(short *scrnHRes, short *scrnVRes): reports the
+            // ScrHRes and ScrVRes low-memory globals, which the loader seeds
+            // at 72 dpi (Inside Macintosh Volume I, Toolbox Utilities).
+            use crate::memory::globals::addr;
+            for (out, global) in [(cpu.gpr[3], addr::SCR_H_RES), (cpu.gpr[4], addr::SCR_V_RES)] {
+                if out != 0 {
+                    let value = memory.read_u16_be(global).unwrap_or(72);
+                    let _ = memory.write_u16_be(out, value);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::EqualCString => {
             Some(PpcImportAction::Return(ppc_equal_c_string(cpu, memory)))
         }

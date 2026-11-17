@@ -734,6 +734,74 @@ fn absent_manager_imports_return_their_documented_errors() {
 }
 
 #[test]
+fn file_and_lowmem_aliases_bind_and_behave() {
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "PBGetVolSync"),
+        dispatcher_target_for_import("InterfaceLib", "PBHGetVolSync")
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "LMGetTheGDevice"),
+        PpcImportDispatcherTarget::GetGDevice
+    );
+    assert_eq!(
+        dispatcher_target_for_import("QuickTimeLib", "CustomGetFilePreview"),
+        dispatcher_target_for_import("InterfaceLib", "CustomGetFile")
+    );
+
+    let mut loaded = loaded_with(b"ScreenRes");
+    loaded.memory.write_u32_be(SCRATCH, 0).unwrap();
+    loaded.cpu.gpr[3] = SCRATCH;
+    loaded.cpu.gpr[4] = SCRATCH + 2;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "ScreenRes"),
+    );
+    assert_eq!(loaded.memory.read_u16_be(SCRATCH), Some(72));
+    assert_eq!(loaded.memory.read_u16_be(SCRATCH + 2), Some(72));
+    {
+        // ScreenRes reports the ScrHRes and ScrVRes globals.
+        use crate::memory::globals::addr;
+        loaded.memory.write_u16_be(addr::SCR_H_RES, 96).unwrap();
+        loaded.memory.write_u16_be(addr::SCR_V_RES, 80).unwrap();
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "ScreenRes"),
+        );
+        assert_eq!(loaded.memory.read_u16_be(SCRATCH), Some(96));
+        assert_eq!(loaded.memory.read_u16_be(SCRATCH + 2), Some(80));
+    }
+
+    let mut loaded = loaded_with(b"LMSetMemErr");
+    loaded.cpu.gpr[3] = ppc_i16_result(-108);
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "LMSetMemErr"),
+    );
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MemError);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-108));
+}
+
+#[test]
+fn byte_range_and_file_id_imports_complete_their_parameter_blocks() {
+    let mut loaded = loaded_with(b"PBLockRangeSync");
+    for (symbol, result) in [
+        ("PBLockRangeSync", PPC_NO_ERR),
+        ("PBUnlockRangeSync", PPC_NO_ERR),
+        ("PBCreateFileIDRefSync", PPC_PARAM_ERR),
+    ] {
+        loaded.memory.write_u16_be(SCRATCH + 16, 0x7fff).unwrap();
+        loaded.cpu.gpr[3] = SCRATCH;
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(result), "{symbol}");
+        assert_eq!(
+            loaded.memory.read_u16_be(SCRATCH + 16),
+            Some(result as u16),
+            "{symbol}"
+        );
+    }
+}
+
+#[test]
 fn delta_point_subtracts_each_coordinate_into_its_own_word() {
     let mut loaded = loaded_with(b"DeltaPoint");
     for (pt_a, pt_b, delta) in [
