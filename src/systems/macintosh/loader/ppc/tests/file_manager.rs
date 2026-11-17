@@ -5519,6 +5519,61 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn pb_open_wd_resolves_vref_zero_to_the_hset_vol_default_directory() {
+        // Bubble Trouble HSetVols into its music folder, then calls PBOpenWD
+        // with ioVRefNum 0, ioWDDirID 0, and ioNamePtr ":" to obtain a
+        // working directory for that folder.
+        let pef = synthetic_pef_with_import(b"PBOpenWDSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let default_wd = 77;
+        loaded.working_directories.with_mut(|directories| {
+            directories.insert(
+                default_wd,
+                ProcessWorkingDirectory {
+                    ref_num: default_wd,
+                    volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                    dir_id: PPC_PREFERENCES_DIR_ID,
+                    proc_id: 0,
+                },
+            );
+        });
+        loaded
+            .application_working_directory_ref_num
+            .with_mut(|ref_num| *ref_num = default_wd);
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 128;
+        loaded.memory.add_region(pb, vec![0; 256]);
+
+        for name in [&b":"[..], &b""[..]] {
+            write_ppc_pstring(&mut loaded.memory, name_ptr, name);
+            loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+            loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+            loaded.memory.write_u32_be(pb + 48, 0).unwrap();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = loaded.halt_pc;
+            loaded.cpu.gpr[3] = pb;
+
+            loaded.run_with_hle_imports(64);
+
+            assert_eq!(
+                loaded.memory.read_u16_be(pb + 16),
+                Some(PPC_NO_ERR as u16),
+                "name {name:?}"
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(pb + 48),
+                Some(PPC_PREFERENCES_DIR_ID),
+                "name {name:?}"
+            );
+            assert_eq!(
+                loaded.memory.read_u16_be(pb + 32),
+                Some(PPC_BOOT_VOLUME_REF_NUM as u16),
+                "name {name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_handles_open_res_file_by_basename() {
         let pef = synthetic_pef_with_import(b"OpenResFile");
         let mut loaded = load_pef_application(&pef).unwrap();
