@@ -4500,6 +4500,64 @@ fn loadseg_does_not_adopt_heap_backed_code_as_reserved_image() {
 }
 
 #[test]
+fn loadseg_keeps_a_locked_code_resource_the_guest_already_loaded() {
+    // The Journeyman Project's Director projector calls GetResource('CODE',
+    // 11513), locks it and caches the data pointer for its XCMD glue before
+    // the segment is first loaded. LoadSeg must not repoint that handle at
+    // the direct-loaded image and free the guest's block, or the next
+    // resource load reuses the memory under the cached pointer.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let code = [0, 0, 0, 1, 0x4E, 0x75];
+    let resource_ptr = setup_resources(&mut disp, &mut bus, b"CODE", 19, &code);
+    bus.write_byte(addr::RES_LOAD, 1);
+    let handle = disp.get_or_create_resource_handle_in_file(&mut bus, *b"CODE", 19, resource_ptr, 0);
+    assert_eq!(bus.read_long(handle), resource_ptr);
+    disp.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0) | 0x80));
+
+    let image = 0x230000;
+    bus.reserve_heap_range(image, image + 0x100);
+    bus.write_bytes(image, &code);
+    assert!(bus.can_adopt_reserved_image_allocation(image, code.len() as u32));
+    disp.register_segments(HashMap::from([(19, image)]));
+    let island = 0x240000;
+    bus.write_word(island, 0);
+    bus.write_word(island + 2, 0x3F3C);
+    bus.write_word(island + 4, 19);
+    bus.write_word(island + 6, 0xA9F0);
+    bus.write_word(TEST_SP, 19);
+    cpu.write_reg(Register::A5, island);
+    cpu.write_reg(Register::PC, island + 8);
+    call(&mut disp, true, 0x1F0, &mut cpu, &mut bus).unwrap();
+
+    assert_eq!(bus.read_word(island + 2), 0x4EF9);
+    assert_eq!(bus.read_long(island + 4), image + 4);
+    assert_eq!(bus.read_long(handle), resource_ptr);
+    assert_eq!(bus.get_alloc_size(resource_ptr), Some(code.len() as u32));
+}
+
+#[test]
+fn launch_binding_repoints_a_preloaded_locked_code_resource_at_the_image() {
+    // TaskMaker's CODE 1 is preloaded and locked through its resource
+    // attributes. Before any guest code runs, the launch binding must point
+    // that handle at the image the application executes; TaskMaker's
+    // integrity check reports "TaskMaker is damaged" otherwise.
+    let (mut disp, _cpu, mut bus) = setup();
+    let code = [0, 0, 0, 1, 0x4E, 0x75];
+    let resource_ptr = setup_resources(&mut disp, &mut bus, b"CODE", 1, &code);
+    let handle = disp.get_or_create_resource_handle_in_file(&mut bus, *b"CODE", 1, resource_ptr, 0);
+    disp.update_handle_state_bits(handle, |state| Some(state.unwrap_or(0) | 0x80));
+
+    let image = 0x230000;
+    bus.reserve_heap_range(image, image + 0x100);
+    bus.write_bytes(image, &code);
+    disp.register_segments(HashMap::from([(1, image)]));
+    disp.bind_application_code_handles(&mut bus, &[1]);
+
+    assert_eq!(bus.read_long(handle), image);
+    assert_eq!(bus.get_alloc_size(resource_ptr), None);
+}
+
+#[test]
 fn reserved_image_guard_rejects_overlapping_live_allocation() {
     let (_, _, mut bus) = setup();
     bus.reserve_heap_range(0x230000, 0x230100);
