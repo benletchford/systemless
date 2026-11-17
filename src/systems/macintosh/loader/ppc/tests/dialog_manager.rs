@@ -7327,6 +7327,75 @@ fn get_new_dialog_auto_positions_against_the_live_menu_bar_height() {
 }
 
 #[test]
+fn get_new_dialog_uses_the_bounds_of_an_already_loaded_dlog() {
+    // Five Stones loads its registration 'DLOG' with Get1Resource, centres
+    // the template's rect on the screen with OffsetRect, then calls
+    // GetNewDialog. GetNewDialog must see that edit, and must still read the
+    // file once the block has been purged.
+    let handle = PPC_DATA_BASE + 0x1000;
+    let template = PPC_DATA_BASE + 0x1010;
+    for (master_pointer, expected) in [(template, (80, 130, 180, 330)), (0, (20, 30, 120, 230))] {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 21];
+        dlog[0..2].copy_from_slice(&20i16.to_be_bytes());
+        dlog[2..4].copy_from_slice(&30i16.to_be_bytes());
+        dlog[4..6].copy_from_slice(&120i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&230i16.to_be_bytes());
+        dlog[8..10].copy_from_slice(&1i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut edited = dlog.clone();
+        for (offset, value) in [(0, 80i16), (2, 130), (4, 180), (6, 330)] {
+            edited[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        let mut region = vec![0; 0x40];
+        region[0..4].copy_from_slice(&master_pointer.to_be_bytes());
+        region[0x10..0x10 + edited.len()].copy_from_slice(&edited);
+        loaded.memory.add_region(handle, region);
+        let mut ditl = vec![0; 22];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&26i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+        ditl[15] = 5;
+        ditl[16..21].copy_from_slice(b"Hello");
+        for (res_type, data, resource_handle) in [(*b"DLOG", dlog, handle), (*b"DITL", ditl, 0)] {
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: current_resource_refnum,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(res_type),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: resource_handle,
+                });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let dialog = loaded.cpu.gpr[3];
+        assert_ne!(dialog, 0);
+        assert_eq!(
+            ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog),
+            Some(expected),
+            "master pointer ${master_pointer:08X}"
+        );
+    }
+}
+
+#[test]
 fn auto_position_dialog_uses_the_live_menu_bar_height() {
     let bounds_ptr = PPC_DATA_BASE + 0x1000;
     let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AutoPositionDialog");

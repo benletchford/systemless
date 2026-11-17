@@ -3210,7 +3210,7 @@ fn ppc_new_alert_dialog(
             *last_resource_error = PPC_RES_NOT_FOUND_ERR;
             return 0;
         };
-        let alert = &vfs_resources[alert_index].data;
+        let alert = &ppc_vfs_resource_current_bytes(memory, &vfs_resources[alert_index]);
         if alert.len() < 12 {
             *last_resource_error = PPC_PARAM_ERR;
             return 0;
@@ -3398,7 +3398,10 @@ fn ppc_get_new_dialog(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
-    let Some(template) = ppc_parse_dialog_template(&vfs_resources[dlog_index].data) else {
+    // Applications commonly centre an already-loaded 'DLOG' before calling
+    // GetNewDialog (Five Stones offsets its registration dialog's rect).
+    let dlog_bytes = ppc_vfs_resource_current_bytes(memory, &vfs_resources[dlog_index]);
+    let Some(template) = ppc_parse_dialog_template(&dlog_bytes) else {
         *last_resource_error = PPC_PARAM_ERR;
         return 0;
     };

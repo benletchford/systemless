@@ -842,6 +842,27 @@ pub(crate) fn ppc_update_res_file(
     *last_resource_error = PPC_NO_ERR;
 }
 
+/// Template bytes a routine that builds an object from a resource reads.
+///
+/// GetNewWindow, GetNewDialog and Alert load their template as a resource
+/// (Inside Macintosh Volume I, p. I-283), and GetResource returns the
+/// existing handle for a resource that is already in memory (p. I-119). A
+/// template the application loaded and edited in place, typically to centre
+/// its rectangle on the screen, is therefore used as edited. An unloaded or
+/// purged resource is read from its file.
+pub(crate) fn ppc_vfs_resource_current_bytes(
+    memory: &mut PpcSectionMem,
+    resource: &PpcVfsResourceRecord,
+) -> crate::managers::resource::ResourceBytes {
+    (resource.handle != 0)
+        .then(|| memory.read_u32_be(resource.handle))
+        .flatten()
+        .filter(|ptr| *ptr != 0)
+        .and_then(|ptr| ppc_memory_read_bytes(memory, ptr, resource.data.len() as u32))
+        .map(Into::into)
+        .unwrap_or_else(|| resource.data.clone())
+}
+
 pub(crate) fn ppc_vfs_resource_index(
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
