@@ -8708,3 +8708,155 @@ fn draw_dialog_leaves_missing_icon_items_blank() {
         assert_eq!(dialog_icon_pixel(&mut loaded, dialog, point), white);
     }
 }
+
+#[test]
+fn dialog_select_update_sends_draw_to_every_custom_definition_control() {
+    // WarCraft II's Startup Options dialog: DialogSelect handles the update
+    // event by queueing drawCntl for each CDEF-backed item. A definition that
+    // returns re-enters DialogSelect with its own registers, and its result in
+    // r3 can address a zero word that reads like a null event. The Control
+    // Manager still sends drawCntl to every visible control. Inside
+    // Macintosh: Macintosh Toolbox Essentials (1992), pp. 5-109--5-112.
+    const VECTOR: u32 = 0x0180_0000;
+    const MARKER: u32 = VECTOR + 0x80;
+    const DEFINITION_ID: i16 = 1002;
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(VECTOR, vec![0; 0x100]);
+    loaded.memory.write_u32_be(VECTOR, VECTOR + 8).unwrap();
+    loaded.memory.write_u32_be(VECTOR + 4, PPC_DATA_BASE).unwrap();
+    // Count every definition call at MARKER+16, log each control handle from
+    // MARKER+32, remember the last message, and return a pointer to a zero
+    // word in r3.
+    for (index, word) in [
+        0x3d80_0180u32, // lis r12, VECTOR@h
+        0x618c_0080,    // ori r12, r12, 0x80
+        0x90ac_0008,    // stw r5, 8(r12)
+        0x816c_0010,    // lwz r11, 16(r12)
+        0x556a_103a,    // slwi r10, r11, 2
+        0x7d4a_6214,    // add r10, r10, r12
+        0x908a_0020,    // stw r4, 32(r10)
+        0x396b_0001,    // addi r11, r11, 1
+        0x916c_0010,    // stw r11, 16(r12)
+        0x386c_0070,    // addi r3, r12, 0x70
+        0x4e80_0020,    // blr
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(VECTOR + 8 + index as u32 * 4, word)
+            .unwrap();
+    }
+    let mut descriptor =
+        vec![0; (PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE) as usize];
+    descriptor[..2].copy_from_slice(&PPC_MIXED_MODE_TRAP.to_be_bytes());
+    descriptor[2] = PPC_ROUTINE_DESCRIPTOR_VERSION;
+    let record = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE as usize;
+    descriptor[record..record + 4].copy_from_slice(&0x3bb0u32.to_be_bytes());
+    descriptor[record + 5] = PPC_ROUTINE_RECORD_POWERPC_ISA;
+    descriptor[record + 6..record + 8]
+        .copy_from_slice(&PPC_ROUTINE_FLAG_USE_NATIVE_ISA.to_be_bytes());
+    descriptor[record + 8..record + 12].copy_from_slice(&VECTOR.to_be_bytes());
+
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&200i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&300i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let item = |rect: [i16; 4], data: &[u8]| {
+        let mut bytes = vec![0; 4];
+        for value in rect {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+        bytes.push(PPC_DIALOG_ITEM_RESOURCE_CONTROL);
+        bytes.push(data.len() as u8);
+        bytes.extend_from_slice(data);
+        bytes
+    };
+    let rects = [[10i16, 10, 30, 150], [40, 10, 60, 150], [70, 10, 90, 150]];
+    let mut ditl = (rects.len() as i16 - 1).to_be_bytes().to_vec();
+    let mut resources = vec![(*b"CDEF", DEFINITION_ID, descriptor)];
+    for (index, rect) in rects.into_iter().enumerate() {
+        let id = 200 + index as i16;
+        ditl.extend(item(rect, &id.to_be_bytes()));
+        let mut cntl = vec![0; 23];
+        for (field, value) in rect.into_iter().enumerate() {
+            cntl[field * 2..field * 2 + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        cntl[10] = 1;
+        cntl[12..14].copy_from_slice(&1i16.to_be_bytes());
+        cntl[16..18].copy_from_slice(&(DEFINITION_ID * 16).to_be_bytes());
+        resources.push((*b"CNTL", id, cntl));
+    }
+    resources.push((*b"DLOG", 128, dlog));
+    resources.push((*b"DITL", 128, ditl));
+    for (res_type, res_id, data) in resources {
+        let ref_num = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(512);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    assert_eq!(loaded.controls.records().len(), rects.len());
+    let calls_before_update = loaded.memory.read_u32_be(MARKER + 16).unwrap();
+
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded.set_event_queue([PpcQueuedEvent {
+        what: 6,
+        message: dialog,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    }]);
+    ppc_write_event_record(&mut loaded.memory, scratch, 6, dialog, 0, 0, 0, 0);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DialogCompatibility(
+        PpcDialogCompatibilityOperation::DialogSelect,
+    );
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 20;
+    loaded.cpu.gpr[5] = scratch + 24;
+    let probe = loaded.run_with_hle_imports(1024);
+
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.pc, loaded.halt_pc);
+    assert_eq!(
+        loaded.memory.read_u32_be(MARKER + 16),
+        Some(calls_before_update + rects.len() as u32),
+        "every control must receive drawCntl"
+    );
+    assert_eq!(loaded.memory.read_u32_be(MARKER + 8), Some(0));
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    // DrawControls order: reverse creation, so the first item is frontmost.
+    let drawn = (calls_before_update..calls_before_update + rects.len() as u32)
+        .map(|call| loaded.memory.read_u32_be(MARKER + 32 + call * 4).unwrap())
+        .collect::<Vec<_>>();
+    let created = loaded
+        .controls
+        .records()
+        .iter()
+        .map(|record| record.handle)
+        .rev()
+        .collect::<Vec<_>>();
+    assert_eq!(drawn, created);
+}

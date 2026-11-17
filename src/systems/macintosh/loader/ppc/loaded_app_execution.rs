@@ -861,6 +861,14 @@ impl PpcLoadedApp {
                         recent_imports.pop_front();
                     }
                 }
+                // A control definition returning to the import that queued
+                // it re-enters that import with the definition's registers.
+                // Only the general dispatch path resumes the queued messages,
+                // so no fast path may answer the re-entry. Inside Macintosh:
+                // Macintosh Toolbox Essentials (1992), p. 5-109: the Control
+                // Manager sends drawCntl for every visible control drawn.
+                let resuming_control_definition =
+                    ppc_control_definition_resume_pending(&toolbox_startup, cpu);
                 // A null event cannot select an item. Pending callbacks
                 // still need the general dispatch path.
                 let null_dialog_poll = matches!(
@@ -871,6 +879,7 @@ impl PpcLoadedApp {
                 ) && dialog_callback_stack.is_empty()
                     && memory.read_u16_be(cpu.gpr[3]) == Some(0);
                 if !trace_ppc
+                    && !resuming_control_definition
                     && (*dispatcher_target != PpcImportDispatcherTarget::TickCount
                         || !trace_imports)
                     && (matches!(

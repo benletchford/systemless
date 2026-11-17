@@ -23818,6 +23818,52 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn resolve_copy_bitmap_dereferences_a_native_process_window_pixmap() {
+        // A PowerPC process carves window ports and their PixMaps from its
+        // native heap without classic allocation records. A 68K CDEF it
+        // calls still passes `&thePort->portBits` to CopyBits (WarCraft II).
+        let (d, _cpu, mut bus) = setup();
+        let heap_base = bus.alloc(0x200);
+        let pm_handle = heap_base;
+        let pm_ptr = heap_base + 0x10;
+        let port = heap_base + 0x80;
+        let pix_base = bus.alloc(640 * 480);
+        bus.write_long(pm_handle, pm_ptr);
+        write_pixmap_8(&mut bus, pm_ptr, pix_base, 640, 480, 0);
+        bus.write_long(port + 2, pm_handle);
+        bus.write_word(port + 6, 0xC000);
+        assert_eq!(d.resolve_copy_bitmap(&bus, port + 2).base, u32::MAX);
+
+        let heap = |heap_cursor| crate::process_context::ProcessNativeHeapState {
+            heap_base,
+            heap_cursor,
+            heap_limit: heap_base + 0x200,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+        };
+        // The PixMap must lie inside the allocated part of the native heap.
+        d.process_memory_manager()
+            .borrow_mut()
+            .publish_native_allocator(heap(heap_base + 0x20), &[], &[], &[]);
+        assert_eq!(d.resolve_copy_bitmap(&bus, port + 2).base, u32::MAX);
+
+        d.process_memory_manager()
+            .borrow_mut()
+            .publish_native_allocator(heap(heap_base + 0x100), &[], &[], &[]);
+        let info = d.resolve_copy_bitmap(&bus, port + 2);
+        assert_eq!(info.base, pix_base);
+        assert_eq!(info.row_bytes, 640);
+        assert_eq!(info.bounds_bottom, 480);
+        assert_eq!(info.bounds_right, 640);
+        assert_eq!(info.pixel_size, 8);
+
+        // A BitMap-shaped record (rowBytes bit 15 clear) is not a PixMap.
+        bus.write_word(pm_ptr + 4, 640);
+        assert_eq!(d.resolve_copy_bitmap(&bus, port + 2).base, u32::MAX);
+    }
+
+    #[test]
     fn resolve_copy_bitmap_direct_pixmap_dereferences_offscreen_base_handle() {
         let (d, _cpu, mut bus) = setup();
         let pm_ptr = bus.alloc(64);
