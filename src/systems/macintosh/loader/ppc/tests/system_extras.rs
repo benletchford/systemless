@@ -647,3 +647,64 @@ fn classic_fcb_pointer_accessor_reads_current_low_memory_without_dereferencing()
         assert_eq!(loaded.memory.read_u32_be(addr::FCB_S_PTR), Some(pointer));
     }
 }
+
+#[test]
+fn absent_manager_imports_return_their_documented_errors() {
+    for (library, symbol, error) in [
+        ("InterfaceLib", "SCSIGet", 2),
+        ("InterfaceLib", "OpenEdition", PPC_PARAM_ERR),
+        ("InterfaceLib", "OpenComponentResFile", PPC_PARAM_ERR),
+        ("Translation", "TranslateFile", PPC_PARAM_ERR),
+        ("TextCommon", "TECGetInfo", -8749),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(library, symbol),
+            PpcImportDispatcherTarget::ReturnError(error),
+            "{symbol}"
+        );
+    }
+    for (library, symbol) in [
+        ("InterfaceLib", "OpenComponent"),
+        ("InterfaceLib", "RegisterComponentResource"),
+        ("InterfaceLib", "GetNextFOND"),
+        ("QuickTimeLib", "MCIsPlayerEvent"),
+        ("Translation", "GetFileTranslationPaths"),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import(library, symbol),
+            PpcImportDispatcherTarget::ReturnNoErr,
+            "{symbol}"
+        );
+    }
+
+    let mut loaded = loaded_with(b"SCSIGet");
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SCSIGet"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(2));
+    for symbol in ["PicComment", "SpaceExtra", "ColorBit", "ResizePalette"] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            PpcImportDispatcherTarget::NoOpPreserve,
+            "{symbol}"
+        );
+    }
+}
+
+#[test]
+fn delta_point_subtracts_each_coordinate_into_its_own_word() {
+    let mut loaded = loaded_with(b"DeltaPoint");
+    for (pt_a, pt_b, delta) in [
+        (0x000a_0003, 0x0004_0005, 0x0006_fffe),
+        (0x0004_0005, 0x000a_0003, 0xfffa_0002),
+    ] {
+        loaded.cpu.gpr[3] = pt_a;
+        loaded.cpu.gpr[4] = pt_b;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "DeltaPoint"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], delta);
+    }
+}

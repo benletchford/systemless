@@ -156,6 +156,7 @@ fn geometry_uses_only_guest_memory(target: &PpcImportDispatcherTarget) -> bool {
         | PpcImportDispatcherTarget::EqualPt
         | PpcImportDispatcherTarget::AddPt
         | PpcImportDispatcherTarget::SubPt
+        | PpcImportDispatcherTarget::DeltaPoint
         | PpcImportDispatcherTarget::PtInRect
         | PpcImportDispatcherTarget::OffsetRect
         | PpcImportDispatcherTarget::InsetRect
@@ -2069,6 +2070,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::EqualPt
         | PpcImportDispatcherTarget::AddPt
         | PpcImportDispatcherTarget::SubPt
+        | PpcImportDispatcherTarget::DeltaPoint
         | PpcImportDispatcherTarget::LocalToGlobal
         | PpcImportDispatcherTarget::GlobalToLocal
         | PpcImportDispatcherTarget::PtInRect

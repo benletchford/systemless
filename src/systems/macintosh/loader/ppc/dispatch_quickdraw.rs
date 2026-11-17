@@ -712,6 +712,14 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::DeltaPoint => {
+            // long DeltaPoint(Point ptA, Point ptB): Inside Macintosh Volume I
+            // (1985), p. I-475. The high word is ptA.v - ptB.v and the low
+            // word is ptA.h - ptB.h, each a separate 16-bit difference.
+            let v = ((cpu.gpr[3] >> 16) as u16).wrapping_sub((cpu.gpr[4] >> 16) as u16);
+            let h = (cpu.gpr[3] as u16).wrapping_sub(cpu.gpr[4] as u16);
+            Some(PpcImportAction::Return((u32::from(v) << 16) | u32::from(h)))
+        }
         PpcImportDispatcherTarget::LocalToGlobal => {
             ppc_transform_port_point(memory, current_gworld, cpu.gpr[3], true);
             Some(PpcImportAction::ReturnPreserve)
