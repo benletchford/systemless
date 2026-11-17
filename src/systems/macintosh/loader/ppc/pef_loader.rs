@@ -234,10 +234,7 @@ fn ppc_plan_initial_cfm_libraries(
     // GameSprockets are system libraries implemented by the native dispatcher.
     // Installer copies can require on-disk CFM initialization metadata that is
     // not present when the archive is expanded into the in-memory launch VFS.
-    fragments.retain(|fragment| {
-        !fragment.name.eq_ignore_ascii_case("DrawSprocketLib")
-            && !fragment.name.eq_ignore_ascii_case("InputSprocketLib")
-    });
+    fragments.retain(|fragment| !ppc_is_native_gamesprocket_library(&fragment.name));
     fragments.sort_by(|left, right| {
         left.name
             .to_ascii_lowercase()

@@ -187,6 +187,7 @@ fn cfm_load_resumes_after_initialization_and_failed_loads_can_retry() {
                         PPC_HEAP_BASE + 0x10000,
                         PPC_STACK_BASE,
                         &mut connections,
+                        &[],
                         &mut next_connection,
                         &mut import_run_state,
                         None,
@@ -2006,6 +2007,7 @@ fn nameless_disk_find_uses_container_name_to_find_loaded_fragment() {
             PPC_HEAP_BASE + 0x10000,
             PPC_STACK_BASE,
             &mut connections,
+            &[],
             &mut next_connection,
             &mut import_run_state,
             Some(fragment.len() as u32),
@@ -2019,6 +2021,346 @@ fn nameless_disk_find_uses_container_name_to_find_loaded_fragment() {
     );
     assert_eq!(memory.read_u32_be(0x6004), Some(0x1234));
     assert_eq!(connections.len(), 1);
+}
+
+#[test]
+fn failed_mem_fragment_load_removes_dependencies_it_connected() {
+    let fragment = synthetic_pef_with_library_import(b"DepLib", b"DepSymbol");
+    let library = PpcCfmLibraryFragment {
+        name: "DepLib".to_string(),
+        bytes: synthetic_pef_with_exports().into(),
+    };
+    let calls = SharedGuestCallStack::default();
+    let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x100000);
+    let mut manager = owner.0.borrow_mut();
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x5000, fragment.clone());
+    memory.add_region(0x6000, vec![0; 0x200]);
+    memory.add_region(PPC_HEAP_BASE, vec![0; 0x100000]);
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[3] = 0x5000;
+    cpu.gpr[4] = fragment.len() as u32;
+    cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+    cpu.gpr[7] = 0x6000;
+    cpu.gpr[8] = 0x6004;
+    cpu.gpr[9] = 0x6010;
+    let mut connections = Vec::new();
+    let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+    let mut import_run_state = PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+    let mut cursor = PPC_HEAP_BASE;
+
+    let action = ppc_get_mem_fragment(
+        &mut cpu,
+        &calls,
+        &mut manager,
+        &mut memory,
+        &mut cursor,
+        PPC_HEAP_BASE + 0x100000,
+        PPC_STACK_BASE,
+        &mut connections,
+        &[library],
+        &mut next_connection,
+        &mut import_run_state,
+        None,
+        None,
+    );
+
+    assert!(!matches!(
+        action,
+        PpcImportAction::Continue | PpcImportAction::Return(0)
+    ));
+    assert!(connections.is_empty());
+    assert_eq!(next_connection, PPC_FIRST_CFM_CONNECTION_ID);
+}
+
+#[test]
+fn dependency_and_fragment_initializer_blocks_share_one_released_scratch() {
+    use crate::execution_kernel::ExecutionTaskState;
+    let fragment = synthetic_pef_with_initializer();
+    // The fragment imports InterfaceLib; a bundled library of that name makes
+    // it a dependency with its own initializer.
+    let library = PpcCfmLibraryFragment {
+        name: "InterfaceLib".to_string(),
+        bytes: synthetic_pef_with_initializer().into(),
+    };
+    let calls = SharedGuestCallStack::default();
+    let worker = calls.create_task().unwrap();
+    assert!(calls.set_scheduling_state(worker, ExecutionTaskState::Ready));
+    assert!(calls.switch_to_task(worker));
+    let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x100000);
+    let mut manager = owner.0.borrow_mut();
+    let mut memory = PpcSectionMem::new();
+    memory.add_region(0x5000, fragment.clone());
+    memory.add_region(0x6000, vec![0; 0x200]);
+    memory.add_region(0x8000, vec![0; 128]);
+    memory.add_region(PPC_HEAP_BASE, vec![0; 0x100000]);
+    let mut cpu = PpcCpu::new();
+    cpu.gpr[1] = 0x8000;
+    cpu.gpr[3] = 0x5000;
+    cpu.gpr[4] = fragment.len() as u32;
+    cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+    cpu.gpr[7] = 0x6000;
+    cpu.gpr[8] = 0x6004;
+    cpu.gpr[9] = 0x6010;
+    let mut connections = Vec::new();
+    let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+    let mut import_run_state = PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout());
+    let mut cursor = PPC_HEAP_BASE;
+
+    let request = cpu.clone();
+    let action = ppc_get_mem_fragment(
+        &mut cpu,
+        &calls,
+        &mut manager,
+        &mut memory,
+        &mut cursor,
+        PPC_HEAP_BASE + 0x100000,
+        PPC_STACK_BASE,
+        &mut connections,
+        &[library],
+        &mut next_connection,
+        &mut import_run_state,
+        None,
+        None,
+    );
+
+    assert_eq!(action, PpcImportAction::Continue);
+    assert_eq!(connections.len(), 2);
+    assert_eq!(manager.native_ptr_records().len(), 1);
+    let ids = connections
+        .iter()
+        .map(|connection| connection.id)
+        .collect::<Vec<_>>();
+    assert!(ids
+        .iter()
+        .all(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
+    // A nested load importing the pending dependency must not bind to it.
+    let mut nested = request.clone();
+    assert_eq!(
+        ppc_get_mem_fragment(
+            &mut nested,
+            &calls,
+            &mut manager,
+            &mut memory,
+            &mut cursor,
+            PPC_HEAP_BASE + 0x100000,
+            PPC_STACK_BASE,
+            &mut connections,
+            &[],
+            &mut next_connection,
+            &mut import_run_state,
+            None,
+            None,
+        ),
+        PpcImportAction::Return(ppc_i16_result(PPC_FRAG_INIT_LOOP))
+    );
+    assert_eq!(connections.len(), 2);
+    cpu.pc = PPC_GUEST_CALL_RETURN_PC;
+    cpu.gpr[3] = 0;
+    assert!(
+        calls.complete_powerpc_resuming_load(&mut cpu, &mut manager, |operation, result| {
+            ppc_complete_cfm_load(operation, result, &mut memory, &mut connections)
+        })
+    );
+    assert_eq!(cpu.gpr[3], 0);
+    assert!(manager.native_ptr_records().is_empty());
+    assert!(!ids
+        .iter()
+        .any(|id| calls.is_cfm_load_pending(CfmLoadId(*id))));
+}
+
+#[test]
+fn fragment_after_an_exempted_dependency_uses_the_raised_allocation_limit() {
+    // Returns the load result and the heap cursor it left behind.
+    let load = |application_limit: Option<u32>, stack_base: u32| {
+        let fragment = synthetic_pef();
+        let library = PpcCfmLibraryFragment {
+            name: "InterfaceLib".to_string(),
+            bytes: synthetic_pef().into(),
+        };
+        let calls = SharedGuestCallStack::default();
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x100000);
+        let mut manager = owner.0.borrow_mut();
+        if let Some(limit) = application_limit {
+            manager.set_application_heap_limit(limit);
+        }
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x5000, fragment.clone());
+        memory.add_region(0x6000, vec![0; 0x200]);
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x100000]);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = 0x5000;
+        cpu.gpr[4] = fragment.len() as u32;
+        cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+        cpu.gpr[7] = 0x6000;
+        cpu.gpr[8] = 0x6004;
+        cpu.gpr[9] = 0x6010;
+        let mut cursor = PPC_HEAP_BASE;
+        let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+        let action = ppc_get_mem_fragment(
+            &mut cpu,
+            &calls,
+            &mut manager,
+            &mut memory,
+            &mut cursor,
+            application_limit.unwrap_or(PPC_HEAP_BASE + 0x100000),
+            stack_base,
+            &mut Vec::new(),
+            &[library],
+            &mut next_connection,
+            &mut PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout()),
+            None,
+            None,
+        );
+        (action, manager.native_heap_state().unwrap().heap_cursor)
+    };
+    // Without exemption, the load needs the heap up to `end`.
+    let (action, end) = load(None, u32::MAX);
+    assert_eq!(action, PpcImportAction::Return(0));
+    // With the partition ending just short of `end`, only the dependency's
+    // exemption leaves room for the fragment.
+    let (action, _) = load(Some(end - PPC_HEAP_ALIGNMENT), PPC_HEAP_BASE);
+    assert_eq!(action, PpcImportAction::Return(0));
+}
+
+#[test]
+fn chained_dependency_initializer_runs_before_the_fragment_and_stops_on_failure() {
+    const MARK: u32 = 0x4800_0000;
+    for dependency_result in [0u16, 0xffff] {
+        // DepLib's initializer stores 1 at MARK; the fragment's copies MARK
+        // to MARK + 4, so the copy shows which ran first.
+        let mut library = synthetic_pef_with_initializer();
+        let code = parse_pef_sections(&library).unwrap()[0].container_offset as usize;
+        for (index, word) in [
+            d_form_u(15, 5, 0, (MARK >> 16) as u16), // lis r5, MARK@h
+            d_form_u(14, 6, 0, 1),                   // li r6, 1
+            d_form_u(36, 6, 5, 0),                   // stw r6, 0(r5)
+            d_form_u(14, 3, 0, dependency_result),   // li r3, result
+            BLR,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_u32(&mut library, code + index * 4, word);
+        }
+        let mut fragment = synthetic_pef_with_library_import(b"DepLib", b"TestImport");
+        write_i32(&mut fragment, 0x80 + 8, 1);
+        write_u32(&mut fragment, 0x80 + 12, 0);
+        let code = parse_pef_sections(&fragment).unwrap()[0].container_offset as usize;
+        for (index, word) in [
+            d_form_u(15, 5, 0, (MARK >> 16) as u16), // lis r5, MARK@h
+            d_form_u(32, 6, 5, 0),                   // lwz r6, 0(r5)
+            d_form_u(36, 6, 5, 4),                   // stw r6, 4(r5)
+            d_form_u(14, 3, 0, 0),                   // li r3, 0
+            BLR,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            write_u32(&mut fragment, code + index * 4, word);
+        }
+
+        let pef = synthetic_pef_with_import(b"GetMemFragment");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_cfm_library_fragments(vec![PpcCfmLibraryFragment {
+            name: "DepLib".to_string(),
+            bytes: library.into(),
+        }]);
+        loaded.memory.add_region(MARK, vec![0; 8]);
+        let fragment_addr = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            fragment.len() as u32,
+            false,
+        );
+        loaded.memory.write_bytes(fragment_addr, &fragment).unwrap();
+        let outputs = ppc_heap_alloc(
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            16,
+            true,
+        );
+        loaded.cpu.gpr[3] = fragment_addr;
+        loaded.cpu.gpr[4] = fragment.len() as u32;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+        loaded.cpu.gpr[7] = outputs;
+        loaded.cpu.gpr[8] = outputs + 4;
+        loaded.cpu.gpr[9] = outputs + 8;
+
+        let probe = loaded.run_with_hle_imports(512);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(MARK), Some(1));
+        let connections = &loaded.cfm.as_ref().unwrap().connections;
+        if dependency_result == 0 {
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(MARK + 4), Some(1));
+            assert_eq!(connections.len(), 2);
+            assert!(connections.iter().any(|item| item.library_name == "DepLib"));
+        } else {
+            assert_ne!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(MARK + 4), Some(0));
+            assert!(connections.is_empty());
+        }
+    }
+}
+
+#[test]
+fn bundled_gamesprockets_stay_native_for_runtime_loaded_fragments() {
+    for (library_name, symbol_name) in [
+        ("DrawSprocketLib", "DSpStartup"),
+        ("InputSprocketLib", "ISpGetVersion"),
+    ] {
+        let fragment =
+            synthetic_pef_with_library_import(library_name.as_bytes(), symbol_name.as_bytes());
+        // Not a loadable PEF: connecting it would fail the load.
+        let library = PpcCfmLibraryFragment {
+            name: library_name.to_string(),
+            bytes: vec![0; 40].into(),
+        };
+        let calls = SharedGuestCallStack::default();
+        let owner = PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_HEAP_BASE + 0x100000);
+        let mut manager = owner.0.borrow_mut();
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x5000, fragment.clone());
+        memory.add_region(0x6000, vec![0; 0x200]);
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x100000]);
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = 0x5000;
+        cpu.gpr[4] = fragment.len() as u32;
+        cpu.gpr[6] = PPC_CFM_LOAD_NEW_COPY;
+        cpu.gpr[7] = 0x6000;
+        cpu.gpr[8] = 0x6004;
+        cpu.gpr[9] = 0x6010;
+        let mut connections = Vec::new();
+        let mut next_connection = PPC_FIRST_CFM_CONNECTION_ID;
+        let mut cursor = PPC_HEAP_BASE;
+
+        let action = ppc_get_mem_fragment(
+            &mut cpu,
+            &calls,
+            &mut manager,
+            &mut memory,
+            &mut cursor,
+            PPC_HEAP_BASE + 0x100000,
+            PPC_STACK_BASE,
+            &mut connections,
+            &[library],
+            &mut next_connection,
+            &mut PpcImportRunState::from_parts(Vec::new(), 0, ppc_import_layout()),
+            None,
+            None,
+        );
+
+        assert_eq!(action, PpcImportAction::Return(0));
+        assert_eq!(connections.len(), 1);
+        assert!(connections
+            .iter()
+            .all(|connection| connection.library_name != library_name));
+    }
 }
 
 #[test]
