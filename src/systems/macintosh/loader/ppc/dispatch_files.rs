@@ -1441,6 +1441,26 @@ pub(super) fn ppc_dispatch_file_compatibility(
             let pb = cpu.gpr[3];
             let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
             let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
+            // A zero ioVRefNum names the default volume, and a zero
+            // ioWDDirID with it names the default directory last selected by
+            // SetVol or HSetVol, not the application's launch folder.
+            // Inside Macintosh: Files (1992), pp. 2-135--2-137, PBOpenWD.
+            let (requested_vref, requested_dir_id) = match (requested_vref == 0)
+                .then(|| {
+                    ppc_working_directory_info(
+                        0,
+                        *application_working_directory_ref_num,
+                        default_dir_id,
+                        working_directories,
+                        vfs_volumes,
+                    )
+                })
+                .flatten()
+            {
+                Some(default) if requested_dir_id == 0 => (default.volume_ref_num, default.dir_id),
+                Some(default) => (default.volume_ref_num, requested_dir_id),
+                None => (requested_vref, requested_dir_id),
+            };
             let proc_id = memory.read_u32_be(pb + 28).unwrap_or(0);
             // ioNamePtr names the directory relative to the volume and dirID.
             // Inside Macintosh: Files (1992), PBOpenWD.
@@ -1467,8 +1487,14 @@ pub(super) fn ppc_dispatch_file_compatibility(
                 let named_path = if !name.starts_with(':') && name.contains(':') {
                     Some(normalized)
                 } else {
-                    ppc_directory_path_for_id(vfs_directories, parent_dir_id)
-                        .map(|parent| ppc_join_vfs_path(parent, &normalized))
+                    // A partial pathname of ":" names the directory itself.
+                    ppc_directory_path_for_id(vfs_directories, parent_dir_id).map(|parent| {
+                        if normalized.is_empty() {
+                            parent.to_string()
+                        } else {
+                            ppc_join_vfs_path(parent, &normalized)
+                        }
+                    })
                 };
                 let named_dir_id = named_path
                     .and_then(|path| ppc_directory_id_for_path(vfs_directories, &path));
