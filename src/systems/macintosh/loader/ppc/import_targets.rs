@@ -5347,8 +5347,10 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib",
             "SCSIGet" | "SCSISelect" | "SCSICmd" | "SCSIRead" | "SCSIRBlind" | "SCSIWrite"
-            | "SCSIWBlind" | "SCSIComplete" | "SCSIStat" | "SCSIAction",
+            | "SCSIWBlind" | "SCSIComplete" | "SCSIAction",
         ) => PpcImportDispatcherTarget::ReturnError(2),
+        // SCSIStat returns the bus status bits, not an OSErr; an idle bus reads 0.
+        ("InterfaceLib", "SCSIStat") => PpcImportDispatcherTarget::ReturnNoErr,
         (
             "InterfaceLib",
             "OpenEdition" | "CloseEdition" | "EditionHasFormat" | "ReadEdition"
