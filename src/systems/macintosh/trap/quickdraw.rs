@@ -25655,12 +25655,60 @@ impl super::TrapDispatcher {
             self.ensure_dialog_background_saved_for_screen_port(bus, port);
         }
 
+        // The bounding boxes above only trim the fill. A non-rectangular
+        // visRgn or clipRgn (for example a window partly covered by a dialog)
+        // also has to mask individual pixels, as QuickDraw clips every drawing
+        // operation to visRgn and clipRgn. Inside Macintosh Volume I, I-149.
+        let (vis_rgn_handle, clip_rgn_handle) = if skips_region_clip {
+            (0, 0)
+        } else {
+            (
+                bus.read_long(port.wrapping_add(24)),
+                bus.read_long(port.wrapping_add(28)),
+            )
+        };
+        let vis_region_complex = vis_rgn_handle != 0 && Self::region_is_complex(bus, vis_rgn_handle);
+        let clip_region_complex =
+            clip_rgn_handle != 0 && Self::region_is_complex(bus, clip_rgn_handle);
+        let vis_region_cache = if vis_region_complex {
+            Self::build_region_membership_cache(bus, vis_rgn_handle, top, bottom)
+        } else {
+            None
+        };
+        let clip_region_cache = if clip_region_complex {
+            Self::build_region_membership_cache(bus, clip_rgn_handle, top, bottom)
+        } else {
+            None
+        };
+
         for y in top..bottom {
             let dy = (y - bounds_top) as u32;
             let tile_y = i32::from(y).rem_euclid(src_height) as u32;
             for x in left..right {
                 let dx = (x - bounds_left) as u32;
                 if dx >= dst_row_bytes {
+                    continue;
+                }
+                if vis_region_complex
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        vis_rgn_handle,
+                        vis_region_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
+                    continue;
+                }
+                if clip_region_complex
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        clip_rgn_handle,
+                        clip_region_cache.as_ref(),
+                        y,
+                        x,
+                    )
+                {
                     continue;
                 }
                 let tile_x = i32::from(x).rem_euclid(src_width) as u32;
