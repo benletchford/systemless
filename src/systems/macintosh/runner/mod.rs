@@ -8073,7 +8073,7 @@ impl FixtureRunner {
                 }
             }
             match batch.exit {
-                BatchExit::BudgetExhausted => {}
+                BatchExit::BudgetExhausted | BatchExit::BoundaryRequested => {}
                 BatchExit::WatchedPc { pc } => {
                     if self.debug_stop_at_m68k_breakpoint(pc) {
                         return (count, !self.halted);
@@ -9382,7 +9382,7 @@ impl FixtureRunner {
             executed = executed.saturating_add(retired);
             self.debug_note_m68k_executed_units(retired);
             match batch.exit {
-                BatchExit::BudgetExhausted => break,
+                BatchExit::BudgetExhausted | BatchExit::BoundaryRequested => break,
                 BatchExit::WatchedPc { pc } => {
                     // User breakpoints take precedence over an internal return
                     // sentinel at the same address.
