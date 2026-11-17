@@ -1232,16 +1232,12 @@ pub(super) fn dispatch_window_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BeginUpdate => {
-            if let Some(params) =
-                crate::window_manager::evaluate_begin_update_parameters(cpu.gpr[3])
-            {
-                let window = params.window_ptr();
-                if gworlds.iter().any(|record| record.port == window) {
-                    *current_gworld = window;
-                    *current_gdevice =
-                        ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
-                }
-            }
+            // Macintosh Toolbox Essentials (1992), p. 4-129: BeginUpdate
+            // only limits the window's visRgn to its update region; it does
+            // not change the current port. Applications that SetPort to an
+            // offscreen port and then BeginUpdate (Escape Velocity draws its
+            // main menu offscreen before copying it to the window) must keep
+            // drawing into that port.
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EndUpdate => {

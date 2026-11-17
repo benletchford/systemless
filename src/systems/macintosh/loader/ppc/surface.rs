@@ -15,11 +15,15 @@ pub(crate) fn ppc_live_gworld_ctable_handle(
         .and_then(|_| gworld.checked_add(2))
         .and_then(|port_bits| memory.read_u32_be(port_bits))
         .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle));
-    live_pixmap
-        .or_else(|| (record.pixmap != 0).then_some(record.pixmap))
-        .and_then(|pixmap| pixmap.checked_add(42))
-        .and_then(|pm_table| memory.read_u32_be(pm_table))
-        .filter(|ctable_handle| *ctable_handle != 0)
+    let pixmap = live_pixmap.or_else(|| (record.pixmap != 0).then_some(record.pixmap))?;
+    let ctable_handle = memory
+        .read_u32_be(pixmap.checked_add(42)?)
+        .filter(|ctable_handle| *ctable_handle != 0)?;
+    let depth = ppc_read_pixmap_bits(memory, pixmap).map_or(0, |bits| bits.depth);
+    Some(
+        ppc_device_ctable_for_device_indexed_pixmap(memory, ctable_handle, record.gdevice, depth)
+            .unwrap_or(ctable_handle),
+    )
 }
 
 pub(crate) fn ppc_live_gworld_clut(
@@ -88,12 +92,29 @@ pub(crate) fn ppc_rgb_color_to_valid_index_in_clut(
     valid: &[bool; 256],
     entry_count: usize,
 ) -> Option<u8> {
+    let entry_count = entry_count.min(clut.len());
+    // QuickDraw's inverse tables reserve exact black and white for the last
+    // and first CLUT entries when those entries hold them, rather than
+    // picking an arbitrary duplicate. A fade to black with SetEntries
+    // collapses every entry to black; black drawn then must stay on the last
+    // entry, or it turns white once the palette fades back in.
+    // Imaging With QuickDraw (1994), p. 4-82; MakeITable in
+    // references/executor/src/quickdraw/qColorMgr.cpp.
+    let rgb = [color.red, color.green, color.blue];
+    if let Some(terminal) = entry_count.checked_sub(1) {
+        if rgb == [0; 3] && valid[terminal] && clut[terminal] == [0; 3] {
+            return Some(terminal as u8);
+        }
+        if rgb == [u16::MAX; 3] && valid[0] && clut[0] == [u16::MAX; 3] {
+            return Some(0);
+        }
+    }
     let target = ppc_rgb_color_to_rgb555(color);
     let target_r = i64::from((target >> 10) & 0x1f);
     let target_g = i64::from((target >> 5) & 0x1f);
     let target_b = i64::from(target & 0x1f);
     clut.iter()
-        .take(entry_count.min(clut.len()))
+        .take(entry_count)
         .enumerate()
         .filter(|(index, _)| valid[*index])
         .min_by_key(|(_, [red, green, blue])| {
@@ -351,6 +372,39 @@ pub(crate) fn ppc_live_front_buffer_for_gworld(
     ppc_live_quickdraw_surface(memory, gworlds, gworld).map(|surface| surface.front_buffer)
 }
 
+/// The live colour table of `gdevice` when `ctable_handle` is a device
+/// table (ctFlags high bit) for a PixMap of the device's indexed depth.
+///
+/// Such a PixMap's pixel values are device indices, and Color QuickDraw
+/// matches RGB colours through the current GDevice's inverse table rather
+/// than the port's pmTable. Imaging With QuickDraw (1994), pp. 4-81--4-82;
+/// Inside Macintosh Volume V (1986), p. V-135. Escape Velocity copies the
+/// screen's table with HandToHand while the screen is faded to black, then
+/// draws its main menu into a CGrafPort using that copy after fading back
+/// in; matching against the stale all-black copy loses every colour.
+fn ppc_device_ctable_for_device_indexed_pixmap(
+    memory: &mut PpcSectionMem,
+    ctable_handle: u32,
+    gdevice: u32,
+    depth: u32,
+) -> Option<u32> {
+    if !matches!(depth, 1 | 2 | 4 | 8) || gdevice == 0 {
+        return None;
+    }
+    let table = memory.read_u32_be(ctable_handle)?;
+    if memory.read_u16_be(table.checked_add(4)?)? & 0x8000 == 0 {
+        return None;
+    }
+    let device_ctable = ppc_gdevice_ctable_handle(memory, gdevice)?;
+    if device_ctable == ctable_handle {
+        return None;
+    }
+    let device = memory.read_u32_be(gdevice)?;
+    let device_pixmap_handle = memory.read_u32_be(device.checked_add(22)?)?;
+    let device_pixmap = memory.read_u32_be(device_pixmap_handle)?;
+    (ppc_read_pixmap_bits(memory, device_pixmap)?.depth == depth).then_some(device_ctable)
+}
+
 pub(crate) fn ppc_live_quickdraw_surface(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -372,6 +426,18 @@ pub(crate) fn ppc_live_quickdraw_surface(
                 .checked_add(42)
                 .and_then(|pm_table| memory.read_u32_be(pm_table))
                 .filter(|handle| *handle != 0);
+            let ctable_handle = ctable_handle.map(|handle| {
+                record
+                    .and_then(|record| {
+                        ppc_device_ctable_for_device_indexed_pixmap(
+                            memory,
+                            handle,
+                            record.gdevice,
+                            bits.depth,
+                        )
+                    })
+                    .unwrap_or(handle)
+            });
             Some((bits, ctable_handle))
         } else {
             let mut bits = ppc_read_pixmap_bits(memory, port_bits)?;

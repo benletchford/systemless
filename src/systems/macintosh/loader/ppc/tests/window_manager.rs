@@ -3315,9 +3315,14 @@ fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
         "InvalRect must publish a concrete local update region",
     );
 
+    // BeginUpdate leaves the current port alone; the application chooses
+    // where to draw. Macintosh Toolbox Essentials (1992), p. 4-129.
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
     loaded.cpu.gpr[3] = window;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::BeginUpdate);
-    assert_eq!(*loaded.current_gworld, window);
+    assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
     run_test_import(&mut loaded, PpcImportDispatcherTarget::EndUpdate);
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
@@ -5528,10 +5533,13 @@ fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evalu
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
             loaded.cpu.gpr[3] = window;
+            loaded
+                .current_gworld
+                .with_mut(|current_gworld| *current_gworld = PPC_MAIN_GWORLD);
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
-            assert_eq!(*loaded.current_gworld, window);
+            assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
 
             // EndUpdate empties update region
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "EndUpdate");
