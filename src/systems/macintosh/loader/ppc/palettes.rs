@@ -2,20 +2,10 @@
 
 use super::*;
 
-pub(crate) fn ppc_window_palette_handle(
-    memory: &mut PpcSectionMem,
-    startup: &PpcToolboxStartupState,
-    window: u32,
-) -> u32 {
-    if memory.read_u16_be(window.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
-        == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
-    {
-        startup.dialog_palettes.get(&window).map_or(0, |entry| entry.0)
-    } else {
-        memory
-            .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-            .unwrap_or(0)
-    }
+// Palettes live outside guest memory: a CWindowRecord ends at 156 bytes and
+// applications embed windows in larger structures.
+pub(crate) fn ppc_window_palette_handle(startup: &PpcToolboxStartupState, window: u32) -> u32 {
+    startup.port_palettes.get(&window).map_or(0, |entry| entry.0)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -837,7 +827,7 @@ pub(crate) fn ppc_activate_window_palette(
             .and_then(|handle| ppc_read_ctable_clut(memory, handle, &defaults))
             .unwrap_or(defaults)
     };
-    let assigned_palette = ppc_window_palette_handle(memory, toolbox_startup, window);
+    let assigned_palette = ppc_window_palette_handle(toolbox_startup, window);
     // Inside Macintosh Volume VI (1991), pp. 20-16, 20-19: a window with no
     // assigned palette uses the application's default palette.
     let palette_handle = if assigned_palette != 0 {
@@ -916,7 +906,7 @@ pub(crate) fn ppc_activate_front_window_palette(
     let gdevice = front.map_or(PPC_MAIN_GDEVICE, |front| {
         ppc_gworld_device(gworlds, front).unwrap_or(fallback_gdevice)
     });
-    let assigned_palette = ppc_window_palette_handle(memory, toolbox_startup, window);
+    let assigned_palette = ppc_window_palette_handle(toolbox_startup, window);
     if assigned_palette == 0
         && toolbox_startup.application_palette == 0
         && !toolbox_startup

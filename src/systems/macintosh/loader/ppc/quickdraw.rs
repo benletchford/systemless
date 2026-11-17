@@ -5004,9 +5004,7 @@ pub(crate) fn ppc_copy_bits_palette_index_map(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette_handle(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {
@@ -5089,9 +5087,7 @@ pub(crate) fn ppc_copy_bits_linked_palette_clut(
     let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
         .saturating_add(1)
         .min(256);
-    let assigned_palette = memory
-        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
-        .unwrap_or(0);
+    let assigned_palette = ppc_window_palette_handle(toolbox_startup, current_gworld);
     let palette_handle = if assigned_palette != 0 {
         assigned_palette
     } else {

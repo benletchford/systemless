@@ -36,7 +36,7 @@ fn enqueue_palette_updates(
             {
                 continue;
             }
-            let associated = ppc_window_palette_handle(memory, startup, window);
+            let associated = ppc_window_palette_handle(startup, window);
             let palette = if associated == 0 {
                 startup.application_palette
             } else {
@@ -205,7 +205,7 @@ pub(super) fn dispatch_palette_import(
             let previous_palette_handle = if window_ptr == u32::MAX {
                 toolbox_startup.application_palette
             } else {
-                ppc_window_palette_handle(memory, toolbox_startup, window_ptr)
+                ppc_window_palette_handle(toolbox_startup, window_ptr)
             };
             if window_ptr == u32::MAX {
                 // Inside Macintosh Volume VI (1991), p. 20-16: WindowPtr(-1)
@@ -213,34 +213,16 @@ pub(super) fn dispatch_palette_import(
                 // same update policy accepted for an ordinary window.
                 toolbox_startup.application_palette = palette_handle;
                 toolbox_startup.application_palette_updates = updates;
-            } else if window_ptr != 0
-                && memory.read_u16_be(window_ptr.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
-                    == Some(crate::dialog_manager::DIALOG_WINDOW_KIND)
-            {
+            } else if window_ptr != 0 {
                 toolbox_startup
-                    .dialog_palettes
+                    .port_palettes
                     .insert(window_ptr, (palette_handle, updates));
-            } else if window_ptr != 0
-                && ppc_memory_can_write_bytes(
-                    memory,
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
-                    2,
-                )
-            {
-                let _ = memory.write_u32_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
-                    palette_handle,
-                );
-                let _ = memory.write_u16_be(
-                    window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
-                    updates,
-                );
             }
             if previous_palette_handle != 0 && previous_palette_handle != palette_handle {
                 let still_associated = toolbox_startup.application_palette
                     == previous_palette_handle
                     || gworlds.iter().any(|record| {
-                        ppc_window_palette_handle(memory, toolbox_startup, record.port)
+                        ppc_window_palette_handle(toolbox_startup, record.port)
                             == previous_palette_handle
                     });
                 if !still_associated {
@@ -262,7 +244,7 @@ pub(super) fn dispatch_palette_import(
                 window_ptr
             };
             let front_uses_default = front_window.map_or(true, |front| {
-                ppc_window_palette_handle(memory, toolbox_startup, front) == 0
+                ppc_window_palette_handle(toolbox_startup, front) == 0
             });
             let applies_now = if window_ptr == u32::MAX {
                 front_window.is_none() || front_uses_default
@@ -316,7 +298,7 @@ pub(super) fn dispatch_palette_import(
             let palette = if window_ptr == u32::MAX {
                 toolbox_startup.application_palette
             } else if window_ptr != 0 {
-                ppc_window_palette_handle(memory, toolbox_startup, window_ptr)
+                ppc_window_palette_handle(toolbox_startup, window_ptr)
             } else {
                 0
             };
