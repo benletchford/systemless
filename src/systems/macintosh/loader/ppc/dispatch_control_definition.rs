@@ -83,6 +83,19 @@ pub(super) fn ppc_control_definition_resource(
         })
 }
 
+/// Whether this import entry is a guest control definition returning to the
+/// import that queued it, so the remaining queued messages must be resumed
+/// before the import itself is dispatched again.
+pub(super) fn ppc_control_definition_resume_pending(
+    startup: &PpcToolboxStartupState,
+    cpu: &PpcCpu,
+) -> bool {
+    startup
+        .control_definition_stack
+        .last()
+        .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_control_definition_continuation(
     binding: &PpcImportBinding,
@@ -102,10 +115,7 @@ pub(super) fn ppc_control_definition_continuation(
     device: &mut u32,
     completion: Option<PpcImportAction>,
 ) -> Option<PpcImportAction> {
-    let resumed = startup
-        .control_definition_stack
-        .last()
-        .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc);
+    let resumed = ppc_control_definition_resume_pending(startup, cpu);
     let mut frame = if resumed && completion.is_none() {
         startup.control_definition_stack.pop().unwrap()
     } else if let Some(completion) = completion {

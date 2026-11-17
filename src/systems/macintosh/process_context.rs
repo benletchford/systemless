@@ -7503,6 +7503,23 @@ impl ProcessNativeMemoryManager {
             })
     }
 
+    /// Whether `[address, address + len)` lies inside the allocated part of
+    /// the native heap.
+    ///
+    /// Toolbox records a native process builds for itself (window ports and
+    /// their PixMaps) are carved from this heap without per-block records.
+    /// Classic trap code running inside the process, such as a 68K definition
+    /// procedure, still receives pointers into it. Inside Macintosh: Memory
+    /// (1992), pp. 1-8--1-11.
+    pub(crate) fn native_heap_contains(&self, address: u32, len: u32) -> bool {
+        self.native_heap_state().is_some_and(|heap| {
+            address >= heap.heap_base
+                && address
+                    .checked_add(len)
+                    .is_some_and(|end| end <= heap.heap_cursor)
+        })
+    }
+
     /// Return a relocatable block's logical size from process-owned allocator
     /// metadata and its current master pointer.
     ///

@@ -18557,7 +18557,48 @@ impl super::TrapDispatcher {
         if pm_ptr == 0 || bus.get_alloc_size(pm_ptr).is_none() {
             return None;
         }
-        Some(CachedCopyBitmapInfo {
+        Some(Self::copy_bitmap_from_pixmap_fields(bus, pm_ptr))
+    }
+
+    /// A color port owned by a native (PowerPC) process keeps its PixMap in
+    /// the process Memory Manager's native heap, which the classic allocator
+    /// does not track. Classic code the process calls through Mixed Mode,
+    /// such as a 68K CDEF passing `&thePort->portBits` to CopyBits, still
+    /// names that port. Imaging With QuickDraw (1994), pp. 4-10--4-12 and
+    /// 3-112--3-113: CopyBits dereferences a cGrafPort's portPixMap.
+    fn native_process_pixmap_info(
+        &self,
+        bus: &MacMemoryBus,
+        pm_handle: u32,
+    ) -> Option<CachedCopyBitmapInfo> {
+        // A PixMap record is 50 bytes. Inside Macintosh: Imaging With
+        // QuickDraw (1994), p. 4-46.
+        const PIXMAP_RECORD_SIZE: u32 = 50;
+        if pm_handle == 0 || !Self::guest_range_in_ram(bus, pm_handle, 4) {
+            return None;
+        }
+        let pm_ptr = bus.read_long(pm_handle);
+        if pm_ptr == 0 || !Self::guest_range_in_ram(bus, pm_ptr, PIXMAP_RECORD_SIZE) {
+            return None;
+        }
+        let memory_manager = self.process_memory_manager();
+        let memory_manager = memory_manager.borrow();
+        if !memory_manager.native_heap_contains(pm_handle, 4)
+            || !memory_manager.native_heap_contains(pm_ptr, PIXMAP_RECORD_SIZE)
+        {
+            return None;
+        }
+        let info = Self::copy_bitmap_from_pixmap_fields(bus, pm_ptr);
+        // rowBytes bit 15 marks a PixMap rather than a BitMap.
+        let is_pixmap = bus.read_word(pm_ptr + 4) & 0x8000 != 0
+            && matches!(info.pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
+            && info.base != 0
+            && info.row_bytes != 0;
+        is_pixmap.then_some(info)
+    }
+
+    fn copy_bitmap_from_pixmap_fields(bus: &MacMemoryBus, pm_ptr: u32) -> CachedCopyBitmapInfo {
+        CachedCopyBitmapInfo {
             base: Self::offscreen_pixmap_base_ptr(bus, pm_ptr),
             row_bytes: (bus.read_word(pm_ptr + 4) & 0x3FFF) as u32,
             bounds_top: bus.read_word(pm_ptr + 6) as i16,
@@ -18566,7 +18607,7 @@ impl super::TrapDispatcher {
             bounds_right: bus.read_word(pm_ptr + 12) as i16,
             pixel_size: bus.read_word(pm_ptr + 32) as u32,
             ctab_handle: bus.read_long(pm_ptr + 42),
-        })
+        }
     }
 
     fn cache_portbits_pixmap_handle(&mut self, bus: &MacMemoryBus, bits_ptr: u32, pm_handle: u32) {
@@ -22192,8 +22233,9 @@ impl super::TrapDispatcher {
         if (raw_word & 0xC000) == 0xC000 {
             let pm_handle = normalize_base(bus.read_long(bits_ptr));
             let direct_pm_ptr = Self::pixmap_ptr_from_handle(bus, pm_handle);
-            let direct_info =
-                direct_pm_ptr.and_then(|pm_ptr| Self::cached_copy_bitmap_from_pixmap(bus, pm_ptr));
+            let direct_info = direct_pm_ptr
+                .and_then(|pm_ptr| Self::cached_copy_bitmap_from_pixmap(bus, pm_ptr))
+                .or_else(|| self.native_process_pixmap_info(bus, pm_handle));
             let cached_info = self.disposed_gworld_portbits.get(&bits_ptr).copied();
             let resolved_info = direct_info.or(cached_info);
             let Some(info) = resolved_info else {
