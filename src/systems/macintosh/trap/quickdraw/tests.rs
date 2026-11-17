@@ -3116,6 +3116,158 @@
         }
     }
 
+    /// Push one argument and dispatch a QuickDraw trap that takes it.
+    fn qd_call_long(
+        d: &mut TrapDispatcher,
+        cpu: &mut impl CpuOps,
+        bus: &mut MacMemoryBus,
+        trap: u16,
+        arg: u32,
+    ) {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, arg);
+        assert!(d.dispatch_quickdraw(true, trap, cpu, bus).unwrap().is_ok());
+    }
+
+    fn one_bit_rows(bus: &MacMemoryBus, base: u32, row_bytes: u32, rows: u32) -> Vec<String> {
+        (0..rows)
+            .map(|row| {
+                bus.read_bytes(base + row * row_bytes, 2)
+                    .iter()
+                    .map(|byte| format!("{byte:08b}"))
+                    .collect::<String>()
+                    .replace('0', ".")
+                    .replace('1', "#")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_bit_gworld_paints_with_the_white_foreground_like_color_quickdraw() {
+        // Diamonds 3D builds its ball masks in a 1-bit GWorld with
+        // ForeColor(whiteColor); PaintRect(r); ForeColor(blackColor);
+        // InsetRect(r, 1, 1); PaintOval(r). Color QuickDraw inks a one-bit
+        // destination with the low bits of the port's resolved fgColor and
+        // bkColor pixels (QDUtil.a ColorMap, DoOneBit), so the white PaintRect
+        // clears the mask and only the oval stays set. Painting black
+        // regardless of the foreground left an opaque square behind the ball.
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 8, 16);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0u32);
+        bus.write_long(TEST_SP + 4, 0u32);
+        bus.write_long(TEST_SP + 8, 0u32);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 1u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+        assert!(d
+            .dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let gdh = d.gworld_devices.get(&gworld).copied().unwrap_or(0);
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0008_0006);
+        bus.write_long(TEST_SP, gdh);
+        bus.write_long(TEST_SP + 4, gworld);
+        assert!(d
+            .dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(*d.current_port, gworld);
+        let pm_ptr = bus.read_long(bus.read_long(gworld + 2));
+        assert_eq!(
+            bus.read_word(pm_ptr + 32),
+            1,
+            "the GWorld must be one bit deep"
+        );
+        let base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm_ptr);
+        let row_bytes = u32::from(bus.read_word(pm_ptr + 4) & 0x3FFF);
+        for row in 0..8 {
+            bus.write_bytes(base + row * row_bytes, &[0xFF, 0xFF]);
+        }
+
+        let rect = bus.alloc(8);
+        write_rect(&mut bus, rect, 0, 0, 8, 16);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x062, 30); // ForeColor(whiteColor)
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A2, rect); // PaintRect
+        assert_eq!(
+            one_bit_rows(&bus, base, row_bytes, 8),
+            vec!["................"; 8],
+            "a white foreground must clear the one-bit mask"
+        );
+
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x062, 33); // ForeColor(blackColor)
+        write_rect(&mut bus, rect, 0, 4, 8, 12);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0B8, rect); // PaintOval
+        let rows = one_bit_rows(&bus, base, row_bytes, 8);
+        assert!(
+            rows.iter()
+                .all(|row| row[..4].chars().all(|c| c == '.') && row[12..].chars().all(|c| c == '.')),
+            "a black oval must leave the cleared corners transparent: {rows:#?}"
+        );
+        assert!(rows[4].contains('#'), "the oval must be painted: {rows:#?}");
+    }
+
+    #[test]
+    fn basic_grafport_one_bit_inks_follow_the_classic_normal_bit() {
+        // QDUtil.a ColorMap (remapOld1bit): on a basic GrafPort drawing into a
+        // one-bit bitmap with colrBit 0, a foreground whose normal bit is
+        // clear (whiteColor) paints white and a background whose normal bit is
+        // set (any colour but whiteColor) erases black. Inside Macintosh
+        // Volume I (1985), pp. I-158 and I-173.
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(2 * 4);
+        let port = bus.alloc(108);
+        write_bitmap_1bpp(&mut bus, port + 2, base, 2, (0, 0, 4, 16));
+        write_rect(&mut bus, port + 16, 0, 0, 4, 16);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 4, 16), &[]);
+        let clip = make_complex_rgn(&mut bus, (0, 0, 4, 16), &[]);
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.pn_pat = [0xFF; 8];
+        d.bk_pat = [0x00; 8];
+        d.pn_mode = 8;
+        let rect = bus.alloc(8);
+
+        bus.write_bytes(base, &[0xFF; 8]);
+        write_rect(&mut bus, rect, 0, 0, 1, 16);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x062, 30); // ForeColor(whiteColor)
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A2, rect); // PaintRect
+
+        write_rect(&mut bus, rect, 1, 0, 2, 16);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x062, 205); // ForeColor(redColor)
+        bus.write_bytes(base + 2, &[0x00, 0x00]);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A2, rect); // PaintRect
+
+        write_rect(&mut bus, rect, 2, 0, 3, 16);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x063, 33); // BackColor(blackColor)
+        bus.write_bytes(base + 4, &[0x00, 0x00]);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A3, rect); // EraseRect
+
+        assert_eq!(
+            one_bit_rows(&bus, base, 2, 4),
+            vec![
+                "................",
+                "################",
+                "################",
+                "################"
+            ],
+            "whiteColor paints white, other foregrounds black, a black background erases black"
+        );
+
+        // A negative colrBit keeps the black-on-white defaults.
+        bus.write_word(port + 88, 0xFFFF);
+        write_rect(&mut bus, rect, 3, 0, 4, 16);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x062, 30); // ForeColor(whiteColor)
+        bus.write_bytes(base + 6, &[0x00, 0x00]);
+        qd_call_long(&mut d, &mut cpu, &mut bus, 0x0A2, rect); // PaintRect
+        assert_eq!(one_bit_rows(&bus, base, 2, 4)[3], "################");
+    }
+
     #[test]
     fn gpu_classic_glyph_rows_match_software_at_every_depth_and_transfer() {
         for depth in [1, 2, 4, 8, 16, 32] {
