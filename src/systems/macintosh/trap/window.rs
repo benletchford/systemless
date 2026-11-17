@@ -5704,6 +5704,15 @@ impl super::TrapDispatcher {
                     } else {
                         Vec::new()
                     };
+                    // Hiding a window runs PaintBehind on its structure: each
+                    // window behind has its newly exposed content erased (when
+                    // PaintWhite is set) and added to its update region.
+                    // Record what each could see before the hide.
+                    // Inside Macintosh Volume I, I-285 and I-296--I-297.
+                    let visibility_before_hide: Vec<(u32, u32)> = windows_behind
+                        .iter()
+                        .map(|&window| (window, self.snapshot_window_visibility(bus, window)))
+                        .collect();
                     bus.write_byte(
                         the_window + Self::WINDOW_VISIBLE_OFFSET,
                         if show_flag { 0xFF } else { 0x00 },
@@ -5735,6 +5744,17 @@ impl super::TrapDispatcher {
                     } else {
                         self.clear_queued_update_events(the_window);
                         self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
+                    }
+                    let erase_content = bus.read_word(0x09DC) != 0;
+                    for (window, old_visible) in visibility_before_hide {
+                        self.paint_newly_exposed_window(
+                            bus,
+                            cpu,
+                            window,
+                            old_visible,
+                            true,
+                            erase_content,
+                        );
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);

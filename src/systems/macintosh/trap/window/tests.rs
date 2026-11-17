@@ -4601,6 +4601,68 @@ fn showhide_false_invalidates_visible_content_behind_target() {
     assert!(!disp.dialog_visible_snapshots.contains_key(&target));
 }
 
+fn hide_target_over_back_with_paint_white(paint_white: u16) -> (u8, bool) {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(0x0824, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    bus.write_word(0x09DC, paint_white);
+
+    let back = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, back, screen_base, 40, 40, 300, 500, "Back", 0, true, true, true, 0,
+    );
+    let target = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, target, screen_base, 80, 100, 220, 420, "Target", 1, true, true,
+        false, 0,
+    );
+    disp.window_list.replace(vec![target, back]);
+    disp.sync_window_list_links(&mut bus);
+    disp.front_window = back;
+    disp.current_port
+        .with_mut(|current_port| *current_port = back);
+    let update_handle = bus.read_long(back + 122);
+    super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+    disp.clear_queued_update_events(back);
+
+    // A pixel the hidden window leaves behind, over the back window's content.
+    let exposed_pixel = screen_base + 150 * 800 + 250;
+    bus.write_byte(exposed_pixel, 0xA5);
+
+    let sp = TEST_SP - 6;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_byte(sp, 0);
+    bus.write_byte(sp + 1, 0xA5);
+    bus.write_long(sp + 2, target);
+    let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    let invalidated = disp
+        .event_queue
+        .iter()
+        .any(|event| event.what == 6 && event.message == back);
+    (bus.read_byte(exposed_pixel), invalidated)
+}
+
+#[test]
+fn showhide_false_erases_exposed_content_behind_when_paint_white_is_set() {
+    // Hiding a window runs PaintBehind on its structure; with PaintWhite set
+    // (the default), each window behind has its newly exposed content erased
+    // before its update event (Inside Macintosh Volume I, I-285, I-296 to
+    // I-297). THINK Class Library hides dialogs with ShowHide, and apps that
+    // repaint only their labels on update relied on this erase.
+    let (pixel, invalidated) = hide_target_over_back_with_paint_white(1);
+    assert_ne!(pixel, 0xA5, "the hidden window's pixels must be erased");
+    assert!(invalidated, "the back window must still receive an update event");
+}
+
+#[test]
+fn showhide_false_keeps_exposed_pixels_when_paint_white_is_clear() {
+    let (pixel, invalidated) = hide_target_over_back_with_paint_white(0);
+    assert_eq!(pixel, 0xA5, "PaintWhite clear leaves exposed pixels for the update");
+    assert!(invalidated, "the back window must still receive an update event");
+}
+
 // ---------------------------------------------------------------
 // 11. SetWTitle (0x11A) -- pops 8 bytes
 // ---------------------------------------------------------------
