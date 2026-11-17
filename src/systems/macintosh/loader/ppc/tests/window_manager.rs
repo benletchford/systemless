@@ -2720,6 +2720,48 @@ fn hle_import_runner_handles_new_cwindow_caller_storage() {
 }
 
 #[test]
+fn new_cwindow_leaves_bytes_after_caller_cwindow_record_untouched() {
+    // Super Othello passes a 156-byte CWindowRecord to GetNewCWindow; the
+    // WIND title scratch that followed it was zeroed by a DialogRecord-sized
+    // clear, so the window lost its "Super Othello" title.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let bounds_ptr = scratch;
+    let storage_ptr = scratch + 0x100;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    loaded
+        .memory
+        .add_region(storage_ptr, vec![0xaa; PPC_CGRAF_PORT_SIZE as usize]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 60, 40, 260, 340).unwrap();
+    loaded.cpu.gpr[3] = storage_ptr;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 4;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0x1234_5678;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], storage_ptr);
+    assert_eq!(
+        loaded.memory.read_u32_be(storage_ptr + 152),
+        Some(0x1234_5678)
+    );
+    let trailing: Vec<u8> = (PPC_CWINDOW_RECORD_SIZE..PPC_CGRAF_PORT_SIZE)
+        .map(|offset| loaded.memory.read_u8(storage_ptr + offset).unwrap())
+        .collect();
+    assert_eq!(
+        trailing,
+        vec![0xaa; (PPC_CGRAF_PORT_SIZE - PPC_CWINDOW_RECORD_SIZE) as usize],
+        "NewCWindow wrote past the caller's CWindowRecord",
+    );
+}
+
+#[test]
 fn hle_import_runner_handles_get_new_cwindow() {
     let pef = synthetic_pef_with_import(b"GetNewCWindow");
     let mut loaded = load_pef_application(&pef).unwrap();
