@@ -853,8 +853,11 @@ fn import_bindings_preserve_symbol_metadata_and_synthetic_addresses() {
     assert!(!bindings[0].weak);
 
     assert_eq!(bindings[1].symbol_name, "FindSymbol");
-    assert_eq!(bindings[1].address, PPC_IMPORT_TRAP_BASE + 4);
-    assert_eq!(bindings[1].tvector_address, None);
+    assert_eq!(bindings[1].address, PPC_IMPORT_TVECTOR_BASE + 8);
+    assert_eq!(
+        bindings[1].tvector_address,
+        Some(PPC_IMPORT_TVECTOR_BASE + 8)
+    );
     assert_eq!(bindings[1].trap_pc, PPC_IMPORT_TRAP_BASE + 4);
     assert!(bindings[1].weak);
     assert_eq!(

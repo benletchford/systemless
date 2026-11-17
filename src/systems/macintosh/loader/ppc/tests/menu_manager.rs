@@ -9874,12 +9874,7 @@ fn menu_item_command_ids_bind_and_round_trip_without_changing_shortcuts() {
         b"AppearanceLib".as_slice(),
         b"CarbonLib".as_slice(),
     ] {
-        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
-            library,
-            b"SetMenuItemCommandID",
-            0,
-            &[sm_index_reloc(0x30, 0)],
-        ));
+        let pef = synthetic_pef_with_library_import(library, b"SetMenuItemCommandID");
         let mut loaded = load_pef_application(&pef).unwrap();
         assert_eq!(
             loaded.imports[0].dispatcher_target,
@@ -10000,12 +9995,7 @@ fn menu_item_reference_constants_bind_and_round_trip_without_changing_shortcuts(
         b"AppearanceLib".as_slice(),
         b"CarbonLib".as_slice(),
     ] {
-        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
-            library,
-            b"SetMenuItemRefCon",
-            0,
-            &[sm_index_reloc(0x30, 0)],
-        ));
+        let pef = synthetic_pef_with_library_import(library, b"SetMenuItemRefCon");
         let mut loaded = load_pef_application(&pef).unwrap();
         assert_eq!(
             loaded.imports[0].dispatcher_target,
