@@ -21,6 +21,8 @@ pub(crate) const PPC_CWINDOW_STATE_HANDLE_OFFSET: u32 = crate::window_manager::W
 pub(crate) const PPC_CWINDOW_TITLE_HANDLE_OFFSET: u32 = 134;
 pub(crate) const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = crate::window_manager::WINDOW_TITLE_WIDTH_OFFSET;
 pub(crate) const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = crate::window_manager::WINDOW_REF_CON_OFFSET;
+/// Size of a CWindowRecord: the most NewCWindow may touch in caller storage.
+pub(crate) const PPC_CWINDOW_RECORD_SIZE: u32 = crate::window_manager::WINDOW_RECORD_SIZE;
 pub(crate) const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 pub(crate) const PPC_CWINDOW_CONTROL_LIST_OFFSET: u32 = 140;
 pub(crate) const PPC_LM_WINDOW_LIST_ADDR: u32 = crate::window_manager::LM_WINDOW_LIST_ADDR;
@@ -1779,7 +1781,15 @@ pub(super) fn ppc_new_cwindow_with_storage(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
-    if storage_ptr != 0 && !ppc_memory_can_write_bytes(memory, storage_ptr, PPC_CGRAF_PORT_SIZE) {
+    // Caller-supplied wStorage only spans a CWindowRecord; the bytes after it
+    // belong to the application, so never initialize past the record there.
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), Window Manager.
+    let record_size = if storage_ptr != 0 {
+        PPC_CWINDOW_RECORD_SIZE
+    } else {
+        PPC_CGRAF_PORT_SIZE
+    };
+    if storage_ptr != 0 && !ppc_memory_can_write_bytes(memory, storage_ptr, record_size) {
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
@@ -1938,7 +1948,7 @@ pub(super) fn ppc_new_cwindow_with_storage(
     let def_proc_data = memory.read_u32_be(def_proc).filter(|ptr| *ptr != 0);
 
     if memory
-        .write_bytes(port, &[0; PPC_CGRAF_PORT_SIZE as usize])
+        .write_bytes(port, &vec![0; record_size as usize])
         .is_none()
         || def_proc_data
             .and_then(|data| memory.write_u16_be(data, proc_id as u16))

@@ -701,6 +701,9 @@ pub const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
 pub const WINDOW_PIC_HANDLE_OFFSET: u32 = 148;
 #[allow(dead_code)]
 pub const WINDOW_REF_CON_OFFSET: u32 = 152;
+/// Size of a WindowRecord or CWindowRecord (Inside Macintosh: Macintosh
+/// Toolbox Essentials (1992), Window Manager).
+pub const WINDOW_RECORD_SIZE: u32 = 156;
 #[allow(dead_code)]
 pub const LM_WINDOW_LIST_ADDR: u32 = 0x09D6;
 #[allow(dead_code)]
