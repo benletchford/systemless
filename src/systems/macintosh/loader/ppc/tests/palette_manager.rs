@@ -767,6 +767,65 @@ use super::*;
     }
 
     #[test]
+    fn front_window_palette_activation_matches_the_device_table_not_the_faded_clut() {
+        // HeartQuest fades the screen with SetEntries, writes its saved
+        // colors back into the main device's ColorTable without SetEntries,
+        // and then opens its game window. Activating the application palette
+        // there must keep that ColorTable (the starting point of the game's
+        // fade-in) and must not touch hardware cells the palette already finds
+        // in the table.
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let standard = TrapDispatcher::standard_mac_8bpp_clut();
+        let pink = [[0xffff, 0x6666, 0xffff]; 256];
+        ppc_write_device_color_table(
+            &mut loaded.memory,
+            PPC_MAIN_GDEVICE,
+            &standard,
+            &mut loaded.toolbox_startup,
+        );
+        loaded.screen_clut.replace(pink);
+        loaded.color_manager_clut.replace(pink);
+
+        let palette_handle = PPC_DATA_BASE + 0x2000;
+        let palette = palette_handle + 0x10;
+        loaded.memory.add_region(palette_handle, vec![0; 0x40]);
+        loaded.memory.write_u32_be(palette_handle, palette).unwrap();
+        loaded.memory.write_u16_be(palette, 1).unwrap();
+        let requested = standard[35];
+        loaded.memory.write_u16_be(palette + 16, requested[0]).unwrap();
+        loaded.memory.write_u16_be(palette + 18, requested[1]).unwrap();
+        loaded.memory.write_u16_be(palette + 20, requested[2]).unwrap();
+        loaded.memory.write_u16_be(palette + 22, 0x0002).unwrap(); // pmTolerant
+        loaded.toolbox_startup.application_palette = palette_handle;
+
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 32]);
+        ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 600, 800).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 2;
+        loaded.cpu.gpr[8] = u32::MAX;
+        loaded.cpu.gpr[9] = 0;
+        loaded.cpu.gpr[10] = 0;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+
+        assert_eq!(
+            loaded.toolbox_startup.active_device_palettes.get(&PPC_MAIN_GDEVICE),
+            Some(&palette_handle)
+        );
+        let table = ppc_gdevice_ctable_handle(&mut loaded.memory, PPC_MAIN_GDEVICE).unwrap();
+        assert_eq!(
+            ppc_read_ctable_clut(&mut loaded.memory, table, &pink),
+            Some(standard)
+        );
+        assert_eq!(loaded.screen_clut, pink);
+    }
+
+    #[test]
     fn send_close_and_palette_less_front_transitions_activate_next_palette() {
         fn add_window(loaded: &mut PpcLoadedApp, window: u32, visible: bool) {
             loaded
