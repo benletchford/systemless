@@ -3481,7 +3481,7 @@ impl super::TrapDispatcher {
                         .and_then(|m| m.items.get((item - 1) as usize))
                         .map(|mi| mi.text.clone())
                     {
-                        bus.write_pstring(str_ptr, text.as_bytes());
+                        bus.write_pstring(str_ptr, &internal_menu_string_bytes(&text));
                     } else {
                         bus.write_byte(str_ptr, 0);
                     }
