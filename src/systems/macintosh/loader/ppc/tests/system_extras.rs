@@ -400,6 +400,47 @@ fn peerless_interprocess_imports_succeed() {
 }
 
 #[test]
+fn top_map_handle_accessors_share_the_low_memory_global() {
+    use crate::memory::globals::addr;
+    let mut loaded = loaded_with(b"LMSetTopMapHndl");
+    loaded.cpu.gpr[3] = 0x1234_5678;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "LMSetTopMapHndl"),
+    );
+    assert_eq!(loaded.memory.read_u32_be(addr::TOP_MAP_HNDL), Some(0x1234_5678));
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "LMGetTopMapHndl"),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+}
+
+#[test]
+fn fractional_width_setters_share_the_low_memory_global() {
+    let mut loaded = loaded_with(b"SetFractEnable");
+    for (symbol, value) in [("SetFractEnable", 1), ("LMSetFractEnable", 0)] {
+        loaded.cpu.gpr[3] = value;
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", "LMGetFractEnable"),
+        );
+        assert_eq!(loaded.cpu.gpr[3], value, "{symbol}");
+    }
+}
+
+#[test]
+fn screen_resolution_accessors_report_the_seeded_72_dpi() {
+    let mut loaded = loaded_with(b"LMGetScrHRes");
+    for symbol in ["LMGetScrHRes", "LMGetScrVRes"] {
+        run_test_import(&mut loaded, dispatcher_target_for_import("InterfaceLib", symbol));
+        assert_eq!(loaded.cpu.gpr[3], 72, "{symbol}");
+    }
+}
+
+#[test]
 fn ppc_open_and_close_complete_their_parameter_blocks() {
     let mut loaded = loaded_with(b"PPCOpenSync");
     let pb = SCRATCH;

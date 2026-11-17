@@ -33,7 +33,13 @@ pub mod addr {
     pub const MEM_TOP: u32 = 0x0108; // Top of memory (ptr)
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
+    pub const SCR_V_RES: u32 = 0x0102; // Screen vertical pixels per inch (word)
+    pub const SCR_H_RES: u32 = 0x0104; // Screen horizontal pixels per inch (word)
     pub const THE_ZONE: u32 = 0x0118; // Current heap zone (ptr)
+    pub const TOP_MAP_HNDL: u32 = 0x0A50; // Resource map list head (handle)
+    pub const FSCALE_DISABLE: u32 = 0x0A63; // Font scaling disabled (byte)
+    pub const LAST_SP_EXTRA: u32 = 0x0B4C; // Most recent font manager space extra (long)
+    pub const FRACT_ENABLE: u32 = 0x0BF4; // Fractional character widths enabled (byte)
     /// UTableBase: pointer to the first Device Manager unit-table entry.
     /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
     /// 3.4 LowMem.h lines 246--264.
