@@ -7679,8 +7679,13 @@ impl super::TrapDispatcher {
                 // not necessarily its final output, so leave the snapshot
                 // stale until ModalDialog resumes and captures the completed
                 // callback. Macintosh Toolbox Essentials (1992), pp. 6-135,
-                // 6-142.
-                tracking.rendered_pixels_final = !filter_capture_pending;
+                // 6-142. The same holds for the update pass that calls each
+                // userItem procedure in turn: a picture drawn by an early
+                // item must not finalize the snapshot while later items are
+                // still queued, or the next frame restores it over their
+                // output. Inside Macintosh Volume I, I-405.
+                tracking.rendered_pixels_final =
+                    !filter_capture_pending && tracking.draw_procs_done;
             }
         }
     }
