@@ -1303,19 +1303,12 @@ impl super::TrapDispatcher {
                 // Per IM:I I-166, SetOrigin offsets visRgn but NOT clipRgn.
                 // "the pen and clipRgn 'stick' to the coordinate system"
                 // visRgn is at port offset 24; clipRgn at 28 is left unchanged.
+                // A non-rectangular visRgn (a window partly covered by another)
+                // must have its scanline data offset too, not just its
+                // bounding box, or clipping drifts away from the covered area.
                 let vis_handle = bus.read_long(port_ptr + 24);
                 if vis_handle != 0 {
-                    let vis_ptr = bus.read_long(vis_handle);
-                    if vis_ptr != 0 {
-                        let rt = bus.read_word(vis_ptr + 2) as i16;
-                        let rl = bus.read_word(vis_ptr + 4) as i16;
-                        let rb = bus.read_word(vis_ptr + 6) as i16;
-                        let rr = bus.read_word(vis_ptr + 8) as i16;
-                        bus.write_word(vis_ptr + 2, rt.wrapping_add(dv) as u16);
-                        bus.write_word(vis_ptr + 4, rl.wrapping_add(dh) as u16);
-                        bus.write_word(vis_ptr + 6, rb.wrapping_add(dv) as u16);
-                        bus.write_word(vis_ptr + 8, rr.wrapping_add(dh) as u16);
-                    }
+                    Self::offset_region(bus, vis_handle, dh, dv);
                 }
                 Ok(())
             }
