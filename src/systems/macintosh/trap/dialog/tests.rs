@@ -8829,6 +8829,42 @@
     }
 
     #[test]
+    fn drawdialog_draws_picture_item_with_resource_id_zero() {
+        // MTE 1992 p. 6-155: a picture item names a `PICT` resource by ID,
+        // and 0 is a valid resource ID. Hellcats over the Pacific's splash
+        // dialog (DITL 136) shows PICT 0 and was left blank.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let port = bus.alloc(170);
+        bus.write_word(port + 20, 60);
+        bus.write_word(port + 22, 100);
+        let (base, stride, _, _, _) = disp.screen_mode;
+        bus.write_bytes(base, &vec![0x77; (stride * 80) as usize]);
+        disp.install_test_resource(&mut bus, *b"PICT", 0, &solid_fill_pict_resource(16, 16));
+        disp.dialog_items.insert(
+            port,
+            vec![DialogItem {
+                item_type: 64,
+                rect: (8, 8, 24, 24),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        bus.write_long(TEST_SP, port);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_byte(base + 16 * stride + 16),
+            255,
+            "DrawDialog must draw PICT 0 into its picture item"
+        );
+    }
+
+    #[test]
     fn dialog_picture_items_clip_without_rescaling_the_destination() {
         for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
             let (mut disp, _cpu, mut bus) = setup();
