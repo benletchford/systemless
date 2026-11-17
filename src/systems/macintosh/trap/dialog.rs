@@ -133,6 +133,9 @@ enum TeRepaint {
     Full,
     CaretLine,
     FromOffset(usize),
+    /// TEUpdate: redraw every line, erasing the full-width strip of each
+    /// line that meets the update rectangle (top, left, bottom, right).
+    Update((i16, i16, i16, i16)),
 }
 
 fn trace_dialog_procs_enabled() -> bool {
@@ -3048,6 +3051,30 @@ impl super::TrapDispatcher {
         base != 0 && row_bytes != 0 && top < bottom && left < right
     }
 
+    /// Whether `port` replaces the standard rectangle bottleneck.
+    ///
+    /// grafProcs is the last field of GrafPort and CGrafPort (offset 104) and
+    /// rectProc is its third slot (offset 8); NIL or the StdRect gateway that
+    /// SetStdProcs/SetStdCProcs install means the standard proc (IM:I
+    /// I-197--I-198; IM:V V-77).
+    fn port_has_custom_rect_proc(bus: &MacMemoryBus, port: u32) -> bool {
+        if port == 0 || !Self::guest_range_in_ram(bus, port, 108) {
+            return false;
+        }
+        let graf_procs = bus.read_long(port + 104);
+        if graf_procs == 0 || !Self::guest_range_in_ram(bus, graf_procs, 12) {
+            return false;
+        }
+        let rect_proc = bus.read_long(graf_procs + 8);
+        let custom = rect_proc != 0 && bus.system_trap_gateway(0xA8A0) != Some(rect_proc);
+        if trace_textedit_enabled() {
+            eprintln!(
+                "[TE] TEUpdate port=${port:08X} grafProcs=${graf_procs:08X} rectProc=${rect_proc:08X} custom={custom}"
+            );
+        }
+        custom
+    }
+
     fn draw_te_contents(
         &mut self,
         cpu: &mut impl CpuOps,
@@ -3303,6 +3330,50 @@ impl super::TrapDispatcher {
                 },
                 ShapeOp::Erase,
             );
+        }
+        if let TeRepaint::Update(update_rect) = repaint {
+            // TEUpdate -> Refresh -> DoDraw erases each line it redraws
+            // before drawing it (DoErase on teSelRect, which ChkBounds widens
+            // to UnboundLeft..UnboundRight); StdEntry clips the drawing to
+            // viewRect. PrepLine stops before DoErase when the line holds no
+            // characters, so an empty record erases nothing, and space below
+            // the last line is left alone: "TEUpdate does not erase the
+            // update rectangle" (IM I-387). Apple TextEdit.a,
+            // DoDraw/PrepLine/xDoErase/ChkBounds.
+            //
+            // That EraseRect runs through the port's grafProcs.rectProc; a
+            // replacement proc owns the erase, so leave it alone. All strips
+            // are erased before any line is drawn so a glyph that overhangs
+            // its line keeps its pixels in the next line's strip.
+            if !Self::port_has_custom_rect_proc(bus, te_port) {
+                let mut line_top = dest_rect.0;
+                for (index, &(start, end)) in lines.iter().enumerate() {
+                    let line_bottom =
+                        line_top.saturating_add(Self::te_height_for_line(bus, te_handle, index));
+                    if start < end && line_bottom > update_rect.0 && line_top < update_rect.2 {
+                        if let Some((top, left, bottom, right)) = Self::rect_intersection(
+                            (line_top, view_rect.1, line_bottom, view_rect.3),
+                            view_rect,
+                        ) {
+                            self.draw_rect(
+                                cpu,
+                                bus,
+                                &Rect {
+                                    top,
+                                    left,
+                                    bottom,
+                                    right,
+                                },
+                                ShapeOp::Erase,
+                            );
+                        }
+                    }
+                    if line_top >= view_rect.2 {
+                        break;
+                    }
+                    line_top = line_bottom;
+                }
+            }
         }
         let mut top = dest_rect.0;
         let mut visible_lines = Vec::new();
@@ -16039,7 +16110,15 @@ impl super::TrapDispatcher {
                             view_rect.3
                         );
                     }
-                    self.draw_te_contents(cpu, bus, te_handle, false);
+                    let update_rect_ptr = bus.read_long(sp + 4);
+                    let update_rect = Self::te_read_rect(bus, update_rect_ptr);
+                    self.draw_te_contents_region(
+                        cpu,
+                        bus,
+                        te_handle,
+                        false,
+                        TeRepaint::Update(update_rect),
+                    );
                     let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
                     self.refresh_visible_dialog_snapshot_for_port(bus, te_port);
                 }
