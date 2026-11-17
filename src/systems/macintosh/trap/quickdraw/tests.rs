@@ -4009,6 +4009,64 @@
         assert_eq!(bus.read_word(port_ptr + 18) as i16, 20); // left
     }
 
+    #[test]
+    fn set_origin_offsets_complex_vis_region_rows_with_its_bounds() {
+        // IM:I I-166: SetOrigin offsets visRgn into the new coordinate
+        // system. A visRgn with a hole (a window partly covered by another)
+        // must move its scanline data, not only its bounding box, or clipping
+        // drifts away from the covered area. THINK Class Library calls
+        // SetOrigin for every pane it draws.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port_ptr = 0x181000u32;
+        let vis = make_complex_rgn(
+            &mut bus,
+            (0, 0, 40, 60),
+            &[
+                0,
+                0,
+                60,
+                super::REGION_STOP,
+                10,
+                20,
+                30,
+                super::REGION_STOP,
+                20,
+                20,
+                30,
+                super::REGION_STOP,
+                40,
+                0,
+                60,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        );
+        bus.write_long(port_ptr + 24, vis);
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, vis, 15, 25),
+            "precondition: the hole is at (10,20)-(20,30)"
+        );
+
+        bus.write_word(TEST_SP, 10u16); // v
+        bus.write_word(TEST_SP + 2, 20u16); // h
+        let result = d.dispatch_quickdraw(true, 0x078, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            TrapDispatcher::region_bbox(&bus, vis),
+            Some((10, 20, 50, 80)),
+            "SetOrigin should offset the visRgn bounding box"
+        );
+        assert!(
+            !TrapDispatcher::region_contains_point(&bus, vis, 25, 45),
+            "the hole must move with the bounding box"
+        );
+        assert!(
+            TrapDispatcher::region_contains_point(&bus, vis, 15, 25),
+            "the hole's old position is visible after the offset"
+        );
+    }
+
     // ==================== Clipping ====================
 
     #[test]
