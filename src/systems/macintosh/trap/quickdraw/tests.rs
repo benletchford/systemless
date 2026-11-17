@@ -19270,9 +19270,10 @@ fn copy_bits_converts_between_direct_color_depths() {
         let result = d.dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(d.device_clut[0], [0x1111, 0x2222, 0x3333]);
+        // Cell 0 stays the white endpoint; entry 1 is installed at once.
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
         assert_eq!(d.device_clut[1], [0x4444, 0x5555, 0x6666]);
-        assert_eq!(d.color_manager_clut[0], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(d.color_manager_clut[1], [0x4444, 0x5555, 0x6666]);
     }
 
     #[test]
@@ -19335,17 +19336,18 @@ fn copy_bits_converts_between_direct_color_depths() {
             assert_eq!(bus.read_word(ctab + 6), (entries - 1) as u16);
             let window = 0x204100;
             d.front_window = window;
+            // Entry 1: cell 0 is the reserved white endpoint.
             let palette = d.create_palette_from_ctab(
                 &mut bus,
-                1,
+                2,
                 0,
                 super::PM_TOLERANT | super::PM_EXPLICIT,
                 0,
             );
             let palette_ptr = bus.read_long(palette);
-            bus.write_word(palette_ptr + 16, 0x1234);
-            bus.write_word(palette_ptr + 18, 0x5678);
-            bus.write_word(palette_ptr + 20, 0x9ABC);
+            bus.write_word(palette_ptr + 32, 0x1234);
+            bus.write_word(palette_ptr + 34, 0x5678);
+            bus.write_word(palette_ptr + 36, 0x9ABC);
             let device_before = bus.read_bytes(gd, 50);
             let pixmap_before = bus.read_bytes(pm, 50);
             let adjacent_before = bus.read_bytes(ctab + 8 + entries * 8, 64);
@@ -19359,9 +19361,9 @@ fn copy_bits_converts_between_direct_color_depths() {
                 .is_ok());
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
             assert_eq!(bus.read_word(ctab + 6), (entries - 1) as u16);
-            assert_eq!(bus.read_word(ctab + 10), 0x1234);
-            assert_eq!(bus.read_word(ctab + 12), 0x5678);
-            assert_eq!(bus.read_word(ctab + 14), 0x9ABC);
+            assert_eq!(bus.read_word(ctab + 18), 0x1234);
+            assert_eq!(bus.read_word(ctab + 20), 0x5678);
+            assert_eq!(bus.read_word(ctab + 22), 0x9ABC);
             assert_eq!(bus.read_bytes(gd, 50), device_before);
             assert_eq!(bus.read_bytes(pm, 50), pixmap_before);
             assert_eq!(bus.read_bytes(ctab + 8 + entries * 8, 64), adjacent_before);
@@ -19372,11 +19374,13 @@ fn copy_bits_converts_between_direct_color_depths() {
     fn activatepalette_consumes_windowptr_argument_and_updates_device_clut() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4100u32;
-        let palette_ptr = bus.alloc(32);
+        let palette_ptr = bus.alloc(48);
         let palette_handle = bus.alloc(4);
 
         bus.write_long(palette_handle, palette_ptr);
-        bus.write_word(palette_ptr, 1);
+        // Two entries: cell 0 is the reserved white endpoint, so entry 1
+        // carries the requested color.
+        bus.write_word(palette_ptr, 2);
         bus.write_word(palette_ptr + 2, 0);
         bus.write_word(palette_ptr + 4, 0);
         bus.write_word(palette_ptr + 6, 0);
@@ -19384,11 +19388,18 @@ fn copy_bits_converts_between_direct_color_depths() {
         bus.write_word(palette_ptr + 10, 0);
         bus.write_word(palette_ptr + 12, 0);
         bus.write_word(palette_ptr + 14, 0);
-        bus.write_word(palette_ptr + 16, 0x1234);
-        bus.write_word(palette_ptr + 18, 0x5678);
-        bus.write_word(palette_ptr + 20, 0x9ABC);
+        bus.write_word(palette_ptr + 16, 0xFFFF);
+        bus.write_word(palette_ptr + 18, 0xFFFF);
+        bus.write_word(palette_ptr + 20, 0xFFFF);
         bus.write_word(
             palette_ptr + 22,
+            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
+        );
+        bus.write_word(palette_ptr + 32, 0x1234);
+        bus.write_word(palette_ptr + 34, 0x5678);
+        bus.write_word(palette_ptr + 36, 0x9ABC);
+        bus.write_word(
+            palette_ptr + 38,
             (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
         );
 
@@ -19405,8 +19416,8 @@ fn copy_bits_converts_between_direct_color_depths() {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_ne!(d.device_clut, before);
-        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
-        assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut[1], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.color_manager_clut[1], [0x1234, 0x5678, 0x9ABC]);
     }
 
     #[test]
@@ -19651,12 +19662,15 @@ fn copy_bits_converts_between_direct_color_depths() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4160u32;
         let usage = super::PM_TOLERANT | super::PM_EXPLICIT;
-        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, usage, 0);
+        let palette = d.create_palette_from_ctab(&mut bus, 2, 0, usage, 0);
         let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        let before = *d.device_clut;
+        // Entry 0 keeps the endpoint's own color; entry 1 requests a new one.
+        TrapDispatcher::write_palette_color_info(&mut bus, palette_ptr, 0, before[0], usage, 0);
         TrapDispatcher::write_palette_color_info(
             &mut bus,
             palette_ptr,
-            0,
+            1,
             [0x1234, 0x5678, 0x9ABC],
             usage,
             0,
@@ -19666,14 +19680,61 @@ fn copy_bits_converts_between_direct_color_depths() {
         d
             .current_port
             .with_mut(|current_port| *current_port = window);
-        let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
-        assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
-        assert_eq!(d.device_clut[1..], before[1..]);
+        assert_eq!(d.device_clut[1], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.color_manager_clut[1], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut[0], before[0]);
+        assert_eq!(d.device_clut[2..], before[2..]);
+    }
+
+    #[test]
+    fn explicit_palette_entries_never_replace_the_white_and_black_endpoints() {
+        // WarCraft II installs a PC-derived 256-entry pmExplicit palette
+        // (black at entry 0, white at entry 255) and fades it in with
+        // AnimatePalette, while its Mac-remapped art draws black as index
+        // 255. The Palette Manager keeps device cells 0 and 255 white and
+        // black, so explicit and animated entries there must not change
+        // them. Inside Macintosh Volume V (1986), V-162; Volume VI (1991),
+        // 20-13.
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4170u32;
+        let usage = super::PM_ANIMATED | super::PM_TOLERANT | super::PM_EXPLICIT;
+        let palette = d.create_palette_from_ctab(&mut bus, 256, 0, usage, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        let before = *d.device_clut;
+        assert_eq!(before[0], [0xFFFF; 3]);
+        assert_eq!(before[255], [0; 3]);
+        TrapDispatcher::write_palette_color_info(&mut bus, palette_ptr, 0, [0; 3], usage, 0);
+        TrapDispatcher::write_palette_color_info(&mut bus, palette_ptr, 255, [0xFCFC; 3], usage, 0);
+        TrapDispatcher::write_palette_color_info(&mut bus, palette_ptr, 7, [0x1111, 0x2222, 0x3333], usage, 0);
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = window);
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut[7], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
+        assert_eq!(d.device_clut[255], [0; 3]);
+
+        // AnimatePalette(window, srcCTab, srcIndex 0, dstEntry 255, 1).
+        let src_ctab = make_test_ctab_handle(&mut bus, &[[0xFCFC; 3]], 0x3333_4444, 0);
+        bus.write_word(TEST_SP, 1);
+        bus.write_word(TEST_SP + 2, 255);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, src_ctab);
+        bus.write_long(TEST_SP + 10, window);
+        let result = d.dispatch_quickdraw(true, 0x29A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut[255], [0; 3]);
+        assert_eq!(d.color_manager_clut[255], [0; 3]);
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
     }
 
     #[test]
@@ -19771,9 +19832,9 @@ fn copy_bits_converts_between_direct_color_depths() {
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
-        let (rgb0, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 0).unwrap();
+        // Cell 0 is the reserved white endpoint, whatever entry 0 lists.
         let (rgb2, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 2).unwrap();
-        assert_eq!(d.device_clut[0], rgb0);
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
         assert_eq!(d.device_clut[2], rgb2);
         assert_ne!(d.device_clut[0], animated_rgb);
         assert_ne!(d.device_clut[2], animated_rgb);
@@ -21961,9 +22022,9 @@ fn copy_bits_converts_between_direct_color_depths() {
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
-        let (rgb0, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 0).unwrap();
+        // Cell 0 is the reserved white endpoint, whatever entry 0 lists.
         let (rgb2, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 2).unwrap();
-        assert_eq!(d.device_clut[0], rgb0);
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
         assert_eq!(d.device_clut[2], rgb2);
         assert_ne!(d.device_clut[0], animated_rgb);
         assert_ne!(d.device_clut[2], animated_rgb);
