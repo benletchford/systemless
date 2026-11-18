@@ -10916,7 +10916,7 @@ impl super::TrapDispatcher {
         crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect)
     }
 
-    fn dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[DialogItem]) -> bool {
+    pub(crate) fn dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[DialogItem]) -> bool {
         crate::dialog_manager::is_dialog_game_managed(
             bounds,
             items.iter().map(|item| (item.item_type, item.rect)),
