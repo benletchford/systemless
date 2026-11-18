@@ -3118,6 +3118,143 @@ fn hle_import_runner_handles_block_move_with_overlap() {
 }
 
 #[test]
+fn block_copies_run_without_a_handle_snapshot() {
+    for name in [
+        b"BlockMove".as_slice(),
+        b"BlockMoveData".as_slice(),
+        b"BlockZero".as_slice(),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+        for _ in 0..64 {
+            assert_ne!(
+                loaded
+                    .process_memory_manager
+                    .0
+                    .borrow_mut()
+                    .new_native_handle(&mut loaded.memory, 32, true),
+                0
+            );
+        }
+        let source = PPC_DATA_BASE + 0x1000;
+        let destination = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(source, b"copied".to_vec());
+        loaded.memory.add_region(destination, b"kept!!".to_vec());
+        let zero = name == b"BlockZero";
+        (loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]) = if zero {
+            (destination, 6, 0)
+        } else {
+            (source, destination, 6)
+        };
+        let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+        let before = snapshots();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(snapshots(), before);
+        let expected: &[u8] = if zero { &[0; 6] } else { b"copied" };
+        for (offset, byte) in expected.iter().copied().enumerate() {
+            assert_eq!(
+                loaded.memory.read_u8(destination + offset as u32),
+                Some(byte)
+            );
+        }
+    }
+}
+
+#[test]
+fn block_copies_over_boundary_globals_reconcile_before_next_instruction() {
+    const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
+    let res_err_addr = crate::memory::globals::addr::RES_ERR;
+    let front_window = PPC_DATA_BASE + 0x2000;
+    let back_window = PPC_DATA_BASE + 0x2400;
+    let next_link_addr = front_window + PPC_CWINDOW_NEXT_WINDOW_OFFSET;
+
+    for name in [b"BlockMove".as_slice(), b"BlockZero".as_slice()] {
+        let zero = name == b"BlockZero";
+        for (dest, len, read_insn, expected) in [
+            // Overwrite WindowList: general path restores `front_window`.
+            (LOWMEM_WINDOW_LIST, 4u32, 0x8140_09D6u32, front_window),
+            // Overwrite ResErr: general path restores the pre-copy error (-192).
+            (
+                res_err_addr,
+                2u32,
+                0xA140_0000u32 | (res_err_addr & 0xFFFF),
+                (-192i16 as u16) as u32,
+            ),
+            // Overwrite front_window's nextWindow link: general path restores `back_window`.
+            (
+                next_link_addr,
+                4u32,
+                0x8155_0000u32 | (PPC_CWINDOW_NEXT_WINDOW_OFFSET & 0xFFFF),
+                back_window,
+            ),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+            let trap_pc = loaded.imports[0].trap_pc;
+            let code_base = PPC_CODE_BASE + 0x400;
+            let source = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(0, vec![0; 0x2000]);
+            loaded.memory.add_region(front_window, vec![0; 0x200]);
+            loaded.memory.add_region(back_window, vec![0; 0x200]);
+            loaded
+                .memory
+                .add_region(source, 0xDEAD_BEEFu32.to_be_bytes().to_vec());
+            loaded
+                .memory
+                .write_u32_be(LOWMEM_WINDOW_LIST, front_window)
+                .unwrap();
+            loaded
+                .memory
+                .write_u16_be(res_err_addr, -192i16 as u16)
+                .unwrap();
+            loaded
+                .memory
+                .write_u32_be(next_link_addr, back_window)
+                .unwrap();
+            loaded.window_list.with_mut(|windows| {
+                windows.push(front_window);
+                windows.push(back_window);
+            });
+
+            // Guest code: call BlockMove/BlockZero, then immediately read back
+            // the overwritten boundary location into r10 before halting.
+            let bl_import = 0x4800_0001 | (trap_pc.wrapping_sub(code_base + 4) & 0x03FF_FFFC);
+            let words = [
+                0x7E88_02A6u32, // mflr r20
+                bl_import,      // bl BlockMove / BlockZero
+                read_insn,      // lwz/lhz r10, target
+                0x7E88_03A6u32, // mtlr r20
+                0x4E80_0020u32, // blr -> PPC_HALT_PC
+            ];
+            let mut code = Vec::with_capacity(words.len() * 4);
+            for word in words {
+                code.extend_from_slice(&word.to_be_bytes());
+            }
+            loaded.memory.add_region(code_base, code);
+            loaded.cpu.pc = code_base;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[21] = front_window;
+            (loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]) = if zero {
+                (dest, len, 0)
+            } else {
+                (source, dest, len)
+            };
+
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(
+                loaded.cpu.gpr[10], expected,
+                "{} over ${dest:08X} must reconcile before the next guest instruction",
+                std::str::from_utf8(name).unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn hle_import_runner_handles_block_move_data_alias() {
     let pef = synthetic_pef_with_import(b"BlockMoveData");
     let mut loaded = load_pef_application(&pef).unwrap();

@@ -3,6 +3,33 @@
 use super::*;
 use super::loaded_app::{PpcGlmCallbackOperation, PpcGlmCallbackState};
 
+/// Returns true when a `BlockMove` or `BlockZero` destination overlaps
+/// boundary-managed low-memory globals (such as `WindowList`, `ResErr`, or
+/// `CurDirStore`) or any live window's `nextWindow` link. Those copies fall
+/// back to the general import path so boundary reconciliation runs identically.
+fn block_copy_overlaps_boundary_state(
+    destination: u32,
+    byte_count: i32,
+    window_list: &crate::process_context::SharedProcessWindowList,
+) -> bool {
+    const LOW_MEMORY_GUARD_END: u32 = 0x2000;
+    if byte_count <= 0 {
+        return false;
+    }
+    let start = u64::from(destination);
+    let end = start + u64::from(byte_count as u32);
+    if start < u64::from(LOW_MEMORY_GUARD_END) {
+        return true;
+    }
+    window_list.with_ref(|windows| {
+        windows.iter().any(|&window| {
+            let link_start = u64::from(window.wrapping_add(PPC_CWINDOW_NEXT_WINDOW_OFFSET));
+            let link_end = link_start + 4;
+            start < link_end && link_start < end
+        })
+    })
+}
+
 fn ppc_rebase_mouse_warp(
     sprocket: &mut PpcInputSprocketState,
     input: PpcInputSnapshot,
@@ -898,7 +925,28 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::StdFilterProc
                             | PpcImportDispatcherTarget::EnableMenuItem
                             | PpcImportDispatcherTarget::DisableMenuItem
-                    ) || null_dialog_poll)
+                    ) || null_dialog_poll
+                        // The general path traces some copies and reconciles
+                        // boundary-managed low-memory globals and window links.
+                        || match dispatcher_target {
+                            PpcImportDispatcherTarget::BlockMove => {
+                                !ppc_hle_trace_enabled()
+                                    && !block_copy_overlaps_boundary_state(
+                                        cpu.gpr[4],
+                                        cpu.gpr[5] as i32,
+                                        &window_list,
+                                    )
+                            }
+                            PpcImportDispatcherTarget::BlockZero => {
+                                !ppc_hle_trace_enabled()
+                                    && !block_copy_overlaps_boundary_state(
+                                        cpu.gpr[3],
+                                        cpu.gpr[4] as i32,
+                                        &window_list,
+                                    )
+                            }
+                            _ => false,
+                        })
                 {
                     if trace_imports {
                         if binding.is_none() {
@@ -1023,6 +1071,16 @@ impl PpcLoadedApp {
                                 cpu.gpr[4] as u16 as i16,
                                 *dispatcher_target == PpcImportDispatcherTarget::EnableMenuItem,
                             );
+                            PpcImportAction::ReturnPreserve
+                        }
+                        // Byte copies within guest memory: no handle, port or
+                        // process state to bring up to date around them.
+                        PpcImportDispatcherTarget::BlockMove => {
+                            ppc_block_move(cpu, memory);
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::BlockZero => {
+                            ppc_block_zero(cpu, memory);
                             PpcImportAction::ReturnPreserve
                         }
                         _ => unreachable!(),
