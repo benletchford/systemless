@@ -6186,6 +6186,22 @@ impl super::TrapDispatcher {
                 if self.dialogs_drawn_by_app.contains(&dialog_ptr) {
                     return None;
                 }
+                // Outside ModalDialog, a dialog whose visible items are all
+                // userItems is just an application window: the Dialog Manager
+                // draws none of its pixels and the Window Manager keeps no
+                // backing store for it, so the application owns the content
+                // and may also write the screen directly. Replaying a snapshot
+                // seeded from its earlier QuickDraw output would paint stale
+                // pixels over that direct drawing every frame.
+                // Inside Macintosh Volume I, I-405 and I-278.
+                if !self.dialog_modal_entered.contains(&dialog_ptr)
+                    && self
+                        .dialog_items
+                        .get(&dialog_ptr)
+                        .is_some_and(|items| Self::dialog_is_game_managed(snapshot.bounds, items))
+                {
+                    return None;
+                }
                 if front_is_dialog && dialog_ptr != front_window {
                     None
                 } else {

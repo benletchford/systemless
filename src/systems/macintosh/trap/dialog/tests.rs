@@ -10973,12 +10973,29 @@
             game_dialog_ptr,
             (40, 20, 41, 21),
         );
+        assert!(
+            disp.dialog_visible_snapshots.contains_key(&game_dialog_ptr),
+            "game-managed dialogs should create snapshots from app-owned bulk drawing"
+        );
+        // Outside ModalDialog the game-managed dialog is an ordinary
+        // application window: the app may write the screen directly (Crystal
+        // Crazy blits its playfield into a full-screen colour dialog), so the
+        // per-frame replay must leave those pixels alone.
+        bus.write_byte(screen_base + 40 * 64 + 20, 0x5A);
+        disp.restore_visible_dialog_snapshots(&mut bus);
+        assert_eq!(
+            bus.read_byte(screen_base + 40 * 64 + 20),
+            0x5A,
+            "a game-managed dialog outside ModalDialog must not replay stale pixels over direct drawing"
+        );
+
+        disp.dialog_modal_entered.insert(game_dialog_ptr);
         bus.write_byte(screen_base + 40 * 64 + 20, 0x00);
         disp.restore_visible_dialog_snapshots(&mut bus);
         assert_eq!(
             bus.read_byte(screen_base + 40 * 64 + 20),
             0x99,
-            "game-managed dialogs should create snapshots from app-owned bulk drawing"
+            "a game-managed dialog in ModalDialog keeps its retained app-drawn snapshot"
         );
     }
 

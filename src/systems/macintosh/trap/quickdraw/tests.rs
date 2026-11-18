@@ -8924,6 +8924,8 @@
         assert_eq!(bus.read_byte(screen_base + 2 * 16 + 2), 0x7A);
 
         bus.write_byte(screen_base + 2 * 16 + 2, 0);
+        // Replay applies to game-managed dialogs only inside ModalDialog.
+        d.dialog_modal_entered.insert(dialog_ptr);
         d.restore_visible_dialog_snapshots(&mut bus);
         assert_eq!(
             bus.read_byte(screen_base + 2 * 16 + 2),
@@ -14253,6 +14255,8 @@
         assert_eq!(bus.read_byte(screen_base + 2 * 16 + 2), 0x7A);
 
         bus.write_byte(screen_base + 2 * 16 + 2, 0);
+        // Replay applies to game-managed dialogs only inside ModalDialog.
+        d.dialog_modal_entered.insert(dialog_ptr);
         d.restore_visible_dialog_snapshots(&mut bus);
 
         assert_eq!(
@@ -14361,6 +14365,8 @@
                 }
                 assert!(d.dialog_visible_snapshots.contains_key(&dialog));
                 bus.write_bytes(SCREEN + 2 * 16 + 2, &[0, 0]);
+                // Replay applies to game-managed dialogs only inside ModalDialog.
+                d.dialog_modal_entered.insert(dialog);
                 d.restore_visible_dialog_snapshots(&mut bus);
                 assert_eq!(bus.read_bytes(SCREEN + 2 * 16 + 2, 2), vec![1, 11]);
                 assert_eq!(
