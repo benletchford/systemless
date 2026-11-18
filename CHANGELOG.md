@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.126.1](https://github.com/benletchford/systemless/compare/v0.126.0...v0.126.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **dialog-manager:** draw picture items whose PICT resource ID is 0 ([#6464](https://github.com/benletchford/systemless/issues/6464)) ([86b974d](https://github.com/benletchford/systemless/commit/86b974d7b9562e779a0ea08c0d3eb26cca65e4c7))
+* **dialog-manager:** keep the modal snapshot open until every userItem has drawn ([#6462](https://github.com/benletchford/systemless/issues/6462)) ([ee26b23](https://github.com/benletchford/systemless/commit/ee26b238a163e1a1e5460b16fdfe2d87f0d5b920))
+* **dialog:** give ModalDialog filters the front window's update event first ([#6509](https://github.com/benletchford/systemless/issues/6509)) ([c2e9534](https://github.com/benletchford/systemless/commit/c2e953476ee7227be41702ba09eab0f0441f918d))
+* **dialog:** keep application-drawn dialog content across update events ([#6516](https://github.com/benletchford/systemless/issues/6516)) ([7b2253e](https://github.com/benletchford/systemless/commit/7b2253e5085e3835676042148df0aaa2ee759721))
+* **event:** keep queued high-level events across FlushEvents ([#6514](https://github.com/benletchford/systemless/issues/6514)) ([f0b593d](https://github.com/benletchford/systemless/commit/f0b593d80d1e3f296233389edfdf5ff3b00e7abb))
+* **menu-manager:** return GetItem text as mac roman bytes ([#6452](https://github.com/benletchford/systemless/issues/6452)) ([d4890cb](https://github.com/benletchford/systemless/commit/d4890cb7d62a8dbe2bb7520268605ca84bb54fea))
+* **palette:** keep device cells 0 and 255 white and black during palette activation ([#6460](https://github.com/benletchford/systemless/issues/6460)) ([878f5a2](https://github.com/benletchford/systemless/commit/878f5a2bbf9728728d7187459b1a5269a1304de7))
+* **ppc:** apply TEStyleInsert style runs and keep styled text laid out ([#6499](https://github.com/benletchford/systemless/issues/6499)) ([3b79836](https://github.com/benletchford/systemless/commit/3b798369e5b01fe25e52ca9d26b451948fdfbfa8))
+* **ppc:** build dialogs, alerts and windows from an already-loaded template ([#6485](https://github.com/benletchford/systemless/issues/6485)) ([c926b79](https://github.com/benletchford/systemless/commit/c926b79bbe4f9e233938b111bbb650da28c6d3d2))
+* **ppc:** draw every custom-CDEF dialog control in DrawControls order ([#6471](https://github.com/benletchford/systemless/issues/6471)) ([304178a](https://github.com/benletchford/systemless/commit/304178a6e62845ebdd86d24897866885c37eacdd))
+* **ppc:** draw srcXor and srcBic text with colour QuickDraw semantics ([#6507](https://github.com/benletchford/systemless/issues/6507)) ([0bc2b3d](https://github.com/benletchford/systemless/commit/0bc2b3d6644fb4df9778794749658cc60bb60974))
+* **ppc:** erase the content of windows created visible ([#6512](https://github.com/benletchford/systemless/issues/6512)) ([6e5ca51](https://github.com/benletchford/systemless/commit/6e5ca51291f7f65f4fa0b723621f79a5ad3fe618))
+* **ppc:** give native-process controls an AuxCtlRec in GetAuxCtl ([#6487](https://github.com/benletchford/systemless/issues/6487)) ([067f5f6](https://github.com/benletchford/systemless/commit/067f5f6c9803716959334f24e281f2d35dd5f782))
+* **ppc:** keep the dBoxProc outer border inside its structure region ([#6496](https://github.com/benletchford/systemless/issues/6496)) ([f42a773](https://github.com/benletchford/systemless/commit/f42a7735a6f096014f9a7532e976318d58161457))
+* **ppc:** keep window palettes out of caller window storage ([#6444](https://github.com/benletchford/systemless/issues/6444)) ([f50dcad](https://github.com/benletchford/systemless/commit/f50dcad3cc5e92859cb6d83a67339a8c99f4ba89))
+* **ppc:** match front-window palette activation against the device color table ([#6456](https://github.com/benletchford/systemless/issues/6456)) ([da829fd](https://github.com/benletchford/systemless/commit/da829fda1c8217c0928f3bc23ba9c581469de4e7))
+* **ppc:** move ModalDialog focus to the next editText item on Tab ([#6520](https://github.com/benletchford/systemless/issues/6520)) ([9c46261](https://github.com/benletchford/systemless/commit/9c4626152124c705fd8061ff02a90dc1c87c99ee))
+* **ppc:** preserve named catalogue lookup paths ([d67a1fd](https://github.com/benletchford/systemless/commit/d67a1fdac4a6544af034f8ec6e412d0d71a15f7f))
+* **ppc:** resolve PBOpenWD vRefNum zero and ":" against the HSetVol default directory ([#6455](https://github.com/benletchford/systemless/issues/6455)) ([6b10a42](https://github.com/benletchford/systemless/commit/6b10a42f676c2f57aeaacc8a31e72666871b1537))
+* **ppc:** return idle bus status from SCSIStat instead of scCommErr ([#6446](https://github.com/benletchford/systemless/issues/6446)) ([83edd88](https://github.com/benletchford/systemless/commit/83edd88e4b05db25c13bf5fd6c350ecd15e47a9d))
+* **quickdraw:** collect an open region's lines only while the port's rgnSave is set ([58d748e](https://github.com/benletchford/systemless/commit/58d748ecb28db7187e80fba32dea33da73851ca2))
+* **quickdraw:** honour complex visRgn shapes in SetOrigin and FillCRect ppat fills ([#6498](https://github.com/benletchford/systemless/issues/6498)) ([58a1483](https://github.com/benletchford/systemless/commit/58a14837960e96a90033846f977976a00778fcb1))
+* **quickdraw:** preserve Window Manager flags when changing ports ([b0b8831](https://github.com/benletchford/systemless/commit/b0b8831066ac4bb939518ae7a77dbbc4094b79a3))
+* **textedit:** clip textedit drawing to the view rectangle ([#6493](https://github.com/benletchford/systemless/issues/6493)) ([28d8887](https://github.com/benletchford/systemless/commit/28d88877711bfd8a584efc95b9c5fe32eaace284))
+* **textedit:** draw unstyled records in their own port colours ([#6489](https://github.com/benletchford/systemless/issues/6489)) ([991915a](https://github.com/benletchford/systemless/commit/991915ad7f2d342b5c12b1bd53424714a67975bf))
+* **textedit:** erase each redrawn line in TEUpdate before drawing it ([#6469](https://github.com/benletchford/systemless/issues/6469)) ([7924e41](https://github.com/benletchford/systemless/commit/7924e4153494e29fbca9a9dd5652564f1b3759d2))
+* **textedit:** return the line bottom from 68k TEGetPoint ([#6491](https://github.com/benletchford/systemless/issues/6491)) ([833f1b0](https://github.com/benletchford/systemless/commit/833f1b011edbb15626d865a4201a5424c42dfeb2))
+* **window-manager:** do not activate or invalidate for hidden windows ([#6501](https://github.com/benletchford/systemless/issues/6501)) ([98f9f21](https://github.com/benletchford/systemless/commit/98f9f21a8dd2c1922e7680d40f7bb5c9ad39d03e))
+* **window:** store Pascal TRUE in a window's visible flag ([#6503](https://github.com/benletchford/systemless/issues/6503)) ([9b06251](https://github.com/benletchford/systemless/commit/9b062515f546e987fbaddb0090fd106ec779193c))
+
+
+### Performance Improvements
+
+* **bus:** prove sparse routed writes writable with one span lookup ([4846f66](https://github.com/benletchford/systemless/commit/4846f66962287321081d094875a540d7ab6da0c6))
+* **launch:** serve contiguous data forks of disk images from the mapping ([99b98c5](https://github.com/benletchford/systemless/commit/99b98c5f7d260b1866710fb542f75e2b2077e7b5))
+* **ppc:** copy 8-bit indexed rows to 16-bit PixMaps a row at a time ([#6500](https://github.com/benletchford/systemless/issues/6500)) ([89a482b](https://github.com/benletchford/systemless/commit/89a482b9b943a3fafe94496d836ca77931233dac))
+* **ppc:** end GetNextEvent busy-waits at the next tick ([#6458](https://github.com/benletchford/systemless/issues/6458)) ([86e3f50](https://github.com/benletchford/systemless/commit/86e3f50e906c405589e44c4a0ab6e582a2233cce))
+* **ppc:** skip the presentation for guest stores to pages it cannot observe ([#6472](https://github.com/benletchford/systemless/issues/6472)) ([6df71f5](https://github.com/benletchford/systemless/commit/6df71f5b783c3c715c4e0e9845d53f843e36f2a8))
+* **presentation:** stop observing offscreen pages after detail is erased ([94ff3db](https://github.com/benletchford/systemless/commit/94ff3db77dc2cd0f6bfc9122a284a26cbb89847c))
+* **vfs:** hash each file path once per catalogue publish ([#6465](https://github.com/benletchford/systemless/issues/6465)) ([6084f90](https://github.com/benletchford/systemless/commit/6084f90ca3fbac2b655351f668bd2071dc34ec0c))
+
 ## [0.126.0](https://github.com/benletchford/systemless/compare/v0.125.0...v0.126.0) (2026-11-17)
 
 
