@@ -2193,6 +2193,108 @@ fn set_dialog_item_text_updates_the_layout_of_the_dialog_text_record() {
 }
 
 #[test]
+fn modal_dialog_tab_moves_focus_to_the_next_edit_text_item() {
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 42];
+    ditl[0..2].copy_from_slice(&1u16.to_be_bytes());
+    ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&220i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    ditl[26..28].copy_from_slice(&40i16.to_be_bytes());
+    ditl[28..30].copy_from_slice(&20i16.to_be_bytes());
+    ditl[30..32].copy_from_slice(&60i16.to_be_bytes());
+    ditl[32..34].copy_from_slice(&220i16.to_be_bytes());
+    ditl[34] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[35] = 5;
+    ditl[36..41].copy_from_slice(b"Alias");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    let items_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+        .unwrap();
+    let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+    let item_text_handles = [
+        loaded.memory.read_u32_be(items_ptr + 2).unwrap(),
+        loaded.memory.read_u32_be(items_ptr + 22).unwrap(),
+    ];
+
+    let item_hit_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(item_hit_ptr, vec![0; 2]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = dialog);
+    // Macintosh Toolbox Essentials (1992), p. 6-88: Tab selects the whole
+    // text of the next editText item, wrapping after the last one.
+    for expected_field in [1usize, 0] {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0; // no filter proc
+        loaded.cpu.gpr[4] = item_hit_ptr;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (0x30 << 8) | 0x09,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET),
+            Some(expected_field as u16)
+        );
+        let te_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+            .unwrap();
+        let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET),
+            Some(item_text_handles[expected_field])
+        );
+        assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET), Some(5));
+    }
+}
+
+#[test]
 fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();

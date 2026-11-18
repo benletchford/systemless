@@ -6049,6 +6049,66 @@ fn ppc_modal_dialog(
                 },
             ) {
                 Some(cancel_hit as u16)
+            } else if decision == crate::dialog_manager::DialogFilterDecision::AdvanceEditTextFocus {
+                // Tab moves the insertion point to the next editText item and
+                // selects its whole text. Inside Macintosh Volume I, p. I-416;
+                // Macintosh Toolbox Essentials (1992), p. 6-88.
+                let edit_field = memory
+                    .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                    .unwrap_or(u16::MAX);
+                let current = if edit_field == u16::MAX {
+                    0
+                } else {
+                    usize::from(edit_field) + 1
+                };
+                if let Some(next) = crate::dialog_manager::find_next_edit_text_item(
+                    items.iter().map(|item| item.item_type),
+                    current,
+                ) {
+                    let mut allocator = PpcProcessAllocatorView {
+                        memory_manager: process_memory_manager,
+                    };
+                    ppc_select_dialog_item_text(
+                        Some(&mut allocator),
+                        None,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        SelectDialogItemTextParameters::new(dialog, next, 0, i16::MAX),
+                        event.when,
+                        PPC_QD_TEXT_MODE_SRC_OR,
+                        PPC_QD_TEXT_SIZE_SYSTEM,
+                        fore_color,
+                    );
+                    handled_edit_event = true;
+                    let _ = ppc_draw_dialog(
+                        window_list,
+                        param_text,
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
+                    let te_handle = memory
+                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                        .unwrap_or(0);
+                    ppc_te_draw(
+                        memory,
+                        handles,
+                        gworlds,
+                        te_handle,
+                        dialog,
+                        fore_color,
+                        fore_indices,
+                    );
+                }
+                None
             } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
