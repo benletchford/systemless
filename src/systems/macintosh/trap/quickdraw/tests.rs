@@ -1780,10 +1780,6 @@
         assert_eq!(d.pn_size, (1, 1));
         assert_eq!(d.pn_mode, 8);
         assert_eq!(d.pn_pat, [0xFF; 8]);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            port_ptr
-        );
         assert_eq!(*d.current_port, port_ptr);
         assert_ne!(*d.current_gdevice, 0);
     }
@@ -1873,10 +1869,6 @@
         assert_eq!(bus.read_long(port_ptr + 76), 0);
         // Port should be set as current port
         assert_eq!(bus.read_long(global_ptr), port_ptr);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            port_ptr
-        );
         assert_eq!(*d.current_port, port_ptr);
         assert_ne!(*d.current_gdevice, 0);
     }
@@ -1991,14 +1983,35 @@
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(*d.current_port, original_port);
         assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            original_port
-        );
-        assert_eq!(
             bus.read_long(watched),
             0xDEAD_BEEF,
             "SetPort must not synthesize pen state into non-port memory"
         );
+    }
+
+    #[test]
+    fn setport_preserves_window_manager_flags() {
+        use crate::memory::globals::addr::{PAINT_WHITE, SAVE_UPDATE};
+
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let port = 0x181000;
+        for (save_update, paint_white) in [(1, 0), (0, 1)] {
+            bus.write_word(SAVE_UPDATE, save_update);
+            bus.write_word(PAINT_WHITE, paint_white);
+            bus.write_long(qd_globals, 0);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, port);
+            d.dispatch_quickdraw(true, 0x073, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert_eq!(bus.read_long(qd_globals), port);
+            assert_eq!(bus.read_word(SAVE_UPDATE), save_update);
+            assert_eq!(bus.read_word(PAINT_WHITE), paint_white);
+        }
+        d.current_port.with_mut(|p| *p = 0);
+        assert_eq!(d.effective_the_port(&bus, 0), 0);
     }
 
     #[test]
@@ -2024,10 +2037,6 @@
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(*d.current_port, port_ptr);
         assert_eq!(*d.current_gdevice, custom_gdh);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            port_ptr
-        );
         assert_eq!(bus.read_long(0x0CC8), custom_gdh);
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -3830,10 +3839,6 @@
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
         assert_eq!(bus.read_long(global_ptr), new_port);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            new_port
-        );
         assert_eq!(*d.current_port, new_port);
         assert_ne!(*d.current_gdevice, 0);
     }

@@ -203,7 +203,12 @@ pub mod addr {
     pub const HILITE_RGB: u32 = 0x0DA0;
 
     // QuickDraw globals
-    pub const THE_PORT: u32 = 0x09DA; // Current GrafPort (ptr)
+    /// Legacy key for the standalone LowMemGlobals map. On the guest bus this
+    /// address holds SaveUpdate, followed by PaintWhite. The guest's current
+    /// port lives in its A5-relative QuickDraw globals.
+    pub const THE_PORT: u32 = 0x09DA;
+    pub const SAVE_UPDATE: u32 = 0x09DA;
+    pub const PAINT_WHITE: u32 = 0x09DC;
     pub const SCRN_BASE: u32 = 0x0824; // Screen base address (ptr) - Inside Macintosh II, II-19
 
     /// GhostWindow: pointer to a window that FrontWindow must not consider

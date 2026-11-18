@@ -4867,9 +4867,6 @@ fn real_setport_cycle_can_close_across_single_instruction_slices() {
         .dispatcher
         .current_port
         .with_mut(|port| *port = original);
-    runner
-        .bus
-        .write_long(crate::memory::globals::addr::THE_PORT, original);
     // TickCount; SetPort(temporary); SetPort(original); repeat.
     let mut words = vec![
         0x594F,
