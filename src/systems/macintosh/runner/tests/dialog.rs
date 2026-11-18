@@ -202,6 +202,60 @@ fn dialog_filter_uses_active_dialog_pending_update_before_null_event() {
 }
 
 #[test]
+fn dialog_filter_takes_front_dialog_update_before_earlier_behind_window_update() {
+    // TaskMaker's startup dialog draws its picture from the filter's update
+    // event. A window behind it was invalidated a tick earlier; GetNextEvent
+    // still returns the front dialog's update first because update events
+    // come from the window list front to back (IM:I I-244; MTE 1992, 2-14).
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let filter_proc = 0x0004_2000u32;
+    let behind_ptr = runner.bus.alloc(170);
+    let dialog_ptr = runner.bus.alloc(170);
+
+    runner.bus.write_word(filter_proc, 0x4E56);
+    runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+    for (window, top) in [(behind_ptr, 60), (dialog_ptr, 100)] {
+        runner.dispatcher.init_cgraf_window(
+            &mut runner.bus,
+            &mut runner.m68k.cpu,
+            window,
+            0,
+            top,
+            120,
+            top + 120,
+            360,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+    }
+    runner.process_context.shared_event_queue().clear();
+    runner.dispatcher.queue_window_update_event(behind_ptr);
+    runner.dispatcher.queue_window_update_event(dialog_ptr);
+    runner.dispatcher.dialog_tracking = Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
+    runner
+        .dispatcher
+        .dialog_tracking
+        .as_mut()
+        .unwrap()
+        .dialog_ptr = dialog_ptr;
+
+    assert!(runner.fire_dialog_filter_proc());
+    let event_ptr = runner.dialog_filter_event;
+    assert_eq!(runner.bus.read_word(event_ptr), 6);
+    assert_eq!(runner.bus.read_long(event_ptr + 2), dialog_ptr);
+    assert!(runner
+        .process_context
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == behind_ptr));
+}
+
+#[test]
 fn dialog_filter_paces_synthetic_update_without_starving_queued_input() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let filter_proc = 0x0004_2000u32;

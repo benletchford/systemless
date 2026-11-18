@@ -13375,12 +13375,31 @@ impl FixtureRunner {
 
         // Consume the next actionable event from the queue, mirroring the real
         // Mac ModalDialog which calls GetNextEvent before invoking the filter.
-        // Inside Macintosh Volume I, I-415
+        // GetNextEvent returns queued mouse and keyboard events before update
+        // events, and takes update events front to back through the window
+        // list, so a dialog's own update precedes those of windows behind it.
+        // Inside Macintosh Volume I, I-415, I-244; MTE 1992, 2-14.
         let idx = self
             .process_context
             .event_queue()
             .iter()
-            .position(|e| matches!(e.what, 1 | 2 | 3 | 4 | 6));
+            .position(|e| matches!(e.what, 1 | 2 | 3 | 4))
+            .or_else(|| {
+                let windows = self.dispatcher.window_list.windows();
+                self.process_context
+                    .event_queue()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.what == 6)
+                    .min_by_key(|(index, e)| {
+                        let depth = windows
+                            .iter()
+                            .position(|&window| window == e.message)
+                            .unwrap_or(usize::MAX);
+                        (depth, *index)
+                    })
+                    .map(|(index, _)| index)
+            });
         let next_event = idx.map(|i| self.process_context.shared_event_queue().remove(i).unwrap());
 
         let filter_event = if let Some(e) = next_event {
