@@ -2400,7 +2400,7 @@ impl super::TrapDispatcher {
         // The full-window update above is still queued when PaintWhite is clear.
         // Inside Macintosh Volume I, I-289, I-296--I-297.
         if let Some(old_visible) = old_visible {
-            let erase_content = bus.read_word(0x09DC) != 0;
+            let erase_content = bus.read_word(crate::memory::globals::addr::PAINT_WHITE) != 0;
             self.paint_newly_exposed_window(bus, cpu, the_window, old_visible, true, erase_content);
         }
         if moved_dialog_background.is_some() && old_structure.is_some() {

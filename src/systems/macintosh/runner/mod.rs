@@ -1400,8 +1400,8 @@ fn idle_cycle_trap_is_journal_complete(
         // the GetGWorld/SetGWorld save/restore pair (quickdraw.rs) games
         // bracket their poll-loop hit-testing with. GetGWorld writes its
         // two VAR results through the bus (journaled) and pops A7;
-        // SetGWorld's writes (the THE_PORT low global and the A5 world's
-        // thePort mirror) are journaled, and the dispatcher
+        // SetGWorld's write to the application's QuickDraw globals is
+        // journaled, and the dispatcher
         // port/draw-state mirrors it rewrites are pure functions of its
         // stack arguments and guest RAM, so they sit at a fixed point
         // across two proven-identical cycles. A cold-start
@@ -5059,7 +5059,7 @@ impl FixtureRunner {
         self.dispatcher
             .sound_manager
             .with_mut(|manager| manager.legacy_speaker_muted = false);
-        self.bus.write_word(0x09dc, 1); // PaintWhite
+        self.bus.write_word(crate::memory::globals::addr::PAINT_WHITE, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
         ppc_app.toolbox_startup.physical_ram_size = ram_size;
         self.bus.write_long(addr::MEM_TOP, ram_size);

@@ -5279,7 +5279,7 @@
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 122));
         let update_vis_region_after =
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 24));
-        let update_the_port_after = bus.read_long(crate::memory::globals::addr::THE_PORT);
+        let update_the_port_after = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
         let update_current_port_after = *disp.current_port;
         let update_saved_vis_after = disp.saved_vis_regions.contains_key(&dialog_ptr);
         let update_queued_draw_procs = disp
@@ -5913,7 +5913,7 @@
                 &bus,
                 bus.read_long(dialog_ptr + 24),
             ),
-            the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
+            the_port_after: bus.read_long(bus.read_long(cpu.read_reg(Register::A5))),
             current_port_after: *disp.current_port,
             saved_vis_after: disp.saved_vis_regions.contains_key(&dialog_ptr),
         }
@@ -7130,7 +7130,7 @@
         close_disp
             .dialog_saved_pixels
             .insert(close_dialog_ptr, saved_pixels.clone().into());
-        close_bus.write_long(crate::memory::globals::addr::THE_PORT, close_dialog_ptr);
+
         let close_global_ptr = close_bus.read_long(close_cpu.read_reg(Register::A5));
         close_bus.write_long(close_global_ptr, close_dialog_ptr);
         close_cpu.write_reg(Register::A7, TEST_SP);
@@ -7153,7 +7153,7 @@
             .contains_key(&close_dialog_ptr);
         let close_window_list_contains_dialog = close_disp.window_list.contains(&close_dialog_ptr);
         let close_front_window_after = close_disp.front_window;
-        let close_the_port_after = close_bus.read_long(crate::memory::globals::addr::THE_PORT);
+        let close_the_port_after = close_bus.read_long(close_bus.read_long(close_cpu.read_reg(Register::A5)));
         let close_current_port_after = *close_disp.current_port;
         let close_update_event_for_previous_window = close_disp
             .event_queue
@@ -7255,7 +7255,7 @@
             menu_id: 900,
             rect: (10, 20, 30, 130),
         });
-        dispose_bus.write_long(crate::memory::globals::addr::THE_PORT, dispose_dialog_ptr);
+
         let dispose_global_ptr = dispose_bus.read_long(dispose_cpu.read_reg(Register::A5));
         dispose_bus.write_long(dispose_global_ptr, dispose_dialog_ptr);
         dispose_cpu.write_reg(Register::A7, TEST_SP);
@@ -7294,7 +7294,7 @@
                 .window_list
                 .contains(&dispose_dialog_ptr),
             dispose_front_window_after: dispose_disp.front_window,
-            dispose_the_port_after: dispose_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            dispose_the_port_after: dispose_bus.read_long(dispose_bus.read_long(dispose_cpu.read_reg(Register::A5))),
             dispose_current_port_after: *dispose_disp.current_port,
             dispose_update_event_for_previous_window: dispose_disp
                 .event_queue
@@ -7378,7 +7378,7 @@
         new_disp
             .current_port
             .with_mut(|current_port| *current_port = new_previous_port);
-        new_bus.write_long(crate::memory::globals::addr::THE_PORT, new_previous_port);
+        new_bus.write_long(new_bus.read_long(new_cpu.read_reg(Register::A5)), new_previous_port);
 
         let new_ditl = build_test_ditl_items(&[
             (16, (10, 12, 28, 120), b"Alpha".as_slice()),
@@ -7430,7 +7430,7 @@
         get_disp
             .current_port
             .with_mut(|current_port| *current_port = get_previous_port);
-        get_bus.write_long(crate::memory::globals::addr::THE_PORT, get_previous_port);
+        get_bus.write_long(get_bus.read_long(get_cpu.read_reg(Register::A5)), get_previous_port);
 
         let mut dlog = build_test_dlog((80, 90, 160, 240), 1901, 0);
         dlog[10] = 1; // visible
@@ -7469,7 +7469,7 @@
             new_window_list: new_disp.window_list.to_vec(),
             new_front_window: new_disp.front_window,
             new_current_port: *new_disp.current_port,
-            new_the_port: new_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            new_the_port: new_bus.read_long(new_bus.read_long(new_cpu.read_reg(Register::A5))),
             new_visible_byte: new_bus.read_byte(new_dialog_ptr + 110),
             new_goaway_byte: new_bus.read_byte(new_dialog_ptr + 112),
             new_refcon: new_bus.read_long(new_dialog_ptr + 152),
@@ -7495,7 +7495,7 @@
             get_window_list: get_disp.window_list.to_vec(),
             get_front_window: get_disp.front_window,
             get_current_port: *get_disp.current_port,
-            get_the_port: get_bus.read_long(crate::memory::globals::addr::THE_PORT),
+            get_the_port: get_bus.read_long(get_bus.read_long(get_cpu.read_reg(Register::A5))),
             get_visible_byte: get_bus.read_byte(get_dialog_ptr + 110),
             get_refcon: get_bus.read_long(get_dialog_ptr + 152),
             get_window_kind: get_bus.read_word(get_dialog_ptr + 108) as i16,
@@ -7822,7 +7822,7 @@
 
         UpdtDialogUpdateRegionSnapshot {
             stack_after: cpu.read_reg(Register::A7),
-            the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
+            the_port_after: bus.read_long(bus.read_long(cpu.read_reg(Register::A5))),
             current_port_after: *disp.current_port,
             deferred_after: disp.dialog_initial_draw_deferred.contains(&dialog_ptr),
             queued_draw_procs: disp
@@ -11870,7 +11870,7 @@
             .current_port
             .with_mut(|current_port| *current_port = dialog_ptr);
         disp.window_bounds = (100, 120, 220, 320);
-        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
+
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
         bus.write_long(global_ptr, dialog_ptr);
@@ -11883,10 +11883,6 @@
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, prev_window);
         assert_eq!(*disp.current_port, prev_window);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            prev_window
-        );
         assert_eq!(bus.read_long(global_ptr), prev_window);
         assert_eq!(
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(prev_window + 122)),
@@ -11926,17 +11922,12 @@
         disp.window_bounds = (100, 120, 220, 320);
         disp.window_list.replace(vec![dialog_ptr, visible_window]);
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
-        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
 
         bus.write_long(TEST_SP, dialog_ptr);
         let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, visible_window);
         assert_eq!(*disp.current_port, visible_window);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            visible_window
-        );
     }
 
     #[test]
@@ -11992,7 +11983,7 @@
         disp
             .current_port
             .with_mut(|current_port| *current_port = other_front);
-        bus.write_long(crate::memory::globals::addr::THE_PORT, other_front);
+
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
         bus.write_long(global_ptr, other_front);
@@ -12005,10 +11996,6 @@
 
         assert_eq!(disp.front_window, other_front);
         assert_eq!(*disp.current_port, other_front);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            other_front
-        );
         assert_eq!(bus.read_long(global_ptr), other_front);
         assert_eq!(
             disp.window_stack.len(),
@@ -12094,7 +12081,7 @@
             .with_mut(|current_port| *current_port = dialog_ptr);
         disp.window_bounds = (100, 120, 220, 320);
         bus.write_byte(dialog_ptr + 110, 0xFF);
-        bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
+
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
         bus.write_long(global_ptr, dialog_ptr);
@@ -12107,10 +12094,6 @@
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, prev_window);
         assert_eq!(*disp.current_port, prev_window);
-        assert_eq!(
-            bus.read_long(crate::memory::globals::addr::THE_PORT),
-            prev_window
-        );
         assert_eq!(bus.read_long(global_ptr), prev_window);
         assert_eq!(
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(prev_window + 122)),

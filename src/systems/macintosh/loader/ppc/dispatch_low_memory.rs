@@ -229,7 +229,7 @@ pub(super) fn dispatch_low_memory_import(
                 .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT) as i16,
         ))),
         PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
-            memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
+            memory.read_u16_be(crate::memory::globals::addr::PAINT_WHITE).unwrap_or(1) != 0,
         ))),
         PpcImportDispatcherTarget::LMGetHWCfgFlags => Some(PpcImportAction::Return(
             // Apple Technical Note PT09 identifies HwCfgFlgs as a signed
@@ -310,7 +310,7 @@ pub(super) fn dispatch_low_memory_import(
                 .unwrap_or(PPC_STACK_BASE),
         )),
         PpcImportDispatcherTarget::LMSetPaintWhite => {
-            let _ = memory.write_u16_be(0x09dc, u16::from(cpu.gpr[3] != 0));
+            let _ = memory.write_u16_be(crate::memory::globals::addr::PAINT_WHITE, u16::from(cpu.gpr[3] != 0));
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LMSetResumeProc => {

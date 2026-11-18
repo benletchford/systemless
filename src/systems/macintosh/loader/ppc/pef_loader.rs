@@ -686,7 +686,7 @@ fn load_pef_application_with_optional_disk_fragment(
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
     // low-memory accessors preserve this flag around window creation.
-    let _ = memory.write_u16_be(0x09dc, 1);
+    let _ = memory.write_u16_be(crate::memory::globals::addr::PAINT_WHITE, 1);
     // Inside Macintosh Volume V (1986), pp. V-592--V-593, documents the
     // MMU32Bit low-memory byte at $0CB2. Native PowerPC processes always use
     // 32-bit addressing.

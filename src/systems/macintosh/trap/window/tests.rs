@@ -1480,11 +1480,6 @@ fn hidden_new_window_preserves_current_port() {
         *disp.current_port, base,
         "hidden NewWindow must preserve the caller's current port"
     );
-    assert_eq!(
-        bus.read_long(crate::memory::globals::addr::THE_PORT),
-        base,
-        "hidden NewWindow must preserve low-memory thePort"
-    );
     let qd_globals = bus.read_long(cpu.read_reg(Register::A5));
     assert_eq!(
         bus.read_long(qd_globals),
@@ -1529,11 +1524,6 @@ fn backmost_visible_new_window_preserves_current_port() {
     assert_eq!(
         *disp.current_port, base,
         "visible NewWindow with behind=NIL must preserve the caller's current port"
-    );
-    assert_eq!(
-        bus.read_long(crate::memory::globals::addr::THE_PORT),
-        base,
-        "backmost NewWindow must preserve low-memory thePort"
     );
     let qd_globals = bus.read_long(cpu.read_reg(Register::A5));
     assert_eq!(
@@ -9987,7 +9977,7 @@ fn movewindow_paints_newly_onscreen_content_and_preserves_copied_pixels() {
         disp.validate_window_rect(&mut bus, window, (0, 0, 40, 50));
         assert!(disp.window_update_rect(&bus, window).is_none());
         bus.fill_bytes(screen, 96 * 80, 0x7B);
-        bus.write_word(0x09DC, paint_white);
+        bus.write_word(crate::memory::globals::addr::PAINT_WHITE, paint_white);
         let old_port = *disp.current_port;
         disp.move_window_to_global(&mut bus, &mut cpu, window, 30, 20, false);
         assert_eq!(bus.read_byte(screen + 25 * 96 + 35), 0x7B, "valid screen pixels are copied");
@@ -9998,7 +9988,7 @@ fn movewindow_paints_newly_onscreen_content_and_preserves_copied_pixels() {
             assert_ne!(exposed, 0x7B, "offscreen content has no valid pixels to copy");
         }
         assert_eq!(*disp.current_port, old_port);
-        assert_eq!(bus.read_word(0x09DC) != 0, paint_white != 0, "erase suppression remains unchanged");
+        assert_eq!(bus.read_word(crate::memory::globals::addr::PAINT_WHITE) != 0, paint_white != 0, "erase suppression remains unchanged");
         assert!(disp.window_update_rect(&bus, window).is_some(), "both flag values deliver an update");
     }
 }
@@ -10275,7 +10265,7 @@ fn window_removal_keeps_cached_and_guest_current_port_coherent() {
             next,
             "GetPort after removal trap {trap:#x}"
         );
-        assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), next);
+
         let a5 = cpu.read_reg(Register::A5);
         assert_eq!(bus.read_long(bus.read_long(a5)), next);
     }
@@ -10301,7 +10291,7 @@ fn window_removal_preserves_a_different_current_port() {
         .unwrap()
         .unwrap();
     assert_eq!(*disp.current_port, other);
-    assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), other);
+
     assert_eq!(
         disp.effective_the_port(&bus, cpu.read_reg(Register::A5)),
         other
@@ -10327,7 +10317,7 @@ fn window_removal_clears_current_port_aliases_when_no_windows_remain() {
             .unwrap()
             .unwrap();
         assert_eq!(*disp.current_port, 0);
-        assert_eq!(bus.read_long(crate::memory::globals::addr::THE_PORT), 0);
+
         assert_eq!(disp.effective_the_port(&bus, cpu.read_reg(Register::A5)), 0);
     }
 }

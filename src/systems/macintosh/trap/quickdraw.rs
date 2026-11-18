@@ -1330,13 +1330,7 @@ impl super::TrapDispatcher {
                 let port_ptr = if *self.current_port != 0 {
                     *self.current_port
                 } else {
-                    let a5 = cpu.read_reg(Register::A5);
-                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
-                    if global_ptr != 0 {
-                        bus.read_long(global_ptr)
-                    } else {
-                        bus.read_long(crate::memory::globals::addr::THE_PORT)
-                    }
+                    self.effective_the_port(bus, cpu.read_reg(Register::A5))
                 };
                 let dst_handle = if port_ptr != 0 {
                     bus.read_long(port_ptr + 28)
@@ -1387,13 +1381,7 @@ impl super::TrapDispatcher {
                 let port_ptr = if *self.current_port != 0 {
                     *self.current_port
                 } else {
-                    let a5 = cpu.read_reg(Register::A5);
-                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
-                    if global_ptr != 0 {
-                        bus.read_long(global_ptr)
-                    } else {
-                        bus.read_long(crate::memory::globals::addr::THE_PORT)
-                    }
+                    self.effective_the_port(bus, cpu.read_reg(Register::A5))
                 };
                 let clip_rgn = if port_ptr != 0 {
                     bus.read_long(port_ptr + 28)
@@ -1438,13 +1426,7 @@ impl super::TrapDispatcher {
                 let port_ptr = if *self.current_port != 0 {
                     *self.current_port
                 } else {
-                    let a5 = cpu.read_reg(Register::A5);
-                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
-                    if global_ptr != 0 {
-                        bus.read_long(global_ptr)
-                    } else {
-                        bus.read_long(crate::memory::globals::addr::THE_PORT)
-                    }
+                    self.effective_the_port(bus, cpu.read_reg(Register::A5))
                 };
                 let clip_rgn_handle = if port_ptr != 0 {
                     bus.read_long(port_ptr + 28)
@@ -6134,8 +6116,7 @@ impl super::TrapDispatcher {
                 }
 
                 // Resolve port pixel geometry from the dispatcher's
-                // current_port (kept in sync with the THE_PORT low-mem
-                // global at 0x09DA by set_current_port_state).
+                // current port.
                 let the_port = *self.current_port;
                 let port_top;
                 let port_left;
@@ -19602,12 +19583,13 @@ impl super::TrapDispatcher {
             .with_mut(|current_gdevice| *current_gdevice = resolved_gdh);
         // Re-selecting a port re-arms QDDone for that port.
         self.qddone_seen_ports.remove(&port);
-        bus.write_long(crate::memory::globals::addr::THE_PORT, port);
 
         let a5 = cpu.read_reg(Register::A5);
-        let global_ptr = bus.read_long(a5);
-        if global_ptr != 0 {
-            bus.write_long(global_ptr, port);
+        if a5 != 0 {
+            let global_ptr = bus.read_long(a5);
+            if global_ptr != 0 {
+                bus.write_long(global_ptr, port);
+            }
         }
 
         if port != 0 {
@@ -26223,11 +26205,7 @@ impl super::TrapDispatcher {
                 }
             }
         }
-        if *self.current_port != 0 {
-            *self.current_port
-        } else {
-            bus.read_long(crate::memory::globals::addr::THE_PORT)
-        }
+        *self.current_port
     }
 
     fn promote_compiled_crsr_resource(
