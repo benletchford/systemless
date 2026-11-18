@@ -1002,6 +1002,48 @@ fn ppc_standard_file_global_rect(
     )
 }
 
+/// Left inset of an entry name inside the Standard File list, leaving room
+/// for the small folder or document glyph drawn before it.
+const PPC_STANDARD_FILE_GET_NAME_INSET: i16 = 20;
+
+/// Draw the small monochrome folder or document glyph that precedes each
+/// Standard File list entry (the same glyphs the 68k list uses). Selected
+/// rows are inverted, so the glyph is drawn white on the black highlight.
+fn ppc_standard_file_draw_entry_icon(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    origin: (i16, i16),
+    directory: bool,
+    selected: bool,
+) {
+    use crate::systems::macintosh::ui_art::{
+        STANDARD_FILE_DOCUMENT_ICON_ROWS, STANDARD_FILE_FOLDER_ICON_ROWS,
+        STANDARD_FILE_ICON_WIDTH,
+    };
+    let rows = if directory {
+        STANDARD_FILE_FOLDER_ICON_ROWS
+    } else {
+        STANDARD_FILE_DOCUMENT_ICON_ROWS
+    };
+    let ink = if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK };
+    let Some(pixel) = ppc_front_rgb_pixel(memory, front, ink) else {
+        return;
+    };
+    let (top, left) = (i32::from(origin.0), i32::from(origin.1));
+    for (y, row) in rows.into_iter().enumerate() {
+        for x in 0..STANDARD_FILE_ICON_WIDTH {
+            if row & (1 << (STANDARD_FILE_ICON_WIDTH - 1 - x)) != 0 {
+                let _ = ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    front,
+                    (left + i32::from(x), top + y as i32),
+                    pixel,
+                );
+            }
+        }
+    }
+}
+
 fn ppc_standard_file_draw_get_dialog(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -1043,20 +1085,23 @@ fn ppc_standard_file_draw_get_dialog(
         if selected {
             let _ = ppc_fill_front_rect(memory, front, row_rect, PPC_RGB_BLACK);
         }
-        let mut text = entry.name.clone();
-        if entry.is_directory {
-            text.extend_from_slice(b" >");
-        }
+        ppc_standard_file_draw_entry_icon(
+            memory,
+            front,
+            (row_top.saturating_add(1), list.1.saturating_add(4)),
+            entry.is_directory,
+            selected,
+        );
         ppc_draw_dialog_text(
             memory,
             gworlds,
             (
                 row_top.saturating_add(1),
-                list.1.saturating_add(5),
+                list.1.saturating_add(PPC_STANDARD_FILE_GET_NAME_INSET),
                 row_bottom,
                 list.3.saturating_sub(3),
             ),
-            &text,
+            &entry.name,
             if selected {
                 PPC_RGB_WHITE
             } else {

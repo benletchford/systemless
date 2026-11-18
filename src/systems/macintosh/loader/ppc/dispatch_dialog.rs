@@ -4681,7 +4681,7 @@ pub(super) fn ppc_draw_front_icon_image(
 }
 
 /// The raw front-buffer pixel nearest to `color`.
-fn ppc_front_rgb_pixel(
+pub(super) fn ppc_front_rgb_pixel(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
     color: PpcRgbColor,

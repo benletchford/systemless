@@ -2261,14 +2261,14 @@ impl super::TrapDispatcher {
         selected: bool,
     ) {
         // The classic list uses small monochrome document and folder icons.
-        let rows: [u16; 11] = if directory {
-            [0x000, 0x3c0, 0x420, 0xffe, 0x801, 0x801, 0x801, 0x801, 0x801, 0xfff, 0x000]
+        let rows = if directory {
+            crate::systems::macintosh::ui_art::STANDARD_FILE_FOLDER_ICON_ROWS
         } else {
-            [0x7e0, 0x420, 0x430, 0x428, 0x427, 0x401, 0x401, 0x401, 0x401, 0x7ff, 0x000]
+            crate::systems::macintosh::ui_art::STANDARD_FILE_DOCUMENT_ICON_ROWS
         };
         let (base, row_bytes, width, height, depth) = self.get_screen_params();
         for (y, row) in rows.into_iter().enumerate() {
-            for x in 0..12 {
+            for x in 0..crate::systems::macintosh::ui_art::STANDARD_FILE_ICON_WIDTH {
                 if row & (1 << (11 - x)) != 0 {
                     Self::fb_set_pixel(bus, base, row_bytes, depth, width, height,
                         left + x, top + y as i16, !selected);
