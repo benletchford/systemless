@@ -1468,7 +1468,14 @@ pub(super) fn ppc_window_structure_bounds(
     content: (i16, i16, i16, i16),
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
-    let border: i16 = if proc_id == 2 { 1 } else { 6 };
+    // dBoxProc's double border reaches eight pixels outside the content
+    // rectangle (Inside Macintosh Volume I, p. I-273); a narrower structure
+    // region lets desktop repaints erase its outer ring.
+    let border: i16 = match proc_id {
+        1 => crate::dialog_manager::DIALOG_DBOX_FRAME_MARGIN,
+        2 => 1,
+        _ => 6,
+    };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
     } else if proc_id == 3 {
