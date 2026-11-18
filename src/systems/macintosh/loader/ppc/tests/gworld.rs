@@ -2968,3 +2968,46 @@ fn hle_import_runner_copy_pixmap_clones_device_table_without_leaking_or_freeing_
         Some(expected)
     );
 }
+
+#[test]
+fn mirror_sync_follows_the_registry_and_adopts_unregistered_records_once() {
+    let record = |pixmap_handle, pixels_locked, pixels_no_purge| PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: 0x1000 + pixmap_handle,
+        pixmap_handle,
+        pixmap: 0x2000 + pixmap_handle,
+        base_addr: 0x3000 + pixmap_handle,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: 8,
+        height: 1,
+        depth: 8,
+        row_bytes: 8,
+        pixels_locked,
+        pixels_no_purge,
+    };
+    // Registered locked and purgeable, mirrored as neither; unregistered with
+    // a locked, non-purgeable mirror; and a record with no PixMapHandle.
+    let mut gworlds = [
+        record(0x10, false, true),
+        record(0x20, true, true),
+        record(0, true, false),
+    ];
+    let states =
+        SharedProcessQuickDrawPixelStates::from_value(std::collections::HashMap::from([(
+            0x10,
+            PPC_PIXELS_LOCKED | PPC_PIXELS_PURGEABLE,
+        )]));
+
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+
+    assert!(gworlds[0].pixels_locked && !gworlds[0].pixels_no_purge);
+    assert!(gworlds[1].pixels_locked && gworlds[1].pixels_no_purge);
+    assert_eq!(states.quickdraw_pixel_state(0x20), PPC_PIXELS_LOCKED);
+    assert_eq!(gworlds[2], record(0, true, false));
+    assert_eq!(states.len(), 2);
+
+    // Once adopted, the registry wins over a mirror changed behind its back.
+    gworlds[1].pixels_locked = false;
+    ppc_sync_gworld_pixel_state_mirrors(&mut gworlds, &states);
+    assert!(gworlds[1].pixels_locked);
+}
