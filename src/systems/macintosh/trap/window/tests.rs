@@ -1424,11 +1424,11 @@ fn run_new_window_with_visible(visible_arg: u16) -> (u32, u8) {
 }
 
 #[test]
-fn new_window_with_visible_true_sets_visible_byte_to_ff() {
+fn new_window_with_visible_true_sets_visible_byte_to_pascal_true() {
     let (window_ptr, visible_byte) = run_new_window_with_visible(1);
     assert_ne!(window_ptr, 0);
     assert_eq!(
-        visible_byte, 0xFF,
+        visible_byte, 0x01,
         "NewWindow(visible=true) must mark window visible"
     );
 }
@@ -4231,7 +4231,7 @@ fn showhide_true_makes_target_visible_without_front_reorder_or_activate_events()
 
     assert_eq!(
         bus.read_byte(target_window + 110),
-        0xFF,
+        0x01,
         "ShowHide(TRUE) must set visible byte"
     );
     assert_eq!(
@@ -4379,6 +4379,55 @@ fn hidden_full_screen_backdrop_for_test(
         bus, cpu, window, screen_base, 0, 0, 9999, 9999, "", 2, false, true, true, 0,
     );
     (screen_base, window)
+}
+
+#[test]
+fn window_visible_flag_stores_pascal_true_like_the_rom() {
+    // WindowMgr.a: ShowWindow pushes #1 ("set boolean WVISIBLE to $01, not
+    // $FF") and ShowHide stores its showFlag byte verbatim, testing only bit
+    // 0. Moria re-hides its main window unless `visible == 1`.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        screen_base,
+        60,
+        40,
+        200,
+        300,
+        "Moria",
+        4,
+        true,
+        true,
+        true,
+        0,
+    );
+    assert_eq!(bus.read_byte(window + 110), 0x01, "NewWindow(visible=TRUE)");
+
+    show_hide_for_test(&mut disp, &mut cpu, &mut bus, window, false);
+    assert_eq!(bus.read_byte(window + 110), 0x00);
+    show_hide_for_test(&mut disp, &mut cpu, &mut bus, window, true);
+    assert_eq!(bus.read_byte(window + 110), 0x01, "ShowHide(window, TRUE)");
+
+    show_hide_for_test(&mut disp, &mut cpu, &mut bus, window, false);
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, window);
+    dispatch(&mut disp, 0x115, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(bus.read_byte(window + 110), 0x01, "ShowWindow");
+
+    // An already-visible window keeps its byte: only bit 0 is compared.
+    let sp = TEST_SP - 6;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_byte(sp, 0xFF);
+    bus.write_long(sp + 2, window);
+    dispatch(&mut disp, 0x108, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(bus.read_byte(window + 110), 0x01);
 }
 
 #[test]
