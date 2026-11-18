@@ -252,10 +252,12 @@ impl ProcessForkBytes {
     /// Retain immutable bytes for resource records. A subsequent file write
     /// detaches the backing buffer while all attached file views stay linked.
     pub(crate) fn resource_snapshot(&self) -> crate::managers::resource::ResourceBytes {
-        // SAFETY: the runner serializes access, as for Deref and with_mut.
-        // Resource snapshots never mutate the shared backing buffer; an image
-        // range is copied once into owned bytes that attached views share.
-        let backing = unsafe { Rc::clone((*self.0.get()).owned()) };
+        // SAFETY: read the backing as for Deref. A caller can still hold a
+        // slice of this fork, so taking a snapshot must keep its backing alive.
+        let backing = match unsafe { &*self.0.get() } {
+            ForkBacking::Owned(bytes) => Rc::clone(bytes),
+            ForkBacking::Image(range) => Rc::new(range.bytes().to_vec()),
+        };
         crate::managers::resource::ResourceBytes::from_shared(backing)
     }
 
@@ -11318,6 +11320,16 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(fork.content_hash(), 0xcbf2_9ce4_8422_2325);
+    }
+
+    #[test]
+    fn resource_snapshot_preserves_the_live_image_backing() {
+        let image = std::rc::Rc::new(b"abcd".to_vec());
+        let range = super::SharedImageRange::new(image, 1, 2).unwrap();
+        let fork = super::ProcessForkBytes::from(range);
+        let snapshot = fork.resource_snapshot();
+        assert!(fork.is_image_backed());
+        assert_eq!(snapshot.slice(0..2), b"bc");
     }
 
     #[test]
