@@ -2347,16 +2347,20 @@ pub(super) fn ppc_front_window_occlusion_pixels(
     let front_buffer = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD)?;
     let target_structure = ppc_window_global_structure_bounds(memory, gworlds, window)?;
     let mut pixels = Vec::new();
+    // The WDEF draws through the Window Manager port, whose clipRgn is
+    // GrayRgn: a structure under the menu bar leaves the menu bar intact.
+    let menu_bar = ppc_menu_bar_excluded_from_gray_rgn(memory).map(|(bottom, right)| (0, 0, bottom, right));
     let occluders = window_list.with_ref(|windows| {
         crate::window_manager::window_occluders(windows.iter().copied(), window, |candidate| {
             ppc_window_is_visible(memory, candidate)
         })
     });
-    for front in occluders {
-        let Some(front_structure) = ppc_window_global_structure_bounds(memory, gworlds, front)
-        else {
-            continue;
-        };
+    let fronts = occluders
+        .into_iter()
+        .filter_map(|front| ppc_window_global_structure_bounds(memory, gworlds, front))
+        .chain(menu_bar)
+        .collect::<Vec<_>>();
+    for front_structure in fronts {
         let overlap = (
             target_structure.0.max(front_structure.0).max(0),
             target_structure.1.max(front_structure.1).max(0),
@@ -2869,6 +2873,23 @@ pub(super) fn ppc_transition_front_window_chrome(
     }
 }
 
+/// Returns the menu bar's (bottom, right) when the desktop region excludes it.
+///
+/// The Window Manager computes a window's visRgn from its content within
+/// GrayRgn (Macintosh Toolbox Essentials (1992), pp. 4-16 and 4-113), and
+/// GrayRgn starts below the MBarHeight-tall menu bar. A window placed at the
+/// top of the screen therefore never paints over the menu bar unless the
+/// application hides it (MBarHeight 0) or adds that strip to GrayRgn.
+fn ppc_menu_bar_excluded_from_gray_rgn(memory: &mut PpcSectionMem) -> Option<(i16, i16)> {
+    let menu_bar_height = i16::try_from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR)?)
+        .ok()
+        .filter(|height| *height > 0)?;
+    let gray_rgn = memory.read_u32_be(PPC_GRAY_RGN_ADDR)?;
+    let (gray_top, _, _, _) = ppc_read_rgn_bbox(memory, gray_rgn)?;
+    (gray_top >= menu_bar_height)
+        .then(|| (menu_bar_height, ppc_main_screen_width() as i16))
+}
+
 pub(super) fn ppc_recalculate_window_vis_regions(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
@@ -2882,6 +2903,13 @@ pub(super) fn ppc_recalculate_window_vis_regions(
         memory_manager: process_memory_manager,
     };
     let front_to_back = window_list.windows();
+    let menu_bar = ppc_menu_bar_excluded_from_gray_rgn(memory).map(|(bottom, right)| {
+        let mut storage = vec![0, 10];
+        for value in [0, 0, bottom, right] {
+            storage.extend_from_slice(&value.to_be_bytes());
+        }
+        storage
+    });
     for window in front_to_back.iter().copied() {
         let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
             continue;
@@ -2928,6 +2956,23 @@ pub(super) fn ppc_recalculate_window_vis_regions(
                 vis_rgn,
                 PpcRegionBooleanOp::Difference,
             );
+        }
+        if let Some(menu_bar) = menu_bar.as_deref() {
+            if let Some(clipped) = ppc_region_storage(memory, vis_rgn).and_then(|storage| {
+                ppc_region_storage_boolean(&storage, menu_bar, PpcRegionBooleanOp::Difference)
+                    .ok()
+            }) {
+                let _ = ppc_write_region_storage(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    vis_rgn,
+                    &clipped,
+                );
+            }
         }
         // visRgn is in port coordinates. The port PixMap's screen bounds
         // include any SetOrigin shift, while contRgn remains global.
