@@ -2207,6 +2207,21 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Track whether a window's rectangle lies wholly off the screen. Such a
+    /// window has no visible frame to draw and occludes nothing; the mark
+    /// must follow MoveWindow, because applications commonly create a window
+    /// far off-screen (for example at h=16384) and move it into place before
+    /// showing it (Inside Macintosh Volume I, I-289).
+    fn refresh_window_offscreen_placement(&mut self, window_ptr: u32, rect: (i16, i16, i16, i16)) {
+        let (_, _, screen_w, screen_h, _) = self.screen_mode;
+        let (top, left, bottom, right) = rect;
+        if top >= screen_h as i16 || left >= screen_w as i16 || bottom <= 0 || right <= 0 {
+            self.windows_placed_offscreen.insert(window_ptr);
+        } else {
+            self.windows_placed_offscreen.remove(&window_ptr);
+        }
+    }
+
     pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2294,6 +2309,7 @@ impl super::TrapDispatcher {
             bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
             Some(global_structure),
         );
+        self.refresh_window_offscreen_placement(the_window, global_content);
         if let Some(update_rect) = old_update_rect {
             Self::write_region_handle_rect(
                 bus,
@@ -3819,15 +3835,10 @@ impl super::TrapDispatcher {
             self.draw_window_chrome(bus, false);
         }
 
-        if wind_top >= screen_h as i16
-            || wind_left >= screen_w as i16
-            || wind_bottom <= 0
-            || wind_right <= 0
-        {
-            self.windows_placed_offscreen.insert(window_ptr);
-        } else {
-            self.windows_placed_offscreen.remove(&window_ptr);
-        }
+        self.refresh_window_offscreen_placement(
+            window_ptr,
+            (wind_top, wind_left, wind_bottom, wind_right),
+        );
 
         self.front_window = window_ptr;
         self.window_title = wind_title.to_string();
@@ -5701,6 +5712,7 @@ impl super::TrapDispatcher {
                         self.current_tick()
                     );
                 }
+                let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
                     if !show_flag {
@@ -5742,12 +5754,31 @@ impl super::TrapDispatcher {
                             );
                             self.queue_window_update_event(the_window);
                         }
+                        // ShowHide's DrawNew paints the revealed window's
+                        // frame through its WDEF (boot3 WindowMgr.a ShowHide).
+                        // Windows parked wholly off-screen draw nothing.
+                        if !was_visible
+                            && !self.dialog_items.contains_key(&the_window)
+                            && !self.windows_placed_offscreen.contains(&the_window)
+                        {
+                            if self.window_uses_custom_def_proc(bus, the_window) {
+                                arm_custom_wdef_draw = true;
+                            } else {
+                                let hilited = bus
+                                    .read_byte(the_window + Self::WINDOW_HILITED_OFFSET)
+                                    != 0;
+                                self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                            }
+                        }
                     } else {
                         self.clear_queued_update_events(the_window);
                         self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
