@@ -2246,6 +2246,82 @@
     }
 
     #[test]
+    fn dctb_dialog_radio_and_checkbox_marks_erase_with_content_color() {
+        // The ROM ButtonCDEF (PlotCheck) sets RGBBackColor to the owning
+        // window's AuxWin content colour and _EraseRects the 12x12 mark
+        // box before framing it, so a coloured 'dctb' shows through a
+        // radio button's corners and an unchecked box's interior. War of
+        // Flowers' pink OptionDialog showed white squares behind every
+        // radio button. boot3 Toolbox/ControlMgr/ButtonCDEF.a, EraseCheck.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((320 * 240) as u32);
+        bus.write_bytes(screen_base, &vec![0xEE; 320 * 240]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 320, 320, 240, 8);
+
+        let content_rgb = (0xFFFF, 0xCCCC, 0xFFFF);
+        disp.device_clut.fill([0, 0, 0]);
+        disp.device_clut.set_entry(0, [0xFFFF, 0xFFFF, 0xFFFF]);
+        disp.device_clut.set_entry(42, [content_rgb.0, content_rgb.1, content_rgb.2]);
+        disp.device_clut.set_entry(255, [0, 0, 0]);
+
+        let mut dlog = build_test_dlog((40, 50, 120, 250), 1941, 0);
+        dlog[10] = 1; // visible
+        let ditl = build_test_ditl_items(&[
+            (6, (8, 8, 26, 80), b"Slow"),
+            (5, (38, 8, 56, 80), b"Sound"),
+        ]);
+        let mut dctb = Vec::with_capacity(48);
+        dctb.extend_from_slice(&0u32.to_be_bytes()); // ctSeed
+        dctb.extend_from_slice(&0u16.to_be_bytes()); // ctFlags
+        dctb.extend_from_slice(&4u16.to_be_bytes()); // five entries
+        for (part, rgb) in [
+            (0u16, content_rgb),
+            (1, (0, 0, 0)),
+            (2, (0, 0, 0)),
+            (3, (0xFFFF, 0xFFFF, 0xFFFF)),
+            (4, (0xDDDD, 0xDDDD, 0xDDDD)),
+        ] {
+            dctb.extend_from_slice(&part.to_be_bytes());
+            dctb.extend_from_slice(&rgb.0.to_be_bytes());
+            dctb.extend_from_slice(&rgb.1.to_be_bytes());
+            dctb.extend_from_slice(&rgb.2.to_be_bytes());
+        }
+
+        disp.install_test_resource(&mut bus, *b"DLOG", 1940, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1941, &ditl);
+        disp.install_test_resource(&mut bus, *b"dctb", 1940, &dctb);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF); // behind
+        bus.write_long(TEST_SP + 4, 0); // dStorage
+        bus.write_word(TEST_SP + 8, 1940); // dialogID
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let pixel = |bus: &MacMemoryBus, v: u32, h: u32| bus.read_byte(screen_base + v * 320 + h);
+        // Radio item at (48,58)-(66,130): 12x12 mark box at (51,60).
+        assert_eq!(
+            pixel(&bus, 51, 60),
+            42,
+            "radio mark box corner outside the circle must keep the dctb content colour"
+        );
+        assert_eq!(
+            pixel(&bus, 57, 66),
+            42,
+            "an unselected radio button's interior is the content colour"
+        );
+        assert_eq!(pixel(&bus, 51, 64), 255, "the radio circle is still framed");
+        // Checkbox item at (78,58)-(96,130): 12x12 box at (81,60).
+        assert_eq!(
+            pixel(&bus, 87, 66),
+            42,
+            "an unchecked box's interior is the content colour"
+        );
+        assert_eq!(pixel(&bus, 81, 60), 255, "the check box is still framed");
+    }
+
+    #[test]
     fn get_new_dialog_applies_matching_ictb_text_style_on_initial_draw() {
         // An ictb follows the matching DITL ID. Each four-byte item entry
         // selects a 20-byte text style record by resource-relative offset.
