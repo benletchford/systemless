@@ -468,7 +468,16 @@ pub(super) fn dispatch_window_import(
                     next_front,
                     tick_count,
                 );
-                ppc_post_new_visible_window_update(memory, event_queue, window, tick_count, input);
+                ppc_post_new_visible_window_update(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    event_queue,
+                    window,
+                    tick_count,
+                    input,
+                );
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -533,7 +542,16 @@ pub(super) fn dispatch_window_import(
                     next_front,
                     tick_count,
                 );
-                ppc_post_new_visible_window_update(memory, event_queue, window, tick_count, input);
+                ppc_post_new_visible_window_update(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    event_queue,
+                    window,
+                    tick_count,
+                    input,
+                );
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -2476,8 +2494,16 @@ pub(super) fn ppc_union_window_update_rect(
 /// application then receives an updateEvt for it, as in the shared 68K Window
 /// Manager. Applications may defer drawing until that event arrives.
 /// Inside Macintosh Volume I (1985), pp. I-281 to I-283.
+/// Macintosh Toolbox Essentials (1992), pp. 4-80 and 4-86: NewWindow and
+/// GetNewWindow draw a visible window immediately; as with ShowWindow, PaintOne
+/// erases its content region with the content color and accumulates it into
+/// the update region before the application's update event arrives.
+#[allow(clippy::too_many_arguments)]
 fn ppc_post_new_visible_window_update(
     memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     window: u32,
     when: u32,
@@ -2490,6 +2516,7 @@ fn ppc_post_new_visible_window_update(
     if let Some(port_rect) = port_rect {
         ppc_invalidate_window_local_rect(memory, window, port_rect);
     }
+    ppc_paint_revealed_window_content(memory, gworlds, window_list, handles, window);
     ppc_enqueue_window_update_event(event_queue, window, when, input);
 }
 
@@ -4036,7 +4063,16 @@ pub(super) fn ppc_dispatch_legacy_window(
                     next_front,
                     when,
                 );
-                ppc_post_new_visible_window_update(memory, event_queue, window, when, input);
+                ppc_post_new_visible_window_update(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    event_queue,
+                    window,
+                    when,
+                    input,
+                );
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
@@ -4281,7 +4317,16 @@ pub(super) fn ppc_dispatch_legacy_window(
                     next_front,
                     when,
                 );
-                ppc_post_new_visible_window_update(memory, event_queue, window, when, input);
+                ppc_post_new_visible_window_update(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    event_queue,
+                    window,
+                    when,
+                    input,
+                );
                 if next_front != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
