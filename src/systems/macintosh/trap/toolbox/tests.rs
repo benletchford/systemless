@@ -7376,7 +7376,7 @@ fn test_pb_open_rf_current_permission_allows_fswrite() {
     assert_eq!(bus.read_word(pb + 16), 0);
     assert_eq!(
         disp.vfs_rsrc.get(filename),
-        Some(&vec![0xCA, 0xFE, 0xBA, 0xBE])
+        Some(&vec![0xCA, 0xFE, 0xBA, 0xBE][..])
     );
 }
 

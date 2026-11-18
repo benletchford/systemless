@@ -3531,7 +3531,7 @@ impl FixtureRunner {
 
     /// Get the contents of a file from the virtual filesystem.
     pub fn vfs_read(&self, filename: &str) -> Option<&[u8]> {
-        self.dispatcher.vfs.get(filename).map(|v| v.as_slice())
+        self.dispatcher.vfs.get(filename).map(|v| v.as_ref())
     }
 
     pub fn vfs_file_summaries(&mut self) -> Vec<VfsFileSummary> {

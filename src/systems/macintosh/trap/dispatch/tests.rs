@@ -2813,7 +2813,7 @@
         assert_eq!(bus.read_bytes(resource_ptr, 7), b"payload");
         assert_eq!(
             disp.vfs.get("__rsrc__Game Folder/Game App"),
-            Some(&serialized),
+            Some(&serialized[..]),
             "native PBRead must see the open application resource fork"
         );
     }

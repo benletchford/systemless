@@ -2509,7 +2509,7 @@ impl super::TrapDispatcher {
         let Some(filename) = self.open_files.get(&(f_ref_num as u16)).cloned() else {
             return -51; // rfNumErr
         };
-        let Some(file_data) = self.vfs.get(&filename).cloned() else {
+        let Some(file_data) = self.vfs.get(&filename).map(<[u8]>::to_vec) else {
             return -43; // fnfErr
         };
         let Some((samples, sample_rate_fixed)) = parse_aiff_samples(&file_data) else {

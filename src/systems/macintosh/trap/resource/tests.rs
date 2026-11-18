@@ -5570,7 +5570,7 @@ fn hlfs_dispatch_fspopenrf_opens_resource_fork_access_path() {
     );
     assert_eq!(
         disp.vfs.get("__rsrc__OpenMe.rsrc"),
-        Some(&vec![0x52, 0x53, 0x52, 0x43])
+        Some(&vec![0x52, 0x53, 0x52, 0x43][..])
     );
 }
 
@@ -9948,7 +9948,7 @@ fn extracted_volume_rejects_write_open_and_fswrite() {
     bus.write_byte(0x310000, 9);
     call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
     assert_eq!(cpu.read_reg(Register::D0) as i32, -44, "wPrErr");
-    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3]));
+    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3][..]));
 }
 
 #[test]
@@ -9987,7 +9987,7 @@ fn extracted_volume_rejects_file_and_directory_mutations() {
 
     call_trap_word(&mut disp, 0xA209, &mut cpu, &mut bus).unwrap();
     assert_eq!(cpu.read_reg(Register::D0) as i32, -44, "PBHDelete");
-    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3]));
+    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3][..]));
 
     bus.write_byte(pb + 27, 1); // fsRdPerm
     call_trap_word(&mut disp, 0xA200, &mut cpu, &mut bus).unwrap();
@@ -9995,7 +9995,7 @@ fn extracted_volume_rejects_file_and_directory_mutations() {
     bus.write_long(pb + 28, 1);
     call(&mut disp, false, 0x12, &mut cpu, &mut bus).unwrap();
     assert_eq!(cpu.read_reg(Register::D0) as i32, -44, "PBSetEOF");
-    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3]));
+    assert_eq!(disp.vfs.get(file_name), Some(&vec![1, 2, 3][..]));
 }
 
 #[test]
@@ -10393,7 +10393,7 @@ fn pb_rename_existing_file_succeeds() {
         !disp.vfs.contains_key("OldName.dat"),
         "old key must be gone"
     );
-    assert_eq!(disp.vfs.get("NewName.dat"), Some(&vec![0xAA, 0xBBu8]));
+    assert_eq!(disp.vfs.get("NewName.dat"), Some(&vec![0xAA, 0xBBu8][..]));
 }
 
 #[test]
@@ -10429,11 +10429,11 @@ fn pbhrename_path_new_name_stays_in_source_directory() {
     assert!(!disp.vfs.contains_key("App Folder/Prefs File__TEMP"));
     assert_eq!(
         disp.vfs.get("App Folder/Prefs File"),
-        Some(&vec![0xAA, 0xBB])
+        Some(&vec![0xAA, 0xBB][..])
     );
     assert_eq!(
         disp.vfs_rsrc.get("App Folder/Prefs File"),
-        Some(&vec![0xCC])
+        Some(&vec![0xCC][..])
     );
     assert!(
         !disp.vfs.contains_key("App Folder/App Folder/Prefs File"),

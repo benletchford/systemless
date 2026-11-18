@@ -401,6 +401,13 @@ writable startup disk, `MacintoshHD`, and a disk image as its own volume.
 Executables on mounted volumes are never launched, and a mounted volume may
 not share a name with the game's media or another mounted volume.
 
+Systemless may keep a disk image passed as the game or with `--mount`
+memory-mapped until it exits, so don't modify or replace the image file while
+it's running. On Windows, an attempt to overwrite it fails with a "file is in
+use" error until Systemless exits. On macOS and Linux nothing prevents it, and
+the game may read changed data or Systemless may crash. Systemless itself never
+writes to the image file.
+
 When the game's media contains more than one application, the runner lists
 the candidates on stderr, marks the one it selected, and shows how to choose
 another. Set `SYSTEMLESS_LOAD_EXECUTABLE` to a listed path, for example
