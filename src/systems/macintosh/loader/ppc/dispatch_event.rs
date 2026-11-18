@@ -274,30 +274,33 @@ pub(super) fn dispatch_tick_count_import(
     }
 }
 
-/// Consecutive empty `GetOSEvent` results from one call site within one tick.
+/// Consecutive empty results of a nonblocking event poll from one call site
+/// within one tick.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct PpcOsEventIdlePollState {
+pub(crate) struct PpcEventIdlePollState {
     context: Option<(u32, u32)>,
     repeat_count: u32,
 }
 
-/// End a `GetOSEvent` busy-wait at the next tick boundary.
+/// End a `GetNextEvent` or `GetOSEvent` busy-wait at the next tick boundary.
 ///
-/// A program that waits for input by calling `GetOSEvent` in a tight loop,
-/// without `WaitNextEvent`, otherwise spins thousands of times per tick. Host
-/// input and the tick's VBL and sound work reach the guest only between
-/// execution slices, so once one call site has seen more than a few empty
-/// results within a tick, later calls in that tick cannot return anything new.
-/// Charging the cycles to the boundary ends the slice there instead.
-pub(super) fn ppc_os_event_idle_poll_action(
+/// A program that waits for input by calling a nonblocking event poll in a
+/// tight loop, without `WaitNextEvent`, otherwise spins hundreds of times per
+/// tick. Host input and the tick's VBL and sound work reach the guest only
+/// between execution slices, so once one call site has seen more than a few
+/// empty results within a tick, later calls in that slice cannot return
+/// anything new. Charging the cycles to the boundary ends the slice there
+/// instead. The count outlives the slice: a tick spans several slices, and in
+/// each later one the first empty poll already shows that nothing arrived.
+pub(super) fn ppc_event_idle_poll_action(
     action: PpcImportAction,
     lr: u32,
     tick_count: u32,
     cycles_until_boundary_or_limit: u64,
-    idle_poll: &mut PpcOsEventIdlePollState,
+    idle_poll: &mut PpcEventIdlePollState,
 ) -> PpcImportAction {
     if action != PpcImportAction::Return(0) || lr == 0 {
-        *idle_poll = PpcOsEventIdlePollState::default();
+        *idle_poll = PpcEventIdlePollState::default();
         return action;
     }
     let context = (lr, tick_count);

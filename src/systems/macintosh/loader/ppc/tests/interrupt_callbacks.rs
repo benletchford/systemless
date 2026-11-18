@@ -998,6 +998,70 @@ fn hle_import_runner_fast_forwards_microseconds_poll_loops() {
     assert_ne!(loaded.memory.read_u32_be(microseconds_ptr + 4), Some(0));
 }
 
+/// Run a guest loop that calls `import` forever for one slice of `cycles`.
+fn run_event_poll_loop_slice(loaded: &mut PpcLoadedApp, loop_pc: u32, cycles: u64) -> u32 {
+    loaded.cpu.pc = loop_pc;
+    loaded.cpu.gpr[3] = 0; // event mask: nothing can be delivered
+    loaded.cpu.gpr[4] = 0;
+    loaded.run_with_hle_imports(cycles).handled_import_count
+}
+
+fn loaded_event_poll_loop(import: &[u8]) -> (PpcLoadedApp, u32) {
+    let pef = synthetic_pef_with_import(import);
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let loop_pc = PPC_DATA_BASE + 0x1100;
+    let trap_hi = (PPC_IMPORT_TRAP_BASE >> 16) as u16;
+    let trap_lo = (PPC_IMPORT_TRAP_BASE & 0xffff) as u16;
+    let mut loop_code = Vec::new();
+    for word in [
+        d_form_u(15, 12, 0, trap_hi),  // lis r12, trap@ha
+        d_form_u(24, 12, 12, trap_lo), // ori r12, r12, trap@l
+        xfx_form(31, 12, 9, 467),      // mtctr r12
+        xl_form(19, 20, 0, 528, true), // bctrl
+        0x4bff_fffc,                   // b -4
+    ] {
+        loop_code.extend_from_slice(&word.to_be_bytes());
+    }
+    loaded.memory.add_region(loop_pc, loop_code);
+    loaded.set_tick_count(100);
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    (loaded, loop_pc)
+}
+
+#[test]
+fn hle_import_runner_ends_empty_event_poll_loops_once_per_slice_within_a_tick() {
+    for import in [&b"GetNextEvent"[..], b"GetOSEvent"] {
+        let name = String::from_utf8_lossy(import);
+        let (mut loaded, loop_pc) = loaded_event_poll_loop(import);
+
+        assert_eq!(
+            run_event_poll_loop_slice(&mut loaded, loop_pc, 10_000),
+            PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD + 1,
+            "{name}: the first slice of a tick polls up to the threshold"
+        );
+        assert_eq!(
+            run_event_poll_loop_slice(&mut loaded, loop_pc, 10_000),
+            1,
+            "{name}: a later slice of the same tick ends at its first empty poll"
+        );
+        loaded.set_tick_count(101);
+        assert_eq!(
+            run_event_poll_loop_slice(&mut loaded, loop_pc, 10_000),
+            PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD + 1,
+            "{name}: a new tick restarts detection"
+        );
+    }
+}
+
+#[test]
+fn hle_import_runner_leaves_event_avail_poll_loops_running() {
+    let (mut loaded, loop_pc) = loaded_event_poll_loop(b"EventAvail");
+    assert!(
+        run_event_poll_loop_slice(&mut loaded, loop_pc, 10_000) > 100,
+        "only the dequeuing polls end the slice"
+    );
+}
+
 #[test]
 fn driver_services_uptime_uses_deterministic_virtual_clock() {
     assert_eq!(
@@ -1357,46 +1421,46 @@ fn dtinstall_runs_the_deferred_task_with_its_parameter() {
 #[test]
 fn empty_os_event_polls_end_at_the_next_tick_after_the_threshold() {
     let lr = 0x0103_4560;
-    let mut idle_poll = PpcOsEventIdlePollState::default();
+    let mut idle_poll = PpcEventIdlePollState::default();
     let empty = PpcImportAction::Return(0);
 
     for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
         assert_eq!(
-            ppc_os_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
+            ppc_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
             empty
         );
     }
     assert_eq!(
-        ppc_os_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(empty.clone(), lr, 42, 500, &mut idle_poll),
         PpcImportAction::ReturnWithExtraCycles(0, 499)
     );
     assert_eq!(
-        ppc_os_event_idle_poll_action(empty.clone(), lr, 43, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(empty.clone(), lr, 43, 500, &mut idle_poll),
         empty,
         "the first poll of the next tick runs normally"
     );
 
     assert_eq!(
-        ppc_os_event_idle_poll_action(empty.clone(), lr + 0x40, 42, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(empty.clone(), lr + 0x40, 42, 500, &mut idle_poll),
         empty,
         "a different polling caller must restart detection"
     );
     assert_eq!(
-        ppc_os_event_idle_poll_action(empty.clone(), lr + 0x40, 43, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(empty.clone(), lr + 0x40, 43, 500, &mut idle_poll),
         empty,
         "a new tick must restart detection"
     );
 
     for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
-        ppc_os_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll);
+        ppc_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll);
     }
     assert_eq!(
-        ppc_os_event_idle_poll_action(PpcImportAction::Return(1), lr, 44, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(PpcImportAction::Return(1), lr, 44, 500, &mut idle_poll),
         PpcImportAction::Return(1),
         "a delivered event is returned unchanged"
     );
     assert_eq!(
-        ppc_os_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll),
+        ppc_event_idle_poll_action(empty.clone(), lr, 44, 500, &mut idle_poll),
         empty,
         "a delivered event must restart detection"
     );

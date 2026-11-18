@@ -73,6 +73,8 @@ pub struct PpcToolboxStartupState {
     /// Most recent EventRecord exposed through the native event imports.
     pub(crate) last_event_record: Option<EventRecordSnapshot>,
     pub(crate) event_queue_probe: EventQueueProbeSnapshot,
+    /// Empty event polls seen in the current tick, kept across execution slices.
+    pub(super) event_idle_poll: PpcEventIdlePollState,
     pub(super) event_loop_timers: Vec<PpcEventLoopTimerRecord>,
     pub(super) next_event_loop_timer_ref: u32,
     pub(super) carbon_event_handlers: Vec<PpcCarbonEventHandlerRecord>,
@@ -200,6 +202,7 @@ impl Default for PpcToolboxStartupState {
             last_disposed_dialog: 0,
             last_event_record: None,
             event_queue_probe: EventQueueProbeSnapshot::default(),
+            event_idle_poll: PpcEventIdlePollState::default(),
             event_loop_timers: Vec::new(),
             next_event_loop_timer_ref: 0x100,
             carbon_event_handlers: Vec::new(),
