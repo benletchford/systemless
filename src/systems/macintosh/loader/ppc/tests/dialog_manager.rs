@@ -7953,9 +7953,11 @@ fn select_dialog_item_text_highlights_only_in_a_visible_dialog() {
         }
         let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-        // Right of the second field's text, inside the row the selection fills.
-        let point = (i32::from(bounds.1) + 140, i32::from(bounds.0) + 55);
+        // Inside the second field's text, and right of it in the same row.
+        let point = (i32::from(bounds.1) + 13, i32::from(bounds.0) + 55);
+        let past_text = (i32::from(bounds.1) + 140, i32::from(bounds.0) + 55);
         let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, point);
+        let before_past_text = ppc_quickdraw_read_pixel(&mut loaded.memory, front, past_text);
 
         loaded.cpu.gpr[3] = dialog;
         loaded.cpu.gpr[4] = 2;
@@ -7965,6 +7967,12 @@ fn select_dialog_item_text_highlights_only_in_a_visible_dialog() {
 
         let after = ppc_quickdraw_read_pixel(&mut loaded.memory, front, point);
         assert_eq!(after != before, visible, "visible={visible}");
+        // TextEdit highlights the selected characters, not the whole field.
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, past_text),
+            before_past_text,
+            "visible={visible}"
+        );
     }
 }
 

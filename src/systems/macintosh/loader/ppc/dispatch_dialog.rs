@@ -5338,7 +5338,7 @@ fn ppc_draw_dialog_items(
                         1,
                     );
                 }
-                let selected = if base_type == DIALOG_ITEM_EDIT_TEXT
+                let selection = if base_type == DIALOG_ITEM_EDIT_TEXT
                     && memory
                         .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                         .is_some_and(|field| usize::from(field) == index)
@@ -5346,58 +5346,58 @@ fn ppc_draw_dialog_items(
                     memory
                         .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                         .and_then(|handle| ppc_te_record_ptr(memory, handle))
-                        .is_some_and(|te_ptr| {
-                            memory
-                                .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                                .unwrap_or(0)
-                                != 0
-                                && memory
-                                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                                    .unwrap_or(0)
-                                    < memory
-                                        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                                        .unwrap_or(0)
+                        .and_then(|te_ptr| {
+                            let active = memory.read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)?;
+                            let start = memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?;
+                            let end = memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?;
+                            (active != 0).then_some((usize::from(start), usize::from(end)))
                         })
                 } else {
-                    false
+                    None
                 };
-                if selected {
-                    let interior = (
-                        rect.0,
-                        rect.1,
-                        rect.0.saturating_add(16).min(rect.2),
-                        rect.3,
-                    );
-                    if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, interior) {
-                        let _ = ppc_fill_front_rect(
-                            memory,
-                            front,
-                            interior,
-                            ppc_theme_rgb(palette.frame_dark),
-                        );
-                    }
-                }
                 let text_rect =
                     if matches!(base_type, DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT) {
                         dialog_text_rect(rect)
                     } else {
                         rect
                     };
-                let color = if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
-                    ppc_theme_rgb(palette.window_background)
-                } else {
-                    ppc_theme_rgb(palette.frame_dark)
-                };
-                if let Some(mut style) =
-                    ppc_dialog_item_text_style(window_list, memory, handles, vfs_resources, dialog, index, color)
-                {
-                    if selected {
-                        style.foreground = color;
-                        style.background = None;
-                    }
+                let color = ppc_theme_rgb(palette.frame_dark);
+                let style = ppc_dialog_item_text_style(
+                    window_list,
+                    memory,
+                    handles,
+                    vfs_resources,
+                    dialog,
+                    index,
+                    color,
+                );
+                // Text (1993), pp. 2-51--2-52: TextEdit highlights only the
+                // selected characters. An empty selection range (including
+                // SelectDialogItemText(0, 32767) on empty text) shows the
+                // insertion point instead of a highlight.
+                let highlight = selection.and_then(|(start, end)| {
+                    let (font, size, face) = style
+                        .map_or((PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0), |style| {
+                            (style.font, style.size, style.face)
+                        });
+                    crate::dialog_manager::dialog_edit_text_highlight_span(
+                        text_rect,
+                        &text,
+                        start,
+                        end,
+                        |bytes| ppc_text_width_bytes(font, size, face, bytes),
+                    )
+                });
+                let themed_highlight = highlight
+                    .is_some_and(|span| ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, span));
+                if let Some(style) = style {
                     ppc_draw_styled_dialog_text(memory, gworlds, text_rect, &text, style, None);
                 } else {
                     ppc_draw_dialog_text(memory, gworlds, text_rect, &text, color);
+                }
+                if let Some(span) = highlight.filter(|_| !themed_highlight) {
+                    // Classic TextEdit inverts the selection range.
+                    let _ = ppc_invert_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, span);
                 }
             }
             DIALOG_ITEM_PICTURE => {

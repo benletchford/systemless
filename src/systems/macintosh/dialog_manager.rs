@@ -1373,6 +1373,38 @@ pub fn dialog_text_rect(item_rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16)
     )
 }
 
+/// Returns the rectangle TextEdit highlights for a single-line editText
+/// selection drawn from the left of `text_rect`, or `None` when the clamped
+/// range selects no characters (TextEdit then shows the insertion point).
+///
+/// `start`/`end` may exceed the text length, as with
+/// `SelectDialogItemText(dialog, item, 0, 32767)`; TESetSelect clamps them.
+/// Text (1993), pp. 2-51--2-52 and 2-87; Macintosh Toolbox Essentials
+/// (1992), p. 6-125.
+pub fn dialog_edit_text_highlight_span(
+    text_rect: (i16, i16, i16, i16),
+    text: &[u8],
+    start: usize,
+    end: usize,
+    width: impl Fn(&[u8]) -> i16,
+) -> Option<(i16, i16, i16, i16)> {
+    let first = start.min(end).min(text.len());
+    let last = start.max(end).min(text.len());
+    if first >= last {
+        return None;
+    }
+    let left = text_rect.1.saturating_add(width(&text[..first]));
+    let right = text_rect
+        .1
+        .saturating_add(width(&text[..last]))
+        .min(text_rect.3);
+    if right <= left {
+        return None;
+    }
+    let bottom = text_rect.0.saturating_add(16).min(text_rect.2);
+    Some((text_rect.0, left, bottom, right))
+}
+
 /// Extract the base dialog item type code, stripping the disabled bit flag (`0x80`).
 pub const fn dialog_item_base_type(raw_type: u8) -> u8 {
     raw_type & !DIALOG_ITEM_DISABLED_FLAG
@@ -8362,6 +8394,28 @@ mod tests {
         assert_eq!(
             evaluate_modal_dialog_key(1, return_msg, 0),
             DialogFilterDecision::Unhandled
+        );
+    }
+
+    #[test]
+    fn edit_text_highlight_covers_only_selected_characters() {
+        let width = |bytes: &[u8]| bytes.len() as i16 * 7;
+        let rect = (10, 121, 26, 300);
+        // SelectDialogItemText(0, 32767) on empty text selects nothing.
+        assert_eq!(dialog_edit_text_highlight_span(rect, b"", 0, 32767, width), None);
+        assert_eq!(dialog_edit_text_highlight_span(rect, b"ab", 2, 2, width), None);
+        // A whole-text selection ends at the text, not the field's right edge.
+        assert_eq!(
+            dialog_edit_text_highlight_span(rect, b" ", 0, 32767, width),
+            Some((10, 121, 26, 128))
+        );
+        assert_eq!(
+            dialog_edit_text_highlight_span(rect, b"abcd", 3, 1, width),
+            Some((10, 128, 26, 142))
+        );
+        assert_eq!(
+            dialog_edit_text_highlight_span((10, 121, 26, 130), b"abcd", 0, 4, width),
+            Some((10, 121, 26, 130))
         );
     }
 
