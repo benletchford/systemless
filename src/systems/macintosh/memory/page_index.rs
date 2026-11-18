@@ -64,6 +64,14 @@ impl PageIndex {
         }
     }
 
+    /// Forget the page holding `address`, once it holds no tracked range.
+    pub(crate) fn unmark_page(&mut self, address: u32) {
+        if let Some(words) = self.words.as_deref_mut() {
+            let page = (address >> PAGE_SHIFT) as usize;
+            words[page / 64] &= !(1u64 << (page % 64));
+        }
+    }
+
     /// Whether any page of `start..end` may hold a tracked range.
     #[inline]
     pub(crate) fn may_overlap(&self, start: u64, end: u64) -> bool {

@@ -45,6 +45,10 @@ pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Present
 /// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
 pub(crate) const STORE_FILTER_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
 
+/// Pages `Presentation::store_filter_new_pages` holds before it gives way to
+/// a whole-filter reset (see `include_offscreen_address`).
+const STORE_FILTER_NEW_PAGES_LIMIT: usize = 1024;
+
 fn next_store_filter_identity() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -334,6 +338,7 @@ impl PresentationSlot {
                 }
                 if p.offscreen.remove_range(address, end) {
                     p.changed(false);
+                    p.forget_emptied_offscreen_pages(address, end);
                 }
             } else if p.observes_range(address, bytes.len()) {
                 for (i, &value) in bytes.iter().enumerate() {
@@ -1106,10 +1111,37 @@ impl Presentation {
         self.offscreen_pages
             .mark(u64::from(address), u64::from(address) + 1);
         if fresh {
-            self.store_filter_new_pages
-                .push(address >> STORE_FILTER_PAGE_SHIFT);
+            // Pages can now be marked again after being forgotten, and only
+            // the 68K bus's store filter drains this list. Past a bound,
+            // drop it and take a new identity instead: the bus then resets
+            // its whole filter, which covers every page the list held.
+            if self.store_filter_new_pages.len() >= STORE_FILTER_NEW_PAGES_LIMIT {
+                self.store_filter_new_pages.clear();
+                self.store_filter_identity = next_store_filter_identity();
+            } else {
+                self.store_filter_new_pages
+                    .push(address >> STORE_FILTER_PAGE_SHIFT);
+            }
             super::note_store_filter_event();
             super::note_observed_page_event();
+        }
+    }
+
+    /// Clear the offscreen page bits of `[address, end)` whose pages no
+    /// longer hold a cell. A guest that composes frames over text it drew
+    /// earlier erases that text's cells store by store; its pages then stop
+    /// being observed, so later stores to them take the plain paths again.
+    /// Drawing text there again marks the page afresh and reports it (see
+    /// `include_offscreen_address`).
+    fn forget_emptied_offscreen_pages(&mut self, address: u32, end: u64) {
+        let page_bytes = 1u64 << STORE_FILTER_PAGE_SHIFT;
+        let mut page = u64::from(address) & !(page_bytes - 1);
+        while page < end {
+            let page_end = page + page_bytes;
+            if !self.offscreen.any_in(page as u32, page_end) {
+                self.offscreen_pages.unmark_page(page as u32);
+            }
+            page = page_end;
         }
     }
 
@@ -1117,7 +1149,8 @@ impl Presentation {
     /// it touches the screen, or its offscreen page bit is set. Deliberately
     /// coarser than `observes_range`: the bit, not the exact offscreen map,
     /// is what `include_offscreen_address` reports changes of, so a page is
-    /// proven plain only while its bit is clear.
+    /// proven plain only while its bit is clear. A bit is cleared only once
+    /// its page holds no cell (`forget_emptied_offscreen_pages`).
     pub(crate) fn page_may_be_observed(&self, page_start: u32) -> bool {
         let start = u64::from(page_start);
         let end = start + (1u64 << STORE_FILTER_PAGE_SHIFT);
@@ -7214,6 +7247,70 @@ mod tests {
         assert!(detail(&bus));
         memory.write_u8(page, 7).unwrap();
         assert!(!detail(&bus), "a store over offscreen detail removes it");
+    }
+
+    #[test]
+    fn offscreen_pages_stop_being_observed_once_guest_stores_erase_their_cells() {
+        use ppc::PpcMemory;
+        let mut bus = bus();
+        bus.enable_outline_presentation(
+            (0x1000, 8, 8, 8, 8),
+            std::array::from_fn(|i| [i as u8; 3]),
+            2,
+        );
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let page = 0x0100_0000;
+        memory.add_region(page, vec![255; 0x2000]);
+        bus.attach_guest_address_space(memory.shared_view());
+        let observed = |bus: &MacMemoryBus, address: u32| {
+            bus.presentation.as_ref().unwrap().page_may_be_observed(address)
+        };
+        assert!(!observed(&bus, page));
+
+        // Two cells on the first page, one on the second.
+        paint_detail(&mut bus, page);
+        paint_detail(&mut bus, page + 0x10);
+        paint_detail(&mut bus, page + 0x1000);
+        assert!(observed(&bus, page) && observed(&bus, page + 0x1000));
+
+        // A store over one of two cells leaves the page observed.
+        memory.write_u8(page, 7).unwrap();
+        assert!(observed(&bus, page));
+        assert!(observed(&bus, page + 0x1000));
+        // Erasing the last cell on a page ends it; the other page keeps its.
+        memory.write_u8(page + 0x10, 7).unwrap();
+        assert!(!observed(&bus, page));
+        assert!(observed(&bus, page + 0x1000));
+        // Text drawn there again marks the page and reports it.
+        let events = crate::memory::store_filter_events();
+        paint_detail(&mut bus, page + 0x20);
+        assert!(observed(&bus, page));
+        assert_ne!(crate::memory::store_filter_events(), events);
+        assert!(bus.presentation.as_ref().unwrap().detail(page + 0x20).is_some());
+    }
+
+    #[test]
+    fn newly_marked_offscreen_pages_give_way_to_a_filter_reset_past_a_bound() {
+        let mut bus = bus();
+        bus.enable_outline_presentation(
+            (0x1000, 8, 8, 8, 8),
+            std::array::from_fn(|i| [i as u8; 3]),
+            2,
+        );
+        let mut p = bus.presentation.as_mut().unwrap();
+        let identity = p.store_filter_identity();
+        // Marking, forgetting and marking the same page again, as a guest
+        // that erases and redraws text does, keeps adding to the list.
+        for _ in 0..STORE_FILTER_NEW_PAGES_LIMIT {
+            p.include_offscreen_address(0x0100_0000);
+            p.offscreen_pages.unmark_page(0x0100_0000);
+        }
+        assert_eq!(p.store_filter_new_pages.len(), STORE_FILTER_NEW_PAGES_LIMIT);
+        assert_eq!(p.store_filter_identity(), identity);
+        p.include_offscreen_address(0x0100_0000);
+        assert!(p.store_filter_new_pages.is_empty());
+        assert_ne!(p.store_filter_identity(), identity);
+        assert!(p.page_may_be_observed(0x0100_0000));
     }
 
     #[test]
