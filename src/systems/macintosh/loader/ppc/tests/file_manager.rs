@@ -3892,7 +3892,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(loaded.memory.read_u32_be(pb + 100), Some(PPC_ROOT_DIR_ID));
         assert_eq!(
             ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
-            Some(b"ToolBot Power Supply".to_vec())
+            Some(b"Gridz\xaa CD:ToolBot Power Supply".to_vec())
         );
     }
 
@@ -4208,7 +4208,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
-        write_ppc_pstring(&mut loaded.memory, name_ptr, b"Preferences");
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"MacintoshHD:System Folder:Preferences");
         loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
         loaded
             .memory
@@ -4243,6 +4243,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(
             loaded.memory.read_u32_be(pb + 100),
             Some(PPC_SYSTEM_FOLDER_DIR_ID)
+        );
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(),
+            Some(b"MacintoshHD:System Folder:Preferences".as_slice())
         );
     }
 
