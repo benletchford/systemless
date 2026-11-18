@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.126.2](https://github.com/benletchford/systemless/compare/v0.126.1...v0.126.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* **window:** draw frames of windows moved on-screen and revealed by ShowHide ([#6524](https://github.com/benletchford/systemless/issues/6524)) ([3e5f9da](https://github.com/benletchford/systemless/commit/3e5f9da5ec5713d49ec990c611d3790325bad428))
+
 ## [0.126.1](https://github.com/benletchford/systemless/compare/v0.126.0...v0.126.1) (2026-11-18)
 
 
