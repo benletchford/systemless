@@ -5053,3 +5053,107 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
         assert!(ppc_point_in_region_storage(&storage, 1, 3));
         assert!(!ppc_point_in_region_storage(&storage, 1, 0));
     }
+
+#[test]
+fn indexed_to_direct16_row_copies_match_the_per_pixel_loop() {
+    // Unscaled 8-bit to 16-bit copies take a row fast path. Every case must
+    // leave memory exactly as the per-pixel loop does: masks, transparency,
+    // source and destination overlapping, destination rectangles clipped by
+    // their PixMap, and a source rectangle reaching outside its PixMap
+    // (which falls back to the loop).
+    let cases = [
+        ((0, 0, 5, 7), (0, 0, 5, 7)),
+        ((0, 0, 5, 7), (-1, -2, 4, 5)),
+        ((1, 2, 4, 6), (3, 4, 6, 8)),
+        ((0, 0, 5, 7), (4, 8, 9, 15)),
+        // Source pixels outside the source PixMap: the loop skips them.
+        ((-1, -1, 4, 6), (0, 0, 5, 7)),
+    ];
+    for (source_rect, destination_rect) in cases {
+        for (mode, masked) in [(0, false), (0, true), (36, false), (36, true)] {
+            // The destination lies in the source's place, apart from it, or
+            // across the end of mapped memory (a write fails part way).
+            for placement in ["alias", "apart", "unmapped"] {
+                let mut results = Vec::new();
+                for generic in [true, false] {
+                    super::super::quickdraw::FORCE_GENERIC_COPY_BITS.with(|forced| forced.set(generic));
+                    let mut loaded =
+                        load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+                    let base = PPC_HEAP_BASE + 0x18000;
+                    loaded
+                        .memory
+                        .add_region(base, (0..0x2000).map(|i| (i * 73 + 0xa5) as u8).collect());
+                    let source = base;
+                    // A small region alone at a high address: rows past its
+                    // end are unmapped.
+                    const ISLAND: u32 = 0x7000_0000;
+                    loaded.memory.add_region(ISLAND, vec![0x5a; 0x100]);
+                    let destination = match placement {
+                        "alias" => base + 9,
+                        "apart" => base + 0x400,
+                        _ => ISLAND + 0x100 - 3 * 31 - 4,
+                    };
+                    let records = base + 0x1000;
+                    ppc_write_pixmap(&mut loaded.memory, records, source, 10, 0, 0, 5, 7, 8)
+                        .unwrap();
+                    ppc_write_pixmap(&mut loaded.memory, records + 0x40, destination, 31, 0, 0, 8, 13, 16)
+                        .unwrap();
+                    let (top, left, bottom, right) = source_rect;
+                    ppc_write_rect(&mut loaded.memory, records + 0x80, top, left, bottom, right).unwrap();
+                    let (top, left, bottom, right) = destination_rect;
+                    ppc_write_rect(&mut loaded.memory, records + 0x90, top, left, bottom, right).unwrap();
+                    loaded.cpu.gpr[3] = records;
+                    loaded.cpu.gpr[4] = records + 0x40;
+                    loaded.cpu.gpr[5] = records + 0x80;
+                    loaded.cpu.gpr[6] = records + 0x90;
+                    loaded.cpu.gpr[7] = mode;
+                    loaded.cpu.gpr[8] = if masked { records + 0xa0 } else { 0 };
+                    let storage = crate::trap::test_helpers::region_storage_bytes(
+                        (0, 1, 4, 12),
+                        &[0, 1, 5, 7, 12, i16::MAX, 4, 1, 5, 7, 12, i16::MAX, i16::MAX],
+                    );
+                    loaded.memory.write_u32_be(records + 0xa0, records + 0xb0).unwrap();
+                    loaded.memory.write_bytes(records + 0xb0, &storage).unwrap();
+                    let clut = std::array::from_fn(|i| {
+                        [(i as u16) * 257, ((255 - i) as u16) * 257, ((i * 37 % 256) as u16) * 257]
+                    });
+                    // Source pixels in the transparent colour (index 1 below).
+                    let bits = ppc_resolve_pixmap_bits(&mut loaded.memory, &[], records).unwrap();
+                    for y in 0..5 {
+                        for x in 0..7 {
+                            if (x + y) % 3 == 0 {
+                                ppc_write_pixmap_raw_pixel(&mut loaded.memory, bits, x, y, 1).unwrap();
+                            }
+                        }
+                    }
+                    let result = ppc_copy_bits(
+                        &mut loaded.cpu,
+                        &mut loaded.memory,
+                        &[],
+                        0,
+                        0,
+                        &loaded.toolbox_startup,
+                        &clut,
+                        PPC_RGB_BLACK,
+                        Some(3),
+                        PPC_RGB_WHITE,
+                        Some(1),
+                        PPC_RGB_BLACK,
+                    );
+                    let mut pixels = vec![0; 0x2100];
+                    loaded.memory.read_bytes_into(base, &mut pixels[..0x2000]).unwrap();
+                    loaded
+                        .memory
+                        .read_bytes_into(ISLAND, &mut pixels[0x2000..])
+                        .unwrap();
+                    results.push((result, pixels));
+                }
+                super::super::quickdraw::FORCE_GENERIC_COPY_BITS.with(|forced| forced.set(false));
+                assert!(
+                    results[0] == results[1],
+                    "source {source_rect:?} destination {destination_rect:?} mode {mode} masked {masked} {placement}"
+                );
+            }
+        }
+    }
+}

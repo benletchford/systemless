@@ -4783,6 +4783,118 @@ pub(crate) fn ppc_deep_mask_boolean_pixel(source: u32, destination: u32, depth: 
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests compare the row fast path with the per-pixel loop.
+    pub(crate) static FORCE_GENERIC_COPY_BITS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+fn generic_copy_bits_forced() -> bool {
+    #[cfg(test)]
+    return FORCE_GENERIC_COPY_BITS.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    false
+}
+
+/// CopyBits from 8-bit indexed pixels to a 16-bit PixMap of the same size,
+/// a row at a time, with exactly the per-pixel loop's result: every source
+/// pixel is read before any destination pixel is written, pixels outside
+/// `mask_rows` or equal to `skip_index` keep their destination, and each
+/// written pixel is its colour table entry in RGB555.
+///
+/// `rows` and `columns` are destination coordinates and `shift` adds the
+/// source offset. Returns `None`, having touched nothing, when some pixel
+/// falls outside either PixMap or a source row cannot be read, so the
+/// per-pixel loop can handle the copy. Otherwise returns the number of pixels
+/// written, or `Some(None)` after a failed write, leaving destination memory
+/// as the per-pixel loop would have.
+#[allow(clippy::too_many_arguments)]
+fn ppc_copy_indexed8_rows_to_rgb555(
+    memory: &mut PpcSectionMem,
+    src_bits: PpcPixMapBits,
+    dst_bits: PpcPixMapBits,
+    clut: &[[u16; 3]; 256],
+    (rows, columns): (std::ops::Range<i32>, std::ops::Range<i32>),
+    (shift_x, shift_y): (i32, i32),
+    mask_rows: &mut regions::PpcRegionRowCache<'_>,
+    skip_index: Option<u32>,
+) -> Option<Option<usize>> {
+    if rows.is_empty() || columns.is_empty() {
+        return None;
+    }
+    let inside = |bits: PpcPixMapBits, x: std::ops::Range<i32>, y: std::ops::Range<i32>, lanes: i32| {
+        x.start >= i32::from(bits.left)
+            && x.end <= i32::from(bits.right)
+            && y.start >= i32::from(bits.top)
+            && y.end <= i32::from(bits.bottom)
+            && (x.end - i32::from(bits.left)) * lanes <= bits.row_bytes as i32
+    };
+    let source_columns = columns.start + shift_x..columns.end + shift_x;
+    let source_rows = rows.start + shift_y..rows.end + shift_y;
+    if !inside(src_bits, source_columns.clone(), source_rows, 1)
+        || !inside(dst_bits, columns.clone(), rows.clone(), 2)
+    {
+        return None;
+    }
+    let row_address = |bits: PpcPixMapBits, x: i32, y: i32, lanes: u32| {
+        bits.base_addr
+            .checked_add((y - i32::from(bits.top)) as u32 * bits.row_bytes)?
+            .checked_add((x - i32::from(bits.left)) as u32 * lanes)
+    };
+    let width = columns.len();
+    let mut source = vec![0u8; width * rows.len()];
+    for (bytes, y) in source.chunks_mut(width).zip(rows.clone()) {
+        let address = row_address(src_bits, source_columns.start, y + shift_y, 1)?;
+        memory.read_bytes_into(address, bytes)?;
+    }
+    let rgb555: [u16; 256] = std::array::from_fn(|index| {
+        let [red, green, blue] = clut[index];
+        ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue })
+    });
+    let mut written = 0;
+    let mut run = Vec::with_capacity(width * 2);
+    for (bytes, y) in source.chunks(width).zip(rows) {
+        let mut x = columns.start;
+        while x < columns.end {
+            let kept = |x: i32, mask_rows: &mut regions::PpcRegionRowCache<'_>| {
+                let index = bytes[(x - columns.start) as usize];
+                mask_rows.contains(y as i16, x as i16)
+                    && skip_index != Some(u32::from(index))
+            };
+            if !kept(x, mask_rows) {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            run.clear();
+            while x < columns.end && kept(x, mask_rows) {
+                let index = bytes[(x - columns.start) as usize];
+                run.extend_from_slice(&rgb555[usize::from(index)].to_be_bytes());
+                x += 1;
+            }
+            // The per-pixel loop fails at this same pixel when the address
+            // does not fit, after the runs already written.
+            let Some(address) = row_address(dst_bits, start, y, 2) else {
+                return Some(None);
+            };
+            if memory.write_bytes(address, &run).is_none() {
+                // Write what the per-pixel loop would have before it failed.
+                for (offset, pixel) in run.chunks(2).enumerate() {
+                    let pixel = u32::from(u16::from_be_bytes([pixel[0], pixel[1]]));
+                    if ppc_write_pixmap_raw_pixel(memory, dst_bits, start + offset as i32, y, pixel)
+                        .is_none()
+                    {
+                        return Some(None);
+                    }
+                }
+            }
+            written += (x - start) as usize;
+        }
+    }
+    Some(Some(written))
+}
+
 pub(crate) fn ppc_write_pixmap_raw_pixel(
     memory: &mut PpcSectionMem,
     bits: PpcPixMapBits,
@@ -5743,6 +5855,36 @@ pub(crate) fn ppc_copy_bits(
         };
         let gpu_handled = gpu_writes.is_some();
         let mut writes = gpu_writes.unwrap_or_default();
+        if !gpu_handled
+            && !generic_copy_bits_forced()
+            && matches!(mode, 0 | 36)
+            && src_bits.depth == 8
+            && dst_bits.depth == 16
+            && src_width == dst_width
+            && src_height == dst_height
+        {
+            if let Some(written) = src_clut.as_ref().and_then(|clut| {
+                ppc_copy_indexed8_rows_to_rgb555(
+                    memory,
+                    src_bits,
+                    dst_bits,
+                    clut,
+                    (copy_top..copy_bottom, copy_left..copy_right),
+                    (i32::from(src_left) - i32::from(dst_left), i32::from(src_top) - i32::from(dst_top)),
+                    &mut mask_rows,
+                    transparent.then_some(transparent_back_pixel),
+                )
+            }) {
+                return match written? {
+                    0 if transparent => Some(()),
+                    0 => {
+                        reason = "no-pixels";
+                        None
+                    }
+                    _ => Some(()),
+                };
+            }
+        }
         if !gpu_handled {
             // This transfer owns one destination palette snapshot. Cache exact
             // RGB555 conversions locally, with an out-of-range index sentinel.
