@@ -1379,6 +1379,18 @@ impl SharedGuestAddressSpace {
         self.with_state_mut(|state| write_routed_u32_state(state, address, value, flat_limit))
     }
 
+    /// Whether `address..address + len` lies in one writable sparse span
+    /// that no shared mapping touches. `false` proves nothing: callers fall
+    /// back to [`Self::routed_byte_is_writable`] for each byte.
+    #[inline]
+    pub(crate) fn sparse_range_is_writable(&self, address: u32, len: usize) -> bool {
+        self.with_state_mut(|state| {
+            let start = u64::from(address);
+            !state.overlaps_shared(start, start + len as u64)
+                && state.regions.writable_span(address, len).is_some()
+        })
+    }
+
     #[inline]
     pub(crate) fn routed_byte_is_writable(&self, address: u32, flat_limit: Option<u32>) -> bool {
         self.with_state_mut(|state| routed_byte_is_writable_state(state, address, flat_limit))
