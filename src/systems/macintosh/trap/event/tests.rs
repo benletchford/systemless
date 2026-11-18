@@ -76,6 +76,40 @@ fn native_menu_mouse_down_follows_older_low_level_events() {
 }
 
 #[test]
+fn flush_events_keeps_queued_open_application_event() {
+    // Solitaire Till Dawn's startup ModalDialog polls with everyEvent, so
+    // the launch 'oapp' event is queued before the app calls
+    // FlushEvents($FF7F). FlushEvents empties only the OS event queue; the
+    // high-level event must survive, or the app never opens its window.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.event_queue.push_back(QueuedEvent {
+        what: TrapDispatcher::K_HIGH_LEVEL_EVENT,
+        message: u32::from_be_bytes(*b"aevt"),
+        when: 0,
+        where_v: i16::from_be_bytes(*b"oa"),
+        where_h: i16::from_be_bytes(*b"pp"),
+        modifiers: 0,
+    });
+    disp.event_queue.push_back(QueuedEvent {
+        what: 3,
+        message: 42,
+        when: 0,
+        where_v: 30,
+        where_h: 40,
+        modifiers: 0,
+    });
+
+    cpu.write_reg(Register::D0, 0xFF7Fu32);
+    let result = disp.dispatch_event(false, 0x32, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(disp.event_queue.len(), 1);
+    let kept = disp.event_queue.iter().next().unwrap();
+    assert_eq!(kept.what, TrapDispatcher::K_HIGH_LEVEL_EVENT);
+    assert_eq!(kept.message, u32::from_be_bytes(*b"aevt"));
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
 fn flush_events_clears_queue_and_sets_d0_zero() {
     let (mut disp, mut cpu, mut bus) = setup();
 

@@ -347,6 +347,15 @@ impl super::TrapDispatcher {
         let mut remaining = std::collections::VecDeque::with_capacity(self.event_queue.len());
 
         while let Some(event) = self.event_queue.pop_front() {
+            // FlushEvents works on the Operating System event queue only.
+            // High-level events wait in a separate per-process queue, so an
+            // application that flushes at startup still receives the
+            // Finder's Open Application event (Macintosh Toolbox Essentials
+            // 1992, pp. 2-30--2-31; FlushEvents only names the OS queue).
+            if event.what == Self::K_HIGH_LEVEL_EVENT {
+                remaining.push_back(event);
+                continue;
+            }
             if !stopped && stop_mask != 0 && Self::event_matches_mask(stop_mask, event.what) {
                 result = event.what as u32;
                 stopped = true;
