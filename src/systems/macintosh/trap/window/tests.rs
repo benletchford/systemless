@@ -1901,6 +1901,74 @@ fn new_cwindow_behind_nil_places_new_window_at_back() {
 }
 
 #[test]
+fn new_cwindow_created_hidden_behind_does_not_invalidate_windows_in_front() {
+    // A window created hidden draws nothing, so placing it behind an
+    // existing window clobbers nothing there (Inside Macintosh Volume I,
+    // I-283). THINK Class Library creates each dialog hidden at the screen
+    // origin before moving and showing it; invalidating the window in front
+    // made Fluffy's Adventure 1.2 repaint that corner over its dialogs.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(0x0824, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+    let existing = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        existing,
+        screen_base,
+        40,
+        4,
+        420,
+        540,
+        "Game",
+        0,
+        true,
+        true,
+        true,
+        0,
+    );
+    disp.window_list.replace(vec![existing]);
+    disp.sync_window_list_links(&mut bus);
+    disp.front_window = existing;
+    let update_handle = bus.read_long(existing + 122);
+    super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+    disp.clear_queued_update_events(existing);
+
+    let bounds_rect_ptr = 0x301200u32;
+    bus.write_word(bounds_rect_ptr, 0);
+    bus.write_word(bounds_rect_ptr + 2, 0);
+    bus.write_word(bounds_rect_ptr + 4, 178);
+    bus.write_word(bounds_rect_ptr + 6, 335);
+
+    let sp = TEST_SP - 30;
+    cpu.write_reg(Register::A7, sp);
+    for i in 0..30u32 {
+        bus.write_byte(sp + i, 0);
+    }
+    bus.write_word(sp + 10, 4); // procID: dBoxProc
+    bus.write_word(sp + 12, 0); // visible = FALSE
+    bus.write_long(sp + 18, bounds_rect_ptr);
+    bus.write_long(sp + 6, 0); // behind = NIL (backmost)
+
+    let result = dispatch(&mut disp, 0x245, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(
+        disp.window_update_rect(&bus, existing),
+        None,
+        "a hidden new window must not add to the update region of a window in front"
+    );
+    assert!(
+        !disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == existing),
+        "a hidden new window must not queue an update event for a window in front"
+    );
+}
+
+#[test]
 fn get_new_window_reads_behind_at_sp_plus_0() {
     let (mut disp, mut cpu, mut bus) = setup();
     install_wind_resource(
@@ -2736,6 +2804,53 @@ fn disposewindow_front_promotion_highlights_next_visible_and_queues_activate_eve
             .iter()
             .any(|event| event.what == 8 && event.message == next && (event.modifiers & 1) == 1),
         "DisposeWindow front promotion must queue activate event for new front window"
+    );
+}
+
+#[test]
+fn disposewindow_front_promotion_skips_hidden_remaining_window() {
+    // IM:I I-283: only a visible window behind the closed front window is
+    // highlighted and activated. THINK Class Library applications keep a
+    // hidden clipboard window; activating it moves TCL's gGopher away from
+    // the next document window (Fluffy's Adventure 1.2 never starts its
+    // first scene).
+    let (mut disp, mut cpu, mut bus) = setup();
+    let front = 0x200040u32;
+    let hidden = 0x200140u32;
+    disp.window_list.replace(vec![front, hidden]);
+    disp.front_window = front;
+    disp.current_port
+        .with_mut(|current_port| *current_port = front);
+    for &base in &[front, hidden] {
+        bus.write_word(base + 16, 10);
+        bus.write_word(base + 18, 10);
+        bus.write_word(base + 20, 50);
+        bus.write_word(base + 22, 100);
+    }
+    bus.write_byte(front + 110u32, 0xFF);
+    bus.write_byte(front + 111u32, 0xFF);
+    bus.write_byte(hidden + 110u32, 0x00);
+    bus.write_byte(hidden + 111u32, 0x00);
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, front);
+
+    let result = dispatch(&mut disp, 0x114, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    assert_eq!(disp.window_list, vec![hidden]);
+    assert_eq!(
+        bus.read_byte(hidden + 111u32),
+        0x00,
+        "a hidden window must not be highlighted when the front window is disposed"
+    );
+    assert!(
+        !disp
+            .event_queue
+            .iter()
+            .any(|event| event.what == 8 && event.message == hidden),
+        "a hidden window must not receive an activate event when the front window is disposed"
     );
 }
 

@@ -3205,8 +3205,9 @@ impl super::TrapDispatcher {
         // parameter is applied. If that parameter moves it behind existing
         // windows, its freshly drawn pixels have clobbered the windows that
         // remain in front. Add the overlap to each affected window's update
-        // region so its application can repaint the exposed content.
-        if let Some(rect) = covered_rect {
+        // region so its application can repaint the exposed content. A window
+        // created hidden drew nothing, so it clobbered nothing.
+        if let Some(rect) = covered_rect.filter(|_| self.window_visible(bus, window_ptr)) {
             let windows = self.window_list.to_vec();
             for &window in &windows {
                 if window == window_ptr {
@@ -3438,8 +3439,12 @@ impl super::TrapDispatcher {
             bus.write_byte(closed_window + Self::WINDOW_HILITED_OFFSET, 0x00);
         }
 
+        // Only a visible window can become the active window. When every
+        // remaining window is hidden (for example a THINK Class Library
+        // clipboard window), nothing is highlighted or activated
+        // (Inside Macintosh Volume I, I-283 and I-286).
         let new_front = self.front_window;
-        if new_front != 0 {
+        if self.window_visible(bus, new_front) {
             bus.write_byte(new_front + Self::WINDOW_HILITED_OFFSET, 0xFF);
             self.queue_window_activation_event(bus, new_front, true);
             self.draw_single_window_chrome_inline(bus, new_front, true);
