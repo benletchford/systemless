@@ -2098,10 +2098,27 @@ impl MacMemoryBus {
         }
         // A complete flat route needs one protection-range check. Keep bulk
         // drawing on the bulk path rather than checking every pixel byte.
-        if self.route(address, len) == GuestMemoryRoute::Flat {
+        let route = self.route(address, len);
+        if route == GuestMemoryRoute::Flat {
             return u32::try_from(len).ok().is_some_and(|len| {
                 !self.readonly_code_overlaps(self.translate_guest_address(address), len)
             });
+        }
+        // Likewise a complete sparse route inside one writable sparse span:
+        // every byte would pass the per-byte check below. In 24-bit mode the
+        // endpoints alone prove the range contiguous only when it is no
+        // longer than the synthetic alias window.
+        let contiguous = self.addressing_32_bit || len <= SYNTHETIC_RESERVE_BYTES as usize;
+        if route == GuestMemoryRoute::Sparse
+            && contiguous
+            && self
+                .range_translates_contiguously(address, len)
+                .zip(self.foreign_address_space.as_ref())
+                .is_some_and(|(translated, memory)| {
+                    memory.sparse_range_is_writable(translated, len)
+                })
+        {
+            return true;
         }
         (0..len).all(|offset| {
             let guest_address = address.wrapping_add(offset as u32);
@@ -4437,6 +4454,57 @@ impl crate::trap::gateways::TrapCodeMemory for MacMemoryBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routed_writes_respect_sparse_protection_and_region_ends() {
+        // Writes routed to sparse native memory: a writable region accepts
+        // them, a read-only one and a hole reject them whole.
+        let mut bus = MacMemoryBus::new(0x0010_0000);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x0200_0000, vec![0; 0x10]);
+        memory.add_readonly_region(0x0200_0010, vec![0; 0x10]);
+        memory.add_region(0x0200_0040, vec![0; 0x10]);
+        bus.attach_guest_address_space(memory.shared_view());
+        let cases = [
+            (0x0200_0000, 4, true),
+            (0x0200_000c, 4, true),
+            // Ends in the read-only region.
+            (0x0200_000e, 4, false),
+            (0x0200_0010, 2, false),
+            // Ends in the hole after the read-only region.
+            (0x0200_001e, 4, false),
+            (0x0200_003e, 4, false),
+            (0x0200_0040, 4, true),
+        ];
+        for (address, len, writable) in cases {
+            assert_eq!(bus.is_guest_address_writable(address, len), writable, "{address:#x}+{len}");
+            let before = bus.read_bytes(address, len);
+            if len == 4 {
+                bus.write_long(address, 0x1122_3344);
+            } else {
+                bus.write_word(address, 0x5566);
+            }
+            let after = bus.read_bytes(address, len);
+            assert_eq!(after != before, writable, "{address:#x}+{len}");
+        }
+    }
+
+    #[test]
+    fn routed_writes_respect_a_read_only_sparse_overlay() {
+        // A newer read-only mapping over part of a writable one: the bytes
+        // it covers reject writes, the rest of the older region accepts them.
+        let mut bus = MacMemoryBus::new(0x0010_0000);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x0300_0000, vec![0; 0x20]);
+        memory.add_readonly_region(0x0300_0008, vec![0; 4]);
+        bus.attach_guest_address_space(memory.shared_view());
+        for (address, writable) in [(0x0300_0000, true), (0x0300_0008, false), (0x0300_0006, false), (0x0300_0010, true)] {
+            assert_eq!(bus.is_guest_address_writable(address, 4), writable, "{address:#x}");
+            let before = bus.read_bytes(address, 4);
+            bus.write_long(address, 0x1122_3344);
+            assert_eq!(bus.read_bytes(address, 4) != before, writable, "{address:#x}");
+        }
+    }
 
     #[test]
     fn fresh_keyboard_type_is_a_physical_type_byte() {
