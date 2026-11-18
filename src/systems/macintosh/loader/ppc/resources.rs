@@ -178,6 +178,13 @@ pub(crate) fn ppc_get_resource(
                     ([b'w', b'c', b't', b'b'], 0) => {
                         Some((SYSTEM_WCTB_PATH, TrapDispatcher::system_wctb_default_body()))
                     }
+                    ([b'K', b'C', b'H', b'R'], 0) => {
+                        // The System file's U.S. keyboard layout. Games load it
+                        // with GetResource and pass it to KeyTranslate
+                        // (Inside Macintosh: Text (1993), pp. C-18--C-20); the
+                        // same table backs smKCHRCache and the 68k KCHR.
+                        Some(("__system__/KCHR", crate::trap::dispatch::standard_us_kchr_bytes()))
+                    }
                     ([b'F', b'O', b'N', b'D'], _) => {
                         // Built-in fonts have no resource file, but the real System's fonts have FONDs.
                         // applFont (1) is an alias for a real family and has no FOND of its own.

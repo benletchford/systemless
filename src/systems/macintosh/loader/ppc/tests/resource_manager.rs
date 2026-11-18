@@ -51,6 +51,38 @@ fn system_wctb_lookup_preserves_open_map_precedence_and_get1_scope() {
 }
 
 #[test]
+fn system_kchr_lookup_supplies_the_us_keyboard_layout() {
+    // The Dig builds its key table with GetResource('KCHR', 0) and
+    // KeyTranslate. A NIL handle made it translate through low memory, so
+    // Space never produced ' ' and skipped scenes instead of pausing.
+    use PpcImportDispatcherTarget::{Get1Resource, GetResource};
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetResource")).unwrap();
+    let lookup = |loaded: &mut PpcLoadedApp, target, id: u16| {
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"KCHR");
+        loaded.cpu.gpr[4] = u32::from(id);
+        run_test_import(loaded, target);
+        loaded.cpu.gpr[3]
+    };
+
+    assert_eq!(lookup(&mut loaded, GetResource, 1), 0);
+    assert_eq!(lookup(&mut loaded, Get1Resource, 0), 0);
+    let handle = lookup(&mut loaded, GetResource, 0);
+    assert_ne!(handle, 0);
+    let bytes = ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle)
+        .expect("materialized KCHR");
+    assert_eq!(bytes, crate::trap::dispatch::standard_us_kchr_bytes());
+    // Unmodified table: modifier index 0 selects a 128-byte table after the
+    // 258-byte header and table count (Inside Macintosh: Text, C-18--C-20).
+    let table = usize::from(bytes[2]);
+    let key = |code: usize| bytes[260 + table * 128 + code];
+    assert_eq!(key(49), b' ', "virtual key 49 is the space bar");
+    assert_eq!(key(0), b'a');
+    assert_eq!(key(36), b'\r');
+    assert_eq!(lookup(&mut loaded, GetResource, 0), handle);
+}
+
+#[test]
 fn get_intl_resource_supplies_roman_numeric_format_from_system_file() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetIntlResource")).unwrap();
     loaded.cpu.gpr[3] = 0;
