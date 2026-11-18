@@ -2120,7 +2120,7 @@
 
         let dlg_ptr = bus.read_long(TEST_SP + 10);
         assert_ne!(dlg_ptr, 0);
-        assert_eq!(bus.read_byte(dlg_ptr + 110), 0xFF);
+        assert_eq!(bus.read_byte(dlg_ptr + 110), 0x01);
         assert!(disp.dialog_items.contains_key(&dlg_ptr));
         assert!(
             disp.dialog_saved_pixels.contains_key(&dlg_ptr),
@@ -2795,7 +2795,7 @@
             0,
         );
 
-        assert_eq!(bus.read_byte(dialog_ptr + 110), 0xFF);
+        assert_eq!(bus.read_byte(dialog_ptr + 110), 0x01);
         assert!(disp
             .event_queue
             .iter()
@@ -8091,7 +8091,7 @@
         assert_eq!(classic.new_front_window, classic.new_dialog_ptr);
         assert_eq!(classic.new_current_port, classic.new_previous_port);
         assert_eq!(classic.new_the_port, classic.new_previous_port);
-        assert_eq!(classic.new_visible_byte, 0xFF);
+        assert_eq!(classic.new_visible_byte, 0x01);
         assert_eq!(classic.new_goaway_byte, 0xFF);
         assert_eq!(classic.new_refcon, 0x1234_5678);
         assert_eq!(classic.new_window_kind, 2);
@@ -8119,7 +8119,7 @@
         assert_eq!(classic.get_front_window, classic.get_dialog_ptr);
         assert_eq!(classic.get_current_port, classic.get_previous_port);
         assert_eq!(classic.get_the_port, classic.get_previous_port);
-        assert_eq!(classic.get_visible_byte, 0xFF);
+        assert_eq!(classic.get_visible_byte, 0x01);
         assert_eq!(classic.get_refcon, 0);
         assert_eq!(classic.get_window_kind, 2);
         assert_eq!(classic.get_proc_id, 2);
