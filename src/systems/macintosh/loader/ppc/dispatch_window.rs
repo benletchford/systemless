@@ -433,7 +433,6 @@ pub(super) fn dispatch_window_import(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
@@ -482,6 +481,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -503,7 +503,6 @@ pub(super) fn dispatch_window_import(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 vfs_resources,
                 current_resource_refnum,
                 last_resource_error,
@@ -556,6 +555,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -784,6 +784,7 @@ pub(super) fn dispatch_window_import(
                         let _ = ppc_activate_front_window_palette(
                             memory,
                             gworlds,
+                            window_list,
                             *current_gdevice,
                             screen_clut,
                             color_manager_clut,
@@ -841,6 +842,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -907,6 +909,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -987,6 +990,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -1170,6 +1174,7 @@ pub(super) fn dispatch_window_import(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         window_device,
                         screen_clut,
                         color_manager_clut,
@@ -1580,7 +1585,6 @@ pub(super) fn ppc_new_cwindow(
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
 ) -> u32 {
     let Some(params) = crate::window_manager::evaluate_new_window_parameters(
         cpu.gpr[3],
@@ -1618,7 +1622,11 @@ pub(super) fn ppc_new_cwindow(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
+        // Inside Macintosh: Imaging With QuickDraw (1994), p. 4-48: a
+        // window's pixel map always uses the main screen's depth, color table,
+        // and bounds, even when an application leaves its own offscreen
+        // GDevice current while creating the window.
+        PPC_MAIN_GDEVICE,
     )
 }
 
@@ -2929,7 +2937,6 @@ pub(super) fn ppc_get_new_cwindow(
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -2972,7 +2979,7 @@ pub(super) fn ppc_get_new_cwindow(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     };
-    ppc_apply_wind_position(memory, gworlds, &bytes, bounds_ptr);
+    ppc_apply_wind_position(memory, gworlds, window_list, &bytes, bounds_ptr);
     let mut window_cpu = cpu.clone();
     window_cpu.gpr[3] = storage_ptr;
     window_cpu.gpr[4] = bounds_ptr;
@@ -2992,7 +2999,6 @@ pub(super) fn ppc_get_new_cwindow(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
         host_menu_bar_hidden,
     );
     if window == 0 {
@@ -3619,9 +3625,15 @@ pub(super) fn ppc_window_is_visible(memory: &mut PpcSectionMem, window: u32) -> 
 pub(super) fn ppc_front_visible_window(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
 ) -> Option<u32> {
+    // GWorld records also describe offscreen GWorlds and ports opened with
+    // OpenCPort. Those are 108-byte CGrafPorts with no WindowRecord fields, so
+    // their "visible" byte at +110 belongs to whatever follows the port in
+    // memory. Only Window Manager records can be the front window.
     gworlds.iter().rev().map(|record| record.port).find(|port| {
         !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+            && window_list.contains_window(*port)
             && ppc_window_is_visible(memory, *port)
     })
 }
@@ -4039,7 +4051,6 @@ pub(super) fn ppc_dispatch_legacy_window(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
@@ -4077,6 +4088,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -4135,7 +4147,6 @@ pub(super) fn ppc_dispatch_legacy_window(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window == 0 {
@@ -4268,7 +4279,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 *last_resource_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::Return(0));
             };
-            ppc_apply_wind_position(memory, gworlds, &bytes, bounds);
+            ppc_apply_wind_position(memory, gworlds, window_list, &bytes, bounds);
             let mut window_cpu = cpu.clone();
             window_cpu.gpr[3] = params.storage_ptr();
             window_cpu.gpr[4] = bounds;
@@ -4288,7 +4299,6 @@ pub(super) fn ppc_dispatch_legacy_window(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
             *last_resource_error = if window == 0 {
@@ -4331,6 +4341,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -4490,6 +4501,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
+                    window_list,
                     *current_gdevice,
                     screen_clut,
                     color_manager_clut,
@@ -4542,6 +4554,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -4571,6 +4584,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
+                        window_list,
                         *current_gdevice,
                         screen_clut,
                         color_manager_clut,
@@ -4629,6 +4643,7 @@ pub(super) fn ppc_dispatch_legacy_window(
             cpu,
             memory,
             gworlds,
+            window_list,
             toolbox_startup,
             event_queue,
             input,
@@ -4695,6 +4710,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         let _ = ppc_activate_front_window_palette(
                             memory,
                             gworlds,
+                            window_list,
                             *current_gdevice,
                             screen_clut,
                             color_manager_clut,
@@ -6232,10 +6248,9 @@ pub(super) fn ppc_new_window_from_cpu(
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
     host_menu_bar_hidden: bool,
 ) -> u32 {
-    let previous_front = ppc_front_visible_window(memory, gworlds);
+    let previous_front = ppc_front_visible_window(memory, gworlds, window_list);
     let window = ppc_new_cwindow(
         cpu,
         allocator.as_deref_mut(),
@@ -6246,7 +6261,6 @@ pub(super) fn ppc_new_window_from_cpu(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
     );
     if window == 0 {
         return 0;
@@ -6402,6 +6416,7 @@ pub(super) fn ppc_wind_position_word(bytes: &[u8]) -> u16 {
 fn ppc_apply_wind_position(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     bytes: &[u8],
     bounds_ptr: u32,
 ) {
@@ -6411,8 +6426,14 @@ fn ppc_apply_wind_position(
     }
     let proc_id = i16::from_be_bytes([bytes[8], bytes[9]]);
     if let Some(bounds) = ppc_read_rect(memory, bounds_ptr) {
-        let (top, left, bottom, right) =
-            ppc_position_window_template_bounds(memory, gworlds, bounds, position, proc_id);
+        let (top, left, bottom, right) = ppc_position_window_template_bounds(
+            memory,
+            gworlds,
+            window_list,
+            bounds,
+            position,
+            proc_id,
+        );
         let _ = ppc_write_rect(memory, bounds_ptr, top, left, bottom, right);
     }
 }
@@ -6420,6 +6441,7 @@ fn ppc_apply_wind_position(
 fn ppc_position_window_template_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     bounds: (i16, i16, i16, i16),
     position: u16,
     proc_id: i16,
@@ -6429,7 +6451,7 @@ fn ppc_position_window_template_bounds(
     let screen_height = screen.map_or(ppc_main_screen_height(), |record| record.height) as i32;
     let menu_bar_height =
         i32::from(memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16).max(0);
-    let parent = ppc_front_visible_window(memory, gworlds)
+    let parent = ppc_front_visible_window(memory, gworlds, window_list)
         .and_then(|window| ppc_window_global_content_bounds(memory, gworlds, window));
     crate::dialog_manager::evaluate_dialog_position_bounds(
         bounds,
@@ -6602,6 +6624,7 @@ pub(super) fn ppc_close_window(
             let _ = ppc_activate_front_window_palette(
                 memory,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 screen_clut,
                 color_manager_clut,
@@ -7291,11 +7314,12 @@ pub(super) fn ppc_go_away_call(cpu: &PpcCpu) -> PpcGoAwayCall {
 pub(super) fn ppc_go_away_window_is_trackable(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     window: u32,
 ) -> bool {
     let proc_id = ppc_window_proc_id(memory, window);
     gworlds.iter().any(|record| record.port == window)
-        && ppc_front_visible_window(memory, gworlds) == Some(window)
+        && ppc_front_visible_window(memory, gworlds, window_list) == Some(window)
         && ppc_window_is_visible(memory, window)
         && memory
             .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
@@ -7385,6 +7409,7 @@ pub(super) fn ppc_dispatch_track_go_away(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     startup: &mut PpcToolboxStartupState,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     input: PpcInputSnapshot,
@@ -7409,7 +7434,7 @@ pub(super) fn ppc_dispatch_track_go_away(
             startup.go_away_tracking = None;
             return PpcImportAction::Return(0);
         }
-        if !ppc_go_away_window_is_trackable(memory, gworlds, call.window) {
+        if !ppc_go_away_window_is_trackable(memory, gworlds, window_list, call.window) {
             let state = startup.go_away_tracking.take().unwrap();
             ppc_draw_go_away_tracking_feedback(memory, &state, false);
             return PpcImportAction::Return(0);
@@ -7443,7 +7468,7 @@ pub(super) fn ppc_dispatch_track_go_away(
 
     if startup.execution.menu().is_some()
         || !input.mouse_button
-        || !ppc_go_away_window_is_trackable(memory, gworlds, params.window_ptr())
+        || !ppc_go_away_window_is_trackable(memory, gworlds, window_list, params.window_ptr())
     {
         return PpcImportAction::Return(0);
     }

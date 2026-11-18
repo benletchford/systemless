@@ -502,6 +502,7 @@ pub(crate) fn ppc_open_cport(
         *last_mem_error = PPC_PARAM_ERR;
         return false;
     }
+    let (port_top, port_left, port_bottom, port_right) = ppc_open_cport_screen_bounds(memory);
     if !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &[PPC_PIXMAP_SIZE, 4]) {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return false;
@@ -556,25 +557,18 @@ pub(crate) fn ppc_open_cport(
             memory,
             port,
             pixmap_handle,
-            bits.top,
-            bits.left,
-            bits.bottom,
-            bits.right,
+            port_top,
+            port_left,
+            port_bottom,
+            port_right,
         )
         .is_none()
         || memory.write_u32_be(port + 24, vis_rgn).is_none()
         || memory
             .write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, clip_rgn)
             .is_none()
-        || ppc_write_rgn_bbox(
-            memory,
-            vis_rgn,
-            bits.top,
-            bits.left,
-            bits.bottom,
-            bits.right,
-        )
-        .is_none()
+        || ppc_write_rgn_bbox(memory, vis_rgn, port_top, port_left, port_bottom, port_right)
+            .is_none()
         || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
     {
         *last_mem_error = PPC_PARAM_ERR;
@@ -599,6 +593,26 @@ pub(crate) fn ppc_open_cport(
     });
     *last_mem_error = PPC_NO_ERR;
     true
+}
+
+/// The rectangle OpenCPort and InitCPort give a new port's portRect and
+/// visRgn: screenBits.bounds, the boundary of the entire main screen.
+///
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-64--4-65, Table
+/// 4-3. Only the PixMap is copied from the current device. An application may
+/// build its own GDevice around a placeholder PixMap, open ports while it is
+/// current, and then point each port's PixMap at real pixel storage; clipping
+/// those ports to the placeholder's bounds would discard all later drawing.
+fn ppc_open_cport_screen_bounds(memory: &mut PpcSectionMem) -> (i16, i16, i16, i16) {
+    ppc_read_pixmap_bits(memory, PPC_MAIN_PIXMAP)
+        .map(|screen| (screen.top, screen.left, screen.bottom, screen.right))
+        .filter(|&(top, left, bottom, right)| bottom > top && right > left)
+        .unwrap_or((
+            0,
+            0,
+            ppc_main_screen_height() as i16,
+            ppc_main_screen_width() as i16,
+        ))
 }
 
 /// Give a CGrafPort being opened in caller-owned storage the defaults
@@ -653,6 +667,7 @@ pub(crate) fn ppc_init_cport(
         return;
     };
     let color_table = memory.read_u32_be(device_pixmap + 42).unwrap_or(0);
+    let (port_top, port_left, port_bottom, port_right) = ppc_open_cport_screen_bounds(memory);
     let vis_rgn = memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap_or(0);
     let clip_rgn = memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET).unwrap_or(0);
     if vis_rgn == 0 || clip_rgn == 0 {
@@ -675,21 +690,14 @@ pub(crate) fn ppc_init_cport(
             memory,
             port,
             pixmap_handle,
-            bits.top,
-            bits.left,
-            bits.bottom,
-            bits.right,
+            port_top,
+            port_left,
+            port_bottom,
+            port_right,
         )
         .is_none()
-        || ppc_write_rgn_bbox(
-            memory,
-            vis_rgn,
-            bits.top,
-            bits.left,
-            bits.bottom,
-            bits.right,
-        )
-        .is_none()
+        || ppc_write_rgn_bbox(memory, vis_rgn, port_top, port_left, port_bottom, port_right)
+            .is_none()
         || ppc_write_rgn_bbox(memory, clip_rgn, i16::MIN, i16::MIN, i16::MAX, i16::MAX).is_none()
     {
         return;

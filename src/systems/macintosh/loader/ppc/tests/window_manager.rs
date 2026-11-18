@@ -409,7 +409,7 @@ fn dispose_dialog_removes_it_from_the_window_list_and_restores_the_previous_wind
     assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
     assert_eq!(*loaded.current_gworld, application_window);
     assert_eq!(
-        ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+        ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
         Some(application_window)
     );
 }
@@ -3399,7 +3399,7 @@ fn hle_import_runner_handles_select_window() {
     assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
     assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
     assert_eq!(
-        ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+        ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
         Some(window_ptr)
     );
     assert_eq!(
@@ -3598,7 +3598,6 @@ fn calc_vis_behind_rebuilds_visible_window_regions_below_the_menu_bar() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
 
@@ -3690,7 +3689,6 @@ fn paint_behind_nil_preserves_pixels_covered_by_a_visible_window() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
@@ -3744,7 +3742,6 @@ fn paint_behind_nil_keeps_the_dbox_proc_outer_border_ring() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
     assert_eq!(
@@ -3801,7 +3798,6 @@ fn paint_one_erases_exposed_content_and_updates_the_window_region() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
 
@@ -3859,7 +3855,6 @@ fn paint_one_uses_color_window_content_instead_of_white() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
     let table = [
@@ -3923,7 +3918,6 @@ fn show_window_does_not_read_dialog_edit_state_as_a_color_table() {
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(dialog, 0);
     loaded
@@ -4001,7 +3995,6 @@ fn reveal_hidden_window_over_black(import: &[u8], proc_id: u32, dialog_kind: boo
         test_handles!(loaded),
         &mut loaded.gworlds,
         &mut loaded.window_list,
-        *loaded.current_gdevice,
     );
     assert_ne!(window, 0);
     if dialog_kind {
@@ -11307,4 +11300,50 @@ fn alt_dbox_window_frames_content_with_one_pixel_border_and_two_pixel_shadow() {
     for (h, v) in [(98, 150), (94, 150), (200, 98), (200, 94), (303, 150), (200, 203)] {
         assert_eq!(pixel(&mut loaded, h, v), desktop, "outside at ({h},{v})");
     }
+}
+
+#[test]
+fn new_visible_cwindow_leaves_bytes_after_an_open_cport_port_alone() {
+    // OpenCPort ports are 108-byte CGrafPorts with no WindowRecord fields.
+    // Prince of Destruction allocates its offscreen ports back to back, so
+    // the "visible" and "hilited" bytes of one port (+110, +111) are the
+    // portPixMap handle of the next. Creating a visible window used to treat
+    // the first port as the previous front window and clear its "hilited"
+    // byte, corrupting its neighbour's PixMap handle.
+    let pef = synthetic_pef_with_import(b"OpenCPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let port = PPC_DATA_BASE + 0x7000;
+    loaded.memory.add_region(port, vec![0; 2 * PPC_GRAF_PORT_SIZE as usize]);
+    let neighbour_pixmap_handle = 0x030e_50c0;
+    loaded
+        .memory
+        .write_u32_be(port + PPC_GRAF_PORT_SIZE + 2, neighbour_pixmap_handle)
+        .unwrap();
+    loaded.cpu.gpr[3] = port;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+    assert!(loaded.gworlds.iter().any(|record| record.port == port));
+
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 109, 145, 491, 655).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 2;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(port + PPC_GRAF_PORT_SIZE + 2),
+        Some(neighbour_pixmap_handle)
+    );
+    assert_eq!(
+        ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
+        Some(window)
+    );
 }

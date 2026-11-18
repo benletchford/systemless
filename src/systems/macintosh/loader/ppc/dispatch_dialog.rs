@@ -289,7 +289,6 @@ pub(super) fn dispatch_dialog_import(
                 controls,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 vfs_resources,
                 current_resource_refnum,
                 last_resource_error,
@@ -316,7 +315,6 @@ pub(super) fn dispatch_dialog_import(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
             );
             let dialog = if dialog != 0
                 && !ppc_initialize_dialog_items(
@@ -363,7 +361,6 @@ pub(super) fn dispatch_dialog_import(
                 handles,
                 gworlds,
                 window_list,
-                *current_gdevice,
             );
             let dialog = if dialog != 0
                 && !ppc_initialize_dialog_items(
@@ -1201,7 +1198,6 @@ pub(super) fn dispatch_dialog_import(
                     controls,
                     gworlds,
                     window_list,
-                    *current_gdevice,
                     vfs_resources,
                     current_resource_refnum,
                     last_resource_error,
@@ -1380,7 +1376,6 @@ pub(super) fn dispatch_dialog_import(
                     controls,
                     gworlds,
                     window_list,
-                    *current_gdevice,
                     vfs_resources,
                     current_resource_refnum,
                     last_resource_error,
@@ -2487,7 +2482,6 @@ fn ppc_dispatch_dialog_compatibility(
                 controls,
                 gworlds,
                 window_list,
-                *current_gdevice,
                 vfs_resources,
                 current_resource_refnum,
                 last_resource_error,
@@ -3183,7 +3177,6 @@ fn ppc_new_alert_dialog(
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -3313,7 +3306,6 @@ fn ppc_new_alert_dialog(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
     let dialog = if dialog != 0
@@ -3380,7 +3372,6 @@ fn ppc_get_new_dialog(
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -3480,7 +3471,6 @@ fn ppc_get_new_dialog(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
     // Item styles require a matching dialog color table. The style table
@@ -3575,7 +3565,6 @@ fn ppc_new_dialog(
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     window_list: &SharedProcessWindowList,
-    current_gdevice: u32,
 ) -> u32 {
     let requested_storage = cpu.gpr[3];
     let bounds_ptr = cpu.gpr[4];
@@ -3665,7 +3654,6 @@ fn ppc_new_dialog(
         handles,
         gworlds,
         window_list,
-        current_gdevice,
     );
     if dialog == 0 {
         if caller_private_storage != 0 {

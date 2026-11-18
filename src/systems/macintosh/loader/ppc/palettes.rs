@@ -910,12 +910,13 @@ pub(crate) fn ppc_activate_window_palette(
 pub(crate) fn ppc_activate_front_window_palette(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     fallback_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Option<u32> {
-    let front = ppc_front_visible_window(memory, gworlds);
+    let front = ppc_front_visible_window(memory, gworlds, window_list);
     let window = front.unwrap_or(PPC_MAIN_GWORLD);
     let gdevice = front.map_or(PPC_MAIN_GDEVICE, |front| {
         ppc_gworld_device(gworlds, front).unwrap_or(fallback_gdevice)

@@ -2577,3 +2577,94 @@ fn basic_bitmaps_on_the_screen_take_the_screen_depth() {
             .bits;
     assert_eq!(resolved.depth, 1);
 }
+
+/// An application GDevice whose PixMap is a 10x10 placeholder, made current
+/// the way Prince of Destruction's PowerPC slice builds its offscreen ports.
+fn install_placeholder_gdevice(loaded: &mut PpcLoadedApp) -> (u32, u32) {
+    let scratch = PPC_DATA_BASE + 0x6000;
+    loaded.memory.add_region(scratch, vec![0; 0x400]);
+    let gdevice_handle = scratch;
+    let gdevice = scratch + 0x10;
+    let pixmap_handle = scratch + 0x80;
+    let pixmap = scratch + 0x90;
+    let placeholder_pixels = scratch + 0x100;
+    loaded.memory.write_u32_be(gdevice_handle, gdevice).unwrap();
+    loaded.memory.write_u32_be(gdevice + 22, pixmap_handle).unwrap();
+    loaded.memory.write_u32_be(pixmap_handle, pixmap).unwrap();
+    ppc_write_pixmap(&mut loaded.memory, pixmap, placeholder_pixels, 16, 0, 0, 10, 10, 8).unwrap();
+    loaded.memory.write_u32_be(pixmap + 42, PPC_MAIN_CTABLE_HANDLE).unwrap();
+    loaded
+        .current_gdevice
+        .with_mut(|current_gdevice| *current_gdevice = gdevice_handle);
+    (gdevice_handle, placeholder_pixels)
+}
+
+#[test]
+fn open_cport_bounds_port_by_the_main_screen_not_the_current_device_pixmap() {
+    // Prince of Destruction's PowerPC slice makes its own GDevice (a 10x10
+    // placeholder PixMap) current, calls OpenCPort, and then points the
+    // port's PixMap at a 512x384 buffer before drawing its options screen
+    // into it. OpenCPort copies only the PixMap from the current device;
+    // portRect and visRgn start as screenBits.bounds. Imaging With QuickDraw
+    // (1994), pp. 4-64--4-65, Table 4-3.
+    let pef = synthetic_pef_with_import(b"OpenCPort");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let (_, placeholder_pixels) = install_placeholder_gdevice(&mut loaded);
+    let port = PPC_DATA_BASE + 0x7000;
+    loaded.memory.add_region(port, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+    loaded.cpu.gpr[3] = port;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenCPort);
+
+    let screen = (0, 0, ppc_main_screen_height() as i16, ppc_main_screen_width() as i16);
+    let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+    let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(pixmap), Some(placeholder_pixels));
+    assert_eq!(ppc_read_rect(&mut loaded.memory, pixmap + 6), Some((0, 0, 10, 10)));
+    assert_eq!(ppc_read_rect(&mut loaded.memory, port + 16), Some(screen));
+    let vis_rgn = loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn), Some(screen));
+}
+
+#[test]
+fn new_cwindow_uses_the_main_screen_while_an_application_gdevice_is_current() {
+    // A window's PixMap always uses the main screen's depth, color table and
+    // bounds, whichever device is current. Prince of Destruction leaves its
+    // placeholder GDevice current when it creates the options window; the
+    // window must still draw to the screen. Imaging With QuickDraw (1994),
+    // p. 4-48.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let (gdevice_handle, _) = install_placeholder_gdevice(&mut loaded);
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 109, 145, 491, 655).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 2;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+    let pixmap_handle = loaded.memory.read_u32_be(window + 2).unwrap();
+    let bits = ppc_read_pixmap_handle_bits(&mut loaded.memory, pixmap_handle).unwrap();
+    assert_eq!(bits.base_addr, PPC_MAIN_SCREEN_BASE);
+    assert_eq!(bits.depth, PPC_MAIN_PIXEL_DEPTH);
+    assert_eq!(
+        (bits.top, bits.left, bits.bottom, bits.right),
+        (
+            -109,
+            -145,
+            ppc_main_screen_height() as i16 - 109,
+            ppc_main_screen_width() as i16 - 145,
+        )
+    );
+    // NewCWindow does not change the current device.
+    assert_eq!(*loaded.current_gdevice, gdevice_handle);
+}
