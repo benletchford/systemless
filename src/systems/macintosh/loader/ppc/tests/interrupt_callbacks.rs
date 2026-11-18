@@ -541,6 +541,139 @@ fn ppc_timer_manager_schedules_and_invokes_native_callbacks() {
 }
 
 #[test]
+fn ppc_timer_task_with_sub_tick_period_fires_several_times_per_tick() {
+    // The Dig's PowerPC SMUSH player paces frames with a Time Manager task
+    // that re-primes itself every 3333 microseconds (300 Hz). Delivering it
+    // only once per 60 Hz tick ran its intro five times too slowly.
+    let pef = synthetic_pef_with_import(b"InsTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let task_ptr = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        20,
+        true,
+    );
+    let callback_entry = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        24,
+        true,
+    );
+    let entry = loaded.entry_pc;
+    // li r4, -3333; lis r12, entry@h; ori r12, r12, entry@l; mtctr r12; bctr
+    // The entry stub calls the PrimeTime import with r3 = the task record.
+    for (index, word) in [
+        0x3880_0000 | u32::from((-3_333i16) as u16),
+        0x3d80_0000 | (entry >> 16),
+        0x618c_0000 | (entry & 0xffff),
+        0x7d89_03a6,
+        0x4e80_0420,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(callback_entry + 4 * index as u32, word)
+            .unwrap();
+    }
+    loaded
+        .memory
+        .write_u32_be(task_ptr + 6, callback_entry)
+        .unwrap();
+    loaded.cpu.gpr[3] = task_ptr;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.timer_tasks.len(), 1);
+
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PrimeTime;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = task_ptr;
+    loaded.cpu.gpr[4] = (-3_333i32) as u32;
+    loaded.set_tick_count(10);
+    loaded.set_clock_cycle_timing(1_000, 0);
+    loaded.run_with_hle_imports(64);
+    // 3333 us is 199,980 millionths of a tick.
+    assert_eq!(loaded.timer_tasks[0].fire_at_subtick, 10_199_980);
+
+    let probes = loaded.fire_timer_tasks_for_ticks(10, 1, 64, 256, false, false);
+    assert_eq!(
+        probes.len(),
+        5,
+        "deadlines 10.2, 10.4, 10.6, 10.8 and 11.0 ticks all fall in tick 11"
+    );
+    assert!(loaded.timer_tasks[0].active);
+    assert_eq!(loaded.timer_tasks[0].fire_at_subtick, 11_199_880);
+    assert_eq!(loaded.timer_tasks[0].fire_at_tick, 12);
+
+    let probes = loaded.fire_timer_tasks_for_ticks(11, 1, 64, 256, false, false);
+    assert_eq!(probes.len(), 5);
+    assert_eq!(loaded.timer_tasks[0].fire_at_subtick, 12_199_780);
+}
+
+#[test]
+fn ppc_timer_task_with_tiny_period_is_capped_per_tick() {
+    let pef = synthetic_pef_with_import(b"InsTime");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let task_ptr = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        20,
+        true,
+    );
+    let callback_entry = ppc_heap_alloc(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        24,
+        true,
+    );
+    let entry = loaded.entry_pc;
+    // Re-prime with a one-microsecond delay from inside the callback.
+    for (index, word) in [
+        0x3880_ffff,
+        0x3d80_0000 | (entry >> 16),
+        0x618c_0000 | (entry & 0xffff),
+        0x7d89_03a6,
+        0x4e80_0420,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        loaded
+            .memory
+            .write_u32_be(callback_entry + 4 * index as u32, word)
+            .unwrap();
+    }
+    loaded
+        .memory
+        .write_u32_be(task_ptr + 6, callback_entry)
+        .unwrap();
+    loaded.cpu.gpr[3] = task_ptr;
+    loaded.run_with_hle_imports(64);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PrimeTime;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = task_ptr;
+    loaded.cpu.gpr[4] = u32::MAX;
+    loaded.set_tick_count(10);
+    loaded.set_clock_cycle_timing(1_000, 0);
+    loaded.run_with_hle_imports(64);
+
+    let probes = loaded.fire_timer_tasks_for_ticks(10, 1, 100_000, 256, false, false);
+    assert_eq!(probes.len(), 64);
+    assert!(loaded.timer_tasks[0].active);
+    // Left behind by the cap, the task resumes next tick from that tick's
+    // start rather than replaying the whole backlog.
+    let probes = loaded.fire_timer_tasks_for_ticks(11, 1, 100_000, 256, false, false);
+    assert_eq!(probes.len(), 64);
+    assert!(loaded.timer_tasks[0].fire_at_subtick >= 11_000_000);
+}
+
+#[test]
 fn native_extended_timer_uses_process_owned_scheduling_metadata() {
     let pef = synthetic_pef_with_import(b"InsXTime");
     let mut native = load_pef_application(&pef).unwrap();

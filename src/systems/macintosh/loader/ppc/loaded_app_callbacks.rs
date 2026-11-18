@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// Upper bound on deliveries of one Time Manager task within a single
+/// 60 Hz tick (a period of roughly 260 microseconds), so a task primed with
+/// a tiny delay cannot stall the tick.
+const PPC_TIMER_MAX_FIRINGS_PER_TICK: u32 = 64;
+
 impl PpcLoadedApp {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_sound_completion_callback_with_process_services(
@@ -680,8 +685,19 @@ impl PpcLoadedApp {
         for tick_offset in 0..elapsed_ticks {
             let current_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
             let current_tick = self.publish_tick(current_tick);
-            self.callback_scheduling
-                .set_current_subtick(u64::from(current_tick) * 1_000_000);
+            let tick_end = u64::from(current_tick) * crate::time_manager::SUBTICKS_PER_TICK;
+            let tick_start = tick_end.saturating_sub(crate::time_manager::SUBTICKS_PER_TICK);
+            self.callback_scheduling.set_current_subtick(tick_end);
+            // A Time Manager delay is not limited to the 60 Hz VBL: the
+            // Time Manager has microsecond resolution and a task that
+            // re-primes itself with a sub-tick delay runs several times per
+            // tick (Inside Macintosh: Processes (1994), pp. 3-5--3-7). PPC
+            // callbacks are delivered at the tick boundary, so each due task
+            // runs "at" its own deadline: any PrimeTime made by its callback
+            // is rebased from that deadline instead of from the boundary, and
+            // the task fires again in this tick while its next deadline is
+            // still inside it.
+            let mut firings: Vec<(u32, u32)> = Vec::new();
             loop {
                 // Interrupts stay masked while a callback waits on a 68K call;
                 // due tasks stay due and fire after it returns.
@@ -691,6 +707,12 @@ impl PpcLoadedApp {
                 if probes.len() >= max_callbacks {
                     return probes;
                 }
+                let fired_this_tick = |task_ptr: u32| {
+                    firings
+                        .iter()
+                        .find(|(fired, _)| *fired == task_ptr)
+                        .map_or(0, |(_, count)| *count)
+                };
                 let Some(task) = self
                     .timer_tasks
                     .iter()
@@ -698,13 +720,21 @@ impl PpcLoadedApp {
                     .filter(|task| {
                         task.architecture == CallbackTaskArchitecture::PowerPc
                             && task.active
-                            && task.last_fired_tick != Some(current_tick)
+                            && fired_this_tick(task.task_ptr) < PPC_TIMER_MAX_FIRINGS_PER_TICK
                             && current_tick.wrapping_sub(task.fire_at_tick) < 0x8000_0000
                     })
-                    .min_by_key(|task| task.fire_at_tick)
+                    .min_by_key(|task| task.fire_at_subtick)
                 else {
                     break;
                 };
+                match firings.iter_mut().find(|(fired, _)| *fired == task.task_ptr) {
+                    Some((_, count)) => *count += 1,
+                    None => firings.push((task.task_ptr, 1)),
+                }
+                // An overdue task (masked interrupts, a long native slice)
+                // catches up by at most one tick rather than replaying every
+                // missed period.
+                let due_subtick = task.fire_at_subtick.clamp(tick_start, tick_end);
                 self.timer_tasks.with_mut(|timer_tasks| {
                     if let Some(installed) = timer_tasks
                         .iter_mut()
@@ -717,6 +747,12 @@ impl PpcLoadedApp {
                 let q_type = self.memory.read_u16_be(task.task_ptr + 4).unwrap_or(0);
                 let _ = self.memory.write_u16_be(task.task_ptr + 4, q_type & 0x7fff);
                 if task.callback != 0 {
+                    let primed_before: Vec<(u32, bool, u64)> = self
+                        .timer_tasks
+                        .iter()
+                        .map(|task| (task.task_ptr, task.active, task.fire_at_subtick))
+                        .collect();
+                    let parks = self.interrupt_callback_parks;
                     probes.push(self.run_timer_callback(
                         task.task_ptr,
                         task.callback,
@@ -726,10 +762,57 @@ impl PpcLoadedApp {
                         process_memory_manager.as_deref_mut(),
                         process_cfm.as_deref_mut(),
                     ));
+                    if self.interrupt_callback_parks == parks {
+                        self.rebase_timer_tasks_primed_in_callback(
+                            &primed_before,
+                            due_subtick,
+                            tick_end,
+                        );
+                    }
                 }
             }
         }
         probes
+    }
+
+    /// Move deadlines set by `PrimeTime` inside a timer callback that ran at
+    /// the tick boundary `tick_end` on behalf of a deadline `due_subtick`.
+    /// PrimeTime measured those delays from `tick_end`; the callback
+    /// logically ran at `due_subtick`, so the delays start there. Extended
+    /// (`InsXTime`) tasks already count from their recorded wakeup.
+    fn rebase_timer_tasks_primed_in_callback(
+        &mut self,
+        primed_before: &[(u32, bool, u64)],
+        due_subtick: u64,
+        tick_end: u64,
+    ) {
+        let shift = tick_end.saturating_sub(due_subtick);
+        if shift == 0 {
+            return;
+        }
+        let scheduling = &self.callback_scheduling;
+        self.timer_tasks.with_mut(|timer_tasks| {
+            for task in timer_tasks.iter_mut().filter(|task| {
+                task.architecture == CallbackTaskArchitecture::PowerPc && task.active
+            }) {
+                let unchanged = primed_before.iter().any(|(task_ptr, active, fire_at)| {
+                    *task_ptr == task.task_ptr && *active && *fire_at == task.fire_at_subtick
+                });
+                if unchanged || task.fire_at_subtick < tick_end {
+                    continue;
+                }
+                let fire_at = if task.extended {
+                    match scheduling.extended_wakeup(task.task_ptr) {
+                        Some(intended) => intended.max(due_subtick),
+                        None => continue,
+                    }
+                } else {
+                    task.fire_at_subtick.saturating_sub(shift).max(due_subtick)
+                };
+                task.fire_at_subtick = fire_at;
+                task.fire_at_tick = fire_at.div_ceil(crate::time_manager::SUBTICKS_PER_TICK) as u32;
+            }
+        });
     }
 
     /// Deliver Carbon event-loop timers only while the guest is polling or
