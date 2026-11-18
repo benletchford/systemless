@@ -11347,3 +11347,61 @@ fn new_visible_cwindow_leaves_bytes_after_an_open_cport_port_alone() {
         Some(window)
     );
 }
+
+#[test]
+fn window_vis_region_excludes_the_menu_bar_outside_gray_rgn() {
+    // GrayRgn starts below the menu bar, so a backdrop window placed at the
+    // top of the screen (Diamonds 3D, HeartQuest) must leave the menu bar
+    // visible; hiding the menu bar (MBarHeight 0) lifts the restriction.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let height = ppc_main_screen_height() as i16;
+    let width = ppc_main_screen_width() as i16;
+    assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(20));
+
+    let window =
+        create_test_cwindow(&mut loaded, bounds_ptr, (0, 0, height, width), 2, true, u32::MAX);
+    let vis_rgn = loaded.memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+        Some((20, 0, height, width))
+    );
+
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    let full =
+        create_test_cwindow(&mut loaded, bounds_ptr, (0, 0, height, width), 2, true, u32::MAX);
+    let full_vis = loaded.memory.read_u32_be(full + PPC_CGRAF_PORT_VIS_RGN_OFFSET).unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, full_vis),
+        Some((0, 0, height, width))
+    );
+}
+
+#[test]
+fn window_frame_under_the_menu_bar_leaves_the_menu_bar_pixels() {
+    // The WDEF draws through the Window Manager port clipped to GrayRgn, so a
+    // title bar tucked under the menu bar (Odyssey's "Hidden Message") must
+    // not paint over the menu bar.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (300, 12), PPC_RGB_WHITE);
+    let menu_pixel = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (300, 12));
+
+    create_test_cwindow(&mut loaded, bounds_ptr, (26, 100, 200, 500), 0, true, u32::MAX);
+
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (300, 12)),
+        menu_pixel,
+        "title bar must stay below the menu bar",
+    );
+    // The part of the title bar below the menu bar is still drawn.
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (99, 22)),
+        ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut),
+    );
+}

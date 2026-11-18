@@ -1029,8 +1029,30 @@ pub(super) fn ppc_region_boolean_op(
     let Some(storage_b) = ppc_region_storage(memory, src_b) else {
         return PPC_PARAM_ERR;
     };
-    let bbox_a = ppc_region_storage_bbox(&storage_a);
-    let bbox_b = ppc_region_storage_bbox(&storage_b);
+    let output = match ppc_region_storage_boolean(&storage_a, &storage_b, operation) {
+        Ok(output) => output,
+        Err(error) => return error,
+    };
+    ppc_write_region_storage(
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        dst,
+        &output,
+    )
+}
+
+/// Region Boolean operation on raw region storage (see ppc_region_boolean_op).
+pub(super) fn ppc_region_storage_boolean(
+    storage_a: &[u8],
+    storage_b: &[u8],
+    operation: PpcRegionBooleanOp,
+) -> Result<Vec<u8>, i16> {
+    let bbox_a = ppc_region_storage_bbox(storage_a);
+    let bbox_b = ppc_region_storage_bbox(storage_b);
     let band = match operation {
         PpcRegionBooleanOp::Intersection => match (bbox_a, bbox_b) {
             (Some(a), Some(b)) if a.2.min(b.2) > a.0.max(b.0) => Some((a.0.max(b.0), a.2.min(b.2))),
@@ -1044,14 +1066,14 @@ pub(super) fn ppc_region_boolean_op(
             (None, None) => None,
         },
     };
-    let output = if let Some(output) = ppc_rectangular_region_boolean(&storage_a, &storage_b, operation) {
+    let output = if let Some(output) = ppc_rectangular_region_boolean(storage_a, storage_b, operation) {
         output
     } else if let Some((top, bottom)) = band {
-        let Some(rows_a) = ppc_region_rows_for_band(&storage_a, top, bottom) else {
-            return PPC_PARAM_ERR;
+        let Some(rows_a) = ppc_region_rows_for_band(storage_a, top, bottom) else {
+            return Err(PPC_PARAM_ERR);
         };
-        let Some(rows_b) = ppc_region_rows_for_band(&storage_b, top, bottom) else {
-            return PPC_PARAM_ERR;
+        let Some(rows_b) = ppc_region_rows_for_band(storage_b, top, bottom) else {
+            return Err(PPC_PARAM_ERR);
         };
         let rows = rows_a
             .iter()
@@ -1059,22 +1081,13 @@ pub(super) fn ppc_region_boolean_op(
             .map(|(lhs, rhs)| ppc_region_combine_rows(lhs, rhs, operation))
             .collect::<Vec<_>>();
         let Some(output) = ppc_region_storage_from_rows(top, &rows) else {
-            return PPC_MEM_FULL_ERR;
+            return Err(PPC_MEM_FULL_ERR);
         };
         output
     } else {
         vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]
     };
-    ppc_write_region_storage(
-        allocator,
-        memory,
-        heap_cursor,
-        heap_limit,
-        last_mem_error,
-        handles,
-        dst,
-        &output,
-    )
+    Ok(output)
 }
 
 pub(super) fn ppc_set_rect_rgn(
