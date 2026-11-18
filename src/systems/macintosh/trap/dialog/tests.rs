@@ -8312,6 +8312,102 @@
     }
 
     #[test]
+    fn static_text_is_clipped_to_its_item_rectangle() {
+        // TextBox clips statText to the item's display rectangle (IM:I
+        // I-388, I-405). Scarab of Ra's "pres" placeholder sits in a box
+        // shorter than the font, so the descender of its "p" must not be
+        // drawn below the box, where no later redraw would erase it.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc(100 * 100);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+        let (top, left, bottom, right) = (10i16, 10i16, 20i16, 80i16);
+        disp.draw_static_text(&mut bus, top, left, bottom, right, "ppp", None);
+
+        let row_has_ink = |bus: &MacMemoryBus, row: i16| {
+            (0..100u32).any(|x| bus.read_byte(screen_base + row as u32 * 100 + x) != 0)
+        };
+        assert!((top..bottom).any(|row| row_has_ink(&bus, row)));
+        for row in bottom..40 {
+            assert!(!row_has_ink(&bus, row), "ink below the box at row {row}");
+        }
+    }
+
+    #[test]
+    fn dialogselect_update_keeps_app_drawn_content_of_a_painted_dialog() {
+        // MTE 1992 p. 6-141: DialogSelect handles an update event with
+        // BeginUpdate, DrawDialog and EndUpdate. Neither erases the content:
+        // the Window Manager already did when it painted the window (IM:I
+        // I-296), so a picture the application drew into the dialog before
+        // the update arrives (Siege's title panel) must survive it.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_ui_theme_id(UiThemeId::ClassicSystem7);
+
+        let screen_base = bus.alloc(100 * 100);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+
+        let dialog_ptr = bus.alloc(256);
+        bus.write_word(dialog_ptr, 0);
+        bus.write_long(dialog_ptr + 2, screen_base);
+        bus.write_word(dialog_ptr + 6, 100);
+        bus.write_word(dialog_ptr + 12, 100);
+        bus.write_word(dialog_ptr + 14, 100);
+        bus.write_word(dialog_ptr + 20, 100);
+        bus.write_word(dialog_ptr + 22, 100);
+        bus.write_byte(dialog_ptr + 110, 0xFF); // visible
+        bus.write_word(dialog_ptr + 108, 2);
+        disp.window_list.push(dialog_ptr);
+        disp.front_window = dialog_ptr;
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 0,
+                    rect: (8, 8, 40, 60),
+                    ..Default::default()
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (70, 8, 90, 44),
+                    text: "OK".to_string(),
+                    ..Default::default()
+                },
+            ],
+        );
+        // The application's picture in the userItem and in open content.
+        let picture_pixel = screen_base + 20 * 100 + 30;
+        let content_pixel = screen_base + 50 * 100 + 70;
+        bus.write_byte(picture_pixel, 0xDE);
+        bus.write_byte(content_pixel, 0xB3);
+
+        let update_rgn_ptr = bus.alloc(10);
+        let update_rgn = bus.alloc(4);
+        bus.write_long(update_rgn, update_rgn_ptr);
+        bus.write_word(update_rgn_ptr, 10);
+        bus.write_word(update_rgn_ptr + 6, 100);
+        bus.write_word(update_rgn_ptr + 8, 100);
+        bus.write_long(dialog_ptr + 122, update_rgn);
+
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+        bus.write_word(event_ptr, 6); // updateEvt
+        bus.write_long(event_ptr + 2, dialog_ptr);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+        disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_byte(picture_pixel), 0xDE);
+        assert_eq!(bus.read_byte(content_pixel), 0xB3);
+        // DrawDialog still redrew the button's frame inside the update.
+        assert_ne!(bus.read_byte(screen_base + 70 * 100 + 20), 0);
+    }
+
+    #[test]
     fn systemless_theme_does_not_change_dialogselect_edit_text_mouse_and_null_events() {
         // MTE 1992 p. 6-139 and IM:I I-417: mouseDown in an enabled
         // editText item is handled through TextEdit and reports the item,

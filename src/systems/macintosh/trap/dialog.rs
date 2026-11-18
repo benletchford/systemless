@@ -899,8 +899,10 @@ impl super::TrapDispatcher {
             return false;
         };
         let before_pixels = self.save_dialog_pixels(bus, bounds);
-        self.dialog_initial_draw_deferred.remove(&dialog_ptr);
-        self.draw_dialog(
+        // A dialog whose first paint was deferred has never been erased, so
+        // its first update still paints the whole shell.
+        let never_painted = self.dialog_initial_draw_deferred.remove(&dialog_ptr);
+        self.draw_dialog_with_content_erase(
             bus,
             bounds,
             proc_id,
@@ -911,6 +913,7 @@ impl super::TrapDispatcher {
             edit_item,
             false,
             dialog_ptr,
+            never_painted,
         );
         // MTE 1992 p. 6-143: UpdateDialog redraws only the supplied update
         // region. Most Dialog Manager HLE drawing helpers write directly to the
@@ -6645,6 +6648,41 @@ impl super::TrapDispatcher {
         skip_pictures: bool,
         dialog_ptr: u32,
     ) {
+        self.draw_dialog_with_content_erase(
+            bus,
+            bounds,
+            proc_id,
+            title,
+            items,
+            default_item,
+            edit_text,
+            edit_item,
+            skip_pictures,
+            dialog_ptr,
+            true,
+        );
+    }
+
+    /// `erase_content` is false on the update path: DialogSelect and
+    /// UpdateDialog redraw items inside BeginUpdate/EndUpdate and never erase
+    /// the content themselves. The Window Manager already erased the exposed
+    /// area when it accumulated the update region (PaintOne; IM:I I-296), and
+    /// anything the application drew since then must survive the redraw
+    /// (IM:I I-417; MTE 1992, pp. 6-141..6-143).
+    fn draw_dialog_with_content_erase(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        proc_id: i16,
+        title: &str,
+        items: &[DialogItem],
+        default_item: i16,
+        edit_text: &str,
+        edit_item: i16,
+        skip_pictures: bool,
+        dialog_ptr: u32,
+        erase_content: bool,
+    ) {
         // DrawDialog renders through the dialog window's port, so QuickDraw
         // clips every item to that port's visRgn. HLE dialog primitives write
         // directly to the framebuffer; bail out when the Window Manager has
@@ -6672,7 +6710,7 @@ impl super::TrapDispatcher {
         // not be clobbered by a synthesized shell.
         let game_managed = Self::dialog_is_game_managed(bounds, items);
         let app_painted = self.dialogs_drawn_by_app.contains(&dialog_ptr);
-        let clear_background = !game_managed || !app_painted;
+        let clear_background = erase_content && (!game_managed || !app_painted);
         let content_color = self.window_semantic_color(bus, dialog_ptr, 0);
         if clear_background {
             if let Some((red, green, blue)) = content_color {
@@ -6693,7 +6731,7 @@ impl super::TrapDispatcher {
                 );
             }
         }
-        if !clear_background {
+        if erase_content && !clear_background {
             eprintln!(
                 "[DIALOG] Preserving app-painted dialog background at ({},{},{},{}), {} items",
                 top,
@@ -9342,6 +9380,11 @@ impl super::TrapDispatcher {
         // guest strings share one representation. TextEdit and QuickDraw still
         // lay out classic bytes, so encode exactly once at that boundary.
         let text_bytes = self.static_text_bytes(text);
+        // TextBox and the statText TextEdit record clip to the item's
+        // display rectangle (IM:I I-388, I-405), so glyph ink below or
+        // right of the box, such as a descender, is not drawn.
+        let clip_width = screen_width.min(right);
+        let clip_height = screen_height.min(bottom);
         let lines = self.te_wrap_lines(font_id, raw_font_size, &text_bytes, max_width);
 
         for (start, end) in lines {
@@ -9365,8 +9408,8 @@ impl super::TrapDispatcher {
                         screen_base,
                         row_bytes,
                         pixel_size,
-                        screen_width,
-                        screen_height,
+                        clip_width,
+                        clip_height,
                         left + Self::TE_LINE_LEFT_INSET,
                         y,
                         &line,
@@ -9381,8 +9424,8 @@ impl super::TrapDispatcher {
                         screen_base,
                         row_bytes,
                         pixel_size,
-                        screen_width,
-                        screen_height,
+                        clip_width,
+                        clip_height,
                         left + Self::TE_LINE_LEFT_INSET,
                         y,
                         &line,
