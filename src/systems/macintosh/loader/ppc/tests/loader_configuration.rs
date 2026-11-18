@@ -420,6 +420,11 @@ fn display_manager_set_rejects_unknown_modes_and_accepts_opaque_display_state() 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     assert_eq!(loaded.memory.read_u32_be(depth_mode_ptr), Some(depth_mode));
+    // A successful mode set redraws the menu bar and desktop; the rejected
+    // call below must leave that redrawn screen alone.
+    let screen_before =
+        ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, screen_row_bytes)
+            .unwrap();
 
     loaded.cpu.pc = loaded.entry_pc;
     loaded.cpu.lr = PPC_HALT_PC;

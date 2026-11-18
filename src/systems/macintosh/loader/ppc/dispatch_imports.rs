@@ -1,7 +1,7 @@
 //! PowerPC CFM HLE import dispatcher.
 
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::*;
 
@@ -692,6 +692,10 @@ pub(crate) fn dispatch_supported_import(
     ) {
         return Some(action);
     }
+    let redraws_after_mode_change = matches!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::SetDepth | PpcImportDispatcherTarget::DMSetDisplayMode
+    );
     if let Some(action) = dispatch_graphics_devices::dispatch_graphics_device_import(
         dispatch_graphics_devices::PpcGraphicsDeviceDispatchContext {
             binding,
@@ -709,6 +713,21 @@ pub(crate) fn dispatch_supported_import(
             color_manager_clut,
         },
     ) {
+        if redraws_after_mode_change && matches!(action, PpcImportAction::Return(0)) {
+            ppc_redraw_screen_after_mode_change_in_dispatch(
+                memory,
+                gworlds,
+                window_list,
+                handles,
+                *current_gdevice,
+                screen_clut,
+                color_manager_clut,
+                toolbox_startup,
+                event_queue,
+                *tick_count,
+                input,
+            );
+        }
         return Some(action);
     }
     if let Some(action) = dispatch_color_tables::dispatch_color_table_import(
@@ -1378,6 +1397,21 @@ pub(crate) fn dispatch_supported_import(
             color_manager_clut,
         })
     {
+        if redraws_after_mode_change && matches!(action, PpcImportAction::Return(0)) {
+            ppc_redraw_screen_after_mode_change_in_dispatch(
+                memory,
+                gworlds,
+                window_list,
+                handles,
+                *current_gdevice,
+                screen_clut,
+                color_manager_clut,
+                toolbox_startup,
+                event_queue,
+                *tick_count,
+                input,
+            );
+        }
         return Some(action);
     }
 
@@ -4634,4 +4668,37 @@ fn ppc_dispatch_object_support_compatibility(
         }
     }
     PpcImportAction::Return(ppc_i16_result(result))
+}
+
+/// Runs the post-SetDepth/DMSetDisplayMode screen redraw with the live menu
+/// list (the dispatcher-local copy may predate menu imports in this call).
+#[allow(clippy::too_many_arguments)]
+fn ppc_redraw_screen_after_mode_change_in_dispatch(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    current_gdevice: u32,
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    let current_menu_list = ppc_current_menu_list(memory);
+    dispatch_window::ppc_redraw_screen_after_mode_change(
+        memory,
+        gworlds,
+        window_list,
+        handles,
+        current_menu_list,
+        current_gdevice,
+        screen_clut,
+        color_manager_clut,
+        toolbox_startup,
+        event_queue,
+        when,
+        input,
+    );
 }

@@ -2735,6 +2735,88 @@ pub(super) fn ppc_restore_window_removal_exposure(
     }
 }
 
+/// Redraws the whole main screen after its depth or mode changed.
+///
+/// Apple's SetDepth (PaletteMgr.a, System 7.1 sources) reinitializes the
+/// GDevice and then, on the menu-bar screen, calls DrawMenuBar,
+/// ActivatePalette(FrontWindow), PaintOne(NIL, gdRect) and
+/// PaintBehind(FrontWindow, gdRect) (RedrawAll with the Layer Manager).
+/// The Display Manager's CheckAndUpdateDisplaysLayout likewise calls
+/// RedrawAll after DMSetDisplayMode. Without this the cleared screen keeps
+/// no desktop, menu bar or window frames until the application redraws.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_redraw_screen_after_mode_change(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    current_menu_list: u32,
+    current_gdevice: u32,
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    let host_menu_bar_hidden = toolbox_startup.host_menu_bar_hidden;
+    // Full-screen games hide the menu bar before switching and then rely on
+    // their own (often custom-WDEF) backdrop windows to black out the
+    // screen. Systemless does not run guest WDEFs, so repainting the desktop
+    // for them would show it through that backdrop (Descent); keep the
+    // cleared screen for applications that already hid the menu bar.
+    if host_menu_bar_hidden || memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(0) == 0 {
+        return;
+    }
+    let Some(screen) = gworlds
+        .iter()
+        .find(|record| record.port == PPC_MAIN_GWORLD)
+        .map(|record| {
+            (
+                0,
+                0,
+                ppc_u32_to_i16_saturating(record.height),
+                ppc_u32_to_i16_saturating(record.width),
+            )
+        })
+    else {
+        return;
+    };
+    let _ = ppc_activate_front_window_palette(
+        memory,
+        gworlds,
+        window_list,
+        current_gdevice,
+        screen_clut,
+        color_manager_clut,
+        toolbox_startup,
+    );
+    // PaintOne/PaintBehind would also erase every window's content to its
+    // content color. Full-screen backdrops (Ferazel's Wand, WarCraft II) do
+    // not repaint themselves on that update, so leave their cleared pixels
+    // and let each window's update event redraw what the application owns.
+    ppc_restore_window_removal_exposure(
+        memory,
+        gworlds,
+        window_list,
+        Some(screen),
+        host_menu_bar_hidden,
+        event_queue,
+        when,
+        input,
+    );
+    if crate::menu_manager::evaluate_draw_menu_bar(host_menu_bar_hidden) {
+        let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+        let _ = ppc_draw_menu_bar_with_colors(
+            memory,
+            gworlds,
+            current_menu_list,
+            screen_clut,
+            MenuColorTable::new(&menu_color_bytes),
+        );
+    }
+}
+
 pub(super) fn ppc_sync_process_window_list(
     memory: &mut PpcSectionMem,
     window_list: &SharedProcessWindowList,
