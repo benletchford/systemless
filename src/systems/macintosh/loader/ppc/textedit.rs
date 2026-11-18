@@ -1394,6 +1394,72 @@ pub(super) fn ppc_te_edit_buffer(
     ))
 }
 
+/// Moves a styled record's run starts across an edit so every run keeps the
+/// characters it styled. Text (1993), pp. 2-21--2-22: deleted text takes its
+/// runs with it, and inserted text takes the style of the character before
+/// the insertion point (the first character's style at offset 0).
+///
+/// The edit is the span between the common prefix (no further than the old
+/// selection start) and the common suffix of the old and new text.
+pub(super) fn ppc_te_shift_style_runs_for_edit(
+    memory: &mut PpcSectionMem,
+    te_handle: u32,
+    old_text: &[u8],
+    new_text: &[u8],
+    selection_start: usize,
+) {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return;
+    };
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff) || old_text == new_text {
+        return;
+    }
+    let Some(style_ptr) = memory
+        .read_u32_be(te_ptr + PPC_TE_TX_FONT_OFFSET)
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|ptr| *ptr != 0)
+    else {
+        return;
+    };
+    let shared = old_text.len().min(new_text.len());
+    let prefix = old_text
+        .iter()
+        .zip(new_text)
+        .take_while(|(old, new)| old == new)
+        .count()
+        .min(selection_start)
+        .min(shared);
+    let suffix = old_text
+        .iter()
+        .rev()
+        .zip(new_text.iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count()
+        .min(shared - prefix);
+    let deleted_end = old_text.len() - suffix;
+    let inserted_end = new_text.len() - suffix;
+    let run_count = memory
+        .read_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET)
+        .unwrap_or(0)
+        .min(4096);
+    for run in 0..u32::from(run_count) {
+        let run_ptr = style_ptr + PPC_TE_STYLE_RUNS_OFFSET + run * 4;
+        let Some(start) = memory.read_u16_be(run_ptr).map(usize::from) else {
+            continue;
+        };
+        if start == 0 || start < prefix {
+            continue;
+        }
+        let moved = if start <= deleted_end {
+            inserted_end
+        } else {
+            start - deleted_end + inserted_end
+        };
+        let _ = memory.write_u16_be(run_ptr, moved.min(u16::MAX as usize) as u16);
+    }
+}
+
 pub(super) fn ppc_te_commit_edit_buffer(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
@@ -1404,6 +1470,17 @@ pub(super) fn ppc_te_commit_edit_buffer(
     te_handle: u32,
     buffer: &crate::text_edit::TextEditBuffer,
 ) -> i16 {
+    let previous = ppc_te_record_ptr(memory, te_handle).and_then(|te_ptr| {
+        let start = memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?;
+        let end = memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?;
+        Some((
+            ppc_te_text_bytes(memory, handles, te_handle)?,
+            usize::from(start.min(end)),
+        ))
+    });
+    if let Some((old_text, selection_start)) = previous {
+        ppc_te_shift_style_runs_for_edit(memory, te_handle, &old_text, buffer.text(), selection_start);
+    }
     let result = ppc_te_set_text(
         allocator.as_deref_mut(),
         memory,
@@ -2185,6 +2262,52 @@ pub(super) fn ppc_te_copy_or_cut(
     )
 }
 
+/// Returns the top of every line, each line starting below the full height of
+/// the lines before it. A styled record's lines have their own heights from
+/// the line-height table, so a taller line pushes later lines down rather
+/// than every line being placed at `index * its own height`.
+/// Inside Macintosh: Text (1993), pp. 2-17 and 2-71.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_te_line_tops(
+    memory: &mut PpcSectionMem,
+    te_ptr: u32,
+    text: &[u8],
+    style_runs: &[PpcTeStyleRun],
+    styled: bool,
+    line_count: usize,
+    top: i16,
+    fallback_line_height: i16,
+) -> Vec<i16> {
+    let mut tops = Vec::with_capacity(line_count);
+    let mut line_top = top;
+    for line in 0..line_count {
+        tops.push(line_top);
+        let line_height = if styled {
+            let start = usize::from(
+                memory
+                    .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + line as u32 * 2)
+                    .unwrap_or(0),
+            )
+            .min(text.len());
+            let end = if line + 1 < line_count {
+                usize::from(
+                    memory
+                        .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + (line + 1) as u32 * 2)
+                        .unwrap_or(text.len() as u16),
+                )
+                .min(text.len())
+            } else {
+                text.len()
+            };
+            ppc_te_line_metrics_for_range(style_runs, start, end).0
+        } else {
+            fallback_line_height
+        };
+        line_top = line_top.saturating_add(line_height);
+    }
+    tops
+}
+
 pub(super) fn ppc_te_draw(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -2238,6 +2361,16 @@ pub(super) fn ppc_te_draw(
     // the text, so drawing is clipped to it.
     let view_clip = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET);
     let view = view_clip.unwrap_or((0, 0, 0, 0));
+    let line_tops = ppc_te_line_tops(
+        memory,
+        te_ptr,
+        &text,
+        &style_runs,
+        styled,
+        line_count,
+        top,
+        fallback_line_height,
+    );
     for line in 0..line_count {
         let start = usize::from(
             memory
@@ -2276,9 +2409,7 @@ pub(super) fn ppc_te_draw(
         } else {
             (fallback_line_height, fallback_ascent)
         };
-        let baseline = top
-            .saturating_add(ascent)
-            .saturating_add((line as i16).saturating_mul(line_height));
+        let baseline = line_tops[line].saturating_add(ascent);
         if styled {
             let mut offset = start;
             let mut pen = line_left;
@@ -2421,7 +2552,7 @@ pub(super) fn ppc_te_draw(
                 if caret_offset > start {
                     caret_x = caret_x.saturating_sub(1);
                 }
-                let line_top = top.saturating_add((line as i16).saturating_mul(line_height));
+                let line_top = line_tops[line];
                 let line_bottom = line_top.saturating_add(line_height);
                 let _ = ppc_paint_rect_bounds(
                     memory,

@@ -256,6 +256,207 @@ fn te_use_style_scrap_applies_the_first_scrap_style_to_the_requested_range() {
 }
 
 #[test]
+fn te_style_insert_applies_every_style_scrap_run_to_the_inserted_text() {
+    // Inside Macintosh: Text (1993), pp. 2-102--2-103: TEStyleInsert styles
+    // the inserted text with hST's runs, whose start offsets are relative to
+    // the insertion point. Ambrosia's PPC registration screens insert a
+    // 'TEXT' resource with a Geneva 9 'styl' this way (Barrack, Bubble Trouble).
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 80, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    loaded.memory.write_bytes(scratch + 0x20, b"ab").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20;
+    loaded.cpu.gpr[4] = 2;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 2)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 2)
+        .unwrap();
+
+    loaded.cpu.gpr[3] = 2 + 2 * PPC_TE_SCRAP_ELEMENT_SIZE;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let scrap_handle = loaded.cpu.gpr[3];
+    let scrap_ptr = loaded.memory.read_u32_be(scrap_handle).unwrap();
+    loaded
+        .memory
+        .write_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET, 2)
+        .unwrap();
+    for (index, start, font, face, size) in [(0u32, 0u32, 3u16, 0u8, 9u16), (1, 4, 3, 1, 9)] {
+        let element = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET + index * PPC_TE_SCRAP_ELEMENT_SIZE;
+        loaded.memory.write_u32_be(element, start).unwrap();
+        loaded
+            .memory
+            .write_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET, font)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(element + PPC_TE_SCRAP_STYLE_FACE_OFFSET, face)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET, size)
+            .unwrap();
+    }
+
+    loaded.memory.write_bytes(scratch + 0x40, b"Geneva").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x40;
+    loaded.cpu.gpr[4] = 6;
+    loaded.cpu.gpr[5] = scrap_handle;
+    loaded.cpu.gpr[6] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEInsert { styled: true },
+    );
+
+    let runs = ppc_te_style_runs(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        te_handle,
+        8,
+    );
+    let style_at = |offset| ppc_te_style_at_offset(&runs, offset);
+    assert_ne!(style_at(0).size, 9, "text before the insertion keeps its style");
+    assert_eq!((style_at(2).font, style_at(2).face, style_at(2).size), (3, 0, 9));
+    assert_eq!((style_at(5).font, style_at(5).face, style_at(5).size), (3, 0, 9));
+    assert_eq!((style_at(6).font, style_at(6).face, style_at(6).size), (3, 1, 9));
+    assert_eq!((style_at(7).font, style_at(7).face, style_at(7).size), (3, 1, 9));
+}
+
+#[test]
+fn styled_textedit_runs_follow_their_text_across_a_replacement() {
+    // Inside Macintosh: Text (1993), pp. 2-21--2-22: editing a styled record
+    // moves later runs with their characters. Ambrosia's PPC registration
+    // screens insert styled text containing "^0" and then replace it with
+    // the product name; the bold "Register..." run must still cover it.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 200, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 200, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    loaded.memory.write_bytes(scratch + 0x20, b"a ^0 Bold z").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20;
+    loaded.cpu.gpr[4] = 11;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+    let style_ptr = scratch + 0x40;
+    loaded.memory.write_u8(style_ptr + 2, 1).unwrap();
+    let select = |loaded: &mut PpcLoadedApp, start: u32, end: u32| {
+        loaded.cpu.gpr[3] = start;
+        loaded.cpu.gpr[4] = end;
+        loaded.cpu.gpr[5] = te_handle;
+        run_test_import(loaded, PpcImportDispatcherTarget::TESetSelect);
+    };
+    select(&mut loaded, 5, 9);
+    loaded.cpu.gpr[3] = 0x0002; // doFace
+    loaded.cpu.gpr[4] = style_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+
+    select(&mut loaded, 2, 4);
+    loaded.memory.write_bytes(scratch + 0x60, b"Barrack").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x60;
+    loaded.cpu.gpr[4] = 7;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEInsert { styled: false },
+    );
+
+    let text = ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle)
+        .unwrap();
+    assert_eq!(text, b"a Barrack Bold z");
+    let runs = ppc_te_style_runs(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        te_handle,
+        text.len(),
+    );
+    let faces = (0..text.len())
+        .map(|offset| ppc_te_style_at_offset(&runs, offset).face)
+        .collect::<Vec<_>>();
+    assert_eq!(faces, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0]);
+}
+
+#[test]
+fn styled_textedit_lines_start_below_the_full_height_of_earlier_lines() {
+    // Inside Macintosh: Text (1993), pp. 2-17 and 2-71: each line of a styled
+    // record has its own height, so a taller line pushes every later line
+    // down. Meteor Storm PPC's help pages mix 18-point headings with 9-point
+    // body text; placing each line at index * its own height overlapped them.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 200, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 200, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    loaded.memory.write_bytes(scratch + 0x20, b"Big\rsmall\rtail").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20;
+    loaded.cpu.gpr[4] = 14;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+
+    let style_ptr = scratch + 0x40;
+    loaded.memory.write_u16_be(style_ptr, 3).unwrap();
+    loaded.memory.write_u16_be(style_ptr + 4, 24).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    loaded.cpu.gpr[3] = 0x0004; // doSize
+    loaded.cpu.gpr[4] = style_ptr;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET), Some(3));
+    let heights = (0..3)
+        .map(|line| ppc_te_line_height(&mut loaded.memory, te_ptr, line))
+        .collect::<Vec<_>>();
+    assert!(heights[0] > heights[1], "heading line is taller: {heights:?}");
+    let text = ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle)
+        .unwrap();
+    let runs = ppc_te_style_runs(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        te_handle,
+        text.len(),
+    );
+    let tops = ppc_te_line_tops(&mut loaded.memory, te_ptr, &text, &runs, true, 3, 10, 0);
+    assert_eq!(
+        tops,
+        vec![10, 10 + heights[0], 10 + heights[0] + heights[1]]
+    );
+}
+
+#[test]
 fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
     let pef = synthetic_pef_with_import(b"TEStyleNew");
     let mut loaded = load_pef_application(&pef).unwrap();
