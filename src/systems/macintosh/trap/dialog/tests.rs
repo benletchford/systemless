@@ -18501,6 +18501,40 @@
     }
 
     #[test]
+    fn textedit_draws_unstyled_text_in_its_own_port_foreground_colour() {
+        // Apple TextEdit.a StyleTrap selects teGrafPort before drawing, so an
+        // unstyled record uses that port's colours. Gold Digger scrolls its
+        // order form while a backdrop port with a white foreground is
+        // current; the text must not inherit that white.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"Name");
+        let te_port = 0x181000;
+        disp.set_current_port_state(&mut bus, &mut cpu, te_port, None);
+        disp.fg_color = (0, 0, 0);
+        let other_port = bus.alloc(108);
+        for offset in 0..108 {
+            let byte = bus.read_byte(te_port + offset);
+            bus.write_byte(other_port + offset, byte);
+        }
+        disp.set_current_port_state(&mut bus, &mut cpu, other_port, None);
+        disp.fg_color = (0xFFFF, 0xFFFF, 0xFFFF);
+        let (base, row_bytes, _, _, _) = disp.screen_mode;
+        for offset in 0..row_bytes * 80 {
+            bus.write_byte(base + offset, 0);
+        }
+
+        disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+
+        assert!(
+            count_set_pixels(&bus, base, row_bytes, 0, 0, 160, 60) > 0,
+            "unstyled text must draw in the record port's black foreground"
+        );
+        assert_eq!(*disp.current_port, other_port);
+        assert_eq!(disp.fg_color, (0xFFFF, 0xFFFF, 0xFFFF));
+    }
+
+    #[test]
     fn textedit_caret_movement_and_blinking_stay_inside_short_view_rectangle() {
         // Text (1993), pp. 2-16/2-29: only the view rectangle is visible.
         // SC2K uses a 15-pixel field with a taller line. Moving or blinking

@@ -3109,18 +3109,6 @@ impl super::TrapDispatcher {
         // Imaging With QuickDraw (1994), pp. 2-9--2-10.
         let (port_top, port_left) = self.port_bounds_top_left(bus, te_port);
         let just = bus.read_word(te_ptr + Self::TE_JUST_OFFSET) as i16;
-        let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
-        let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
-            self.te_style_runs(bus, te_handle, text_bytes.len())
-        } else {
-            Vec::new()
-        };
-        let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
-        let old_font = self.tx_font;
-        let old_face = self.tx_face;
-        let old_size = self.tx_size;
-        let old_fg = self.fg_color;
-        let old_loc = self.pn_loc;
         let previous_port = *self.current_port;
         let previous_gdevice = *self.current_gdevice;
         let switched_port = te_port != 0 && te_port != previous_port;
@@ -3134,6 +3122,23 @@ impl super::TrapDispatcher {
         if te_port != 0 {
             self.set_current_port_state(bus, cpu, te_port, None);
         }
+        // StdEntry selects teGrafPort before drawing, so an unstyled record
+        // draws in that port's foreground colour, never the caller's. Read
+        // the style, and the state restored below, only after the switch.
+        // Apple TextEdit.a, StyleTrap: `Move.L teGrafPort(A3),-(SP)`;
+        // `_SetPort`.
+        let (font, face, size, color, _, _) = self.te_primary_style(bus, te_handle);
+        let styled_runs = if Self::te_is_styled_record(bus, te_ptr) {
+            self.te_style_runs(bus, te_handle, text_bytes.len())
+        } else {
+            Vec::new()
+        };
+        let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
+        let old_font = self.tx_font;
+        let old_face = self.tx_face;
+        let old_size = self.tx_size;
+        let old_fg = self.fg_color;
+        let old_loc = self.pn_loc;
         if trace_textedit_enabled() {
             let (vis_top, vis_left, vis_bottom, vis_right) = {
                 let vis_handle = bus.read_long(*self.current_port + 24);
