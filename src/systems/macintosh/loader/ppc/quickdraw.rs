@@ -2537,9 +2537,10 @@ fn ppc_gpu_text_mask(
             }
         }
         let bits = (1u32 << fb.depth) - 1;
+        // `color` is already the mode's ink (see ppc_text_mode_ink_pixel):
+        // srcXor flips those bits, every other mode stores it.
         let transfer = match text_mode & 0x3f {
             2 => [bits, u32::from(color)],
-            3 => [bits & !u32::from(color), 0],
             _ => [0, u32::from(color)],
         };
         let command = QuickDrawGpuCommand {
@@ -2700,13 +2701,33 @@ fn ppc_apply_text_pixel_unclipped(
             };
             ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, dst ^ color_pixel)
         }
-        3 => {
-            let Some(dst) = ppc_quickdraw_read_pixel(memory, front_buffer, point) else {
-                return false;
-            };
-            ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, dst & !color_pixel)
-        }
         _ => ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, color_pixel),
+    }
+}
+
+/// Inside Macintosh: Imaging With QuickDraw (boolean transfer modes in a
+/// colour port): where a glyph is set, srcXor inverts the destination pixel
+/// and srcBic paints it with the background colour; neither uses the
+/// foreground colour. Return the ink those modes apply: the inversion mask
+/// for srcXor and the background pixel for srcBic. Treating them as bitwise
+/// operations on the foreground pixel made both no-ops for a black
+/// foreground on direct-colour screens, where black is pixel 0.
+fn ppc_text_mode_ink_pixel(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    port: u32,
+    color_pixel: u16,
+    text_mode: i16,
+) -> u16 {
+    match text_mode & 0x3f {
+        2 => match surface.front_buffer.depth {
+            16 => 0x7fff,
+            depth => ((1u32 << depth) - 1) as u16,
+        },
+        3 => ppc_read_rgb_color(memory, port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)
+            .and_then(|color| ppc_quickdraw_surface_color_pixel(memory, surface, color))
+            .unwrap_or(color_pixel),
+        _ => color_pixel,
     }
 }
 
@@ -2956,6 +2977,8 @@ pub(crate) fn ppc_draw_text_chars(
     else {
         return;
     };
+    let color_pixel =
+        ppc_text_mode_ink_pixel(memory, surface, current_gworld, color_pixel, text_mode);
     let clip_storage = ppc_port_clip_storage(memory, current_gworld, clip_rect);
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
@@ -3148,6 +3171,8 @@ pub(crate) fn ppc_draw_text_chars_styled(
     else {
         return;
     };
+    let color_pixel =
+        ppc_text_mode_ink_pixel(memory, surface, current_gworld, color_pixel, text_mode);
     let clip_storage = ppc_port_clip_storage(memory, current_gworld, clip_rect);
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))

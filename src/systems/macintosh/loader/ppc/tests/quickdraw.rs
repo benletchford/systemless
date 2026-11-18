@@ -49,6 +49,65 @@ fn draw_string_inverted_source_modes_apply_to_ink_and_character_cell() {
 }
 
 #[test]
+fn draw_string_src_xor_and_src_bic_use_colour_semantics_on_direct_screens() {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-34..4-36: in a
+    // colour port srcXor inverts the destination where the glyph is set and
+    // srcBic paints it with the background colour. MaxZip (Spider and Web,
+    // So Far) draws its status line as black-foreground srcBic text over a
+    // black bar; treating the modes as `dst ^ fore` / `dst & !fore` made both
+    // no-ops for black (pixel 0) on the default 16-bit screen.
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"DrawString"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let port = *loaded.current_gworld;
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    assert_eq!(front.depth, 16);
+    loaded.quickdraw_fore_color = PpcRgbColor { red: 0, green: 0, blue: 0 };
+    loaded.quickdraw_text_size = 12;
+    let text = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(text, b"\x01W".to_vec());
+    let red = [0xff, 0xff, 0, 0, 0, 0];
+    let white = [0xff; 6];
+    for (mode, background, expected) in [
+        (2, white, 0x7fff),
+        (3, white, 0x7fff),
+        (3, red, 0x7c00),
+    ] {
+        loaded
+            .memory
+            .write_bytes(port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET, &background)
+            .unwrap();
+        for y in 0..32 {
+            for x in 0..32 {
+                assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 0));
+            }
+        }
+        loaded.cpu.gpr[3] = mode;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextMode);
+        loaded.cpu.gpr[3] = 5;
+        loaded.cpu.gpr[4] = 20;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawString);
+        let pixels: Vec<_> = (0..32)
+            .flat_map(|y| (0..32).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap())
+            .collect();
+        let ink = pixels.iter().filter(|&&pixel| pixel == expected).count();
+        assert!(ink > 10, "mode {mode} drew {ink} glyph pixels");
+        assert!(
+            pixels.iter().all(|&pixel| pixel == 0 || pixel == expected),
+            "mode {mode} must only touch glyph pixels"
+        );
+    }
+}
+
+#[test]
 fn host_chrome_text_ignores_and_restores_application_screen_clip() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
     let clip = loaded
