@@ -7643,6 +7643,63 @@ fn port_changed_resync_follows_a_port_rect_the_application_rewrote_itself() {
 }
 
 #[test]
+fn window_parked_off_screen_then_moved_on_screen_draws_its_frame_on_show_hide() {
+    // Moria creates its windows hidden at h=16384, moves them into place
+    // with MoveWindow and reveals them with ShowHide. The off-screen mark
+    // must follow the move, and ShowHide's DrawNew paints the frame
+    // (Inside Macintosh Volume I, I-285, I-289; boot3 WindowMgr.a ShowHide).
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window,
+        screen_base,
+        0,
+        16384,
+        100,
+        16484,
+        "Moria",
+        4,
+        false,
+        true,
+        true,
+        0,
+    );
+    assert!(disp.windows_placed_offscreen.contains(&window));
+
+    disp.move_window_to_global(&mut bus, &mut cpu, window, 158, 88, false);
+    assert!(
+        !disp.windows_placed_offscreen.contains(&window),
+        "MoveWindow onto the screen must clear the off-screen mark"
+    );
+
+    for offset in 0..800 * 600 {
+        bus.write_byte(screen_base + offset, 0x42);
+    }
+    show_hide_for_test(&mut disp, &mut cpu, &mut bus, window, true);
+    // The title bar spans the rows just above the content's top edge (88).
+    let title_row = (70..88).map(|v| screen_base + v * 800);
+    let painted = title_row
+        .flat_map(|row| (158..258).map(move |h| row + h))
+        .filter(|&addr| bus.read_byte(addr) != 0x42)
+        .count();
+    assert!(
+        painted > 0,
+        "ShowHide(TRUE) must draw the window's title bar"
+    );
+
+    disp.move_window_to_global(&mut bus, &mut cpu, window, 16384, 0, false);
+    assert!(
+        disp.windows_placed_offscreen.contains(&window),
+        "MoveWindow off the screen must restore the off-screen mark"
+    );
+}
+
+#[test]
 fn windows_created_wholly_off_screen_get_no_synthesised_chrome() {
     // An application that parks a window off-screen intends to drive its
     // content itself; real hardware draws that window's frame where it was
