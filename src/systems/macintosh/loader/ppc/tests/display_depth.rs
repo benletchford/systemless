@@ -1092,10 +1092,13 @@ fn hle_import_runner_set_depth_preserves_device_state_and_clear_bounds() {
             ppc_main_screen_buffer_size(),
         )
         .unwrap();
+        // SetDepth clears the visible screen and then redraws the menu bar
+        // and desktop over it; neither may reach past the visible rows.
         let clear_byte = if depth == 8 { 0xff } else { 0x00 };
         assert!(framebuffer[..clear_len]
             .iter()
-            .all(|byte| *byte == clear_byte));
+            .all(|byte| *byte != 0x5a || clear_byte == 0x5a));
+        assert!(framebuffer[..clear_len].iter().any(|byte| *byte != clear_byte));
         assert!(framebuffer[clear_len..].iter().all(|byte| *byte == 0x5a));
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, framebuffer_after_canary, 32),
@@ -2667,4 +2670,92 @@ fn new_cwindow_uses_the_main_screen_while_an_application_gdevice_is_current() {
     );
     // NewCWindow does not change the current device.
     assert_eq!(*loaded.current_gdevice, gdevice_handle);
+}
+
+#[test]
+fn set_depth_redraws_menu_bar_desktop_and_windows_like_the_palette_manager() {
+    // Apple's SetDepth (PaletteMgr.a) follows InitGDevice with DrawMenuBar,
+    // ActivatePalette(FrontWindow) and PaintOne/PaintBehind over gdRect, so
+    // the cleared screen gets its desktop, window frames and
+    // update events back (Bubbles "Switch it!", HeartQuest).
+    let pef = synthetic_pef_with_import(b"SetDepth");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 32]);
+    let window = super::window_manager::create_test_cwindow(
+        &mut loaded,
+        bounds_ptr,
+        (100, 100, 260, 300),
+        0,
+        true,
+        u32::MAX,
+    );
+    loaded.set_event_queue(std::iter::empty());
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    assert_eq!(front.depth, 8);
+    let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+    let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+    let pixel = |loaded: &mut PpcLoadedApp, h: i32, v: i32| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (h, v))
+    };
+
+    // Desktop outside the window shows the standard desktop again.
+    for (h, v) in [(10, 400), (11, 400), (500, 300), (501, 301)] {
+        let desktop = ppc_physical_screen_color_pixel(
+            front,
+            ppc_standard_desktop_color(&loaded.gworlds, h, v),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        assert_eq!(pixel(&mut loaded, h, v), Some(desktop), "desktop at ({h},{v})");
+    }
+    // Menu bar: white bar with its black bottom line.
+    assert_eq!(pixel(&mut loaded, 700, 5), Some(white));
+    assert_eq!(pixel(&mut loaded, 700, 19), Some(black));
+    // The window's frame is redrawn; its content is left to its update event.
+    assert_eq!(pixel(&mut loaded, 99, 180), Some(black));
+    assert!(loaded
+        .event_queue()
+        .iter()
+        .any(|event| event.what == 6 && event.message == window));
+}
+
+#[test]
+fn set_depth_leaves_the_cleared_screen_when_the_menu_bar_is_hidden() {
+    // Full-screen games hide the menu bar and black out the screen with
+    // their own backdrop windows; without the guest WDEF the cleared screen
+    // is the faithful stand-in, so no desktop is painted over it.
+    let pef = synthetic_pef_with_import(b"SetDepth");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0).unwrap();
+    loaded.set_event_queue(std::iter::empty());
+
+    loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 1;
+    loaded.cpu.gpr[6] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    for (h, v) in [(10, 5), (10, 400), (500, 300)] {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (h, v)),
+            Some(0xff),
+            "cleared pixel at ({h},{v})"
+        );
+    }
+    assert!(loaded.event_queue().is_empty());
 }
