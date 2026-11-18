@@ -255,6 +255,12 @@ impl PresentationSlot {
     pub fn set(&self, value: Option<Presentation>) {
         *self.0.borrow_mut() = value;
         super::note_store_filter_event();
+        super::note_observed_page_event();
+    }
+    /// Whether a store anywhere in the page at `page_start` may change what
+    /// this slot presents. See `Presentation::page_may_be_observed`.
+    pub(crate) fn page_may_be_observed(&self, page_start: u32) -> bool {
+        self.as_ref().is_some_and(|p| p.page_may_be_observed(page_start))
     }
     pub fn observes(&self, address: u32, len: usize) -> bool {
         self.as_ref()
@@ -1103,6 +1109,7 @@ impl Presentation {
             self.store_filter_new_pages
                 .push(address >> STORE_FILTER_PAGE_SHIFT);
             super::note_store_filter_event();
+            super::note_observed_page_event();
         }
     }
 
@@ -7182,6 +7189,31 @@ mod tests {
                 .detail(destination)
                 .is_none());
         }
+    }
+
+    #[test]
+    fn guest_stores_reach_pages_that_become_observed_after_being_seen_unobserved() {
+        use ppc::PpcMemory;
+        let mut bus = bus();
+        bus.enable_outline_presentation(
+            (0x1000, 8, 8, 8, 8),
+            std::array::from_fn(|i| [i as u8; 3]),
+            2,
+        );
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let page = 0x0100_0000;
+        memory.add_region(page, vec![255; 64]);
+        bus.attach_guest_address_space(memory.shared_view());
+        let detail = |bus: &MacMemoryBus| bus.presentation.as_ref().unwrap().detail(page).is_some();
+
+        // Stores to a page with nothing to present need not reach the
+        // presentation, until offscreen detail lands on that page.
+        memory.write_u8(page + 8, 255).unwrap();
+        memory.write_u8(page + 9, 255).unwrap();
+        paint_detail(&mut bus, page);
+        assert!(detail(&bus));
+        memory.write_u8(page, 7).unwrap();
+        assert!(!detail(&bus), "a store over offscreen detail removes it");
     }
 
     #[test]

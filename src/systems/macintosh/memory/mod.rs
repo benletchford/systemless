@@ -157,6 +157,19 @@ pub(crate) fn store_filter_events() -> u64 {
     STORE_FILTER_EVENTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Bumped whenever a page may start to be observed by a presentation: a
+/// presentation is installed or replaced, or an offscreen page bit is set.
+/// Caches of pages proven unobserved compare it with the value they last saw.
+static OBSERVED_PAGE_EVENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn note_observed_page_event() {
+    OBSERVED_PAGE_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn observed_page_events() -> u64 {
+    OBSERVED_PAGE_EVENTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) mod presentation;
 pub use presentation::{CompactPresentation, CompactPresentationCache};
 pub use presentation::{SavedPixels, VisibleImageStamp};
