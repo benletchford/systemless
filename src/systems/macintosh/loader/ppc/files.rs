@@ -468,7 +468,13 @@ pub(super) fn ppc_pb_get_cat_info(
     } else {
         entry.name.clone()
     };
-    if name_ptr != 0 && !ppc_write_pstring_bytes(memory, name_ptr, &output_name) {
+    // A zero index names the target with this buffer; callers may reuse the
+    // full path in a later File Manager call. Only indexed/directory-ID
+    // lookups return a name (Inside Macintosh: Files, PBGetCatInfo).
+    if fdir_index != 0
+        && name_ptr != 0
+        && !ppc_write_pstring_bytes(memory, name_ptr, &output_name)
+    {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     // ioVRefNum is input-only here: callers enumerating by index reuse the block
