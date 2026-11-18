@@ -113,6 +113,8 @@ pub(super) struct RegionMembershipCache {
 pub(super) use crate::quickdraw::raster::region_rows::RegionBooleanOp;
 
 pub(super) const REGION_HEADER_SIZE: u32 = 10;
+/// Offset of rgnSave in a GrafPort and a CGrafPort (Inside Macintosh Volume I, I-148).
+const GRAF_PORT_RGN_SAVE_OFFSET: u32 = 96;
 const REGION_STOP: i16 = i16::MAX;
 const PALETTE_HEADER_SIZE: u32 = 16;
 const PALETTE_COLOR_INFO_SIZE: u32 = 16;
@@ -1932,7 +1934,7 @@ impl super::TrapDispatcher {
                     // p. A-23.
                     pict::recording_push_line(commands, (v0, h0), (v, h));
                 } else {
-                    self.record_region_line(v0, h0, v, h);
+                    self.record_region_line(bus, v0, h0, v, h);
                     if let Err(e) = self.draw_line(cpu, bus, h0, v0, h, v) {
                         return Some(Err(e));
                     }
@@ -1963,7 +1965,7 @@ impl super::TrapDispatcher {
                 } else if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     pict::recording_push_line(commands, (v0, h0), (v1, h1));
                 } else {
-                    self.record_region_line(v0, h0, v1, h1);
+                    self.record_region_line(bus, v0, h0, v1, h1);
                     if let Err(e) = self.draw_line(cpu, bus, h0, v0, h1, v1) {
                         return Some(Err(e));
                     }
@@ -2972,7 +2974,7 @@ impl super::TrapDispatcher {
                     pict::recording_push_rect(commands, 0x0030, (r.top, r.left, r.bottom, r.right));
                     return Some(Ok(()));
                 }
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Frame);
@@ -2990,7 +2992,7 @@ impl super::TrapDispatcher {
                     pict::recording_push_rect(commands, 0x0031, (r.top, r.left, r.bottom, r.right));
                     return Some(Ok(()));
                 }
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Paint);
@@ -3047,7 +3049,7 @@ impl super::TrapDispatcher {
                     pict::recording_push_rect(commands, 0x0032, (r.top, r.left, r.bottom, r.right));
                     return Some(Ok(()));
                 }
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Erase);
@@ -3061,7 +3063,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_rect(cpu, bus, &r, ShapeOp::Invert);
@@ -3079,7 +3081,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 let mut pat = [0u8; 8];
@@ -3132,7 +3134,7 @@ impl super::TrapDispatcher {
                     .into_iter()
                     .map(|(left, right)| (r.left + left, r.left + right))
                     .collect::<Vec<_>>();
-                if self.extend_recording_region_from_spans(r.top, &spans) && self.pn_vis < 0 {
+                if self.extend_recording_region_from_spans(bus, r.top, &spans) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Frame);
@@ -3148,7 +3150,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Paint);
@@ -3164,7 +3166,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Erase);
@@ -3180,7 +3182,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Invert);
@@ -3197,7 +3199,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 let mut pat = [0u8; 8];
@@ -3235,7 +3237,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 let spans = Self::compute_rrect_spans(&r, oval_width, oval_height);
-                if self.extend_recording_region_from_spans(r.top, &spans) && self.pn_vis < 0 {
+                if self.extend_recording_region_from_spans(bus, r.top, &spans) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Frame);
@@ -3266,7 +3268,7 @@ impl super::TrapDispatcher {
                     );
                     return Some(Ok(()));
                 }
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Paint);
@@ -3287,7 +3289,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Erase);
@@ -3308,7 +3310,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Invert);
@@ -3330,7 +3332,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 let mut pat = [0u8; 8];
@@ -8598,7 +8600,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Frame);
@@ -8618,7 +8620,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Paint);
@@ -8638,7 +8640,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Erase);
@@ -8658,7 +8660,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 self.draw_arc(cpu, bus, &r, start_angle, arc_angle, ShapeOp::Invert);
@@ -8684,7 +8686,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 8);
                 cpu.write_reg(Register::A7, sp + 12);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
+                if self.extend_recording_region(bus, r.top, r.left, r.bottom, r.right) && self.pn_vis < 0 {
                     return Some(Ok(()));
                 }
                 let mut pat = [0u8; 8];
@@ -10815,8 +10817,34 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw 1994, 3-87
             // Begins recording line and framed-shape outlines into a region;
             // Hide the pen while recording; callers may show it again.
+            // The save handle goes in the port's rgnSave field: collection
+            // follows that field (see region_recording_active).
             (true, 0x0DA) => {
-                self.recording_region = Some(super::dispatch::RegionRecording::default());
+                let port = *self.current_port;
+                let mut save_port = 0;
+                if port != 0 && self.port_allows_draw_state_memory_sync(bus, port) {
+                    if self.region_save_handle == 0 {
+                        // A full heap leaves no save handle: rgnSave stays
+                        // untouched and the whole span is collected.
+                        let ptr = bus.alloc(10);
+                        let handle = if ptr != 0 { bus.alloc(4) } else { 0 };
+                        if handle != 0 {
+                            bus.write_word(ptr, 10);
+                            bus.write_long(handle, ptr);
+                            self.region_save_handle = handle;
+                        } else {
+                            bus.free(ptr);
+                        }
+                    }
+                    if self.region_save_handle != 0 {
+                        bus.write_long(port + GRAF_PORT_RGN_SAVE_OFFSET, self.region_save_handle);
+                        save_port = port;
+                    }
+                }
+                self.recording_region = Some(super::dispatch::RegionRecording {
+                    save_port,
+                    ..Default::default()
+                });
                 self.pn_vis -= 1;
                 self.sync_current_port_draw_state(bus);
                 Ok(())
@@ -10833,6 +10861,9 @@ impl super::TrapDispatcher {
                 let dst_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 if let Some(recording) = self.recording_region.take() {
+                    if recording.save_port != 0 {
+                        bus.write_long(recording.save_port + GRAF_PORT_RGN_SAVE_OFFSET, 0);
+                    }
                     self.pn_vis += 1;
                     self.sync_current_port_draw_state(bus);
                     if dst_handle != 0 {
@@ -16274,29 +16305,65 @@ impl super::TrapDispatcher {
         Self::extend_recording_bbox(recording, top, left, bottom, right);
     }
 
+    /// Whether drawing in the current port is collected into the open region.
+    ///
+    /// OpenRgn stores its save handle in the current port's rgnSave field
+    /// (Imaging With QuickDraw 1994, 3-88), and QuickDraw collects lines and
+    /// framed shapes while that field is not NIL. An application can
+    /// therefore pause collection by clearing rgnSave and resume it by
+    /// putting the handle back. MacPaint 1.3's filled polygon does: it draws
+    /// each side twice between OpenRgn and CloseRgn, the second time with
+    /// rgnSave cleared. A port whose memory is not mirrored, or an OpenRgn
+    /// that stored no save handle, keeps collecting for the whole
+    /// OpenRgn..CloseRgn span.
+    pub(crate) fn region_recording_active(&self, bus: &MacMemoryBus) -> bool {
+        let Some(recording) = self.recording_region.as_ref() else {
+            return false;
+        };
+        if recording.save_port == 0 {
+            return true;
+        }
+        let port = *self.current_port;
+        if port == 0 || !self.port_allows_draw_state_memory_sync(bus, port) {
+            return true;
+        }
+        bus.read_long(port + GRAF_PORT_RGN_SAVE_OFFSET) != 0
+    }
+
     /// While OpenRgn..CloseRgn is in progress, rectangular drawing
     /// primitives contribute their mathematical boundary and skip the actual
     /// framebuffer write. Returns true if recording is active.
     pub(crate) fn extend_recording_region(
         &mut self,
+        bus: &MacMemoryBus,
         top: i16,
         left: i16,
         bottom: i16,
         right: i16,
     ) -> bool {
-        if let Some(recording) = self.recording_region.as_mut() {
-            Self::record_region_rect_boundary(recording, top, left, bottom, right);
-            true
-        } else {
-            false
+        if !self.region_recording_active(bus) {
+            return false;
         }
+        let Some(recording) = self.recording_region.as_mut() else {
+            return false;
+        };
+        Self::record_region_rect_boundary(recording, top, left, bottom, right);
+        true
     }
 
     /// Add exact scanline boundaries for a framed QuickDraw shape to the
     /// active region. Each span is recorded as a one-row closed loop, which
     /// preserves QuickDraw's even-odd boundary organization while avoiding a
     /// lossy bounding-box substitution for curved shapes.
-    fn extend_recording_region_from_spans(&mut self, top: i16, spans: &[(i16, i16)]) -> bool {
+    fn extend_recording_region_from_spans(
+        &mut self,
+        bus: &MacMemoryBus,
+        top: i16,
+        spans: &[(i16, i16)],
+    ) -> bool {
+        if !self.region_recording_active(bus) {
+            return false;
+        }
         let Some(recording) = self.recording_region.as_mut() else {
             return false;
         };
@@ -16313,14 +16380,23 @@ impl super::TrapDispatcher {
         true
     }
 
-    pub(crate) fn record_region_line(&mut self, v0: i16, h0: i16, v1: i16, h1: i16) -> bool {
-        if let Some(recording) = self.recording_region.as_mut() {
-            recording.outline_segments.push(((v0, h0), (v1, h1)));
-            Self::extend_recording_bbox(recording, v0.min(v1), h0.min(h1), v0.max(v1), h0.max(h1));
-            true
-        } else {
-            false
+    pub(crate) fn record_region_line(
+        &mut self,
+        bus: &MacMemoryBus,
+        v0: i16,
+        h0: i16,
+        v1: i16,
+        h1: i16,
+    ) -> bool {
+        if !self.region_recording_active(bus) {
+            return false;
         }
+        let Some(recording) = self.recording_region.as_mut() else {
+            return false;
+        };
+        recording.outline_segments.push(((v0, h0), (v1, h1)));
+        Self::extend_recording_bbox(recording, v0.min(v1), h0.min(h1), v0.max(v1), h0.max(h1));
+        true
     }
 
     /// Dereference a PolyHandle and add its actual boundary to the open
@@ -16334,7 +16410,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         poly_handle: u32,
     ) -> bool {
-        if self.recording_region.is_none() {
+        if !self.region_recording_active(bus) {
             return false;
         }
         if poly_handle == 0 {
@@ -16377,7 +16453,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         rgn_handle: u32,
     ) -> bool {
-        if self.recording_region.is_none() {
+        if !self.region_recording_active(bus) {
             return false;
         }
         let Some((top, left, bottom, right)) = Self::region_bbox(bus, rgn_handle) else {

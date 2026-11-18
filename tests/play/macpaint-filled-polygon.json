@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 342,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_down",
+      "v": 237,
+      "h": 58
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 237,
+      "h": 58
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 60,
+      "h": 340
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 60,
+      "h": 340
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 70,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 70,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 115,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 115,
+      "h": 390
+    },
+    {
+      "type": "run",
+      "ticks": 10
+    },
+    {
+      "type": "mouse_down",
+      "v": 115,
+      "h": 345
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 115,
+      "h": 345
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "mouse_down",
+      "v": 115,
+      "h": 345
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "mouse_up",
+      "v": 115,
+      "h": 345
+    },
+    {
+      "type": "run",
+      "ticks": 40
+    },
+    {
+      "type": "screenshot",
+      "name": "filled-polygon"
+    },
+    {
+      "type": "assert_pixel",
+      "x": 370,
+      "y": 90,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 350,
+      "y": 100,
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 320,
+      "y": 90,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 396,
+      "y": 110,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    }
+  ]
+}
