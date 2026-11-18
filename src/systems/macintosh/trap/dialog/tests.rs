@@ -18604,6 +18604,111 @@
     }
 
     #[test]
+    fn textedit_glyphs_are_clipped_to_the_view_rectangle() {
+        // Apple TextEdit.a StyleTrap intersects the port clip with viewRect
+        // for every call. Gold Digger's partly visible last line drew its
+        // glyphs below the view, over the window frame.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"Wgjpqy Wgjpqy");
+        let te_ptr = bus.read_long(te_handle);
+        TrapDispatcher::te_write_rect_words(
+            &mut bus,
+            te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+            (20, 20, 60, 160),
+        );
+        let (base, row_bytes, _, _, _) = disp.screen_mode;
+        let draw = |disp: &mut TrapDispatcher,
+                    cpu: &mut MockCpu,
+                    bus: &mut MacMemoryBus,
+                    view: (i16, i16, i16, i16)| {
+            TrapDispatcher::te_write_rect_words(
+                bus,
+                te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+                view,
+            );
+            for offset in 0..row_bytes * 80 {
+                bus.write_byte(base + offset, 0);
+            }
+            disp.draw_te_contents(cpu, bus, te_handle, true);
+            let mut inside = 0;
+            let mut outside = 0;
+            for y in 0..70 {
+                for x in 0..170 {
+                    if screen_pixel_is_set(bus, base, row_bytes, x, y) {
+                        if y >= view.0 && y < view.2 && x >= view.1 && x < view.3 {
+                            inside += 1;
+                        } else {
+                            outside += 1;
+                        }
+                    }
+                }
+            }
+            (inside, outside)
+        };
+
+        // With a generous view the descenders reach rows the short view
+        // excludes, so the short view must lose exactly those pixels.
+        let (full, _) = draw(&mut disp, &mut cpu, &mut bus, (20, 20, 60, 160));
+        let line_height =
+            bus.read_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET) as i16;
+        let ascent = bus.read_word(te_ptr + TrapDispatcher::TE_FONT_ASCENT_OFFSET) as i16;
+        assert!(line_height > ascent + 1);
+        let short = (20, 20, 20 + ascent + 1, 160);
+        let (inside, outside) = draw(&mut disp, &mut cpu, &mut bus, short);
+        assert!(inside > 0 && inside < full, "inside={inside} full={full}");
+        assert_eq!(outside, 0, "glyph pixels outside viewRect");
+        assert_eq!(bus.read_long(0x181000 + 28), 0x182300, "caller's clipRgn restored");
+    }
+
+    #[test]
+    fn textedit_selection_highlight_stays_inside_short_view_rectangle() {
+        // Apple TextEdit.a StyleTrap clips every TextEdit call to viewRect.
+        // Fungus selects "10" in a 15-pixel field whose line is 17 pixels
+        // tall; typing over it erases only the view, so a highlight painted
+        // below the view stayed on screen as a black bar.
+        for theme in [UiThemeId::ClassicSystem7, UiThemeId::SystemlessDefault] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            disp.set_screen_mode_for_test(bus.read_long(0x0824), 64, 512, 342, 1);
+            disp.set_ui_theme_id(theme);
+            let te_handle = make_te_with_text(&mut disp, &mut bus, b"10");
+            let te_ptr = bus.read_long(te_handle);
+            let view = (20, 20, 35, 100);
+            TrapDispatcher::te_write_rect_words(
+                &mut bus,
+                te_ptr + TrapDispatcher::TE_DEST_RECT_OFFSET,
+                (20, 19, 35, 120),
+            );
+            TrapDispatcher::te_write_rect_words(
+                &mut bus,
+                te_ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET,
+                view,
+            );
+            bus.write_word(te_ptr + TrapDispatcher::TE_LINE_HEIGHT_OFFSET, 18);
+            let (base, row_bytes, _, _, _) = disp.screen_mode;
+            for offset in 0..row_bytes * 80 {
+                bus.write_byte(base + offset, 0);
+            }
+            bus.write_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 0);
+            bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+            disp.draw_te_contents(&mut cpu, &mut bus, te_handle, true);
+            let mut visible_pixels = 0;
+            for y in 0..60 {
+                for x in 0..140 {
+                    let set = screen_pixel_is_set(&bus, base, row_bytes, x, y);
+                    if y >= view.0 && y < view.2 && x >= view.1 && x < view.3 {
+                        visible_pixels += usize::from(set);
+                    } else {
+                        assert!(!set, "{theme:?}: highlight outside view at ({x},{y})");
+                    }
+                }
+            }
+            assert!(visible_pixels > 0, "{theme:?}: selection must be highlighted");
+        }
+    }
+
+    #[test]
     fn teactivate_and_tedeactivate_repaint_empty_insertion_caret() {
         // IM:I I-385 and Text 1993 p. 2-80: TEActivate displays the caret
         // when the active selection is an insertion point; TEDeactivate

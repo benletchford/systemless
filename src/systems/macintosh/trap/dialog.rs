@@ -3139,6 +3139,7 @@ impl super::TrapDispatcher {
         let old_size = self.tx_size;
         let old_fg = self.fg_color;
         let old_loc = self.pn_loc;
+        let saved_clip = self.te_install_view_clip(bus, te_port, view_rect);
         if trace_textedit_enabled() {
             let (vis_top, vis_left, vis_bottom, vis_right) = {
                 let vis_handle = bus.read_long(*self.current_port + 24);
@@ -3556,16 +3557,28 @@ impl super::TrapDispatcher {
                     // still draw at destRect.left + TE_LINE_LEFT_INSET.
                     selection_left = selection_left.saturating_sub(Self::TE_LINE_LEFT_INSET);
                 }
+                // StdEntry clips every TextEdit call to viewRect (and the
+                // port's clipRgn), so a line taller than the view never
+                // highlights past it. Painting outside viewRect leaves pixels
+                // that the next viewRect-clipped erase cannot remove. Apple
+                // TextEdit.a, StyleTrap: `Pea teViewRect(A3); _ClipRect;
+                // _SectRgn`.
+                let Some((top, left, bottom, right)) = Self::rect_intersection(
+                    (line_top, selection_left, line_bottom, selection_right),
+                    view_rect,
+                ) else {
+                    continue;
+                };
                 if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                     if te_active {
                         self.draw_rect(
                             cpu,
                             bus,
                             &Rect {
-                                top: line_top,
-                                left: selection_left,
-                                bottom: line_bottom,
-                                right: selection_right,
+                                top,
+                                left,
+                                bottom,
+                                right,
                             },
                             ShapeOp::Invert,
                         );
@@ -3576,10 +3589,10 @@ impl super::TrapDispatcher {
                     // while active ranges keep normal highlighted selection chrome.
                     self.draw_theme_text_selection(
                         bus,
-                        line_top.wrapping_sub(port_top),
-                        selection_left.wrapping_sub(port_left),
-                        line_bottom.wrapping_sub(port_top),
-                        selection_right.wrapping_sub(port_left),
+                        top.wrapping_sub(port_top),
+                        left.wrapping_sub(port_left),
+                        bottom.wrapping_sub(port_top),
+                        right.wrapping_sub(port_left),
                         te_active,
                     );
                 }
@@ -3612,9 +3625,57 @@ impl super::TrapDispatcher {
             );
         }
 
+        if let Some(clip) = saved_clip {
+            bus.write_long(te_port + 28, clip);
+        }
         if switched_port {
             self.set_current_port_state(bus, cpu, previous_port, Some(previous_gdevice));
         }
+    }
+
+    /// StdEntry saves the port's clipRgn, clips to viewRect and intersects
+    /// that with the saved clip, so nothing a TextEdit call draws lands
+    /// outside the view; the caller's clip is restored on exit. Returns the
+    /// clipRgn handle to put back. Apple TextEdit.a, StyleTrap/StdExit2.
+    fn te_install_view_clip(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_port: u32,
+        view_rect: (i16, i16, i16, i16),
+    ) -> Option<u32> {
+        if te_port == 0 {
+            return None;
+        }
+        let clip = bus.read_long(te_port + 28);
+        if clip == 0 || bus.read_long(clip) == 0 {
+            return None;
+        }
+        let (view_rgn, sect_rgn) = match self.te_view_clip_regions {
+            Some(regions) => regions,
+            None => {
+                let view_rgn = Self::allocate_handle_with_data(bus, 10);
+                let sect_rgn = Self::allocate_handle_with_data(bus, 10);
+                if view_rgn == 0 || sect_rgn == 0 {
+                    return None;
+                }
+                self.te_view_clip_regions = Some((view_rgn, sect_rgn));
+                (view_rgn, sect_rgn)
+            }
+        };
+        let view = (view_rect.0 < view_rect.2 && view_rect.1 < view_rect.3).then_some(view_rect);
+        if !Self::write_region(bus, view_rgn, view, &[])
+            || !Self::write_region_boolean_op(
+                bus,
+                sect_rgn,
+                clip,
+                view_rgn,
+                crate::quickdraw::raster::region_rows::RegionBooleanOp::Intersection,
+            )
+        {
+            return None;
+        }
+        bus.write_long(te_port + 28, sect_rgn);
+        Some(clip)
     }
 
     fn te_feature_bit(&self, te_handle: u32, feature: u16) -> bool {
