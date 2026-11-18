@@ -4048,6 +4048,51 @@ fn show_hide_erases_a_revealed_window_without_a_color_table() {
     assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 4, false), white);
 }
 
+/// Creates a visible window of `proc_id` with NewCWindow over a black probe
+/// pixel and returns the probe pixel afterwards.
+fn new_visible_window_over_black(proc_id: u32) -> Option<u16> {
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, 60, 40, 160, 200).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_pixel(&mut loaded.memory, front, (120, 110), PPC_RGB_BLACK);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = proc_id;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+    assert!(
+        loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == window)
+    );
+    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 110))
+}
+
+#[test]
+fn new_visible_window_erases_its_content_like_paint_one() {
+    // Macintosh Toolbox Essentials (1992), pp. 4-80 and 4-91: a window
+    // created visible is drawn through PaintOne, which erases its content
+    // with the content color (white without a color table). Icebreaker's
+    // full-screen plainDBox backdrop otherwise showed the stale desktop
+    // behind its 256-colour alert.
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    assert_eq!(new_visible_window_over_black(2), white);
+    assert_eq!(new_visible_window_over_black(0), white);
+    // A custom WDEF computes its own content region; leave it to the app.
+    let black = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)));
+    assert_eq!(new_visible_window_over_black(128 * 16), black);
+}
+
 #[test]
 fn legacy_window_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
