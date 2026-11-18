@@ -7176,8 +7176,8 @@ impl super::TrapDispatcher {
                         .unwrap_or(0)
                         != 0;
                     self.draw_checkbox_with_enabled_and_inactive(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
-                        enabled, inactive,
+                        bus, dialog_ptr, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                        checked, enabled, inactive,
                     );
                 }
                 6 => {
@@ -7189,8 +7189,8 @@ impl super::TrapDispatcher {
                         .unwrap_or(0)
                         != 0;
                     self.draw_radio_with_enabled_and_inactive(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
-                        enabled, inactive,
+                        bus, dialog_ptr, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                        selected, enabled, inactive,
                     );
                 }
                 7 => {
@@ -7228,6 +7228,7 @@ impl super::TrapDispatcher {
                             ),
                             1 => self.draw_checkbox_with_enabled_and_inactive(
                                 bus,
+                                dialog_ptr,
                                 abs_top,
                                 abs_left,
                                 abs_bottom,
@@ -7239,6 +7240,7 @@ impl super::TrapDispatcher {
                             ),
                             2 => self.draw_radio_with_enabled_and_inactive(
                                 bus,
+                                dialog_ptr,
                                 abs_top,
                                 abs_left,
                                 abs_bottom,
@@ -7434,8 +7436,8 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                     );
                     self.draw_checkbox_with_enabled_and_inactive(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, checked,
-                        enabled, inactive,
+                        bus, dialog_ptr, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                        checked, enabled, inactive,
                     );
                 }
                 DIALOG_ITEM_RADIO => {
@@ -7453,8 +7455,8 @@ impl super::TrapDispatcher {
                         (abs_top, abs_left, abs_bottom, abs_right),
                     );
                     self.draw_radio_with_enabled_and_inactive(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, selected,
-                        enabled, inactive,
+                        bus, dialog_ptr, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                        selected, enabled, inactive,
                     );
                 }
                 DIALOG_ITEM_RESOURCE_CONTROL => {
@@ -7498,6 +7500,7 @@ impl super::TrapDispatcher {
                                 );
                                 self.draw_checkbox_with_enabled_and_inactive(
                                     bus,
+                                    dialog_ptr,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
@@ -7517,6 +7520,7 @@ impl super::TrapDispatcher {
                                 );
                                 self.draw_radio_with_enabled_and_inactive(
                                     bus,
+                                    dialog_ptr,
                                     abs_top,
                                     abs_left,
                                     abs_bottom,
@@ -8964,12 +8968,13 @@ impl super::TrapDispatcher {
         title: &str,
         checked: bool,
     ) {
-        self.draw_checkbox_state(bus, top, left, bottom, _right, title, checked, true, false);
+        self.draw_checkbox_state(bus, 0, top, left, bottom, _right, title, checked, true, false);
     }
 
     fn draw_checkbox_with_enabled_and_inactive(
         &self,
         bus: &mut MacMemoryBus,
+        owner: u32,
         top: i16,
         left: i16,
         bottom: i16,
@@ -8979,18 +8984,69 @@ impl super::TrapDispatcher {
         enabled: bool,
         inactive: bool,
     ) {
-        if enabled && !inactive {
-            self.draw_checkbox(bus, top, left, bottom, _right, title, checked);
+        self.draw_checkbox_state(
+            bus, owner, top, left, bottom, _right, title, checked, enabled, inactive,
+        );
+    }
+
+    /// Erase a check box or radio button mark box before framing it.
+    ///
+    /// The ROM ButtonCDEF (PlotCheck) sets the back colour to the owning
+    /// window's AuxWin content colour and then `_EraseRect`s the 12x12
+    /// box, so a coloured 'dctb' shows through a radio button's corners
+    /// and an unchecked box's interior rather than a white square.
+    /// boot3 Toolbox/ControlMgr/ButtonCDEF.a, PlotCheck/EraseCheck.
+    fn erase_control_mark_box(
+        &self,
+        bus: &mut MacMemoryBus,
+        owner: u32,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let content = (owner != 0)
+            .then(|| self.window_semantic_color(bus, owner, 0))
+            .flatten()
+            .filter(|&rgb| rgb != (0xFFFF, 0xFFFF, 0xFFFF));
+        if let Some((red, green, blue)) = content {
+            let pixel_index = Self::nearest_palette_index(&self.device_clut, [red, green, blue]);
+            Self::fb_fill_rect_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_index,
+            );
             return;
         }
-        self.draw_checkbox_state(
-            bus, top, left, bottom, _right, title, checked, enabled, inactive,
+        Self::fb_fill_rect(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            false,
         );
     }
 
     fn draw_checkbox_state(
         &self,
         bus: &mut MacMemoryBus,
+        owner: u32,
         top: i16,
         left: i16,
         bottom: i16,
@@ -9021,19 +9077,13 @@ impl super::TrapDispatcher {
             checked,
             false,
         ) {
-            // Draw checkbox box
-            Self::fb_fill_rect(
+            self.erase_control_mark_box(
                 bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
+                owner,
                 box_top,
                 box_left,
                 box_top + box_size,
                 box_left + box_size,
-                false,
             );
             self.draw_rect_border(
                 bus,
@@ -9107,12 +9157,13 @@ impl super::TrapDispatcher {
         title: &str,
         selected: bool,
     ) {
-        self.draw_radio_state(bus, top, left, bottom, _right, title, selected, true, false);
+        self.draw_radio_state(bus, 0, top, left, bottom, _right, title, selected, true, false);
     }
 
     fn draw_radio_with_enabled_and_inactive(
         &self,
         bus: &mut MacMemoryBus,
+        owner: u32,
         top: i16,
         left: i16,
         bottom: i16,
@@ -9122,18 +9173,15 @@ impl super::TrapDispatcher {
         enabled: bool,
         inactive: bool,
     ) {
-        if enabled && !inactive {
-            self.draw_radio(bus, top, left, bottom, _right, title, selected);
-            return;
-        }
         self.draw_radio_state(
-            bus, top, left, bottom, _right, title, selected, enabled, inactive,
+            bus, owner, top, left, bottom, _right, title, selected, enabled, inactive,
         );
     }
 
     fn draw_radio_state(
         &self,
         bus: &mut MacMemoryBus,
+        owner: u32,
         top: i16,
         left: i16,
         bottom: i16,
@@ -9161,18 +9209,13 @@ impl super::TrapDispatcher {
             selected,
             false,
         ) {
-            Self::fb_fill_rect(
+            self.erase_control_mark_box(
                 bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
+                owner,
                 mark_top,
                 mark_left,
                 mark_top + mark_size,
                 mark_left + mark_size,
-                false,
             );
             // Radio buttons are small circles, with a dot when selected
             // (IM:I I-312; MTE 1992 pp. 5-5..5-6; HIG 1992 pp. 209..210).
