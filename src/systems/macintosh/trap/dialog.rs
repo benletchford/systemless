@@ -15212,10 +15212,26 @@ impl super::TrapDispatcher {
                                 .get(line_index)
                                 .copied()
                                 .unwrap_or(0);
-                            let (top, x) = self.te_char_to_point(bus, te_handle, clamped);
-                            let y = top.saturating_add(Self::te_ascent_for_line(
-                                bus, te_handle, line_index,
-                            ));
+                            let (_, x) = self.te_char_to_point(bus, te_handle, clamped);
+                            // iTEGetPoint returns teSelRect.bottom, the bottom
+                            // of the line rectangle LineRect builds, not the
+                            // baseline. An offset at or past teLength uses
+                            // the line holding the last character (GetLine on
+                            // teLength - 1), so a trailing CR stays on its
+                            // own line. Apple TextEdit.a, iTEGetPoint.
+                            let point_line = if text_len > 0 && clamped == text_len as usize {
+                                Self::te_char_to_line_index(bus, te_handle, clamped - 1)
+                            } else {
+                                line_index
+                            };
+                            let dest_top = Self::te_read_rect(
+                                bus,
+                                te_ptr + Self::TE_DEST_RECT_OFFSET,
+                            )
+                            .0;
+                            let y = (0..=point_line).fold(dest_top, |y, line| {
+                                y.saturating_add(Self::te_height_for_line(bus, te_handle, line))
+                            });
                             if trace_textedit_enabled() {
                                 let starts = Self::te_line_starts(bus, te_handle);
                                 let pc = cpu.read_reg(Register::PC);
