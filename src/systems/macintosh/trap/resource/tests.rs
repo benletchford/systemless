@@ -5168,22 +5168,30 @@ fn high_level_fs_generated_routes_preserve_exact_moveq_values() {
 fn high_level_fs_dispatch_records_nonterminal_and_rejects_stale_high_word() {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.current_trap_word = 0xAA52;
+    // FSpRename on an FSSpec with an empty name: a deterministic bdNamErr.
+    let spec_ptr = 0x300000u32;
+    write_fsspec(&mut bus, spec_ptr, 0, 2, b"");
+    bus.write_long(TEST_SP, 0);
+    bus.write_long(TEST_SP + 4, spec_ptr);
 
+    cpu.write_reg(Register::A7, TEST_SP);
     cpu.write_reg(Register::D0, 11);
     let result = disp
         .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
         .expect("HighLevelFSDispatch arm");
-    assert!(matches!(result, Err(crate::Error::Halted)));
+    assert!(result.is_ok());
+    assert_eq!(bus.read_word(TEST_SP + 8) as i16, -37);
     assert_eq!(
         disp.current_selector_operation,
         Some(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES[10].operation_id)
     );
 
+    cpu.write_reg(Register::A7, TEST_SP);
     cpu.write_reg(Register::D0, 0x0001_000B);
     let result = disp
         .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
         .expect("HighLevelFSDispatch arm");
-    assert!(matches!(result, Err(crate::Error::Halted)));
+    assert!(result.is_ok());
     assert_eq!(disp.current_selector_operation, None);
 }
 
@@ -12591,4 +12599,174 @@ fn an_app_on_a_mounted_volume_reports_its_folder_on_that_volume() {
             "{app_path}"
         );
     }
+}
+
+// ================================================================
+// HighLevelFSDispatch (0x252) selectors 11/12 — FSpRename, FSpCatMove
+// ================================================================
+fn call_fsp_two_pointer_selector(
+    disp: &mut super::super::TrapDispatcher,
+    cpu: &mut MockCpu,
+    bus: &mut crate::memory::MacMemoryBus,
+    selector: u32,
+    first: u32,
+    second: u32,
+) -> i16 {
+    // Pascal pushes the result slot, then the first and second arguments,
+    // leaving the second (rightmost) argument on top of the stack.
+    bus.write_long(TEST_SP, second);
+    bus.write_long(TEST_SP + 4, first);
+    bus.write_word(TEST_SP + 8, 0xBEEF);
+    cpu.write_reg(Register::A7, TEST_SP);
+    cpu.write_reg(Register::D0, selector);
+    call(disp, true, 0x252, cpu, bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8, "selector {selector} pops both pointers");
+    bus.read_word(TEST_SP + 8) as i16
+}
+
+#[test]
+fn hlfs_dispatch_fspcatmove_missing_source_returns_fnferr() {
+    // Files 1992, 2-162: FSpCatMove reports fnfErr when the source is
+    // missing. Rebel Assault II's bundled ChoiceStick tool probes for an old
+    // preferences file this way and halted when the selector was absent.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.ensure_vfs_directory("Prefs");
+    let source = 0x300000u32;
+    let dest = 0x300100u32;
+    write_fsspec(&mut bus, source, 0, 2, b"Old Prefs");
+    write_fsspec(&mut bus, dest, 0, 2, b"Prefs");
+
+    let result = call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest);
+
+    assert_eq!(result, -43);
+}
+
+#[test]
+fn hlfs_dispatch_fspcatmove_moves_both_forks_and_finder_info_into_directory() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let prefs_dir_id = disp.ensure_vfs_directory("Prefs");
+    disp.vfs.insert("Settings".to_string(), vec![1, 2]);
+    disp.vfs_rsrc.insert("Settings".to_string(), vec![3, 4]);
+    disp.set_vfs_entry_finfo(
+        "Settings",
+        u32::from_be_bytes(*b"pref"),
+        u32::from_be_bytes(*b"GAME"),
+        0,
+    );
+    let source = 0x300000u32;
+    let dest = 0x300100u32;
+    write_fsspec(&mut bus, source, 0, 2, b"Settings");
+    write_fsspec(&mut bus, dest, 0, 2, b"Prefs");
+
+    let result = call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest);
+
+    assert_eq!(result, 0);
+    assert!(!disp.vfs.contains_key("Settings"));
+    assert!(!disp.vfs_rsrc.contains_key("Settings"));
+    assert_eq!(disp.vfs.get("Prefs/Settings"), Some(&[1, 2][..]));
+    assert_eq!(disp.vfs_rsrc.get("Prefs/Settings"), Some(&[3, 4][..]));
+    assert_eq!(
+        disp.vfs_metadata.get("Prefs/Settings").map(|metadata| metadata.file_type),
+        Some(u32::from_be_bytes(*b"pref"))
+    );
+
+    // An FSSpec with an empty name names the directory dirID itself.
+    write_fsspec(&mut bus, source, 0, prefs_dir_id, b"Settings");
+    write_fsspec(&mut bus, dest, 0, 2, b"");
+    let result = call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest);
+    assert_eq!(result, 0);
+    assert!(disp.vfs.contains_key("Settings"));
+    assert!(!disp.vfs.contains_key("Prefs/Settings"));
+}
+
+#[test]
+fn hlfs_dispatch_fspcatmove_reports_duplicate_missing_destination_and_offspring_moves() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.ensure_vfs_directory("Prefs");
+    disp.ensure_vfs_directory("Data/Inner");
+    disp.vfs.insert("Settings".to_string(), vec![1]);
+    disp.vfs.insert("Prefs/Settings".to_string(), vec![2]);
+    let source = 0x300000u32;
+    let dest = 0x300100u32;
+
+    write_fsspec(&mut bus, source, 0, 2, b"Settings");
+    write_fsspec(&mut bus, dest, 0, 2, b"Prefs");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest),
+        -48,
+        "dupFNErr when the destination already holds that name"
+    );
+    assert_eq!(disp.vfs.get("Settings"), Some(&[1][..]));
+
+    write_fsspec(&mut bus, dest, 0, 2, b"Nowhere");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest),
+        -120,
+        "dirNFErr when the destination directory is missing"
+    );
+
+    write_fsspec(&mut bus, source, 0, 2, b"Data");
+    let inner_dir_id = disp.ensure_vfs_directory("Data/Inner");
+    write_fsspec(&mut bus, dest, 0, inner_dir_id, b"");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest),
+        -122,
+        "badMovErr when a directory would move into its own offspring"
+    );
+}
+
+#[test]
+fn hlfs_dispatch_fspcatmove_moves_directory_with_contents_keeping_its_id() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let data_dir_id = disp.ensure_vfs_directory("Data");
+    disp.ensure_vfs_directory("Archive");
+    disp.vfs.insert("Data/Level 1".to_string(), vec![9]);
+    let source = 0x300000u32;
+    let dest = 0x300100u32;
+    write_fsspec(&mut bus, source, 0, 2, b"Data");
+    write_fsspec(&mut bus, dest, 0, 2, b"Archive");
+
+    let result = call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 12, source, dest);
+
+    assert_eq!(result, 0);
+    assert_eq!(disp.vfs.get("Archive/Data/Level 1"), Some(&[9][..]));
+    assert_eq!(disp.directory_path_for_id(data_dir_id), Some("Archive/Data"));
+}
+
+#[test]
+fn hlfs_dispatch_fsprename_renames_file_in_place() {
+    // Files 1992, 2-161: FSpRename changes only the name; dupFNErr when the
+    // new name is already in use in that directory.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.ensure_vfs_directory("Prefs");
+    disp.vfs.insert("Prefs/Old".to_string(), vec![1]);
+    disp.vfs_rsrc.insert("Prefs/Old".to_string(), vec![2]);
+    disp.vfs.insert("Prefs/Taken".to_string(), vec![3]);
+    let prefs_dir_id = disp.ensure_vfs_directory("Prefs");
+    let spec = 0x300000u32;
+    let new_name = 0x300100u32;
+    write_fsspec(&mut bus, spec, 0, prefs_dir_id, b"Old");
+
+    bus.write_byte(new_name, 5);
+    bus.write_bytes(new_name + 1, b"Taken");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 11, spec, new_name),
+        -48
+    );
+
+    bus.write_byte(new_name, 3);
+    bus.write_bytes(new_name + 1, b"New");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 11, spec, new_name),
+        0
+    );
+    assert!(!disp.vfs.contains_key("Prefs/Old"));
+    assert_eq!(disp.vfs.get("Prefs/New"), Some(&[1][..]));
+    assert_eq!(disp.vfs_rsrc.get("Prefs/New"), Some(&[2][..]));
+
+    write_fsspec(&mut bus, spec, 0, prefs_dir_id, b"Missing");
+    assert_eq!(
+        call_fsp_two_pointer_selector(&mut disp, &mut cpu, &mut bus, 11, spec, new_name),
+        -43
+    );
 }

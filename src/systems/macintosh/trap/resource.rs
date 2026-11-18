@@ -7186,6 +7186,167 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 4);
                         Ok(())
                     }
+                    11 => {
+                        // FSpRename ($AA52, selector 11)
+                        // FUNCTION FSpRename(spec: FSSpec; newName: Str255): OSErr;
+                        // Stack (rightmost on top): [newName(4)] [spec(4)] [result(2)]
+                        // Files 1992, 2-161: renames a file or directory in
+                        // place; it cannot move the entry to another
+                        // directory. dupFNErr when the new name is taken,
+                        // fLckdErr for a locked file, fnfErr when missing.
+                        let sp = cpu.read_reg(Register::A7);
+                        let new_name_ptr = bus.read_long(sp);
+                        let spec_ptr = bus.read_long(sp + 4);
+                        let filename = read_fsspec_name(bus, spec_ptr);
+                        let vref = bus.read_word(spec_ptr) as i16;
+                        let dir_id = bus.read_long(spec_ptr + 2);
+                        let new_name = if new_name_ptr != 0 {
+                            decode_mac_roman(&bus.read_pstring(new_name_ptr))
+                        } else {
+                            String::new()
+                        };
+                        let new_leaf = super::TrapDispatcher::normalize_hfs_path(&new_name);
+                        let new_leaf = super::TrapDispatcher::vfs_basename(&new_leaf).to_string();
+
+                        let result: i16 = if filename.is_empty() || new_leaf.is_empty() {
+                            -37 // bdNamErr
+                        } else if let Some((old_path, is_directory)) =
+                            self.existing_fsspec_catalog_entry(vref, dir_id, &filename)
+                        {
+                            let new_path = match old_path.rsplit_once('/') {
+                                Some((parent, _)) => format!("{parent}/{new_leaf}"),
+                                None => new_leaf.clone(),
+                            };
+                            if old_path.is_empty() {
+                                -37 // bdNamErr: volume renames are not modelled
+                            } else if self.vfs_path_is_read_only(&old_path) {
+                                -44 // wPrErr
+                            } else if !is_directory && self.locked_files.contains(&old_path) {
+                                -45 // fLckdErr
+                            } else if new_path == old_path {
+                                0
+                            } else if !new_path.eq_ignore_ascii_case(&old_path)
+                                && self.vfs_catalog_path_exists(&new_path)
+                            {
+                                -48 // dupFNErr
+                            } else {
+                                let parent_dir_id = self
+                                    .vfs_directories
+                                    .iter()
+                                    .find(|directory| directory.path == old_path)
+                                    .map(|directory| directory.parent_dir_id)
+                                    .unwrap_or(0);
+                                self.relink_vfs_catalog_entry(&old_path, &new_path, parent_dir_id);
+                                0
+                            }
+                        } else {
+                            -43 // fnfErr
+                        };
+                        eprintln!(
+                            "[TRAP] FSpRename(\"{}\" -> \"{}\") -> {}",
+                            filename, new_name, result
+                        );
+                        bus.write_word(sp + 8, result as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
+                    12 => {
+                        // FSpCatMove ($AA52, selector 12)
+                        // FUNCTION FSpCatMove(source: FSSpec; dest: FSSpec): OSErr;
+                        // Stack (rightmost on top): [dest(4)] [source(4)] [result(2)]
+                        // Files 1992, 2-162: moves a file or directory into
+                        // the directory `dest` names (an FSSpec whose name
+                        // is empty names the directory dirID itself), keeping
+                        // its name. fnfErr when the source is missing,
+                        // dirNFErr when the destination is not a directory,
+                        // badMovErr for a move into the source's own
+                        // offspring, dupFNErr when the name is already taken,
+                        // diffVolErr across volumes.
+                        let sp = cpu.read_reg(Register::A7);
+                        let dest_ptr = bus.read_long(sp);
+                        let source_ptr = bus.read_long(sp + 4);
+                        let source_name = read_fsspec_name(bus, source_ptr);
+                        let source_vref = bus.read_word(source_ptr) as i16;
+                        let source_dir_id = bus.read_long(source_ptr + 2);
+                        let dest_name = read_fsspec_name(bus, dest_ptr);
+                        let dest_vref = bus.read_word(dest_ptr) as i16;
+                        let dest_dir_id = bus.read_long(dest_ptr + 2);
+
+                        let source = if source_name.is_empty() {
+                            None
+                        } else {
+                            self.existing_fsspec_catalog_entry(
+                                source_vref,
+                                source_dir_id,
+                                &source_name,
+                            )
+                        };
+                        let dest_path = if dest_name.is_empty() {
+                            let resolved = self.resolve_directory_id(dest_vref, dest_dir_id);
+                            self.directory_path_for_id(resolved).map(str::to_string)
+                        } else {
+                            self.find_vfs_directory_for_hfs_lookup(
+                                dest_vref,
+                                dest_dir_id,
+                                &dest_name,
+                            )
+                        };
+
+                        let result: i16 = match (source, dest_path) {
+                            (None, _) => -43, // fnfErr
+                            (Some(_), None) => -120, // dirNFErr
+                            (Some((source_path, _)), Some(dest_path)) => {
+                                let leaf =
+                                    super::TrapDispatcher::vfs_basename(&source_path).to_string();
+                                let new_path = if dest_path.is_empty() {
+                                    leaf
+                                } else {
+                                    format!("{dest_path}/{leaf}")
+                                };
+                                let source_lower = source_path.to_ascii_lowercase();
+                                let dest_lower = dest_path.to_ascii_lowercase();
+                                if source_path.is_empty() {
+                                    -122 // badMovErr: the volume root cannot move
+                                } else if self.volume_ref_num_for_vfs_path(&source_path)
+                                    != self.volume_ref_num_for_vfs_path(&dest_path)
+                                {
+                                    -1303 // diffVolErr
+                                } else if dest_lower == source_lower
+                                    || dest_lower.starts_with(&format!("{source_lower}/"))
+                                {
+                                    -122 // badMovErr
+                                } else if new_path.eq_ignore_ascii_case(&source_path) {
+                                    0 // already in that directory
+                                } else if self.vfs_path_is_read_only(&source_path) {
+                                    -44 // wPrErr
+                                } else if self.vfs_catalog_path_exists(&new_path) {
+                                    -48 // dupFNErr
+                                } else {
+                                    let new_parent_dir_id = self
+                                        .vfs_directories
+                                        .iter()
+                                        .find(|directory| {
+                                            directory.path.eq_ignore_ascii_case(&dest_path)
+                                        })
+                                        .map(|directory| directory.dir_id)
+                                        .unwrap_or(2);
+                                    self.relink_vfs_catalog_entry(
+                                        &source_path,
+                                        &new_path,
+                                        new_parent_dir_id,
+                                    );
+                                    0
+                                }
+                            }
+                        };
+                        eprintln!(
+                            "[TRAP] FSpCatMove(\"{}\" -> dirID={} \"{}\") -> {}",
+                            source_name, dest_dir_id, dest_name, result
+                        );
+                        bus.write_word(sp + 8, result as u16);
+                        cpu.write_reg(Register::A7, sp + 8);
+                        Ok(())
+                    }
                     13 => {
                         // FSpOpenResFile (selector 13 = $000D)
                         // FUNCTION FSpOpenResFile(spec: FSSpec; permission: SignedByte): INTEGER;
@@ -8909,6 +9070,130 @@ impl super::TrapDispatcher {
             return Some(path);
         }
         None
+    }
+
+    /// Moves one catalogue entry (a file with both forks, or a directory with
+    /// everything beneath it) from `old_path` to `new_path` inside the local
+    /// VFS, keeping directory IDs, Finder metadata, locks and open access
+    /// paths attached to the moved entry. Callers validate the move first
+    /// (existence, duplicate names, moves into offspring); this only relinks.
+    /// Files 1992, 2-99 (PBCatMove) and 2-118 (PBHRename): both keep the
+    /// entry's identity and only change its name or parent directory.
+    fn relink_vfs_catalog_entry(&mut self, old_path: &str, new_path: &str, new_parent_dir_id: u32) {
+        let old_lower = old_path.to_ascii_lowercase();
+        let old_prefix = format!("{old_lower}/");
+        let relinked = |key: &str| -> Option<String> {
+            let lower = key.to_ascii_lowercase();
+            if lower == old_lower {
+                Some(new_path.to_string())
+            } else if lower.starts_with(&old_prefix) {
+                Some(format!("{new_path}{}", &key[old_path.len()..]))
+            } else {
+                None
+            }
+        };
+
+        let mut moved_keys: Vec<(String, String)> = self
+            .vfs
+            .keys()
+            .chain(self.vfs_rsrc.keys())
+            .filter_map(|key| relinked(key).map(|new_key| (key.clone(), new_key)))
+            .collect();
+        moved_keys.sort();
+        moved_keys.dedup();
+        for (old_key, new_key) in &moved_keys {
+            if let Some(data) = self.vfs.remove(old_key) {
+                self.vfs.insert(new_key.clone(), data);
+            }
+            if let Some(rsrc) = self.vfs_rsrc.remove(old_key) {
+                self.vfs_rsrc.insert(new_key.clone(), rsrc);
+            }
+            if let Some(metadata) = self.vfs_metadata.remove(old_key) {
+                self.vfs_metadata.insert(new_key.clone(), metadata);
+            }
+            if self.locked_files.remove(old_key) {
+                self.locked_files.insert(new_key.clone());
+            }
+            // Open access paths follow the entry so a later FSRead or
+            // FSWrite on an already-open refNum still reaches the file.
+            let open_refnums: Vec<u16> = self
+                .open_files
+                .iter()
+                .filter_map(|record| {
+                    (record.path == *old_key)
+                        .then(|| u16::try_from(record.ref_num).ok())
+                        .flatten()
+                })
+                .collect();
+            for refnum in open_refnums {
+                self.open_files.insert(refnum, new_key.clone());
+            }
+        }
+
+        let moved_directory = self.vfs_directories.with_mut(|directories| {
+            let mut moved_directory = false;
+            for directory in directories.iter_mut() {
+                let lower = directory.path.to_ascii_lowercase();
+                if lower == old_lower {
+                    directory.path = new_path.to_string();
+                    directory.parent_dir_id = new_parent_dir_id;
+                    directory.dirty = true;
+                    moved_directory = true;
+                } else if lower.starts_with(&old_prefix) {
+                    directory.path = format!("{new_path}{}", &directory.path[old_path.len()..]);
+                    directory.dirty = true;
+                }
+            }
+            moved_directory
+        });
+
+        self.remove_vfs_entry_from_process(old_path);
+        for (_, new_key) in &moved_keys {
+            self.publish_vfs_entry_to_process(new_key);
+        }
+        if moved_directory {
+            self.publish_vfs_entry_to_process(new_path);
+        }
+
+        if let Some(ref dir) = self.output_dir {
+            let old_host = dir.join(old_path);
+            let new_host = dir.join(new_path);
+            if let Some(parent) = new_host.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::rename(old_host, new_host);
+        }
+    }
+
+    /// Resolves an FSSpec naming an existing file or directory to its VFS
+    /// path and whether it is a directory. Files 1992, 2-154.
+    fn existing_fsspec_catalog_entry(
+        &mut self,
+        vref: i16,
+        dir_id: u32,
+        name: &str,
+    ) -> Option<(String, bool)> {
+        // One HFS directory cannot hold a file and a folder with the same
+        // name, so resolve folders first: the file lookups are lenient and
+        // would otherwise pick a file inside the named folder.
+        if let Some(path) = self.find_vfs_directory_for_hfs_lookup(vref, dir_id, name) {
+            return Some((path, true));
+        }
+        if let Some(path) = self.find_vfs_file_for_hfs_lookup(vref, dir_id, name) {
+            return Some((path, false));
+        }
+        self.find_vfs_rsrc_file_for_hfs_lookup(vref, dir_id, name)
+            .map(|path| (path, false))
+    }
+
+    /// Whether `path` already names a file fork or directory in the VFS.
+    fn vfs_catalog_path_exists(&self, path: &str) -> bool {
+        self.vfs.keys().any(|key| key.eq_ignore_ascii_case(path))
+            || self.vfs_rsrc.keys().any(|key| key.eq_ignore_ascii_case(path))
+            || self
+                .vfs_directories
+                .iter()
+                .any(|directory| directory.path.eq_ignore_ascii_case(path))
     }
 
     fn find_vfs_directory_for_hfs_lookup(
