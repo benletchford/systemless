@@ -2758,3 +2758,756 @@ fn make_rgb_pat_rejects_a_nil_handle_or_color_without_changing_the_record() {
     let record = loaded.memory.read_u32_be(handle).unwrap();
     assert_eq!(loaded.memory.read_u16_be(record), Some(1));
 }
+
+#[test]
+fn indexed_offscreen_text_keeps_outline_presentation_when_copied_to_a_direct_screen() {
+    // Applications commonly compose a frame, text included, in an 8-bit
+    // offscreen GWorld and copy it to a 16-bit screen each frame.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3000;
+    const SCREEN_PIXMAP: u32 = SCRATCH + 0x500;
+    let white16: Vec<u8> = [0x7f, 0xff].repeat(usize::from(ROW_BYTES) * HEIGHT / 2);
+    // A background index whose value differs from the high byte of its
+    // 16-bit pixel, so each destination byte needs its own mapping.
+    const WHITE_INDEX: u8 = 0x12;
+    let clut: [[u16; 3]; 256] = std::array::from_fn(|i| {
+        if i == usize::from(WHITE_INDEX) {
+            [u16::MAX; 3]
+        } else {
+            [i as u16 * 257; 3]
+        }
+    });
+    let mut outputs = Vec::new();
+    for copied in [false, true] {
+        let indexed = vec![WHITE_INDEX; usize::from(ROW_BYTES) * HEIGHT];
+        let fixture = fixture(&indexed, WHOLE_PORT, WHOLE_PORT);
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+        install_port(&mut loaded, &fixture, if copied { 8 } else { 16 });
+        loaded.memory.add_region(SCREEN, white16.clone());
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        bus.write_bytes(SCREEN, &white16);
+        bus.enable_outline_presentation(
+            (SCREEN, u32::from(ROW_BYTES), 24, HEIGHT as u16, 16),
+            std::array::from_fn(|i| [i as u8; 3]),
+            3,
+        );
+        loaded
+            .memory
+            .shared_view()
+            .set_presentation(bus.presentation.clone());
+        let text_pixels = if copied {
+            loaded.memory.add_region(0x1000, indexed.clone());
+            0x1000
+        } else {
+            SCREEN
+        };
+        loaded.memory.write_u32_be(PIXMAP, text_pixels).unwrap();
+        loaded.gworlds.last_mut().unwrap().base_addr = text_pixels;
+        ppc_draw_text_bytes(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PORT,
+            (-4, 7),
+            PPC_QD_TEXT_FONT_DEFAULT,
+            12,
+            1,
+            PPC_RGB_BLACK,
+            Some(0),
+            b"Ag",
+        );
+        if copied {
+            assert!(!bus.has_visible_outline_detail(), "the text starts offscreen");
+            let (top, left, bottom, right) = BOUNDS;
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                SCREEN_PIXMAP,
+                SCREEN,
+                u32::from(ROW_BYTES),
+                top,
+                left,
+                bottom,
+                right,
+                16,
+            )
+            .unwrap();
+            ppc_write_rect(&mut loaded.memory, RECT, top, left, bottom, right).unwrap();
+            loaded.cpu.gpr[3] = PIXMAP;
+            loaded.cpu.gpr[4] = SCREEN_PIXMAP;
+            loaded.cpu.gpr[5] = RECT;
+            loaded.cpu.gpr[6] = RECT;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            assert!(ppc_copy_bits(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                0,
+                &loaded.toolbox_startup,
+                &clut,
+                PPC_RGB_BLACK,
+                Some(0),
+                PPC_RGB_WHITE,
+                Some(255),
+                PPC_RGB_BLACK
+            ));
+        }
+        assert!(
+            bus.has_visible_outline_detail(),
+            "copied={copied}: the screen must retain outline samples"
+        );
+        let mut bytes = vec![0; white16.len()];
+        loaded.memory.read_bytes_into(SCREEN, &mut bytes).unwrap();
+        let (width, height, rgb, _) = bus.outline_presentation_rgb().unwrap();
+        outputs.push((bytes, width, height, rgb));
+    }
+    assert_eq!(outputs[1], outputs[0]);
+}
+
+#[test]
+fn offscreen_text_detail_survives_unchanged_stores_and_goes_when_erased() {
+    // A guest blitter that composes a frame reads, masks and writes back
+    // every byte of its offscreen buffer, text included. Storing a byte's
+    // own value must not cost the text its outline detail; storing the
+    // background over the text must remove all of it, edges included.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3000;
+    const OFFSCREEN: u32 = 0x1000;
+    const SCREEN_PIXMAP: u32 = SCRATCH + 0x500;
+    const DIRECT_OFFSCREEN: u32 = 0x5000;
+    const WHITE_INDEX: u8 = 0x12;
+    let white16: Vec<u8> = [0x7f, 0xff].repeat(usize::from(ROW_BYTES) * HEIGHT / 2);
+    let clut: [[u16; 3]; 256] = std::array::from_fn(|i| {
+        if i == usize::from(WHITE_INDEX) {
+            [u16::MAX; 3]
+        } else {
+            [i as u16 * 257; 3]
+        }
+    });
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Stores {
+        None,
+        SameValues,
+        Background,
+        InkColour,
+        /// Erase with the background, then draw other text over the place.
+        Redrawn,
+    }
+    // Rows of a second, partial copy whose edges cut through the text.
+    let partial_rows = std::cell::Cell::new(None::<(i16, i16)>);
+    // The depth of the offscreen buffer the text is drawn into.
+    let source_depth = std::cell::Cell::new(8u8);
+    let run = |stores: Stores, text: bool, destination: u32, copy_first: bool, depth: u8| {
+        let source_depth = source_depth.get();
+        let screen_bytes = if depth == 16 {
+            white16.clone()
+        } else {
+            vec![WHITE_INDEX; usize::from(ROW_BYTES) * HEIGHT]
+        };
+        let indexed = vec![WHITE_INDEX; usize::from(ROW_BYTES) * HEIGHT];
+        let fixture = fixture(&indexed, WHOLE_PORT, WHOLE_PORT);
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+        install_port(&mut loaded, &fixture, source_depth.into());
+        loaded.memory.add_region(SCREEN, screen_bytes.clone());
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        bus.write_bytes(SCREEN, &screen_bytes);
+        bus.enable_outline_presentation(
+            (SCREEN, u32::from(ROW_BYTES), 24, HEIGHT as u16, u16::from(depth)),
+            std::array::from_fn(|i| [i as u8; 3]),
+            3,
+        );
+        loaded
+            .memory
+            .shared_view()
+            .set_presentation(bus.presentation.clone());
+        let background = if source_depth == 16 { white16.clone() } else { indexed.clone() };
+        loaded.memory.add_region(OFFSCREEN, background.clone());
+        loaded.memory.write_u32_be(PIXMAP, OFFSCREEN).unwrap();
+        loaded.gworlds.last_mut().unwrap().base_addr = OFFSCREEN;
+        let draw = |loaded: &mut PpcLoadedApp, bytes: &[u8]| {
+            ppc_draw_text_bytes(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                (-4, 7),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                12,
+                1,
+                PPC_RGB_BLACK,
+                Some(0),
+                bytes,
+            );
+        };
+        if text {
+            draw(&mut loaded, b"Ag");
+        }
+        let mut drawn = vec![0; indexed.len()];
+        loaded.memory.read_bytes_into(OFFSCREEN, &mut drawn).unwrap();
+        loaded.memory.add_region(DIRECT_OFFSCREEN, white16.clone());
+        let (top, left, bottom, right) = BOUNDS;
+        let copy = |loaded: &mut PpcLoadedApp, rows: Option<(i16, i16)>| {
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                SCREEN_PIXMAP,
+                destination,
+                u32::from(ROW_BYTES),
+                top,
+                left,
+                bottom,
+                right,
+                if destination == SCREEN { depth.into() } else { 16 },
+            )
+            .unwrap();
+            let (rect_top, rect_bottom) = rows.map_or((top, bottom), |(from, to)| (top + from, top + to));
+            ppc_write_rect(&mut loaded.memory, RECT, rect_top, left, rect_bottom, right).unwrap();
+            loaded.cpu.gpr[3] = PIXMAP;
+            loaded.cpu.gpr[4] = SCREEN_PIXMAP;
+            loaded.cpu.gpr[5] = RECT;
+            loaded.cpu.gpr[6] = RECT;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            assert!(ppc_copy_bits(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                0,
+                &loaded.toolbox_startup,
+                &clut,
+                PPC_RGB_BLACK,
+                Some(0),
+                PPC_RGB_WHITE,
+                Some(255),
+                PPC_RGB_BLACK
+            ));
+        };
+        if copy_first {
+            copy(&mut loaded, None);
+        }
+        // The stores below stand for guest code's own blitter.
+        loaded.memory.presentation().set_guest_stores(true);
+        match stores {
+            Stores::None => {}
+            Stores::SameValues => {
+                for (offset, byte) in drawn.iter().enumerate() {
+                    loaded.memory.write_u8(OFFSCREEN + offset as u32, *byte).unwrap();
+                }
+            }
+            Stores::Background | Stores::InkColour | Stores::Redrawn => {
+                for (offset, &white) in background.iter().enumerate() {
+                    let fill = if stores == Stores::InkColour { 0 } else { white };
+                    loaded.memory.write_u8(OFFSCREEN + offset as u32, fill).unwrap();
+                }
+            }
+        }
+        loaded.memory.presentation().set_guest_stores(false);
+        if stores == Stores::Redrawn {
+            draw(&mut loaded, b"il");
+        }
+        copy(&mut loaded, None);
+        if let Some(rows) = partial_rows.get() {
+            copy(&mut loaded, Some(rows));
+        }
+        let cells = (0..screen_bytes.len() as u32)
+            .filter(|offset| bus.test_has_detail(destination + offset))
+            .count();
+        let (width, height, rgb, _) = bus.outline_presentation_rgb().unwrap();
+        (cells, bus.has_visible_outline_detail(), width, height, rgb)
+    };
+    // A 16-bit screen converts each copied 8-bit pixel; an 8-bit one copies
+    // it as is, and so does a 16-bit screen copying from a 16-bit buffer.
+    for (source, depth) in [(8, 16), (8, 8), (16, 16)] {
+        source_depth.set(source);
+        let drawn = run(Stores::None, true, SCREEN, false, depth);
+        assert!(drawn.1, "the copied text carries outline detail");
+        assert_eq!(
+            run(Stores::SameValues, true, SCREEN, false, depth),
+            drawn,
+            "{source}-bit buffer, {depth}-bit screen: unchanged stores keep the text as it was"
+        );
+        let blank = run(Stores::None, false, SCREEN, false, depth);
+        assert!(!blank.1);
+        assert_eq!(
+            run(Stores::Background, true, SCREEN, false, depth),
+            blank,
+            "{source}-bit buffer, {depth}-bit screen: erased text leaves no outline behind"
+        );
+        // Filling with the ink colour changes no inked pixel's byte.
+        let filled = run(Stores::InkColour, false, SCREEN, false, depth);
+        assert!(!filled.1);
+        assert_eq!(
+            run(Stores::InkColour, true, SCREEN, false, depth),
+            filled,
+            "{source}-bit buffer, {depth}-bit screen: text filled over in its own colour leaves no outline behind"
+        );
+        // Other text drawn where erased text stood must look as it does on a
+        // clean buffer: the erased glyphs' edges may not survive beside it.
+        let fresh = run(Stores::Redrawn, false, SCREEN, false, depth);
+        assert!(fresh.1);
+        assert_eq!(
+            run(Stores::Redrawn, true, SCREEN, false, depth),
+            fresh,
+            "{source}-bit buffer, {depth}-bit screen: new text shows no trace of the text it replaced"
+        );
+    }
+    source_depth.set(8);
+    // The frame is copied with its text, and again after the text is erased.
+    // The second copy brings plain pixels whose bytes equal the first copy's
+    // around the glyphs; they still replace the detail the first copy left,
+    // on the screen and in a direct-colour offscreen buffer alike.
+    for destination in [SCREEN, DIRECT_OFFSCREEN] {
+        assert!(run(Stores::None, true, destination, true, 16).0 > 0);
+        assert_eq!(
+            run(Stores::Background, true, destination, true, 16).0,
+            0,
+            "destination ${destination:04X}"
+        );
+    }
+    // A later copy of only some rows, cutting through the glyphs, leaves the
+    // text exactly as the whole copy made it.
+    for destination in [SCREEN, DIRECT_OFFSCREEN] {
+        partial_rows.set(None);
+        let whole = run(Stores::None, true, destination, false, 16);
+        assert!(whole.0 > 0);
+        for rows in (1..HEIGHT as i16).flat_map(|cut| [(0, cut), (cut, HEIGHT as i16)]) {
+            partial_rows.set(Some(rows));
+            assert_eq!(
+                run(Stores::None, true, destination, false, 16),
+                whole,
+                "rows {rows:?} copied again to {destination:#x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn import_runner_keeps_text_detail_through_guest_stores_of_unchanged_bytes() {
+    // Code the import runner executes may write back text bytes it read,
+    // keeping their detail. The same stores made outside guest code, as a
+    // Toolbox call's drawing, replace it.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3000;
+    const OFFSCREEN: u32 = 0x1000;
+    const WHITE_INDEX: u8 = 0x12;
+    let white16: Vec<u8> = [0x7f, 0xff].repeat(usize::from(ROW_BYTES) * HEIGHT / 2);
+    let indexed = vec![WHITE_INDEX; usize::from(ROW_BYTES) * HEIGHT];
+    let fixture = fixture(&indexed, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    loaded.memory.add_region(SCREEN, white16.clone());
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    bus.write_bytes(SCREEN, &white16);
+    bus.enable_outline_presentation(
+        (SCREEN, u32::from(ROW_BYTES), 24, HEIGHT as u16, 16),
+        std::array::from_fn(|i| [i as u8; 3]),
+        3,
+    );
+    loaded
+        .memory
+        .shared_view()
+        .set_presentation(bus.presentation.clone());
+    loaded.memory.add_region(OFFSCREEN, indexed.clone());
+    loaded.memory.write_u32_be(PIXMAP, OFFSCREEN).unwrap();
+    loaded.gworlds.last_mut().unwrap().base_addr = OFFSCREEN;
+    ppc_draw_text_bytes(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-4, 7),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        12,
+        1,
+        PPC_RGB_BLACK,
+        Some(0),
+        b"Ag",
+    );
+    let detail: Vec<u32> = (OFFSCREEN..OFFSCREEN + indexed.len() as u32)
+        .filter(|&address| bus.test_has_detail(address))
+        .collect();
+    assert!(!detail.is_empty(), "the text carries offscreen detail");
+
+    // lis/ori r3, address; lbz r4, 0(r3); stb r4, 0(r3), for each cell.
+    let code_pc = PPC_DATA_BASE + 0x1100;
+    let mut code = Vec::new();
+    for &address in &detail {
+        for word in [
+            d_form_u(15, 3, 0, (address >> 16) as u16),
+            d_form_u(24, 3, 3, address as u16),
+            d_form_u(34, 4, 3, 0),
+            d_form_u(38, 4, 3, 0),
+        ] {
+            code.extend_from_slice(&word.to_be_bytes());
+        }
+    }
+    code.extend_from_slice(&0x4800_0000u32.to_be_bytes()); // b .
+    loaded.memory.add_region(code_pc, code);
+    loaded.cpu.pc = code_pc;
+    loaded.run_with_hle_imports(detail.len() as u64 * 8 + 1_000);
+    assert_eq!(loaded.cpu.pc, code_pc + detail.len() as u32 * 16, "every store ran");
+    assert!(
+        detail.iter().all(|&address| bus.test_has_detail(address)),
+        "guest stores of unchanged bytes keep the detail"
+    );
+
+    for &address in &detail {
+        let byte = loaded.memory.read_u8(address).unwrap();
+        loaded.memory.write_u8(address, byte).unwrap();
+    }
+    assert!(
+        !detail.iter().any(|&address| bus.test_has_detail(address)),
+        "the same stores outside guest code replace it"
+    );
+}
+
+#[test]
+fn a_guest_store_that_changes_copied_text_drops_everything_that_copy_brought() {
+    // Text copied from one 8-bit offscreen buffer to another is one run in
+    // the destination: a guest store that changes any of its pixels removes
+    // all of its detail there, also where the bytes stay the same.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3000;
+    const OFFSCREEN: u32 = 0x1000;
+    const COPY: u32 = 0x5000;
+    const COPY_PIXMAP: u32 = SCRATCH + 0x500;
+    const WHITE_INDEX: u8 = 0x12;
+    let clut: [[u16; 3]; 256] = std::array::from_fn(|i| {
+        if i == usize::from(WHITE_INDEX) {
+            [u16::MAX; 3]
+        } else {
+            [i as u16 * 257; 3]
+        }
+    });
+    let indexed = vec![WHITE_INDEX; usize::from(ROW_BYTES) * HEIGHT];
+    let fixture = fixture(&indexed, WHOLE_PORT, WHOLE_PORT);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    loaded.memory.add_region(SCREEN, indexed.clone());
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    bus.write_bytes(SCREEN, &indexed);
+    bus.enable_outline_presentation(
+        (SCREEN, u32::from(ROW_BYTES), 24, HEIGHT as u16, 8),
+        std::array::from_fn(|i| [i as u8; 3]),
+        3,
+    );
+    loaded
+        .memory
+        .shared_view()
+        .set_presentation(bus.presentation.clone());
+    loaded.memory.add_region(OFFSCREEN, indexed.clone());
+    loaded.memory.write_u32_be(PIXMAP, OFFSCREEN).unwrap();
+    loaded.gworlds.last_mut().unwrap().base_addr = OFFSCREEN;
+    ppc_draw_text_bytes(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-4, 7),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        12,
+        1,
+        PPC_RGB_BLACK,
+        Some(0),
+        b"Ag",
+    );
+    loaded.memory.add_region(COPY, indexed.clone());
+    let (top, left, bottom, right) = BOUNDS;
+    ppc_write_pixmap(
+        &mut loaded.memory,
+        COPY_PIXMAP,
+        COPY,
+        u32::from(ROW_BYTES),
+        top,
+        left,
+        bottom,
+        right,
+        8,
+    )
+    .unwrap();
+    ppc_write_rect(&mut loaded.memory, RECT, top, left, bottom, right).unwrap();
+    loaded.cpu.gpr[3] = PIXMAP;
+    loaded.cpu.gpr[4] = COPY_PIXMAP;
+    loaded.cpu.gpr[5] = RECT;
+    loaded.cpu.gpr[6] = RECT;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    assert!(ppc_copy_bits(
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        0,
+        &loaded.toolbox_startup,
+        &clut,
+        PPC_RGB_BLACK,
+        Some(0),
+        PPC_RGB_WHITE,
+        Some(255),
+        PPC_RGB_BLACK
+    ));
+    let copied: Vec<u32> = (0..indexed.len() as u32)
+        .map(|offset| COPY + offset)
+        .filter(|&address| bus.test_has_detail(address))
+        .collect();
+    assert!(copied.len() > 1, "the copy carried the text's detail");
+    // Guest code changes one pixel of the copy and stores every other byte
+    // back unchanged.
+    let mut held = vec![0u8; indexed.len()];
+    loaded.memory.read_bytes_into(COPY, &mut held).unwrap();
+    let changed = (copied[0] - COPY) as usize;
+    held[changed] ^= 1;
+    loaded.memory.presentation().set_guest_stores(true);
+    loaded.memory.write_bytes(COPY, &held).unwrap();
+    loaded.memory.presentation().set_guest_stores(false);
+    let left_over = copied.iter().filter(|&&address| bus.test_has_detail(address)).count();
+    assert_eq!(left_over, 0, "detail the copy brought survived");
+    // The source keeps its own run.
+    assert!((0..indexed.len() as u32).any(|offset| bus.test_has_detail(OFFSCREEN + offset)));
+}
+
+#[test]
+fn glyphs_whose_strike_reaches_past_their_outline_leave_no_bare_pixels() {
+    // The one-bit glyph can reach past its outline (the arm of a bold "r").
+    // A pixel it inks without a detail cell shows as a solid block in the
+    // high-resolution presentation, beside the outline text.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3_0000;
+    const OFFSCREEN: u32 = 0x1_0000;
+    const WHITE_INDEX: u8 = 0x12;
+    const WIDE: (i16, i16, i16, i16) = (0, 0, 40, 160);
+    const WIDE_ROW: u16 = 160;
+    let rows = 40usize;
+    let indexed = vec![WHITE_INDEX; usize::from(WIDE_ROW) * rows];
+    // Glyphs whose one-bit strike reaches past the outline at that size.
+    let cases: [(i16, u8, &[u8]); 5] = [
+        (20, 1, b"r"),
+        (20, 0, b"r"),
+        (15, 0, b"B"),
+        (16, 1, b"D"),
+        (21, 0, b"p"),
+    ];
+    for (size, style, bytes) in cases {
+        let fixture = IndexedPortFixture {
+            bounds: WIDE,
+            row_bytes: WIDE_ROW,
+            pixels: &[],
+            fg_index: 103,
+            bg_index: 42,
+            vis: (WIDE, &[]),
+            clip: (WIDE, &[]),
+        };
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+        install_port(&mut loaded, &fixture, 8);
+        loaded.memory.add_region(SCREEN, indexed.clone());
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        bus.write_bytes(SCREEN, &indexed);
+        bus.enable_outline_presentation(
+            (SCREEN, u32::from(WIDE_ROW), 160, rows as u16, 8),
+            std::array::from_fn(|i| [i as u8; 3]),
+            4,
+        );
+        loaded
+            .memory
+            .shared_view()
+            .set_presentation(bus.presentation.clone());
+        loaded.memory.add_region(OFFSCREEN, indexed.clone());
+        loaded.memory.write_u32_be(PIXMAP, OFFSCREEN).unwrap();
+        loaded.gworlds.last_mut().unwrap().base_addr = OFFSCREEN;
+        ppc_draw_text_bytes_styled(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PORT,
+            (4, 28),
+            crate::quickdraw::fonts::families::FONT_TIMES,
+            size,
+            1,
+            PPC_RGB_BLACK,
+            Some(0),
+            style,
+            bytes,
+        );
+        let mut drawn = vec![0; indexed.len()];
+        loaded
+            .memory
+            .read_bytes_into(OFFSCREEN, &mut drawn)
+            .unwrap();
+        let width = usize::from(WIDE_ROW);
+        let ink = |offset: usize| drawn[offset] != WHITE_INDEX;
+        let has_detail = |offset: usize| bus.test_has_detail(OFFSCREEN + offset as u32);
+        // An inked pixel with no detail and no inked or detailed neighbour on
+        // some side: the outline does not reach it.
+        let stray: Vec<usize> = (0..drawn.len())
+            .filter(|&offset| {
+                let column = offset % width;
+                ink(offset)
+                    && !has_detail(offset)
+                    && [
+                        column.checked_sub(1).map(|_| offset - 1),
+                        (column + 1 < width).then_some(offset + 1),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|beside| !ink(beside) && !has_detail(beside))
+            })
+            .collect();
+        assert!(drawn.iter().any(|&b| b != WHITE_INDEX), "nothing drawn");
+        assert!(
+            stray.is_empty(),
+            "{size} {style} {:?}: stray bitmap pixels at {stray:?}",
+            std::str::from_utf8(bytes).unwrap()
+        );
+    }
+}
+
+#[test]
+fn full_width_8_to_16_copy_clears_second_row_detail_across_plain_first_row() {
+    // When a full-width 16-bit destination has contiguous rows (`row_bytes ==
+    // width * 2`), a plain first row followed by a row with retained detail
+    // must still discard the second row's detail—including when the copied
+    // bytes equal the destination's existing bytes.
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    const SCREEN: u32 = 0x3_0000;
+    const SRC_8: u32 = 0x1_0000;
+    const SCREEN_PIXMAP: u32 = SCRATCH + 0x500;
+    const WIDTH: u16 = 24;
+    const ROWS: u16 = 16;
+    const DST_ROW_BYTES: u16 = WIDTH * 2;
+    const SRC_ROW_BYTES: u16 = WIDTH;
+    const BOUNDS_FULL: (i16, i16, i16, i16) = (0, 0, ROWS as i16, WIDTH as i16);
+    const WHITE_INDEX: u8 = 0x12;
+
+    let white16: Vec<u8> = [0x7f, 0xff].repeat(usize::from(WIDTH) * usize::from(ROWS));
+    let clut: [[u16; 3]; 256] = std::array::from_fn(|i| {
+        if i == usize::from(WHITE_INDEX) {
+            [u16::MAX; 3]
+        } else {
+            [i as u16 * 257; 3]
+        }
+    });
+
+    let src_fixture = IndexedPortFixture {
+        bounds: BOUNDS_FULL,
+        row_bytes: SRC_ROW_BYTES,
+        pixels: &[],
+        fg_index: 0,
+        bg_index: WHITE_INDEX,
+        vis: (BOUNDS_FULL, &[]),
+        clip: (BOUNDS_FULL, &[]),
+    };
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    install_port(&mut loaded, &src_fixture, 8);
+    loaded.memory.add_region(SCREEN, white16.clone());
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    bus.write_bytes(SCREEN, &white16);
+    bus.enable_outline_presentation(
+        (SCREEN, u32::from(DST_ROW_BYTES), WIDTH, ROWS, 16),
+        std::array::from_fn(|i| [i as u8; 3]),
+        3,
+    );
+    loaded
+        .memory
+        .shared_view()
+        .set_presentation(bus.presentation.clone());
+
+    // Draw text directly onto the 16-bit screen starting below row 0, so row 0
+    // has no detail while later rows carry retained outline detail.
+    ppc_write_pixmap(
+        &mut loaded.memory,
+        SCREEN_PIXMAP,
+        SCREEN,
+        u32::from(DST_ROW_BYTES),
+        0,
+        0,
+        ROWS as i16,
+        WIDTH as i16,
+        16,
+    )
+    .unwrap();
+    let dst_port = PORT + 0x400;
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: dst_port,
+        pixmap_handle: 0,
+        pixmap: SCREEN_PIXMAP,
+        base_addr: SCREEN,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: u32::from(WIDTH),
+        height: u32::from(ROWS),
+        depth: 16,
+        row_bytes: u32::from(DST_ROW_BYTES),
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    ppc_draw_text_bytes(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        dst_port,
+        (2, 12),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        10,
+        1,
+        PPC_RGB_BLACK,
+        Some(0),
+        b"A",
+    );
+    let first_detail_row = (0..usize::from(ROWS))
+        .find(|&row| {
+            let row_base = SCREEN + (row as u32) * u32::from(DST_ROW_BYTES);
+            (0..u32::from(DST_ROW_BYTES)).any(|off| bus.test_has_detail(row_base + off))
+        })
+        .expect("screen must hold outline detail on a row below row 0");
+    assert!(
+        first_detail_row >= 1,
+        "row 0 must be plain so the copy crosses from a plain row into a detailed row"
+    );
+
+    // Build an 8-bit plain source whose mapped 16-bit pixels match the
+    // screen's exact existing bytes (including equal destination bytes on the
+    // detailed row), with no outline detail of its own.
+    let mut screen_now = vec![0u8; white16.len()];
+    loaded
+        .memory
+        .read_bytes_into(SCREEN, &mut screen_now)
+        .unwrap();
+    let mut src_bytes = vec![WHITE_INDEX; usize::from(WIDTH) * usize::from(ROWS)];
+    for (i, pair) in screen_now.chunks_exact(2).enumerate() {
+        let px = u16::from_be_bytes([pair[0], pair[1]]);
+        src_bytes[i] = if px == 0x7fff { WHITE_INDEX } else { 0 };
+    }
+    loaded.memory.add_region(SRC_8, src_bytes);
+    loaded.memory.write_u32_be(PIXMAP, SRC_8).unwrap();
+    loaded.gworlds[0].base_addr = SRC_8;
+
+    // Copy a 2-row full-width span starting at the plain row immediately above
+    // `first_detail_row` and covering `first_detail_row`.
+    let copy_top = (first_detail_row - 1) as i16;
+    let copy_bottom = (first_detail_row + 1) as i16;
+    ppc_write_rect(&mut loaded.memory, RECT, copy_top, 0, copy_bottom, WIDTH as i16).unwrap();
+    loaded.cpu.gpr[3] = PIXMAP;
+    loaded.cpu.gpr[4] = SCREEN_PIXMAP;
+    loaded.cpu.gpr[5] = RECT;
+    loaded.cpu.gpr[6] = RECT;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    assert!(ppc_copy_bits(
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        &loaded.gworlds,
+        dst_port,
+        0,
+        &loaded.toolbox_startup,
+        &clut,
+        PPC_RGB_BLACK,
+        Some(0),
+        PPC_RGB_WHITE,
+        Some(255),
+        PPC_RGB_BLACK
+    ));
+
+    let row_base = SCREEN + (first_detail_row as u32) * u32::from(DST_ROW_BYTES);
+    let remaining = (0..u32::from(DST_ROW_BYTES))
+        .filter(|&off| bus.test_has_detail(row_base + off))
+        .count();
+    assert_eq!(
+        remaining, 0,
+        "plain 8-to-16 copy spanning a plain first row must discard detail on the second row"
+    );
+}
