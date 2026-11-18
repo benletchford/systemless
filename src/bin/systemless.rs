@@ -314,6 +314,12 @@ struct Cli {
     #[arg(long, conflicts_with = "literal_arrows")]
     arrows_as_numpad: bool,
 
+    /// Hold each frame until the game finishes redrawing (at most four ticks).
+    /// For games that redraw straight into their window and flicker when a
+    /// frame is shown part-way through.
+    #[arg(long)]
+    present_settled_frames: bool,
+
     /// Keep arrow keys mapped as literal arrow keys
     #[arg(
         long,
@@ -1115,10 +1121,16 @@ impl App {
     /// Apply launch options to the serial (non-threaded) runtime driver, the
     /// default desktop path. The threaded runtime owner receives the same
     /// options through `RuntimeConfig`.
-    fn configure_serial_driver(&mut self, gpu: bool, mounts: &[PathBuf]) {
+    fn configure_serial_driver(
+        &mut self,
+        gpu: bool,
+        mounts: &[PathBuf],
+        settled_frame_presentation: bool,
+    ) {
         if let Some(driver) = self.driver.as_mut() {
             driver.gpu = gpu;
             driver.mounts = mounts.to_vec();
+            driver.settled_frame_presentation = settled_frame_presentation;
         }
     }
 
@@ -3547,6 +3559,7 @@ fn run_gui(
     use_wgpu: bool,
     use_software: bool,
     gpu_fallback: renderer_selection::GpuFallback,
+    settled_frame_presentation: bool,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -3576,6 +3589,7 @@ fn run_gui(
         native_preflight: native_integrations && !native_bundle::already_relaunched(),
         game_path: game_path.clone(),
         mounts,
+        settled_frame_presentation,
         arrows_as_numpad,
         native_integrations,
         addressing_24_bit,
@@ -3599,7 +3613,7 @@ fn run_gui(
     app.use_software = use_software;
     app.gpu_fallback = gpu_fallback;
     app.wgpu_wake = Some(event_loop.create_proxy());
-    app.configure_serial_driver(use_wgpu, &config.mounts);
+    app.configure_serial_driver(use_wgpu, &config.mounts, config.settled_frame_presentation);
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
@@ -4173,6 +4187,7 @@ fn main() {
             use_wgpu,
             cli.renderer == renderer_selection::Renderer::Software,
             cli.gpu_fallback.unwrap_or_default(),
+            cli.present_settled_frames,
         );
     }
 }
@@ -5027,7 +5042,7 @@ mod tests {
     fn serial_desktop_driver_receives_mount_volumes() {
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         let mounts = vec![PathBuf::from("/disc.iso"), PathBuf::from("/second disc")];
-        app.configure_serial_driver(true, &mounts);
+        app.configure_serial_driver(true, &mounts, false);
         let driver = app.driver.as_ref().expect("serial runtime driver");
         assert_eq!(driver.mounts, mounts);
         assert!(driver.gpu);

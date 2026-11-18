@@ -7997,3 +7997,26 @@ pub(crate) fn dispatcher_target_for_import(
         _ => PpcImportDispatcherTarget::Unsupported,
     }
 }
+
+impl PpcImportDispatcherTarget {
+    /// Whether this import is an event, input, or clock poll: the calls a
+    /// game makes between redraws. Mirrors the 68K classification used for
+    /// settled-frame presentation (`FixtureRunner::should_present_frame`).
+    pub(crate) fn settles_presentation(&self) -> bool {
+        matches!(
+            self,
+            Self::GetNextEvent(_)
+                | Self::EventAvail
+                | Self::GetOSEvent
+                | Self::OSEventAvail
+                | Self::GetMouse
+                | Self::StillDown
+                | Self::Button
+                | Self::TickCount
+                | Self::GetKeys
+                | Self::WaitMouseUp
+                | Self::SystemTask
+                | Self::Delay
+        )
+    }
+}

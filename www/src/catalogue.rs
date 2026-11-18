@@ -82,6 +82,8 @@ pub struct GameSettings {
     pub launch_modifiers: &'static [LaunchModifier],
     pub mobile_controls: MobileControls,
     pub show_menu_bar: bool,
+    /// Hold frames until the guest settles; for titles that redraw in place.
+    pub present_settled_frames: bool,
     pub screen_depth: Option<u16>,
     pub addressing_24_bit: bool,
     pub screen_size: Option<(u16, u16)>,

@@ -1601,6 +1601,16 @@ fn runtime_defaults_to_workers_without_overriding_explicit_compatibility() {
     assert!(!compatibility.worker);
     assert_eq!(omitted.runtime_pacing, RuntimePacing::default());
     assert!(!omitted.show_menu_bar);
+    assert!(!omitted.present_settled_frames);
+}
+
+#[test]
+fn runtime_present_settled_frames_is_an_opt_in_per_title_setting() {
+    let enabled: Runtime = serde_saphyr::from_str("present_settled_frames: true").unwrap();
+    assert!(enabled.present_settled_frames);
+    // Off by default, and omitted from serialized entries when off.
+    let serialized = serde_json::to_value(Runtime::default()).unwrap();
+    assert!(serialized.get("present_settled_frames").is_none());
 }
 
 #[test]

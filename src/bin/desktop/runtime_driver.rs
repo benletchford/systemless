@@ -57,6 +57,8 @@ pub(super) struct GuiDriver {
     game_path: PathBuf,
     /// Additional media mounted as locked volumes beside the game.
     pub(super) mounts: Vec<PathBuf>,
+    /// `--present-settled-frames`: hold frames until the guest settles.
+    pub(super) settled_frame_presentation: bool,
     arrows_as_numpad: bool,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
@@ -118,6 +120,7 @@ impl GuiDriver {
             force_next_render: true,
             game_path,
             mounts: Vec::new(),
+            settled_frame_presentation: false,
             arrows_as_numpad,
             addressing_24_bit,
             screen_depth,
@@ -170,6 +173,7 @@ impl GuiDriver {
         game::init_game_owned(&mut runner, app);
         runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
+        runner.set_settled_frame_presentation(self.settled_frame_presentation);
 
         let ipt = configure_realtime_execution_rate(&mut runner);
         eprintln!("[SYSTEMLESS] Instructions per tick: {}", ipt);
@@ -773,18 +777,22 @@ impl GuiDriver {
     }
 
     pub(super) fn should_render_frame(&self, debug_overlay_visible: bool) -> bool {
-        if self.force_next_render {
-            return true;
-        }
         if debug_overlay_visible {
             return true;
         }
         let Some(runner) = self.runner.as_ref() else {
-            return false;
+            return self.force_next_render;
         };
-        runner.is_halted()
-            || runner.is_ui_tracking_active()
-            || self.last_presented_guest_tick != Some(runner.guest_tick())
+        if runner.is_halted() || runner.is_ui_tracking_active() {
+            return true;
+        }
+        if !self.force_next_render && self.last_presented_guest_tick == Some(runner.guest_tick()) {
+            return false;
+        }
+        // With settled-frame presentation enabled, the runner holds a frame
+        // caught part-way through a redraw. Input-forced presents are held
+        // too, or a player moving or typing would see every mid-redraw frame.
+        runner.should_present_frame(self.last_presented_guest_tick)
     }
 }
 

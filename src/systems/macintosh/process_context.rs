@@ -3080,11 +3080,18 @@ pub(crate) struct ProcessInputState {
     key_map: [u8; 16],
     caps_lock_physically_pressed: bool,
     key_repeat: Option<ProcessKeyRepeatState>,
+    /// Whether the guest's most recent Toolbox call, from either ISA, was an
+    /// event, input, or clock poll. `None` until the first call. Frontends
+    /// that present only settled frames read it; it is not device state.
+    presentation_settled: Option<bool>,
 }
 
 impl ProcessInputState {
     pub(crate) fn is_pristine(&self) -> bool {
-        self == &Self::default()
+        Self {
+            presentation_settled: None,
+            ..*self
+        } == Self::default()
     }
 
     fn key_is_down(&self, key_code: u8) -> bool {
@@ -3326,6 +3333,16 @@ impl SharedProcessInputState {
 
     pub(crate) fn mouse_position(&self) -> (i16, i16) {
         self.with_ref(|state| state.mouse_pos)
+    }
+
+    /// Record whether the guest's latest Toolbox call was an event, input,
+    /// or clock poll (see `FixtureRunner::should_present_frame`).
+    pub(crate) fn note_presentation_settled(&self, settled: bool) {
+        self.with_mut(|state| state.presentation_settled = Some(settled));
+    }
+
+    pub(crate) fn presentation_settled(&self) -> Option<bool> {
+        self.with_ref(|state| state.presentation_settled)
     }
 
     pub(crate) fn set_mouse_position(&self, position: (i16, i16)) {
@@ -11056,6 +11073,14 @@ impl ProcessContext {
 
     pub(crate) fn attach_input_state(&self, adapter: &mut SharedProcessInputState) {
         adapter.attach_to(&self.input_state);
+    }
+
+    pub(crate) fn note_presentation_settled(&self, settled: bool) {
+        self.input_state.note_presentation_settled(settled);
+    }
+
+    pub(crate) fn presentation_settled(&self) -> Option<bool> {
+        self.input_state.presentation_settled()
     }
 
     pub(crate) fn attach_classic_file_system(

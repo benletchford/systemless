@@ -257,6 +257,10 @@ pub struct Machine {
     compact_guest: Vec<u32>,
     compact_overlay: Vec<u32>,
     rendered_packet: bool,
+    /// Guest tick of the last frame the page presented, for settled-frame holds.
+    settled_last_presented_tick: Option<u32>,
+    /// A frame was held mid-redraw and still needs presenting once settled.
+    settled_frame_pending: bool,
     overlay_rgba: Vec<u8>,
     cursor_backup: CursorBackup,
     presented_rgba: Vec<u8>,
@@ -507,6 +511,8 @@ impl Machine {
             compact_guest: Vec::new(),
             compact_overlay: Vec::new(),
             rendered_packet: false,
+            settled_last_presented_tick: None,
+            settled_frame_pending: false,
             overlay_rgba: Vec::new(),
             cursor_backup: CursorBackup::default(),
             presented_rgba: Vec::new(),
@@ -551,6 +557,34 @@ impl Machine {
 
     pub fn set_arrows_as_numpad(&mut self, enabled: bool) {
         self.runner.set_arrows_as_numpad(enabled);
+    }
+
+    /// Per-title opt-in from the catalogue's `present_settled_frames`.
+    pub fn set_settled_frame_presentation(&mut self, enabled: bool) {
+        self.runner.set_settled_frame_presentation(enabled);
+    }
+
+    /// Decide whether to present this frame. `wants_paint` is the caller's
+    /// usual decision (visual work, first paint, resize, debug). With
+    /// settled-frame presentation enabled and `may_hold` set, a frame caught
+    /// part-way through a redraw is held, and presented later once the guest
+    /// settles or the runner's tick cap passes, even if no further visual
+    /// work happens. See `FixtureRunner::should_present_frame`.
+    pub fn settled_frame_gate(&mut self, wants_paint: bool, may_hold: bool) -> bool {
+        if !wants_paint && !self.settled_frame_pending {
+            return false;
+        }
+        if may_hold
+            && !self
+                .runner
+                .should_present_frame(self.settled_last_presented_tick)
+        {
+            self.settled_frame_pending = true;
+            return false;
+        }
+        self.settled_frame_pending = false;
+        self.settled_last_presented_tick = Some(self.runner.guest_tick());
+        true
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]

@@ -362,6 +362,7 @@ fn GameRuntime(
         let arrows_as_numpad = game.settings.arrows_as_numpad;
         let launch_modifiers = game.settings.launch_modifiers;
         let show_menu_bar = game.settings.show_menu_bar;
+        let present_settled_frames = game.settings.present_settled_frames;
         let screen_depth = game.settings.screen_depth;
         let addressing_24_bit = game.settings.addressing_24_bit;
         let screen_size = game.settings.screen_size;
@@ -559,6 +560,7 @@ fn GameRuntime(
                 }
             };
             machine.set_arrows_as_numpad(arrows_as_numpad);
+            machine.set_settled_frame_presentation(present_settled_frames);
             if !alive.load(Ordering::Relaxed) {
                 return;
             }
@@ -2026,9 +2028,10 @@ fn start_render_loop(
         }
 
         let force_debug_paint = debug_enabled || debug_visibility_changed;
-        let painted_frame =
-            should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint)
-                || frame.needs_snapshot();
+        let wants_paint =
+            should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint);
+        let may_hold = painted_once && !size_changed && !force_debug_paint;
+        let painted_frame = m.settled_frame_gate(wants_paint, may_hold) || frame.needs_snapshot();
         if painted_frame {
             let render_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
             frame.set_cursor_css(&canvas, m.cursor_css());
@@ -2556,6 +2559,7 @@ async fn boot_catalogue_worker(
         "id": game.id, "architecture": architecture.key(),
         "launch_modifiers": game.settings.launch_modifiers,
         "show_menu_bar": game.settings.show_menu_bar,
+        "present_settled_frames": game.settings.present_settled_frames,
         "screen_depth": game.settings.screen_depth,
         "addressing_24_bit": game.settings.addressing_24_bit,
         "screen_size": game.settings.screen_size,

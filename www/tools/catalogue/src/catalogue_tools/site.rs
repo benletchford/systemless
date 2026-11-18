@@ -126,11 +126,12 @@ pub fn rust_games(c: &CompiledCatalogue) -> Result<String> {
         )?;
         write!(
             out,
-            "settings: GameSettings {{ worker: {}, gpu_compute: {}, arrows_as_numpad: {}, show_menu_bar: {}, screen_depth: {:?}, addressing_24_bit: {}, screen_size: {:?}, application_partition_size: {:?}, executable_path: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}, adaptive_min_cpu_mhz: {:?}}},",
+            "settings: GameSettings {{ worker: {}, gpu_compute: {}, arrows_as_numpad: {}, show_menu_bar: {}, present_settled_frames: {}, screen_depth: {:?}, addressing_24_bit: {}, screen_size: {:?}, application_partition_size: {:?}, executable_path: {:?}, remove_paths: {}, file_mappings: &[{}], key_mappings: &[{}], launch_modifiers: &[{}], runtime_pacing: RuntimePacing {{max_ticks_per_paint: {}, reset_slack_ticks: {}, cpu_mhz: {}, adaptive_min_cpu_mhz: {:?}}},",
             r.worker,
             r.gpu_compute,
             e.controls.arrows_as_numpad,
             r.show_menu_bar,
+            r.present_settled_frames,
             r.screen_depth,
             r.addressing_24_bit,
             r.screen_size,
