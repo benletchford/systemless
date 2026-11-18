@@ -174,89 +174,52 @@ pub(super) fn dispatch_textedit_import(
         }
         PpcImportDispatcherTarget::TEUseStyleScrap => {
             // TextEdit.h exposes the native PPC ABI as (rangeStart, rangeEnd,
-            // StScrpHandle, redraw, TEHandle). A style scrap may describe
-            // several relative runs; preserve its first complete style for
-            // the requested range until multi-run scrap application is
-            // represented by the native TextEdit model.
+            // StScrpHandle, redraw, TEHandle). Each scrap run starts at an
+            // offset relative to rangeStart. Text (1993), p. 2-106.
             let range_start = cpu.gpr[3] as i32;
             let range_end = cpu.gpr[4] as i32;
             let scrap_handle = cpu.gpr[5];
             let redraw = cpu.gpr[6] != 0;
             let te_handle = cpu.gpr[7];
-            let scrap_ptr = memory
-                .read_u32_be(scrap_handle)
-                .filter(|ptr| *ptr != 0)
-                .unwrap_or(0);
-            let has_style = scrap_ptr != 0
-                && memory
-                    .read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET)
-                    .unwrap_or(0)
-                    != 0;
-            if has_style {
-                let source = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
-                let text_style_ptr =
-                    ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, 12, true);
-                if text_style_ptr != 0 {
-                    let font = memory
-                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_FONT_OFFSET)
-                        .unwrap_or(0);
-                    let face = memory
-                        .read_u8(source + PPC_TE_SCRAP_STYLE_FACE_OFFSET)
-                        .unwrap_or(0);
-                    let size = memory
-                        .read_u16_be(source + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(text_style_ptr, font);
-                    let _ = memory.write_u8(text_style_ptr + 2, face);
-                    let _ = memory.write_u16_be(text_style_ptr + 4, size);
-                    for offset in [0u32, 2, 4] {
-                        let component = memory
-                            .read_u16_be(source + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + offset)
-                            .unwrap_or(0);
-                        let _ = memory.write_u16_be(text_style_ptr + 6 + offset, component);
-                    }
-                    let (start, end) = if range_end < range_start {
-                        (range_end, range_start)
-                    } else {
-                        (range_start, range_end)
-                    };
-                    let mut allocator = PpcProcessAllocatorView {
-                        memory_manager: process_memory_manager,
-                    };
-                    if ppc_te_set_style_for_range(
-                        Some(&mut allocator),
+            let (start, end) = if range_end < range_start {
+                (range_end, range_start)
+            } else {
+                (range_start, range_end)
+            };
+            if ppc_te_apply_style_scrap_to_range(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                te_handle,
+                scrap_handle,
+                start.max(0) as usize,
+                end.max(0) as usize,
+            ) {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let _ = ppc_te_recalculate_layout(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                );
+                if redraw {
+                    ppc_te_draw(
                         memory,
-                        heap_cursor,
-                        heap_limit,
-                        last_mem_error,
                         handles,
+                        gworlds,
                         te_handle,
-                        start.max(0) as usize,
-                        end.max(0) as usize,
-                        0x000f,
-                        text_style_ptr,
-                    ) {
-                        let _ = ppc_te_recalculate_layout(
-                            Some(&mut allocator),
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            last_mem_error,
-                            handles,
-                            te_handle,
-                        );
-                        if redraw {
-                            ppc_te_draw(
-                                memory,
-                                handles,
-                                gworlds,
-                                te_handle,
-                                current_gworld,
-                                *quickdraw_fore_color,
-                                quickdraw_fore_indices,
-                            );
-                        }
-                    }
+                        current_gworld,
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices,
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -379,6 +342,13 @@ pub(super) fn dispatch_textedit_import(
             // precedes the final TEHandle argument in the native ABI.
             let te_handle = if styled { cpu.gpr[6] } else { cpu.gpr[5] };
             let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default();
+            let insert_start = ppc_te_record_ptr(memory, te_handle)
+                .and_then(|te_ptr| {
+                    let start = memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?;
+                    let end = memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?;
+                    Some(usize::from(start.min(end)))
+                })
+                .unwrap_or(0);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -392,6 +362,36 @@ pub(super) fn dispatch_textedit_import(
                 te_handle,
                 &bytes,
             );
+            // Text (1993), pp. 2-102--2-103: TEStyleInsert gives the inserted
+            // text the runs in hST; with NIL hST it behaves like TEInsert.
+            if styled
+                && cpu.gpr[5] != 0
+                && ppc_te_apply_style_scrap_to_range(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                    cpu.gpr[5],
+                    insert_start,
+                    insert_start.saturating_add(bytes.len()),
+                )
+            {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let _ = ppc_te_recalculate_layout(
+                    Some(&mut allocator),
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    te_handle,
+                );
+            }
             *last_mem_error = result;
             ppc_te_draw(
                 memory,
@@ -1138,4 +1138,100 @@ pub(super) fn dispatch_textedit_import(
         }
         _ => None,
     }
+}
+
+/// Applies every run of a style scrap (`StScrpRec`) to the text that starts at
+/// `range_start`, returning whether any run changed the record's styles.
+///
+/// Inside Macintosh: Text (1993), pp. 2-102--2-103 and 2-106: each
+/// `ScrpSTElement`'s `scrpStartChar` is relative to the start of the range,
+/// and a run lasts until the next element's start (or the end of the range).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_te_apply_style_scrap_to_range(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+    scrap_handle: u32,
+    range_start: usize,
+    range_end: usize,
+) -> bool {
+    let Some(scrap_ptr) = memory.read_u32_be(scrap_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    let count = memory
+        .read_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET)
+        .unwrap_or(0) as i16;
+    if count <= 0 || range_start >= range_end {
+        return false;
+    }
+    let element = |index: i16| {
+        scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET + index as u32 * PPC_TE_SCRAP_ELEMENT_SIZE
+    };
+    let relative_start = |memory: &mut PpcSectionMem, index: i16| {
+        memory
+            .read_u32_be(element(index))
+            .map(|start| (start as i32).max(0) as usize)
+    };
+    let text_style_ptr =
+        ppc_process_heap_alloc(process_memory_manager, memory, heap_cursor, 12, true);
+    if text_style_ptr == 0 {
+        return false;
+    }
+    let mut changed = false;
+    for index in 0..count {
+        let source = element(index);
+        let Some(start) = relative_start(memory, index) else {
+            break;
+        };
+        let end = if index + 1 < count {
+            relative_start(memory, index + 1).unwrap_or(usize::MAX)
+        } else {
+            usize::MAX
+        };
+        let start = range_start.saturating_add(start).min(range_end);
+        let end = range_start.saturating_add(end).min(range_end);
+        if start >= end {
+            continue;
+        }
+        let font = memory
+            .read_u16_be(source + PPC_TE_SCRAP_STYLE_FONT_OFFSET)
+            .unwrap_or(0);
+        let face = memory
+            .read_u8(source + PPC_TE_SCRAP_STYLE_FACE_OFFSET)
+            .unwrap_or(0);
+        let size = memory
+            .read_u16_be(source + PPC_TE_SCRAP_STYLE_SIZE_OFFSET)
+            .unwrap_or(0);
+        let _ = memory.write_u16_be(text_style_ptr, font);
+        let _ = memory.write_u8(text_style_ptr + 2, face);
+        let _ = memory.write_u16_be(text_style_ptr + 4, size);
+        for offset in [0u32, 2, 4] {
+            let component = memory
+                .read_u16_be(source + PPC_TE_SCRAP_STYLE_COLOR_OFFSET + offset)
+                .unwrap_or(0);
+            let _ = memory.write_u16_be(text_style_ptr + 6 + offset, component);
+        }
+        let mut allocator = PpcProcessAllocatorView {
+            memory_manager: process_memory_manager,
+        };
+        // doAll (doFont | doFace | doSize | doColor): Text (1993), p. 2-89.
+        changed |= ppc_te_set_style_for_range(
+            Some(&mut allocator),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            te_handle,
+            start,
+            end,
+            0x000f,
+            text_style_ptr,
+        );
+    }
+    changed
 }
