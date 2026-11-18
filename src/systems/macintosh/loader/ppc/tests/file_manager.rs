@@ -2960,6 +2960,82 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_standard_get_file_list_draws_folder_and_document_glyphs() {
+        // Odyssey's PowerPC Open dialog listed its "Web Links" folder as
+        // "Web Links >" with no icon. Standard File rows start with a small
+        // folder or document glyph (Mac OS 8.1 shows one per row), as the
+        // 68k list already draws; the name follows the glyph.
+        let pef = synthetic_pef_with_import(b"StandardGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Alpha Folder".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Beta Document".to_string(),
+            data: (b"text".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = u32::MAX; // numTypes -1: all file types
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .clone()
+            .expect("StandardGetFile must retain its dialog across the import yield");
+        let names: Vec<_> = tracking.entries.iter().map(|entry| entry.name.clone()).collect();
+        assert_eq!(names[..2], [b"Alpha Folder".to_vec(), b"Beta Document".to_vec()]);
+        assert_eq!(tracking.selected, 0);
+        let front = tracking.front_buffer;
+        let white = ppc_front_rgb_pixel(&mut loaded.memory, front, PPC_RGB_WHITE).unwrap();
+        let black = ppc_front_rgb_pixel(&mut loaded.memory, front, PPC_RGB_BLACK).unwrap();
+        let glyph_left =
+            i32::from(tracking.bounds.1 + PPC_STANDARD_FILE_GET_LIST_RECT.1) + 4;
+        let row_top = |row: i16| {
+            i32::from(
+                tracking.bounds.0
+                    + PPC_STANDARD_FILE_GET_LIST_RECT.0
+                    + 2
+                    + row * PPC_STANDARD_FILE_GET_ROW_HEIGHT,
+            ) + 1
+        };
+        let mut pixel = |x: i32, y: i32| {
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (glyph_left + x, y)).unwrap()
+        };
+        // Selected folder row: inverted, so the folder's tab and body edge
+        // are white on the black highlight while its empty top row is black.
+        assert_eq!(pixel(0, row_top(0)), black, "folder glyph row 0 is blank");
+        assert_eq!(pixel(4, row_top(0) + 1), white, "folder tab must be drawn");
+        assert_eq!(pixel(0, row_top(0) + 3), white, "folder body must be drawn");
+        assert_eq!(pixel(11, row_top(0) + 9), white, "folder bottom-right corner");
+        // Unselected document row: black glyph on the white list.
+        assert_eq!(pixel(0, row_top(1)), white, "document glyph column 0 is blank");
+        assert_eq!(pixel(1, row_top(1)), black, "document top edge must be drawn");
+        assert_eq!(pixel(10, row_top(1) + 9), black, "document bottom edge");
+        // The name starts after the glyph; nothing is drawn between them.
+        for x in 12..16 {
+            for y in row_top(1)..row_top(1) + 11 {
+                assert_eq!(pixel(x, y), white, "gap after document glyph at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
     fn hle_import_runner_standard_get_file_gui_navigates_and_filters_vfs_entries() {
         let pef = synthetic_pef_with_import(b"StandardGetFile");
         let mut loaded = load_pef_application(&pef).unwrap();
