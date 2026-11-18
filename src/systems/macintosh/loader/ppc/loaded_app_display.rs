@@ -50,7 +50,7 @@ impl PpcLoadedApp {
 
     /// Global content bounds of the frontmost visible Window Manager record.
     pub fn window_bounds(&mut self) -> (i16, i16, i16, i16) {
-        ppc_front_visible_window(&mut self.memory, &self.gworlds)
+        ppc_front_visible_window(&mut self.memory, &self.gworlds, &self.window_list)
             .and_then(|window| {
                 ppc_window_global_content_bounds(&mut self.memory, &self.gworlds, window)
             })

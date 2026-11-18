@@ -702,7 +702,7 @@ use super::*;
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.screen_clut[1], color_a);
         assert_eq!(
-            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
             Some(window_a)
         );
 
@@ -721,7 +721,7 @@ use super::*;
         assert_eq!(loaded.screen_clut[1], color_b);
         assert_eq!(*loaded.current_gworld, current_port);
         assert_eq!(
-            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
             Some(window_b)
         );
 
@@ -966,7 +966,7 @@ use super::*;
             "a palette-less front window uses the built-in default palette"
         );
         assert_eq!(
-            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
             Some(no_palette)
         );
 
