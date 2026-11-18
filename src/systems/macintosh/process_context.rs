@@ -1423,6 +1423,9 @@ impl ProcessFileSystemState {
         // scanning every directory per file.
         let parent_dir_ids = process_vfs_parent_dir_index(&self.vfs_directories);
         let mut parent_key = String::new();
+        // Records from one folder are usually adjacent, so remember the last
+        // parent looked up and skip the index for a repeat of it.
+        let mut last_parent: Option<(&str, u32)> = None;
         // Publication needs metadata only; cloning records copies their fork bytes.
         let files = self.vfs_files.iter().map(|file| {
             (
@@ -1451,8 +1454,19 @@ impl ProcessFileSystemState {
                         if path.is_empty() {
                             continue;
                         }
-                        let parent_dir_id =
-                            process_vfs_parent_dir_id(&parent_dir_ids, &mut parent_key, path);
+                        let parent_path = process_vfs_parent_path(path);
+                        let parent_dir_id = match last_parent {
+                            Some((last_path, dir_id)) if last_path == parent_path => dir_id,
+                            _ => {
+                                let dir_id = process_vfs_dir_id(
+                                    &parent_dir_ids,
+                                    &mut parent_key,
+                                    parent_path,
+                                );
+                                last_parent = Some((parent_path, dir_id));
+                                dir_id
+                            }
+                        };
                         publish_native_vfs_metadata(
                             metadata,
                             next_file_id,
@@ -1610,15 +1624,23 @@ fn process_vfs_parent_dir_index(directories: &[ProcessVfsDirectory]) -> HashMap<
     index
 }
 
+fn process_vfs_parent_path(path: &str) -> &str {
+    path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("")
+}
+
 fn process_vfs_parent_dir_id(
     parent_dir_ids: &HashMap<String, u32>,
     key: &mut String,
     path: &str,
 ) -> u32 {
-    let parent_path = path
-        .rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or("");
+    process_vfs_dir_id(parent_dir_ids, key, process_vfs_parent_path(path))
+}
+
+fn process_vfs_dir_id(
+    parent_dir_ids: &HashMap<String, u32>,
+    key: &mut String,
+    parent_path: &str,
+) -> u32 {
     key.clear();
     key.push_str(parent_path);
     key.make_ascii_lowercase();
@@ -1637,37 +1659,40 @@ fn publish_native_vfs_metadata(
     finder_flags: u16,
     touch: bool,
 ) {
-    let timestamp = *next_timestamp;
     // Look up before inserting: almost every call finds an existing entry, and
     // `entry` would allocate an owned key for each one.
-    if !metadata.contains_key(path) {
-        let file_id = *next_file_id;
-        *next_file_id = next_file_id.saturating_add(1);
-        *next_timestamp = next_timestamp.saturating_add(1);
-        metadata.insert(
-            path.to_string(),
-            ProcessVfsMetadata {
-                file_id,
-                parent_dir_id,
-                file_type,
-                creator,
-                finder_flags,
-                created_date: timestamp,
-                modified_date: timestamp,
-            },
-        );
-    }
-    let Some(entry) = metadata.get_mut(path) else {
+    if let Some(entry) = metadata.get_mut(path) {
+        entry.parent_dir_id = parent_dir_id;
+        entry.file_type = file_type;
+        entry.creator = creator;
+        entry.finder_flags = finder_flags;
+        if touch {
+            entry.modified_date = *next_timestamp;
+            *next_timestamp = next_timestamp.saturating_add(1);
+        }
         return;
-    };
-    entry.parent_dir_id = parent_dir_id;
-    entry.file_type = file_type;
-    entry.creator = creator;
-    entry.finder_flags = finder_flags;
+    }
+    let timestamp = *next_timestamp;
+    let file_id = *next_file_id;
+    *next_file_id = next_file_id.saturating_add(1);
+    *next_timestamp = next_timestamp.saturating_add(1);
+    let mut modified_date = timestamp;
     if touch {
-        entry.modified_date = *next_timestamp;
+        modified_date = *next_timestamp;
         *next_timestamp = next_timestamp.saturating_add(1);
     }
+    metadata.insert(
+        path.to_string(),
+        ProcessVfsMetadata {
+            file_id,
+            parent_dir_id,
+            file_type,
+            creator,
+            finder_flags,
+            created_date: timestamp,
+            modified_date,
+        },
+    );
 }
 
 impl std::ops::Deref for ProcessFileSystemState {
@@ -14105,7 +14130,10 @@ mod tests {
         });
         for path in [
             "disc/data/Clip",
+            "disc/data/Notes",
+            "DISC/DATA/Credits",
             "Disc/Data/MOVIES/Intro",
+            "Disc/Data/MOVIES/Outro",
             "Loose",
             "Missing/File",
         ] {
@@ -14118,9 +14146,18 @@ mod tests {
             state.classic_vfs_metadata[path].parent_dir_id
         };
         assert_eq!(parent(&state, "disc/data/Clip"), 20);
+        assert_eq!(parent(&state, "disc/data/Notes"), 20);
         assert_eq!(parent(&state, "Disc/Data/MOVIES/Intro"), 22);
+        assert_eq!(parent(&state, "Disc/Data/MOVIES/Outro"), 22);
+        assert_eq!(parent(&state, "DISC/DATA/Credits"), 20);
         assert_eq!(parent(&state, "Loose"), 2);
         assert_eq!(parent(&state, "Missing/File"), 2);
+        assert_eq!(parent(&state, "Disc/Data/Saved"), 20);
+        // A file first published while dirty was modified after it was created.
+        let saved = state.classic_vfs_metadata["Disc/Data/Saved"];
+        assert!(saved.modified_date > saved.created_date);
+        let clip = state.classic_vfs_metadata["disc/data/Clip"];
+        assert_eq!(clip.modified_date, clip.created_date);
 
         // Republishing keeps file IDs and creation dates, and touches only
         // dirty files.
