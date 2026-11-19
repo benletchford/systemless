@@ -7011,6 +7011,19 @@ impl super::TrapDispatcher {
                     } else if color_ptr != 0 {
                         let value = bus.read_word(color_ptr);
                         let foreground = d0_selector == 0x040F;
+                        // How the restored color becomes the port's
+                        // fgColor/bkColor pixel, mirroring the setter the
+                        // ROM's restore goes through.
+                        enum RestoredPixel {
+                            // RGBForeColor/RGBBackColor.
+                            Rgb,
+                            // PmForeColor/PmBackColor, tolerant entry.
+                            PaletteRgb,
+                            // PmForeColor/PmBackColor, explicit or animated
+                            // entry: the device index itself.
+                            PaletteIndex(u8),
+                        }
+                        let mut pixel_rule = None;
                         if value == 0 {
                             let color = (
                                 bus.read_word(color_ptr + 2),
@@ -7024,6 +7037,7 @@ impl super::TrapDispatcher {
                                 self.bg_color = color;
                                 self.pm_bg_color = None;
                             }
+                            pixel_rule = Some(RestoredPixel::Rgb);
                         } else if value == 1 {
                             let palette = bus.read_long(color_ptr + 2);
                             let entry = bus.read_word(color_ptr + 6) as i16;
@@ -7036,7 +7050,8 @@ impl super::TrapDispatcher {
                                 if let Some((rgb, usage, _tolerance)) =
                                     Self::read_palette_color_info(bus, palette, entry as u16)
                                 {
-                                    let color = if usage & (PM_EXPLICIT | PM_ANIMATED) != 0 {
+                                    let indexed = usage & (PM_EXPLICIT | PM_ANIMATED) != 0;
+                                    let color = if indexed {
                                         let [r, g, b] = self.device_clut[(entry as usize) & 0xFF];
                                         (r, g, b)
                                     } else {
@@ -7047,10 +7062,44 @@ impl super::TrapDispatcher {
                                     } else {
                                         self.bg_color = color;
                                     }
+                                    pixel_rule = Some(if indexed {
+                                        RestoredPixel::PaletteIndex(entry as u8)
+                                    } else {
+                                        RestoredPixel::PaletteRgb
+                                    });
                                 }
                             }
                         }
                         self.sync_current_port_draw_state(bus);
+                        // RestoreFore/RestoreBack go through RGBForeColor or
+                        // PmForeColor (and the Back variants), so the port's
+                        // fgColor/bkColor pixel follows the restored color.
+                        // Leaving it stale drew Warcraft II's Startup Options
+                        // button labels in the CDEF's white emboss color.
+                        // Inside Macintosh Volume VI (1991), pp. 20-21 to
+                        // 20-22.
+                        let port = *self.current_port;
+                        match pixel_rule {
+                            Some(RestoredPixel::PaletteIndex(index)) => {
+                                if port != 0 && (bus.read_word(port + 6) & 0xC000) == 0xC000 {
+                                    let (offset, bit) =
+                                        if foreground { (80, 0x01) } else { (84, 0x02) };
+                                    bus.write_long(port + offset, u32::from(index));
+                                    *self.resolved_port_color_fields.entry(port).or_default() |=
+                                        bit;
+                                }
+                            }
+                            Some(rule) => {
+                                let use_screen_itable = matches!(rule, RestoredPixel::Rgb);
+                                self.resolve_current_port_color_pixels(
+                                    bus,
+                                    foreground,
+                                    !foreground,
+                                    use_screen_itable,
+                                );
+                            }
+                            None => {}
+                        }
                     }
                     cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
