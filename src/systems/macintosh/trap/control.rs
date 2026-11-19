@@ -307,6 +307,11 @@ impl super::TrapDispatcher {
                 | 0x48E7 // MOVEM.L regs,-(SP)
                 | 0x4EF9 // JMP abs.L
                 | 0x4EFA // JMP pc-relative
+                // JSR stubs: Chinese Chess Pro's 16-byte CDEF resources begin
+                // with JSR *+$E (an RTS) before jumping through a code
+                // address the application patches into the resource.
+                | 0x4EB9 // JSR abs.L
+                | 0x4EBA // JSR pc-relative
                 | 0x6000..=0x60FF // BRA/BRA.S to the real entry
         )
     }
