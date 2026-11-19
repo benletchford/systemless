@@ -3916,3 +3916,121 @@ fn draw_sprocket_rgb32_pixels_swap_and_desktop_restore() {
         );
     }
 }
+
+#[test]
+fn draw_sprocket_queued_context_switches_display_mode_and_back() {
+    // Diablo II (DrawSprocket 1.7 path): find 640x480x16 and 640x480x32,
+    // reserve the first, queue the second under it, activate, then switch
+    // between them. FindBestContext returns one reference for both modes.
+    for name in [&b"DSpContext_Queue"[..], b"DSpContext_Switch"] {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", name);
+        let loaded = load_pef_application(&pef).unwrap();
+        assert!(matches!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::DSpContextQueue | PpcImportDispatcherTarget::DSpContextSwitch
+        ));
+    }
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let desktop = loaded.presented_front_buffer().unwrap();
+    let attributes16 = PPC_DATA_BASE + 0x1000;
+    let attributes32 = attributes16 + 128;
+    let output = attributes16 + 256;
+    loaded.memory.add_region(attributes16, vec![0; 264]);
+    for (attributes, depth) in [(attributes16, 16u32), (attributes32, 32)] {
+        write_test_dsp_context_attributes(&mut loaded.memory, attributes, PpcDspContextAttributes {
+            display_depth: depth,
+            back_buffer_depth: depth,
+            display_best_depth_mask: 1 << depth.trailing_zeros(),
+            back_buffer_best_depth_mask: 1 << depth.trailing_zeros(),
+            ..PpcDspContextAttributes::default()
+        });
+        loaded.cpu.gpr[3] = attributes;
+        loaded.cpu.gpr[4] = output;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpFindBestContext);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    let context = loaded.memory.read_u32_be(output).unwrap();
+
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = context;
+    loaded.cpu.gpr[5] = attributes32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextQueue);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DSP_CONTEXT_NOT_RESERVED_ERR));
+
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = attributes16;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = context;
+    loaded.cpu.gpr[5] = attributes32;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextQueue);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.context_attributes.display_depth, 16);
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop, "queueing leaves the display");
+
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_ACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.presented_front_buffer().unwrap().depth, 16);
+    let window = loaded.draw_sprocket.blanking_window.unwrap();
+
+    for depth in [32, 16, 32] {
+        loaded.cpu.gpr[3] = context;
+        loaded.cpu.gpr[4] = context;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSwitch);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.presented_front_buffer().unwrap().depth, depth);
+        assert_eq!(loaded.draw_sprocket.context_attributes.display_depth, depth);
+        assert_eq!(loaded.draw_sprocket.context_state, PpcDspContextPlayState::Active);
+        assert_eq!(loaded.draw_sprocket.blanking_window, Some(window));
+    }
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT + 0x30;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSwitch);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_DSP_CONTEXT_NOT_RESERVED_ERR));
+
+    loaded.cpu.gpr[3] = context;
+    loaded.cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSetState);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = context;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextRelease);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.presented_front_buffer().unwrap(), desktop);
+    assert!(loaded.draw_sprocket.switch_contexts.is_empty());
+}
+
+#[test]
+fn draw_sprocket_switch_releases_through_the_parent_context() {
+    // Apple's DSp_Context_Switch sample switches to a distinct queued
+    // context and later releases the parent reference.
+    let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_Switch");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let parent = PPC_DSP_CONTEXT + 0x40;
+    let child = PPC_DSP_CONTEXT + 0x10;
+    loaded.cpu.gpr[3] = parent;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextReserve);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = parent;
+    loaded.cpu.gpr[4] = child;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextQueue);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = parent;
+    loaded.cpu.gpr[4] = child;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextSwitch);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.reserved_context, Some(child));
+    assert_eq!(
+        (loaded.draw_sprocket.context_attributes.width, loaded.draw_sprocket.context_attributes.height),
+        (800, 600)
+    );
+    loaded.cpu.gpr[3] = parent;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DSpContextRelease);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.draw_sprocket.reserved_context, None);
+}
