@@ -953,7 +953,13 @@ pub(crate) fn ppc_new_gworld(
     }
 
     let has_positive_bounds = requested_bottom > requested_top && requested_right > requested_left;
-    let (top, left, bottom, right) = if !has_positive_bounds {
+    // A zero pixelDepth reads boundsRect as a global screen rectangle only to
+    // select a device; the port and PixMap get the same size with topLeft at
+    // (0,0). Apple's QuickDraw GWorld.a (NewGWorld header and
+    // computePortRect): "The port's portRect is set to the same size as
+    // boundsRect with the topLeft coordinates set to (0,0)." Its
+    // screen-alignment pixel offset is an optimization we don't model.
+    let (top, left, bottom, right) = if !has_positive_bounds || requested_depth == 0 {
         (
             0,
             0,
@@ -1272,12 +1278,23 @@ pub(crate) fn ppc_update_gworld(
         return GW_FLAG_ERR;
     }
 
-    let (top, left, bottom, right) = (
-        requested_top,
-        requested_left,
-        requested_bottom,
-        requested_right,
-    );
+    // GWorld.a useMaxDevice: a zero pixelDepth offsets boundsRect "so that
+    // topLeft = (0,0)", exactly as NewGWorld does.
+    let (top, left, bottom, right) = if requested_depth == 0 {
+        (
+            0,
+            0,
+            requested_bottom.saturating_sub(requested_top),
+            requested_right.saturating_sub(requested_left),
+        )
+    } else {
+        (
+            requested_top,
+            requested_left,
+            requested_bottom,
+            requested_right,
+        )
+    };
     let (width, height) = ppc_rect_dimensions(top, left, bottom, right);
     let Some(row_bytes) = ppc_row_bytes(width, depth).filter(|row_bytes| *row_bytes <= 0x3fff)
     else {
