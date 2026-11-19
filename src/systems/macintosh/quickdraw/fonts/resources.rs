@@ -200,14 +200,23 @@ pub(crate) fn register_resource_font_strike_for_family(
             .checked_sub(first_char)
             .filter(|_| code <= last_char)
             .unwrap_or(missing_index);
-        ascii.push(decode_index(index).unwrap_or(Glyph {
+        let mut glyph = decode_index(index).unwrap_or(Glyph {
             width: 0,
             height: 0,
             advance: wid_max.clamp(0, u8::MAX as i16) as u8,
             origin_x: 0,
             origin_y: 0,
             data_offset: 0,
-        }));
+        });
+        if code == 0x20 {
+            // QuickDraw never images the space character: DrawText.a's
+            // character loop tests for 32 before the missing-glyph lookup
+            // and only advances the pen by the width table's space entry
+            // (SPACECH). Fonts that omit the space (Civilization's nation
+            // fonts) would otherwise paint the missing-symbol bar.
+            glyph.width = 0;
+        }
+        ascii.push(glyph);
     }
     let mut macroman = Vec::new();
     // Some application icon fonts use DEL as an ordinary glyph.
