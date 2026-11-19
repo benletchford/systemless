@@ -7773,6 +7773,112 @@ fn dialog_sheet_window_filter_and_item_insertion_dispatch_with_canonical_evaluat
     }
 }
 #[test]
+fn dialog_static_text_without_item_styles_uses_the_dialog_port_font() {
+    // Antibody calls SetDialogFont and sizes its registration dialog's port
+    // text; without an ictb its statText labels are drawn in that port font.
+    let rightmost_ink = |port_font: Option<(i16, i16)>| {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef_with_import(b"GetNewDialog"),
+            PpcLoadConfig {
+                screen_depth: 16,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&100i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&300i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 28];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&30i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&290i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+        ditl[15] = 12;
+        ditl[16..28].copy_from_slice(b"Organization");
+        for (kind, data) in [
+            (*b"DLOG", dlog),
+            (*b"dctb", vec![0, 0, 0, 0, 0, 0, 0xff, 0xff]),
+            (*b"DITL", ditl),
+        ] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: *loaded.process_file_system.current_resource_file,
+                    path: String::new(),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: 128,
+                    name: Vec::new(),
+                    data: data.into(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+        let dialog = loaded.cpu.gpr[3];
+        assert_ne!(dialog, 0);
+        if let Some((font, size)) = port_font {
+            loaded
+                .memory
+                .write_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET, font as u16)
+                .unwrap();
+            loaded
+                .memory
+                .write_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET, size as u16)
+                .unwrap();
+        }
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let white = PpcRgbColor {
+            red: 0xffff,
+            green: 0xffff,
+            blue: 0xffff,
+        };
+        for y in 0..40 {
+            for x in 0..300 {
+                ppc_quickdraw_write_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (i32::from(bounds.1) + x, i32::from(bounds.0) + y),
+                    white,
+                );
+            }
+        }
+        loaded.cpu.gpr[3] = dialog;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawDialog);
+        let mut rightmost = None;
+        for y in 10..30 {
+            for x in 10..290 {
+                if ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (i32::from(bounds.1) + x, i32::from(bounds.0) + y),
+                )
+                .is_some_and(|pixel| pixel != 0x7fff)
+                {
+                    rightmost = rightmost.max(Some(x));
+                }
+            }
+        }
+        rightmost.expect("label ink")
+    };
+
+    let system = rightmost_ink(None);
+    let geneva_9 = rightmost_ink(Some((3, 9)));
+    assert!(
+        geneva_9 + 10 < system,
+        "Geneva 9 label ends at {geneva_9}, system font label at {system}"
+    );
+}
+
+#[test]
 fn dialog_item_styles_copy_named_font_resource_render_short_labels_and_dispose() {
     for caller_owned in [false, true] {
         let mut loaded = load_pef_application_with_config(

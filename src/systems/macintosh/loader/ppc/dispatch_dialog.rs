@@ -4909,6 +4909,33 @@ struct PpcDialogItemTextStyle {
     background: Option<PpcRgbColor>,
 }
 
+/// Without an item color table, the Dialog Manager draws statText and
+/// editText items through TextEdit in the dialog's own grafPort, so its
+/// txFont, txFace and txSize apply. SetDialogFont/SetDAFont seed txFont at
+/// creation, and applications may also call TextFont/TextSize on the port.
+/// Inside Macintosh Volume I (1985), pp. I-405 and I-412. Ports still at the
+/// system font defaults keep the standard dialog text path.
+fn ppc_dialog_port_text_style(
+    memory: &mut PpcSectionMem,
+    dialog: u32,
+    foreground: PpcRgbColor,
+) -> Option<PpcDialogItemTextStyle> {
+    let font = memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET)? as i16;
+    let face = memory.read_u8(dialog + PPC_CGRAF_PORT_TX_FACE_OFFSET)?;
+    let size = memory.read_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET)? as i16;
+    if font == PPC_QD_TEXT_FONT_DEFAULT && face == 0 && matches!(size, 0 | 12) {
+        return None;
+    }
+    Some(PpcDialogItemTextStyle {
+        font,
+        size: if size <= 0 { PPC_QD_TEXT_SIZE_SYSTEM } else { size },
+        face,
+        mode: PPC_QD_TEXT_MODE_SRC_OR,
+        foreground,
+        background: None,
+    })
+}
+
 fn ppc_dialog_item_text_style(
     window_list: &SharedProcessWindowList,
     memory: &mut PpcSectionMem,
@@ -5277,6 +5304,9 @@ fn ppc_draw_dialog_items(
                         index,
                         ppc_theme_rgb(palette.frame_dark),
                     )
+                    .or_else(|| {
+                        ppc_dialog_port_text_style(memory, dialog, ppc_theme_rgb(palette.frame_dark))
+                    })
                     .unwrap_or(PpcDialogItemTextStyle {
                         font: PPC_QD_TEXT_FONT_DEFAULT,
                         size: PPC_QD_TEXT_SIZE_SYSTEM,
@@ -5378,6 +5408,7 @@ fn ppc_draw_dialog_items(
                 };
                 if let Some(mut style) =
                     ppc_dialog_item_text_style(window_list, memory, handles, vfs_resources, dialog, index, color)
+                        .or_else(|| ppc_dialog_port_text_style(memory, dialog, color))
                 {
                     if selected {
                         style.foreground = color;
