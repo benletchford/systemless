@@ -724,6 +724,8 @@ pub enum PpcImportDispatcherTarget {
     DSpContextRestore,
     DSpContextSetVblProc,
     DSpContextIsBusy,
+    DSpContextQueue,
+    DSpContextSwitch,
     DSpAltBufferDispose,
     DSpContextInvalBackBufferRect,
     DSpContextSetUnderlayAltBuffer,
@@ -3029,6 +3031,8 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::DSpContextSetVblProc
         }
         ("DrawSprocketLib", "DSpContext_IsBusy") => PpcImportDispatcherTarget::DSpContextIsBusy,
+        ("DrawSprocketLib", "DSpContext_Queue") => PpcImportDispatcherTarget::DSpContextQueue,
+        ("DrawSprocketLib", "DSpContext_Switch") => PpcImportDispatcherTarget::DSpContextSwitch,
         ("DrawSprocketLib", "DSpAltBuffer_Dispose") => {
             PpcImportDispatcherTarget::DSpAltBufferDispose
         }

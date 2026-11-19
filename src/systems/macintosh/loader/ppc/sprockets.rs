@@ -107,6 +107,11 @@ pub struct PpcDrawSprocketState {
     pub vbl_refcon: Option<u32>,
     pub(crate) desktop_snapshot: Option<PpcDspDesktopSnapshot>,
     pub(crate) context_clut: Option<[[u16; 3]; 256]>,
+    /// DrawSprocket 1.7 switch set: the reserved parent context first, then
+    /// every context queued under it, each with its reserved attributes.
+    pub(crate) switch_contexts: Vec<(u32, PpcDspContextAttributes)>,
+    /// Index of the switch-set entry currently owning the display.
+    pub(crate) switch_current: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +161,8 @@ impl Default for PpcDrawSprocketState {
             vbl_refcon: None,
             desktop_snapshot: None,
             context_clut: None,
+            switch_contexts: Vec::new(),
+            switch_current: 0,
         }
     }
 }
@@ -1721,7 +1728,140 @@ pub(crate) fn ppc_dsp_context_reserve(
     draw_sprocket.reserved_context = Some(context);
     draw_sprocket.active_context = None;
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
+    draw_sprocket.switch_contexts = vec![(context, draw_sprocket.context_attributes)];
+    draw_sprocket.switch_current = 0;
     PPC_NO_ERR
+}
+
+/// DSpContext_Queue (DrawSprocketLib 1.7): reserve `inChildContext` with
+/// `inDesiredAttributes` under the reserved `inParentContext`, ready for a
+/// later DSpContext_Switch. Apple's DSp_Context_Switch sample (2000) reserves
+/// one context, queues every other mode under it, activates only the parent,
+/// then switches modes with DSpContext_Switch alone.
+pub(crate) fn ppc_dsp_context_queue(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &mut PpcDrawSprocketState,
+) -> i16 {
+    let (parent, child, attributes) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
+    if let Some(error) = ppc_dsp_context_error(parent).or_else(|| ppc_dsp_context_error(child)) {
+        return error;
+    }
+    if draw_sprocket.reserved_context.is_none()
+        || !draw_sprocket
+            .switch_contexts
+            .iter()
+            .any(|(reference, _)| *reference == parent)
+    {
+        return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
+    }
+    let queued = if attributes == 0 {
+        let Some(attributes) = ppc_dsp_attributes_for_context(child, draw_sprocket) else {
+            return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+        };
+        attributes
+    } else {
+        let Some(mut requested) = ppc_read_dsp_context_attributes(memory, attributes) else {
+            return PPC_PARAM_ERR;
+        };
+        if !ppc_dsp_context_request_is_supported(requested) {
+            return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+        }
+        requested.page_count = requested.page_count.min(PPC_DSP_MAX_REQUESTED_PAGE_COUNT);
+        ppc_selected_dsp_context_attributes(requested)
+    };
+    draw_sprocket.switch_contexts.push((child, queued));
+    PPC_NO_ERR
+}
+
+/// DSpContext_Switch (DrawSprocketLib 1.7): hand the display from the current
+/// context of a switch set to another member, keeping its play state. The
+/// sample calls no SetState, Release or Reserve around the switch, and later
+/// sets the switched-to context inactive and releases the parent.
+///
+/// FindBestContext can hand the same reference to several requests, so when
+/// `inNewContext` names more than one member the switch picks a member other
+/// than the current one.
+pub(crate) fn ppc_dsp_context_switch(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &mut [PpcGWorldRecord],
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
+    next_ct_seed: &mut u32,
+    screen_bits: Option<u32>,
+    draw_sprocket: &mut PpcDrawSprocketState,
+) -> i16 {
+    let (old, new) = (cpu.gpr[3], cpu.gpr[4]);
+    if let Some(error) = ppc_dsp_context_error(old).or_else(|| ppc_dsp_context_error(new)) {
+        return error;
+    }
+    let current = draw_sprocket.switch_current;
+    if draw_sprocket.reserved_context != Some(old)
+        || draw_sprocket.switch_contexts.get(current).map(|entry| entry.0) != Some(old)
+    {
+        return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
+    }
+    let Some(target) = draw_sprocket
+        .switch_contexts
+        .iter()
+        .enumerate()
+        .position(|(index, (reference, _))| index != current && *reference == new)
+    else {
+        return if new == old {
+            PPC_NO_ERR
+        } else {
+            PPC_DSP_CONTEXT_NOT_RESERVED_ERR
+        };
+    };
+    let state = draw_sprocket.context_state;
+    let mut switch_cpu = cpu.clone();
+    if state != PpcDspContextPlayState::Inactive {
+        switch_cpu.gpr[3] = old;
+        switch_cpu.gpr[4] = PPC_DSP_CONTEXT_STATE_INACTIVE;
+        let result = ppc_dsp_context_set_state(
+            &switch_cpu,
+            memory,
+            gworlds,
+            screen_clut,
+            color_manager_clut,
+            next_ct_seed,
+            screen_bits,
+            draw_sprocket,
+        );
+        if result != PPC_NO_ERR {
+            return result;
+        }
+    }
+    draw_sprocket.switch_contexts[current].1 = draw_sprocket.context_attributes;
+    let attributes = draw_sprocket.switch_contexts[target].1;
+    draw_sprocket.context_attributes = attributes;
+    draw_sprocket.selected_context = new;
+    draw_sprocket.reserved_context = Some(new);
+    draw_sprocket.switch_current = target;
+    draw_sprocket.back_buffer_gworld = if attributes.page_count == 1 {
+        draw_sprocket.front_buffer_gworld
+    } else {
+        PPC_DSP_BACK_GWORLD
+    };
+    if state == PpcDspContextPlayState::Inactive {
+        return PPC_NO_ERR;
+    }
+    switch_cpu.gpr[3] = new;
+    switch_cpu.gpr[4] = match state {
+        PpcDspContextPlayState::Paused => PPC_DSP_CONTEXT_STATE_PAUSED,
+        _ => PPC_DSP_CONTEXT_STATE_ACTIVE,
+    };
+    ppc_dsp_context_set_state(
+        &switch_cpu,
+        memory,
+        gworlds,
+        screen_clut,
+        color_manager_clut,
+        next_ct_seed,
+        screen_bits,
+        draw_sprocket,
+    )
 }
 
 pub(crate) fn ppc_configure_dsp_framebuffers(
@@ -1993,7 +2133,15 @@ pub(crate) fn ppc_dsp_context_release(
     if let Some(error) = ppc_dsp_context_error(context) {
         return error;
     }
-    if draw_sprocket.reserved_context != Some(context) {
+    // Releasing any member of a DrawSprocket 1.7 switch set (the sample
+    // releases its parent after switching away) releases the display.
+    if draw_sprocket.reserved_context != Some(context)
+        && (draw_sprocket.reserved_context.is_none()
+            || !draw_sprocket
+                .switch_contexts
+                .iter()
+                .any(|(reference, _)| *reference == context))
+    {
         return PPC_DSP_CONTEXT_NOT_RESERVED_ERR;
     }
     if !ppc_dsp_restore_desktop(
@@ -2012,6 +2160,8 @@ pub(crate) fn ppc_dsp_context_release(
     draw_sprocket.reserved_context = None;
     draw_sprocket.active_context = None;
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
+    draw_sprocket.switch_contexts.clear();
+    draw_sprocket.switch_current = 0;
     PPC_NO_ERR
 }
 
@@ -2496,6 +2646,8 @@ pub(crate) fn ppc_draw_sprocket_action_name(
         PpcImportDispatcherTarget::DSpContextGetAttributes => Some("get_attributes"),
         PpcImportDispatcherTarget::DSpContextSetVblProc => Some("set_vbl_proc"),
         PpcImportDispatcherTarget::DSpContextIsBusy => Some("is_busy"),
+        PpcImportDispatcherTarget::DSpContextQueue => Some("context_queue"),
+        PpcImportDispatcherTarget::DSpContextSwitch => Some("context_switch"),
         PpcImportDispatcherTarget::DSpAltBufferDispose => Some("alt_buffer_dispose"),
         PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some("inval_back_buffer_rect"),
         PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {

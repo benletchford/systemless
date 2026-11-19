@@ -1809,6 +1809,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DSpContextRestore
         | PpcImportDispatcherTarget::DSpContextSetVblProc
         | PpcImportDispatcherTarget::DSpContextIsBusy
+        | PpcImportDispatcherTarget::DSpContextQueue
+        | PpcImportDispatcherTarget::DSpContextSwitch
         | PpcImportDispatcherTarget::DSpAltBufferDispose
         | PpcImportDispatcherTarget::DSpContextInvalBackBufferRect
         | PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {

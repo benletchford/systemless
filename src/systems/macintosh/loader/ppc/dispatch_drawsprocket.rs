@@ -172,6 +172,21 @@ pub(super) fn dispatch_drawsprocket_import(
         PpcImportDispatcherTarget::DSpContextReserve => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
         )),
+        PpcImportDispatcherTarget::DSpContextQueue => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_queue(cpu, memory, draw_sprocket)),
+        )),
+        PpcImportDispatcherTarget::DSpContextSwitch => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_switch(
+                cpu,
+                memory,
+                gworlds,
+                screen_clut,
+                color_manager_clut,
+                next_ct_seed,
+                screen_bits,
+                draw_sprocket,
+            )),
+        )),
         PpcImportDispatcherTarget::DSpContextRelease => {
             let result = ppc_dsp_context_release(
                 cpu,
