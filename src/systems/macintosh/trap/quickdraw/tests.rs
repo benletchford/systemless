@@ -22164,6 +22164,57 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn palettedispatch_restore_fore_and_back_resolve_cgrafport_pixels() {
+        // Warcraft II's button CDEF saves black text, sets RGBForeColor white
+        // for an emboss pass, then RestoreFore before drawing the label. The
+        // port's fgColor/bkColor pixels must follow the restored RGB, as they
+        // do when the ROM's RestoreFore/RestoreBack call RGBForeColor and
+        // RGBBackColor. Inside Macintosh Volume VI (1991), pp. 20-21 to 20-22.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        let black = bus.alloc(6);
+        let white = bus.alloc(6);
+        for offset in [0, 2, 4] {
+            bus.write_word(black + offset, 0);
+            bus.write_word(white + offset, 0xFFFF);
+        }
+        macro_rules! call {
+            ($selector:expr, $trap:expr, $arg:expr) => {{
+                if let Some(selector) = $selector {
+                    cpu.write_reg(Register::D0, selector);
+                }
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_long(TEST_SP, $arg);
+                let result = d.dispatch_quickdraw(true, $trap, &mut cpu, &mut bus);
+                assert!(result.unwrap().is_ok());
+            }};
+        }
+        call!(None::<u32>, 0x214, black); // RGBForeColor
+        call!(None::<u32>, 0x215, white); // RGBBackColor
+        let black_pixel = bus.read_long(port + 80);
+        let white_pixel = bus.read_long(port + 84);
+        assert_ne!(black_pixel, white_pixel);
+
+        let saved_fore = bus.alloc(8);
+        let saved_back = bus.alloc(8);
+        call!(Some(0x040D), 0x2A2, saved_fore);
+        call!(Some(0x040E), 0x2A2, saved_back);
+        call!(None::<u32>, 0x214, white);
+        call!(None::<u32>, 0x215, black);
+        assert_eq!(bus.read_long(port + 80), white_pixel);
+        assert_eq!(bus.read_long(port + 84), black_pixel);
+
+        call!(Some(0x040F), 0x2A2, saved_fore);
+        call!(Some(0x0410), 0x2A2, saved_back);
+        assert_eq!(d.fg_color, (0, 0, 0));
+        assert_eq!(d.bg_color, (0xFFFF, 0xFFFF, 0xFFFF));
+        assert_eq!(bus.read_long(port + 80), black_pixel, "fgColor pixel");
+        assert_eq!(bus.read_long(port + 84), white_pixel, "bkColor pixel");
+    }
+
+    #[test]
     fn palettedispatch_save_and_restore_preserve_palette_handle_and_entry() {
         let (mut d, mut cpu, mut bus) = setup();
         let palette = d.create_palette_from_ctab(&mut bus, 4, 0, super::PM_TOLERANT, 0);
