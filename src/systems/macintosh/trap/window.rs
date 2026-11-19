@@ -5191,9 +5191,16 @@ impl super::TrapDispatcher {
                         Some(global_structure),
                     );
 
-                    // Update visRgn in local coords
+                    // Update visRgn in local coords. A hidden window's visRgn
+                    // stays empty: the Window Manager only gives visible
+                    // windows a visRgn (CalcVis skips hidden ones), so
+                    // writing the new size into an empty region would let a
+                    // hidden window paint over the screen. SimEarth resizes
+                    // its hidden GAIA World window and then CopyBits its
+                    // terrain into it every frame. Inside Macintosh Volume I,
+                    // I-283 and I-297.
                     let vis_rgn_handle = bus.read_long(the_window + 24);
-                    if vis_rgn_handle != 0 {
+                    if vis_rgn_handle != 0 && self.window_visible(bus, the_window) {
                         let vis_rgn = bus.read_long(vis_rgn_handle);
                         if vis_rgn != 0 {
                             // Keep existing top (may clip menu bar)

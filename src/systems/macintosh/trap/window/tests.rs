@@ -7259,11 +7259,14 @@ fn test_size_window() {
         "portRect.right"
     );
 
-    // visRgn updated in local coords (top kept from existing region)
+    // This bare fixture leaves wVisible at 0, so the window is hidden and
+    // SizeWindow must not grow its visRgn (IM:I I-283, I-297). Resizing a
+    // visible window is covered by
+    // size_window_recalculates_background_occlusion_region.
     assert_eq!(bus.read_word(vis_rgn_data + 2) as i16, 40, "visRgn.top");
     assert_eq!(bus.read_word(vis_rgn_data + 4) as i16, 0, "visRgn.left");
-    assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 480, "visRgn.bottom");
-    assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 640, "visRgn.right");
+    assert_eq!(bus.read_word(vis_rgn_data + 6) as i16, 342, "visRgn.bottom");
+    assert_eq!(bus.read_word(vis_rgn_data + 8) as i16, 512, "visRgn.right");
 
     // clipRgn is application state; SizeWindow leaves it alone
     // (Inside Macintosh Volume I, I-290).
@@ -7278,6 +7281,43 @@ fn test_size_window() {
         bus.read_word(clip_rgn_data + 8) as i16,
         512,
         "clipRgn.right"
+    );
+}
+
+#[test]
+fn size_window_keeps_a_hidden_windows_vis_rgn_empty() {
+    // SimEarth creates its GAIA World window hidden (WIND 1002), resizes it
+    // with SizeWindow, then CopyBits its terrain into it on every frame.
+    // A hidden window has an empty visRgn (IM:I I-283, I-297); writing the
+    // new size into it let that terrain and the window's scroll bars paint
+    // over the windows in front.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, disp.screen_mode.0, 48, 16, 335, 495, "", 8, false, false,
+        false, 0,
+    );
+    let vis = bus.read_long(window + 24);
+    assert_eq!(
+        super::super::TrapDispatcher::region_handle_rect(&bus, vis),
+        None,
+        "a window created hidden starts with an empty visRgn"
+    );
+
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0); // fUpdate = FALSE
+    bus.write_word(sp + 2, 271);
+    bus.write_word(sp + 4, 319);
+    bus.write_long(sp + 6, window);
+    assert!(dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().is_ok());
+
+    assert_eq!(bus.read_word(window + 20) as i16, 271, "portRect.bottom");
+    assert_eq!(bus.read_word(window + 22) as i16, 319, "portRect.right");
+    assert_eq!(
+        super::super::TrapDispatcher::region_handle_rect(&bus, vis),
+        None,
+        "SizeWindow must leave a hidden window's visRgn empty"
     );
 }
 
