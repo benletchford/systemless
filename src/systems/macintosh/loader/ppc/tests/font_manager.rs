@@ -102,29 +102,28 @@ fn hle_import_runner_handles_font_metrics() {
     loaded.memory.add_region(metrics_ptr, vec![0xaa; 20]);
     loaded.cpu.gpr[3] = metrics_ptr;
     let text_font = ppc_current_text_font(&mut loaded.memory, *loaded.current_gworld);
-    let (face, scale) = get_font_face_scaled(text_font, loaded.quickdraw_text_size);
-    let metrics = face.metrics;
+    assert_eq!(text_font, 0, "Chicago");
+    loaded.quickdraw_text_size = 12;
     let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
 
     let probe = loaded.run_with_hle_imports(64);
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(
-        loaded.memory.read_u32_be(metrics_ptr),
-        Some(to_fixed(metrics.ascent.saturating_mul(scale)))
-    );
+    // Chicago 12 as Mac OS 9.0's GetFontInfo reports it: ascent 12, descent 3,
+    // widMax 16, leading 1.
+    assert_eq!(loaded.memory.read_u32_be(metrics_ptr), Some(to_fixed(12)));
     assert_eq!(
         loaded.memory.read_u32_be(metrics_ptr + 4),
-        Some(to_fixed(metrics.descent.saturating_mul(scale)))
+        Some(to_fixed(3))
     );
     assert_eq!(
         loaded.memory.read_u32_be(metrics_ptr + 8),
-        Some(to_fixed(metrics.leading.saturating_mul(scale)))
+        Some(to_fixed(1))
     );
     assert_eq!(
         loaded.memory.read_u32_be(metrics_ptr + 12),
-        Some(to_fixed(metrics.wid_max.saturating_mul(scale)))
+        Some(to_fixed(16))
     );
     let table = loaded
         .memory

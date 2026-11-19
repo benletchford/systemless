@@ -67,4 +67,24 @@ The bundled Monaco substitute retains its own outline pixels and per-glyph
 advances. Its `widMax` compatibility metric is derived at each requested size
 from the classic scalable Monaco family's normalized maximum advance of
 1552/2048 em. This is metadata only; no original font software or glyph artwork
-is included.
+is included. `GetFontInfo` and `FontMetrics` now report the measured
+[classic line metrics](#classic-line-metrics) instead; the face keeps this
+value for Systemless's own layout.
+
+## Classic line metrics
+
+`GetFontInfo`, `FontMetrics` and `StdTxMeas` report Mac OS 9.0's line metrics
+(ascent, descent, widMax and leading) for Chicago, New York, Geneva, Monaco,
+Palatino, Times, Helvetica, Courier and Symbol while their glyphs come from the
+bundled substitutes. The values were measured by a small 68K program on Mac
+OS 9.0 running in SheepShaver, which called `TextFont`, `TextFace`, `TextSize`,
+`RealFont` and `GetFontInfo` for each family at every size from 6 to 48 points, plain and
+bold, with bitmaps preferred (the default). `../classic_metrics.rs` encodes them
+as one rule per field and family plus the few sizes that break the rules; the
+rules and exceptions reproduce all 774 measured records. Bold changes only
+widMax. Sizes outside 6 to 48 points follow the rules.
+
+This is metadata only: the values come from calling `GetFontInfo` on a running
+system, and nothing is taken from Apple's font files. Whenever a guest font or a
+`SYSTEMLESS_ORIGINAL_FONTS_DIR` strike is what gets drawn, its own metrics are
+reported instead.

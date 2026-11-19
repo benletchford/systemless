@@ -7149,6 +7149,37 @@
     }
 
     #[test]
+    fn times_reports_mac_os_9_line_metrics_at_twelve_plain_and_twenty_bold() {
+        // GetFontInfo on Mac OS 9.0: Times 12 plain 9 / 3 / 12 / 0 and Times 20
+        // bold 15 / 5 / 20 / 0 (ascent / descent / widMax / leading). StdTxMeas
+        // fills its FontInfo the same way.
+        let (mut d, mut cpu, mut bus) = setup();
+        let info = 0x300000u32;
+        let read = |bus: &mut MacMemoryBus| -> [u16; 4] {
+            [0, 2, 4, 6].map(|at| bus.read_word(info + at))
+        };
+        for (size, face, expected) in [(12, 0, [9, 3, 12, 0]), (20, 1, [15, 5, 20, 0])] {
+            d.tx_font = crate::quickdraw::fonts::FONT_TIMES;
+            d.tx_size = size;
+            d.tx_face = face;
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, info);
+            d.dispatch_quickdraw(true, 0x08B, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(read(&mut bus), expected, "GetFontInfo Times {size}");
+
+            bus.write_bytes(info, &[0xA5; 8]);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, info);
+            bus.write_long(TEST_SP + 4, 0);
+            bus.write_long(TEST_SP + 8, 0);
+            bus.write_long(TEST_SP + 12, 0);
+            bus.write_word(TEST_SP + 16, 0);
+            d.dispatch_quickdraw(true, 0x0ED, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(read(&mut bus), expected, "StdTxMeas Times {size}");
+        }
+    }
+
+    #[test]
     fn fontmetrics_writes_fixed_ascent_descent_leading_widmax() {
         // Inside Macintosh Volume IV (1986), p. IV-32:
         // FontMetrics writes Fixed metrics into FMetricRec.
@@ -7165,22 +7196,13 @@
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
 
-        let (face, scale) = crate::quickdraw::fonts::get_font_face_scaled(d.tx_font, d.tx_size);
-        let metrics = face.metrics;
+        // Geneva 14 as Mac OS 9.0's GetFontInfo reports it: ascent 14, descent 3,
+        // widMax 19, leading 1.
         let to_fixed = |v: i16| -> u32 { (v as i32 as u32) << 16 };
-        assert_eq!(bus.read_long(rec_ptr), to_fixed(metrics.ascent * scale));
-        assert_eq!(
-            bus.read_long(rec_ptr + 4),
-            to_fixed(metrics.descent * scale)
-        );
-        assert_eq!(
-            bus.read_long(rec_ptr + 8),
-            to_fixed(metrics.leading * scale)
-        );
-        assert_eq!(
-            bus.read_long(rec_ptr + 12),
-            to_fixed(metrics.wid_max * scale)
-        );
+        assert_eq!(bus.read_long(rec_ptr), to_fixed(14));
+        assert_eq!(bus.read_long(rec_ptr + 4), to_fixed(3));
+        assert_eq!(bus.read_long(rec_ptr + 8), to_fixed(1));
+        assert_eq!(bus.read_long(rec_ptr + 12), to_fixed(19));
         assert_ne!(
             bus.read_long(rec_ptr + 16),
             0xA5A5A5A5,
