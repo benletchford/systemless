@@ -1151,6 +1151,28 @@ fn cfm_reifies_real_pef_exports_with_section_absolute_and_reexported_addresses()
 }
 
 #[test]
+fn cfm_resolves_section_exports_past_the_section_end_like_cfm() {
+    // You Don't Know Jack Demo (PowerPC) exports "._ptrgl" at an offset
+    // beyond its data section; CFM still loads the application.
+    let fragment = synthetic_pef_with_exports();
+    let mapped = vec![MappedSection {
+        index: 1,
+        section_kind: SECTION_KIND_UNPACKED_DATA,
+        base: 0x0310_0000,
+        bytes: Vec::new(),
+    }];
+    let exports = crate::cfm::fragment::resolve_fragment_exports(
+        &fragment,
+        &mapped,
+        &[0xcafe_babe, 0xdead_beef],
+    )
+    .unwrap();
+
+    assert_eq!(exports[0].name, "tvector");
+    assert_eq!(exports[0].address, 0x0310_0000);
+}
+
+#[test]
 fn get_shared_library_does_not_fabricate_unknown_connections() {
     let pef = synthetic_pef_with_import(b"GetSharedLibrary");
     let mut loaded = load_pef_application(&pef).unwrap();
