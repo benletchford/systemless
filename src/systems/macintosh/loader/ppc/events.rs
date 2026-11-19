@@ -182,9 +182,14 @@ pub(crate) fn ppc_matching_event_index(
     if os_only {
         matching.map(|(index, _)| index).next()
     } else {
-        matching
+        let index = matching
             .min_by_key(|(index, event)| (ppc_toolbox_event_priority(event.what), *index))
-            .map(|(index, _)| index)
+            .map(|(index, _)| index)?;
+        Some(crate::event_queue::autokey_before_its_keyup(
+            event_queue,
+            index,
+            |what| ppc_event_matches_mask(event_mask, what),
+        ))
     }
 }
 
@@ -227,7 +232,9 @@ pub(crate) fn ppc_dequeue_event(
     tick_count: u32,
 ) -> (u16, u32, u32, i16, i16, u16, bool) {
     if let Some(index) = ppc_matching_event_index(event_queue, event_mask, os_only) {
-        let event = event_queue.remove(index).unwrap();
+        let event =
+            crate::event_queue::remove_event_and_retire_earlier_autokeys(event_queue, index)
+                .unwrap();
         return (
             event.what,
             event.message,
@@ -313,5 +320,72 @@ pub(crate) fn ppc_enqueue_window_activation_transition(
     }
     if let Some(next) = next_front {
         ppc_enqueue_window_activation_event(memory, event_queue, next, true, when);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(what: u16, message: u32) -> PpcQueuedEvent {
+        PpcQueuedEvent {
+            what,
+            message,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }
+    }
+
+    #[test]
+    fn elapsed_autokey_is_selected_before_the_keyup_that_follows_it() {
+        // An autoKey posted before the release precedes that key's keyUp;
+        // another key's autoKey keeps its lower priority.
+        let queue: VecDeque<_> = [event(5, 0x7C1D), event(4, 0x7C1D)].into_iter().collect();
+        assert_eq!(ppc_matching_event_index(&queue, 0xFFFF, false), Some(0));
+        let queue: VecDeque<_> = [event(5, 0x7B1C), event(4, 0x7C1D)].into_iter().collect();
+        assert_eq!(ppc_matching_event_index(&queue, 0xFFFF, false), Some(1));
+        // A mask without autoKey still gets the keyUp.
+        assert_eq!(ppc_matching_event_index(&queue, 0x0010, false), Some(1));
+        let queue: VecDeque<_> = [event(5, 0x7C1D), event(4, 0x7C1D)].into_iter().collect();
+        assert_eq!(ppc_matching_event_index(&queue, 0x0010, false), Some(1));
+    }
+
+    #[test]
+    fn keyup_only_dequeue_retires_earlier_autokeys_for_that_key_only() {
+        let input = PpcInputSnapshot::default();
+        let mut queue: VecDeque<_> = [
+            event(5, 0x7C1D),
+            event(5, 0x7B1C),
+            event(4, 0x7C1D),
+            event(5, 0x7C1D),
+        ]
+        .into_iter()
+        .collect();
+
+        // Peeking with a keyUp-only mask leaves earlier repeats intact.
+        let peeked = ppc_peek_event(&queue, 0x0010, input, false, 10);
+        assert_eq!((peeked.0, peeked.1, peeked.6), (4, 0x7C1D, true));
+        assert_eq!(queue.len(), 4);
+
+        // Consuming keyUp retires the earlier repeat for 0x7C, while preserving
+        // the other key's repeat and any later repeat queued after the release.
+        let first = ppc_dequeue_event(&mut queue, 0x0010, input, false, 10);
+        assert_eq!((first.0, first.1, first.6), (4, 0x7C1D, true));
+        let second = ppc_dequeue_event(&mut queue, 0xFFFF, input, false, 10);
+        assert_eq!((second.0, second.1, second.6), (5, 0x7B1C, true));
+        let third = ppc_dequeue_event(&mut queue, 0xFFFF, input, false, 10);
+        assert_eq!((third.0, third.1, third.6), (5, 0x7C1D, true));
+        let fourth = ppc_dequeue_event(&mut queue, 0xFFFF, input, false, 10);
+        assert!(!fourth.6);
+
+        // The two-event changing-mask sequence [autoKey, keyUp] with keyUp-only
+        // then everyEvent never delivers the stale repeat after the release.
+        let mut pair: VecDeque<_> = [event(5, 0x7C1D), event(4, 0x7C1D)].into_iter().collect();
+        let release = ppc_dequeue_event(&mut pair, 0x0010, input, false, 10);
+        assert_eq!((release.0, release.1, release.6), (4, 0x7C1D, true));
+        let follow_up = ppc_dequeue_event(&mut pair, 0xFFFF, input, false, 10);
+        assert!(!follow_up.6);
     }
 }

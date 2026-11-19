@@ -153,14 +153,28 @@ impl super::TrapDispatcher {
     }
 
     fn matching_toolbox_event_index(&self, event_mask: u16) -> Option<usize> {
-        self.event_queue
+        self.matching_toolbox_event(event_mask).map(|(index, _)| index)
+    }
+
+    /// The queued event to deliver and the priority it is delivered at: an
+    /// autoKey moved ahead of its key's keyUp takes the keyUp's place, so
+    /// it competes with a pending menu click as the keyUp would have.
+    fn matching_toolbox_event(&self, event_mask: u16) -> Option<(usize, u8)> {
+        let (index, priority) = self
+            .event_queue
             .iter()
             .enumerate()
             .filter(|(_, event)| {
                 event.what != 6 && Self::event_matches_mask(event_mask, event.what)
             })
-            .min_by_key(|(index, event)| (Self::toolbox_event_priority(event.what), *index))
-            .map(|(index, _)| index)
+            .map(|(index, event)| (index, Self::toolbox_event_priority(event.what)))
+            .min_by_key(|&(index, priority)| (priority, index))?;
+        let index = crate::event_queue::autokey_before_its_keyup(
+            self.event_queue.iter(),
+            index,
+            |what| Self::event_matches_mask(event_mask, what),
+        );
+        Some((index, priority))
     }
 
     fn preferred_marked_update_event(
@@ -522,17 +536,15 @@ impl super::TrapDispatcher {
         );
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let queued = self
-            .matching_toolbox_event_index(event_mask)
-            .and_then(|index| self.event_queue.get(index));
+            .matching_toolbox_event(event_mask)
+            .and_then(|(index, priority)| Some((self.event_queue.get(index)?, priority)));
         let update = self
             .preferred_marked_update_event(bus, event_mask)
             .map(|(event, _)| event);
         let queued_or_menu = match (pending_menu, queued) {
-            (Some(pending), Some(queued)) => Some(
-                if Self::toolbox_event_priority(pending.what)
-                    < Self::toolbox_event_priority(queued.what)
-                    || (Self::toolbox_event_priority(pending.what)
-                        == Self::toolbox_event_priority(queued.what)
+            (Some(pending), Some((queued, queued_priority))) => Some(
+                if Self::toolbox_event_priority(pending.what) < queued_priority
+                    || (Self::toolbox_event_priority(pending.what) == queued_priority
                         && self.pending_native_menu_wins_fifo_tie())
                 {
                     pending
@@ -540,7 +552,7 @@ impl super::TrapDispatcher {
                     queued
                 },
             ),
-            (pending, queued) => pending.or(queued),
+            (pending, queued) => pending.or(queued.map(|(queued, _)| queued)),
         };
         match (queued_or_menu, update) {
             (Some(queued), Some(update)) => Some(
@@ -593,20 +605,17 @@ impl super::TrapDispatcher {
             self.service_window_picture_updates(cpu, bus);
         }
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
-        let first_idx = self.matching_toolbox_event_index(event_mask);
+        let first = self.matching_toolbox_event(event_mask);
+        let first_idx = first.map(|(index, _)| index);
         let preferred_update = self
             .preferred_marked_update_event(bus, event_mask)
             .map(|(event, _)| event);
         let pending_has_priority = pending_menu.as_ref().is_some_and(|pending| {
-            let precedes_queued = first_idx
-                .and_then(|index| self.event_queue.get(index))
-                .is_none_or(|queued| {
-                    Self::toolbox_event_priority(pending.what)
-                        < Self::toolbox_event_priority(queued.what)
-                        || (Self::toolbox_event_priority(pending.what)
-                            == Self::toolbox_event_priority(queued.what)
-                            && self.pending_native_menu_wins_fifo_tie())
-                });
+            let precedes_queued = first.is_none_or(|(_, queued_priority)| {
+                Self::toolbox_event_priority(pending.what) < queued_priority
+                    || (Self::toolbox_event_priority(pending.what) == queued_priority
+                        && self.pending_native_menu_wins_fifo_tie())
+            });
             let precedes_update = preferred_update.as_ref().is_none_or(|update| {
                 Self::toolbox_event_priority(pending.what)
                     <= Self::toolbox_event_priority(update.what)
@@ -660,7 +669,9 @@ impl super::TrapDispatcher {
                 // A consumed event can highlight or close a retained dialog even
                 // though GetNextEvent returns a null event to the guest.
                 self.event_poll_requires_yield = true;
-                self.event_queue.remove(idx);
+                self.event_queue.with_mut(|queue| {
+                    crate::event_queue::remove_event_and_retire_earlier_autokeys(queue, idx);
+                });
                 self.acknowledge_window_activation_event(bus, &event);
                 if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                     eprintln!(
@@ -678,7 +689,12 @@ impl super::TrapDispatcher {
                     false,
                 );
             }
-            let event = self.event_queue.remove(idx).unwrap();
+            let event = self
+                .event_queue
+                .with_mut(|queue| {
+                    crate::event_queue::remove_event_and_retire_earlier_autokeys(queue, idx)
+                })
+                .unwrap();
             self.acknowledge_window_activation_event(bus, &event);
             if event.what == Self::K_HIGH_LEVEL_EVENT
                 && event.message == Self::K_CORE_EVENT_CLASS
@@ -860,7 +876,12 @@ impl super::TrapDispatcher {
             }
         }
         if let Some(idx) = queued_idx {
-            let ev = self.event_queue.remove(idx).unwrap();
+            let ev = self
+                .event_queue
+                .with_mut(|queue| {
+                    crate::event_queue::remove_event_and_retire_earlier_autokeys(queue, idx)
+                })
+                .unwrap();
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
                     "[INPUT] dequeue what={} message=${:08X} where=({}, {}) mask=${:04X}",
