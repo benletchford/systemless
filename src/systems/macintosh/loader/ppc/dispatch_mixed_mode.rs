@@ -1197,9 +1197,10 @@ pub(super) fn ppc_call_universal_proc(
     }
     let final_pc = cpu.lr;
     let restore_rtoc = cpu.gpr[2];
-    let return_gpr3 = ppc_call_universal_proc_return_gpr3(proc_info);
-    let selector = ppc_call_universal_proc_selector(cpu, memory, proc_info).ok()?;
-    let arguments = ppc_call_universal_proc_arguments(cpu, memory, proc_info).ok()?;
+    let mut return_gpr3 = ppc_call_universal_proc_return_gpr3(proc_info);
+    let mut selector = ppc_call_universal_proc_selector(cpu, memory, proc_info).ok()?;
+    let mut arguments = ppc_call_universal_proc_arguments(cpu, memory, proc_info).ok()?;
+    let mut effective_proc_info = proc_info;
     if memory.read_u32_be(proc_ptr) == Some(0x40c0_007c)
         && memory.read_u32_be(proc_ptr.wrapping_add(4)) == Some(0x0700_4e75)
     {
@@ -1234,6 +1235,25 @@ pub(super) fn ppc_call_universal_proc(
             "[PPC-TRACE] CallUniversalProc target isa={:?} entry=${:08X} rtoc=${:08X} system_isa={:?}",
             target.isa, target.entry, target.rtoc, memory.system_code_isa(proc_ptr),
         );
+    }
+    // A 68K routine reached through a routine descriptor is called with the
+    // conventions in its routine record. ShadowWraith's static descriptor for
+    // its Sound-Trecker resource records D0-dispatched procInfo $E6A8, while
+    // the caller passes plain Pascal $E620 with the selector as its first
+    // argument; converting with the caller's value dropped every argument.
+    if target.isa == GuestIsa::M68k
+        && target.proc_info != 0
+        && target.proc_info != proc_info
+        && matches!(
+            target.representation,
+            crate::guest_procedure::GuestProcedureRepresentation::RoutineDescriptor { .. }
+        )
+    {
+        let record_proc_info = target.proc_info;
+        effective_proc_info = record_proc_info;
+        return_gpr3 = ppc_call_universal_proc_return_gpr3(record_proc_info);
+        selector = ppc_call_universal_proc_selector(cpu, memory, record_proc_info).ok()?;
+        arguments = ppc_call_universal_proc_arguments(cpu, memory, record_proc_info).ok()?;
     }
     match target.isa {
         GuestIsa::PowerPc => {
@@ -1283,7 +1303,7 @@ pub(super) fn ppc_call_universal_proc(
             heap_limit,
             toolbox_startup,
             target,
-            proc_info,
+            effective_proc_info,
             selector,
             arguments?,
             final_pc,
