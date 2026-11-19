@@ -139,10 +139,21 @@ impl PpcLoadedApp {
             .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
             .checked_sub(PPC_INITIAL_STACK_FRAME_SIZE)?
             & !15;
-        if frame_sp < base
-            || interrupted_sp > limit
-            || !ppc_memory_can_write_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE)
-        {
+        let on_owner_stack = interrupted_sp >= base && interrupted_sp <= limit;
+        let writable = if on_owner_stack {
+            frame_sp >= base
+                && ppc_memory_can_write_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE)
+        } else {
+            // An application may run on a stack it allocated itself (Rebel
+            // Assault II's decoder uses one in its data section). The
+            // interrupt still arrives on whatever stack r1 names, so accept
+            // it when the callback frame and Red Zone are writable memory that
+            // does not reach into the owner's real stack.
+            let span = interrupted_sp - frame_sp;
+            (frame_sp >= limit || interrupted_sp <= base)
+                && ppc_memory_can_write_bytes(&mut self.memory, frame_sp, span)
+        };
+        if !writable {
             return None;
         }
         if !ppc_zero_guest_bytes(&mut self.memory, frame_sp, PPC_INITIAL_STACK_FRAME_SIZE) {
