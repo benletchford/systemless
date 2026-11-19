@@ -49,6 +49,10 @@ impl QuickDrawTextStyle {
         Self(0)
     }
 
+    pub(crate) const fn bits(self) -> u8 {
+        self.0
+    }
+
     pub(crate) const fn is_plain(self) -> bool {
         self.0 == 0
     }

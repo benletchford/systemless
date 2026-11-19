@@ -145,6 +145,7 @@ fn font_bitmap(font: i16, style: u8, size: i16, code: i32) -> Bitmap {
     if !(0..=255).contains(&code) {
         return empty();
     }
+    let (font, style) = crate::quickdraw::fonts::styled_face(font, size, style);
     let style = QuickDrawTextStyle::from_bits(style);
     let (face, numerator, denominator) = get_font_face_scale_ratio(font, size);
     let ch = char::from(code as u8);

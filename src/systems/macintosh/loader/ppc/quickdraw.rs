@@ -2305,6 +2305,7 @@ pub(crate) fn ppc_trunc_string(
 }
 
 pub(crate) fn ppc_text_width_bytes(text_font: i16, text_size: i16, style: u8, bytes: &[u8]) -> i16 {
+    let (text_font, style) = crate::quickdraw::fonts::styled_face(text_font, text_size, style);
     let style = QuickDrawTextStyle::from_bits(style);
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let base_advance = bytes.iter().fold(0i32, |advance, ch| {
@@ -2882,6 +2883,9 @@ pub(crate) fn ppc_draw_text_bytes_styled_clipped(
     clip_rect: Option<(i16, i16, i16, i16)>,
     bytes: &[u8],
 ) -> i16 {
+    // A family's own bold face, where one stands in, replaces synthesized
+    // bold: its glyphs and widths, with no extra advance or second strike.
+    let (text_font, style) = crate::quickdraw::fonts::styled_face(text_font, text_size, style);
     let style = QuickDrawTextStyle::from_bits(style);
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let base_advance = bytes.iter().fold(0i32, |advance, ch| {

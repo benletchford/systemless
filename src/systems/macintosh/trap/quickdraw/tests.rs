@@ -6484,6 +6484,93 @@
     }
 
     #[test]
+    fn bold_times_measures_and_draws_with_mac_os_9_widths() {
+        // Measured on Mac OS 9.0: Times bold takes the bold face's widths from
+        // 12 points up and is plain + 1 at 10 points.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        d.tx_font = crate::quickdraw::fonts::FONT_TIMES;
+        let pascal = 0x300000u32;
+        let raw = 0x300100u32;
+        let mut char_width = |d: &mut TrapDispatcher, bus: &mut MacMemoryBus, byte: u8| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, u16::from(byte));
+            d.dispatch_quickdraw(true, 0x08D, &mut cpu, bus).unwrap().unwrap();
+            bus.read_word(TEST_SP + 2) as i16
+        };
+        for (size, byte, expected) in [(12, b'O', 9), (12, b'K', 9), (20, b'O', 16), (20, b'K', 16)] {
+            d.tx_size = size;
+            d.tx_face = 1;
+            assert_eq!(char_width(&mut d, &mut bus, byte), expected, "{size} {}", byte as char);
+        }
+        d.tx_size = 10;
+        d.tx_face = 0;
+        let plain = char_width(&mut d, &mut bus, b'O');
+        d.tx_face = 1;
+        assert_eq!(char_width(&mut d, &mut bus, b'O'), plain + 1, "synthesized at 10 points");
+
+        d.tx_size = 20;
+        d.tx_face = 1;
+        for (text, expected) in [(b"New Player".as_slice(), 98i16), (b"OK", 32)] {
+            bus.write_byte(pascal, text.len() as u8);
+            bus.write_bytes(pascal + 1, text);
+            bus.write_bytes(raw, text);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pascal);
+            d.dispatch_quickdraw(true, 0x08C, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(bus.read_word(TEST_SP + 4) as i16, expected, "StringWidth");
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, text.len() as u16);
+            bus.write_word(TEST_SP + 2, 0);
+            bus.write_long(TEST_SP + 4, raw);
+            d.dispatch_quickdraw(true, 0x086, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(bus.read_word(TEST_SP + 8) as i16, expected, "TextWidth");
+            d.pn_loc = (40, 20);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pascal);
+            d.dispatch_quickdraw(true, 0x084, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(d.pn_loc.1 - 20, expected, "DrawString pen advance");
+        }
+
+        // DrawString draws the bold face's glyphs once: exactly what the bold
+        // face draws as plain text, with no second strike.
+        let port = 0x181000u32;
+        let base = bus.alloc(20 * 40);
+        bus.write_long(port + 2, base);
+        bus.write_word(port + 6, 20);
+        write_rect(&mut bus, port + 8, 0, 0, 40, 160);
+        write_rect(&mut bus, port + 16, 0, 0, 40, 160);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 33); // blackColor
+        d.dispatch_quickdraw(true, 0x062, &mut cpu, &mut bus).unwrap().unwrap();
+        d.tx_size = 20;
+        d.tx_mode = 1;
+        d.pn_vis = 0;
+        let text = b"Delete Player";
+        bus.write_byte(pascal, text.len() as u8);
+        bus.write_bytes(pascal + 1, text);
+        let mut drawn = |d: &mut TrapDispatcher, bus: &mut MacMemoryBus, font, face| {
+            d.tx_font = font;
+            d.tx_face = face;
+            d.pn_loc = (28, 4);
+            bus.write_bytes(base, &[0; 20 * 40]);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, pascal);
+            d.dispatch_quickdraw(true, 0x084, &mut cpu, bus).unwrap().unwrap();
+            bus.read_bytes(base, 20 * 40)
+        };
+        let bold = drawn(&mut d, &mut bus, crate::quickdraw::fonts::FONT_TIMES, 1);
+        let face = drawn(
+            &mut d,
+            &mut bus,
+            crate::quickdraw::fonts::families::FONT_BUNDLED_ROMAN_BOLD,
+            0,
+        );
+        assert!(bold.iter().any(|&b| b != 0), "nothing drawn");
+        assert!(bold == face, "bold Times draws other pixels than its bold face");
+    }
+
+    #[test]
     fn geneva9_bold_draw_and_measure_paths_share_classic_phrase_advance() {
         const TEXT: &[u8] = b"This is your shooter.  There are many like it, ";
         const EXPECTED: i16 = 254;

@@ -2163,11 +2163,12 @@ impl super::TrapDispatcher {
                 let start_addr = str_ptr + 1;
                 for i in 0..len {
                     let ch = bus.read_byte(start_addr + i as u32) as char;
-                    let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                        i32::from(self.glyph_advance(g))
-                    } else {
-                        i32::from(self.missing_glyph_advance())
-                    };
+                    let advance =
+                        if let Some((g, _)) = get_glyph(self.text_glyph_font(), self.tx_size, ch) {
+                            i32::from(self.glyph_advance(g))
+                        } else {
+                            i32::from(self.missing_glyph_advance())
+                        };
                     total_base += advance;
                 }
                 let total_width = self.proportional_text_width(total_base);
@@ -2185,11 +2186,12 @@ impl super::TrapDispatcher {
             (true, 0x08D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ch = (bus.read_word(sp) & 0xFF) as u8 as char;
-                let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                    i32::from(self.glyph_advance(g))
-                } else {
-                    i32::from(self.missing_glyph_advance())
-                };
+                let advance =
+                    if let Some((g, _)) = get_glyph(self.text_glyph_font(), self.tx_size, ch) {
+                        i32::from(self.glyph_advance(g))
+                    } else {
+                        i32::from(self.missing_glyph_advance())
+                    };
                 let advance = self.proportional_text_width(advance);
                 bus.write_word(sp + 2, advance as u16);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -2210,11 +2212,12 @@ impl super::TrapDispatcher {
                 let start_addr = text_buf + first_byte as u32;
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start_addr + i as u32) as char;
-                    let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                        i32::from(self.glyph_advance(g))
-                    } else {
-                        i32::from(self.missing_glyph_advance())
-                    };
+                    let advance =
+                        if let Some((g, _)) = get_glyph(self.text_glyph_font(), self.tx_size, ch) {
+                            i32::from(self.glyph_advance(g))
+                        } else {
+                            i32::from(self.missing_glyph_advance())
+                        };
                     total_base += advance;
                 }
                 let total_width = self.proportional_text_width(total_base);
@@ -2295,7 +2298,7 @@ impl super::TrapDispatcher {
                     let mut advance = 0i32;
                     for &byte in &text {
                         advance += if let Some((glyph, _)) =
-                            get_glyph(self.tx_font, self.tx_size, byte as char)
+                            get_glyph(self.text_glyph_font(), self.tx_size, byte as char)
                         {
                             i32::from(self.glyph_advance(glyph))
                         } else {
@@ -11551,12 +11554,13 @@ impl super::TrapDispatcher {
 
                 for i in 0..byte_count {
                     let ch = bus.read_byte(text_buf + i as u32) as char;
-                    let advance =
-                        if let Some((glyph, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                            i32::from(self.glyph_advance(glyph) * scale)
-                        } else {
-                            i32::from(self.missing_glyph_advance() * scale)
-                        };
+                    let advance = if let Some((glyph, _)) =
+                        get_glyph(self.text_glyph_font(), self.tx_size, ch)
+                    {
+                        i32::from(self.glyph_advance(glyph) * scale)
+                    } else {
+                        i32::from(self.missing_glyph_advance() * scale)
+                    };
                     total_width += advance;
                 }
 
@@ -14982,12 +14986,13 @@ impl super::TrapDispatcher {
                     if text_addr != 0 && count > 0 {
                         for i in 0..(count as u32) {
                             let ch = bus.read_byte(text_addr + i) as char;
-                            let advance =
-                                if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                                    self.glyph_advance(g) * scale
-                                } else {
-                                    self.missing_glyph_advance() * scale
-                                };
+                            let advance = if let Some((g, _)) =
+                                get_glyph(self.text_glyph_font(), self.tx_size, ch)
+                            {
+                                self.glyph_advance(g) * scale
+                            } else {
+                                self.missing_glyph_advance() * scale
+                            };
                             offset = offset.saturating_add(advance);
                             bus.write_word(char_locs + (i + 1) * 2, offset as u16);
                         }
