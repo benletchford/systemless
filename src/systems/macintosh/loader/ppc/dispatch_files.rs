@@ -776,6 +776,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             ))))
         }
         PpcImportDispatcherTarget::GetFInfoCString => {
@@ -789,6 +790,7 @@ pub(super) fn dispatch_file_import(context: PpcFileDispatchContext<'_>) -> Optio
                 vfs_files,
                 vfs_resource_files,
                 default_dir_id,
+                vfs_volumes,
             );
             ppc_p2cstr(cpu, memory);
             Some(PpcImportAction::Return(ppc_i16_result(result)))
