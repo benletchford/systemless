@@ -1913,6 +1913,7 @@ impl MacMemoryBus {
         // ScrnBase ($0824) - pointer to screen buffer
         bus.write_long(0x0824, screen_base);
         bus.write_word(super::globals::addr::SCREEN_ROW, screen_row_bytes);
+        bus.write_word(super::globals::addr::CHUNKY_DEPTH, profile.screen_depth);
 
         // Direct Sound Driver clients clear SoundBase themselves; NIL would
         // send those writes into low memory and corrupt Ticks. Reserve the
@@ -1938,6 +1939,7 @@ impl MacMemoryBus {
         debug_assert!(matches!(depth, 1 | 2 | 4 | 8));
         let row_bytes = profile.screen_row_bytes_at_depth(depth);
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
+        self.write_word(super::globals::addr::CHUNKY_DEPTH, depth);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 10, profile.screen_height);
         self.write_word(super::globals::addr::SCREEN_BITS + 12, profile.screen_width);
@@ -4802,6 +4804,16 @@ mod tests {
     fn new_bus_publishes_default_screen_row_bytes() {
         let bus = MacMemoryBus::new(1024);
         assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 816);
+    }
+
+    #[test]
+    fn screen_configuration_publishes_chunky_depth() {
+        // SysEqu.a: ChunkyDepth ($0D60) is the main screen's pixel depth.
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::CHUNKY_DEPTH), 8);
+        let profile = crate::machine_profile::reference_machine_profile();
+        bus.configure_screen(profile, 4);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::CHUNKY_DEPTH), 4);
     }
 
     #[test]
