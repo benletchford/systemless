@@ -300,6 +300,131 @@ fn parked_native_call_executes_68k_code_and_nested_traps_in_shared_memory() {
     assert_eq!(runner.bus.read_long(RESULT), 41);
 }
 
+/// Trophy Bass's PowerPC code drives a 68K SoundMusicSys driver through
+/// Mixed Mode; the driver plays through SndPlayDoubleBuffer with a 68K
+/// doubleback procedure. Injecting that interrupt into the idle 68K processor
+/// between Mixed Mode calls lost it (the next call installs its own
+/// registers), so the channel never refilled and the game stalled on its
+/// title. The callback must run inside the 68K call and leave it intact,
+/// whether it pops its Pascal parameters or not.
+#[test]
+fn powerpc_app_delivers_68k_doubleback_inside_a_mixed_mode_call() {
+    use crate::sound::PendingDoubleBackCallback;
+
+    const M68K_ENTRY: u32 = 0x0301_0000;
+    const CALLBACK: u32 = 0x0301_0100;
+    const RESULT: u32 = 0x0302_0000;
+    const HEADER: u32 = 0x0302_0100;
+    const BUFFER: u32 = 0x0302_0200;
+    const CHANNEL: u32 = 0x0302_0300;
+    const STACK_BASE: u32 = 0x0303_0000;
+    const INITIAL_SP: u32 = STACK_BASE + 0x80;
+    const RETURN_PC: u32 = 0x0304_0000;
+
+    for pascal_cleanup in [true, false] {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(41, 1, 0);
+        runner.init_app(&app);
+
+        let mut callback = vec![
+            0x26, 0x3c, 0x00, 0x00, 0x12, 0x34, // MOVE.L #$1234,D3
+            0x24, 0x6f, 0x00, 0x04, // MOVEA.L 4(SP),A2: exhausted buffer
+            0x23, 0xca, 0x03, 0x02, 0x00, 0x04, // MOVE.L A2,RESULT+4
+            0x23, 0xef, 0x00, 0x08, 0x03, 0x02, 0x00, 0x08, // MOVE.L 8(SP),RESULT+8
+        ];
+        if pascal_cleanup {
+            callback.extend([
+                0x20, 0x5f, // MOVEA.L (SP)+,A0
+                0x50, 0x8f, // ADDQ.L #8,SP
+                0x4e, 0xd0, // JMP (A0)
+            ]);
+        } else {
+            callback.extend([0x4e, 0x75]); // RTS
+        }
+        let ppc_app = runner.native.application_mut().expect("PPC app");
+        ppc_app.memory.add_region(
+            M68K_ENTRY,
+            vec![
+                0x52, 0x83, // ADDQ.L #1,D3
+                0x23, 0xc3, 0x03, 0x02, 0x00, 0x00, // MOVE.L D3,RESULT
+                0x4e, 0x75, // RTS
+            ],
+        );
+        ppc_app.memory.add_region(CALLBACK, callback);
+        ppc_app.memory.add_region(RESULT, vec![0; 12]);
+        ppc_app.memory.add_region(HEADER, vec![0; 0x400]);
+        ppc_app.memory.write_u32_be(HEADER + 12, BUFFER).unwrap();
+        ppc_app.memory.write_u32_be(BUFFER + 4, 1).unwrap();
+        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        assert!(ppc_app
+            .toolbox_startup
+            .execution
+            .calls()
+            .begin_powerpc_to_m68k(
+                crate::guest_call::GuestCallTarget {
+                    isa: crate::guest_procedure::GuestIsa::M68k,
+                    entry: M68K_ENTRY,
+                    rtoc: 0,
+                },
+                M68K_ENTRY,
+                INITIAL_SP,
+                RETURN_PC,
+                INITIAL_SP + 4,
+                crate::guest_call::M68kRegisterState::default(),
+                Some(crate::guest_call::M68kResultSource::Data(0)),
+                PPC_CODE_BASE,
+                0,
+                PpcNativeReturnGpr3::Preserve,
+            ));
+        runner
+            .dispatcher
+            .sound_manager
+            .queue_doubleback_callback(PendingDoubleBackCallback {
+                callback_addr: CALLBACK,
+                chan_ptr: CHANNEL,
+                header_ptr: HEADER,
+                exhausted_buffer_index: 0,
+            });
+
+        let (_, running) = runner.run_steps(64, None);
+
+        assert!(running, "pascal_cleanup={pascal_cleanup}");
+        assert!(!runner.is_halted(), "pascal_cleanup={pascal_cleanup}");
+        assert!(
+            runner.dispatcher.guest_calls.is_empty(),
+            "pascal_cleanup={pascal_cleanup}"
+        );
+        assert!(
+            runner.active_interrupt_callback.is_none(),
+            "pascal_cleanup={pascal_cleanup}"
+        );
+        assert_eq!(
+            runner.bus.read_long(RESULT + 4),
+            BUFFER,
+            "pascal_cleanup={pascal_cleanup}"
+        );
+        assert_eq!(
+            runner.bus.read_long(RESULT + 8),
+            CHANNEL,
+            "pascal_cleanup={pascal_cleanup}"
+        );
+        assert_eq!(runner.bus.read_long(BUFFER + 4), 0, "dbBufferReady cleared");
+        // The interrupted routine resumed with its own D3, not the callback's.
+        assert_eq!(
+            runner.bus.read_long(RESULT),
+            1,
+            "pascal_cleanup={pascal_cleanup}"
+        );
+        let ppc_app = runner.native.application_mut().expect("PPC app retained");
+        assert_eq!(
+            ppc_app.cpu.pc, PPC_CODE_BASE,
+            "pascal_cleanup={pascal_cleanup}"
+        );
+    }
+}
+
 #[test]
 fn parked_powerpc_to_68k_call_obeys_guest_vector_10() {
     const M68K_ENTRY: u32 = 0x0301_1000;

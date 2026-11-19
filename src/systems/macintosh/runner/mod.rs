@@ -419,6 +419,29 @@ fn trace_opcode_counts_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_OPCODE_COUNTS").is_some())
 }
 
+/// Registers a 68K sound callback delivered inside a Mixed Mode call saves
+/// and restores, in `ActiveInterruptCallback::{d_regs, a_regs}` order.
+const MIXED_MODE_CALLBACK_D_REGS: [Register; 8] = [
+    Register::D0,
+    Register::D1,
+    Register::D2,
+    Register::D3,
+    Register::D4,
+    Register::D5,
+    Register::D6,
+    Register::D7,
+];
+const MIXED_MODE_CALLBACK_A_REGS: [Register; 8] = [
+    Register::A0,
+    Register::A1,
+    Register::A2,
+    Register::A3,
+    Register::A4,
+    Register::A5,
+    Register::A6,
+    Register::A7,
+];
+
 static TRACE_PPC_FETCH_COUNTS: OnceLock<bool> = OnceLock::new();
 fn trace_ppc_fetch_counts_enabled() -> bool {
     *TRACE_PPC_FETCH_COUNTS
@@ -1953,6 +1976,12 @@ pub struct FixtureRunner {
     /// Guest-memory address of the SndPlayDoubleBuffer doubleback trampoline.
     /// Allocated once on first use and reused for all double-buffer callbacks.
     sound_doubleback_trampoline: u32,
+    /// A7 at entry to a 68K sound callback delivered inside a PowerPC
+    /// application's Mixed Mode call (its return address on top).
+    mixed_mode_sound_callback_sp: u32,
+    /// Set while `deliver_mixed_mode_sound_interrupt` fires a 68K sound
+    /// callback into a Mixed Mode call (stack frame, no synthetic trampoline).
+    delivering_mixed_mode_sound: bool,
     /// Guest-memory address of the SndNewChannel callback trampoline.
     /// Allocated once on first use and reused for all callback procedures.
     sound_callback_trampoline: u32,
@@ -2187,6 +2216,8 @@ impl FixtureRunner {
             audio_buffer: Vec::new(),
             legacy_sound: legacy_sound::LegacySound::default(),
             sound_doubleback_trampoline: 0,
+            mixed_mode_sound_callback_sp: 0,
+            delivering_mixed_mode_sound: false,
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
             file_completion_trampoline: 0,
@@ -5498,13 +5529,123 @@ impl FixtureRunner {
         self.dispatcher
             .sync_guest_sound_channel_state(&mut self.bus);
 
-        if !sound_interrupt_dispatched {
+        // A PowerPC application's 68K processor runs only inside Mixed Mode
+        // calls, which install their own registers. A callback injected into
+        // the idle processor here would be overwritten by the next call and
+        // leave its interrupt open for good, so 68K sound callbacks for a
+        // PowerPC application are delivered inside a 68K call instead
+        // (`run_pending_m68k_guest_call`).
+        if !sound_interrupt_dispatched && !self.is_powerpc_app() {
             let fired_sound_callback = self.fire_sound_callbacks();
             if !fired_sound_callback {
                 // Fire pending double-buffer callbacks (SndPlayDoubleBuffer).
                 self.fire_sound_doubleback_callbacks();
             }
         }
+    }
+
+    /// Deliver one pending 68K Sound Manager callback (callBackCmd, file
+    /// completion or doubleback) to the 68K code a PowerPC application is
+    /// running through Mixed Mode. The callback interrupts that code at its
+    /// current instruction like any interrupt, and
+    /// `finish_mixed_mode_sound_interrupt` restores the interrupted registers
+    /// when it returns. Sound (1994), pp. 2-72 and 2-146.
+    fn deliver_mixed_mode_sound_interrupt(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+        self.delivering_mixed_mode_sound = true;
+        let delivered = self.fire_sound_callbacks() || self.fire_sound_doubleback_callbacks();
+        self.delivering_mixed_mode_sound = false;
+        delivered
+    }
+
+    /// Call a 68K sound callback from inside a PowerPC application's Mixed
+    /// Mode call. The synthetic trampolines the 68K runtime uses live outside
+    /// a PowerPC process's memory, so the parameters (and a copy of the
+    /// command for callBackCmd procedures) go on the interrupted 68K stack
+    /// beneath a return address of the interrupted instruction. Pascal and C
+    /// callees both return there; the interrupted registers, including A7,
+    /// are then restored whole.
+    fn inject_mixed_mode_sound_callback(
+        &mut self,
+        source: ActiveInterruptCallbackSource,
+        callback_addr: u32,
+        params: &[u32],
+        command: Option<[u8; 8]>,
+    ) -> bool {
+        let resume_pc = self.m68k.cpu.read_reg(Register::PC);
+        let resume_sp = self.m68k.cpu.read_reg(Register::A7);
+        let d_regs = MIXED_MODE_CALLBACK_D_REGS.map(|register| self.m68k.cpu.read_reg(register));
+        let a_regs = MIXED_MODE_CALLBACK_A_REGS.map(|register| self.m68k.cpu.read_reg(register));
+        let sr = self.m68k.cpu.core.get_sr();
+        let ccr = self.m68k.cpu.core.get_ccr();
+
+        let mut sp = resume_sp;
+        let mut command_ptr = None;
+        if let Some(bytes) = command {
+            sp = sp.wrapping_sub(8);
+            for (offset, byte) in (0u32..).zip(bytes) {
+                self.bus.write_byte(sp.wrapping_add(offset), byte);
+            }
+            command_ptr = Some(sp);
+        }
+        // Classic Pascal pushes parameters left to right, so the last one
+        // sits nearest the return address. Sound (1994), 2-153.
+        for &value in params.iter().chain(command_ptr.as_ref()).chain([resume_pc].iter()) {
+            sp = sp.wrapping_sub(4);
+            self.bus.write_long(sp, value);
+        }
+
+        self.active_interrupt_callback = Some(ActiveInterruptCallback {
+            source,
+            resume_pc,
+            resume_sp,
+            d_regs,
+            a_regs,
+            sr,
+            ccr,
+            restore_port: None,
+        });
+        self.mixed_mode_sound_callback_sp = sp;
+        self.m68k
+            .cpu
+            .core
+            .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
+        self.m68k.cpu.write_reg(Register::A7, sp);
+        self.m68k.cpu.write_reg(Register::PC, callback_addr);
+        true
+    }
+
+    /// Complete a callback delivered by `inject_mixed_mode_sound_callback`
+    /// once it has returned to the interrupted instruction, whichever share
+    /// of its parameters it popped.
+    fn finish_mixed_mode_sound_interrupt(&mut self) {
+        let Some(callback) = self.active_interrupt_callback else {
+            return;
+        };
+        let sp = self.m68k.cpu.read_reg(Register::A7);
+        if !is_sound_interrupt_source(callback.source)
+            || self.m68k.cpu.read_reg(Register::PC) != callback.resume_pc
+            || sp <= self.mixed_mode_sound_callback_sp
+            || sp > callback.resume_sp
+        {
+            return;
+        }
+        if trace_sound_runner_enabled() {
+            eprintln!(
+                "[SOUND-CB] resume {:?} pc=${:08X} sp=${:08X} restore_ccr=${:02X} (mixed mode)",
+                callback.source, callback.resume_pc, callback.resume_sp, callback.ccr
+            );
+        }
+        for (register, value) in MIXED_MODE_CALLBACK_D_REGS.into_iter().zip(callback.d_regs) {
+            self.m68k.cpu.write_reg(register, value);
+        }
+        for (register, value) in MIXED_MODE_CALLBACK_A_REGS.into_iter().zip(callback.a_regs) {
+            self.m68k.cpu.write_reg(register, value);
+        }
+        self.m68k.cpu.core.set_sr_noint_nosp(callback.sr);
+        self.active_interrupt_callback = self.suspended_dialog_callback.take();
     }
 
     /// Mix a GUI-only audio slice without running foreground guest code or
@@ -9397,10 +9538,12 @@ impl FixtureRunner {
         let mut executed = 0usize;
         let mut running = true;
         let mut watch_buf = Vec::with_capacity(4);
+        self.deliver_mixed_mode_sound_interrupt();
         while executed < max_steps {
             if self.debug_finish_step_if_ready() {
                 return Some((executed, true));
             }
+            self.finish_mixed_mode_sound_interrupt();
             if self.dispatcher.resume_menu_tracking(&mut self.m68k.cpu, &mut self.bus).is_some() {
                 executed += 1;
                 self.debug_note_m68k_executed_units(1);
@@ -9430,6 +9573,14 @@ impl FixtureRunner {
             }
             watch_buf.clear();
             watch_buf.push(pending.return_pc);
+            if let Some(callback) = self
+                .active_interrupt_callback
+                .filter(|callback| {
+                    is_sound_interrupt_source(callback.source) && callback.resume_pc != entry_pc
+                })
+            {
+                watch_buf.push(callback.resume_pc);
+            }
             self.dispatcher
                 .append_pending_native_trap_return_pcs(&mut watch_buf);
             watch_buf.extend(self.debug_m68k_breakpoint_addresses());
@@ -12746,6 +12897,19 @@ impl FixtureRunner {
                     return false;
                 }
 
+                if self.delivering_mixed_mode_sound {
+                    let mut command = [0u8; 8];
+                    command[..2].copy_from_slice(&cmd.cmd.to_be_bytes());
+                    command[2..4].copy_from_slice(&(cmd.param1 as u16).to_be_bytes());
+                    command[4..].copy_from_slice(&cmd.param2.to_be_bytes());
+                    return self.inject_mixed_mode_sound_callback(
+                        ActiveInterruptCallbackSource::SoundCallback,
+                        callback_addr,
+                        &[chan_ptr],
+                        Some(command),
+                    );
+                }
+
                 // Sound 1994, 2-152
                 if self.sound_callback_trampoline == 0 {
                     // Sound callback:
@@ -12790,6 +12954,15 @@ impl FixtureRunner {
             } => {
                 if callback_addr == 0 {
                     return false;
+                }
+
+                if self.delivering_mixed_mode_sound {
+                    return self.inject_mixed_mode_sound_callback(
+                        ActiveInterruptCallbackSource::SoundFileCompletion,
+                        callback_addr,
+                        &[chan_ptr],
+                        None,
+                    );
                 }
 
                 // Sound 1994, 2-151
@@ -12878,6 +13051,15 @@ impl FixtureRunner {
 
         if cb.callback_addr == 0 {
             return false;
+        }
+
+        if self.delivering_mixed_mode_sound {
+            return self.inject_mixed_mode_sound_callback(
+                ActiveInterruptCallbackSource::SoundDoubleBack,
+                cb.callback_addr,
+                &[cb.chan_ptr, exhausted_buf_ptr],
+                None,
+            );
         }
 
         // Allocate trampoline on first use.
