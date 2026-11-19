@@ -20099,6 +20099,8 @@ impl super::TrapDispatcher {
         if !self.preflight_setdepth_color_tables(bus, color_screen_base, entry_count) {
             return false;
         }
+        // Ports still pointing at the old screen base follow the device.
+        let old_screen_base = bus.read_long(0x0824);
         bus.write_long(0x0824, color_screen_base); // ScrnBase
         bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
 
@@ -20127,6 +20129,7 @@ impl super::TrapDispatcher {
         self.install_standard_depth_clut(bus, depth, is_color);
         self.sync_screen_backed_cgrafports_depth(
             bus,
+            old_screen_base,
             color_screen_base,
             row_bytes,
             depth,
@@ -20326,9 +20329,34 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Ports that may draw straight to the screen: every colour port we
+    /// opened, the window list, the current and front ports, and both
+    /// Window Manager ports. The ROM walks PortList for the same purpose;
+    /// GetWMgrPort/GetCWMgrPort callers draw in those ports directly.
+    fn screen_port_candidates(&self) -> Vec<u32> {
+        let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
+        ports.extend(self.window_list.windows());
+        ports.extend([
+            *self.current_port,
+            self.front_window,
+            self.window_manager_port,
+            self.window_manager_cport,
+        ]);
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
+    /// Point every screen-backed port at the new screen geometry, as the
+    /// ROM's InitGDevice does for the main device after a mode change: a
+    /// colour port whose pixMap shares the screen base gets the device's
+    /// baseAddr, rowBytes, pixelType/Size and cmpCount/Size, and an
+    /// old-style port gets portBits.baseAddr and rowBytes. Bounds are left
+    /// alone. boot3 QuickDraw/GDevice.a, InitGDevice @portWalkLoop.
     fn sync_screen_backed_cgrafports_depth(
         &mut self,
         bus: &mut MacMemoryBus,
+        old_screen_base: u32,
         screen_base: u32,
         row_bytes: u32,
         depth: u16,
@@ -20337,21 +20365,27 @@ impl super::TrapDispatcher {
         let Some((clut, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
             return;
         };
-        let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
-        ports.extend(self.window_list.windows());
-        ports.extend([*self.current_port, self.front_window]);
-        ports.sort_unstable();
-        ports.dedup();
+        let on_screen = |base: u32| {
+            let base = base & 0x3FFF_FFFF;
+            base == screen_base || (old_screen_base != 0 && base == old_screen_base)
+        };
+        let ports = self.screen_port_candidates();
 
         for port in ports {
-            if port == 0 || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+            if port == 0 {
+                continue;
+            }
+            if (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+                // Old-style GrafPort: portBits is inline.
+                if on_screen(bus.read_long(port + 2)) {
+                    bus.write_long(port + 2, screen_base);
+                    bus.write_word(port + 6, row_bytes as u16 & 0x3FFF);
+                }
                 continue;
             }
             let pixmap_handle = bus.read_long(port + 2);
             let pixmap = bus.read_long(pixmap_handle);
-            if pixmap == 0
-                || (Self::offscreen_pixmap_base_ptr(bus, pixmap) & 0x3FFF_FFFF) != screen_base
-            {
+            if pixmap == 0 || !on_screen(Self::offscreen_pixmap_base_ptr(bus, pixmap)) {
                 continue;
             }
 
@@ -20360,6 +20394,7 @@ impl super::TrapDispatcher {
             if ctab == 0 {
                 continue;
             }
+            bus.write_long(pixmap, screen_base);
             bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
             bus.write_word(pixmap + 32, depth);
             bus.write_word(pixmap + 34, 1);
@@ -20387,12 +20422,10 @@ impl super::TrapDispatcher {
         if Self::color_table_ptr(bus, main_ctab_handle) == 0 {
             return false;
         }
+        // ScrnBase still holds the outgoing screen base here.
+        let old_screen_base = bus.read_long(0x0824) & 0x3FFF_FFFF;
         let mut ctab_handles = vec![main_ctab_handle];
-        let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
-        ports.extend(self.window_list.windows());
-        ports.extend([*self.current_port, self.front_window]);
-        ports.sort_unstable();
-        ports.dedup();
+        let ports = self.screen_port_candidates();
 
         for port in ports {
             if port == 0 || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
@@ -20400,9 +20433,14 @@ impl super::TrapDispatcher {
             }
             let pixmap_handle = bus.read_long(port + 2);
             let pixmap = bus.read_long(pixmap_handle);
-            if pixmap == 0
-                || (Self::offscreen_pixmap_base_ptr(bus, pixmap) & 0x3FFF_FFFF) != screen_base
-            {
+            let base = if pixmap == 0 {
+                0
+            } else {
+                Self::offscreen_pixmap_base_ptr(bus, pixmap) & 0x3FFF_FFFF
+            };
+            let on_screen =
+                base == screen_base || (old_screen_base != 0 && base == old_screen_base);
+            if pixmap == 0 || !on_screen {
                 continue;
             }
             let ctab_handle = bus.read_long(pixmap + 42);

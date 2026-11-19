@@ -20647,6 +20647,41 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn displaydispatch_set_display_mode_retargets_window_manager_ports() {
+        // Bubble Trouble switches to 640x480, then zooms its nag dialog
+        // open with FrameRect/EraseRect in GetCWMgrPort. Both Window
+        // Manager ports must take the new screen rowBytes, as InitGDevice's
+        // PortList walk does (boot3 QuickDraw/GDevice.a), or the erase is
+        // smeared across the screen at the old 800-pixel stride.
+        let (mut d, mut cpu, mut bus) = setup();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let wmgr_cport = d.ensure_color_window_manager_port(&mut bus);
+        let wmgr_port = d.ensure_window_manager_port(&mut bus);
+        let cport_pixmap = bus.read_long(bus.read_long(wmgr_cport + 2));
+        let old_row_bytes = bus.read_word(cport_pixmap + 4) & 0x3FFF;
+        assert_ne!(old_row_bytes, 640);
+        assert_eq!(bus.read_word(wmgr_port + 6), old_row_bytes);
+        let depth_mode = 0x0031_1100u32;
+        bus.write_long(depth_mode, 0x83);
+
+        cpu.write_reg(Register::D0, 0x0A11);
+        bus.write_long(TEST_SP, 0); // displayState
+        bus.write_long(TEST_SP + 4, 0); // reserved
+        bus.write_long(TEST_SP + 8, depth_mode);
+        bus.write_long(TEST_SP + 12, 0x0000_0080); // 640x480
+        bus.write_long(TEST_SP + 16, main_gdh);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 20), 0);
+        assert_eq!(d.screen_mode.1, 640);
+        assert_eq!(bus.read_word(cport_pixmap + 4), 0x8000 | 640);
+        assert_eq!(bus.read_word(cport_pixmap + 32), 8);
+        assert_eq!(bus.read_word(wmgr_port + 6), 640);
+        assert_eq!(bus.read_long(wmgr_port + 2), d.screen_mode.0);
+    }
+
+    #[test]
     fn displaydispatch_set_display_mode_grows_low_depth_color_table() {
         let (mut d, mut cpu, mut bus) = setup();
         let screen_base = bus.read_long(0x0824);
