@@ -243,6 +243,79 @@ use super::*;
         }
     }
 
+    /// Rebel Assault II runs its movie decoder on a stack it keeps in its own
+    /// data section. Time Manager, VBL and sound interrupts that arrive there
+    /// must still run below that stack's Red Zone; refusing them stopped the
+    /// game's timers for good at its first fade.
+    #[test]
+    fn interrupt_callbacks_run_on_an_application_allocated_stack() {
+        const OUTPUT: u32 = PPC_DATA_BASE + 0x3000;
+        const VECTOR: u32 = PPC_DATA_BASE + 0x4000;
+        const PRIVATE_STACK: u32 = PPC_DATA_BASE + 0x8000;
+        const PRIVATE_STACK_SIZE: u32 = 0x1000;
+        const ENTRY: u32 = PPC_CODE_BASE + 0x2000;
+        for kind in 0..4 {
+            let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+            loaded.memory.add_region(OUTPUT, vec![0; 4]);
+            loaded.memory.add_region(VECTOR, vec![0; 8]);
+            loaded.memory.write_u32_be(VECTOR, ENTRY).unwrap();
+            loaded
+                .memory
+                .write_u32_be(VECTOR + 4, PPC_DATA_BASE)
+                .unwrap();
+            loaded.memory.add_region(
+                ENTRY,
+                [d_form_u(36, 1, 3, 0), BLR]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            );
+            loaded
+                .memory
+                .add_region(PRIVATE_STACK, vec![0; PRIVATE_STACK_SIZE as usize]);
+            let private_sp = PRIVATE_STACK + PRIVATE_STACK_SIZE - 0x100;
+            assert!(private_sp < loaded.stack_base);
+            loaded.cpu.gpr[1] = private_sp;
+            let protected_base = private_sp - PPC_INTERRUPT_RED_ZONE_SIZE;
+            let protected = vec![0xa5; (PPC_INTERRUPT_RED_ZONE_SIZE + 64) as usize];
+            loaded
+                .memory
+                .write_bytes(protected_base, &protected)
+                .unwrap();
+            let saved = loaded.cpu.clone();
+
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+
+            assert!(
+                matches!(result, PpcRunResult::Halted { .. }),
+                "callback family {kind}: {result:?}"
+            );
+            let frame = ppc_interrupt_callback_stack_pointer(private_sp);
+            assert_eq!(loaded.memory.read_u32_be(OUTPUT), Some(frame), "{kind}");
+            assert_eq!(loaded.memory.read_u32_be(frame), Some(private_sp), "{kind}");
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, protected_base, protected.len() as u32),
+                Some(protected),
+                "{kind}"
+            );
+            assert_eq!(loaded.cpu.gpr, saved.gpr, "{kind}");
+            assert_eq!(loaded.cpu.pc, saved.pc, "{kind}");
+
+            // A private stack whose Red Zone is not wholly writable is still
+            // refused without touching memory or registers.
+            let partial_sp = PRIVATE_STACK + 0x40;
+            loaded.cpu.gpr[1] = partial_sp;
+            let saved = loaded.cpu.clone();
+            let result = invoke_worker_interrupt_for_test(&mut loaded, kind);
+            assert!(
+                matches!(result, PpcRunResult::MemoryFault { cycles: 0, .. }),
+                "callback family {kind}: {result:?}"
+            );
+            assert_eq!(loaded.cpu.gpr, saved.gpr, "{kind}");
+            assert_eq!(loaded.cpu.pc, saved.pc, "{kind}");
+        }
+    }
+
     #[test]
     fn interrupt_callbacks_protect_worker_frames_and_refuse_exhausted_stacks() {
         use crate::guest_call::ExecutionTaskId;
