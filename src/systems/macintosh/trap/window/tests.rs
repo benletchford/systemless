@@ -7014,6 +7014,8 @@ fn check_moved_dialog_background(visible: bool) {
     let screen = bus.alloc(320 * 240);
     bus.write_long(0x0824, screen);
     disp.screen_mode = (screen, 320, 320, 240, 8);
+    // A booted guest starts with PaintWhite set.
+    bus.write_word(crate::memory::globals::addr::PAINT_WHITE, 1);
     let back = bus.alloc(256);
     disp.init_cgraf_window(
         &mut bus, &mut cpu, back, screen, 20, 20, 220, 300, "Back", 0, true, false, false, 0,
@@ -7044,10 +7046,16 @@ fn check_moved_dialog_background(visible: bool) {
     }
 
     disp.move_window_to_global(&mut bus, &mut cpu, dialog, 100, 60, false);
+    // Destination: a visible dialog's pixels move with it; a hidden move
+    // leaves the background there.
     assert_eq!(
         bus.read_byte(screen + 80 * 320 + 120),
         if visible { 250 } else { 80 }
     );
+    // Vacated area over the back window: erased (PaintWhite set) after a
+    // visible move; untouched after a hidden move, which uncovers nothing.
+    let vacated = screen + 155 * 320 + 90;
+    assert_eq!(bus.read_byte(vacated), if visible { 0 } else { 155 });
     // Simulate showing and drawing the dialog after a hidden move.
     bus.write_byte(dialog + 110, 1);
     for y in 60..130u32 {
@@ -7055,7 +7063,7 @@ fn check_moved_dialog_background(visible: bool) {
             bus.write_byte(screen + y * 320 + x, 250);
         }
     }
-    assert_eq!(bus.read_byte(screen + 155 * 320 + 90), 155);
+    assert_eq!(bus.read_byte(vacated), if visible { 0 } else { 155 });
     // CloseDialog must restore the row that was underneath the new
     // location, including the overlap with the old dialog rectangle.
     cpu.write_reg(Register::A7, TEST_SP);
@@ -7065,7 +7073,7 @@ fn check_moved_dialog_background(visible: bool) {
         .unwrap();
     assert_eq!(bus.read_byte(screen + 80 * 320 + 120), 80);
     assert_eq!(bus.read_byte(screen + 110 * 320 + 120), 110);
-    assert_eq!(bus.read_byte(screen + 155 * 320 + 90), 155);
+    assert_eq!(bus.read_byte(vacated), if visible { 0 } else { 155 });
 }
 
 #[test]
@@ -7135,13 +7143,15 @@ fn move_window_restores_exposed_desktop_when_host_hides_menu_bar() {
 fn move_window_reveals_and_invalidates_background_content() {
     // MoveWindow/DragWindow must pair the screen copy with CalcVisBehind
     // and PaintBehind semantics. The back window's old occlusion hole is
-    // removed and its newly exposed content is queued for application
-    // redraw. Inside Macintosh Volume I, I-289, I-293, I-297.
+    // removed, its newly exposed content is erased (PaintWhite has its boot
+    // value) and queued for application redraw. Inside Macintosh Volume I,
+    // I-289, I-293, I-296--I-297.
     let (mut disp, mut cpu, mut bus) = setup();
     let screen_base = bus.alloc(320 * 240);
     bus.write_long(0x0824, screen_base);
     disp.screen_mode = (screen_base, 320, 320, 240, 8);
     disp.menu_bar_hidden = true;
+    bus.write_word(crate::memory::globals::addr::PAINT_WHITE, 1);
 
     let back = bus.alloc(256);
     let front = bus.alloc(256);
@@ -7185,8 +7195,93 @@ fn move_window_reveals_and_invalidates_background_content() {
     disp.validate_window_rect(&mut bus, back, (0, 0, 200, 280));
     disp.validate_window_rect(&mut bus, front, (0, 0, 80, 120));
 
-    // PaintBehind clears PaintWhite: newly exposed application pixels
-    // stay untouched until its update event is handled (IM:I I-297).
+    // Back-window content that the move uncovers.
+    let exposed_pixel = screen_base + 80 * 320 + 100;
+    bus.write_byte(exposed_pixel, 173);
+
+    disp.move_window_to_global(&mut bus, &mut cpu, front, 190, 140, true);
+
+    assert!(
+        super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+        "the back visRgn must expose the front window's former location"
+    );
+    assert_eq!(
+        bus.read_byte(exposed_pixel),
+        0,
+        "content uncovered in the back window is erased to white, not desktop"
+    );
+    let back_update = bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
+    assert!(
+        super::super::TrapDispatcher::region_contains_point(&bus, back_update, 80, 100),
+        "the newly exposed back content must be invalidated"
+    );
+    assert!(
+        disp.event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == back),
+        "the back window must receive an update event"
+    );
+    assert!(
+        disp.event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == front),
+        "the moved window must redraw any newly visible content"
+    );
+}
+
+#[test]
+fn move_window_keeps_exposed_pixels_when_paint_white_is_clear() {
+    // With PaintWhite clear, the content a moved window uncovers in the
+    // windows behind is left for their update events to redraw.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(320 * 240);
+    bus.write_long(0x0824, screen_base);
+    disp.screen_mode = (screen_base, 320, 320, 240, 8);
+    disp.menu_bar_hidden = true;
+    bus.write_word(crate::memory::globals::addr::PAINT_WHITE, 0);
+
+    let back = bus.alloc(256);
+    let front = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        back,
+        screen_base,
+        20,
+        20,
+        220,
+        300,
+        "Back",
+        0,
+        true,
+        false,
+        false,
+        0,
+    );
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        front,
+        screen_base,
+        50,
+        60,
+        130,
+        180,
+        "Front",
+        0,
+        true,
+        false,
+        false,
+        0,
+    );
+    let back_vis = bus.read_long(back + 24);
+    assert!(
+        !super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
+        "precondition: the front structure occludes the back window"
+    );
+    disp.validate_window_rect(&mut bus, back, (0, 0, 200, 280));
+    disp.validate_window_rect(&mut bus, front, (0, 0, 80, 120));
+
     let exposed_pixel = screen_base + 80 * 320 + 100;
     bus.write_byte(exposed_pixel, 173);
 
@@ -7199,7 +7294,7 @@ fn move_window_reveals_and_invalidates_background_content() {
     assert_eq!(
         bus.read_byte(exposed_pixel),
         173,
-        "moving a window must not paint desktop over another window's content"
+        "content uncovered in the back window is kept when PaintWhite is clear"
     );
     let back_update = bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
     assert!(
