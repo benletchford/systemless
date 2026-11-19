@@ -2041,6 +2041,7 @@ pub(super) fn ppc_get_finfo(
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     default_dir_id: u32,
+    vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
     let file_name_ptr = cpu.gpr[3];
     let vref_num = cpu.gpr[4] as u16 as i16;
@@ -2054,22 +2055,46 @@ pub(super) fn ppc_get_finfo(
     let Some(name_bytes) = ppc_read_pstring_bytes(memory, file_name_ptr) else {
         return PPC_PARAM_ERR;
     };
-    let path = ppc_resolved_fsspec_target_path(
+    // Inside Macintosh: Files (1992), pp. 2-27--2-30: a full pathname names
+    // its volume, so an unmounted volume is nsvErr and a missing file is
+    // fnfErr. Skull Cracker probes "SkullCracker:Data:imain.Mov" to detect
+    // its CD; a leaf-name fallback reported the hard-disk movie instead.
+    let full_path = match ppc_full_pathname_vfs_path(
         vfs_directories,
-        vfs_files,
-        vfs_resource_files,
-        default_dir_id,
-        &name_bytes,
-    )
-    .or_else(|| {
+        vfs_volumes,
+        &decode_mac_roman(&name_bytes),
+    ) {
+        Ok(full_path) => full_path,
+        Err(err) => {
+            let _ = ppc_write_finfo(memory, finfo_ptr, 0, 0, 0);
+            return err;
+        }
+    };
+    let path = if let Some((full_path, _)) = full_path {
+        ppc_vfs_target_path(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            full_path.trim_end_matches('/'),
+        )
+    } else {
         ppc_resolved_fsspec_target_path(
             vfs_directories,
             vfs_files,
             vfs_resource_files,
-            PPC_ROOT_DIR_ID,
+            default_dir_id,
             &name_bytes,
         )
-    });
+        .or_else(|| {
+            ppc_resolved_fsspec_target_path(
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                PPC_ROOT_DIR_ID,
+                &name_bytes,
+            )
+        })
+    };
     let Some(path) = path else {
         let _ = ppc_write_finfo(memory, finfo_ptr, 0, 0, 0);
         return PPC_FNF_ERR;

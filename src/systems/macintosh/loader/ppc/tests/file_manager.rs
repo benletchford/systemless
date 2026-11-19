@@ -2638,6 +2638,58 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_get_finfo_full_pathname_names_its_volume() {
+        // Skull Cracker probes "SkullCracker:Data:imain.Mov" for its CD and
+        // must not receive the hard-disk copy through a leaf-name match.
+        let pef = synthetic_pef_with_import(b"GetFInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let name_ptr = scratch;
+        let finfo_ptr = scratch + 0x100;
+        loaded.memory.add_region(scratch, vec![0; 0x200]);
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Skullcracker Demo/Movies/imain.mov".to_string(),
+            data: (b"moov".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"TVOD"),
+            file_type: u32::from_be_bytes(*b"MooV"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        for (name, expected) in [
+            (&b"SkullCracker:Data:imain.Mov"[..], PPC_NSV_ERR),
+            (&b"MacintoshHD:Skullcracker Demo:Local:imain.Mov"[..], PPC_FNF_ERR),
+            (&b"MacintoshHD:Skullcracker Demo:Movies:imain.Mov"[..], PPC_NO_ERR),
+            (&b"imain.Mov"[..], PPC_NO_ERR),
+        ] {
+            write_ppc_pstring(&mut loaded.memory, name_ptr, name);
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = name_ptr;
+            loaded.cpu.gpr[4] = 0;
+            loaded.cpu.gpr[5] = finfo_ptr;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                ppc_i16_result(expected),
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+            let expected_type = if expected == PPC_NO_ERR {
+                u32::from_be_bytes(*b"MooV")
+            } else {
+                0
+            };
+            assert_eq!(
+                ppc_read_finfo(&mut loaded.memory, finfo_ptr).map(|info| info.0),
+                Some(expected_type)
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_h_get_and_set_finfo_use_explicit_directory() {
         let pef = synthetic_pef_with_import(b"HGetFInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
