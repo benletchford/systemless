@@ -4307,23 +4307,22 @@ pub(crate) fn ppc_sync_gworld_pixel_state_mirrors(
     gworlds: &mut [PpcGWorldRecord],
     pixel_states: &SharedProcessQuickDrawPixelStates,
 ) {
-    for record in gworlds {
-        if record.pixmap_handle == 0 {
-            continue;
-        }
-        if !pixel_states.has_quickdraw_pixel_state(record.pixmap_handle) {
+    // Runs before most imports: one registry borrow and one lookup per record.
+    pixel_states.with_mut(|states| {
+        for record in gworlds {
+            if record.pixmap_handle == 0 {
+                continue;
+            }
             // Synthetic/native records created before the process registry
             // existed contribute their old booleans exactly once; after this
             // adoption the registry is canonical.
-            pixel_states.set_quickdraw_pixel_state(
-                record.pixmap_handle,
-                ppc_gworld_pixel_state_from_mirror(record),
-            );
+            let state = *states
+                .entry(record.pixmap_handle)
+                .or_insert_with(|| ppc_gworld_pixel_state_from_mirror(record));
+            record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
+            record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
         }
-        let state = pixel_states.quickdraw_pixel_state(record.pixmap_handle);
-        record.pixels_locked = state & PPC_PIXELS_LOCKED != 0;
-        record.pixels_no_purge = state & PPC_PIXELS_PURGEABLE == 0;
-    }
+    });
 }
 
 /// Return a process-owned state word, adopting a legacy native mirror only
