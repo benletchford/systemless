@@ -230,35 +230,38 @@ fn new_control_handle<C: CpuOps>(
     bus.read_long(cpu.read_reg(Register::A7))
 }
 
-/// IM:I I-331 declares `NewControl`'s `visible` as a `BOOLEAN`, which is
-/// one byte in a word-aligned stack slot. MPW C writes the flag in the
-/// high byte; Dark Castle's build writes it in the low byte and zeroes
-/// the high one, so a fixed-half read makes every one of its controls
-/// invisible and none of them draw.
+/// IM:I I-331 declares `NewControl`'s `visible` as a `BOOLEAN`: one byte
+/// in a word-aligned stack slot. The ROM tests only that byte, the high
+/// half of the slot (`TST.B (A4)` / `SNE` in ControlMgr.a NewControl), so
+/// whatever `MOVE.B Dn,-(SP)` leaves in the low half must not matter.
+/// Chinese Chess Pro creates a hidden probe scroll bar with a FALSE flag
+/// over a stale low byte; reading the whole word made it visible and its
+/// image stuck in the corner of the board.
 #[test]
-fn newcontrol_accepts_a_visible_flag_in_either_byte() {
-    for (label, word) in [
-        ("high byte (MPW C)", 0xFF00u16),
-        ("low byte (Dark Castle)", 0x00FFu16),
-        ("both bytes", 0xFFFFu16),
+fn newcontrol_reads_the_visible_flag_from_the_high_byte_only() {
+    for (label, word, expected_vis) in [
+        ("TRUE, clean slot", 0xFF00u16, 255u8),
+        ("TRUE ($01), stale low byte", 0x01A8u16, 255u8),
+        ("FALSE, clean slot", 0x0000u16, 0u8),
+        ("FALSE, stale low byte", 0x00FFu16, 0u8),
+        ("FALSE, stale low byte (Chinese Chess Pro)", 0x00A8u16, 0u8),
     ] {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = 0x300000u32;
         let window_ptr = bus.alloc(200);
         let bounds_ptr = bus.alloc(8);
-        for (i, v) in [276i16, 20, 292, 87].iter().enumerate() {
+        for (i, v) in [0i16, 0, 100, 16].iter().enumerate() {
             bus.write_word(bounds_ptr + (i as u32) * 2, *v as u16);
         }
-        let title_ptr = bus.alloc(16);
-        bus.write_byte(title_ptr, 4);
-        bus.write_bytes(title_ptr + 1, b"Play");
+        let title_ptr = bus.alloc(4);
+        bus.write_byte(title_ptr, 0);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, 0);
-        bus.write_word(sp + 4, 0); // pushButProc
+        bus.write_word(sp + 4, 16); // scrollBarProc
         bus.write_word(sp + 6, 1);
         bus.write_word(sp + 8, 0);
-        bus.write_word(sp + 10, 0);
+        bus.write_word(sp + 10, 1);
         bus.write_word(sp + 12, word);
         bus.write_long(sp + 14, title_ptr);
         bus.write_long(sp + 18, bounds_ptr);
@@ -272,34 +275,12 @@ fn newcontrol_accepts_a_visible_flag_in_either_byte() {
         let ctrl_ptr = bus.read_long(handle);
         assert_eq!(
             bus.read_byte(ctrl_ptr + 16),
-            255,
-            "contrlVis must be 255 for a TRUE visible flag in the {} slot",
+            expected_vis,
+            "contrlVis for visible slot ${:04X} ({})",
+            word,
             label
         );
     }
-
-    // A genuinely FALSE flag stays invisible.
-    let (mut disp, mut cpu, mut bus) = setup();
-    let sp = 0x300000u32;
-    let bounds_ptr = bus.alloc(8);
-    let title_ptr = bus.alloc(4);
-    bus.write_byte(title_ptr, 0);
-    cpu.write_reg(Register::A7, sp);
-    bus.write_long(sp, 0);
-    bus.write_word(sp + 4, 0);
-    bus.write_word(sp + 6, 1);
-    bus.write_word(sp + 8, 0);
-    bus.write_word(sp + 10, 0);
-    bus.write_word(sp + 12, 0x0000);
-    bus.write_long(sp + 14, title_ptr);
-    bus.write_long(sp + 18, bounds_ptr);
-    bus.write_long(sp + 22, 0);
-    disp.dispatch_control(true, 0x154, &mut cpu, &mut bus)
-        .expect("NewControl handled")
-        .expect("NewControl returns");
-    let handle = bus.read_long(sp + 26);
-    let ctrl_ptr = bus.read_long(handle);
-    assert_eq!(bus.read_byte(ctrl_ptr + 16), 0, "FALSE stays invisible");
 }
 
 fn make_control_ctab_handle(bus: &mut MacMemoryBus) -> u32 {
@@ -659,7 +640,7 @@ fn newcontrol_custom_cdef_arms_init_then_draw_pascal_callbacks() {
     bus.write_word(sp + 6, 1);
     bus.write_word(sp + 8, 0);
     bus.write_word(sp + 10, 0);
-    bus.write_word(sp + 12, 1);
+    bus.write_word(sp + 12, 0x0100); // visible = TRUE in the BOOLEAN byte
     bus.write_long(sp + 14, title_ptr);
     bus.write_long(sp + 18, bounds_ptr);
     bus.write_long(sp + 22, window_ptr);
