@@ -249,6 +249,73 @@ use super::*;
         assert_eq!(header, [0; 8]);
     }
 
+    /// Calls NewGWorld (or UpdateGWorld on `existing`) with `bounds` and returns
+    /// the resulting port's portRect and PixMap bounds.
+    fn gworld_rects_for_bounds(
+        depth: u32,
+        bounds: (i16, i16, i16, i16),
+        target: PpcImportDispatcherTarget,
+    ) -> ((i16, i16, i16, i16), (i16, i16, i16, i16)) {
+        let pef = synthetic_pef_with_import(b"NewGWorld");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr = scratch;
+        let gworld_out_ptr = scratch + 8;
+        loaded.memory.add_region(scratch, vec![0; 16]);
+        let call = |loaded: &mut PpcLoadedApp,
+                    depth: u32,
+                    (top, left, bottom, right): (i16, i16, i16, i16),
+                    target| {
+            ppc_write_rect(&mut loaded.memory, bounds_ptr, top, left, bottom, right).unwrap();
+            loaded.cpu.gpr[3] = gworld_out_ptr;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = bounds_ptr;
+            loaded.cpu.gpr[6] = 0;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = 0;
+            run_test_import(loaded, target);
+        };
+        if target == PpcImportDispatcherTarget::UpdateGWorld {
+            call(&mut loaded, 16, (0, 0, 8, 8), PpcImportDispatcherTarget::NewGWorld);
+        }
+        call(&mut loaded, depth, bounds, target.clone());
+        assert_eq!(loaded.cpu.gpr[3] & 0x8000_ffff, 0, "{target:?} failed");
+        let port = loaded.memory.read_u32_be(gworld_out_ptr).unwrap();
+        let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+        let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+        (
+            ppc_read_rect(&mut loaded.memory, port + 16).unwrap(),
+            ppc_read_rect(&mut loaded.memory, pixmap + 6).unwrap(),
+        )
+    }
+
+    #[test]
+    fn hle_import_runner_gworld_depth_zero_roots_port_at_zero_origin() {
+        // Apple QuickDraw GWorld.a, NewGWorld: "If the pixelDepth is 0: The
+        // boundsRect is interpreted as a global rectangle in screen space ...
+        // The port's portRect is set to the same size as boundsRect with the
+        // topLeft coordinates set to (0,0)." UpdateGWorld's useMaxDevice path
+        // does the same. Avernum 3 passes each item strip's picFrame (e.g.
+        // (58,0,88,291)) and draws the picture at (0,0,30,291).
+        for target in [
+            PpcImportDispatcherTarget::NewGWorld,
+            PpcImportDispatcherTarget::UpdateGWorld,
+        ] {
+            assert_eq!(
+                gworld_rects_for_bounds(0, (58, 10, 88, 301), target.clone()),
+                ((0, 0, 30, 291), (0, 0, 30, 291)),
+                "{target:?}"
+            );
+            // "If the pixelDepth is 1,2,4,8,16,or 32: The pixmap's bounds,
+            // portRect, and device's rect are all set to boundsRect."
+            assert_eq!(
+                gworld_rects_for_bounds(16, (58, 10, 88, 301), target.clone()),
+                ((58, 10, 88, 301), (58, 10, 88, 301)),
+                "{target:?}"
+            );
+        }
+    }
+
     #[test]
     fn hle_import_runner_update_gworld_flags_control_color_table_pixel_mapping() {
         let pef = synthetic_pef_with_import(b"NewGWorld");
