@@ -2917,23 +2917,18 @@ impl super::TrapDispatcher {
     /// Read a Pascal `BOOLEAN` parameter from its two-byte stack slot.
     ///
     /// Inside Macintosh Volume I, I-331 declares parameters such as
-    /// `NewControl`'s `visible` as `BOOLEAN`, which is one byte, but the 68K
-    /// stack keeps word alignment so the caller pushes two. Compilers differ
-    /// on which half they write and leave the other undefined: MPW C leaves
-    /// the flag in the high byte, while Dark Castle's build writes it in the
-    /// low byte and zeroes the high one (`$00FF` for TRUE). Reading a fixed
-    /// half therefore misreads one of the two — taking the high byte makes
-    /// every Dark Castle control invisible, so its Play/Demo/Quit buttons and
-    /// Novice/Beginner/Intermediate/Advanced radios never draw.
-    ///
-    /// A `BOOLEAN` is false only when it is zero, so treat the slot as true
-    /// when either byte is set. That is exactly the set of values a caller
-    /// can mean by TRUE, and it leaves the high-byte convention unchanged.
+    /// `NewControl`'s `visible` as `BOOLEAN`: one byte, pushed with
+    /// `MOVE.B Dn,-(SP)`, which keeps the stack word-aligned by moving SP two
+    /// bytes and leaves the low half of the slot undefined. The ROM tests only
+    /// the flag byte (ControlMgr.a NewControl: `TST.B (A4)` then `SNE` into
+    /// contrlVis), so a stale low byte must not turn FALSE into TRUE. Chinese
+    /// Chess Pro creates a hidden probe scroll bar at (0,0,100,16) with such a
+    /// slot; reading the whole word showed it over the corner of the board.
     ///
     /// Regression coverage:
-    ///   src/trap/control.rs::tests::newcontrol_accepts_a_visible_flag_in_either_byte
+    ///   src/systems/macintosh/trap/control/tests.rs::newcontrol_reads_the_visible_flag_from_the_high_byte_only
     fn read_pascal_boolean(bus: &MacMemoryBus, addr: u32) -> bool {
-        bus.read_word(addr) != 0
+        bus.read_byte(addr) != 0
     }
 
     /// Complete only the registered internal return, before public trap patch
