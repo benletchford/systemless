@@ -10013,6 +10013,46 @@
     }
 
     #[test]
+    fn draw_edit_text_wraps_and_clips_text_to_the_display_rect() {
+        // IM:I I-405: an editText display rect is the TextEdit destRect and
+        // viewRect. Smack a Skunk's high-score name field is 75 pixels wide
+        // and starts out as "Your name here": TextEdit wraps "here" onto a
+        // hidden second line instead of drawing it past the field's frame.
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let (mut disp, _cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+
+        disp.draw_edit_text(&mut bus, 81, 55, 97, 130, "Your name here", false);
+
+        assert!(
+            (81..97).any(|y| {
+                (56..130).any(|x| screen_pixel_is_set(&bus, screen_base, row_bytes, x, y))
+            }),
+            "the first line of text must be drawn inside the field"
+        );
+        // The frame sits three pixels outside the display rect (x=133);
+        // nothing may be drawn to the right of it.
+        for y in 78..100 {
+            for x in 134..220 {
+                assert!(
+                    !screen_pixel_is_set(&bus, screen_base, row_bytes, x, y),
+                    "editText glyphs must not spill past the field at ({x}, {y})"
+                );
+            }
+        }
+        // The wrapped second line ("here") lies below the viewRect.
+        for y in 101..120 {
+            for x in 50..140 {
+                assert!(
+                    !screen_pixel_is_set(&bus, screen_base, row_bytes, x, y),
+                    "the wrapped line below the field must stay hidden at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn draw_edit_text_systemless_theme_routes_caret_through_provider() {
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;

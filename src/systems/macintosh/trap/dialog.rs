@@ -9562,20 +9562,38 @@ impl super::TrapDispatcher {
         let (font_id, _, raw_font_size) = self.item_text_state();
         let font_size = Self::font_lookup_size(raw_font_size);
         let metrics = get_font_metrics(font_id, font_size);
-        let text_y = top + metrics.ascent;
-        Self::fb_draw_string(
-            bus,
-            screen_base,
-            row_bytes,
-            pixel_size,
-            screen_width,
-            screen_height,
-            left + 1,
-            text_y,
-            text,
-            font_id,
-            font_size,
-        );
+        // IM:I I-405: the display rectangle is the TextEdit destRect and
+        // viewRect, so the text wraps at its width and nothing is drawn
+        // outside it. Text wider than the field (Smack a Skunk's 75-pixel
+        // "Your name here") wraps onto a line below the field, which the
+        // viewRect hides.
+        let line_height = metrics.ascent + metrics.descent + metrics.leading;
+        let text_bytes = encode_mac_roman_lossy(text);
+        let clip = (top, left, bottom, right);
+        let mut text_y = top + metrics.ascent;
+        for (start, end) in
+            self.te_wrap_lines(font_id, raw_font_size, &text_bytes, right.saturating_sub(left))
+        {
+            if text_y - metrics.ascent >= bottom {
+                break;
+            }
+            let line = decode_mac_roman(&text_bytes[start..end]);
+            Self::fb_draw_string_clipped(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                left + 1,
+                text_y,
+                line.trim_end_matches(['\r', '\n']),
+                font_id,
+                font_size,
+                clip,
+            );
+            text_y = text_y.saturating_add(line_height);
+        }
         if let Some((selection_start, selection_end)) = selection_range {
             // IM:I I-422 and MTE 1992 p. 6-131: SelIText /
             // SelectDialogItemText displays the selected range by inverting
