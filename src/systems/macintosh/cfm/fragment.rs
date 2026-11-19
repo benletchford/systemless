@@ -279,11 +279,11 @@ pub(crate) fn resolve_fragment_exports(
                         .iter()
                         .find(|section| section.index == section_index)
                         .ok_or(CfmLoadError::CorruptFragment)?;
-                    let offset = usize::try_from(symbol.symbol_value)
-                        .map_err(|_| CfmLoadError::CorruptFragment)?;
-                    if offset >= section.bytes.len() {
-                        return Err(CfmLoadError::CorruptFragment);
-                    }
+                    // The export value is a section offset that CFM adds to
+                    // the section base without a bounds check. The PowerPC
+                    // You Don't Know Jack Demo exports linker glue
+                    // "._ptrgl" past the end of its data section; rejecting
+                    // it refused to load an application that real CFM ran.
                     section
                         .base
                         .checked_add(symbol.symbol_value)
