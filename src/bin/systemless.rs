@@ -608,6 +608,15 @@ fn guest_resize_scale(
     display_scale.filter(|_| !fullscreen && !maximized)
 }
 
+fn presentation_resize_check_needed(
+    sized_content: Option<ContentRect>,
+    desired_content: ContentRect,
+    has_pending_transition: bool,
+    has_transient_restore: bool,
+) -> bool {
+    sized_content != Some(desired_content) || has_pending_transition || has_transient_restore
+}
+
 fn window_guest_resize_scale(window: &Window, display_scale: Option<u32>) -> Option<u32> {
     guest_resize_scale(
         display_scale,
@@ -2024,10 +2033,19 @@ impl App {
                 game_h,
                 frame.crop.hidden_menu_height,
             );
-            let allow_guest_resize = self.window.as_ref().is_some_and(|window| {
-                window_guest_resize_scale(window, self.display_scale).is_some()
-            });
-            if !allow_guest_resize {
+            // Querying window fullscreen/zoom state crosses into AppKit on
+            // macOS; skip it when no content-rect change or transition is active.
+            let resize_check_needed = presentation_resize_check_needed(
+                self.window_sized_content_rect,
+                desired_content,
+                self.pending_window_transition.is_some(),
+                self.transient_window_restore_geometry.is_some(),
+            );
+            let allow_guest_resize = resize_check_needed
+                && self.window.as_ref().is_some_and(|window| {
+                    window_guest_resize_scale(window, self.display_scale).is_some()
+                });
+            if resize_check_needed && !allow_guest_resize {
                 self.pending_window_transition = None;
                 self.transient_window_restore_geometry = None;
                 self.window_sized_content_rect = Some(desired_content);
@@ -4902,6 +4920,47 @@ mod tests {
             guest_scaled_physical_size(640, 480, 2),
             winit::dpi::PhysicalSize::new(1280, 960)
         );
+    }
+
+    #[test]
+    fn presentation_skips_window_resize_state_query_when_steady() {
+        let full = ContentRect {
+            left: 0,
+            top: 0,
+            width: 640,
+            height: 480,
+        };
+        let dialog = ContentRect {
+            left: 0,
+            top: 20,
+            width: 640,
+            height: 460,
+        };
+        assert!(!presentation_resize_check_needed(
+            Some(full),
+            full,
+            false,
+            false
+        ));
+        assert!(presentation_resize_check_needed(None, full, false, false));
+        assert!(presentation_resize_check_needed(
+            Some(full),
+            dialog,
+            false,
+            false
+        ));
+        assert!(presentation_resize_check_needed(
+            Some(full),
+            full,
+            true,
+            false
+        ));
+        assert!(presentation_resize_check_needed(
+            Some(full),
+            full,
+            false,
+            true
+        ));
     }
 
     #[test]
