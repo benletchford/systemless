@@ -712,6 +712,9 @@ impl PpcLoadedApp {
                     elapsed,
                 );
                 let dispatcher_target = import_run_state.dispatcher_target_cloned(index);
+                if let Some(target) = dispatcher_target.as_ref() {
+                    process_input.note_presentation_settled(target.settles_presentation());
+                }
                 let is_tick_count_import = dispatcher_target
                     .as_ref()
                     .is_some_and(|target| *target == PpcImportDispatcherTarget::TickCount);

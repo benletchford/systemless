@@ -726,3 +726,103 @@ fn disassemble_at_uses_the_configured_ram_boundary() {
         "mapped RAM above 8 MiB must not be reported as unmapped"
     );
 }
+
+#[test]
+fn presentation_settle_trap_marks_event_input_and_clock_polls_only() {
+    // A frame presented while the guest's latest trap is one of these shows a
+    // finished redraw. Drawing and window-update traps leave the guest
+    // part-way through one.
+    for opcode in [
+        0xA860u16, // WaitNextEvent
+        0xA970,    // GetNextEvent
+        0xA971,    // EventAvail
+        0xA972,    // GetMouse
+        0xA973,    // StillDown
+        0xA974,    // Button
+        0xA975,    // TickCount
+        0xA976,    // GetKeys
+        0xA977,    // WaitMouseUp
+        0xA9B4,    // SystemTask
+        0xA030,    // OSEventAvail
+        0xA031,    // GetOSEvent
+        0xA03B,    // Delay
+    ] {
+        assert!(
+            super::super::presentation_settle_trap(opcode),
+            "${opcode:04X} should settle"
+        );
+    }
+    for opcode in [
+        0xA8F6u16, // DrawPicture
+        0xA8A3,    // EraseRect
+        0xAA0E,    // FillCRect
+        0xA8EC,    // CopyBits
+        0xA922,    // BeginUpdate
+        0xA873,    // SetPort
+    ] {
+        assert!(
+            !super::super::presentation_settle_trap(opcode),
+            "${opcode:04X} should not settle"
+        );
+    }
+}
+
+#[test]
+fn ppc_imports_settle_presentation_like_their_68k_traps() {
+    for target in [
+        PpcImportDispatcherTarget::TickCount,
+        PpcImportDispatcherTarget::Button,
+        PpcImportDispatcherTarget::GetKeys,
+        PpcImportDispatcherTarget::GetMouse,
+        PpcImportDispatcherTarget::EventAvail,
+        PpcImportDispatcherTarget::SystemTask,
+        PpcImportDispatcherTarget::Delay,
+    ] {
+        assert!(target.settles_presentation(), "{target:?} should settle");
+    }
+    for target in [
+        PpcImportDispatcherTarget::Unsupported,
+        PpcImportDispatcherTarget::ExitToShell,
+    ] {
+        assert!(
+            !target.settles_presentation(),
+            "{target:?} should not settle"
+        );
+    }
+}
+
+#[test]
+fn settled_frame_presentation_holds_mid_redraw_frames_until_a_poll_or_four_ticks() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let presented = runner.guest_tick();
+
+    // Off by default: a mid-redraw frame is presented as before.
+    runner.process_context.note_presentation_settled(false);
+    assert!(runner.should_present_frame(Some(presented)));
+
+    runner.set_settled_frame_presentation(true);
+    // The guest's latest Toolbox call was drawing: hold the frame.
+    assert!(!runner.should_present_frame(Some(presented)));
+    // The first frame is never held.
+    assert!(runner.should_present_frame(None));
+
+    // A real clock poll (TickCount) releases the hold.
+    runner.m68k.cpu.write_reg(Register::A7, 0x007F_FF00);
+    runner
+        .dispatch_classic_with_process_services(0xA975)
+        .unwrap();
+    assert_eq!(runner.process_context.presentation_settled(), Some(true));
+    assert!(runner.should_present_frame(Some(presented)));
+
+    // Back in a redraw with no poll: held for up to four guest ticks.
+    runner.process_context.note_presentation_settled(false);
+    for _ in 0..super::super::SETTLED_FRAME_MAX_HOLD_TICKS - 1 {
+        runner.force_advance_guest_tick();
+        assert!(!runner.should_present_frame(Some(presented)));
+    }
+    runner.force_advance_guest_tick();
+    assert!(
+        runner.should_present_frame(Some(presented)),
+        "a guest that never polls is still presented after the tick cap"
+    );
+}

@@ -1479,6 +1479,32 @@ fn hle_trap_extra_tick_cost(opcode: u16) -> i32 {
     }
 }
 
+/// Longest a settled-frame hold may delay presentation, in guest ticks.
+pub const SETTLED_FRAME_MAX_HOLD_TICKS: u32 = 4;
+
+/// Traps a game calls between redraws: event polls, input polls, and clock
+/// reads. A frame presented while the guest's latest trap is one of these
+/// shows a finished redraw; a frame presented after a drawing trap may show a
+/// half-drawn screen in games that draw directly to the window.
+fn presentation_settle_trap(opcode: u16) -> bool {
+    matches!(
+        canonical_trap_number(opcode),
+        (true, 0x0170) // GetNextEvent
+            | (true, 0x0060) // WaitNextEvent
+            | (true, 0x0171) // EventAvail
+            | (true, 0x0172) // GetMouse
+            | (true, 0x0173) // StillDown
+            | (true, 0x0174) // Button
+            | (true, 0x0175) // TickCount
+            | (true, 0x0176) // GetKeys
+            | (true, 0x0177) // WaitMouseUp
+            | (true, 0x01B4) // SystemTask
+            | (false, 0x0030) // OSEventAvail
+            | (false, 0x0031) // GetOSEvent
+            | (false, 0x003B) // Delay
+    )
+}
+
 fn event_manager_yield_trap(opcode: u16) -> bool {
     matches!(
         canonical_trap_number(opcode),
@@ -1880,6 +1906,9 @@ pub struct FixtureRunner {
     /// the real Mac where MenuSelect blocks the application event loop.
     frozen_ticks: Option<u32>,
     menu_presentation_remainder: u64,
+    /// Opt-in: frontends hold the previous frame while the guest is part-way
+    /// through a redraw (see `should_present_frame`).
+    settled_frame_presentation: bool,
     /// Guest-memory address of the Time Manager interrupt trampoline code.
     /// Allocated once on first use and reused for all subsequent timer fires.
     timer_trampoline: u32,
@@ -2140,6 +2169,7 @@ impl FixtureRunner {
             virtual_idle_entries: 0,
             frozen_ticks: None,
             menu_presentation_remainder: 0,
+            settled_frame_presentation: false,
             timer_trampoline: 0,
             deferred_task_trampoline: 0,
             vbl_trampoline: 0,
@@ -3501,6 +3531,36 @@ impl FixtureRunner {
             .unwrap_or(false)
             || has_routable_process_callback
             || !self.dispatcher.sound_manager.pending_callbacks.is_empty()
+    }
+
+    /// Enable or disable settled-frame presentation. Off by default.
+    pub fn set_settled_frame_presentation(&mut self, enabled: bool) {
+        self.settled_frame_presentation = enabled;
+    }
+
+    pub fn settled_frame_presentation(&self) -> bool {
+        self.settled_frame_presentation
+    }
+
+    /// Whether a frontend should present the current screen now.
+    ///
+    /// Always true unless settled-frame presentation is enabled. When it is,
+    /// a frame is held while the guest's latest Toolbox call (68K trap or
+    /// PowerPC import) was drawing or other non-poll work, because games
+    /// that redraw straight into their window can be caught part-way through
+    /// a redraw. The hold ends at the next event, input, or clock poll, and
+    /// lasts at most `SETTLED_FRAME_MAX_HOLD_TICKS` guest ticks after
+    /// `last_presented_tick`, so a guest that never polls still updates.
+    /// Halted guests and UI tracking always present.
+    pub fn should_present_frame(&self, last_presented_tick: Option<u32>) -> bool {
+        if !self.settled_frame_presentation || self.is_halted() || self.is_ui_tracking_active() {
+            return true;
+        }
+        if self.process_context.presentation_settled().unwrap_or(true) {
+            return true;
+        }
+        last_presented_tick
+            .is_none_or(|last| self.guest_tick().wrapping_sub(last) >= SETTLED_FRAME_MAX_HOLD_TICKS)
     }
 
     pub fn is_ui_tracking_active(&self) -> bool {
@@ -7242,6 +7302,8 @@ impl FixtureRunner {
     }
 
     fn dispatch_classic_with_process_services(&mut self, opcode: u16) -> Result<()> {
+        self.process_context
+            .note_presentation_settled(presentation_settle_trap(opcode));
         let role = if self.native.availability().application {
             NativeEngineRole::Application
         } else {

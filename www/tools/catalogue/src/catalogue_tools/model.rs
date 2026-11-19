@@ -219,6 +219,11 @@ pub struct Runtime {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub launch_modifiers: Vec<LaunchModifier>,
     pub show_menu_bar: bool,
+    /// Hold each frame until the guest finishes redrawing (at most four
+    /// ticks), for titles that redraw straight into their window and flicker
+    /// when a frame is shown part-way through.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub present_settled_frames: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub screen_depth: Option<u16>,
     pub addressing_24_bit: bool,
@@ -242,6 +247,7 @@ impl Default for Runtime {
             gpu_compute: false,
             launch_modifiers: Vec::new(),
             show_menu_bar: false,
+            present_settled_frames: false,
             screen_depth: None,
             addressing_24_bit: false,
             screen_size: None,

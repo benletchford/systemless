@@ -25,6 +25,8 @@ struct BootConfig {
     runtime_pacing: RuntimePacing,
     arrows_as_numpad: bool,
     #[serde(default)]
+    present_settled_frames: bool,
+    #[serde(default)]
     plugins: Vec<PluginMetadata>,
 }
 
@@ -151,6 +153,7 @@ impl WorkerMachine {
         .await
         .map_err(|error| JsValue::from_str(&error))?;
         machine.set_arrows_as_numpad(config.arrows_as_numpad);
+        machine.set_settled_frame_presentation(config.present_settled_frames);
         machine.set_worker_audio_queue_samples(Some(0));
         Ok(Self {
             machine,
@@ -186,8 +189,12 @@ impl WorkerMachine {
         let gpu_frame = self.machine.take_q3_gpu_frame();
         let counters = self.machine.perf_counters();
         let logical_size = self.machine.screen_size();
-        let should_render = gpu_frame.is_none()
+        let wants_render = gpu_frame.is_none()
             && (frame_result.visual_work || !self.painted_once || debug || force_render);
+        let should_render = gpu_frame.is_none()
+            && self
+                .machine
+                .settled_frame_gate(wants_render, self.painted_once && !debug);
         let output_scale = output_scale.clamp(1, 4);
         let compact_frame = if should_render && compact_render && !debug {
             self.machine.render_compact().map(|frame| {
