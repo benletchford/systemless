@@ -6364,7 +6364,13 @@ impl super::TrapDispatcher {
                 let vis_rgn = bus.read_long(vis_rgn_handle);
                 if vis_rgn != 0 {
                     let current_vis_top = bus.read_word(vis_rgn + 2) as i16;
-                    if current_vis_top != vis_top_expected {
+                    // Only ever grow the region upwards. A window that has
+                    // called SetOrigin keeps a visRgn whose top is negative
+                    // in its own local coordinates (Ingemar's Skiing Game
+                    // uses origin (-144,-125) on a full-screen window, so
+                    // its visRgn starts at -125). Pulling that top down to
+                    // 0 would cut off the band above the local origin.
+                    if current_vis_top > vis_top_expected {
                         bus.write_word(vis_rgn + 2, vis_top_expected as u16);
                         // Also update clipRgn and portRect to match.
                         let clip_rgn_handle = bus.read_long(self.front_window + 28);
@@ -8519,6 +8525,38 @@ mod redraw_chrome_tests {
             bus.read_word(PORT_PTR + 16) as i16,
             0,
             "port_top must be updated to match expanded visRgn"
+        );
+    }
+
+    /// The hidden-menu-bar expansion only grows visRgn. A full-screen window
+    /// that has called SetOrigin has a visRgn whose top is already above 0 in
+    /// its local coordinates; it must be left alone, not cut back to 0.
+    /// Ingemar's Skiing Game sets its origin to (-144,-125) and lost the 125
+    /// rows above its course when it brought the menu bar back.
+    #[test]
+    fn redraw_chrome_does_not_shrink_visrgn_of_window_with_offset_origin() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        bus.write_word(VIS_RGN + 2, (-125i16) as u16);
+        bus.write_word(CLIP_RGN + 2, (-125i16) as u16);
+        bus.write_word(PORT_PTR + 16, (-125i16) as u16);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 600, 800);
+        disp.window_proc_id = 2; // plainDBox
+        disp.fullscreen_locked = false;
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_word(VIS_RGN + 2) as i16,
+            -125,
+            "visRgn.top above the local origin must not be pulled down to 0"
+        );
+        assert_eq!(
+            bus.read_word(PORT_PTR + 16) as i16,
+            -125,
+            "port_top must keep the offset origin"
         );
     }
 
