@@ -5212,6 +5212,34 @@ impl TrapDispatcher {
         });
     }
 
+    /// Record the creation and modification dates an archive stored for an
+    /// installed file. The catalog reports them as ioFlCrDat and ioFlMdDat
+    /// (Inside Macintosh: Files (1992), p. 2-212), and some applications
+    /// compare them to detect edited data files. Zero means the archive did not
+    /// record a date, so the synthetic one is kept. Later writes must still
+    /// look newer, so the timestamp allocator moves past the recorded dates.
+    pub(crate) fn set_vfs_entry_dates(&mut self, name: &str, created_date: u32, modified_date: u32) {
+        let normalized = Self::normalize_vfs_path(name);
+        if !self.vfs_metadata.contains_key(&normalized) {
+            return;
+        }
+        self.vfs_metadata.update(&normalized, |metadata| {
+            if created_date != 0 {
+                metadata.created_date = created_date;
+            }
+            if modified_date != 0 {
+                metadata.modified_date = modified_date;
+            }
+        });
+        let latest = created_date.max(modified_date);
+        self.next_vfs_timestamp.with_mut(|next_timestamp| {
+            *next_timestamp = (*next_timestamp).max(latest.saturating_add(1));
+        });
+        self.process_file_system.with_mut(|file_system| {
+            file_system.publish_classic_vfs_metadata(&normalized);
+        });
+    }
+
     pub(crate) fn set_vfs_entry_finfo(
         &mut self,
         name: &str,

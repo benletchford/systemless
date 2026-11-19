@@ -276,6 +276,7 @@ pub(super) fn ppc_pb_get_cat_info(
     vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
+    vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     default_dir_id: u32,
@@ -402,6 +403,7 @@ pub(super) fn ppc_pb_get_cat_info(
             pb,
             vfs_directories,
             vfs_files,
+            vfs_metadata,
             vfs_resource_files,
             vfs_resources,
             &entry.path,
@@ -599,6 +601,7 @@ pub(super) fn ppc_pb_get_finfo(
     vfs_directories: &[PpcVfsDirectory],
     vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_files: &[PpcVfsFileRecord],
+    vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     default_dir_id: u32,
@@ -683,6 +686,7 @@ pub(super) fn ppc_pb_get_finfo(
         pb,
         vfs_directories,
         vfs_files,
+        vfs_metadata,
         vfs_resource_files,
         vfs_resources,
         &path,
@@ -985,6 +989,7 @@ pub(super) fn ppc_fill_file_finfo_pb(
     pb: u32,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
+    vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     path: &str,
@@ -1007,8 +1012,9 @@ pub(super) fn ppc_fill_file_finfo_pb(
     memory.write_u32_be(pb + 58, data_len)?;
     memory.write_u32_be(pb + 64, resource_len)?;
     memory.write_u32_be(pb + 68, resource_len)?;
-    memory.write_u32_be(pb + 72, 0)?;
-    memory.write_u32_be(pb + 76, 0)?;
+    let (created_date, modified_date) = ppc_file_dates_for_path(vfs_metadata, path);
+    memory.write_u32_be(pb + 72, created_date)?;
+    memory.write_u32_be(pb + 76, modified_date)?;
     if include_parent_dir_id {
         memory.write_u32_be(
             pb + 100,
@@ -1719,6 +1725,7 @@ pub(super) fn ppc_fill_file_catalog_info(
     pb: u32,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
+    vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     vfs_resources: &[PpcVfsResourceRecord],
     path: &str,
@@ -1738,10 +1745,29 @@ pub(super) fn ppc_fill_file_catalog_info(
     memory.write_u32_be(pb + 58, data_len)?;
     memory.write_u32_be(pb + 64, resource_len)?;
     memory.write_u32_be(pb + 68, resource_len)?;
-    memory.write_u32_be(pb + 72, 0)?;
-    memory.write_u32_be(pb + 76, 0)?;
+    let (created_date, modified_date) = ppc_file_dates_for_path(vfs_metadata, path);
+    memory.write_u32_be(pb + 72, created_date)?;
+    memory.write_u32_be(pb + 76, modified_date)?;
     memory.write_u32_be(pb + 100, ppc_parent_dir_id_for_path(vfs_directories, path))?;
     Some(())
+}
+
+/// The File Manager reports a file's ioFlCrDat and ioFlMdDat from its
+/// catalog record (Inside Macintosh: Files (1992), pp. 2-194 and 2-212).
+/// Paths without catalog metadata report zero, as before.
+pub(super) fn ppc_file_dates_for_path(
+    vfs_metadata: &HashMap<String, ProcessVfsMetadata>,
+    path: &str,
+) -> (u32, u32) {
+    vfs_metadata
+        .get(path)
+        .or_else(|| {
+            vfs_metadata
+                .iter()
+                .find(|(candidate, _)| candidate.eq_ignore_ascii_case(path))
+                .map(|(_, metadata)| metadata)
+        })
+        .map_or((0, 0), |metadata| (metadata.created_date, metadata.modified_date))
 }
 
 pub(super) fn ppc_resource_fork_len_for_path(

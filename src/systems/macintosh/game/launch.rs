@@ -833,6 +833,14 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
     reject_filter_suite_without_host(&payload, runner)?;
     skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
     insert_payload_into_vfs(runner, payload, &mut executable_entry);
+    // StuffIt records each file's Finder dates; keep them for the catalog.
+    for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
+        runner.dispatcher_mut().set_vfs_entry_dates(
+            &entry.name,
+            entry.creation_date,
+            entry.modification_date,
+        );
+    }
 
     log_vfs(runner);
 
@@ -4959,6 +4967,49 @@ mod tests {
         assert_eq!(file.file_type, *b"TEXT");
         assert_eq!(file.creator, *b"ttxt");
         assert_eq!(file.finder_flags, 0x100);
+    }
+
+    #[test]
+    fn stuffit_load_keeps_archived_file_dates_for_the_catalog() {
+        // Monkey Shines 2's demo refuses to play its world unless the file's
+        // catalog modification date still equals the date it shipped with.
+        let mut archive = SitArchive::new();
+        archive.add_entry(SitEntry {
+            name: "World".into(),
+            data_fork: b"world data".to_vec(),
+            resource_fork: Vec::new(),
+            file_type: *b"wRlD",
+            creator: *b"bNzD",
+            is_folder: false,
+            data_method: 0,
+            rsrc_method: 0,
+            data_ulen: 0,
+            rsrc_ulen: 0,
+            finder_flags: 0x0100,
+            creation_date: 2_977_141_827,
+            modification_date: 3_063_903_761,
+            is_compressed: false,
+            format: stuffit::ArchiveFormat::Sit5,
+        });
+        let bytes = archive.serialize_compressed().unwrap();
+        let mut runner = new_runner();
+
+        // The archive holds no application, but its files are installed first.
+        let Err(error) = load_game(&mut runner, &bytes) else {
+            panic!("the archive holds no application");
+        };
+
+        let dispatcher = runner.dispatcher_mut();
+        let metadata = dispatcher
+            .vfs_file_metadata("World")
+            .unwrap_or_else(|| panic!("archived file is in the catalog: {error}"));
+        assert_eq!(metadata.created_date, 2_977_141_827);
+        assert_eq!(metadata.modified_date, 3_063_903_761);
+        // Files written later must still look newer than shipped ones.
+        dispatcher.vfs.insert("Saved".to_string(), b"save".to_vec());
+        dispatcher.touch_vfs_entry("Saved");
+        let saved = dispatcher.vfs_file_metadata("Saved").unwrap();
+        assert!(saved.modified_date > 3_063_903_761);
     }
 
     #[test]

@@ -1933,6 +1933,7 @@ impl PpcLoadedApp {
                             deleted_vfs_file_paths,
                             resource_manager,
                             next_file_ref_num,
+                            classic_vfs_metadata,
                             ..
                         } = file_system;
                         screen_clut.with_mut(|screen_clut| {
@@ -2050,6 +2051,7 @@ impl PpcLoadedApp {
                                             files,
                                             writable_refnums,
                                             vfs_files,
+                                            vfs_metadata: classic_vfs_metadata,
                                             stdio_streams,
                                             deleted_vfs_file_paths,
                                             resource_files,
