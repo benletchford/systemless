@@ -374,6 +374,22 @@ mod tests {
         assert_eq!(data[glyph.data_offset], 255);
     }
 
+    #[test]
+    fn resource_font_without_space_advances_without_missing_symbol_ink() {
+        // Civilization's nation fonts encode no space ('!' only here), so
+        // char 32 maps to the missing symbol. QuickDraw's DrawText loop
+        // handles 32 before the missing-glyph lookup and draws nothing.
+        let mut font = minimal_nfnt();
+        font[2..4].copy_from_slice(&33u16.to_be_bytes());
+        font[4..6].copy_from_slice(&33u16.to_be_bytes());
+        assert!(register_resource_font_strike_for_family(30003, 17, &font));
+        let (space, _) = crate::quickdraw::text::get_glyph(30003, 17, ' ').unwrap();
+        assert_eq!((space.width, space.advance), (0, 1));
+        let (bang, data) = crate::quickdraw::text::get_glyph(30003, 17, '!').unwrap();
+        assert_eq!(bang.width, 1);
+        assert_eq!(data[bang.data_offset], 255);
+    }
+
     fn distinctive_override_blob(font_id: i16, size: i16) -> override_format::Blob {
         let glyphs: Vec<Glyph> = (0..override_format::GLYPH_COUNT)
             .map(|_| Glyph {
