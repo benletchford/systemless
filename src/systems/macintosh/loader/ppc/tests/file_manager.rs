@@ -3865,6 +3865,66 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn catalog_and_finfo_calls_report_the_file_catalog_dates() {
+        // Inside Macintosh: Files (1992), pp. 2-194 and 2-212: ioFlCrDat and
+        // ioFlMdDat come from the file's catalog record. Monkey Shines 2
+        // compares ioFlMdDat with its shipped world's date before playing it.
+        let path = "System Folder/Preferences/Test World";
+        for symbol in [&b"PBGetCatInfoSync"[..], &b"PBHGetFInfoSync"[..]] {
+            let pef = synthetic_pef_with_import(symbol);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let pb = PPC_DATA_BASE + 0x1000;
+            let name_ptr = pb + 128;
+            loaded.memory.add_region(pb, vec![0; 256]);
+            write_ppc_pstring(&mut loaded.memory, name_ptr, b"Test World");
+            loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+            loaded
+                .memory
+                .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+                .unwrap();
+            loaded
+                .memory
+                .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
+                .unwrap();
+            loaded.memory.write_u32_be(pb + 72, 0xFFFF_FFFF).unwrap();
+            loaded.memory.write_u32_be(pb + 76, 0xFFFF_FFFF).unwrap();
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: path.to_string(),
+                data: (b"world".to_vec()).into(),
+                creator: u32::from_be_bytes(*b"bNzD"),
+                file_type: u32::from_be_bytes(*b"wRlD"),
+                finder_flags: 0,
+                dirty: false,
+            });
+            loaded
+                .process_file_system
+                .classic_vfs_metadata
+                .with_mut(|metadata| {
+                    metadata.insert(
+                        path.to_string(),
+                        crate::process_context::ProcessVfsMetadata {
+                            file_id: 40,
+                            parent_dir_id: PPC_PREFERENCES_DIR_ID,
+                            file_type: u32::from_be_bytes(*b"wRlD"),
+                            creator: u32::from_be_bytes(*b"bNzD"),
+                            finder_flags: 0,
+                            created_date: 0xB173_9443,
+                            modified_date: 0xB69F_7611,
+                        },
+                    );
+                });
+            loaded.cpu.gpr[3] = pb;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            assert_eq!(loaded.memory.read_u32_be(pb + 72), Some(0xB173_9443));
+            assert_eq!(loaded.memory.read_u32_be(pb + 76), Some(0xB69F_7611));
+        }
+    }
+
+    #[test]
     fn pb_get_cat_info_searches_a_working_directory_and_keeps_its_ref() {
         let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
