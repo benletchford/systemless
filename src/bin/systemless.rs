@@ -1036,6 +1036,8 @@ struct App {
     #[cfg(not(target_os = "macos"))]
     surface_size: Option<(u32, u32)>,
     frame_argb: Vec<u32>,
+    /// The last frame converted to ARGB; see `display::ArgbFrameCache`.
+    argb_cache: display::ArgbFrameCache,
     guest_frame_argb: Vec<u32>,
     presentation_argb: Vec<u32>,
     #[cfg(target_os = "macos")]
@@ -1237,6 +1239,7 @@ impl App {
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
             frame_argb: Vec::new(),
+            argb_cache: display::ArgbFrameCache::default(),
             guest_frame_argb: Vec::new(),
             presentation_argb: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -2208,7 +2211,7 @@ impl App {
             && !self.debug_overlay_visible;
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
         if !compact_ready {
-            frame.screen.render_argb(&mut frame_argb);
+            self.argb_cache.render(&frame.screen, &mut frame_argb);
             let guest = retained
                 .as_ref()
                 .filter(|_| cursor.is_some() || self.debug_overlay_visible)
@@ -2265,7 +2268,7 @@ impl App {
                 return;
             }
             if compact_ready {
-                frame.screen.render_argb(&mut frame_argb);
+                self.argb_cache.render(&frame.screen, &mut frame_argb);
             }
         }
 
@@ -2301,7 +2304,7 @@ impl App {
                 return;
             }
             // Beyond the shader's exact integer range: resolve on the CPU.
-            frame.screen.render_argb(&mut frame_argb);
+            self.argb_cache.render(&frame.screen, &mut frame_argb);
         }
 
         #[cfg(target_os = "windows")]
@@ -2366,7 +2369,7 @@ impl App {
                         // them for this same frame before entering software
                         // presentation; self.frame_argb may hold an older size
                         // or screen, including after a resize/device failure.
-                        frame.screen.render_argb(&mut frame_argb);
+                        self.argb_cache.render(&frame.screen, &mut frame_argb);
                     }
                 }
             }
