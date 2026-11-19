@@ -30,6 +30,11 @@ pub mod addr {
     /// ScreenRow: rowBytes of the active screen (word).
     /// MPW Interfaces/AIncludes/LowMemEqu.a defines `ScreenRow` at $0106.
     pub const SCREEN_ROW: u32 = 0x0106;
+    /// ChunkyDepth: pixel depth of the main screen (word).
+    /// MPW Interfaces/AIncludes/SysEqu.a defines `ChunkyDepth` at $0D60
+    /// ("depth of the pixels"); Color QuickDraw keeps it in step with the
+    /// main device's pixel size.
+    pub const CHUNKY_DEPTH: u32 = 0x0D60;
     pub const MEM_TOP: u32 = 0x0108; // Top of memory (ptr)
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)

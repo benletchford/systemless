@@ -20152,6 +20152,7 @@ impl super::TrapDispatcher {
         let old_screen_base = bus.read_long(0x0824);
         bus.write_long(0x0824, color_screen_base); // ScrnBase
         bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
+        bus.write_word(crate::memory::globals::addr::CHUNKY_DEPTH, depth);
 
         let sb = crate::memory::globals::addr::SCREEN_BITS;
         bus.write_long(sb, color_screen_base);

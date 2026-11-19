@@ -21246,6 +21246,36 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn set_depth_keeps_chunky_depth_low_memory_in_step() {
+        // SysEqu.a: ChunkyDepth ($0D60) holds the main screen's pixel depth.
+        // Utopia reads it straight from low memory and refuses its colour
+        // boards when it is below 8, so SetDepth must keep it current.
+        let (mut d, mut cpu, mut bus) = setup();
+        let chunky_depth = crate::memory::globals::addr::CHUNKY_DEPTH;
+        assert_eq!(bus.read_word(chunky_depth), 8);
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+
+        for depth in [4u16, 1, 2, 8] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0A13);
+            bus.write_word(TEST_SP, u16::from(depth > 1)); // flags: colour unless 1-bit
+            bus.write_word(TEST_SP + 2, 1); // whichFlags: gdDevType
+            bus.write_word(TEST_SP + 4, depth);
+            bus.write_long(TEST_SP + 6, main_gdh);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_word(TEST_SP + 10), 0, "SetDepth({depth}) result");
+            assert_eq!(d.screen_mode.4, depth);
+            assert_eq!(
+                bus.read_word(chunky_depth),
+                depth,
+                "ChunkyDepth after SetDepth({depth})"
+            );
+        }
+    }
+
+    #[test]
     fn set_depth_two_wires_packed_screen_and_color_table() {
         // Imaging With QuickDraw (1994), pp. 4-10--4-11 and 5-34--5-35:
         // 2bpp is an indexed device depth, and SetDepth imposes the selected
@@ -21626,6 +21656,7 @@ fn copy_bits_converts_between_direct_color_depths() {
         let screen_base = bus.read_long(0x0824);
         let initial_row_bytes = TrapDispatcher::row_bytes_for_depth(800, 1).unwrap();
         d.set_screen_mode_for_test(screen_base, initial_row_bytes, 800, 600, 1);
+        bus.write_word(crate::memory::globals::addr::CHUNKY_DEPTH, 1);
         let gdh = d.ensure_main_gdevice(&mut bus);
         let gd = bus.read_long(gdh);
         let pixmap = bus.read_long(bus.read_long(gd + 22));
@@ -21667,6 +21698,7 @@ fn copy_bits_converts_between_direct_color_depths() {
             bus.read_word(crate::memory::globals::addr::SCREEN_ROW),
             before_screen_row
         );
+        assert_eq!(bus.read_word(crate::memory::globals::addr::CHUNKY_DEPTH), 1);
         assert_eq!(
             bus.read_bytes(crate::memory::globals::addr::SCREEN_BITS, 14),
             before_screen_bits
