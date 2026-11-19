@@ -1373,6 +1373,48 @@ fn showcontrol_arms_application_cdef_draw_in_owner_port() {
 }
 
 #[test]
+fn showcontrol_calls_application_cdef_stub_that_starts_with_jsr() {
+    // Chinese Chess Pro's CDEF 256/272 resources are 16-byte stubs:
+    // JSR *+$E (an RTS), MOVEA.L target(PC),A0, JMP (A0), target, RTS.
+    // The application patches `target` with its own CDEF code.
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let sp = 0x300000u32;
+    let return_pc = 0x1234_5678;
+    let owner = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+    let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (7, 313, 339, 326), 0, 0);
+    let cdef_proc = bus.alloc(16);
+    let cdef_handle = bus.alloc(4);
+    let stub = [
+        0x4EBA, 0x000C, 0x207A, 0x0004, 0x4ED0, 0x0012, 0x3456, 0x4E75,
+    ];
+    for (i, word) in stub.into_iter().enumerate() {
+        bus.write_word(cdef_proc + 2 * i as u32, word);
+    }
+    bus.write_long(cdef_handle, cdef_proc);
+    bus.write_long(ctrl_ptr + 4, owner);
+    bus.write_long(ctrl_ptr + 24, cdef_handle);
+    disp.control_manager.set_proc_id(ctrl_ptr, 272 << 4);
+
+    assert!(disp.control_uses_application_def_proc(&bus, ctrl_ptr));
+
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, return_pc);
+    bus.write_long(sp, ctrl_handle);
+    disp.dispatch_control(true, 0x157, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+
+    let trampoline = disp.control_def_trampoline;
+    assert_ne!(trampoline, 0);
+    assert_eq!(
+        cpu.read_reg(Register::PC),
+        trampoline,
+        "ShowControl should call the application CDEF instead of drawing a standard control"
+    );
+    assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
+}
+
+#[test]
 fn hidecontrol_clears_contrlvis_and_pops_handle_arg() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = 0x300000u32;
