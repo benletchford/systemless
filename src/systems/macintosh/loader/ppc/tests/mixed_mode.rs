@@ -2224,6 +2224,49 @@ fn hle_import_runner_call_universal_proc_places_m68k_dispatched_selectors() {
 }
 
 #[test]
+fn hle_import_runner_call_universal_proc_converts_with_the_m68k_routine_record_procinfo() {
+    // ShadowWraith passes plain Pascal procInfo $E620 for a static descriptor
+    // whose 68K record is D0-dispatched $E6A8; the selector arrives as the
+    // first PowerPC argument and must reach D0 with the remaining arguments
+    // on the 68K stack.
+    let pef = synthetic_pef_with_import(b"CallUniversalProc");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback_entry = PPC_HEAP_BASE + 0x2000;
+    let record_proc_info = test_dispatched_stack_proc_info(
+        PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED,
+        PPC_PROCINFO_SIZE_NONE,
+        PPC_PROCINFO_SIZE_TWO,
+        &[PPC_PROCINFO_SIZE_FOUR],
+    );
+    let caller_proc_info = record_proc_info & !0x0000_00cf;
+    install_test_m68k_callback(
+        &mut loaded,
+        descriptor,
+        callback_entry,
+        record_proc_info,
+        0,
+        &[0x4e74, 4],
+    );
+    loaded.cpu.gpr[3] = descriptor;
+    loaded.cpu.gpr[4] = caller_proc_info;
+    loaded.cpu.gpr[5] = 0x1234_5678;
+    loaded.cpu.gpr[6] = 0xcafe_babe;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    let pending = loaded.guest_calls().activate_m68k().unwrap();
+    assert_eq!(pending.registers.data[0], 0x5678);
+    assert_eq!(
+        loaded.memory.read_u32_be(pending.initial_sp + 4),
+        Some(0xcafe_babe)
+    );
+    assert_eq!(pending.final_sp, pending.initial_sp + 8);
+    drain_test_m68k_guest_calls(&mut loaded);
+}
+
+#[test]
 fn hle_import_runner_call_universal_proc_decodes_stack_procinfo_sizes() {
     let pef = synthetic_pef_with_import(b"CallUniversalProc");
     let mut loaded = load_pef_application(&pef).unwrap();
