@@ -9,7 +9,7 @@ pub(crate) struct PpcPendingLaunch {
 }
 
 pub(super) fn dispatch(context: &mut PpcDispatchContext<'_>) -> Option<PpcImportAction> {
-    let target = context.binding.dispatcher_target.clone();
+    let target = context.binding.dispatcher_target;
     if let Some(pending) = context.toolbox_startup.pending_launch.as_mut() {
         let exiting = matches!(target, PpcImportDispatcherTarget::ExitToShell);
         let yielding = matches!(
