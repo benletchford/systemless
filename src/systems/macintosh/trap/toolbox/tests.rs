@@ -22405,3 +22405,24 @@ fn classic_file_graphics_importer_rejects_transparency_instead_of_flattening_it(
     assert_eq!(bus.read_long(out), 0);
     assert!(disp.classic_graphics_importers.is_empty());
 }
+
+#[test]
+fn standard_file_minus_one_where_centres_get_and_put_dialogs() {
+    // System 7 Standard File centres its dialog for where = (-1,-1); Spaceward
+    // Ho! passes that to SFGetFile and must not get a dialog pinned under the
+    // menu bar at the top-left corner. Explicit origins are still honoured.
+    let (mut disp, _cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+    let centred_get = disp.standard_file_get_dialog_bounds(None);
+    assert_eq!(disp.standard_file_get_dialog_bounds(Some((-1, -1))), centred_get);
+    assert!(centred_get.1 > 4 && centred_get.0 > 24, "centred, not pinned: {centred_get:?}");
+    assert_eq!(disp.standard_file_get_dialog_bounds(Some((60, 80))).0, 60);
+    assert_eq!(disp.standard_file_get_dialog_bounds(Some((60, 80))).1, 80);
+
+    let centred_put = disp.standard_file_put_dialog_bounds(None);
+    assert_eq!(disp.standard_file_put_dialog_bounds(Some((-1, -1))), centred_put);
+    assert!(centred_put.1 > 4 && centred_put.0 > 24, "centred, not pinned: {centred_put:?}");
+    assert_eq!(disp.standard_file_put_dialog_bounds(Some((60, 80))).0, 60);
+}

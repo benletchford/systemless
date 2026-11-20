@@ -548,6 +548,16 @@ fn standard_file_put_reply_old(bus: &mut MacMemoryBus, reply_ptr: u32, vref: i16
     bus.write_pstring(reply_ptr + 10, name);
 }
 
+/// System 7 Standard File centres its dialog when `where` is (-1,-1)
+/// (Inside Macintosh: Files, `CustomGetFile` `where`; Apple's StandardGetFolder
+/// sample passes `{-1,-1}` "to center the dialog"). The System 6-style
+/// SFGetFile/SFPutFile entry points share that dialog engine, so treat the
+/// sentinel as "no explicit origin" there too, as the PowerPC path does.
+fn standard_file_explicit_origin(requested_origin: Option<(i16, i16)>) -> Option<(i16, i16)> {
+    requested_origin.filter(|&origin| origin != (-1, -1))
+}
+
+
 fn standard_file_get_reply_old(
     bus: &mut MacMemoryBus,
     reply_ptr: u32,
@@ -2112,6 +2122,7 @@ impl super::TrapDispatcher {
         &self,
         requested_origin: Option<(i16, i16)>,
     ) -> (i16, i16, i16, i16) {
+        let requested_origin = standard_file_explicit_origin(requested_origin);
         let (_, _, screen_width, screen_height, _) = self.screen_mode;
         let centered_left = (screen_width as i16 - STANDARD_FILE_GET_DIALOG_WIDTH) / 2;
         let centered_top = (screen_height as i16 - STANDARD_FILE_GET_DIALOG_HEIGHT) / 2;
@@ -2782,6 +2793,7 @@ impl super::TrapDispatcher {
     }
 
     fn standard_file_put_dialog_bounds(&self, requested_origin: Option<(i16, i16)>) -> (i16, i16, i16, i16) {
+        let requested_origin = standard_file_explicit_origin(requested_origin);
         let (_, _, screen_width, screen_height, _) = self.screen_mode;
         let (requested_top, requested_left) = requested_origin.unwrap_or(((screen_height as i16 - STANDARD_FILE_DIALOG_HEIGHT) / 2, (screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH) / 2));
         let left = requested_left.max(4).min((screen_width as i16 - STANDARD_FILE_DIALOG_WIDTH - 4).max(4));
