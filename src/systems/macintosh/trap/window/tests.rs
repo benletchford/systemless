@@ -10418,3 +10418,80 @@ fn window_removal_clears_current_port_aliases_when_no_windows_remain() {
         assert_eq!(disp.effective_the_port(&bus, cpu.read_reg(Register::A5)), 0);
     }
 }
+
+#[test]
+fn dbox_chrome_frames_structure_region_after_app_grows_content_region() {
+    // Triazzle's "How to Play" dBoxProc dialog insets its own contRgn and
+    // visRgn by -5 after ShowWindow to paint a bevel inside the frame. The
+    // standard WDEF keeps framing StrucRgn.rgnBBox (StandardWDEF.a
+    // WDefDrawWindow / StructInTemp), so the frame must not move outward
+    // past the strucRgn that DisposeDialog later invalidates.
+    let (mut disp, mut cpu, mut bus) = setup();
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+    disp.menu_bar_hidden = false;
+    let (screen_base, row_bytes, _, _, depth) = disp.screen_mode;
+    assert_eq!(depth, 8, "test addresses screen bytes as 8-bit pixels");
+
+    let window_addr = bus.alloc(256);
+    let content = (100i16, 100i16, 200i16, 300i16);
+    disp.init_cgraf_window(
+        &mut bus,
+        &mut cpu,
+        window_addr,
+        screen_base,
+        content.0,
+        content.1,
+        content.2,
+        content.3,
+        "",
+        1,
+        true,
+        false,
+        false,
+        0,
+    );
+    let structure = super::super::TrapDispatcher::region_handle_rect(
+        &bus,
+        bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET),
+    );
+    assert_eq!(structure, Some((92, 92, 208, 308)));
+
+    // InsetRgn(contRgn, -5, -5) as Triazzle does after ShowWindow.
+    let cont_rgn =
+        bus.read_long(window_addr + super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET);
+    super::super::TrapDispatcher::write_region_handle_rect(
+        &mut bus,
+        cont_rgn,
+        Some((95, 95, 205, 305)),
+    );
+
+    let sentinel = 0x5A;
+    let pixel = |x: u32, y: u32| screen_base + y * row_bytes + x;
+    for y in 80..220u32 {
+        for x in 80..320u32 {
+            bus.write_byte(pixel(x, y), sentinel);
+        }
+    }
+    disp.draw_single_window_chrome_inline(&mut bus, window_addr, true);
+
+    for (x, y) in [
+        (87u32, 150u32),
+        (91, 150),
+        (150, 87),
+        (150, 91),
+        (312, 150),
+        (150, 212),
+    ] {
+        assert_eq!(
+            bus.read_byte(pixel(x, y)),
+            sentinel,
+            "frame pixel ({x},{y}) lies outside the strucRgn"
+        );
+    }
+    assert_ne!(
+        bus.read_byte(pixel(92, 150)),
+        sentinel,
+        "the outer frame line sits on the strucRgn edge"
+    );
+    assert_ne!(bus.read_byte(pixel(150, 92)), sentinel);
+}

@@ -5965,9 +5965,14 @@ impl super::TrapDispatcher {
         // no title bar; dispatch to draw_window_frame rather than
         // draw_window_chrome (which paints title-bar chrome).
         let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
-        let (wind_top, wind_left, wind_bottom, wind_right) = self
-            .window_content_global_rect(bus, window_ptr)
-            .unwrap_or_else(|| self.window_global_port_rect(bus, window_ptr));
+        // The standard WDEF frames dialog boxes from the strucRgn, which
+        // only CalcRgns (Show/Move/SizeWindow) recomputes; an application
+        // may grow its contRgn afterwards without moving the frame.
+        // StandardWDEF.a WDefDrawWindow (StructInTemp).
+        let (wind_top, wind_left, wind_bottom, wind_right) =
+            Self::frame_window_content_from_structure(bus, window_ptr, proc_id)
+                .or_else(|| self.window_content_global_rect(bus, window_ptr))
+                .unwrap_or_else(|| self.window_global_port_rect(bus, window_ptr));
         if wind_bottom <= wind_top || wind_right <= wind_left {
             return;
         }

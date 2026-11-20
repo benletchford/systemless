@@ -1424,6 +1424,39 @@ impl super::TrapDispatcher {
         self.window_structure_global_rect_for_proc(bus, content_rect, proc_id)
     }
 
+    /// Content edge implied by the strucRgn of a frame-only dialog window
+    /// (`dBoxProc`, `plainDBox`, `altDBoxProc`).
+    ///
+    /// The standard WDEF frames the window from `StrucRgn.rgnBBox`
+    /// (`StructInTemp` in StandardWDEF.a `WDefDrawWindow`) inside a
+    /// `DeviceLoop` over the strucRgn, so an application that grows its
+    /// contRgn after `ShowWindow` (Triazzle insets it by -5 to paint its own
+    /// bevel) does not move the frame. Returns `None` for other procIDs or
+    /// when the window has no structure region yet.
+    pub(super) fn frame_window_content_from_structure(
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+        proc_id: i16,
+    ) -> Option<(i16, i16, i16, i16)> {
+        let (top_inset, left_inset, bottom_inset, right_inset) = match proc_id {
+            1 => (8, 8, 8, 8),
+            2 => (1, 1, 1, 1),
+            3 => (1, 1, 3, 3),
+            _ => return None,
+        };
+        let (top, left, bottom, right) = Self::region_handle_rect(
+            bus,
+            bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+        )?;
+        let content = (
+            top.saturating_add(top_inset),
+            left.saturating_add(left_inset),
+            bottom.saturating_sub(bottom_inset),
+            right.saturating_sub(right_inset),
+        );
+        (content.0 < content.2 && content.1 < content.3).then_some(content)
+    }
+
     pub(super) fn window_structure_rect(
         &self,
         bus: &MacMemoryBus,
