@@ -298,6 +298,12 @@ struct GuestAddressSpaceState {
     /// and by every clone, from the same non-reusing namespace. `0` makes
     /// every dispatch check tokens.
     code_epoch: u64,
+    /// [`PpcMemory::direct_read_epoch`]: renewed by every new region or
+    /// shared mapping and by every clone, from a non-reusing namespace.
+    layout_epoch: u64,
+    /// Bumped whenever a page is first marked in `executed_pages`, so that
+    /// pages offered for direct writes stop being offered.
+    executed_generation: u64,
 }
 
 impl GuestAddressSpaceState {
@@ -315,11 +321,17 @@ impl GuestAddressSpaceState {
         }
         // A new mapping can shadow a cached span or fall inside a cached gap.
         self.renew_code_epoch();
+        self.renew_layout_epoch();
         self.instruction_lookup.clear();
         self.data_lookup.clear();
         self.route_lookup.clear();
         self.instruction_token_cache.fill(CodeTokenSlot::default());
         self.shared_regions.push(mapping);
+    }
+
+    /// Invalidate every page the JIT reads directly.
+    fn renew_layout_epoch(&mut self) {
+        self.layout_epoch = try_allocate_instruction_cache_token().unwrap_or(0);
     }
 
     /// Invalidate every token check the JIT remembers.
@@ -919,6 +931,12 @@ fn sparse_instruction_token(state: &mut GuestAddressSpaceState, addr: u32) -> Op
     let writable = state.regions.writable_span(addr, 4).is_some();
     let token = if writable {
         let start = u64::from(addr);
+        if !state.executed_pages.may_overlap(start, start + 4) {
+            // The page leaves the direct-write table. The JIT checks that
+            // table's epoch again only when the code epoch moves.
+            state.executed_generation += 1;
+            state.renew_code_epoch();
+        }
         state.executed_pages.mark(start, start + 4);
         state.writable_code_token(addr)?
     } else {
@@ -1223,6 +1241,8 @@ impl SharedGuestAddressSpace {
             state.presentation = slot;
             state.quiet_presentation_pages = QuietPresentationPages::default();
         });
+        // Pages the old slot left unobserved may be observed by the new one.
+        super::note_observed_page_event();
     }
     fn new(memory: &GuestAddressSpace) -> Self {
         Self(Rc::clone(&memory.0))
@@ -1465,6 +1485,8 @@ impl Clone for GuestAddressSpace {
             instruction_token_cache: [CodeTokenSlot::default(); INSTRUCTION_TOKEN_CACHE_SLOTS],
             // The clone mints its own tokens (see `page_tokens` above).
             code_epoch: try_allocate_instruction_cache_token().unwrap_or(0),
+            layout_epoch: try_allocate_instruction_cache_token().unwrap_or(0),
+            executed_generation: state.executed_generation,
         })))
     }
 }
@@ -1528,6 +1550,7 @@ impl GuestAddressSpace {
         });
         state.regions.add_region(base, bytes);
         state.retire_all_code_tokens();
+        state.renew_layout_epoch();
     }
 
     /// Map a read-only region. Newer mappings take precedence over overlaps.
@@ -1539,6 +1562,7 @@ impl GuestAddressSpace {
         });
         state.regions.add_readonly_region(base, bytes);
         state.retire_all_code_tokens();
+        state.renew_layout_epoch();
     }
 
     /// Publish runtime-generated code with system provenance in owned storage.
@@ -2256,6 +2280,60 @@ impl GuestAddressSpace {
 }
 
 impl PpcMemory for GuestAddressSpace {
+    /// A page no shared mapping may touch has only the sparse map behind it,
+    /// read without side effects, so generated code may read it directly.
+    fn direct_read_page(&mut self, page: u32) -> Option<*const u8> {
+        let state = self.state_mut();
+        let start = u64::from(page) << 12;
+        if state.may_overlap_shared(start, start + (1 << 12)) {
+            return None;
+        }
+        PpcMemory::direct_read_page(&mut state.regions, page)
+    }
+
+    fn direct_read_epoch(&self) -> Option<[u64; 2]> {
+        let state = self.state();
+        if state.layout_epoch == 0 {
+            return None;
+        }
+        // The sparse map's identity separates memories and clones; the
+        // layout epoch moves with every region and shared mapping added.
+        let [regions, _] = PpcMemory::direct_read_epoch(&state.regions)?;
+        Some([regions, state.layout_epoch])
+    }
+
+    /// A store through the pointer skips `note_write`, so only a page that
+    /// needs none of it qualifies: sparse and writable, with no shared
+    /// mapping, no code executed from it and nothing the presentation shows.
+    fn direct_write_page(&mut self, page: u32) -> Option<*mut u8> {
+        let state = self.state_mut();
+        let start = u64::from(page) << 12;
+        let end = start + (1 << 12);
+        if state.may_overlap_shared(start, end)
+            || state.executed_pages.may_overlap(start, end)
+            || state.presentation.page_may_be_observed(page << 12)
+        {
+            return None;
+        }
+        PpcMemory::direct_write_page(&mut state.regions, page)
+    }
+
+    fn direct_write_epoch(&self) -> Option<[u64; 4]> {
+        let state = self.state();
+        if state.layout_epoch == 0 || state.code_epoch == 0 {
+            return None;
+        }
+        let [regions, _] = PpcMemory::direct_read_epoch(&state.regions)?;
+        // Presentation installs and new offscreen pages bump the observed-page
+        // counter; a newly executed page bumps the executed generation.
+        Some([
+            regions,
+            state.layout_epoch,
+            super::observed_page_events(),
+            state.executed_generation,
+        ])
+    }
+
     #[inline]
     fn read_u8(&mut self, addr: u32) -> Option<u8> {
         let state = self.state_mut();
@@ -2724,6 +2802,55 @@ mod tests {
         unsafe { memory.add_shared_region(BASE + 4096, shared) };
         assert_eq!(memory.read_u32_be(BASE + 4096), Some(0x1122_3344));
         assert_eq!(memory.read_u32_be(BASE + 8192), Some(0x5555_5555));
+    }
+
+    /// Generated code reads and writes a page directly only while nothing
+    /// observes the page: no shared mapping, and for writes no code executed
+    /// from it. The epochs move when a page stops qualifying.
+    #[test]
+    fn direct_pages_exclude_shared_mappings_and_executed_code() {
+        const BASE: u32 = 0x0100_0000;
+        let page = |offset: u32| (BASE + offset) >> 12;
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, vec![0x60; 0x4000]);
+        memory.add_readonly_region(BASE + 0x8000, vec![0x60; 0x1000]);
+        assert!(memory.direct_read_page(page(0)).is_some());
+        assert!(memory.direct_write_page(page(0)).is_some());
+        assert!(memory.direct_read_page(page(0x8000)).is_some());
+        assert!(memory.direct_write_page(page(0x8000)).is_none());
+
+        // Executing code from a writable page withdraws it from direct writes:
+        // a store there must retire the page's code tokens.
+        let (read, write) = (memory.direct_read_epoch(), memory.direct_write_epoch());
+        let code = memory.code_epoch();
+        assert!(memory.instruction_cache_token(BASE + 0x1000).is_some());
+        assert_eq!(memory.direct_read_epoch(), read);
+        assert_ne!(memory.direct_write_epoch(), write);
+        // The JIT looks at the write epoch again only when the code epoch moves.
+        assert_ne!(memory.code_epoch(), code);
+        assert!(memory.direct_read_page(page(0x1000)).is_some());
+        assert!(memory.direct_write_page(page(0x1000)).is_none());
+        // Executing from it again moves nothing.
+        let write = memory.direct_write_epoch();
+        assert!(memory.instruction_cache_token(BASE + 0x1004).is_some());
+        assert_eq!(memory.direct_write_epoch(), write);
+
+        // A shared mapping withdraws the pages it may touch from both.
+        unsafe {
+            memory.add_shared_region(
+                BASE + 0x2800,
+                SharedRamRegion::from_owned_bytes(vec![0; 0x100]),
+            )
+        };
+        assert_ne!(memory.direct_read_epoch(), read);
+        assert!(memory.direct_read_page(page(0x2000)).is_none());
+        assert!(memory.direct_write_page(page(0x2000)).is_none());
+        assert!(memory.direct_write_page(page(0x3000)).is_some());
+
+        // A detached clone is a different memory.
+        let clone = memory.clone();
+        assert_ne!(clone.direct_read_epoch(), memory.direct_read_epoch());
+        assert_ne!(clone.direct_write_epoch(), memory.direct_write_epoch());
     }
 
     /// The code epoch must change whenever an instruction token could, and
