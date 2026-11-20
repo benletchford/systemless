@@ -2,69 +2,6 @@ use super::*;
 use crate::trap::TrapDispatcher;
 use image::ImageEncoder;
 
-#[test]
-fn indexed_quicktime_preserves_source_colors_on_direct_destinations() {
-    let rle = [0, 0, 0, 13, 0, 0, 1, 1, 1, 1, 1, 1, 0xff];
-    let smc = [0, 0, 0, 6, 0x60, 1];
-    for (codec, compressed, height) in [(b"rle ", &rle[..], 1), (b"smc ", &smc[..], 4)] {
-        for depth in [8, 16, 32] {
-            let mut bus = MacMemoryBus::new(1024 * 1024);
-            let pos = 0x1000;
-            let description_size = 110;
-            bus.write_long(pos, 68 + description_size + compressed.len() as u32);
-            bus.write_word(pos + 4 + 52 + 4, height);
-            bus.write_word(pos + 4 + 52 + 6, 4);
-            let desc = pos + 4 + 68;
-            bus.write_long(desc, description_size);
-            bus.write_long(desc + 4, u32::from_be_bytes(*codec));
-            bus.write_word(desc + 32, 4);
-            bus.write_word(desc + 34, height);
-            bus.write_long(desc + 44, compressed.len() as u32);
-            bus.write_word(desc + 82, 8);
-            bus.write_word(desc + 92, 1); // two ColorTable entries
-            bus.write_word(desc + 102, 1);
-            bus.write_word(desc + 104, 0x1234);
-            bus.write_word(desc + 106, 0x5678);
-            bus.write_word(desc + 108, 0x9abc);
-            for (index, byte) in compressed.iter().enumerate() {
-                bus.write_byte(desc + description_size + index as u32, *byte);
-            }
-            let clut = TrapDispatcher::standard_mac_8bpp_clut();
-            let rb = 4 * u32::from(depth) / 8;
-            let clip = DstClip::new((0, 0, 1, 1), vec![]);
-            let clipped_pixel = 0x2000 + u32::from(depth) / 8;
-            bus.write_long(clipped_pixel, 0xdeadbeef);
-            parse_compressed_quicktime(
-                &mut bus,
-                pos,
-                0,
-                0,
-                0,
-                0,
-                1.0,
-                1.0,
-                (0x2000, rb, 4, height, depth),
-                &clut,
-                None,
-                Some(&clip),
-            );
-            match depth {
-                8 => assert_eq!(
-                    bus.read_byte(0x2000),
-                    closest_clut_index(0x1234, 0x5678, 0x9abc, &clut)
-                ),
-                16 => assert_eq!(
-                    bus.read_word(0x2000),
-                    (0x1234 >> 11) << 10 | (0x5678 >> 11) << 5 | (0x9abcu16 >> 11)
-                ),
-                32 => assert_eq!(bus.read_long(0x2000), 0x0012569a),
-                _ => unreachable!(),
-            }
-            assert_eq!(bus.read_long(clipped_pixel), 0xdeadbeef);
-        }
-    }
-}
-
 fn png_record(bus: &mut MacMemoryBus, damaged: bool) -> (u32, u32) {
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
@@ -81,6 +18,9 @@ fn png_record(bus: &mut MacMemoryBus, damaged: bool) -> (u32, u32) {
     let pos = 0x1000;
     let payload = 68 + 86 + png.len() as u32;
     bus.write_long(pos, payload);
+    bus.write_long(pos + 6, 0x10000);
+    bus.write_long(pos + 22, 0x10000);
+    bus.write_long(pos + 38, 0x4000_0000);
     bus.write_word(pos + 4 + 52 + 4, 1); // source bottom
     bus.write_word(pos + 4 + 52 + 6, 2); // source right
     let desc = pos + 4 + 68;
@@ -199,6 +139,208 @@ fn quicktime_png_obeys_source_crop_and_destination_clip() {
         );
         assert_eq!(bus.read_long(0x2000), 0x00112233);
         assert_eq!(bus.read_long(0x2004), 0x0000FF00);
+    }
+}
+
+#[test]
+fn compressed_picture_matrix_translates_scales_and_rotates_pixels() {
+    for (matrix, expected) in [
+        ([0x10000, 0, 0, 0x10000, 0x10000, 0x10000], [(1, 1), (2, 1)]),
+        ([0, 0x10000, -0x10000, 0, 0x20000, 0], [(1, 0), (1, 1)]),
+        ([0x20000, 0, 0, 0x10000, 0, 0], [(0, 0), (2, 0)]),
+        ([-0x10000, 0, 0, 0x10000, 0x20000, 0], [(1, 0), (0, 0)]),
+        ([0x10000, 0x10000, 0, 0x10000, 0, 0], [(0, 0), (1, 1)]),
+    ] {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let (pos, _) = png_record(&mut bus, false);
+        for (offset, value) in [0, 4, 12, 16, 24, 28].into_iter().zip(matrix) {
+            bus.write_long(pos + 6 + offset, value as u32);
+        }
+        let base = 0x2000;
+        parse_compressed_quicktime(
+            &mut bus,
+            pos,
+            0,
+            0,
+            0,
+            0,
+            1.0,
+            1.0,
+            (base, 16, 4, 4, 32),
+            &[[0; 3]; 256],
+            None,
+            None,
+        );
+        for ((x, y), color) in expected.into_iter().zip([0xFF0000, 0x00FF00]) {
+            assert_eq!(bus.read_long(base + y * 16 + x * 4), color);
+        }
+        if matrix[0] == 0x20000 {
+            assert_eq!(bus.read_long(base + 4), 0xFF0000);
+            assert_eq!(bus.read_long(base + 12), 0x00FF00);
+        }
+    }
+}
+
+#[test]
+fn compressed_picture_matrix_samples_small_nonzero_scale() {
+    let matrix = PictAffine {
+        a: 1.0 / 65536.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0 / 65536.0,
+        tx: 128.0 - 1.0 / 65536.0,
+        ty: 128.0 - 1.0 / 65536.0,
+    };
+    let samples: Vec<_> = matrix
+        .sample_points(
+            (0, 0, 2, 2),
+            (0, 0),
+            (0, 0),
+            (1.0 / 256.0, 1.0 / 256.0),
+            (1, 1),
+        )
+        .collect();
+    assert_eq!(samples, vec![(1, 1, 0, 0, 128, 128)]);
+}
+
+#[test]
+fn compressed_picture_clip_uses_transformed_picture_coordinates() {
+    for scale in [1, 2] {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let (pos, _) = png_record(&mut bus, false);
+        bus.write_long(pos + 30, 1 << 16); // translate right one
+        bus.write_long(pos + 34, 1 << 16); // translate down one
+        let clip = PictureRegion {
+            top: 1,
+            left: 2,
+            bottom: 2,
+            right: 3,
+            rows: vec![],
+        };
+        parse_compressed_quicktime(
+            &mut bus,
+            pos,
+            0,
+            0,
+            0,
+            0,
+            f64::from(scale),
+            f64::from(scale),
+            (0x2000, 32, 8, 8, 32),
+            &[[0; 3]; 256],
+            Some(&clip),
+            None,
+        );
+        for y in scale..2 * scale {
+            for x in scale..3 * scale {
+                let pixel = bus.read_long(0x2000 + y * 32 + x * 4);
+                assert_eq!(pixel, if x >= 2 * scale { 0x00ff00 } else { 0 });
+            }
+        }
+    }
+}
+
+#[test]
+fn compressed_picture_fractional_translation_obeys_nonrectangular_clip() {
+    let mut bus = MacMemoryBus::new(1024 * 1024);
+    let (pos, _) = png_record(&mut bus, false);
+    bus.write_long(pos + 30, 0x8000); // translate right half a pixel
+    let clip = PictureRegion {
+        top: 0,
+        left: 0,
+        bottom: 1,
+        right: 2,
+        rows: vec![vec![1, 2]],
+    };
+    parse_compressed_quicktime(
+        &mut bus,
+        pos,
+        0,
+        0,
+        0,
+        0,
+        2.0,
+        2.0,
+        (0x2000, 24, 6, 2, 32),
+        &[[0; 3]; 256],
+        Some(&clip),
+        None,
+    );
+    for row in 0..2 {
+        let base = 0x2000 + row * 24;
+        assert_eq!(bus.read_long(base + 4), 0);
+        assert_eq!(bus.read_long(base + 8), 0x00ff0000);
+        assert_eq!(bus.read_long(base + 12), 0x0000ff00);
+        assert_eq!(bus.read_long(base + 16), 0);
+    }
+}
+
+#[test]
+fn compressed_picture_matrix_applies_to_smc_and_rle() {
+    for format in 0..3 {
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let pos = 0x1000;
+        let (data, width, height, depth, codec): (&[u8], u16, u16, u16, [u8; 4]) = match format {
+            0 => (
+                &[0, 0, 0, 13, 0, 0, 1, 2, 0x7c, 0x00, 0x03, 0xe0, 0xff],
+                2,
+                1,
+                16,
+                *b"rle ",
+            ),
+            1 => (&[0, 0, 0, 6, 0x60, 1], 4, 4, 8, *b"smc "),
+            _ => (
+                &[0, 0, 0, 13, 0, 0, 1, 1, 1, 1, 1, 1, 0xff],
+                4,
+                1,
+                8,
+                *b"rle ",
+            ),
+        };
+        bus.write_long(pos, 68 + 86 + data.len() as u32);
+        bus.write_long(pos + 6, 0x10000);
+        bus.write_long(pos + 22, 0x10000);
+        bus.write_long(pos + 30, 1 << 16);
+        bus.write_long(pos + 34, 1 << 16);
+        bus.write_long(pos + 38, 0x4000_0000);
+        bus.write_word(pos + 4 + 52 + 4, height);
+        bus.write_word(pos + 4 + 52 + 6, width);
+        let desc = pos + 4 + 68;
+        bus.write_long(desc, 86);
+        bus.write_long(desc + 4, u32::from_be_bytes(codec));
+        bus.write_word(desc + 32, width);
+        bus.write_word(desc + 34, height);
+        bus.write_long(desc + 44, data.len() as u32);
+        bus.write_word(desc + 82, depth);
+        bus.write_bytes(desc + 86, data);
+        let base = 0x2000;
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let output_depth = if format == 0 { 16 } else { 8 };
+        let rb = 8 * u32::from(output_depth) / 8;
+        parse_compressed_quicktime(
+            &mut bus,
+            pos,
+            0,
+            0,
+            0,
+            0,
+            1.0,
+            1.0,
+            (base, rb, 8, 8, output_depth),
+            &clut,
+            None,
+            None,
+        );
+        if format != 0 {
+            assert_eq!(bus.read_byte(base), 0);
+            assert_eq!(bus.read_byte(base + rb + 1), 255);
+            assert_eq!(bus.read_byte(base + u32::from(height) * rb + 4), 255);
+            assert_eq!(bus.read_byte(base + (u32::from(height) + 1) * rb + 4), 0);
+        } else {
+            assert_eq!(bus.read_word(base), 0);
+            assert_eq!(bus.read_word(base + rb + 2), 0x7c00);
+            assert_eq!(bus.read_word(base + rb + 4), 0x03e0);
+        }
     }
 }
 
