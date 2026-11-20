@@ -752,6 +752,60 @@
     }
 
     #[test]
+    fn stop_note_and_caution_alerts_plot_their_standard_icon_at_icrect() {
+        // ROM DialogMgr.a DoAlert plots the variant's icon (Stop=0, Note=1,
+        // Caution=2) at ICRect (10,20,42,52) in the alert window after
+        // NewDialog, even when the DITL has no icon item; plain Alert plots
+        // none. Inside Macintosh Volume I, I-418.
+        let alert_id = 3300;
+        let ditl_id = 3301;
+        let (top, left) = (100i16, 100i16);
+        for (trap, icon_id) in [(0x185, None), (0x186, Some(0)), (0x187, Some(1)), (0x188, Some(2))] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let alrt = build_test_alrt((top, left, 220, 400), ditl_id, 0x5555);
+            let ditl = build_test_ditl_items(&[
+                (4, (76, 210, 96, 270), b"OK"),
+                (0x88, (10, 70, 60, 290), b"Message"),
+            ]);
+            disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+            disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+            let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+            assert_eq!(pixel_size, 8);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, alert_id as u16);
+
+            disp.dispatch_dialog(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_some(), "alert ${trap:03X} stays modal");
+
+            let plotted: Vec<bool> = (0..32u32)
+                .flat_map(|row| (0..32u32).map(move |col| (row, col)))
+                .map(|(row, col)| {
+                    let y = (top + 10) as u32 + row;
+                    let x = (left + 20) as u32 + col;
+                    bus.read_byte(screen_base + y * row_bytes + x) == 0xFF
+                })
+                .collect();
+            match icon_id {
+                Some(id) => {
+                    let bitmap = crate::dialog_manager::system_icon_bitmap(id)
+                        .expect("standard alert icons are supplied");
+                    let expected: Vec<bool> = (0..32usize)
+                        .flat_map(|row| (0..32usize).map(move |col| (row, col)))
+                        .map(|(row, col)| bitmap[row * 4 + col / 8] & (0x80 >> (col % 8)) != 0)
+                        .collect();
+                    assert_eq!(plotted, expected, "alert ${trap:03X} must plot ICON {id} at ICRect");
+                }
+                None => assert!(
+                    plotted.iter().all(|set| !set),
+                    "plain Alert must not plot an icon"
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn multi_button_alert_tracks_click_and_returns_selected_item() {
         // Multi-choice Alert resources are real modal dialogs, not merely
         // OK-only notices. Keep the Alert function frame pending until a
