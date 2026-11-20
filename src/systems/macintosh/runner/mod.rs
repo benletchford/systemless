@@ -13165,7 +13165,10 @@ impl FixtureRunner {
         let entry = self.bus.read_word(addr);
         // A stack-based Boolean procedure may reserve its 2-byte result slot
         // before saving registers or branching. IM:I 1985 pp. I-61–I-62.
-        matches!(entry, 0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA | 0x554F)
+        // Compilers that save a single register emit MOVE.L Dn/An,-(SP)
+        // ($2F00-$2F0F) instead of MOVEM.L (Super Othello's MPW C filterProc
+        // starts with MOVE.L A2,-(SP)).
+        matches!(entry, 0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA | 0x554F | 0x2F00..=0x2F0F)
     }
 
     fn resolve_dialog_draw_proc_addr(&self, proc_addr: u32) -> Option<u32> {
