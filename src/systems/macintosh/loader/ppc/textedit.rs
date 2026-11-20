@@ -967,6 +967,7 @@ pub(super) fn ppc_te_set_style_for_range(
     range_end: usize,
     mode: u16,
     text_style_ptr: u32,
+    stored_metrics: Option<(i16, i16)>,
 ) -> bool {
     if text_style_ptr == 0 {
         return false;
@@ -1036,14 +1037,19 @@ pub(super) fn ppc_te_set_style_for_range(
                     .unwrap_or(style.color.blue),
             };
         }
-        let metrics = get_font_metrics(style.font, ppc_te_font_lookup_size(style.size));
         style.size = ppc_te_font_lookup_size(style.size);
-        style.line_height = metrics
-            .ascent
-            .saturating_add(metrics.descent)
-            .saturating_add(metrics.leading)
-            .max(1);
-        style.ascent = metrics.ascent.max(0);
+        if let Some((line_height, ascent)) = stored_metrics {
+            style.line_height = line_height;
+            style.ascent = ascent;
+        } else {
+            let metrics = get_font_metrics(style.font, style.size);
+            style.line_height = metrics
+                .ascent
+                .saturating_add(metrics.descent)
+                .saturating_add(metrics.leading)
+                .max(1);
+            style.ascent = metrics.ascent.max(0);
+        }
         style
     };
     let old_range_end_style = ppc_te_style_at_offset(&existing_runs, range_end);
