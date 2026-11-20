@@ -16,6 +16,15 @@ impl PpcLoadedApp {
         }
     }
 
+    /// Borrow the entire front buffer directly when it lives in one contiguous
+    /// sparse guest RAM region, avoiding a per-row copy during host sync.
+    pub fn front_buffer_readable_bytes(&mut self, front_buffer: PpcFrontBuffer) -> Option<&[u8]> {
+        let total_bytes =
+            usize::try_from(front_buffer.height.checked_mul(front_buffer.row_bytes)?).ok()?;
+        self.memory
+            .readable_bytes(front_buffer.base_addr, total_bytes)
+    }
+
     pub fn read_front_buffer_row(
         &mut self,
         front_buffer: PpcFrontBuffer,

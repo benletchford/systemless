@@ -3039,35 +3039,47 @@ impl MacMemoryBus {
     /// Copy a plain presentation row while retaining the single revision and
     /// guest-value update that ordinary presentation writes would perform.
     /// Diagnostics and protected ranges deliberately use the routed fallback.
-    pub(crate) fn write_plain_presented_bytes(&mut self, address: u32, data: &[u8]) -> bool {
+    /// Prove once that `[address, address + len)` is a contiguous flat host RAM
+    /// span with a presentation attached and no active read/write observers,
+    /// returning its translated base address for [`Self::write_plain_presented_bytes_checked`].
+    pub(crate) fn can_write_plain_presented_span(&self, address: u32, len: usize) -> Option<u32> {
         if self.presentation.is_none() {
-            return false;
+            return None;
         }
-        let Some(translated) = self.range_translates_contiguously(address, data.len()) else {
-            return false;
-        };
-        if self.route(address, data.len()) != GuestMemoryRoute::Flat
-            || self.readonly_code_overlaps(translated, data.len() as u32)
+        let translated = self.range_translates_contiguously(address, len)?;
+        if self.route(address, len) != GuestMemoryRoute::Flat
+            || self.readonly_code_overlaps(translated, len as u32)
             || mem_read_trace_active()
             || mem_write_trace_active()
             || fb_write_trace_range().is_some()
             || self.write_probe_original.is_some()
             || watchpoint_armed()
-            || (u64::from(translated) + data.len() as u64) > u64::from(self.ram_size)
+            || (u64::from(translated) + len as u64) > u64::from(self.ram_size)
         {
-            return false;
+            return None;
         }
-        // The gates above already prove a readable local RAM span and no
-        // read observer. Reuse that proof instead of routing the same row
-        // again; the store and presentation update below are unchanged.
+        Some(translated)
+    }
+
+    pub(crate) fn write_plain_presented_bytes_checked(&mut self, translated: u32, data: &[u8]) {
         let changed = self.ram_slice(translated, data.len() as u32) != data;
         self.note_bulk_store(translated, data.len() as u32);
-        self.ram.write_bytes_in_bounds(translated as usize, data);
         if changed {
+            self.ram.write_bytes_in_bounds(translated as usize, data);
             if let Some(mut p) = self.presentation.as_mut() {
                 p.sync_plain_screen_row(translated, data);
             }
         }
+    }
+
+    pub(crate) fn write_plain_presented_bytes(&mut self, address: u32, data: &[u8]) -> bool {
+        let Some(translated) = self.can_write_plain_presented_span(address, data.len()) else {
+            return false;
+        };
+        // The gates above already prove a readable local RAM span and no
+        // read observer. Reuse that proof instead of routing the same row
+        // again; the store and presentation update below are unchanged.
+        self.write_plain_presented_bytes_checked(translated, data);
         true
     }
 

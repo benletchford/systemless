@@ -3169,6 +3169,32 @@ impl MacMemoryBus {
     }
 
     /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
+    /// Like [`Self::sync_presented_bytes`], when the caller has already proven
+    /// `[destination, destination + bytes.len())` via
+    /// [`Self::can_write_plain_presented_span`] at `translated_destination`.
+    pub(crate) fn sync_presented_bytes_checked(
+        &mut self,
+        destination: u32,
+        translated_destination: u32,
+        source: u32,
+        bytes: &[u8],
+    ) {
+        if destination == source {
+            return;
+        }
+        let source_end = u64::from(source) + bytes.len() as u64;
+        let plain_row = self.presentation.as_ref().is_some_and(|p| {
+            p.can_sync_plain_screen_row(translated_destination, bytes.len())
+                && (!p.may_have_offscreen_detail(source, source_end)
+                    || !p.offscreen.any_in(source, source_end))
+        });
+        if plain_row {
+            self.write_plain_presented_bytes_checked(translated_destination, bytes);
+            return;
+        }
+        self.sync_presented_bytes(destination, source, bytes);
+    }
+
     pub(crate) fn sync_presented_bytes(&mut self, destination: u32, source: u32, bytes: &[u8]) {
         if destination == source {
             return;
