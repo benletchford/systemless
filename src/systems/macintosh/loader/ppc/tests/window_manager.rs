@@ -793,7 +793,7 @@ fn hle_import_runner_handles_new_cwindow_allocation() {
     // visible has its whole content pending update.
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
-        Some((0, 0, 240, 320))
+        Some((20, 10, 260, 330))
     );
     assert!(
         loaded
@@ -2968,7 +2968,7 @@ fn hle_import_runner_handles_get_new_cwindow() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
-        Some((0, 0, 200, 300))
+        Some((40, 50, 240, 350))
     );
     let surface =
         ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, storage_ptr).unwrap();
@@ -3369,8 +3369,8 @@ fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
     run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalRect);
     assert_eq!(
         ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
-        Some((4, 6, 40, 50)),
-        "InvalRect must publish a concrete local update region",
+        Some((24, 16, 60, 60)),
+        "InvalRect must publish the local rectangle as a global update region",
     );
 
     // BeginUpdate leaves the current port alone; the application chooses
@@ -3387,6 +3387,62 @@ fn hle_import_runner_tracks_ppc_update_region_until_end_update() {
         Some((0, 0, 0, 0)),
         "EndUpdate must clear the committed update region",
     );
+}
+
+#[test]
+fn inval_and_valid_rect_keep_the_update_region_in_global_coordinates() {
+    // updateRgn is in global coordinates. Inside Macintosh Volume I (1985),
+    // p. I-278. Imperialism reads it directly and offsets it into its
+    // window's local space; a local region lost the window's bottom rows.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvalRect")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let window = create_test_cwindow(&mut loaded, scratch, (40, 0, 520, 640), 4, true, u32::MAX);
+    let update_rgn = loaded
+        .memory
+        .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, update_rgn),
+        Some((40, 0, 520, 640)),
+        "a window created visible is invalidated over its global content",
+    );
+    ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = window);
+
+    let rect_ptr = scratch + 16;
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 0, 0, 480, 640).unwrap();
+    loaded.cpu.gpr[3] = rect_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalRect);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 0, 520, 640)));
+
+    // A local rectangle after SetOrigin still maps to the same screen rows.
+    ppc_set_empty_rgn(&mut loaded.memory, update_rgn).unwrap();
+    ppc_set_port_origin(&mut loaded.memory, window, 0, -360).unwrap();
+    ppc_write_rect(&mut loaded.memory, rect_ptr, -360, 0, -300, 640).unwrap();
+    loaded.cpu.gpr[3] = rect_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalRect);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 0, 100, 640)));
+
+    // MoveWindow carries the pending update region with the window. Hide it
+    // first so the move itself adds no newly exposed content.
+    loaded.cpu.gpr[3] = window;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 0, 100, 640)));
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = 20;
+    loaded.cpu.gpr[5] = 50;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveWindow);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((50, 20, 110, 660)));
+
+    // ValidRect takes local coordinates too.
+    ppc_write_rect(&mut loaded.memory, rect_ptr, -360, 0, 120, 640).unwrap();
+    loaded.cpu.gpr[3] = rect_ptr;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ValidRect);
+    assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 0, 0)));
 }
 
 #[test]
@@ -5636,7 +5692,7 @@ fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evalu
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((20, 20, 80, 80)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 40, 100, 100)));
 
             // ValidRect removes it
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ValidRect");
@@ -5683,7 +5739,7 @@ fn window_invalidation_update_and_drawing_commands_dispatch_with_canonical_evalu
             let probe = loaded.run_with_hle_imports(64);
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((15, 15, 75, 75)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((35, 35, 95, 95)));
 
             // ValidRgn removes it
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(std::str::from_utf8(lib).unwrap(), "ValidRgn");
@@ -7553,7 +7609,7 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i16, 0);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((10, 10, 50, 60)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((50, 60, 90, 110)));
 
             // ValidWindowRect clears it
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRect");
@@ -7577,7 +7633,7 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i16, 0);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 100, 200)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 50, 140, 250)));
 
             // in_rect = 0 validates whole portRect
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRect");
@@ -7616,7 +7672,7 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i16, 0);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((15, 20, 65, 80)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((55, 70, 105, 130)));
 
             // ValidWindowRgn clears it
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRgn");
@@ -7640,7 +7696,7 @@ fn window_invalidation_geometry_and_attribute_commands_dispatch_with_canonical_e
             assert_eq!(probe.handled_import_count, 1);
             assert_eq!(probe.unsupported_import_index, None);
             assert_eq!(loaded.cpu.gpr[3] as i16, 0);
-            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((0, 0, 100, 200)));
+            assert_eq!(ppc_read_rgn_bbox(&mut loaded.memory, update_rgn), Some((40, 50, 140, 250)));
 
             // rgn_handle = 0 validates whole portRect
             loaded.imports[0].dispatcher_target = dispatcher_target_for_import(lib_str, "ValidWindowRgn");

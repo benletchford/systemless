@@ -2477,15 +2477,15 @@ pub(super) fn ppc_invalidate_window_global_rect(
     if ppc_rgn_ptr(memory, update_rgn).is_none() {
         return;
     }
-    let local = (
-        intersection.0.saturating_sub(content.0),
-        intersection.1.saturating_sub(content.1),
-        intersection.2.saturating_sub(content.0),
-        intersection.3.saturating_sub(content.1),
-    );
-    ppc_union_window_update_rect(memory, window, local);
+    ppc_union_window_update_rect(memory, window, intersection);
 }
 
+/// Adds a global rectangle to a window's update region.
+///
+/// updateRgn is kept in global coordinates (Inside Macintosh Volume I (1985),
+/// p. I-278), so it stays valid when the application moves the port origin,
+/// and applications that read it directly convert it to local coordinates
+/// themselves.
 pub(super) fn ppc_union_window_update_rect(
     memory: &mut PpcSectionMem,
     window: u32,
@@ -2546,12 +2546,60 @@ fn ppc_post_new_visible_window_update(
     ppc_enqueue_window_update_event(event_queue, window, when, input);
 }
 
+/// Returns the (dv, dh) that converts the window port's local coordinates to
+/// global ones: the global position of the portRect's top-left corner minus
+/// that corner's local coordinates. SetOrigin changes the local coordinates of
+/// the corner but not its global position.
+fn ppc_window_local_to_global_delta(memory: &mut PpcSectionMem, window: u32) -> Option<(i16, i16)> {
+    let (port_top, port_left, _, _) =
+        ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))?;
+    let (global_top, global_left) = match memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTENT_RGN_OFFSET))
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    {
+        Some((top, left, _, _)) => (top, left),
+        None => {
+            // No content region yet: portBits.bounds maps local to global.
+            let pixmap = memory
+                .read_u32_be(window.wrapping_add(2))
+                .and_then(|handle| memory.read_u32_be(handle))?;
+            let (bounds_top, bounds_left, _, _) = ppc_read_rect(memory, pixmap.wrapping_add(6))?;
+            (
+                port_top.wrapping_sub(bounds_top),
+                port_left.wrapping_sub(bounds_left),
+            )
+        }
+    };
+    Some((
+        global_top.wrapping_sub(port_top),
+        global_left.wrapping_sub(port_left),
+    ))
+}
+
+fn ppc_window_local_rect_to_global(
+    memory: &mut PpcSectionMem,
+    window: u32,
+    rect: (i16, i16, i16, i16),
+) -> Option<(i16, i16, i16, i16)> {
+    let (dv, dh) = ppc_window_local_to_global_delta(memory, window)?;
+    Some((
+        rect.0.saturating_add(dv),
+        rect.1.saturating_add(dh),
+        rect.2.saturating_add(dv),
+        rect.3.saturating_add(dh),
+    ))
+}
+
+/// InvalRect/InvalRgn take a rectangle in the window's local coordinates and
+/// add it, clipped to the port rectangle, to the global update region.
+/// Inside Macintosh Volume I (1985), pp. I-278 and I-291.
 pub(super) fn ppc_invalidate_window_local_rect(
     memory: &mut PpcSectionMem,
     window: u32,
     rect: (i16, i16, i16, i16),
 ) {
-    let Some(content) = ppc_read_rect(memory, window.wrapping_add(16)) else {
+    let Some(content) = ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
+    else {
         return;
     };
     let clipped = (
@@ -2560,9 +2608,17 @@ pub(super) fn ppc_invalidate_window_local_rect(
         rect.2.min(content.2),
         rect.3.min(content.3),
     );
-    ppc_union_window_update_rect(memory, window, clipped);
+    if clipped.0 >= clipped.2 || clipped.1 >= clipped.3 {
+        return;
+    }
+    let Some(global) = ppc_window_local_rect_to_global(memory, window, clipped) else {
+        return;
+    };
+    ppc_union_window_update_rect(memory, window, global);
 }
 
+/// ValidRect/ValidRgn remove a local rectangle from the global update region.
+/// Inside Macintosh Volume I (1985), pp. I-278 and I-291.
 pub(super) fn ppc_validate_window_local_rect(
     memory: &mut PpcSectionMem,
     window: u32,
@@ -2574,6 +2630,9 @@ pub(super) fn ppc_validate_window_local_rect(
     let Some(update) = ppc_read_rgn_bbox(memory, update_rgn)
         .filter(|current| current.0 < current.2 && current.1 < current.3)
     else {
+        return;
+    };
+    let Some(rect) = ppc_window_local_rect_to_global(memory, window, rect) else {
         return;
     };
     if rect.0 <= update.0 && rect.1 <= update.1 && rect.2 >= update.2 && rect.3 >= update.3 {
@@ -3290,6 +3349,10 @@ pub(super) fn ppc_move_window_coordinates(
     let new_pixel_left = ppc_i32_to_i16_saturating(i32::from(port_left) - i32::from(new_left));
     let new_pixel_bottom = ppc_i32_to_i16_saturating(i32::from(new_pixel_top) + pixel_height);
     let new_pixel_right = ppc_i32_to_i16_saturating(i32::from(new_pixel_left) + pixel_width);
+    // The global update region moves with the window, as in the 68K Window
+    // Manager. Inside Macintosh Volume I (1985), pp. I-278 and I-289.
+    let previous_global_top_left = ppc_window_local_to_global_delta(memory, window_ptr)
+        .map(|(dv, dh)| (port_top.wrapping_add(dv), port_left.wrapping_add(dh)));
     ppc_write_rect(
         memory,
         pixmap + 6,
@@ -3312,6 +3375,21 @@ pub(super) fn ppc_move_window_coordinates(
             ),
         ),
     )?;
+    if let Some((previous_top, previous_left)) = previous_global_top_left {
+        let update_rgn = memory
+            .read_u32_be(window_ptr.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
+            .unwrap_or(0);
+        let dirty = ppc_read_rgn_bbox(memory, update_rgn)
+            .is_some_and(|(top, left, bottom, right)| top < bottom && left < right);
+        if dirty {
+            let _ = ppc_offset_rgn(
+                memory,
+                update_rgn,
+                new_left.wrapping_sub(previous_left),
+                new_top.wrapping_sub(previous_top),
+            );
+        }
+    }
 
     // portRect is guest-writable and describes local coordinates, not the
     // allocated backing surface. It may legitimately differ from the cached
