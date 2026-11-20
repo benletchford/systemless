@@ -724,7 +724,13 @@ impl PpcLoadedApp {
                 let mut binding = trace_recent_on_halt
                     .then(|| import_run_state.binding_cloned(index))
                     .flatten();
-                if !is_tick_count_import {
+                // MPYield has no effect without other preemptive tasks, so a
+                // `while (TickCount() < deadline) MPYield();` loop is still the
+                // same idle TickCount poll.
+                let is_mp_yield_import = dispatcher_target
+                    .as_ref()
+                    .is_some_and(|target| *target == PpcImportDispatcherTarget::MpYield);
+                if !is_tick_count_import && !is_mp_yield_import {
                     tick_count_idle_poll.reset();
                 }
                 if !trace_imports && !trace_ppc && !trace_qd3d {

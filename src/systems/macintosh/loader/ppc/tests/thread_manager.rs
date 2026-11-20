@@ -1168,7 +1168,7 @@ fn hle_import_runner_thread_critical_sections_cross_both_abi_edges() {
 
 
 #[test]
-fn mp_yield_resolves_weak_transition_vector_and_yields_after_void_return() {
+fn mp_yield_resolves_weak_transition_vector_and_returns_without_effect() {
     let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
         b"CarbonLib",
         b"MPYield",
@@ -1193,13 +1193,53 @@ fn mp_yield_resolves_weak_transition_vector_and_yields_after_void_return() {
     loaded.cpu.gpr[3] = 0x12345678;
     loaded.cpu.gpr[2] = 0x87654321;
     let registers = loaded.cpu.gpr;
-    let first = loaded.run_with_hle_imports(64);
-    assert_eq!(first.handled_import_count, 1);
-    assert_eq!(first.unsupported_import_index, None);
-    assert!(matches!(first.result, PpcRunResult::CycleLimit { cycles } if cycles < 64));
-    assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+    // Mac OS 8 Multiprocessing Services Reference, MPYield: other than
+    // possibly yielding to another task the call has no effect. With no other
+    // preemptive task to run it returns straight to the caller.
+    let run = loaded.run_with_hle_imports(64);
+    assert_eq!(run.handled_import_count, 1);
+    assert_eq!(run.unsupported_import_index, None);
+    assert!(matches!(run.result, PpcRunResult::Halted { .. }));
     assert_eq!(loaded.cpu.gpr, registers);
-    let resumed = loaded.run_with_hle_imports(64);
-    assert_eq!(resumed.handled_import_count, 0);
-    assert!(matches!(resumed.result, PpcRunResult::Halted { .. }));
+}
+
+#[test]
+fn tick_count_poll_with_mp_yield_waits_for_the_tick_boundary() {
+    // Candy Crisis limits its menu frame rate with
+    // `while (TickCount() < deadline) MPYield();`. MPYield must neither end
+    // the native slice nor break the TickCount idle-poll fast-forward, or the
+    // loop costs a slice exit per iteration and the game crawls.
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_repeated_imports(2));
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.imports[1].dispatcher_target = PpcImportDispatcherTarget::MpYield;
+    let tick_trap = loaded.imports[0].trap_pc;
+    let yield_trap = loaded.imports[1].trap_pc;
+    let loop_pc = PPC_DATA_BASE + 0x1100;
+    let mut loop_code = Vec::new();
+    for trap in [tick_trap, yield_trap] {
+        for word in [
+            d_form_u(15, 12, 0, (trap >> 16) as u16),    // lis r12, trap@h
+            d_form_u(24, 12, 12, (trap & 0xffff) as u16), // ori r12, r12, trap@l
+            xfx_form(31, 12, 9, 467),                    // mtctr r12
+            xl_form(19, 20, 0, 528, true),               // bctrl
+        ] {
+            loop_code.extend_from_slice(&word.to_be_bytes());
+        }
+    }
+    loop_code.extend_from_slice(&0x4bff_ffe0u32.to_be_bytes()); // b -32
+    loaded.memory.add_region(loop_pc, loop_code);
+    loaded.cpu.pc = loop_pc;
+    loaded.set_tick_count(42);
+    loaded.set_clock_cycle_timing(1_000, 250);
+
+    let probe = loaded.run_with_hle_imports(750);
+
+    assert_eq!(ppc_run_result_cycles(probe.result), 750);
+    assert_eq!(loaded.cpu.gpr[3], 42);
+    assert!(
+        probe.handled_import_count
+            <= 2 * PPC_TICK_COUNT_IDLE_POLL_FAST_FORWARD_THRESHOLD.saturating_add(1),
+        "poll loop executed {} imports instead of returning at the tick boundary",
+        probe.handled_import_count
+    );
 }

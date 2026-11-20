@@ -167,11 +167,14 @@ pub(super) fn dispatch_thread_import(
 
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::MpYield => {
-            // Apple Multiprocessing.h: void MPYield(void). Relinquish the
-            // current execution slice after completing the procedure return.
-            // Yield alone would retain this import and re-enter it forever.
-            cpu.pc = cpu.lr;
-            Some(PpcImportAction::Yield(1))
+            // Mac OS 8 Multiprocessing Services Reference, MPYield: "Other
+            // than possibly yielding the processor to another task or
+            // application, the call has no effect." The HLE runs no other
+            // preemptive tasks, so the call returns at once. Ending the native
+            // slice here instead made a TickCount/MPYield frame limiter pay a
+            // full slice exit per iteration (Candy Crisis menus ran at a few
+            // ticks per second).
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MpCreateSemaphore => {
             // Multiprocessing Services Reference (2008), MPCreateSemaphore.
