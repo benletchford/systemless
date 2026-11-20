@@ -123,6 +123,7 @@ pub(crate) fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecor
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: false,
     };
     let front_buffer = PpcFrontBuffer {
         base_addr: record.base_addr,
@@ -318,6 +319,7 @@ pub(crate) fn ppc_seed_dsp_back_gworld(memory: &mut PpcSectionMem) -> PpcGWorldR
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: false,
     }
 }
 
@@ -452,6 +454,7 @@ pub(crate) fn ppc_open_port(
         row_bytes: bits.row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: false,
     });
     *last_mem_error = PPC_NO_ERR;
     true
@@ -590,6 +593,7 @@ pub(crate) fn ppc_open_cport(
         row_bytes: bits.row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: false,
     });
     *last_mem_error = PPC_NO_ERR;
     true
@@ -1100,6 +1104,7 @@ pub(crate) fn ppc_new_gworld(
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: flags & NO_NEW_DEVICE == 0 && requested_depth != 0,
     });
     gworld_allocations.insert(
         port,

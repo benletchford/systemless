@@ -47,6 +47,13 @@ pub struct PpcGWorldRecord {
     /// import boundaries. Inside Macintosh: Imaging With QuickDraw (1994),
     /// pp. 6-34--6-38.
     pub pixels_no_purge: bool,
+    /// NewGWorld with a nonzero depth and without `noNewDevice` builds a
+    /// private GDevice whose color table is the GWorld's own pmTable; depth 0
+    /// reuses the screen's GDevice. The record still names the main
+    /// device for port selection, so this marks that drawing must map colors
+    /// through the GWorld's table rather than the main device's live table.
+    /// Imaging With QuickDraw (1994), pp. 6-16--6-20.
+    pub private_gdevice: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

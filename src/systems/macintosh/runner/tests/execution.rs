@@ -678,6 +678,7 @@ fn install_ppc_sound_event_boundary_fixture(app: &mut LoadedApp) {
         row_bytes: 512,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     ppc_app.set_input_snapshot(PpcInputSnapshot {
         mouse_v: 17,

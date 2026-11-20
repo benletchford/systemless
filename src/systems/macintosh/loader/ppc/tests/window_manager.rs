@@ -394,6 +394,7 @@ fn dispose_dialog_removes_it_from_the_window_list_and_restores_the_previous_wind
             row_bytes: 100,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
     }
     loaded.window_list.extend([dialog, application_window]);
@@ -3184,6 +3185,7 @@ fn hle_import_runner_handles_size_window() {
         row_bytes: 1280,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.cpu.gpr[3] = window_ptr;
     loaded.cpu.gpr[4] = 512;
@@ -3246,6 +3248,7 @@ fn hle_import_runner_handles_move_window() {
         row_bytes: 1280,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.cpu.gpr[3] = window_ptr;
     loaded.cpu.gpr[4] = 30;
@@ -3383,6 +3386,7 @@ fn hle_import_runner_handles_select_window() {
         row_bytes: 640,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -3444,6 +3448,7 @@ fn hle_import_runner_handles_close_window() {
         row_bytes: 640,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.gworlds.push(PpcGWorldRecord {
         ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -3458,6 +3463,7 @@ fn hle_import_runner_handles_close_window() {
         row_bytes: 640,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.window_list.extend([window_ptr, underlying_window]);
     loaded

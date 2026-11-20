@@ -4778,6 +4778,7 @@ fn append_ditl_creates_controls_that_shorten_ditl_disposes() {
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     let text = make_test_ditl_item_typed(10, 10, 26, 160, PPC_DIALOG_ITEM_STATIC_TEXT, b"Note");
     let ditl_bytes = make_test_ditl(&[text]);
@@ -4853,6 +4854,7 @@ fn shorten_ditl_disposes_removed_text_and_clears_their_edit_field() {
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     let ok = make_test_ditl_item(10, 10, 30, 80, b"OK");
@@ -4931,6 +4933,7 @@ fn ditl_manipulation_and_query_commands_dispatch_with_canonical_evaluation() {
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     // 1. Safe no-ops and zero counts on empty or NULL dialogs
@@ -5109,6 +5112,7 @@ fn dialog_item_visibility_query_and_update_commands_dispatch_with_canonical_eval
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     // 1. FindDialogItem: Safe no-op / miss on NULL dialog
@@ -5253,6 +5257,7 @@ fn dialog_event_loop_and_rendering_commands_dispatch_with_canonical_evaluation()
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.window_list.push(dialog_ptr);
 
@@ -5358,6 +5363,7 @@ fn dialog_teardown_commands_dispatch_with_canonical_evaluation() {
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.window_list.push(dialog_ptr);
 
@@ -5392,6 +5398,7 @@ fn dialog_teardown_commands_dispatch_with_canonical_evaluation() {
         row_bytes: 300,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.window_list.push(dialog2_ptr);
     assert!(loaded.window_list.contains(&dialog2_ptr));

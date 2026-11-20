@@ -1236,6 +1236,7 @@ fn hle_import_runner_inverts_one_bit_bitmap_before_region_conversion() {
         row_bytes: 1,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -1372,6 +1373,7 @@ fn quickdraw_uses_the_live_pixmap_coordinate_origin_and_color_table() {
         row_bytes: 4,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -1469,6 +1471,7 @@ fn onscreen_color_port_keeps_its_logical_pm_table_during_a_hardware_fade() {
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     let screen_clut = [[0; 3]; 256];
     let color_manager_clut = [[0; 3]; 256];
@@ -1507,6 +1510,7 @@ fn hle_import_runner_draws_quickdraw_primitives_into_8bpp_current_gworld() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -1643,6 +1647,7 @@ fn hle_import_runner_does_not_cross_short_two_bit_pixmap_rows() {
         row_bytes: 1,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -1689,6 +1694,7 @@ fn hle_import_runner_draws_representative_quickdraw_primitives_into_2bpp_gworld(
         row_bytes: ROW_BYTES,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -3227,6 +3233,7 @@ fn hle_import_runner_draws_picture_handle_into_8bpp_current_gworld() {
         row_bytes: 8,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -3276,6 +3283,7 @@ fn hle_import_runner_draws_picture_handle_into_4bpp_current_gworld() {
         row_bytes: 4,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
@@ -3322,6 +3330,7 @@ fn basic_grafport_uses_port_rect_when_copied_bitmap_bounds_exceed_row_bytes() {
         row_bytes: 1,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     let surface =
@@ -3413,6 +3422,7 @@ fn hle_import_runner_draws_raw_quilt_picture_frame_into_8bpp_current_gworld() {
         row_bytes: 8,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld
