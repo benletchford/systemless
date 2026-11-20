@@ -6477,12 +6477,16 @@ impl super::TrapDispatcher {
                     let fi = tracking.flash_item;
                     if (fi as usize) <= tracking.items.len() {
                         let item = &tracking.items[(fi - 1) as usize];
+                        let item_visible = crate::dialog_manager::dialog_item_intersects_bounds(
+                            tracking.bounds,
+                            item.rect,
+                        );
                         let (it, il, ib, ir) = item.rect;
                         let abs_top = tracking.bounds.0 + it;
                         let abs_left = tracking.bounds.1 + il;
                         let abs_bottom = tracking.bounds.0 + ib;
                         let abs_right = tracking.bounds.1 + ir;
-                        if tracking.flash_remaining % 2 == 0 {
+                        if item_visible && tracking.flash_remaining % 2 == 0 {
                             self.invert_button_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
                         }
                     }

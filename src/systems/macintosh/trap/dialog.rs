@@ -4463,7 +4463,8 @@ impl super::TrapDispatcher {
                     if remaining > 0 && flash_item > 0 && (flash_item as usize) <= t.items.len() {
                         let item = &t.items[(flash_item - 1) as usize];
                         Some((
-                            Self::dialog_item_screen_rect(t.bounds, item.rect),
+                            t.bounds,
+                            item.rect,
                             item.text.clone(),
                             crate::dialog_manager::is_dialog_default_button(
                                 flash_item,
@@ -4477,10 +4478,11 @@ impl super::TrapDispatcher {
                 (remaining, button_draw, flash_item)
             };
 
-            if let Some((screen_rect, title, is_default, highlighted)) = button_draw {
-                self.draw_dialog_button_highlight_state(
+            if let Some((bounds, item_rect, title, is_default, highlighted)) = button_draw {
+                self.draw_dialog_item_button_highlight_state(
                     bus,
-                    screen_rect,
+                    bounds,
+                    item_rect,
                     &title,
                     is_default,
                     highlighted,
@@ -8966,6 +8968,27 @@ impl super::TrapDispatcher {
         self.invert_button_rect(bus, top, left, bottom, right);
     }
 
+    /// Draw a dialog push button's flash or tracking state. The Control
+    /// Manager draws through the dialog port's visRgn and clipRgn, so a button
+    /// whose rectangle lies wholly outside the window is never drawn. Exile II
+    /// keeps an invisible default "Button" item to the right of its dialogs
+    /// this way.
+    fn draw_dialog_item_button_highlight_state(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        item_rect: (i16, i16, i16, i16),
+        title: &str,
+        is_default: bool,
+        highlighted: bool,
+    ) {
+        if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item_rect) {
+            return;
+        }
+        let rect = Self::dialog_item_screen_rect(bounds, item_rect);
+        self.draw_dialog_button_highlight_state(bus, rect, title, is_default, highlighted);
+    }
+
     fn restore_dialog_button_normal_state(
         &self,
         bus: &mut MacMemoryBus,
@@ -8980,6 +9003,10 @@ impl super::TrapDispatcher {
             if control_ptr != 0 {
                 bus.write_byte(control_ptr + 17, 0);
             }
+        }
+        // A button wholly outside the window is clipped away by the port.
+        if !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect) {
+            return;
         }
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
         self.draw_button_with_enabled(bus, top, left, bottom, right, &item.text, is_default, true);
@@ -11023,8 +11050,7 @@ impl super::TrapDispatcher {
         highlighted: bool,
     ) {
         if !highlighted {
-            let screen_rect = Self::dialog_item_screen_rect(bounds, rect);
-            self.draw_dialog_button_highlight_state(bus, screen_rect, title, is_default, true);
+            self.draw_dialog_item_button_highlight_state(bus, bounds, rect, title, is_default, true);
         }
         if let Some(t) = self.dialog_tracking.as_mut() {
             t.flash_remaining = 6;
@@ -13065,7 +13091,7 @@ impl super::TrapDispatcher {
                             {
                                 let item = &t.items[(flash_item - 1) as usize];
                                 Some((
-                                    Self::dialog_item_screen_rect(bounds, item.rect),
+                                    item.rect,
                                     item.text.clone(),
                                     flash_item == t.default_item,
                                     remaining % 2 == 0,
@@ -13076,11 +13102,12 @@ impl super::TrapDispatcher {
                             (remaining, button_draw)
                         };
 
-                        if let Some((screen_rect, title, is_default, highlighted)) = button_draw {
+                        if let Some((item_rect, title, is_default, highlighted)) = button_draw {
                             // Toggle button highlight.
-                            self.draw_dialog_button_highlight_state(
+                            self.draw_dialog_item_button_highlight_state(
                                 bus,
-                                screen_rect,
+                                bounds,
+                                item_rect,
                                 &title,
                                 is_default,
                                 highlighted,
@@ -13557,11 +13584,10 @@ impl super::TrapDispatcher {
                                                     })
                                             });
                                         if let Some((def, rect, title, is_default)) = target {
-                                            let screen_rect =
-                                                Self::dialog_item_screen_rect(bounds, rect);
-                                            self.draw_dialog_button_highlight_state(
+                                            self.draw_dialog_item_button_highlight_state(
                                                 bus,
-                                                screen_rect,
+                                                bounds,
+                                                rect,
                                                 &title,
                                                 is_default,
                                                 true,
@@ -13595,11 +13621,10 @@ impl super::TrapDispatcher {
                                                     })
                                             });
                                         if let Some((cancel, rect, title, is_default)) = target {
-                                            let screen_rect =
-                                                Self::dialog_item_screen_rect(bounds, rect);
-                                            self.draw_dialog_button_highlight_state(
+                                            self.draw_dialog_item_button_highlight_state(
                                                 bus,
-                                                screen_rect,
+                                                bounds,
+                                                rect,
                                                 &title,
                                                 is_default,
                                                 true,
