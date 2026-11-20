@@ -177,6 +177,9 @@ impl DesktopSaveStore {
                 continue;
             }
 
+            if self.persisted_save_paths.contains(&stat.path) {
+                next_persisted_paths.insert(stat.path.clone());
+            }
             let Some(summary) = runner.vfs_file_summary(&stat.path) else {
                 continue;
             };
@@ -204,13 +207,8 @@ impl DesktopSaveStore {
                             snapshot.path, err
                         );
                         next_fingerprints.remove(&summary.path);
-                        if self.persisted_save_paths.contains(&summary.path) {
-                            next_persisted_paths.insert(summary.path.clone());
-                        }
                     }
                 }
-            } else {
-                next_persisted_paths.insert(summary.path.clone());
             }
         }
 
@@ -924,8 +922,14 @@ mod tests {
         assert_eq!(run_sync(&mut store, &mut runner), 1);
         assert_eq!(run_sync(&mut store, &mut runner), 0);
 
+        let previous = save.clone();
         save.data_fork.push(42);
         runner.import_vfs_file(&save);
+        store.sync_save_files_with(&mut runner, |_, _| None);
+        assert_eq!(
+            load_saved_files_from_root(store.root()).unwrap(),
+            vec![previous]
+        );
         assert_eq!(run_sync(&mut store, &mut runner), 1);
         assert_eq!(run_sync(&mut store, &mut runner), 0);
 
