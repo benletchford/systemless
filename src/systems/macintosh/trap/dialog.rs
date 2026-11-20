@@ -4237,6 +4237,35 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// Plot an icon the way the Dialog Manager does for icon items and the
+    /// alert-family default icon: a `cicn` first (`GetCIcon`/`PlotCIcon`),
+    /// then the 1-bit `ICON` (`GetIcon`/`PlotIcon`), falling back to the
+    /// synthesized System file icons 0..2. Returns whether anything was
+    /// drawn. Rect is in screen coordinates.
+    fn draw_dialog_icon_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        icon_id: i16,
+    ) -> bool {
+        let (top, left, bottom, right) = rect;
+        if let Some((_, icon_ptr)) = self.find_or_load_resource_any(bus, *b"cicn", icon_id) {
+            if self.draw_cicn_icon(bus, top, left, bottom, right, icon_ptr) {
+                return true;
+            }
+        }
+        // ICON resource: 32x32 1-bit bitmap = 128 bytes (IM:I I-205).
+        let icon_ptr = match self.find_or_load_resource_any(bus, *b"ICON", icon_id) {
+            Some((_, ptr)) => Some(ptr),
+            None => self.synthesize_system_icon(bus, icon_id),
+        };
+        if let Some(icon_ptr) = icon_ptr {
+            self.draw_icon(bus, top, left, bottom, right, icon_ptr);
+            return true;
+        }
+        false
+    }
+
     fn begin_interactive_alert<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -4248,6 +4277,7 @@ impl super::TrapDispatcher {
         items_id: i16,
         position: u16,
         default_item: i16,
+        icon_id: Option<i16>,
     ) -> bool {
         let Some((_, ditl_data)) = self.find_or_load_resource_any(bus, *b"DITL", items_id) else {
             return false;
@@ -4313,6 +4343,25 @@ impl super::TrapDispatcher {
             );
         }
         self.dialog_cancel_items.insert(dialog_ptr, init.cancel_item());
+
+        // StopAlert/NoteAlert/CautionAlert plot their standard icon (ID
+        // 0/1/2) at the fixed ICRect (10,20,42,52) in the alert window right
+        // after NewDialog; plain Alert passes no icon. ROM DialogMgr.a DoAlert
+        // (`ICRect DC.W 10,20,42,52`, GetCIcon then GetIcon + PlotIcon);
+        // Inside Macintosh Volume I, I-418/I-423.
+        if let Some(icon_id) = icon_id {
+            let (top, left, _, _) = bounds;
+            if self.draw_dialog_icon_resource(
+                bus,
+                (top + 10, left + 20, top + 42, left + 52),
+                icon_id,
+            ) && self.dialog_visible_snapshots.contains_key(&dialog_ptr)
+            {
+                let pixels = self.save_dialog_pixels(bus, bounds);
+                self.dialog_visible_snapshots
+                    .insert(dialog_ptr, PersistentDialogSnapshot { bounds, pixels });
+            }
+        }
 
         let saved_pixels = self
             .dialog_saved_pixels
@@ -7051,32 +7100,11 @@ impl super::TrapDispatcher {
                 // Icon (32)
                 DIALOG_ITEM_ICON => {
                     if !skip_pictures && item.resource_id != 0 {
-                        let drew_cicn = if let Some((_, icon_ptr)) =
-                            self.find_or_load_resource_any(bus, *b"cicn", item.resource_id)
-                        {
-                            self.draw_cicn_icon(
-                                bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
-                            )
-                        } else {
-                            false
-                        };
-                        if !drew_cicn {
-                            if let Some((_, icon_ptr)) =
-                                self.find_or_load_resource_any(bus, *b"ICON", item.resource_id)
-                            {
-                                // ICON resource: 32x32 1-bit bitmap = 128 bytes
-                                // Inside Macintosh Volume I, I-205
-                                self.draw_icon(
-                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
-                                );
-                            } else if let Some(icon_ptr) =
-                                self.synthesize_system_icon(bus, item.resource_id)
-                            {
-                                self.draw_icon(
-                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
-                                );
-                            }
-                        }
+                        self.draw_dialog_icon_resource(
+                            bus,
+                            (abs_top, abs_left, abs_bottom, abs_right),
+                            item.resource_id,
+                        );
                     }
                 }
                 // Picture (64)
@@ -11743,6 +11771,7 @@ impl super::TrapDispatcher {
                             items_id,
                             position,
                             default_item,
+                            kind.icon_id(),
                         ) {
                             if super::dispatch::trace_dialog_traps_enabled() {
                                 eprintln!(
