@@ -5363,6 +5363,49 @@ pub(crate) fn ppc_arithmetic_transfer_channel(
     }
 }
 
+/// One destination pixel for the Boolean CopyBits modes 1-7 (srcOr, srcXor,
+/// srcBic, notSrcCopy, notSrcOr, notSrcXor, notSrcBic), or `None` when the
+/// mode leaves the destination pixel unchanged. Bitmaps, and uncolorized
+/// pixels that share one indexed color space, combine their values bitwise.
+/// Otherwise Color QuickDraw applies the foreground and background colors
+/// to black, white and weighted source colors, and inverts for the Xor modes
+/// (so notSrcCopy with a white foreground and black background copies).
+/// Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-8--3-9 and
+/// Table 4-1, pp. 4-32--4-34.
+pub(crate) fn ppc_copy_bits_boolean_pixel(
+    mode: u16,
+    (src_bits, src_pixel, src_clut): (PpcPixMapBits, u32, Option<&[[u16; 3]; 256]>),
+    (dst_bits, dst_pixel, dst_clut): (PpcPixMapBits, u32, Option<&[[u16; 3]; 256]>),
+    shared_index_space: bool,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+) -> Option<u32> {
+    if shared_index_space {
+        let pixel_mask = if dst_bits.depth >= 8 {
+            u8::MAX
+        } else {
+            (1u8 << dst_bits.depth) - 1
+        };
+        return TrapDispatcher::indexed_boolean_transfer(
+            src_pixel as u8,
+            dst_pixel as u8,
+            mode,
+            pixel_mask,
+        )
+        .map(u32::from);
+    }
+    let source = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut)?;
+    let destination = ppc_pixmap_pixel_rgb(dst_bits, dst_pixel, dst_clut)?;
+    let rgb = TrapDispatcher::copy_bits_direct_source_mode_rgb(
+        source,
+        destination,
+        mode,
+        [fore_color.red, fore_color.green, fore_color.blue],
+        [back_color.red, back_color.green, back_color.blue],
+    )?;
+    ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut)
+}
+
 pub(crate) fn ppc_copy_bits(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -5387,9 +5430,9 @@ pub(crate) fn ppc_copy_bits(
     let mut trace_details = None;
     let copied = (|| {
         let mode = transfer_mode & 0x3f;
-        // 0 srcCopy, 32 blend, 33 addPin, 34 addOver, 35 subPin,
-        // 36 transparent, 37 addMax, 38 subOver, 39 adMin.
-        if !matches!(mode, 0 | 32..=39) {
+        // 0 srcCopy, 1-7 Boolean modes, 32 blend, 33 addPin, 34 addOver,
+        // 35 subPin, 36 transparent, 37 addMax, 38 subOver, 39 adMin.
+        if !matches!(mode, 0..=7 | 32..=39) {
             reason = "unsupported-mode";
             return None;
         }
@@ -5408,9 +5451,14 @@ pub(crate) fn ppc_copy_bits(
         let src_bits = src_resolved.bits;
         let dst_bits = dst_resolved.bits;
         let transparent = mode == 36;
+        let boolean = matches!(mode, 1..=7);
+        // Black on white applies no colorizing, so Boolean modes between
+        // pixels of one indexed color space reduce to bitwise pixel values.
+        let uncolorized = [fore_color.red, fore_color.green, fore_color.blue] == [0; 3]
+            && [back_color.red, back_color.green, back_color.blue] == [u16::MAX; 3];
         let supported_source = matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16 | 32);
         let supported_destination = matches!(dst_bits.depth, 1 | 2 | 4 | 8 | 16 | 32);
-        let compatible_depths = if transparent || mode == 0 {
+        let compatible_depths = if transparent || boolean || mode == 0 {
             // Imaging With QuickDraw (1994), p. 3-117 and pp. 4-27--4-28:
             // CopyBits converts source colors into the destination device's
             // pixel format, and expands a BitMap through the foreground and
@@ -5941,7 +5989,26 @@ pub(crate) fn ppc_copy_bits(
                     if transparent && transparent_source == transparent_back_pixel {
                         continue;
                     }
-                    let pixel = if dst_bits.depth == 1
+                    let pixel = if boolean {
+                        let destination =
+                            ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
+                        let Some(pixel) = ppc_copy_bits_boolean_pixel(
+                            mode,
+                            (src_bits, src_pixel, src_clut.as_ref()),
+                            (dst_bits, destination, dst_clut.as_ref()),
+                            src_bits.depth == dst_bits.depth
+                                && (src_bits.depth == 1
+                                    || (uncolorized
+                                        && palette_map.is_none()
+                                        && ppc_indexed_depth_entry_count(src_bits.depth)
+                                            .is_some())),
+                            fore_color,
+                            back_color,
+                        ) else {
+                            continue;
+                        };
+                        pixel
+                    } else if dst_bits.depth == 1
                         && matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39)
                     {
                         // Arithmetic modes on a one-bit destination use the
@@ -6058,7 +6125,9 @@ pub(crate) fn ppc_copy_bits(
             }
         }
         if writes.is_empty() {
-            if transparent {
+            // Transparent and Boolean modes legitimately leave every
+            // destination pixel untouched for some sources.
+            if transparent || boolean {
                 return Some(());
             }
             reason = "no-pixels";

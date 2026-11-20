@@ -24310,7 +24310,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn indexed_boolean_transfer(
+    pub(crate) fn indexed_boolean_transfer(
         src_pixel: u8,
         dst_pixel: u8,
         mode_base: u16,
@@ -24362,7 +24362,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    fn copy_bits_direct_source_mode_rgb(
+    pub(crate) fn copy_bits_direct_source_mode_rgb(
         src_rgb: [u16; 3],
         dst_rgb: [u16; 3],
         mode_base: u16,
