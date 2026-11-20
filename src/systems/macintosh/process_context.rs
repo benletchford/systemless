@@ -2236,6 +2236,10 @@ struct ProcessWindowListState {
     // Caller-owned DialogRecords end at byte 170. Their manager-private
     // tail lives in separately owned scratch, shared across CPU adapters.
     caller_dialog_private_storage: HashMap<u32, u32>,
+    // The dctb GetNewDialog installed for a dialog, as SetWinColor records
+    // it in the AuxWin list: it follows the window, not its windowKind,
+    // which applications may change after creation.
+    dialog_color_tables: HashMap<u32, u32>,
 }
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
@@ -4890,6 +4894,7 @@ impl SharedProcessWindowList {
             windows,
             classes: HashMap::new(),
             caller_dialog_private_storage: HashMap::new(),
+            dialog_color_tables: HashMap::new(),
         }))
     }
 
@@ -4913,6 +4918,9 @@ impl SharedProcessWindowList {
         self.0.with_mut(|state| {
             let result = operation(&mut state.windows);
             state.classes.retain(|window, _| state.windows.contains(window));
+            state
+                .dialog_color_tables
+                .retain(|window, _| state.windows.contains(window));
             result
         })
     }
@@ -4930,6 +4938,21 @@ impl SharedProcessWindowList {
     pub(crate) fn has_caller_dialog_private_storage(&self, dialog: u32) -> bool {
         self.0
             .with_ref(|state| state.caller_dialog_private_storage.contains_key(&dialog))
+    }
+
+    pub(crate) fn set_dialog_color_table(&self, dialog: u32, color_table: u32) {
+        self.0.with_mut(|state| {
+            if color_table == 0 {
+                state.dialog_color_tables.remove(&dialog);
+            } else {
+                state.dialog_color_tables.insert(dialog, color_table);
+            }
+        });
+    }
+
+    pub(crate) fn dialog_color_table(&self, dialog: u32) -> Option<u32> {
+        self.0
+            .with_ref(|state| state.dialog_color_tables.get(&dialog).copied())
     }
 
     pub(crate) fn dialog_private_address(&self, dialog: u32, offset: u32) -> u32 {

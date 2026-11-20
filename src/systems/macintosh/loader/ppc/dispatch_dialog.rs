@@ -3506,6 +3506,31 @@ fn ppc_get_new_dialog(
                 window_list.dialog_private_address(dialog, PPC_DIALOG_COLOR_TABLE_HANDLE_OFFSET),
                 color_table,
             );
+            window_list.set_dialog_color_table(dialog, color_table);
+            // DialogMgr.a GetNewDialog/setUpCDialog creates a dctb dialog
+            // invisible, calls SetWinColor, then ShowWindow (or ShowHide).
+            // SetWinColor (WindowMgr.a) makes wContentColor the port's
+            // RGBBackColor, so later EraseRect/TETextBox calls use it, and the
+            // reveal erases the content with it. The window was created
+            // visible and painted with the default surface before the table
+            // existed; erase it again with the table's color.
+            if let Some(content_color) = ppc_window_content_color(memory, color_table) {
+                let _ = ppc_write_port_rgb_color(
+                    memory,
+                    dialog,
+                    PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                    content_color,
+                );
+            }
+            if ppc_window_is_visible(memory, dialog) {
+                super::dispatch_window::ppc_paint_revealed_window_content(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    dialog,
+                );
+            }
         }
         if let Some(index) = ppc_vfs_resource_index(
             vfs_resources,
