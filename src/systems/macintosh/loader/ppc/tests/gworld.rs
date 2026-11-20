@@ -1798,6 +1798,7 @@ use super::*;
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         };
         loaded.gworlds.push(record);
         loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 11);
@@ -3051,6 +3052,7 @@ fn mirror_sync_follows_the_registry_and_adopts_unregistered_records_once() {
         row_bytes: 8,
         pixels_locked,
         pixels_no_purge,
+        private_gdevice: false,
     };
     // Registered locked and purgeable, mirrored as neither; unregistered with
     // a locked, non-purgeable mirror; and a record with no PixMapHandle.

@@ -4497,6 +4497,7 @@ mod agl_choose_tests {
             row_bytes: 2,
             pixels_locked: false,
             pixels_no_purge: true,
+            private_gdevice: false,
         };
         let windows = SharedProcessWindowList::from_value(vec![port]);
         let mut memory = PpcSectionMem::new();

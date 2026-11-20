@@ -2076,6 +2076,7 @@ pub(super) fn ppc_new_cwindow_with_storage(
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: true,
+        private_gdevice: false,
     });
     ppc_reorder_window(gworlds, window_list, port, behind, false);
     window_list.set_window_class(

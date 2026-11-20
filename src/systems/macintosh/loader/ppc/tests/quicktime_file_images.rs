@@ -69,6 +69,7 @@ fn destination(loaded: &mut PpcLoadedApp, depth: u32) -> u32 {
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
     loaded.cpu.gpr[4] = PORT;

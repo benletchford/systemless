@@ -575,6 +575,7 @@ use super::*;
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         loaded.memory.add_region(palette_handle, vec![0; 4]);
         loaded.memory.add_region(palette, vec![0; 32]);
@@ -657,6 +658,7 @@ use super::*;
                 row_bytes: 1,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
             loaded.window_list.insert(0, window);
         }
@@ -864,6 +866,7 @@ use super::*;
                 row_bytes: 1,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
             loaded.window_list.insert(0, window);
         }
@@ -1030,6 +1033,7 @@ use super::*;
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         assert!(with_test_display_cluts!(
             loaded,
@@ -1513,6 +1517,7 @@ use super::*;
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         loaded.window_list.push(window_ptr);
         loaded.cpu.gpr[3] = window_ptr;
@@ -1588,6 +1593,7 @@ use super::*;
                 row_bytes: 1,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
         }
         loaded.memory.add_region(palette_handle, vec![0; 4]);
@@ -3219,6 +3225,7 @@ use super::*;
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         for port in [PPC_MAIN_GWORLD, window] {
             loaded.toolbox_startup.port_palettes.insert(port, (old_palette, 0));
@@ -3272,6 +3279,7 @@ use super::*;
                 row_bytes: 1,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
         }
         let defaults = TrapDispatcher::standard_mac_8bpp_clut();

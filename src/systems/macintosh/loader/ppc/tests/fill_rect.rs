@@ -117,6 +117,7 @@ fn install_port(loaded: &mut PpcLoadedApp, fixture: &IndexedPortFixture<'_>, dep
         row_bytes: u32::from(fixture.row_bytes),
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .current_gworld

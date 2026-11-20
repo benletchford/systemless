@@ -162,6 +162,92 @@ fn device_flagged_port_table_copy_matches_colors_through_its_live_device() {
 }
 
 #[test]
+fn new_gworld_private_device_keeps_its_device_flagged_table() {
+    // ShadowWraith's PowerPC slice loads its menu 'clut' (ctFlags device bit
+    // set), passes it to NewGWorld without noNewDevice, and draws the menu
+    // pictures into those GWorlds while the screen still shows the previous
+    // scene's palette. NewGWorld builds a private GDevice from that table, so
+    // drawing maps colours through the GWorld's own table, not the screen's.
+    // A noNewDevice GWorld on the main device, or a depth-0 GWorld, shares
+    // the screen GDevice and keeps matching through its live table.
+    // Imaging With QuickDraw (1994), pp. 6-16--6-20.
+    let pef = synthetic_pef_with_import(b"NewGWorld");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x8000;
+    let gworld_out = scratch;
+    let bounds = scratch + 0x10;
+    let clut_handle = scratch + 0x20;
+    let clut_table = scratch + 0x40;
+    loaded
+        .memory
+        .add_region(scratch, vec![0; 0x40 + PPC_MAIN_CTABLE_SIZE as usize]);
+    ppc_write_rect(&mut loaded.memory, bounds, 0, 0, 16, 16).unwrap();
+
+    // A device-flagged clut whose only non-black entry is a colour absent
+    // from the screen's table.
+    let mut clut = ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_CTABLE, PPC_MAIN_CTABLE_SIZE)
+        .unwrap();
+    assert_eq!(u16::from_be_bytes([clut[4], clut[5]]) & 0x8000, 0x8000);
+    for entry in clut[8..].chunks_exact_mut(8) {
+        entry[2..8].fill(0);
+    }
+    let menu_color = PpcRgbColor {
+        red: 0x8a8a,
+        green: 0x5a5a,
+        blue: 0x2121,
+    };
+    clut[8 + 42 * 8 + 2..8 + 42 * 8 + 8].copy_from_slice(&[0x8a, 0x8a, 0x5a, 0x5a, 0x21, 0x21]);
+    loaded.memory.write_u32_be(clut_handle, clut_table).unwrap();
+    for (offset, byte) in clut.iter().enumerate() {
+        loaded.memory.write_u8(clut_table + offset as u32, *byte).unwrap();
+    }
+
+    let new_gworld = |loaded: &mut PpcLoadedApp, depth: u32, gdevice: u32, flags: u32| {
+        loaded.cpu.gpr[3] = gworld_out;
+        loaded.cpu.gpr[4] = depth;
+        loaded.cpu.gpr[5] = bounds;
+        loaded.cpu.gpr[6] = clut_handle;
+        loaded.cpu.gpr[7] = gdevice;
+        loaded.cpu.gpr[8] = flags;
+        run_test_import(loaded, PpcImportDispatcherTarget::NewGWorld);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let port = loaded.memory.read_u32_be(gworld_out).unwrap();
+        let pixmap_handle = loaded.memory.read_u32_be(port + 2).unwrap();
+        let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+        (port, loaded.memory.read_u32_be(pixmap + 42).unwrap())
+    };
+
+    // keepLocal only: a private device built from the clut.
+    let (private_port, private_table) = new_gworld(&mut loaded, 8, 0, 1 << 3);
+    assert_ne!(private_table, PPC_MAIN_CTABLE_HANDLE);
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, private_port),
+        Some(private_table)
+    );
+    let surface =
+        ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, private_port).unwrap();
+    assert_eq!(surface.ctable_handle, Some(private_table));
+    assert_eq!(
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, menu_color),
+        Some(42)
+    );
+
+    // noNewDevice on the main GDevice shares the screen device's live table.
+    let (shared_port, _) = new_gworld(&mut loaded, 8, PPC_MAIN_GDEVICE, 1 << 1);
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, shared_port),
+        Some(PPC_MAIN_CTABLE_HANDLE)
+    );
+
+    // Depth 0 reuses the screen's GDevice even without noNewDevice.
+    let (screen_depth_port, _) = new_gworld(&mut loaded, 0, 0, 0);
+    assert_eq!(
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, screen_depth_port),
+        Some(PPC_MAIN_CTABLE_HANDLE)
+    );
+}
+
+#[test]
 fn hle_import_runner_handles_test_device_attribute() {
     let pef = synthetic_pef_with_import(b"TestDeviceAttribute");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -450,6 +536,7 @@ fn hle_import_runner_set_depth_grows_private_screen_ctable_without_replacing_han
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     for depth in [4, 8, 1] {
@@ -543,6 +630,7 @@ fn hle_import_runner_set_depth_private_ctable_growth_failure_is_atomic() {
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded
         .memory
@@ -691,6 +779,7 @@ fn hle_import_runner_set_depth_rejects_undersized_untracked_ctable_without_overw
         row_bytes: ppc_main_screen_row_bytes(),
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     let before_heap_cursor = loaded.heap_cursor();
@@ -1607,6 +1696,7 @@ fn hle_import_runner_set_depth_follows_live_set_port_pix_aliases() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
     }
 

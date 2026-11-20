@@ -179,6 +179,7 @@ fn paused_draw_sprocket_pointer_coordinates_preserve_context_display() {
         row_bytes: 640,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     for state in [PpcDspContextPlayState::Active, PpcDspContextPlayState::Paused] {
         let native = runner.native.application_mut().unwrap();
@@ -356,6 +357,7 @@ fn ppc_host_sync_restores_indexed_pm_table_across_direct_color_transitions() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
 
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -473,6 +475,7 @@ fn ppc_packed_front_buffers_sync_centered_pixels_with_process_color_state() {
             row_bytes,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         let config = FixtureRunnerConfig::default()
             .with_screen_depth(depth)
@@ -570,6 +573,7 @@ fn ppc_host_sync_paints_the_matte_only_when_its_geometry_changes() {
         row_bytes: ROW_BYTES,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     let mut runner = FixtureRunner::new(16 * 1024 * 1024, FixtureRunnerConfig::default());
     runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
@@ -636,6 +640,7 @@ fn ppc_rgb32_front_buffer_reaches_host_pixels_and_fades_without_mutating_guest()
         row_bytes: 12,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     ppc_app.attach_unconverted_process_services(&mut runner.process_context);

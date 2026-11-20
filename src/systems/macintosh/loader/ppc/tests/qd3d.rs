@@ -1812,6 +1812,7 @@ fn q3_mac_draw_context_front_buffer_uses_registered_port() {
         row_bytes: 640,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     });
     loaded.q3_objects.push(PpcQ3ObjectRecord {
         object: draw_context,
@@ -8960,6 +8961,7 @@ fn q3_completed_frame_fast_render_records_state_only_target_metadata() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
         PpcGWorldRecord {
             ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -8974,6 +8976,7 @@ fn q3_completed_frame_fast_render_records_state_only_target_metadata() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
     ];
     loaded
@@ -15057,6 +15060,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -15498,6 +15502,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     replay_loaded
         .current_gworld
@@ -15654,6 +15659,7 @@ fn q3_software_renderer_uses_pixmap_draw_context_destination() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -15829,6 +15835,7 @@ fn q3_software_renderer_uses_mac_draw_context_registered_port_destination() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
         PpcGWorldRecord {
             ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -15843,6 +15850,7 @@ fn q3_software_renderer_uses_mac_draw_context_registered_port_destination() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
     ];
     loaded
@@ -15991,6 +15999,7 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
         PpcGWorldRecord {
             ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -16005,6 +16014,7 @@ fn q3_completed_frame_renders_to_dsp_back_buffer_mac_draw_context_until_swap() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         },
     ];
     loaded
@@ -16196,6 +16206,7 @@ fn q3_software_renderer_respects_fill_style_edges_and_points() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -16364,6 +16375,7 @@ fn q3_software_renderer_uses_trimesh_edge_attributes_for_edge_fill() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -16609,6 +16621,7 @@ fn q3_software_renderer_uses_edge_specular_attributes_for_edge_fill() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -16872,6 +16885,7 @@ fn q3_software_renderer_uses_edge_normals_for_edge_fill_directional_lights() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -17079,6 +17093,7 @@ fn q3_software_renderer_uses_edge_ambient_coefficients_for_edge_fill() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -17288,6 +17303,7 @@ fn q3_software_renderer_respects_backfacing_remove_style() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -17716,6 +17732,7 @@ impl ImmediateTriMeshFixture {
             row_bytes: 32,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -18035,6 +18052,7 @@ fn q3_software_renderer_culls_faces_turned_away_from_the_camera() {
             row_bytes: 32,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -18235,6 +18253,7 @@ fn q3_software_renderer_flips_backfacing_normals_for_flip_style() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -18464,6 +18483,7 @@ fn q3_software_renderer_fills_trimeshes_with_depth_testing() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -18623,6 +18643,7 @@ fn q3_software_renderer_sorts_transparent_filled_triangles_back_to_front() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -18826,6 +18847,7 @@ fn q3_software_renderer_sorts_transparent_points_and_edges_back_to_front() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -18989,6 +19011,7 @@ fn q3_software_renderer_blends_transparency_color_with_front_buffer() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -19178,6 +19201,7 @@ fn q3_software_renderer_blends_vertex_transparency_color_with_front_buffer() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -19355,6 +19379,7 @@ fn q3_software_renderer_uses_triangle_diffuse_and_transparency_colors() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -19551,6 +19576,7 @@ fn q3_software_renderer_uses_vertex_diffuse_colors() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -19704,6 +19730,7 @@ fn q3_software_renderer_applies_captured_light_colors_to_materials() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -19958,6 +19985,7 @@ fn q3_software_renderer_uses_vertex_ambient_coefficients_for_ambient_lights() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -20128,6 +20156,7 @@ fn q3_software_renderer_uses_triangle_ambient_coefficients_for_ambient_lights() 
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -20537,6 +20566,7 @@ fn q3_software_test_front_gworld(front_base: u32) -> PpcGWorldRecord {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }
 }
 
@@ -21471,6 +21501,7 @@ fn q3_software_renderer_applies_specular_attributes_to_directional_lights() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -21663,6 +21694,7 @@ fn q3_software_renderer_uses_vertex_specular_attributes_for_phong() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -21873,6 +21905,7 @@ fn q3_software_renderer_uses_triangle_specular_attributes_for_phong() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -22150,6 +22183,7 @@ fn q3_software_renderer_uses_vertex_normals_for_directional_lights() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -22408,6 +22442,7 @@ fn q3_software_renderer_uses_triangle_normals_for_directional_lights() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -22627,6 +22662,7 @@ fn q3_software_renderer_applies_point_and_spot_lights_from_world_positions() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -22843,6 +22879,7 @@ fn q3_software_renderer_respects_interpolation_style_shading_modes() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -23045,6 +23082,7 @@ fn q3_software_renderer_applies_linear_fog_style_to_materials() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -23255,6 +23293,7 @@ fn q3_software_renderer_applies_alpha_fog_from_vertex_transparency() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -23420,6 +23459,7 @@ fn q3_software_renderer_applies_captured_mipmap_texture_color() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -23572,6 +23612,7 @@ fn q3_software_renderer_blends_argb_texture_alpha() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -23751,6 +23792,7 @@ fn q3_software_renderer_composes_texture_material_and_vertex_opacity() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -24012,6 +24054,7 @@ fn q3_software_renderer_samples_captured_mipmap_with_vertex_uvs() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -24227,6 +24270,7 @@ fn q3_software_renderer_honors_shader_uv_boundary_modes() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded
             .current_gworld
@@ -24420,6 +24464,7 @@ fn q3_software_renderer_applies_shader_uv_transform_before_texture_sampling() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -24600,6 +24645,7 @@ fn q3_software_renderer_clips_partially_offscreen_trimeshes() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -24774,6 +24820,7 @@ fn q3_software_renderer_clips_camera_near_and_far_depth() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -25166,6 +25213,7 @@ fn q3_software_renderer_maps_camera_viewport_to_front_buffer_region() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -25286,6 +25334,7 @@ fn q3_software_renderer_maps_explicit_draw_context_pane_to_front_buffer_region()
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -25905,6 +25954,7 @@ fn q3_point_projector_matches_per_point_projection_and_gates_view_direction() {
         row_bytes: 32,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded
         .current_gworld
@@ -27937,7 +27987,7 @@ fn render_subpixel_tile_scene(front_base: u32, meshes: &[[(f32, f32, f32); 3]]) 
         ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port: PPC_MAIN_GWORLD, pixmap_handle: 0, pixmap: 0, base_addr: front_base,
         gdevice: PPC_MAIN_GDEVICE, width: 8, height: 8, depth: 16, row_bytes: 16,
-        pixels_locked: false, pixels_no_purge: false,
+        pixels_locked: false, pixels_no_purge: false, private_gdevice: false,
     }];
     loaded.current_gworld.with_mut(|current| *current = PPC_MAIN_GWORLD);
     loaded.q3_views.push(PpcQ3ViewStateRecord::new(view));

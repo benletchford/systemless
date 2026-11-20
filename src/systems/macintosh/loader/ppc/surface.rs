@@ -21,7 +21,7 @@ pub(crate) fn ppc_live_gworld_ctable_handle(
         .filter(|ctable_handle| *ctable_handle != 0)?;
     let depth = ppc_read_pixmap_bits(memory, pixmap).map_or(0, |bits| bits.depth);
     Some(
-        ppc_device_ctable_for_device_indexed_pixmap(memory, ctable_handle, record.gdevice, depth)
+        ppc_device_ctable_for_device_indexed_pixmap(memory, ctable_handle, record, depth)
             .unwrap_or(ctable_handle),
     )
 }
@@ -382,13 +382,20 @@ pub(crate) fn ppc_live_front_buffer_for_gworld(
 /// screen's table with HandToHand while the screen is faded to black, then
 /// draws its main menu into a CGrafPort using that copy after fading back
 /// in; matching against the stale all-black copy loses every colour.
+///
+/// A GWorld made by NewGWorld without `noNewDevice` is drawn through its own
+/// private GDevice, whose table is the GWorld's pmTable (Imaging With
+/// QuickDraw (1994), pp. 6-16--6-20). Its device-flagged table therefore
+/// stays authoritative: ShadowWraith draws its menu art into such GWorlds
+/// with a 'clut' resource while the screen still shows the previous scene.
 fn ppc_device_ctable_for_device_indexed_pixmap(
     memory: &mut PpcSectionMem,
     ctable_handle: u32,
-    gdevice: u32,
+    record: &PpcGWorldRecord,
     depth: u32,
 ) -> Option<u32> {
-    if !matches!(depth, 1 | 2 | 4 | 8) || gdevice == 0 {
+    let gdevice = record.gdevice;
+    if !matches!(depth, 1 | 2 | 4 | 8) || gdevice == 0 || record.private_gdevice {
         return None;
     }
     let table = memory.read_u32_be(ctable_handle)?;
@@ -430,10 +437,7 @@ pub(crate) fn ppc_live_quickdraw_surface(
                 record
                     .and_then(|record| {
                         ppc_device_ctable_for_device_indexed_pixmap(
-                            memory,
-                            handle,
-                            record.gdevice,
-                            bits.depth,
+                            memory, handle, record, bits.depth,
                         )
                     })
                     .unwrap_or(handle)

@@ -1911,6 +1911,7 @@ fn cinepak_movie_draw_fixture() -> (PpcLoadedApp, u32, u32) {
         row_bytes: 8,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime = PpcQuickTimeState {
         movie_data: movie_file_data,
@@ -2150,6 +2151,7 @@ fn quicktime_attached_controller_bounds_position_movie_pixels() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime = PpcQuickTimeState {
         movie_data: movie_file_data,
@@ -2830,6 +2832,7 @@ fn hle_import_runner_tracks_quicktime_gworld_targets_and_visible_draws() {
         row_bytes: 8,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime.graphics_importer_open = true;
     loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
@@ -3080,6 +3083,7 @@ fn hle_import_runner_draws_quicktime_pict_file_into_gworld() {
         row_bytes: 16,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.push_test_vfs_file(PpcVfsFileRecord {
         path: "Splash Pict".to_string(),
@@ -4217,6 +4221,7 @@ fn hle_import_runner_quicktime_graphics_importer_decodes_gif() {
         row_bytes: 4,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime.graphics_importer_gworld = gworld;
     loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
@@ -4427,6 +4432,7 @@ fn hle_import_runner_quicktime_graphics_importer_maps_gif_through_destination_cl
         row_bytes: 2,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime.graphics_importer_gworld = gworld;
     loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
@@ -4525,6 +4531,7 @@ fn hle_import_runner_quicktime_graphics_importer_draws_gif_into_32_bit_gworld() 
         row_bytes: 8,
         pixels_locked: false,
         pixels_no_purge: false,
+        private_gdevice: false,
     }];
     loaded.quicktime.graphics_importer_gworld = gworld;
     loaded.cpu.gpr[3] = PPC_QT_GRAPHICS_IMPORTER;
@@ -5263,6 +5270,7 @@ fn quicktime_imports_aiff_and_compressed_aifc_as_audio_movies() {
             row_bytes: 8,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }];
         loaded.quicktime.movie_box = (0, 0, 4, 4);
         assert!(

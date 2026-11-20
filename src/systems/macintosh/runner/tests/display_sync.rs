@@ -79,6 +79,7 @@ fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
                 row_bytes: 4,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             },
             PpcGWorldRecord {
                 ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
@@ -93,6 +94,7 @@ fn ppc_gui_cpu_slice_defers_front_buffer_sync_until_composite() {
                 row_bytes: 4,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             },
         ],
         gworld_pixel_states: Default::default(),
@@ -384,6 +386,7 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
             row_bytes: 16,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         }],
         gworld_pixel_states: Default::default(),
         q3_objects: Vec::new(),

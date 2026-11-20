@@ -2631,6 +2631,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
             row_bytes: 8,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         };
 
         let resolved = ppc_resolve_pixmap_ctable_handle_with_provenance(
@@ -3013,6 +3014,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
                 row_bytes: 8,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
             SYNTHESIZED_PIXMAP
         } else {
@@ -3591,6 +3593,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
                 row_bytes: 3,
                 pixels_locked: false,
                 pixels_no_purge: false,
+                private_gdevice: false,
             });
             loaded
                 .memory
@@ -4199,6 +4202,7 @@ fn gpu_native_deep_masks_match_all_depths_boolean_modes_aliases_and_stores() {
             row_bytes: 1,
             pixels_locked: false,
             pixels_no_purge: false,
+            private_gdevice: false,
         });
         loaded
             .current_gworld
