@@ -17477,6 +17477,48 @@
     }
 
     #[test]
+    fn dialog_button_feedback_skips_buttons_outside_the_window() {
+        // Exile II gives each dialog a default "Button" item placed to the
+        // right of the window, so Return works while the button stays
+        // clipped away. Its flash and its post-hit redraw must not paint it
+        // onto the desktop beside the dialog.
+        let (mut disp, _cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let bounds = (100, 100, 200, 300);
+        let outside_rect = (20, 250, 40, 300);
+        let inside_rect = (20, 30, 40, 90);
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let screen_len = (row_bytes * 342) as usize;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+        let outside = DialogItem {
+            item_type: 4,
+            rect: outside_rect,
+            text: "Button".to_string(),
+            ..DialogItem::default()
+        };
+        let before = bus.read_bytes(screen_base, screen_len);
+
+        disp.draw_dialog_item_button_highlight_state(
+            &mut bus,
+            bounds,
+            outside_rect,
+            "Button",
+            true,
+            true,
+        );
+        disp.restore_dialog_button_normal_state(&mut bus, dialog_ptr, bounds, 1, &outside, true);
+        assert_eq!(bus.read_bytes(screen_base, screen_len), before);
+
+        let inside = DialogItem {
+            rect: inside_rect,
+            ..outside
+        };
+        disp.restore_dialog_button_normal_state(&mut bus, dialog_ptr, bounds, 1, &inside, true);
+        assert_ne!(bus.read_bytes(screen_base, screen_len), before);
+    }
+
+    #[test]
     fn modal_dialog_filter_button_hit_releases_visual_before_nested_modal() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
