@@ -3422,19 +3422,16 @@ fn full_width_8_to_16_copy_clears_second_row_detail_across_plain_first_row() {
     )
     .unwrap();
     let dst_port = PORT + 0x400;
+    // Both ports use the main screen device and the same bounds.
+    let source_world = *loaded.gworlds.last().unwrap();
     loaded.gworlds.push(PpcGWorldRecord {
-        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
         port: dst_port,
         pixmap_handle: 0,
         pixmap: SCREEN_PIXMAP,
         base_addr: SCREEN,
-        gdevice: PPC_MAIN_GDEVICE,
-        width: u32::from(WIDTH),
-        height: u32::from(ROWS),
         depth: 16,
         row_bytes: u32::from(DST_ROW_BYTES),
-        pixels_locked: false,
-        pixels_no_purge: false,
+        ..source_world
     });
     ppc_draw_text_bytes(
         &mut loaded.memory,
