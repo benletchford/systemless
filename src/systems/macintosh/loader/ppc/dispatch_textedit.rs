@@ -148,6 +148,7 @@ pub(super) fn dispatch_textedit_import(
                     end,
                     cpu.gpr[3] as u16,
                     cpu.gpr[4],
+                    None,
                 )
             };
             if style_result && !insertion_point && cpu.gpr[5] != 0 {
@@ -197,6 +198,7 @@ pub(super) fn dispatch_textedit_import(
                 scrap_handle,
                 start.max(0) as usize,
                 end.max(0) as usize,
+                false,
             ) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
@@ -377,6 +379,7 @@ pub(super) fn dispatch_textedit_import(
                     cpu.gpr[5],
                     insert_start,
                     insert_start.saturating_add(bytes.len()),
+                    true,
                 )
             {
                 let mut allocator = PpcProcessAllocatorView {
@@ -858,6 +861,7 @@ pub(super) fn dispatch_textedit_import(
                     to,
                     mode & 0x001f,
                     new_style,
+                    None,
                 );
             }
             if changed && redraw {
@@ -1158,6 +1162,7 @@ pub(super) fn ppc_te_apply_style_scrap_to_range(
     scrap_handle: u32,
     range_start: usize,
     range_end: usize,
+    keep_scrap_metrics: bool,
 ) -> bool {
     let Some(scrap_ptr) = memory.read_u32_be(scrap_handle).filter(|ptr| *ptr != 0) else {
         return false;
@@ -1215,6 +1220,22 @@ pub(super) fn ppc_te_apply_style_scrap_to_range(
                 .unwrap_or(0);
             let _ = memory.write_u16_be(text_style_ptr + 6 + offset, component);
         }
+        // TEStyleInsert's PstStylGuts/AddStyle (TextEdit.a) copies each
+        // ScrpSTElement from scrpHeight onward into the style table, so the
+        // stored line height and ascent are kept rather than re-derived from
+        // the font. TEUseStyleScrap goes through SetStyle, which recomputes.
+        let stored_metrics = if keep_scrap_metrics {
+            let height = memory
+                .read_u16_be(source + PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET)
+                .unwrap_or(0) as i16;
+            let ascent = memory
+                .read_u16_be(source + PPC_TE_SCRAP_STYLE_ASCENT_OFFSET)
+                .unwrap_or(0) as i16;
+            // A zero height cannot lay out a line; fall back to the font.
+            (height > 0 && ascent >= 0).then_some((height, ascent))
+        } else {
+            None
+        };
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: process_memory_manager,
         };
@@ -1231,6 +1252,7 @@ pub(super) fn ppc_te_apply_style_scrap_to_range(
             end,
             0x000f,
             text_style_ptr,
+            stored_metrics,
         );
     }
     changed

@@ -339,6 +339,86 @@ fn te_style_insert_applies_every_style_scrap_run_to_the_inserted_text() {
 }
 
 #[test]
+fn te_style_insert_keeps_the_style_scrap_line_height_and_ascent() {
+    // TextEdit.a iTEStylInsert -> PstStylGuts -> AddStyle copies each
+    // ScrpSTElement from scrpHeight onward into the style table, so inserted
+    // runs use the stored line height and ascent rather than metrics derived
+    // from the font. Centaurian's help pages ship Helvetica 14 'styl' runs
+    // with height 15 / ascent 11; deriving them spread every line to the
+    // font's own height and pushed the last entries off the panel.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 200, 420).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 200, 420).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let te_handle = loaded.cpu.gpr[3];
+
+    let (font, size, height, ascent) = (21u16, 14u16, 15u16, 11u16);
+    let derived = get_font_metrics(font as i16, size as i16);
+    assert_ne!(
+        (derived.ascent + derived.descent + derived.leading, derived.ascent),
+        (height as i16, ascent as i16),
+        "the scrap metrics must differ from the font's for this test to bite"
+    );
+
+    loaded.cpu.gpr[3] = 2 + PPC_TE_SCRAP_ELEMENT_SIZE;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let scrap_handle = loaded.cpu.gpr[3];
+    let scrap_ptr = loaded.memory.read_u32_be(scrap_handle).unwrap();
+    let element = scrap_ptr + PPC_TE_SCRAP_STYLE_TAB_OFFSET;
+    loaded
+        .memory
+        .write_u16_be(scrap_ptr + PPC_TE_SCRAP_N_STYLES_OFFSET, 1)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_HEIGHT_OFFSET, height)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_ASCENT_OFFSET, ascent)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_FONT_OFFSET, font)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(element + PPC_TE_SCRAP_STYLE_SIZE_OFFSET, size)
+        .unwrap();
+
+    loaded.memory.write_bytes(scratch + 0x40, b"Asteroid\rMine").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x40;
+    loaded.cpu.gpr[4] = 13;
+    loaded.cpu.gpr[5] = scrap_handle;
+    loaded.cpu.gpr[6] = te_handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::TEInsert { styled: true },
+    );
+
+    let runs = ppc_te_style_runs(
+        &mut loaded.memory,
+        &test_handle_records!(loaded),
+        te_handle,
+        13,
+    );
+    let style = ppc_te_style_at_offset(&runs, 10);
+    assert_eq!((style.font, style.size), (font as i16, size as i16));
+    assert_eq!((style.line_height, style.ascent), (height as i16, ascent as i16));
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET), Some(2));
+    assert_eq!(ppc_te_line_height(&mut loaded.memory, te_ptr, 0), height as i16);
+    assert_eq!(ppc_te_line_height(&mut loaded.memory, te_ptr, 1), height as i16);
+}
+
+#[test]
 fn styled_textedit_runs_follow_their_text_across_a_replacement() {
     // Inside Macintosh: Text (1993), pp. 2-21--2-22: editing a styled record
     // moves later runs with their characters. Ambrosia's PPC registration
