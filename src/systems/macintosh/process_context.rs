@@ -448,6 +448,7 @@ fn process_vfs_directories_are_pristine(directories: &[ProcessVfsDirectory]) -> 
 pub(crate) struct ProcessVfsFileRecords {
     records: Vec<ProcessVfsFileRecord>,
     data_forks: SharedProcessValue<ProcessForkMap>,
+    version: u64,
 }
 
 impl Clone for ProcessVfsFileRecords {
@@ -476,12 +477,18 @@ impl std::ops::Deref for ProcessVfsFileRecords {
 
 impl std::ops::DerefMut for ProcessVfsFileRecords {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.version = self.version.wrapping_add(1);
         &mut self.records
     }
 }
 
 impl ProcessVfsFileRecords {
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
     pub(crate) fn push(&mut self, record: ProcessVfsFileRecord) {
+        self.version = self.version.wrapping_add(1);
         if !record.path.is_empty() {
             self.data_forks
                 .insert_shared(record.path.clone(), &record.data);
@@ -490,6 +497,7 @@ impl ProcessVfsFileRecords {
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsFileRecord) -> bool) {
+        self.version = self.version.wrapping_add(1);
         let mut removed_paths = Vec::new();
         self.records.retain(|record| {
             if keep(record) {
@@ -507,6 +515,7 @@ impl ProcessVfsFileRecords {
     }
 
     pub(crate) fn replace(&mut self, records: Vec<ProcessVfsFileRecord>) {
+        self.version = self.version.wrapping_add(1);
         self.records.clear();
         self.data_forks.clear();
         for record in records {
@@ -522,6 +531,7 @@ impl ProcessVfsFileRecords {
         else {
             return false;
         };
+        self.version = self.version.wrapping_add(1);
         let fork_key = self
             .data_forks
             .keys()
@@ -538,6 +548,7 @@ impl ProcessVfsFileRecords {
     }
 
     fn merge_from(&mut self, source: &mut Self) {
+        self.version = self.version.wrapping_add(1);
         for record in source.records.drain(..) {
             if self
                 .records
@@ -793,6 +804,7 @@ pub struct ProcessVfsResourceFileRecord {
 pub(crate) struct ProcessVfsResourceFileRecords {
     records: Vec<ProcessVfsResourceFileRecord>,
     resource_forks: SharedProcessValue<ProcessForkMap>,
+    version: u64,
 }
 
 impl Clone for ProcessVfsResourceFileRecords {
@@ -825,12 +837,18 @@ impl std::ops::Deref for ProcessVfsResourceFileRecords {
 
 impl std::ops::DerefMut for ProcessVfsResourceFileRecords {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        self.version = self.version.wrapping_add(1);
         &mut self.records
     }
 }
 
 impl ProcessVfsResourceFileRecords {
+    pub(crate) fn version(&self) -> u64 {
+        self.version
+    }
+
     pub(crate) fn push(&mut self, record: ProcessVfsResourceFileRecord) {
+        self.version = self.version.wrapping_add(1);
         if !record.path.is_empty() {
             if let Some(raw_data) = &record.raw_data {
                 self.resource_forks
@@ -843,6 +861,7 @@ impl ProcessVfsResourceFileRecords {
     }
 
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsResourceFileRecord) -> bool) {
+        self.version = self.version.wrapping_add(1);
         let mut removed_paths = Vec::new();
         self.records.retain(|record| {
             if keep(record) {
@@ -860,6 +879,7 @@ impl ProcessVfsResourceFileRecords {
     }
 
     pub(crate) fn replace(&mut self, records: Vec<ProcessVfsResourceFileRecord>) {
+        self.version = self.version.wrapping_add(1);
         self.records.clear();
         self.resource_forks.clear();
         for record in records {
@@ -875,6 +895,7 @@ impl ProcessVfsResourceFileRecords {
         else {
             return false;
         };
+        self.version = self.version.wrapping_add(1);
         let fork_key = self
             .resource_forks
             .keys()
@@ -891,6 +912,7 @@ impl ProcessVfsResourceFileRecords {
     }
 
     pub(crate) fn update_fork(&mut self, path: &str, bytes: &[u8]) {
+        self.version = self.version.wrapping_add(1);
         let key = self
             .resource_forks
             .keys()
@@ -921,6 +943,7 @@ impl ProcessVfsResourceFileRecords {
     }
 
     fn merge_from(&mut self, source: &mut Self) {
+        self.version = self.version.wrapping_add(1);
         for record in source.records.drain(..) {
             if self
                 .records
@@ -1297,6 +1320,17 @@ pub struct ProcessFileSystemState {
     pub(crate) launched_app_path: Option<String>,
     pub(crate) resource_manager: SharedProcessResourceManager,
     pub(crate) next_file_ref_num: i16,
+    pub(crate) published_catalogue: Option<PublishedVfsCatalogue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PublishedVfsCatalogue {
+    files_version: u64,
+    resource_files_version: u64,
+    directories_fingerprint: u64,
+    classic_metadata_ptr: usize,
+    classic_metadata_len: usize,
+    dirty_paths: Vec<String>,
 }
 
 impl Default for ProcessFileSystemState {
@@ -1323,6 +1357,7 @@ impl Default for ProcessFileSystemState {
             launched_app_path: None,
             resource_manager: SharedProcessResourceManager::default(),
             next_file_ref_num: 128,
+            published_catalogue: None,
         }
     }
 }
@@ -1490,6 +1525,7 @@ impl ProcessFileSystemState {
         source
             .resource_manager
             .attach_to(&self.resource_manager);
+        self.published_catalogue = None;
     }
 
     fn detached_vfs_snapshot(&self) -> Self {
@@ -1535,14 +1571,46 @@ impl ProcessFileSystemState {
     /// therefore do not participate in this compatibility pass. Files (1992),
     /// pp. 2-27--2-29 and 2-85.
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
-        // This runs after every execution slice, so it must stay linear in the
-        // number of files: look parents up in one case-folded index rather than
-        // scanning every directory per file.
+        // This runs after every execution slice, so skip the full directory
+        // index and file scan when neither the file tables nor the directory
+        // list changed since the previous publish and no deletions are queued.
+        let files_version = self.vfs_files.version();
+        let resource_files_version = self.vfs_resource_files.version();
+        let directories_fingerprint = process_vfs_directories_fingerprint(&self.vfs_directories);
+        let classic_metadata_ptr = Rc::as_ptr(&self.classic_vfs_metadata.0) as usize;
+        let classic_metadata_len = self.classic_vfs_metadata.len();
+        if self.deleted_vfs_file_paths.is_empty() {
+            if let Some(published) = self.published_catalogue.as_ref() {
+                if published.files_version == files_version
+                    && published.resource_files_version == resource_files_version
+                    && published.directories_fingerprint == directories_fingerprint
+                    && published.classic_metadata_ptr == classic_metadata_ptr
+                    && published.classic_metadata_len == classic_metadata_len
+                {
+                    if !published.dirty_paths.is_empty() {
+                        self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
+                            self.classic_vfs_metadata.with_mut(|metadata| {
+                                for path in &published.dirty_paths {
+                                    if let Some(entry) = metadata.get_mut(path) {
+                                        entry.modified_date = *next_timestamp;
+                                        *next_timestamp = next_timestamp.saturating_add(1);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+        // Look parents up in one case-folded index rather than scanning every
+        // directory per file.
         let parent_dir_ids = process_vfs_parent_dir_index(&self.vfs_directories);
         let mut parent_key = String::new();
         // Records from one folder are usually adjacent, so remember the last
         // parent looked up and skip the index for a repeat of it.
         let mut last_parent: Option<(&str, u32)> = None;
+        let mut dirty_paths = Vec::new();
         // Publication needs metadata only; cloning records copies their fork bytes.
         let files = self.vfs_files.iter().map(|file| {
             (
@@ -1570,6 +1638,9 @@ impl ProcessFileSystemState {
                     {
                         if path.is_empty() {
                             continue;
+                        }
+                        if dirty {
+                            dirty_paths.push(path.to_string());
                         }
                         let parent_path = process_vfs_parent_path(path);
                         let parent_dir_id = match last_parent {
@@ -1633,6 +1704,16 @@ impl ProcessFileSystemState {
             self.classic_vfs_metadata.remove(&path);
             self.classic_locked_files.remove(&path);
         }
+        self.published_catalogue = self.deleted_vfs_file_paths.is_empty().then(|| {
+            PublishedVfsCatalogue {
+                files_version: self.vfs_files.version(),
+                resource_files_version: self.vfs_resource_files.version(),
+                directories_fingerprint,
+                classic_metadata_ptr: Rc::as_ptr(&self.classic_vfs_metadata.0) as usize,
+                classic_metadata_len: self.classic_vfs_metadata.len(),
+                dirty_paths,
+            }
+        });
     }
 
     pub(crate) fn publish_classic_vfs_metadata(&mut self, path: &str) {
@@ -1726,6 +1807,21 @@ impl ProcessFileSystemState {
                     .starts_with(&prefix.to_ascii_lowercase())
         });
     }
+}
+
+fn process_vfs_directories_fingerprint(directories: &[ProcessVfsDirectory]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ (directories.len() as u64);
+    for directory in directories {
+        hash ^= u64::from(directory.dir_id);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        hash ^= directory.path.len() as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        for &byte in directory.path.as_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    hash
 }
 
 /// Directory IDs keyed by ASCII-lowercased path. Where several directories
@@ -14364,6 +14460,85 @@ mod tests {
                 assert_eq!(metadata.modified_date, previous.modified_date, "{path}");
             }
         }
+    }
+
+    #[test]
+    fn publish_native_vfs_catalogue_cache_invalidates_on_file_and_directory_changes() {
+        let mut state = ProcessFileSystemState::default();
+        state.vfs_directories.with_mut(|dirs| {
+            dirs.push(ProcessVfsDirectory {
+                path: "Disc".to_string(),
+                dir_id: 100,
+                parent_dir_id: 2,
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
+        });
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "Disc/ReadOnly".to_string(),
+            data: ProcessForkBytes::from(vec![1, 2, 3]),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "Disc/SaveFile".to_string(),
+            data: ProcessForkBytes::from(vec![4, 5]),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"SAVE"),
+            finder_flags: 0,
+            dirty: true,
+        });
+
+        state.publish_native_vfs_catalogue();
+        assert_eq!(
+            state.classic_vfs_metadata["Disc/ReadOnly"].parent_dir_id,
+            100
+        );
+        let save_mod_1 = state.classic_vfs_metadata["Disc/SaveFile"].modified_date;
+
+        // Unchanged second publish hits the fast path while still advancing
+        // the dirty file's modification timestamp.
+        state.publish_native_vfs_catalogue();
+        let save_mod_2 = state.classic_vfs_metadata["Disc/SaveFile"].modified_date;
+        assert!(save_mod_2 > save_mod_1);
+
+        // Mutating an existing record through DerefMut invalidates the cache.
+        state.vfs_files[0].file_type = u32::from_be_bytes(*b"DATA");
+        state.publish_native_vfs_catalogue();
+        assert_eq!(
+            state.classic_vfs_metadata["Disc/ReadOnly"].file_type,
+            u32::from_be_bytes(*b"DATA")
+        );
+
+        // Adding a new directory and file under it invalidates the cache.
+        state.vfs_directories.with_mut(|dirs| {
+            dirs.push(ProcessVfsDirectory {
+                path: "Disc/Sub".to_string(),
+                dir_id: 200,
+                parent_dir_id: 100,
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            });
+        });
+        state.vfs_files.push(ProcessVfsFileRecord {
+            path: "Disc/Sub/NewFile".to_string(),
+            data: ProcessForkBytes::from(vec![9]),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        state.publish_native_vfs_catalogue();
+        assert_eq!(
+            state.classic_vfs_metadata["Disc/Sub/NewFile"].parent_dir_id,
+            200
+        );
     }
 
     #[test]
