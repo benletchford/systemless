@@ -3181,6 +3181,28 @@ pub(crate) fn ppc_port_rgb_colors(
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-9--2-10:
     // rgbFgColor and rgbBkColor belong to each CGrafPort. Port switches must
     // therefore restore them instead of leaking the previous port's colors.
+    const HEADER_LEN: usize = (PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET as usize) + 6;
+    let mut header = [0u8; HEADER_LEN];
+    if memory.read_bytes_into(port, &mut header).is_some() {
+        let port_version = u16::from_be_bytes([header[6], header[7]]);
+        if port_version & 0xc000 != 0xc000 {
+            return None;
+        }
+        let fg = PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET as usize;
+        let bk = PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET as usize;
+        return Some((
+            PpcRgbColor {
+                red: u16::from_be_bytes([header[fg], header[fg + 1]]),
+                green: u16::from_be_bytes([header[fg + 2], header[fg + 3]]),
+                blue: u16::from_be_bytes([header[fg + 4], header[fg + 5]]),
+            },
+            PpcRgbColor {
+                red: u16::from_be_bytes([header[bk], header[bk + 1]]),
+                green: u16::from_be_bytes([header[bk + 2], header[bk + 3]]),
+                blue: u16::from_be_bytes([header[bk + 4], header[bk + 5]]),
+            },
+        ));
+    }
     if memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
         return None;
     }
@@ -3373,16 +3395,44 @@ pub(crate) fn ppc_restore_process_port_draw_state(
     text_mode: &mut i16,
     text_size: &mut i16,
 ) {
-    let Some((port_fore_color, port_back_color)) = ppc_port_rgb_colors(memory, port) else {
-        return;
-    };
-
     // A graphics port is the complete drawing environment, and each port
     // owns its pen, colors, and text settings. Reload the documented
     // CGrafPort fields whenever attached execution crosses an HLE boundary so
     // a preceding 68K callback is visible without an adapter-to-adapter copy.
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-30--2-33,
     // 4-8--4-10, and 4-48.
+    const DRAW_STATE_LEN: usize = (PPC_CGRAF_PORT_TX_SIZE_OFFSET as usize) + 2;
+    let mut port_bytes = [0u8; DRAW_STATE_LEN];
+    if memory.read_bytes_into(port, &mut port_bytes).is_some() {
+        let port_version = u16::from_be_bytes([port_bytes[6], port_bytes[7]]);
+        if port_version & 0xc000 != 0xc000 {
+            return;
+        }
+        let fg = PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET as usize;
+        let bk = PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET as usize;
+        let pn = PPC_CGRAF_PORT_PN_LOC_OFFSET as usize;
+        let tx_mode = PPC_CGRAF_PORT_TX_MODE_OFFSET as usize;
+        let tx_size = PPC_CGRAF_PORT_TX_SIZE_OFFSET as usize;
+        *fore_color = PpcRgbColor {
+            red: u16::from_be_bytes([port_bytes[fg], port_bytes[fg + 1]]),
+            green: u16::from_be_bytes([port_bytes[fg + 2], port_bytes[fg + 3]]),
+            blue: u16::from_be_bytes([port_bytes[fg + 4], port_bytes[fg + 5]]),
+        };
+        *back_color = PpcRgbColor {
+            red: u16::from_be_bytes([port_bytes[bk], port_bytes[bk + 1]]),
+            green: u16::from_be_bytes([port_bytes[bk + 2], port_bytes[bk + 3]]),
+            blue: u16::from_be_bytes([port_bytes[bk + 4], port_bytes[bk + 5]]),
+        };
+        *pen_v = u16::from_be_bytes([port_bytes[pn], port_bytes[pn + 1]]) as i16;
+        *pen_h = u16::from_be_bytes([port_bytes[pn + 2], port_bytes[pn + 3]]) as i16;
+        *text_mode = u16::from_be_bytes([port_bytes[tx_mode], port_bytes[tx_mode + 1]]) as i16;
+        *text_size = u16::from_be_bytes([port_bytes[tx_size], port_bytes[tx_size + 1]]) as i16;
+        return;
+    }
+
+    let Some((port_fore_color, port_back_color)) = ppc_port_rgb_colors(memory, port) else {
+        return;
+    };
     *fore_color = port_fore_color;
     *back_color = port_back_color;
     if let Some((h, v)) = ppc_gworld_pen(memory, port) {
