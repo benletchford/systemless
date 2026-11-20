@@ -69,6 +69,36 @@ fn dialog_filter_accepts_a_stack_result_reservation_prologue() {
 }
 
 #[test]
+fn dialog_filter_accepts_a_single_register_save_prologue() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let callback = runner.bus.alloc(4);
+    runner.bus.write_word(callback, 0x2F0A); // MOVE.L A2,-(SP)
+    runner.bus.write_word(callback + 2, 0x594F); // SUBQ.W #4,SP
+    assert!(runner.looks_like_dialog_proc_entry(callback));
+
+    runner.bus.write_word(callback, 0x2F03); // MOVE.L D3,-(SP)
+    assert!(runner.looks_like_dialog_proc_entry(callback));
+
+    runner.bus.write_word(callback, 0x2F10); // MOVE.L (A0),-(SP): not a prologue
+    assert!(!runner.looks_like_dialog_proc_entry(callback));
+}
+
+#[test]
+fn modal_dialog_fires_filter_that_saves_one_register_first() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let filter_proc = 0x0004_2000u32;
+    runner.bus.write_word(filter_proc, 0x2F0A); // MOVE.L A2,-(SP)
+    runner.bus.write_word(filter_proc + 2, 0x594F); // SUBQ.W #4,SP
+    runner.m68k.cpu.write_reg(Register::PC, 0x0001_0000);
+    runner.m68k.cpu.write_reg(Register::A7, 0x007F_FFC0);
+    let mut tracking = dialog_tracking_for_test(filter_proc, 0x0030_0000);
+    tracking.stack_ptr = 0x007F_FFC0;
+    runner.dispatcher.dialog_tracking = Some(tracking);
+
+    assert!(runner.fire_dialog_filter_proc());
+}
+
+#[test]
 fn dialog_callback_scratch_preserves_materialized_toolbox_trap_table() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let table_start = crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE;
