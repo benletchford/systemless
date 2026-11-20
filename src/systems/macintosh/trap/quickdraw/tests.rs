@@ -16571,6 +16571,82 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn test_copy_bits_screen_blit_keeps_indices_of_a_source_seeded_before_palette_animation() {
+        // Warcraft copies the screen device's ctSeed into the CTable of its
+        // briefing art, fades every animated cell to black with
+        // AnimatePalette and then CopyBits the art to the screen. The ROM
+        // restores the device seed after animating, so the pixels keep their
+        // indices and fade back in. A fresh seed made CopyBits match the art
+        // against the black device table, leaving only the white endpoint.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let screen_pm_handle = bus.read_long(gd + 22);
+        let screen_pm = bus.read_long(screen_pm_handle);
+        let screen_base = bus.read_long(screen_pm);
+        let screen_row_bytes = (bus.read_word(screen_pm + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        let window = 0x0020_5100u32;
+        let usage = super::PM_ANIMATED | super::PM_EXPLICIT;
+        let palette = d.create_palette_from_ctab(&mut bus, 3, 0, usage, 0);
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.activate_associated_palette_for_window(&mut bus, window);
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let screen_seed = TrapDispatcher::ctab_seed(&bus, screen_ctab_handle).unwrap();
+        let logical = d.read_ctab_handle_clut(&bus, screen_ctab_handle)[1];
+        let animated_rgb = [0x1234, 0x5678, 0x9ABC];
+        assert_ne!(logical, animated_rgb);
+
+        let src_pixmap = 0x31A280u32;
+        let src_base = 0x31B280u32;
+        let src_ctab_handle = 0x31C280u32;
+        let src_rect = 0x31D280u32;
+        let dst_rect = 0x31D290u32;
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            screen_seed,
+            &[(1, logical[0], logical[1], logical[2])],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        bus.write_byte(src_base, 1);
+        bus.write_byte(screen_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        // AnimateEntry(window, 1, animated_rgb)
+        d.current_port
+            .with_mut(|current_port| *current_port = window);
+        let src_rgb = bus.alloc(6);
+        bus.write_word(src_rgb, animated_rgb[0]);
+        bus.write_word(src_rgb + 2, animated_rgb[1]);
+        bus.write_word(src_rgb + 4, animated_rgb[2]);
+        bus.write_long(TEST_SP, src_rgb);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_long(TEST_SP + 6, window);
+        let result = d.dispatch_quickdraw(true, 0x299, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut[1], animated_rgb);
+        assert_eq!(
+            TrapDispatcher::ctab_seed(&bus, screen_ctab_handle),
+            Some(screen_seed)
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, screen_pm);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base), 1);
+    }
+
+    #[test]
     fn test_copy_bits_screen_blit_preserves_same_device_indices_after_set_entries() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let gdh = d.ensure_main_gdevice(&mut bus);
@@ -20185,7 +20261,8 @@ fn copy_bits_converts_between_direct_color_depths() {
              bus.read_word(ctab_ptr + 22)],
             animated_rgb
         );
-        assert_ne!(bus.read_long(ctab_ptr), seed_before);
+        // The ROM restores the device ctSeed after animating (PaletteMgr.a).
+        assert_eq!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
@@ -22493,7 +22570,8 @@ fn copy_bits_converts_between_direct_color_depths() {
              bus.read_word(ctab_ptr + 22)],
             animated_rgb
         );
-        assert_ne!(bus.read_long(ctab_ptr), seed_before);
+        // The ROM restores the device ctSeed after animating (PaletteMgr.a).
+        assert_eq!(bus.read_long(ctab_ptr), seed_before);
         // Un-animated explicit-animated entries reactivate to their OWN
         // palette colors (explicit+animated installs at the exact index,
         // IM:ACI 1995 pp. 1-12..1-14), not the animated value.

@@ -2199,6 +2199,12 @@ pub struct TrapDispatcher {
     /// transient full-table fade frame while retaining the prior logical
     /// GDevice table for inverse-table lookups.
     pub(crate) screen_palette_fade_active: bool,
+    /// Seed of the device ColorTable whose animated cells AnimateEntry or
+    /// AnimatePalette last rewrote. The ROM restores the old ctSeed after
+    /// those SetEntries calls, so a source PixMap carrying this seed still
+    /// copies its indices directly (PaletteMgr.a, AnimateEntry and
+    /// AnimatePalette).
+    pub(crate) palette_animation_device_seed: Option<u32>,
     /// True after the application rewrote the main screen device's
     /// ColorTable in memory and rebuilt its inverse table with
     /// MakeITable while the hardware CLUT still shows a SetEntries fade.
@@ -4180,6 +4186,7 @@ impl TrapDispatcher {
             seeded_picture_palette_until_tick: 0,
             seeded_picture_palette: Self::standard_mac_8bpp_clut(),
             screen_palette_fade_active: false,
+            palette_animation_device_seed: None,
             screen_logical_ctab_restored: false,
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::default(),

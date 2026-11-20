@@ -3907,7 +3907,17 @@ impl super::TrapDispatcher {
                 // live device CLUT may intentionally differ from the Color
                 // Manager's logical table during a fade. Compare the
                 // effective tables before preserving indexed pixels.
+                // Palette animation rewrites device cells but keeps the
+                // device ctSeed. A source table that carries that seed was
+                // built for the device's indices, so CopyBits copies them
+                // unchanged while the animated cells differ
+                // (PaletteMgr.a, AnimatePalette).
+                let source_seed_matches_animated_device = dst_ctab_handle == 0
+                    && src_ctab_seed.is_some()
+                    && src_ctab_seed == dst_ctab_seed
+                    && dst_ctab_seed == self.palette_animation_device_seed;
                 let indexed_tables_differ = match (src_clut.as_ref(), dst_clut.as_ref()) {
+                    _ if source_seed_matches_animated_device => false,
                     (Some(src_clut), Some(dst_clut)) => src_clut != dst_clut,
                     _ => src_ctab_seed != dst_ctab_seed,
                 };
@@ -17856,9 +17866,12 @@ impl super::TrapDispatcher {
             bus.write_word(entry + 2, rgb[0]);
             bus.write_word(entry + 4, rgb[1]);
             bus.write_word(entry + 6, rgb[2]);
-            let seed = self.next_color_table_seed();
-            bus.write_long(ctab_ptr, seed);
-            self.trace_ctab_seed_write(ctab_ptr, seed, "animate_palette_entry");
+            // The ROM saves the device ctSeed before its SetEntries call and
+            // restores it afterwards ("we didn't really want it to change"),
+            // so the inverse table and any source PixMap that copied this
+            // seed keep treating the table as unchanged.
+            // PaletteMgr.a, AnimateEntry and AnimatePalette.
+            self.palette_animation_device_seed = Some(bus.read_long(ctab_ptr));
         }
     }
 
