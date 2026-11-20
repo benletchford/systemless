@@ -244,6 +244,18 @@ impl PpcLoadedApp {
             self.import_count,
             ppc_import_layout(),
         );
+        let mut scratch_binding = PpcImportBinding {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: String::new(),
+            symbol_name: String::new(),
+            class: 0,
+            weak: false,
+            address: 0,
+            tvector_address: None,
+            trap_pc: 0,
+            dispatcher_target: PpcImportDispatcherTarget::Unsupported,
+        };
         let q3_start_rendering_import_index = import_run_state
             .bindings()
             .iter()
@@ -715,21 +727,18 @@ impl PpcLoadedApp {
                 if let Some(target) = dispatcher_target.as_ref() {
                     process_input.note_presentation_settled(target.settles_presentation());
                 }
-                let is_tick_count_import = dispatcher_target
-                    .as_ref()
-                    .is_some_and(|target| *target == PpcImportDispatcherTarget::TickCount);
+                let is_tick_count_import = matches!(
+                    dispatcher_target,
+                    Some(PpcImportDispatcherTarget::TickCount)
+                );
                 // Most per-frame imports are handled by the small fast path
-                // below. Defer cloning their library and symbol strings until
-                // tracing or the general dispatcher actually needs them.
-                let mut binding = trace_recent_on_halt
-                    .then(|| import_run_state.binding_cloned(index))
-                    .flatten();
-                // MPYield has no effect without other preemptive tasks, so a
-                // `while (TickCount() < deadline) MPYield();` loop is still the
-                // same idle TickCount poll.
-                let is_mp_yield_import = dispatcher_target
-                    .as_ref()
-                    .is_some_and(|target| *target == PpcImportDispatcherTarget::MpYield);
+                // below. Defer copying their library and symbol strings into
+                // the reusable scratch binding until tracing or the general
+                // dispatcher actually needs them.
+                let mut binding_loaded = trace_recent_on_halt
+                    && import_run_state.copy_binding_into(index, &mut scratch_binding);
+                // MPYield without other preemptive tasks preserves the idle poll.
+                let is_mp_yield_import = matches!(dispatcher_target, Some(PpcImportDispatcherTarget::MpYield));
                 if !is_tick_count_import && !is_mp_yield_import {
                     tick_count_idle_poll.reset();
                 }
@@ -817,12 +826,15 @@ impl PpcLoadedApp {
                 ) {
                     Ok(Some(action)) => {
                         if trace_imports {
-                            if binding.is_none() {
-                                binding = import_run_state.binding_cloned(index);
+                            if !binding_loaded {
+                                binding_loaded =
+                                    import_run_state.copy_binding_into(index, &mut scratch_binding);
                             }
-                            let binding = binding
-                                .as_ref()
-                                .expect("live trap import tracing resolves a known binding");
+                            debug_assert!(
+                                binding_loaded,
+                                "live trap import tracing resolves a known binding"
+                            );
+                            let binding = &scratch_binding;
                             push_ppc_hle_import_trace_entry(
                                 &mut import_trace,
                                 PpcHleImportTraceEntry {
@@ -845,9 +857,11 @@ impl PpcLoadedApp {
                     Err(()) => return PpcImportAction::Halt,
                 }
                 if trace_recent_on_halt {
-                    let binding = binding
-                        .as_ref()
-                        .expect("recent import tracing resolves a known binding");
+                    debug_assert!(
+                        binding_loaded,
+                        "recent import tracing resolves a known binding"
+                    );
+                    let binding = &scratch_binding;
                     let entry = PpcHleImportTraceEntry {
                         import_index: index,
                         library_name: binding.library_name.clone(),
@@ -888,7 +902,7 @@ impl PpcLoadedApp {
                     && memory.read_u16_be(cpu.gpr[3]) == Some(0);
                 if !trace_ppc
                     && !resuming_control_definition
-                    && (*dispatcher_target != PpcImportDispatcherTarget::TickCount
+                    && (!matches!(dispatcher_target, PpcImportDispatcherTarget::TickCount)
                         || !trace_imports)
                     && (matches!(
                         dispatcher_target,
@@ -907,12 +921,15 @@ impl PpcLoadedApp {
                     ) || null_dialog_poll)
                 {
                     if trace_imports {
-                        if binding.is_none() {
-                            binding = import_run_state.binding_cloned(index);
+                        if !binding_loaded {
+                            binding_loaded =
+                                import_run_state.copy_binding_into(index, &mut scratch_binding);
                         }
-                        let binding = binding
-                            .as_ref()
-                            .expect("import tracing resolves a known binding");
+                        debug_assert!(
+                            binding_loaded,
+                            "import tracing resolves a known binding"
+                        );
+                        let binding = &scratch_binding;
                         push_ppc_hle_import_trace_entry(
                             &mut import_trace,
                             PpcHleImportTraceEntry {
@@ -1027,7 +1044,10 @@ impl PpcLoadedApp {
                                 process_memory_manager.native_handle_records(),
                                 cpu.gpr[3],
                                 cpu.gpr[4] as u16 as i16,
-                                *dispatcher_target == PpcImportDispatcherTarget::EnableMenuItem,
+                                matches!(
+                                    dispatcher_target,
+                                    PpcImportDispatcherTarget::EnableMenuItem
+                                ),
                             );
                             PpcImportAction::ReturnPreserve
                         }
@@ -1036,8 +1056,11 @@ impl PpcLoadedApp {
                     handled_import_count = handled_import_count.saturating_add(1);
                     return action;
                 }
-                let Some(binding) = binding.or_else(|| import_run_state.binding_cloned(index))
-                else {
+                if !binding_loaded {
+                    binding_loaded =
+                        import_run_state.copy_binding_into(index, &mut scratch_binding);
+                }
+                if !binding_loaded {
                     unsupported_import_index = Some(index);
                     if trace_ppc {
                         eprintln!(
@@ -1048,8 +1071,8 @@ impl PpcLoadedApp {
                         );
                     }
                     return PpcImportAction::Halt;
-                };
-                let binding = &binding;
+                }
+                let binding = &scratch_binding;
                 if !trace_ppc && !trace_qd3d {
                     if q3_start_rendering_import_index == Some(index) {
                         if trace_imports {
@@ -2156,11 +2179,18 @@ impl PpcLoadedApp {
                     action
                 };
 
-                let cursor_device_move = binding.dispatcher_target == PpcImportDispatcherTarget::CrsrDevMoveTo
-                    || binding.dispatcher_target == PpcImportDispatcherTarget::SystemCompatibility(
-                        PpcSystemCompatibilityOperation::CursorDeviceMove,
-                    );
-                if (cursor_device_move || binding.dispatcher_target == PpcImportDispatcherTarget::GetMouse)
+                let cursor_device_move = matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::CrsrDevMoveTo
+                        | PpcImportDispatcherTarget::SystemCompatibility(
+                            PpcSystemCompatibilityOperation::CursorDeviceMove,
+                        )
+                );
+                if (cursor_device_move
+                    || matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::GetMouse
+                    ))
                     && action.is_some()
                 {
                     if let Some(point) = memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2) {
