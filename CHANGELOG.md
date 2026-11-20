@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.127.0](https://github.com/benletchford/systemless/compare/v0.126.2...v0.127.0) (2026-11-20)
+
+
+### Features
+
+* **runner:** support settled-frame presentation ([fe70912](https://github.com/benletchford/systemless/commit/fe70912cd6ff84d3302098bdf057ada318d00038))
+
+
+### Bug Fixes
+
+* **control:** call application CDEF stubs that start with JSR ([#6552](https://github.com/benletchford/systemless/issues/6552)) ([1b51d88](https://github.com/benletchford/systemless/commit/1b51d8807b6a3b266bfb2c25d3b3d4bc1514bb37))
+* **control:** read the NewControl visible flag from its BOOLEAN byte only ([#6558](https://github.com/benletchford/systemless/issues/6558)) ([e88535d](https://github.com/benletchford/systemless/commit/e88535df24a5ba6e3a3452cd0343cb00cd201c7f))
+* **dialog:** erase radio and check box marks with the dialog content colour ([#6544](https://github.com/benletchford/systemless/issues/6544)) ([88209fe](https://github.com/benletchford/systemless/commit/88209feb74865f1390a8dda0b2bb48975dc62405))
+* **dialog:** plot the standard icon in 68k stop, note and caution alerts ([#6599](https://github.com/benletchford/systemless/issues/6599)) ([b43a32e](https://github.com/benletchford/systemless/commit/b43a32e922e7d53144bf7507f8b33713af3ca06c))
+* **dialog:** stop replaying snapshots over game-managed dialogs outside ModalDialog ([#6532](https://github.com/benletchford/systemless/issues/6532)) ([5cb796b](https://github.com/benletchford/systemless/commit/5cb796b792b3bce91d23b8799425c48282ef027b))
+* **dialog:** wrap and clip editText item text to its display rectangle ([#6578](https://github.com/benletchford/systemless/issues/6578)) ([43aa75a](https://github.com/benletchford/systemless/commit/43aa75ab636ae2fea2c3527f4740e9e83ede9421))
+* **file:** implement 68k FSpRename and FSpCatMove ([#6534](https://github.com/benletchford/systemless/issues/6534)) ([5317b67](https://github.com/benletchford/systemless/commit/5317b67097ca9c050e6d57c3c0cb829be0163987))
+* **ppc:** accept section exports beyond the section end like CFM ([#6564](https://github.com/benletchford/systemless/issues/6564)) ([1371a80](https://github.com/benletchford/systemless/commit/1371a805013cb90ee25321a874727e904f56da98))
+* **ppc:** convert CallUniversalProc arguments with the 68K routine record procInfo ([#6566](https://github.com/benletchford/systemless/issues/6566)) ([2977064](https://github.com/benletchford/systemless/commit/2977064e40b2defb3941325a31aad3ad7cb30c58))
+* **ppc:** deliver 68K sound callbacks inside Mixed Mode calls ([#6576](https://github.com/benletchford/systemless/issues/6576)) ([af312da](https://github.com/benletchford/systemless/commit/af312da96ac6f0f77c69ff05d390e57e16af3d26))
+* **ppc:** draw dialog text in the dialog port font without item styles ([#6568](https://github.com/benletchford/systemless/issues/6568)) ([45c5484](https://github.com/benletchford/systemless/commit/45c548429f74ae002fdad5cfea2cc7c40a421276))
+* **ppc:** draw folder and document glyphs in the Standard File list ([#6540](https://github.com/benletchford/systemless/issues/6540)) ([4807f19](https://github.com/benletchford/systemless/commit/4807f192ea8c6916cdad48f4ced0b4b98e6c8e05))
+* **ppc:** draw into new GWorlds through their own device-flagged color table ([#6597](https://github.com/benletchford/systemless/issues/6597)) ([5df2367](https://github.com/benletchford/systemless/commit/5df2367060591b3d2e346efb8a5e104e5e87b597))
+* **ppc:** erase content that a removed window exposes in the windows behind it ([#6601](https://github.com/benletchford/systemless/issues/6601)) ([5661048](https://github.com/benletchford/systemless/commit/566104889b7ee3f23386091ace2dc1ee4b5941e9))
+* **ppc:** fire sub-tick Time Manager tasks several times per tick ([#6546](https://github.com/benletchford/systemless/issues/6546)) ([2064469](https://github.com/benletchford/systemless/commit/20644691a0b5b2b571b4e45dd1829e642512d64c))
+* **ppc:** implement DrawSprocket 1.7 DSpContext_Queue and DSpContext_Switch ([#6581](https://github.com/benletchford/systemless/issues/6581)) ([3408d10](https://github.com/benletchford/systemless/commit/3408d10a8975c1d66683d487b32a2ce2aeff854a))
+* **ppc:** keep window and OpenCPort ports on the main screen bounds ([#6527](https://github.com/benletchford/systemless/issues/6527)) ([11b62aa](https://github.com/benletchford/systemless/commit/11b62aad9d306ebc14a2b73020134e8881d13f30))
+* **ppc:** keep window content and frames out of the menu bar ([#6538](https://github.com/benletchford/systemless/issues/6538)) ([858d47d](https://github.com/benletchford/systemless/commit/858d47d93d58ed460e4da27be07249e0569826e5))
+* **ppc:** measure StyledLineBreak runs with the current port font ([#6593](https://github.com/benletchford/systemless/issues/6593)) ([f833e58](https://github.com/benletchford/systemless/commit/f833e58f9d8373bc0dd97254b71c5f8bff0b2fe3))
+* **ppc:** redraw the menu bar, desktop and window frames after SetDepth ([#6536](https://github.com/benletchford/systemless/issues/6536)) ([9677b4c](https://github.com/benletchford/systemless/commit/9677b4cb6ddd3bd5e51ff5b98ead464cc7c37d5f))
+* **ppc:** report archived file dates from the catalog ([#6554](https://github.com/benletchford/systemless/issues/6554)) ([b78925b](https://github.com/benletchford/systemless/commit/b78925b6a5364718c094570bd437a08ce7c8fb33))
+* **ppc:** resolve GetFInfo full pathnames against their named volume ([#6563](https://github.com/benletchford/systemless/issues/6563)) ([a7a59c7](https://github.com/benletchford/systemless/commit/a7a59c706ff8319ef1fd3897ae97fafa9026234e))
+* **ppc:** root depth-zero GWorld ports at (0,0) like QuickDraw ([#6589](https://github.com/benletchford/systemless/issues/6589)) ([e705c09](https://github.com/benletchford/systemless/commit/e705c097466cbf073485654a464a01837c7335aa))
+* **ppc:** run interrupt callbacks on an application-allocated stack ([#6572](https://github.com/benletchford/systemless/issues/6572)) ([d6aef21](https://github.com/benletchford/systemless/commit/d6aef21e9754d6c5e6731569af23a243979d6eff))
+* **ppc:** supply the system KCHR keyboard layout from GetResource ([#6548](https://github.com/benletchford/systemless/issues/6548)) ([1f37b75](https://github.com/benletchford/systemless/commit/1f37b75e5b2cb73f76794f128b4402414d0778a4))
+* **quickdraw:** publish the main screen depth in the ChunkyDepth low-memory global ([#6587](https://github.com/benletchford/systemless/issues/6587)) ([524e674](https://github.com/benletchford/systemless/commit/524e6745cdf2869439927fe06c277226d3e841db))
+* **quickdraw:** resolve port pixels when restoring saved fore and back colors ([#6585](https://github.com/benletchford/systemless/issues/6585)) ([8994d87](https://github.com/benletchford/systemless/commit/8994d87255fbf45938a24564e0f4438d784eb7ac))
+* **quickdraw:** retarget the Window Manager ports after a display mode change ([#6570](https://github.com/benletchford/systemless/issues/6570)) ([5bf8155](https://github.com/benletchford/systemless/commit/5bf8155f7f8a6c52bdcdcd5a755111f8db1d73eb))
+* **standard-file:** centre 68k SFGetFile and SFPutFile dialogs for the (-1,-1) origin ([#6603](https://github.com/benletchford/systemless/issues/6603)) ([547d3df](https://github.com/benletchford/systemless/commit/547d3df66e46da72b1bd843d4648317901638bc6))
+* **text:** never draw a glyph for the space character ([#6583](https://github.com/benletchford/systemless/issues/6583)) ([7260804](https://github.com/benletchford/systemless/commit/7260804f24538fc203cba9cf44e9e9c6b8a5aef8))
+* **window:** frame dialog boxes from their structure region ([#6595](https://github.com/benletchford/systemless/issues/6595)) ([2caa20e](https://github.com/benletchford/systemless/commit/2caa20ebd17c79f4d843b98ca11c4efa6b05549d))
+* **window:** keep a hidden window's visRgn empty when SizeWindow resizes it ([#6560](https://github.com/benletchford/systemless/issues/6560)) ([3f24aed](https://github.com/benletchford/systemless/commit/3f24aed1bd914a04c3b7edc5644344131ffb0566))
+* **window:** only grow the front window's visRgn when the menu bar is hidden ([#6574](https://github.com/benletchford/systemless/issues/6574)) ([d48e0bc](https://github.com/benletchford/systemless/commit/d48e0bc73f2c063960cf77ba27d8e5e4bc18f049))
+
+
+### Performance Improvements
+
+* **ppc:** sync GWorld pixel-state mirrors with one lookup per record ([92016a8](https://github.com/benletchford/systemless/commit/92016a8efd309e6602d4b113f8cc3159f1b7b643))
+
 ## [0.126.2](https://github.com/benletchford/systemless/compare/v0.126.1...v0.126.2) (2026-11-18)
 
 
