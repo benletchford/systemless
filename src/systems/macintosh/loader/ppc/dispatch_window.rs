@@ -899,6 +899,7 @@ pub(super) fn dispatch_window_import(
                     memory,
                     gworlds,
                     window_list,
+                    Some(handles),
                     exposed,
                     toolbox_startup.host_menu_bar_hidden,
                     event_queue,
@@ -967,6 +968,7 @@ pub(super) fn dispatch_window_import(
                     memory,
                     gworlds,
                     window_list,
+                    Some(handles),
                     exposed,
                     toolbox_startup.host_menu_bar_hidden,
                     event_queue,
@@ -1480,6 +1482,17 @@ pub(super) fn dispatch_window_import(
         ),
         _ => None,
     }
+}
+
+/// Whether `proc_id` names a system WDEF whose content region is the window's
+/// port rectangle: the standard document, dialog and rounded-corner WDEFs
+/// (IDs 0 and 1, procIDs 0-31; Inside Macintosh Volume I, p. I-273), the
+/// Appearance document, dialog and utility WDEFs (IDs
+/// 64-67, procIDs 1024-1087) and the floating-window WDEF (ID 124, procIDs
+/// 1985-1999, `kWindowFloatProc` through `kWindowFloatSideFullZoomGrowProc`
+/// in Universal Interfaces 3.x MacWindows.h).
+pub(super) fn ppc_window_proc_has_system_content_region(proc_id: i16) -> bool {
+    matches!(proc_id >> 4, 0 | 1 | 64..=67 | 124)
 }
 
 pub(super) fn ppc_window_proc_has_title_bar(proc_id: i16) -> bool {
@@ -2640,6 +2653,7 @@ pub(super) fn ppc_repaint_window_geometry_transition(
         memory,
         gworlds,
         window_list,
+        None,
         Some(exposed),
         host_menu_bar_hidden,
         event_queue,
@@ -2652,10 +2666,12 @@ pub(super) fn ppc_repaint_window_geometry_transition(
     ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_restore_window_removal_exposure(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     window_list: &SharedProcessWindowList,
+    handles: Option<&[PpcHandleRecord]>,
     exposed: Option<(i16, i16, i16, i16)>,
     host_menu_bar_hidden: bool,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
@@ -2735,6 +2751,9 @@ pub(super) fn ppc_restore_window_removal_exposure(
             continue;
         }
         ppc_redraw_visible_window_frame(memory, gworlds, window_list, window, host_menu_bar_hidden);
+        if let Some(handles) = handles {
+            ppc_erase_exposed_window_content(memory, gworlds, window_list, handles, window, exposed);
+        }
         ppc_invalidate_window_global_rect(memory, gworlds, window, exposed);
         ppc_enqueue_window_update_event(event_queue, window, when, input);
     }
@@ -2804,6 +2823,7 @@ pub(super) fn ppc_redraw_screen_after_mode_change(
         memory,
         gworlds,
         window_list,
+        None,
         Some(screen),
         host_menu_bar_hidden,
         event_queue,
@@ -3916,6 +3936,24 @@ fn ppc_paint_revealed_window_content(
         return;
     };
     ppc_invalidate_window_local_rect(memory, window, port_rect);
+    let Some(color) = ppc_window_paint_one_color(memory, gworlds, window_list, handles, window)
+    else {
+        return;
+    };
+    let _ = ppc_paint_window_background_bounds(memory, gworlds, window, port_rect, color);
+}
+
+/// The color PaintOne erases `window`'s content with: the content color of
+/// its WCTab (or a dialog's dctb), else white for system WDEFs whose content
+/// region Systemless knows. `None` leaves an application WDEF's content to
+/// the application.
+fn ppc_window_paint_one_color(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    window: u32,
+) -> Option<PpcRgbColor> {
     // A dialog's color table is the dctb GetNewDialog copied for it.
     let color_table = if ppc_window_is_dialog(memory, window) {
         memory
@@ -3927,20 +3965,58 @@ fn ppc_paint_revealed_window_content(
     } else {
         ppc_window_color_table_handle(memory, window)
     };
-    // Only the standard document and dialog WDEFs (IDs 0 and 1, procIDs
-    // 0-15) have content regions Systemless computes; a custom WDEF defines
-    // its own, so without a WCTab its content is left to the application.
-    let Some(color) = color_table
+    color_table
         .and_then(|handle| ppc_window_content_color(memory, handle))
         .or_else(|| {
-            (0..16).contains(&ppc_window_proc_id(memory, window)).then(|| {
-                ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background)
-            })
+            ppc_window_proc_has_system_content_region(ppc_window_proc_id(memory, window)).then(
+                || ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().window_background),
+            )
         })
+}
+
+/// Macintosh Toolbox Essentials (1992), p. 4-115: PaintBehind calls PaintOne
+/// for each window behind a removed one, which erases the newly exposed
+/// part of its content region with the window's content color before the
+/// update event. Without it a window kept the pixels of the dialog that had
+/// covered it (Bubbles' side panel showed its New Game dialog).
+fn ppc_erase_exposed_window_content(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    window: u32,
+    exposed: (i16, i16, i16, i16),
+) {
+    let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+        return;
+    };
+    let intersection = (
+        content.0.max(exposed.0),
+        content.1.max(exposed.1),
+        content.2.min(exposed.2),
+        content.3.min(exposed.3),
+    );
+    if intersection.0 >= intersection.2 || intersection.1 >= intersection.3 {
+        return;
+    }
+    let Some(port_rect) = ppc_read_rect(memory, window.wrapping_add(PPC_CWINDOW_PORT_RECT_OFFSET))
     else {
         return;
     };
-    let _ = ppc_paint_window_background_bounds(memory, gworlds, window, port_rect, color);
+    let Some(color) = ppc_window_paint_one_color(memory, gworlds, window_list, handles, window)
+    else {
+        return;
+    };
+    // The content's global top-left is the port rectangle's top-left.
+    let local = (
+        intersection.0.saturating_sub(content.0).saturating_add(port_rect.0),
+        intersection.1.saturating_sub(content.1).saturating_add(port_rect.1),
+        intersection.2.saturating_sub(content.0).saturating_add(port_rect.0),
+        intersection.3.saturating_sub(content.1).saturating_add(port_rect.1),
+    );
+    // The Window Manager port's clipping applies: the window's visRgn, not
+    // the application's clipRgn.
+    let _ = ppc_paint_window_background_bounds(memory, gworlds, window, local, color);
 }
 
 fn ppc_window_color_table_handle(memory: &mut PpcSectionMem, window: u32) -> Option<u32> {
@@ -4590,6 +4666,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 memory,
                 gworlds,
                 window_list,
+                Some(handles),
                 exposed,
                 toolbox_startup.host_menu_bar_hidden,
                 event_queue,
@@ -6714,6 +6791,7 @@ pub(super) fn ppc_close_window(
             memory,
             gworlds,
             window_list,
+            Some(handles),
             exposed,
             toolbox_startup.host_menu_bar_hidden,
             event_queue,
