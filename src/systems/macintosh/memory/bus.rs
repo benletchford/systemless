@@ -3440,9 +3440,30 @@ impl MacMemoryBus {
         self.addressing_32_bit
     }
 
+    /// Whether `[address, address + len)` lies wholly inside the top-of-RAM
+    /// display reservation (framebuffer and its sound buffer) when that
+    /// reservation sits above the 24-bit address space.
+    ///
+    /// Such video memory is 32-bit addressed: the screen PixMap's baseAddr
+    /// needs all 32 bits, and Color QuickDraw switches the MMU to 32-bit mode
+    /// itself while it transfers pixels to a PixMap that requires it
+    /// (32-Bit QuickDraw: pmVersion baseAddr32, PixMap32Bit). Toolbox drawing
+    /// therefore
+    /// reaches the screen even when the application has left the MMU in
+    /// 24-bit mode. A 24-bit address can never name these bytes (its top byte
+    /// is ignored and the low 24 bits stay below 16 MB), so keeping them
+    /// unmasked cannot redirect any access a 24-bit client makes on purpose.
+    #[inline]
+    fn in_32_bit_display_window(&self, address: u32, len: u32) -> bool {
+        let display_start = self.synthetic_floor.saturating_add(SYNTHETIC_RESERVE_BYTES);
+        display_start >= 0x0100_0000
+            && address >= display_start
+            && u64::from(address) + u64::from(len.max(1)) <= u64::from(self.ram_size)
+    }
+
     #[inline]
     pub fn translate_guest_address(&self, address: u32) -> u32 {
-        if self.addressing_32_bit {
+        if self.addressing_32_bit || self.in_32_bit_display_window(address, 1) {
             address
         } else {
             let address24 = address & 0x00FF_FFFF;
@@ -3575,6 +3596,11 @@ impl MacMemoryBus {
 
     #[inline]
     pub(crate) fn range_translates_contiguously(&self, address: u32, len: usize) -> Option<u32> {
+        if !self.addressing_32_bit
+            && u32::try_from(len).is_ok_and(|len| self.in_32_bit_display_window(address, len))
+        {
+            return Some(address);
+        }
         let translated = self.translate_guest_address(address);
         let address24 = address & 0x00FF_FFFF;
         let address_space_end = if self.addressing_32_bit {
@@ -4724,6 +4750,40 @@ mod tests {
     }
 
     #[test]
+    fn twenty_four_bit_mode_keeps_the_32_bit_display_window_reachable() {
+        // Valkyrie leaves the MMU in 24-bit mode and then calls DrawPicture
+        // for its cockpit panel. QuickDraw must still reach the 32-bit screen
+        // instead of writing the panel into low RAM at the masked address.
+        let mut bus = MacMemoryBus::new(0x0200_0000);
+        let display = bus.synthetic_floor + SYNTHETIC_RESERVE_BYTES;
+        assert!(display >= 0x0100_0000);
+        let low_alias = (display + 0x100) & 0x00FF_FFFF;
+        let low_before = bus.read_bytes(low_alias, 8);
+
+        bus.set_addressing_32_bit(false);
+        bus.write_byte(display + 0x100, 0x5A);
+        bus.write_word(display + 0x102, 0x1234);
+        bus.write_bytes(display + 0x104, &[1, 2, 3, 4]);
+        assert_eq!(bus.read_byte(display + 0x100), 0x5A);
+        assert_eq!(
+            bus.range_translates_contiguously(display + 0x100, 8),
+            Some(display + 0x100)
+        );
+
+        bus.set_addressing_32_bit(true);
+        assert_eq!(
+            bus.read_bytes(display + 0x100, 8),
+            [0x5A, 0, 0x12, 0x34, 1, 2, 3, 4]
+        );
+        assert_eq!(bus.read_bytes(low_alias, 8), low_before);
+
+        // Ordinary 24-bit pointers still ignore their top byte.
+        bus.set_addressing_32_bit(false);
+        bus.write_byte(0x4001_0000, 0x77);
+        assert_eq!(bus.read_byte(0x0001_0000), 0x77);
+    }
+
+    #[test]
     fn system_trap_gateway_remains_callable_after_switch_to_24_bit_mode() {
         let mut bus = MacMemoryBus::new(0x0200_0000);
         let gateway = bus.get_or_create_system_trap_gateway(0xA8AA);
@@ -4733,7 +4793,7 @@ mod tests {
         assert_eq!(bus.read_word(gateway), 0xACAA);
         assert_eq!(bus.read_word(gateway & 0x00FF_FFFF), 0xACAA);
         assert_eq!(bus.read_bytes(gateway, 2), [0xAC, 0xAA]);
-        let alias_end = bus.synthetic_floor + SYNTHETIC_RESERVE_BYTES;
+        let alias_end = (bus.synthetic_floor + SYNTHETIC_RESERVE_BYTES) & 0x00FF_FFFF;
         assert!(bus
             .range_translates_contiguously(alias_end - 2, 4)
             .is_none());
