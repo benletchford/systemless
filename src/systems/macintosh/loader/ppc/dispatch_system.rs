@@ -434,6 +434,25 @@ fn ppc_write_offset_table(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Text settings of the current graphics port, used by Script Manager calls
+/// that measure text the way QuickDraw draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcPortTextMetrics {
+    pub(crate) font: i16,
+    pub(crate) size: i16,
+    pub(crate) face: u8,
+    pub(crate) char_extra: i16,
+}
+
+impl PpcPortTextMetrics {
+    /// Advance width QuickDraw gives one byte of text in this port.
+    pub(crate) fn byte_width(&self, byte: u8) -> i32 {
+        let bytes = [byte];
+        i32::from(ppc_text_width_bytes(self.font, self.size, self.face, &bytes))
+            + ppc_char_extra_width(self.char_extra, self.size, &bytes)
+    }
+}
+
 pub(crate) fn ppc_dispatch_system_compatibility(
     operation: PpcSystemCompatibilityOperation,
     cpu: &mut PpcCpu,
@@ -445,6 +464,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
     handles: &mut Vec<PpcHandleRecord>,
     launched_app_path: Option<&str>,
     kchr_cache_ptr: &mut u32,
+    port_text: PpcPortTextMetrics,
 ) -> PpcImportAction {
     match operation {
         PpcSystemCompatibilityOperation::Munger => {
@@ -677,13 +697,16 @@ pub(crate) fn ppc_dispatch_system_compatibility(
                 Vec::new()
             };
 
+            // Inside Macintosh: Text (1993), pp. 5-37 and 5-80: StyledLineBreak
+            // measures each style run with the font, size and style of the
+            // current graphics port, which the caller sets for that run.
             let eval = crate::text_utils::evaluate_styled_line_break(
                 &bytes,
                 text_start,
                 text_end,
                 available_pixels,
                 first_style_run_on_line,
-                crate::text_utils::default_char_advance_measure,
+                |byte| port_text.byte_width(byte),
             );
 
             if offset_ptr != 0 {

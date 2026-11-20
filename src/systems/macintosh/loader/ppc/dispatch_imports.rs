@@ -3191,6 +3191,12 @@ pub(crate) fn dispatch_supported_import(
             ))
         }
         PpcImportDispatcherTarget::SystemCompatibility(operation) => {
+            let port_text = dispatch_system::PpcPortTextMetrics {
+                font: ppc_current_text_font(memory, *current_gworld),
+                size: *quickdraw_text_size,
+                face: ppc_current_text_style(memory, *current_gworld),
+                char_extra: ppc_port_char_extra_packed(memory, *current_gworld),
+            };
             Some(dispatch_system::ppc_dispatch_system_compatibility(
                 operation,
                 cpu,
@@ -3202,6 +3208,7 @@ pub(crate) fn dispatch_supported_import(
                 handles,
                 launched_app_path,
                 &mut toolbox_startup.kchr_cache_ptr,
+                port_text,
             ))
         }
         PpcImportDispatcherTarget::OpenTransport(function) => Some(
