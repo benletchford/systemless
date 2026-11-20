@@ -4002,7 +4002,7 @@ fn ppc_window_is_dialog(memory: &mut PpcSectionMem, window: u32) -> bool {
 /// update region. Without a WCTab, the content color is the default white
 /// (the theme's window background). The erase uses the Window Manager port's
 /// clipping, so the application's clipRgn does not limit it.
-fn ppc_paint_revealed_window_content(
+pub(super) fn ppc_paint_revealed_window_content(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     window_list: &SharedProcessWindowList,
@@ -4032,8 +4032,12 @@ fn ppc_window_paint_one_color(
     handles: &[PpcHandleRecord],
     window: u32,
 ) -> Option<PpcRgbColor> {
-    // A dialog's color table is the dctb GetNewDialog copied for it.
-    let color_table = if ppc_window_is_dialog(memory, window) {
+    // A dialog's color table is the dctb GetNewDialog installed for it. It
+    // belongs to the window (SetWinColor's AuxWin record), so it applies even
+    // when the application has since changed windowKind (WarCraft II).
+    let color_table = if let Some(handle) = window_list.dialog_color_table(window) {
+        Some(handle).filter(|handle| handles.iter().any(|record| record.handle == *handle))
+    } else if ppc_window_is_dialog(memory, window) {
         memory
             .read_u32_be(window_list.dialog_private_address(
                 window,

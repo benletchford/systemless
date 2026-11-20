@@ -558,6 +558,30 @@ impl super::TrapDispatcher {
         0
     }
 
+    /// A PowerPC process builds its dialogs in its own heap, so the 68K
+    /// Window Manager has no AuxWin record for them. When a mixed-mode 68K
+    /// definition procedure (Blizzard's tab CDEF) asks GetAuxWin about such a
+    /// dialog, expose the dctb GetNewDialog attached to it, as SetWinColor
+    /// would have installed it on a real Mac (DialogMgr.a setUpCDialog).
+    fn native_dialog_aux_record(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) -> u32 {
+        // WindowRecord plus the DialogRecord fields through aDefItem.
+        const DIALOG_RECORD_SIZE: u32 = 170;
+        if window_ptr == 0 || !Self::guest_range_in_ram(bus, window_ptr, DIALOG_RECORD_SIZE) {
+            return 0;
+        }
+        let native = self
+            .process_memory_manager()
+            .borrow()
+            .native_heap_contains(window_ptr, DIALOG_RECORD_SIZE);
+        let Some(color_table) = self.window_list.dialog_color_table(window_ptr) else {
+            return 0;
+        };
+        if !native || !Self::guest_range_in_ram(bus, color_table, 4) {
+            return 0;
+        }
+        self.ensure_window_aux_record(bus, window_ptr, color_table)
+    }
+
     pub(crate) fn ensure_window_aux_record(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -6594,11 +6618,10 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp + 4);
                 let aux_ptr = bus.read_long(sp);
-                let aux_handle = self
-                    .window_aux_records
-                    .get(&the_window)
-                    .copied()
-                    .unwrap_or(0);
+                let aux_handle = match self.window_aux_records.get(&the_window).copied() {
+                    Some(handle) => handle,
+                    None => self.native_dialog_aux_record(bus, the_window),
+                };
                 if aux_ptr != 0 {
                     bus.write_long(aux_ptr, aux_handle);
                 }

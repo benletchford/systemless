@@ -8091,6 +8091,12 @@ fn show_window_paints_a_revealed_dialog_with_its_dctb_content_color() {
     let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
     let probe = (i32::from(bounds.1) + 150, i32::from(bounds.0) + 70);
     ppc_quickdraw_write_pixel(&mut loaded.memory, front, probe, PPC_RGB_BLACK);
+    // The table follows the window even after the application changes
+    // windowKind (WarCraft II's Startup Options sets its own kind).
+    loaded
+        .memory
+        .write_u16_be(dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET, 8)
+        .unwrap();
 
     loaded.cpu.gpr[3] = dialog;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
@@ -8100,11 +8106,93 @@ fn show_window_paints_a_revealed_dialog_with_its_dctb_content_color() {
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, probe),
         Some((gray << 10) | (gray << 5) | gray)
     );
+    loaded
+        .memory
+        .write_u16_be(
+            dialog + PPC_CWINDOW_WINDOW_KIND_OFFSET,
+            crate::dialog_manager::DIALOG_WINDOW_KIND,
+        )
+        .unwrap();
     loaded.cpu.gpr[3] = dialog;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
     assert!(!test_handle_records!(loaded)
         .iter()
         .any(|record| record.handle == color_table));
+}
+
+#[test]
+fn get_new_dialog_paints_a_visible_dialog_with_its_dctb_content_color() {
+    // DialogMgr.a GetNewDialog (setUpCDialog) creates a dialog that has a
+    // dctb invisible, calls SetWinColor, then ShowWindow, so a dialog whose
+    // DLOG is visible appears already erased with the dctb content color.
+    // Frog Xing's PPC shareware notice (altDBoxProc, content #FFFFCCCC)
+    // came up white because the content was painted before the table was
+    // attached.
+    let mut loaded = load_pef_application_with_config(
+        &synthetic_pef_with_import(b"GetNewDialog"),
+        PpcLoadConfig {
+            screen_depth: 16,
+            ..PpcLoadConfig::default()
+        },
+    )
+    .unwrap();
+    let mut dlog = vec![0; 22];
+    dlog[0..2].copy_from_slice(&60i16.to_be_bytes());
+    dlog[2..4].copy_from_slice(&40i16.to_be_bytes());
+    dlog[4..6].copy_from_slice(&160i16.to_be_bytes());
+    dlog[6..8].copy_from_slice(&240i16.to_be_bytes());
+    dlog[8..10].copy_from_slice(&3i16.to_be_bytes()); // altDBoxProc
+    dlog[10] = 1; // visible
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 20];
+    ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+    ditl[8..10].copy_from_slice(&10i16.to_be_bytes());
+    ditl[10..12].copy_from_slice(&22i16.to_be_bytes());
+    ditl[12..14].copy_from_slice(&100i16.to_be_bytes());
+    ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT;
+    ditl[15] = 4;
+    ditl[16..20].copy_from_slice(b"Text");
+    let dctb = vec![
+        0, 0, 0, 0, // ctSeed
+        0, 0, // ctFlags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0xff, 0xff, 0xff, 0xff, 0xcc, 0xcc,
+    ];
+    for (kind, data) in [(*b"DLOG", dlog), (*b"DITL", ditl), (*b"dctb", dctb)] {
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: *loaded.process_file_system.current_resource_file,
+                path: String::new(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = u32::MAX;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewDialog);
+    let dialog = loaded.cpu.gpr[3];
+    assert_ne!(dialog, 0);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let bounds = ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+    let probe = (i32::from(bounds.1) + 150, i32::from(bounds.0) + 70);
+    let blue = 0xccu16 >> 3;
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, probe),
+        Some((0x1f << 10) | (0x1f << 5) | blue)
+    );
+    // SetWinColor (WindowMgr.a) also makes the content color the port's
+    // RGBBackColor, so the app's TETextBox/EraseRect calls erase to it.
+    let (_, back) = ppc_port_rgb_colors(&mut loaded.memory, dialog).unwrap();
+    assert_eq!((back.red, back.green, back.blue), (0xffff, 0xffff, 0xcccc));
 }
 
 #[test]

@@ -6772,6 +6772,61 @@ fn getauxwin_returns_false_writes_nil_and_pops_arguments_for_untracked_pointer()
     );
 }
 
+#[test]
+fn getauxwin_exposes_the_dctb_of_a_native_process_dialog() {
+    // DialogMgr.a setUpCDialog installs a dialog's dctb with SetWinColor, so
+    // GetAuxWin returns it. A PowerPC dialog lives in the native heap and has
+    // no 68K AuxWin record; WarCraft II's mixed-mode 68K tab CDEF still reads
+    // the content color through GetAuxWin to paint its pane.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let heap_base = bus.alloc(0x400);
+    let dialog = heap_base;
+    let color_table = heap_base + 0x200;
+    let color_table_ptr = heap_base + 0x210;
+    bus.write_long(color_table, color_table_ptr);
+    // WarCraft II changes the dialog's windowKind after GetNewDialog; the
+    // color table still belongs to the window.
+    bus.write_word(dialog + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET, 8);
+    disp.window_list.replace(vec![dialog]);
+    disp.window_list.set_dialog_color_table(dialog, color_table);
+    let aw_out = bus.alloc(4);
+    let get_aux_win = |disp: &mut super::super::TrapDispatcher,
+                       cpu: &mut super::super::test_helpers::MockCpu,
+                       bus: &mut crate::memory::MacMemoryBus| {
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, aw_out);
+        bus.write_long(sp + 4, dialog);
+        bus.write_word(sp + 8, 0xFFFF);
+        assert!(dispatch(disp, 0x242, cpu, bus).unwrap().is_ok());
+        (bus.read_long(aw_out), bus.read_word(TEST_SP - 2))
+    };
+
+    // Outside any native heap the dialog is unknown: NIL and FALSE.
+    assert_eq!(get_aux_win(&mut disp, &mut cpu, &mut bus), (0, 0));
+
+    disp.process_memory_manager().borrow_mut().publish_native_allocator(
+        crate::process_context::ProcessNativeHeapState {
+            heap_base,
+            heap_cursor: heap_base + 0x300,
+            heap_limit: heap_base + 0x400,
+            last_mem_error: 0,
+            heap_maximized: false,
+            master_pointer_blocks_requested: 0,
+        },
+        &[],
+        &[],
+        &[],
+    );
+    let (aux_handle, result) = get_aux_win(&mut disp, &mut cpu, &mut bus);
+    assert_ne!(aux_handle, 0);
+    assert_eq!(result, 0x0100);
+    let aux_ptr = bus.read_long(aux_handle);
+    assert_eq!(bus.read_long(aux_ptr + 4), dialog, "awOwner");
+    assert_eq!(bus.read_long(aux_ptr + 8), color_table, "awCTable");
+    assert_eq!(get_aux_win(&mut disp, &mut cpu, &mut bus), (aux_handle, 0x0100));
+}
+
 // ---------------------------------------------------------------
 // Helper: set up a window structure at a given address with valid
 // portRect and region handles for MoveWindow/SizeWindow tests.
