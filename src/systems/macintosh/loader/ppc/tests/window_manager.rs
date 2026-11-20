@@ -1473,6 +1473,7 @@ fn ppc_window_removal_exposure_uses_pattern_when_host_hides_menu_bar() {
         &mut loaded.memory,
         &loaded.gworlds,
         &loaded.window_list,
+        None,
         Some((0, 0, 2, 2)),
         true,
         &mut event_queue,
@@ -1534,6 +1535,7 @@ fn ppc_window_geometry_exposure_preserves_newly_covered_pixels() {
         &mut loaded.memory,
         &loaded.gworlds,
         &loaded.window_list,
+        None,
         Some((0, 0, 100, 100)),
         true,
         &mut event_queue,
@@ -1555,6 +1557,63 @@ fn ppc_window_geometry_exposure_preserves_newly_covered_pixels() {
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
         Some(desktop),
     );
+}
+
+/// Creates a visible `proc_id` window at (20,20)-(80,80), marks its content
+/// pixel (40,40) with index 17 and repaints the area a removed window
+/// exposed over it. Returns the content pixel afterwards.
+fn content_pixel_after_removal_exposure(proc_id: u32) -> Option<u16> {
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 20, 20, 80, 80).unwrap();
+    ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Panel");
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = proc_id;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    assert_ne!(loaded.cpu.gpr[3], 0);
+
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (40, 40),
+        17,
+    ));
+    let mut event_queue = VecDeque::new();
+    ppc_restore_window_removal_exposure(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        &loaded.window_list,
+        Some(&[]),
+        Some((30, 30, 60, 60)),
+        true,
+        &mut event_queue,
+        0,
+        PpcInputSnapshot::default(),
+    );
+    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (40, 40))
+}
+
+#[test]
+fn ppc_window_removal_exposure_erases_exposed_content_of_system_windows() {
+    // Macintosh Toolbox Essentials (1992), p. 4-115: PaintBehind calls
+    // PaintOne for the windows behind a removed window, erasing their newly
+    // exposed content with the content color (white without a WCTab).
+    // Bubbles hides its New Game dialog over its floating side panel
+    // (kWindowFloatGrowProc, 1987); the panel kept the dialog's pixels.
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    assert_eq!(content_pixel_after_removal_exposure(0), white);
+    assert_eq!(content_pixel_after_removal_exposure(1987), white);
+    // An application WDEF computes its own content region; leave it alone.
+    assert_eq!(content_pixel_after_removal_exposure(2048), Some(17));
 }
 
 #[test]
@@ -4045,6 +4104,31 @@ fn show_hide_erases_a_revealed_window_without_a_color_table() {
     let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
     assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 5, true), white);
     assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 4, false), white);
+}
+
+#[test]
+fn show_hide_erases_a_revealed_floating_window_but_not_a_custom_wdef_window() {
+    // kWindowFloatGrowProc (1987) is the system floating-window WDEF 124, so
+    // PaintOne erases its content to white like any system window. Bubbles
+    // shows its side panel this way while its New Game dialog is still on
+    // screen; without the erase the panel kept the dialog's popup, checkbox
+    // and Cancel button. An application WDEF (Descent's procID 2048, WDEF
+    // 128) computes its own content region, so its pixels are left alone.
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    let black = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)));
+    assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 1987, false), white);
+    assert_eq!(reveal_hidden_window_over_black(b"ShowWindow", 1985, false), white);
+    assert_eq!(reveal_hidden_window_over_black(b"ShowHide", 2048, false), black);
+}
+
+#[test]
+fn system_content_region_proc_ids_cover_standard_appearance_and_floating_wdefs() {
+    for proc_id in [0, 4, 15, 16, 1024, 1087, 1985, 1987, 1999] {
+        assert!(ppc_window_proc_has_system_content_region(proc_id), "{proc_id}");
+    }
+    for proc_id in [32, 128, 1088, 1983, 2000, 2048, -1] {
+        assert!(!ppc_window_proc_has_system_content_region(proc_id), "{proc_id}");
+    }
 }
 
 /// Creates a visible window of `proc_id` with NewCWindow over a black probe
