@@ -2541,8 +2541,13 @@ fn ppc_trunc_text_truncates_and_updates_length() {
     assert_eq!(truncated, [b'H', b'e', b'l', b'l', b'o', 0xC9]);
 }
 
-#[test]
-fn ppc_styled_line_break_breaks_at_word_boundary() {
+fn run_ppc_styled_line_break(
+    font: i16,
+    size: i16,
+    face: u8,
+    input: &[u8],
+    available: i32,
+) -> (u32, u32, u32) {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StyledLineBreak")).unwrap();
     let text = PPC_DATA_BASE + 0x1000;
     let width_ptr = PPC_DATA_BASE + 0x1040;
@@ -2550,11 +2555,18 @@ fn ppc_styled_line_break_breaks_at_word_boundary() {
     loaded.memory.add_region(text, vec![0; 64]);
     loaded.memory.add_region(width_ptr, vec![0; 16]);
     loaded.memory.add_region(offset_ptr, vec![0; 16]);
+    loaded
+        .memory
+        .write_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FONT_OFFSET, font as u16)
+        .unwrap();
+    loaded
+        .memory
+        .write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET, face)
+        .unwrap();
+    loaded.quickdraw_text_size = size;
 
-    let input = b"HELLO WORLD";
     loaded.memory.write_bytes(text, input).unwrap();
-    // 7 chars * 6 px = 42 px in 16.16 Fixed
-    loaded.memory.write_u32_be(width_ptr, 42 << 16).unwrap();
+    loaded.memory.write_u32_be(width_ptr, (available as u32) << 16).unwrap();
     loaded.memory.write_u32_be(offset_ptr, 0xFFFF_FFFF).unwrap();
 
     loaded.cpu.gpr[3] = text;
@@ -2572,45 +2584,60 @@ fn ppc_styled_line_break_breaks_at_word_boundary() {
         ),
     );
 
-    assert_eq!(loaded.cpu.gpr[3], 0); // smBreakWord
-    assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(6));
-    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(6 << 16));
+    (
+        loaded.cpu.gpr[3],
+        loaded.memory.read_u32_be(offset_ptr).unwrap(),
+        loaded.memory.read_u32_be(width_ptr).unwrap() >> 16,
+    )
+}
+
+#[test]
+fn ppc_styled_line_break_breaks_at_word_boundary() {
+    let font = crate::quickdraw::fonts::FONT_GENEVA;
+    let input = b"HELLO WORLD";
+    let available = i32::from(ppc_text_width_bytes(font, 12, 0, b"HELLO WOR"));
+    let used = i32::from(ppc_text_width_bytes(font, 12, 0, b"HELLO "));
+
+    let (code, offset, remaining) = run_ppc_styled_line_break(font, 12, 0, input, available);
+
+    assert_eq!(code, 0); // smBreakWord
+    assert_eq!(offset, 6);
+    assert_eq!(remaining, (available - used) as u32);
 }
 
 #[test]
 fn ppc_styled_line_break_overflow_when_entire_run_fits() {
-    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"StyledLineBreak")).unwrap();
-    let text = PPC_DATA_BASE + 0x1000;
-    let width_ptr = PPC_DATA_BASE + 0x1040;
-    let offset_ptr = PPC_DATA_BASE + 0x1050;
-    loaded.memory.add_region(text, vec![0; 64]);
-    loaded.memory.add_region(width_ptr, vec![0; 16]);
-    loaded.memory.add_region(offset_ptr, vec![0; 16]);
-
+    let font = crate::quickdraw::fonts::FONT_GENEVA;
     let input = b"HELLO";
-    loaded.memory.write_bytes(text, input).unwrap();
-    // 5 chars * 6 px = 30 px. Available = 40 px in 16.16 Fixed.
-    loaded.memory.write_u32_be(width_ptr, 40 << 16).unwrap();
-    loaded.memory.write_u32_be(offset_ptr, 0xFFFF_FFFF).unwrap();
+    let available = i32::from(ppc_text_width_bytes(font, 12, 0, input)) + 10;
 
-    loaded.cpu.gpr[3] = text;
-    loaded.cpu.gpr[4] = input.len() as u32;
-    loaded.cpu.gpr[5] = 0;
-    loaded.cpu.gpr[6] = input.len() as u32;
-    loaded.cpu.gpr[7] = 0;
-    loaded.cpu.gpr[8] = width_ptr;
-    loaded.cpu.gpr[9] = offset_ptr;
+    let (code, offset, remaining) = run_ppc_styled_line_break(font, 12, 0, input, available);
 
-    run_test_import(
-        &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::StyledLineBreak,
-        ),
-    );
+    assert_eq!(code, 2); // smBreakOverflow
+    assert_eq!(offset, 5);
+    assert_eq!(remaining, 10);
+}
 
-    assert_eq!(loaded.cpu.gpr[3], 2); // smBreakOverflow
-    assert_eq!(loaded.memory.read_u32_be(offset_ptr), Some(5));
-    assert_eq!(loaded.memory.read_u32_be(width_ptr), Some(10 << 16));
+// Damage Incorporated's PPC briefings wrap Courier 12 runs, some bold, with
+// StyledLineBreak; a fixed 6-pixel advance let every line run past the page.
+#[test]
+fn ppc_styled_line_break_measures_with_port_font_size_and_face() {
+    let font = crate::quickdraw::fonts::FONT_COURIER;
+    let input = b"OPERATION:  White Night";
+    let plain = i32::from(ppc_text_width_bytes(font, 12, 0, input));
+    let bold_style = 0x01; // bold
+    assert!(plain > 6 * input.len() as i32);
+    assert!(i32::from(ppc_text_width_bytes(font, 12, bold_style, input)) > plain);
+
+    let (code, offset, remaining) = run_ppc_styled_line_break(font, 12, 0, input, plain);
+    assert_eq!((code, offset, remaining), (2, input.len() as u32, 0));
+
+    let (code, offset, remaining) =
+        run_ppc_styled_line_break(font, 12, bold_style, input, plain);
+    let used = i32::from(ppc_text_width_bytes(font, 12, bold_style, b"OPERATION:  White "));
+    assert_eq!(code, 0); // smBreakWord
+    assert_eq!(offset, 18);
+    assert_eq!(remaining, (plain - used) as u32);
 }
 
 #[test]
