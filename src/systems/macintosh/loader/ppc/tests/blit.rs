@@ -5161,3 +5161,94 @@ fn indexed_to_direct16_row_copies_match_the_per_pixel_loop() {
         }
     }
 }
+
+#[test]
+fn copy_bits_boolean_modes_follow_color_quickdraw_table() {
+    // Imaging With QuickDraw (1994), Table 4-1: Boolean source modes apply
+    // the foreground and background colors to black and white source
+    // pixels; notSrcCopy with a white foreground and black background
+    // therefore copies (Abbalone 3D saves and restores screen areas so).
+    const RED: u16 = 0x7c00;
+    let white = PPC_RGB_WHITE;
+    let black = PPC_RGB_BLACK;
+    for (mode, fore, back, expected) in [
+        (1u32, black, white, [0x0000, RED]),
+        (2, black, white, [0x03ff, RED]),
+        (3, black, white, [0x7fff, RED]),
+        (4, black, white, [0x7fff, 0x0000]),
+        (4, white, black, [0x0000, 0x7fff]),
+        (5, black, white, [RED, 0x0000]),
+        (6, black, white, [RED, 0x03ff]),
+        (7, black, white, [RED, 0x7fff]),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let base = PPC_HEAP_BASE + 0x18000;
+        loaded.memory.add_region(base, vec![0; 0x200]);
+        let (source, destination, records) = (base, base + 0x40, base + 0x100);
+        loaded.memory.write_bytes(source, &[0x00, 0x00, 0x7f, 0xff]).unwrap();
+        loaded.memory.write_bytes(destination, &[0x7c, 0x00, 0x7c, 0x00]).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, records, source, 4, 0, 0, 1, 2, 16).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, records + 0x40, destination, 4, 0, 0, 1, 2, 16)
+            .unwrap();
+        ppc_write_rect(&mut loaded.memory, records + 0x80, 0, 0, 1, 2).unwrap();
+        loaded.cpu.gpr[3] = records;
+        loaded.cpu.gpr[4] = records + 0x40;
+        loaded.cpu.gpr[5] = records + 0x80;
+        loaded.cpu.gpr[6] = records + 0x80;
+        loaded.cpu.gpr[7] = mode;
+        loaded.cpu.gpr[8] = 0;
+        assert!(ppc_copy_bits(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &[],
+            0,
+            0,
+            &loaded.toolbox_startup,
+            &[[0; 3]; 256],
+            fore,
+            None,
+            back,
+            None,
+            PPC_RGB_BLACK,
+        ));
+        let mut pixels = [0u8; 4];
+        loaded.memory.read_bytes_into(destination, &mut pixels).unwrap();
+        let actual = [
+            u16::from_be_bytes([pixels[0], pixels[1]]),
+            u16::from_be_bytes([pixels[2], pixels[3]]),
+        ];
+        assert_eq!(actual, expected, "mode={mode} fore={fore:?}");
+    }
+
+    // Bitmaps combine their bits directly.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    let base = PPC_HEAP_BASE + 0x18000;
+    loaded.memory.add_region(base, vec![0; 0x200]);
+    let (source, destination, records) = (base, base + 0x40, base + 0x100);
+    loaded.memory.write_bytes(source, &[0b1100_0000]).unwrap();
+    loaded.memory.write_bytes(destination, &[0b1010_0000]).unwrap();
+    ppc_write_pixmap(&mut loaded.memory, records, source, 2, 0, 0, 1, 4, 1).unwrap();
+    ppc_write_pixmap(&mut loaded.memory, records + 0x40, destination, 2, 0, 0, 1, 4, 1).unwrap();
+    ppc_write_rect(&mut loaded.memory, records + 0x80, 0, 0, 1, 4).unwrap();
+    loaded.cpu.gpr[3] = records;
+    loaded.cpu.gpr[4] = records + 0x40;
+    loaded.cpu.gpr[5] = records + 0x80;
+    loaded.cpu.gpr[6] = records + 0x80;
+    loaded.cpu.gpr[7] = 2; // srcXor
+    loaded.cpu.gpr[8] = 0;
+    assert!(ppc_copy_bits(
+        &mut loaded.cpu,
+        &mut loaded.memory,
+        &[],
+        0,
+        0,
+        &loaded.toolbox_startup,
+        &[[0; 3]; 256],
+        PPC_RGB_BLACK,
+        None,
+        PPC_RGB_WHITE,
+        None,
+        PPC_RGB_BLACK,
+    ));
+    assert_eq!(loaded.memory.read_u8(destination), Some(0b0110_0000));
+}
