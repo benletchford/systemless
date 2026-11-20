@@ -16230,6 +16230,50 @@ impl super::TrapDispatcher {
         handle
     }
 
+    /// The table that screen-backed drawing matches RGB colours against.
+    /// Normally the live hardware CLUT; after the application restored the
+    /// logical device ColorTable under a hardware fade (see
+    /// `sync_color_manager_clut_from_screen_ctab`), the logical table.
+    pub(super) fn screen_port_matching_clut(&self) -> [[u16; 3]; 256] {
+        if self.screen_logical_ctab_restored {
+            *self.color_manager_clut
+        } else {
+            *self.device_clut
+        }
+    }
+
+    /// Rebuilding the main screen device's own inverse table re-reads its
+    /// ColorTable from memory. The ROM's MakeITable seeds the table from
+    /// the device's ColorTable, and ITabMatch matches against that same
+    /// table. It does not read the hardware CLUT (ColorMgr.a, MakeITable and
+    /// ITabMatch). Some games fade the hardware with SetEntries, copy their
+    /// real colours back into the device ColorTable, give it a new ctSeed and
+    /// call MakeITable(NIL, NIL, 0). Drawing must then match those colours
+    /// while the screen stays faded.
+    fn sync_color_manager_clut_from_screen_ctab(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        gdh: u32,
+        clut: &[[u16; 3]; 256],
+    ) {
+        if gdh == 0
+            || gdh != self.ensure_main_gdevice(bus)
+            || Self::gdevice_pixel_size(bus, gdh) != Some(8)
+            || Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh)) == 0
+            || *clut == *self.device_clut
+        {
+            return;
+        }
+        if trace_palette_enabled() {
+            eprintln!(
+                "[PALETTE] MakeITable restores logical screen ctab cm[0]=({:04X},{:04X},{:04X}) cm[255]=({:04X},{:04X},{:04X})",
+                clut[0][0], clut[0][1], clut[0][2], clut[255][0], clut[255][1], clut[255][2]
+            );
+        }
+        self.color_manager_clut.replace(*clut);
+        self.screen_logical_ctab_restored = true;
+    }
+
     fn make_inverse_table(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -16259,6 +16303,9 @@ impl super::TrapDispatcher {
             Self::gdevice_ctab_handle(bus, current_gdh)
         };
         let clut = self.read_ctab_handle_clut(bus, effective_ctab_handle);
+        if itab_handle == 0 && !explicit_ctab {
+            self.sync_color_manager_clut_from_screen_ctab(bus, current_gdh, &clut);
+        }
         let seed = Self::ctab_seed(bus, effective_ctab_handle).unwrap_or(0);
         let res = Self::normalized_itable_resolution(bus, current_gdh, requested_res);
         let table = self.cached_inverse_table_bytes(&clut, res);
@@ -20575,12 +20622,12 @@ impl super::TrapDispatcher {
                 && row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
             if screen_backed {
-                (*self.device_clut, pixel_size == 8)
+                (self.screen_port_matching_clut(), pixel_size == 8)
             } else {
                 (self.read_port_clut(bus, bus.read_long(pixmap + 42)), false)
             }
         } else {
-            (*self.device_clut, self.screen_mode.4 == 8)
+            (self.screen_port_matching_clut(), self.screen_mode.4 == 8)
         };
         let logical_screen_clut = *self.color_manager_clut;
 
@@ -24649,6 +24696,7 @@ impl super::TrapDispatcher {
         }
         let target_is_screen = self.set_entries_target_is_screen(bus);
         if target_is_screen {
+            self.screen_logical_ctab_restored = false;
             self.display_gamma
                 .set_implicit(crate::display::default_display_gamma());
         }

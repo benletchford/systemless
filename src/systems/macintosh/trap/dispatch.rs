@@ -2199,6 +2199,12 @@ pub struct TrapDispatcher {
     /// transient full-table fade frame while retaining the prior logical
     /// GDevice table for inverse-table lookups.
     pub(crate) screen_palette_fade_active: bool,
+    /// True after the application rewrote the main screen device's
+    /// ColorTable in memory and rebuilt its inverse table with
+    /// MakeITable while the hardware CLUT still shows a SetEntries fade.
+    /// Screen drawing then matches colours against that logical table, as
+    /// the ROM does, until the next screen SetEntries.
+    pub(crate) screen_logical_ctab_restored: bool,
     /// Most recent non-system GetCTable resource fetch. Some games fetch a
     /// CLUT immediately before drawing a screen-backed PICT and expect that
     /// table to drive the initial palette seed for the picture.
@@ -4174,6 +4180,7 @@ impl TrapDispatcher {
             seeded_picture_palette_until_tick: 0,
             seeded_picture_palette: Self::standard_mac_8bpp_clut(),
             screen_palette_fade_active: false,
+            screen_logical_ctab_restored: false,
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::default(),
             palette_updates: HashMap::default(),
