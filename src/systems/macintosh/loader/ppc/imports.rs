@@ -217,10 +217,33 @@ impl PpcImportRunState {
         (self.bindings, self.count)
     }
 
+    #[cfg(test)]
     pub(super) fn binding_cloned(&self, symbol_index: u32) -> Option<PpcImportBinding> {
         self.binding_index(symbol_index)
             .and_then(|binding_index| self.bindings.get(binding_index))
             .cloned()
+    }
+
+    pub(super) fn copy_binding_into(&self, symbol_index: u32, dst: &mut PpcImportBinding) -> bool {
+        let Some(src) = self
+            .binding_index(symbol_index)
+            .and_then(|binding_index| self.bindings.get(binding_index))
+        else {
+            return false;
+        };
+        dst.library_index = src.library_index;
+        dst.symbol_index = src.symbol_index;
+        dst.library_name.clear();
+        dst.library_name.push_str(&src.library_name);
+        dst.symbol_name.clear();
+        dst.symbol_name.push_str(&src.symbol_name);
+        dst.class = src.class;
+        dst.weak = src.weak;
+        dst.address = src.address;
+        dst.tvector_address = src.tvector_address;
+        dst.trap_pc = src.trap_pc;
+        dst.dispatcher_target = src.dispatcher_target.clone();
+        true
     }
 
     pub(super) fn dispatcher_target_cloned(
