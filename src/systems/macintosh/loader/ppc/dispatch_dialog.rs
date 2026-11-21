@@ -1087,7 +1087,6 @@ pub(super) fn dispatch_dialog_import(
                 current_gdevice,
                 screen_clut,
                 *quickdraw_fore_color,
-                quickdraw_fore_indices,
                 input,
                 tick_count,
                 event_queue,
@@ -1246,7 +1245,6 @@ pub(super) fn dispatch_dialog_import(
                 current_gdevice,
                 screen_clut,
                 *quickdraw_fore_color,
-                quickdraw_fore_indices,
                 input,
                 tick_count,
                 event_queue,
@@ -1430,7 +1428,6 @@ pub(super) fn dispatch_dialog_import(
                 current_gdevice,
                 screen_clut,
                 *quickdraw_fore_color,
-                quickdraw_fore_indices,
                 input,
                 tick_count,
                 event_queue,
@@ -4970,6 +4967,52 @@ fn ppc_dialog_port_text_style(
     })
 }
 
+/// The dialog's TERec draws its open editText item. DialogMgr.a (DTextItem,
+/// TstContinue) brackets TEUpdate and TEClick with SetUpText/RestoreTE: the
+/// item's ictb font, face and size are copied into the TERec for the call
+/// and the record's own values restored afterwards, so the open field is
+/// measured and drawn in the same style TextBox uses for the other items.
+/// Styled records keep their style runs.
+#[allow(clippy::too_many_arguments)]
+fn ppc_with_dialog_edit_style<R>(
+    window_list: &SharedProcessWindowList,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    resources: &[PpcVfsResourceRecord],
+    dialog: u32,
+    index: usize,
+    te_handle: u32,
+    foreground: PpcRgbColor,
+    f: impl FnOnce(&mut PpcSectionMem, PpcRgbColor) -> R,
+) -> R {
+    let style = ppc_dialog_item_text_style(window_list, memory, handles, resources, dialog, index, foreground)
+        .or_else(|| ppc_dialog_port_text_style(memory, dialog, foreground));
+    let te_ptr = ppc_te_record_ptr(memory, te_handle)
+        .filter(|te_ptr| memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) != Some(0xffff));
+    let (Some(style), Some(te_ptr)) = (style, te_ptr) else {
+        return f(memory, foreground);
+    };
+    let saved = (
+        memory.read_u16_be(te_ptr + PPC_TE_TX_FONT_OFFSET),
+        memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET),
+        memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET),
+    );
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_TX_FONT_OFFSET, style.font as u16);
+    let _ = memory.write_u8(te_ptr + PPC_TE_TX_FACE_OFFSET, style.face);
+    let _ = memory.write_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET, style.size as u16);
+    let result = f(memory, style.foreground);
+    if let Some(font) = saved.0 {
+        let _ = memory.write_u16_be(te_ptr + PPC_TE_TX_FONT_OFFSET, font);
+    }
+    if let Some(face) = saved.1 {
+        let _ = memory.write_u8(te_ptr + PPC_TE_TX_FACE_OFFSET, face);
+    }
+    if let Some(size) = saved.2 {
+        let _ = memory.write_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET, size);
+    }
+    result
+}
+
 fn ppc_dialog_item_text_style(
     window_list: &SharedProcessWindowList,
     memory: &mut PpcSectionMem,
@@ -5391,6 +5434,43 @@ fn ppc_draw_dialog_items(
                         ppc_theme_rgb(palette.frame_dark),
                         1,
                     );
+                }
+                // DialogMgr.a DTextItem: the open field is erased and redrawn
+                // by TEUpdate through the dialog's TERec, which also owns its
+                // selection and caret. Drawing its item text here as well
+                // would overprint the TERec's glyphs.
+                if base_type == DIALOG_ITEM_EDIT_TEXT
+                    && memory
+                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                        .is_some_and(|field| usize::from(field) == index)
+                {
+                    let te_handle = memory
+                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                        .unwrap_or(0);
+                    if ppc_te_record_ptr(memory, te_handle).is_some() {
+                        ppc_with_dialog_edit_style(
+                            window_list,
+                            memory,
+                            handles,
+                            vfs_resources,
+                            dialog,
+                            index,
+                            te_handle,
+                            ppc_theme_rgb(palette.frame_dark),
+                            |memory, color| {
+                                ppc_te_draw(
+                                    memory,
+                                    handles,
+                                    gworlds,
+                                    te_handle,
+                                    dialog,
+                                    color,
+                                    &HashMap::new(),
+                                )
+                            },
+                        );
+                        continue;
+                    }
                 }
                 let selected = if base_type == DIALOG_ITEM_EDIT_TEXT
                     && memory
@@ -5896,7 +5976,6 @@ fn ppc_modal_dialog(
     current_gdevice: &mut u32,
     screen_clut: &[[u16; 3]; 256],
     fore_color: PpcRgbColor,
-    fore_indices: &HashMap<u32, u8>,
     input: PpcInputSnapshot,
     tick_count: u32,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
@@ -6036,14 +6115,41 @@ fn ppc_modal_dialog(
                 let te_handle = memory
                     .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
                     .unwrap_or(0);
-                ppc_te_click(
+                ppc_with_dialog_edit_style(
+                    window_list,
                     memory,
                     handles,
+                    vfs_resources,
+                    dialog,
+                    item_index,
                     te_handle,
-                    event.where_v.saturating_sub(bounds.0),
-                    event.where_h.saturating_sub(bounds.1),
-                    event.modifiers & 0x0200 != 0,
-                    0,
+                    fore_color,
+                    |memory, _| {
+                        ppc_te_click(
+                            memory,
+                            handles,
+                            te_handle,
+                            event.where_v.saturating_sub(bounds.0),
+                            event.where_h.saturating_sub(bounds.1),
+                            event.modifiers & 0x0200 != 0,
+                            0,
+                        )
+                    },
+                );
+                // TEClick redraws the selection it sets (Text (1993),
+                // p. 2-79); a click in a newly opened field collapses the
+                // whole-text selection to an insertion point.
+                let _ = ppc_draw_dialog(
+                    window_list,
+                    param_text,
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    current_resource_refnum,
+                    dialog,
                 );
                 handled_edit_event = true;
                 None
@@ -6150,18 +6256,6 @@ fn ppc_modal_dialog(
                         current_resource_refnum,
                         dialog,
                     );
-                    let te_handle = memory
-                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
-                        .unwrap_or(0);
-                    ppc_te_draw(
-                        memory,
-                        handles,
-                        gworlds,
-                        te_handle,
-                        dialog,
-                        fore_color,
-                        fore_indices,
-                    );
                 }
                 None
             } else if character.eq_ignore_ascii_case(&b'a') && event.modifiers & 0x0100 != 0 {
@@ -6208,15 +6302,6 @@ fn ppc_modal_dialog(
                         vfs_resources,
                         current_resource_refnum,
                         dialog,
-                    );
-                    ppc_te_draw(
-                        memory,
-                        handles,
-                        gworlds,
-                        te_handle,
-                        dialog,
-                        fore_color,
-                        fore_indices,
                     );
                 }
                 None
