@@ -26,6 +26,75 @@ fn select_window_preserves_classic_visible_region() {
 }
 
 #[test]
+fn select_window_erases_and_invalidates_content_the_front_window_covered() {
+    // Angband's main terminal sits partly under its Choice window. When the
+    // back window is selected, the formerly covered strip must be erased and
+    // reported in an update event (PaintOne of the clobbered region).
+    for target in [
+        PpcImportDispatcherTarget::SelectWindow,
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SelectWindow")).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let back = create_test_cwindow(&mut loaded, scratch, (100, 300, 300, 600), 0, true, u32::MAX);
+        let front_window =
+            create_test_cwindow(&mut loaded, scratch, (100, 0, 300, 320), 0, true, u32::MAX);
+        let front = ppc_live_front_buffer_for_gworld(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+        )
+        .unwrap();
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, back).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE)
+                .unwrap();
+        let back_update = loaded
+            .memory
+            .read_u32_be(back + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_set_empty_rgn(&mut loaded.memory, back_update).unwrap();
+        // Pixels the front window drew over the back window's left edge.
+        let covered = (310, 200);
+        let uncovered = (500, 200);
+        let marker = white ^ 0x5;
+        assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, covered, marker));
+        assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, uncovered, marker));
+
+        loaded.cpu.gpr[3] = back;
+        run_test_import(&mut loaded, target);
+
+        assert_eq!(loaded.window_list.front_window(), Some(back), "{target:?}");
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, covered),
+            Some(white),
+            "{target:?} did not erase the formerly covered content",
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, uncovered),
+            Some(marker),
+            "{target:?} erased content that was already visible",
+        );
+        let update = ppc_read_rgn_bbox(&mut loaded.memory, back_update).unwrap();
+        assert!(
+            update.0 <= 100 && update.1 <= 300 && update.2 >= 300 && update.3 >= 321,
+            "{target:?} update region {update:?} misses the covered strip",
+        );
+        assert!(update.3 < 600, "{target:?} invalidated the whole window: {update:?}");
+        assert!(
+            loaded
+                .event_queue()
+                .iter()
+                .any(|event| event.what == 6 && event.message == back),
+            "{target:?} queued no update event",
+        );
+        let _ = front_window;
+    }
+}
+
+#[test]
 fn bring_to_front_leaves_the_front_window_regions_alone() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"BringToFront")).unwrap();
     let scratch = PPC_DATA_BASE + 0x1400;

@@ -1147,6 +1147,12 @@ pub(super) fn dispatch_window_import(
             if let Some(params) = crate::window_manager::evaluate_select_window_parameters(cpu.gpr[3]) {
                 let window = params.window_ptr();
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
+                let covered = ppc_window_content_covered_by_front_windows(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                );
                 ppc_reorder_window(gworlds, window_list, window, 0, true);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
@@ -1166,6 +1172,17 @@ pub(super) fn dispatch_window_import(
                         toolbox_startup.host_menu_bar_hidden,
                     );
                 }
+                ppc_expose_window_brought_forward(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    window,
+                    &covered,
+                    event_queue,
+                    tick_count,
+                    input,
+                );
                 let window_device =
                     ppc_gworld_device(gworlds, window).unwrap_or(*current_gdevice);
                 ppc_register_gdevice(toolbox_startup, window_device);
@@ -2926,6 +2943,73 @@ pub(super) fn ppc_sync_process_window_list(
             let _ = memory.write_u32_be(LOWMEM_WINDOW_LIST, head);
         }
     });
+}
+
+/// Global rectangles of `window`'s content that visible windows in front of
+/// it cover, collected before the window is brought forward.
+pub(super) fn ppc_window_content_covered_by_front_windows(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    window: u32,
+) -> Vec<(i16, i16, i16, i16)> {
+    if !ppc_window_is_visible(memory, window) {
+        return Vec::new();
+    }
+    let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) else {
+        return Vec::new();
+    };
+    let mut covered = Vec::new();
+    for front in window_list.windows() {
+        if front == window {
+            break;
+        }
+        if !ppc_window_is_visible(memory, front) {
+            continue;
+        }
+        let Some(front_content) = ppc_window_global_content_bounds(memory, gworlds, front) else {
+            continue;
+        };
+        let structure =
+            ppc_window_structure_bounds(ppc_window_proc_id(memory, front), front_content);
+        let overlap = (
+            content.0.max(structure.0),
+            content.1.max(structure.1),
+            content.2.min(structure.2),
+            content.3.min(structure.3),
+        );
+        if overlap.0 < overlap.2 && overlap.1 < overlap.3 {
+            covered.push(overlap);
+        }
+    }
+    covered
+}
+
+/// After SelectWindow/BringToFront, the content the front windows used to
+/// cover is "clobbered": the Window Manager's PaintOne erases it to the
+/// content color, adds it to the update region and the application gets an
+/// update event (Macintosh Toolbox Essentials (1992), pp. 4-117--4-119,
+/// SelectWindow / BringToFront; Window Manager PaintOne).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_expose_window_brought_forward(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
+    handles: &[PpcHandleRecord],
+    window: u32,
+    covered: &[(i16, i16, i16, i16)],
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    when: u32,
+    input: PpcInputSnapshot,
+) {
+    if covered.is_empty() {
+        return;
+    }
+    for &rect in covered {
+        ppc_erase_exposed_window_content(memory, gworlds, window_list, handles, window, rect);
+        ppc_invalidate_window_global_rect(memory, gworlds, window, rect);
+    }
+    ppc_enqueue_window_update_event(event_queue, window, when, input);
 }
 
 pub(super) fn ppc_transition_front_window_chrome(
@@ -4865,6 +4949,16 @@ pub(super) fn ppc_dispatch_legacy_window(
                 // Palette layering calls this every idle pass for the front window.
                 let already_front = window_list.front_window() == Some(window);
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
+                let covered = if already_front {
+                    Vec::new()
+                } else {
+                    ppc_window_content_covered_by_front_windows(
+                        memory,
+                        gworlds,
+                        window_list,
+                        window,
+                    )
+                };
                 // Keep the GWorld stack in step even then: ppc_front_visible_window
                 // reads it, and it can lag the window list.
                 ppc_reorder_window(gworlds, window_list, window, 0, true);
@@ -4879,6 +4973,24 @@ pub(super) fn ppc_dispatch_legacy_window(
                     heap_limit,
                     last_mem_error,
                     handles,
+                );
+                ppc_redraw_visible_window_frame(
+                    memory,
+                    gworlds,
+                    window_list,
+                    window,
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+                ppc_expose_window_brought_forward(
+                    memory,
+                    gworlds,
+                    window_list,
+                    handles,
+                    window,
+                    &covered,
+                    event_queue,
+                    when,
+                    input,
                 );
                 if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
