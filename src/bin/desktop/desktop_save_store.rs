@@ -155,6 +155,14 @@ impl DesktopSaveStore {
     }
 
     pub fn sync_save_files_now(&mut self, runner: &mut FixtureRunner) {
+        self.sync_save_files_with(runner, |runner, path| runner.vfs_file_snapshot(path));
+    }
+
+    fn sync_save_files_with(
+        &mut self,
+        runner: &mut FixtureRunner,
+        mut snapshot_for: impl FnMut(&mut FixtureRunner, &str) -> Option<VfsFileSnapshot>,
+    ) {
         let stats = runner.vfs_file_stats_where(is_user_save_path);
         let mut next_fingerprints = HashMap::new();
         let mut next_persisted_paths = HashSet::new();
@@ -169,18 +177,22 @@ impl DesktopSaveStore {
                 continue;
             }
 
+            if self.persisted_save_paths.contains(&stat.path) {
+                next_persisted_paths.insert(stat.path.clone());
+            }
             let Some(summary) = runner.vfs_file_summary(&stat.path) else {
                 continue;
             };
             let fingerprint = SaveFingerprint::from(&summary);
             next_fingerprints.insert(summary.path.clone(), fingerprint.clone());
 
-            let Some(snapshot) = runner.vfs_file_snapshot(&summary.path) else {
-                continue;
-            };
             if self.last_vfs_fingerprints.get(&summary.path) != Some(&fingerprint)
                 || !self.persisted_save_paths.contains(&summary.path)
             {
+                let Some(snapshot) = snapshot_for(runner, &summary.path) else {
+                    next_fingerprints.remove(&summary.path);
+                    continue;
+                };
                 match self.persist_save_file(&snapshot) {
                     Ok(()) => {
                         eprintln!(
@@ -195,13 +207,8 @@ impl DesktopSaveStore {
                             snapshot.path, err
                         );
                         next_fingerprints.remove(&summary.path);
-                        if self.persisted_save_paths.contains(&summary.path) {
-                            next_persisted_paths.insert(summary.path.clone());
-                        }
                     }
                 }
-            } else {
-                next_persisted_paths.insert(summary.path.clone());
             }
         }
 
@@ -889,6 +896,45 @@ mod tests {
 
         let loaded = load_saved_files_from_root(store.root()).unwrap();
         assert_eq!(loaded, vec![packaged]);
+    }
+
+    #[test]
+    fn sync_does_not_snapshot_unchanged_persisted_saves() {
+        let temp = tempfile::tempdir().unwrap();
+        let game_path = temp.path().join("Game.sit");
+        fs::write(&game_path, b"archive").unwrap();
+        let root = prepare_store(&game_path, &temp.path().join("data"), None).unwrap();
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let mut save = snapshot("Saves/Player One");
+        runner.import_vfs_file(&save);
+
+        let mut store = DesktopSaveStore::at_root(root, HashMap::new());
+        let run_sync = |store: &mut DesktopSaveStore, runner: &mut FixtureRunner| {
+            let mut snapshot_calls = 0usize;
+            store.sync_save_files_with(runner, |runner, path| {
+                snapshot_calls += 1;
+                runner.vfs_file_snapshot(path)
+            });
+            snapshot_calls
+        };
+
+        assert_eq!(run_sync(&mut store, &mut runner), 1);
+        assert_eq!(run_sync(&mut store, &mut runner), 0);
+
+        let previous = save.clone();
+        save.data_fork.push(42);
+        runner.import_vfs_file(&save);
+        store.sync_save_files_with(&mut runner, |_, _| None);
+        assert_eq!(
+            load_saved_files_from_root(store.root()).unwrap(),
+            vec![previous]
+        );
+        assert_eq!(run_sync(&mut store, &mut runner), 1);
+        assert_eq!(run_sync(&mut store, &mut runner), 0);
+
+        let loaded = load_saved_files_from_root(store.root()).unwrap();
+        assert_eq!(loaded, vec![save]);
     }
 
     #[test]
