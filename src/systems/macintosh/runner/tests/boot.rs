@@ -186,6 +186,35 @@ fn init_app_seeds_current_application_fcb_low_memory_state() {
 }
 
 #[test]
+fn init_app_boots_68k_applications_with_paint_white_set() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let app = LoadedApp {
+        ppc: None,
+        code0_header: Code0Header {
+            above_a5: 0,
+            below_a5: 0x2000,
+            jump_table_size: 0,
+            jump_table_offset: 0,
+        },
+        a5_base: 0x0040_0000,
+        jump_table: Vec::new(),
+        segment_bases: HashMap::new(),
+        loaded_image_end: 0,
+        initial_sp: 0x007F_FFC0,
+        size_resource: None,
+    };
+    runner.bus.write_word(addr::PAINT_WHITE, 0);
+
+    runner.init_app(&app);
+
+    assert_eq!(
+        runner.bus.read_word(addr::PAINT_WHITE),
+        1,
+        "68K applications boot with PaintWhite set, as PowerPC applications do"
+    );
+}
+
+#[test]
 fn init_app_sets_legacy_sound_driver_low_memory_defaults() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let app = LoadedApp {

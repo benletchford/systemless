@@ -4396,6 +4396,12 @@ impl FixtureRunner {
         // Games may set this to 0 to hide the menu bar for full-screen mode.
         // Inside Macintosh Volume V, V-245
         self.bus.write_word(addr::MBAR_HEIGHT, 20);
+        // PaintWhite ($09DC): while set, PaintOne erases content that a
+        // moved or hidden window uncovers before the update event. Boot with
+        // it set, as the PowerPC launch path does; a genuine Quadra 650 ROM
+        // running Mac OS 7.5.3 erases that content. Inside Macintosh
+        // Volume I (1985), I-296--I-297.
+        self.bus.write_word(addr::PAINT_WHITE, 1);
         // SdVolume ($0260): current speaker volume, low three bits only.
         // Inside Macintosh Volume II, II-232; Volume III, III-166. Some
         // classic apps also read this byte directly and skip all audio when
