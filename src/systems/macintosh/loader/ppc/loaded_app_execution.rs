@@ -940,32 +940,47 @@ impl PpcLoadedApp {
                     };
                 // Hot Toolbox operations that do not allocate handles, touch
                 // files or resources, or need the full dispatch context.
+                let safe_output = |address, size| {
+                    !block_copy_overlaps_boundary_state(address, size, &window_list)
+                };
                 let hot_toolbox_fast_path = toolbox_startup.pending_launch.is_none()
-                    && matches!(
-                        dispatcher_target,
+                    && match dispatcher_target {
                         PpcImportDispatcherTarget::SetPort
-                            | PpcImportDispatcherTarget::SetPortWindowPort
-                            | PpcImportDispatcherTarget::SetPortDialogPort
-                            | PpcImportDispatcherTarget::SetGWorld
-                            | PpcImportDispatcherTarget::GetMouse
-                            | PpcImportDispatcherTarget::InitCursor
-                            | PpcImportDispatcherTarget::SetEmptyRgn
-                            | PpcImportDispatcherTarget::SetEventMask
-                            | PpcImportDispatcherTarget::SystemTask
-                            | PpcImportDispatcherTarget::TEIdle
-                            | PpcImportDispatcherTarget::GetMainDevice
-                            | PpcImportDispatcherTarget::GetDeviceList
-                            | PpcImportDispatcherTarget::DialogCompatibility(
-                                PpcDialogCompatibilityOperation::IsDialogEvent
-                            )
-                    );
+                        | PpcImportDispatcherTarget::SetPortWindowPort
+                        | PpcImportDispatcherTarget::SetPortDialogPort
+                        | PpcImportDispatcherTarget::SetGWorld => {
+                            toolbox_startup.init_graf_global_ptr == 0
+                                || safe_output(toolbox_startup.init_graf_global_ptr, 4)
+                        }
+                        PpcImportDispatcherTarget::GetMouse => {
+                            (cpu.gpr[3] == 0 || safe_output(cpu.gpr[3], 4))
+                                && process_input.cursor_device_records().is_none_or(|records| {
+                                    records.data.checked_add(8).is_some_and(|addr| safe_output(addr, 12))
+                                })
+                        }
+                        PpcImportDispatcherTarget::SetEmptyRgn => ppc_rgn_ptr(memory, cpu.gpr[3])
+                            .is_none_or(|ptr| safe_output(ptr, 10)),
+                        PpcImportDispatcherTarget::TEIdle => ppc_te_record_ptr(memory, cpu.gpr[3])
+                            .is_none_or(|ptr| safe_output(ptr, (PPC_TE_CARET_STATE_OFFSET + 2) as i32)),
+                        PpcImportDispatcherTarget::InitCursor
+                        | PpcImportDispatcherTarget::SetEventMask
+                        | PpcImportDispatcherTarget::SystemTask
+                        | PpcImportDispatcherTarget::GetMainDevice
+                        | PpcImportDispatcherTarget::GetDeviceList
+                        | PpcImportDispatcherTarget::DialogCompatibility(
+                            PpcDialogCompatibilityOperation::IsDialogEvent,
+                        ) => true,
+                        _ => false,
+                    };
                 let clip_rect_fast_rgn = (toolbox_startup.pending_launch.is_none()
                     && matches!(dispatcher_target, PpcImportDispatcherTarget::ClipRect))
                 .then(|| {
                     let port = *current_gworld;
                     port.checked_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
                         .and_then(|addr| memory.read_u32_be(addr))
-                        .filter(|&clip_rgn| ppc_rgn_ptr(memory, clip_rgn).is_some())
+                        .filter(|&clip_rgn| {
+                            ppc_rgn_ptr(memory, clip_rgn).is_some_and(|ptr| safe_output(ptr, 10))
+                        })
                 })
                 .flatten();
                 if !trace_ppc
@@ -1216,6 +1231,7 @@ impl PpcLoadedApp {
                         PpcImportDispatcherTarget::QDDone => PpcImportAction::Return(1),
                         PpcImportDispatcherTarget::QDError => PpcImportAction::Return(
                             ppc_i16_result(*toolbox_startup.last_quickdraw_error),
+                        ),
                         PpcImportDispatcherTarget::SetPort
                         | PpcImportDispatcherTarget::SetPortWindowPort
                         | PpcImportDispatcherTarget::SetPortDialogPort => {
@@ -1323,7 +1339,7 @@ impl PpcLoadedApp {
                                 let _ = memory.write_u16_be(point_ptr + 2, global_h);
                                 let _ = ppc_transform_port_point(
                                     memory,
-                                    *current_gworld,
+                                    current_gworld.get(),
                                     point_ptr,
                                     false,
                                 );
