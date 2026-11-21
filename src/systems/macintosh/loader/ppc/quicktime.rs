@@ -6187,18 +6187,43 @@ fn ppc_qt_draw_decoded_movie_frame(
         Vec::new()
     };
     let mut wrote_any = false;
+    let byte_aligned_bpp = match front_buffer.depth {
+        8 => Some(1u32),
+        16 => Some(2u32),
+        32 => Some(4u32),
+        _ => None,
+    };
+    let mut run_bytes = byte_aligned_bpp
+        .map(|bpp| {
+            Vec::with_capacity(((dst_right - dst_left) as usize).saturating_mul(bpp as usize))
+        })
+        .unwrap_or_default();
     for dst_y in dst_top..dst_bottom {
+        let local_y = (dst_y - surface_top) as u32;
+        let mut run_start_x: Option<u32> = None;
         for dst_x in dst_left..dst_right {
             let Some((x, y)) = toolbox::movie_sample_point(
                 &inverse,
                 f64::from(dst_x) + 0.5,
                 f64::from(dst_y) + 0.5,
             ) else {
+                if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+                    if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
+                        wrote_any = true;
+                    }
+                    run_bytes.clear();
+                }
                 continue;
             };
             let x = (x - f64::from(natural.1)) / natural_width;
             let y = (y - f64::from(natural.0)) / natural_height;
             if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+                if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+                    if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
+                        wrote_any = true;
+                    }
+                    run_bytes.clear();
+                }
                 continue;
             }
             let src_x = (x * frame.width as f64).floor() as usize;
@@ -6208,46 +6233,140 @@ fn ppc_qt_draw_decoded_movie_frame(
                 .and_then(|base| base.checked_add(src_x))
                 .and_then(|pixel| pixel.checked_mul(3))
             else {
+                if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+                    if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
+                        wrote_any = true;
+                    }
+                    run_bytes.clear();
+                }
                 continue;
             };
             let Some(rgb) = frame.rgb.get(rgb_offset..rgb_offset.saturating_add(3)) else {
+                if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+                    if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
+                        wrote_any = true;
+                    }
+                    run_bytes.clear();
+                }
                 continue;
             };
             if !ppc_qt_display_clip_contains(quicktime, dst_x, dst_y) {
+                if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+                    if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
+                        wrote_any = true;
+                    }
+                    run_bytes.clear();
+                }
                 continue;
             }
-            let color = PpcRgbColor {
-                red: u16::from(rgb[0]) * 257,
-                green: u16::from(rgb[1]) * 257,
-                blue: u16::from(rgb[2]) * 257,
-            };
-            let pixel = if let Some(clut) = &indexed_clut {
+            if byte_aligned_bpp.is_some() {
+                run_start_x.get_or_insert((dst_x - surface_left) as u32);
+                match front_buffer.depth {
+                    8 => {
+                        let color = PpcRgbColor {
+                            red: u16::from(rgb[0]) * 257,
+                            green: u16::from(rgb[1]) * 257,
+                            blue: u16::from(rgb[2]) * 257,
+                        };
+                        let key = usize::from(ppc_rgb_color_to_rgb555(color));
+                        if index_cache[key] == u16::MAX {
+                            index_cache[key] = u16::from(ppc_rgb_color_to_index_in_clut(
+                                color,
+                                indexed_clut.as_ref().expect("8-bit clut snapshotted"),
+                                256,
+                            ));
+                        }
+                        run_bytes.push(index_cache[key] as u8);
+                    }
+                    16 => {
+                        let rgb555 = (u16::from(rgb[0] >> 3) << 10)
+                            | (u16::from(rgb[1] >> 3) << 5)
+                            | u16::from(rgb[2] >> 3);
+                        run_bytes.extend_from_slice(&rgb555.to_be_bytes());
+                    }
+                    32 => {
+                        run_bytes.extend_from_slice(&[0, rgb[0], rgb[1], rgb[2]]);
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                let color = PpcRgbColor {
+                    red: u16::from(rgb[0]) * 257,
+                    green: u16::from(rgb[1]) * 257,
+                    blue: u16::from(rgb[2]) * 257,
+                };
                 let key = usize::from(ppc_rgb_color_to_rgb555(color));
                 if index_cache[key] == u16::MAX {
                     index_cache[key] = u16::from(ppc_rgb_color_to_index_in_clut(
                         color,
-                        clut,
+                        indexed_clut.as_ref().expect("indexed clut snapshotted"),
                         1usize << front_buffer.depth,
                     ));
                 }
-                u32::from(index_cache[key])
-            } else {
-                let Some(pixel) = ppc_qt_graphics_pixel_value(memory, surface, color) else {
-                    continue;
-                };
-                pixel
-            };
-            if ppc_qt_write_graphics_pixel(
-                memory,
-                front_buffer,
-                surface.local_point((dst_x, dst_y)),
-                pixel,
-            ) {
+                if ppc_qt_write_graphics_pixel(
+                    memory,
+                    front_buffer,
+                    surface.local_point((dst_x, dst_y)),
+                    u32::from(index_cache[key]),
+                ) {
+                    wrote_any = true;
+                }
+            }
+        }
+        if let (Some(bpp), Some(start_x)) = (byte_aligned_bpp, run_start_x.take()) {
+            if flush_qt_pixel_run(memory, front_buffer, local_y, start_x, bpp, &run_bytes) {
                 wrote_any = true;
             }
+            run_bytes.clear();
         }
     }
     Some(wrote_any)
+}
+
+fn flush_qt_pixel_run(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    local_y: u32,
+    start_x: u32,
+    bytes_per_pixel: u32,
+    run_bytes: &[u8],
+) -> bool {
+    if run_bytes.is_empty() {
+        return false;
+    }
+    let Some(addr) = local_y
+        .checked_mul(front_buffer.row_bytes)
+        .and_then(|row| {
+            start_x
+                .checked_mul(bytes_per_pixel)
+                .and_then(|x| row.checked_add(x))
+        })
+        .and_then(|offset| front_buffer.base_addr.checked_add(offset))
+    else {
+        return false;
+    };
+    if memory.write_bytes(addr, run_bytes).is_some() {
+        return true;
+    }
+    let step = bytes_per_pixel as usize;
+    let mut wrote_any = false;
+    for (index, chunk) in run_bytes.chunks_exact(step).enumerate() {
+        let value = match step {
+            1 => u32::from(chunk[0]),
+            2 => u32::from(u16::from_be_bytes([chunk[0], chunk[1]])),
+            4 => u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]),
+            _ => unreachable!(),
+        };
+        if ppc_qt_write_graphics_pixel(
+            memory,
+            front_buffer,
+            ((start_x + index as u32) as i32, local_y as i32),
+            value,
+        ) {
+            wrote_any = true;
+        }
+    }
+    wrote_any
 }
 
 pub(crate) fn ppc_qt_rgb555_from_u8(red: u8, green: u8, blue: u8) -> u16 {
