@@ -28,7 +28,7 @@ use super::{
     PpcImportAction, PpcProcessAllocatorView, PpcQuickDrawSurface, PpcRgbColor, PpcSectionMem,
     PpcSoundFilePlaybackRecord, PpcSoundState, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsVolumeRecord,
     PpcVfsResourceFileRecord, PpcVfsResourceRecord, PPC_FIRST_FILE_REF_NUM,
-    PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
+    PPC_FNF_ERR, PPC_INVALID_COMPONENT_ID, PPC_MEM_FULL_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
     PPC_QT_GRAPHICS_IMPORTER, PPC_QT_MOVIE, PPC_QT_MOVIE_TASKS_PER_SECOND, PPC_RES_NOT_FOUND_ERR,
 };
 use crate::managers::resource::ResourceFork;
@@ -1429,7 +1429,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             quicktime.movie_task_fraction = 0;
             quicktime.movie_clock_remainder = 0;
             quicktime.movie_disposed = false;
-            quicktime.movie_controllers.clear();
+            ppc_qt_detach_movie_controllers(quicktime);
             quicktime.movie_at_beginning = true;
             ppc_qt_reset_movie_video_decode_cache(quicktime);
             ppc_qt_reset_movie_toolbox_state(quicktime);
@@ -4147,7 +4147,7 @@ pub(crate) fn ppc_qt_new_movie_from_file(
     quicktime.movie_task_fraction = 0;
     quicktime.movie_clock_remainder = 0;
     quicktime.movie_disposed = false;
-    quicktime.movie_controllers.clear();
+    ppc_qt_detach_movie_controllers(quicktime);
     quicktime.movie_at_beginning = true;
     ppc_qt_reset_movie_video_decode_cache(quicktime);
     ppc_qt_reset_movie_toolbox_state(quicktime);
@@ -4159,6 +4159,7 @@ pub(crate) fn ppc_qt_open_movie_file(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
     quicktime: &mut PpcQuickTimeState,
     vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
@@ -4181,35 +4182,49 @@ pub(crate) fn ppc_qt_open_movie_file(
     let mut movie_file_audio_track = None;
     let mut movie_file_tracks = Vec::new();
     if spec_ptr != 0 {
-        if let Ok(path) = ppc_existing_path_for_fsspec(
+        // Inside Macintosh: QuickTime (1993), pp. 2-98–2-99: OpenMovieFile
+        // opens the file the FSSpec names and returns File Manager errors.
+        // A spec that names no file fails with fnfErr, as the 68K trap
+        // does. Star Trek: Judgment Rites only skips the intro movies its
+        // demo does not ship when OpenMovieFile fails.
+        let path = match ppc_existing_path_for_fsspec(
             memory,
             vfs_directories,
             vfs_files,
-            &[],
+            vfs_resource_files,
             spec_ptr,
             vfs_volumes,
         ) {
-            if let Some(file) = vfs_files
+            Ok(path) => path,
+            Err(error) => return error,
+        };
+        let data_file = vfs_files
+            .iter()
+            .find(|record| record.path.eq_ignore_ascii_case(&path));
+        if data_file.is_none()
+            && !vfs_resource_files
                 .iter()
-                .find(|record| record.path.eq_ignore_ascii_case(&path))
-            {
-                movie_file_path = path;
-                movie_file_data = file.data.to_vec();
-                movie_file_bounds = ppc_qt_movie_bounds(&movie_file_data);
-                movie_file_video_track = ppc_qt_movie_first_video_track(&movie_file_data);
-                movie_file_video_samples = ppc_qt_movie_video_samples(&movie_file_data);
-                movie_file_audio_track = ppc_qt_movie_first_audio_track(&movie_file_data);
-                movie_file_tracks = ppc_qt_movie_tracks(&movie_file_data);
-                movie_file_preferred_rate =
-                    ppc_qt_movie_preferred_rate(&movie_file_data).unwrap_or(0x0001_0000);
-                movie_file_preferred_volume =
-                    ppc_qt_movie_preferred_volume(&movie_file_data).unwrap_or(0x0100);
-                if let Some((time_scale, duration)) = ppc_qt_movie_duration(&movie_file_data) {
-                    movie_file_time_scale = time_scale;
-                    movie_file_duration = duration;
-                    movie_file_tasks_until_done =
-                        ppc_qt_movie_tasks_until_done(time_scale, duration);
-                }
+                .any(|record| record.path.eq_ignore_ascii_case(&path))
+        {
+            return PPC_FNF_ERR;
+        }
+        if let Some(file) = data_file {
+            movie_file_path = path;
+            movie_file_data = file.data.to_vec();
+            movie_file_bounds = ppc_qt_movie_bounds(&movie_file_data);
+            movie_file_video_track = ppc_qt_movie_first_video_track(&movie_file_data);
+            movie_file_video_samples = ppc_qt_movie_video_samples(&movie_file_data);
+            movie_file_audio_track = ppc_qt_movie_first_audio_track(&movie_file_data);
+            movie_file_tracks = ppc_qt_movie_tracks(&movie_file_data);
+            movie_file_preferred_rate =
+                ppc_qt_movie_preferred_rate(&movie_file_data).unwrap_or(0x0001_0000);
+            movie_file_preferred_volume =
+                ppc_qt_movie_preferred_volume(&movie_file_data).unwrap_or(0x0100);
+            if let Some((time_scale, duration)) = ppc_qt_movie_duration(&movie_file_data) {
+                movie_file_time_scale = time_scale;
+                movie_file_duration = duration;
+                movie_file_tasks_until_done =
+                    ppc_qt_movie_tasks_until_done(time_scale, duration);
             }
         }
     }
@@ -4789,6 +4804,21 @@ pub(crate) fn ppc_qt_is_movie_done(cpu: &mut PpcCpu, quicktime: &PpcQuickTimeSta
     )
 }
 
+/// A movie controller belongs to the application until DisposeMovieController
+/// (Inside Macintosh: QuickTime Components (1993), p. 2-32), whatever happens
+/// to the movie it was attached to. When the single modelled movie is
+/// replaced or disposed, earlier controllers stay valid but no longer drive
+/// any movie: `mcActionIdle` on them has nothing to do. Star Trek: Judgment
+/// Rites keeps polling its "Logo" controller after a movie that played
+/// nested inside Logo's loop has finished. Discarding the controller made
+/// that poll fail with invalidComponentID, and the game showed its
+/// movie-error alert instead of reaching the menu.
+fn ppc_qt_detach_movie_controllers(quicktime: &mut PpcQuickTimeState) {
+    for controller in &mut quicktime.movie_controllers {
+        controller.movie = 0;
+    }
+}
+
 pub(crate) fn ppc_qt_dispose_movie(
     cpu: &mut PpcCpu,
     quicktime: &mut PpcQuickTimeState,
@@ -4800,7 +4830,7 @@ pub(crate) fn ppc_qt_dispose_movie(
     quicktime.movie_started = false;
     quicktime.movie_disposed = true;
     ppc_qt_clear_movie_source(quicktime);
-    quicktime.movie_controllers.clear();
+    ppc_qt_detach_movie_controllers(quicktime);
     quicktime.movie_active = false;
     quicktime.movie_video_track = None;
     quicktime.movie_video_samples = None;

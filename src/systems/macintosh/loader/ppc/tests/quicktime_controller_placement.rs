@@ -97,3 +97,53 @@ fn quicktime_controller_invalid_rect_does_not_change_movie_or_allocate_handle() 
     );
     assert!(loaded.quicktime.movie_controllers.is_empty());
 }
+
+#[test]
+fn quicktime_controller_outlives_the_movie_it_was_attached_to() {
+    // Star Trek: Judgment Rites plays its intro movies nested inside the
+    // "Logo" movie's MCDoAction loop. When the inner movie replaces and
+    // then disposes the modelled movie, Logo's controller must stay valid
+    // until DisposeMovieController (QuickTime Components (1993), p. 2-32),
+    // so its next mcActionIdle succeeds rather than reporting
+    // invalidComponentID.
+    let mut loaded = movie_toolbox_fixture();
+    let rect = PPC_DATA_BASE + 0x4000;
+    let movie_out = PPC_DATA_BASE + 0x4100;
+    ppc_write_rect(&mut loaded.memory, rect, 110, 80, 350, 400).unwrap();
+    let outer =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 11]);
+    assert_ne!(outer, 0);
+
+    loaded.cpu.gpr[3] = movie_out;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 0;
+    loaded.cpu.gpr[7] = 1;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtNewMovieFromFile);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let inner =
+        call_movie_toolbox(&mut loaded, "NewMovieController", &[PPC_QT_MOVIE, rect, 11]);
+    assert_ne!(inner, 0);
+    assert_ne!(inner, outer);
+    call_movie_toolbox(&mut loaded, "DisposeMovieController", &[inner]);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtDisposeMovie);
+
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[outer, 1, 0]),
+        0,
+        "mcActionIdle on the outer controller"
+    );
+    assert!(loaded
+        .quicktime
+        .movie_controllers
+        .iter()
+        .any(|controller| controller.handle == outer && controller.movie == 0));
+    call_movie_toolbox(&mut loaded, "DisposeMovieController", &[outer]);
+    assert!(loaded.quicktime.movie_controllers.is_empty());
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "MCDoAction", &[outer, 1, 0]) as i16,
+        PPC_INVALID_COMPONENT_ID
+    );
+}
