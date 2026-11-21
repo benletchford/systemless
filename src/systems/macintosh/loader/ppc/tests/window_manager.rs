@@ -3458,7 +3458,10 @@ fn hle_import_runner_get_new_cwindow_associates_matching_palette() {
     assert_eq!(loaded.memory.read_u16_be(palette + 16), Some(0x1111));
     assert_eq!(loaded.memory.read_u16_be(palette + 18), Some(0x2222));
     assert_eq!(loaded.memory.read_u16_be(palette + 20), Some(0x3333));
-    assert_eq!(loaded.screen_clut[1], [0x1111, 0x2222, 0x3333]);
+    assert_eq!(
+        loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 0)],
+        [0x1111, 0x2222, 0x3333]
+    );
 }
 
 #[test]

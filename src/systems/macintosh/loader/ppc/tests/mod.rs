@@ -28,6 +28,17 @@ macro_rules! test_heap_limit {
     };
 }
 
+/// Main-device cell the Palette Manager assigned to a palette entry.
+pub(crate) fn ppc_test_palette_cell(loaded: &PpcLoadedApp, palette: u32, entry: usize) -> usize {
+    let allocation = loaded
+        .toolbox_startup
+        .palette_allocations
+        .iter()
+        .find(|allocation| allocation.palette == palette && allocation.gdevice == PPC_MAIN_GDEVICE)
+        .expect("palette allocation");
+    usize::from(allocation.entry_to_index[entry].expect("allocated entry"))
+}
+
 macro_rules! with_test_screen_clut {
     ($app:ident, |$screen:ident| $body:expr) => {{
         let screen_clut = $app.screen_clut.shared_handle();

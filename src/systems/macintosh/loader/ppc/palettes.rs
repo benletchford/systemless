@@ -566,6 +566,58 @@ pub(crate) fn ppc_apply_palette(
     let mut allocation_blocked = unavailable;
     allocation_blocked[0] = true;
     allocation_blocked[255] = true;
+    // Apple's Palette Manager (PaletteMgr.a AnalyzeDev/Correlate) gives a
+    // tolerant entry with no in-tolerance match the index its Color2Index
+    // match names when this activation has not already taken it, and
+    // otherwise the next index from a fixed list. The list walks the table
+    // from its highest index down, nibble-swapped on an 8-bit device so
+    // replacements spread across the table, offering cells no tolerant
+    // entry has yanked before cells already holding yanked colors. Once a
+    // palette with 33 or more tolerant entries has missed, entries whose
+    // tolerance is at most $400 take list indices without matching.
+    let tolerant_entries = entries
+        .iter()
+        .filter(|(_, usage, _)| usage & PM_TOLERANT != 0)
+        .count();
+    let device_entries = ppc_gdevice_ctable_handle(memory, gdevice)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|table| *table != 0)
+        .and_then(|table| memory.read_u16_be(table + 6))
+        .map_or(256, |size| (usize::from(size) + 1).clamp(2, 256));
+    let tolerant_yanked: Vec<u8> = toolbox_startup
+        .palette_allocations
+        .iter()
+        .filter(|allocation| allocation.gdevice == gdevice)
+        .flat_map(|allocation| allocation.entry_mappings.iter())
+        .filter_map(|mapping| match mapping {
+            PpcPaletteEntryMapping::TolerantInstalled(index) => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let explicit_entries: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, usage, _))| usage & PM_EXPLICIT != 0)
+        .map(|(entry, _)| entry % device_entries)
+        .collect();
+    let walk = (0..device_entries).rev().map(|index| {
+        if device_entries == 256 {
+            usize::from((index as u8).rotate_right(4))
+        } else {
+            index
+        }
+    });
+    let mut tolerant_index_list: Vec<usize> = walk
+        .clone()
+        .filter(|index| !tolerant_yanked.contains(&(*index as u8)))
+        .chain(walk.filter(|index| tolerant_yanked.contains(&(*index as u8))))
+        .filter(|index| {
+            *index != 0 && *index != device_entries - 1 && !explicit_entries.contains(index)
+        })
+        .collect();
+    tolerant_index_list.reverse();
+    let mut tolerant_missed = false;
+    let mut tolerant_matched = [false; 256];
     // Inside Macintosh Volume VI (1991), pp. 20-6, 20-8--20-12: combined
     // animated/explicit and tolerant/explicit entries have priority, then
     // animated and tolerant entries; courteous colors only match.
@@ -723,27 +775,48 @@ pub(crate) fn ppc_apply_palette(
                 }
                 continue;
             }
-            let closest = ppc_closest_available_clut_index(
-                rgb[0],
-                rgb[1],
-                rgb[2],
-                screen_clut,
-                &unavailable,
-                &claimed,
-            );
             if tolerant {
-                let candidate = screen_clut[usize::from(closest)];
-                let difference = (0..3)
-                    .map(|channel| rgb[channel].abs_diff(candidate[channel]))
-                    .max()
-                    .unwrap_or(0);
-                if difference <= tolerance {
-                    entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
-                    continue;
+                let closest = ppc_closest_available_clut_index(
+                    rgb[0],
+                    rgb[1],
+                    rgb[2],
+                    screen_clut,
+                    &unavailable,
+                    &[false; 256],
+                );
+                let usable = |slot: usize, claimed: &[bool; 256]| {
+                    !device_protected[slot]
+                        && !allocation_blocked[slot]
+                        && !claimed[slot]
+                        && !tolerant_matched[slot]
+                };
+                let skip_match =
+                    tolerant_entries >= 33 && tolerant_missed && tolerance <= 0x0400;
+                let mut yank = None;
+                if !skip_match {
+                    let candidate = screen_clut[usize::from(closest)];
+                    let difference = (0..3)
+                        .map(|channel| rgb[channel].abs_diff(candidate[channel]))
+                        .max()
+                        .unwrap_or(0);
+                    if difference <= tolerance {
+                        entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
+                        tolerant_matched[usize::from(closest)] = true;
+                        continue;
+                    }
+                    if usable(usize::from(closest), &claimed) {
+                        yank = Some(usize::from(closest));
+                    }
                 }
-                if let Some((slot, stolen)) = (0..256)
-                    .find(|slot| {
-                        !device_protected[*slot] && !allocation_blocked[*slot] && !claimed[*slot]
+                tolerant_missed = true;
+                if let Some((slot, stolen)) = yank
+                    .or_else(|| {
+                        while let Some(slot) = tolerant_index_list.pop() {
+                            if usable(slot, &claimed) {
+                                return Some(slot);
+                            }
+                        }
+                        None
                     })
                     .map(|slot| (slot, None))
                     .or_else(|| {
@@ -779,7 +852,15 @@ pub(crate) fn ppc_apply_palette(
                     entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
                 }
             } else {
-                entry_mappings[entry] = PpcPaletteEntryMapping::MatchOnly(closest);
+                entry_mappings[entry] =
+                    PpcPaletteEntryMapping::MatchOnly(ppc_closest_available_clut_index(
+                        rgb[0],
+                        rgb[1],
+                        rgb[2],
+                        screen_clut,
+                        &unavailable,
+                        &claimed,
+                    ));
             }
         }
     }
