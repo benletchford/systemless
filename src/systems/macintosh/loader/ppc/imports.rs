@@ -192,9 +192,6 @@ fn checked_slot_address(
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PpcImportIndexCache {
-    cached_len: usize,
-    cached_count: u32,
-    cached_ptr: usize,
     indices: Vec<Option<usize>>,
 }
 
@@ -212,7 +209,7 @@ impl PpcImportRunState {
         count: u32,
         layout: PpcImportLayout,
     ) -> Self {
-        let indices = binding_indices(&bindings, count);
+        let indices = binding_indices(&bindings, count, Vec::new());
         Self {
             bindings,
             count,
@@ -227,17 +224,8 @@ impl PpcImportRunState {
         layout: PpcImportLayout,
         cache: &mut PpcImportIndexCache,
     ) -> Self {
-        let ptr = bindings.as_ptr() as usize;
-        let expected_len = usize::try_from(count).unwrap_or(0);
-        let indices = if cache.cached_len == bindings.len()
-            && cache.cached_count == count
-            && cache.cached_ptr == ptr
-            && cache.indices.len() == expected_len
-        {
-            std::mem::take(&mut cache.indices)
-        } else {
-            binding_indices(&bindings, count)
-        };
+        // Public bindings may be reordered or edited in place between slices.
+        let indices = binding_indices(&bindings, count, std::mem::take(&mut cache.indices));
         Self {
             bindings,
             count,
@@ -254,9 +242,6 @@ impl PpcImportRunState {
         self,
         cache: &mut PpcImportIndexCache,
     ) -> (Vec<PpcImportBinding>, u32) {
-        cache.cached_len = self.bindings.len();
-        cache.cached_count = self.count;
-        cache.cached_ptr = self.bindings.as_ptr() as usize;
         cache.indices = self.indices;
         (self.bindings, self.count)
     }
@@ -371,11 +356,16 @@ impl PpcImportRunState {
     }
 }
 
-fn binding_indices(bindings: &[PpcImportBinding], count: u32) -> Vec<Option<usize>> {
+fn binding_indices(
+    bindings: &[PpcImportBinding],
+    count: u32,
+    mut indices: Vec<Option<usize>>,
+) -> Vec<Option<usize>> {
     let Ok(count) = usize::try_from(count) else {
         return Vec::new();
     };
-    let mut indices = vec![None; count];
+    indices.clear();
+    indices.resize(count, None);
     for (binding_index, binding) in bindings.iter().enumerate() {
         let Ok(symbol_index) = usize::try_from(binding.symbol_index) else {
             continue;
@@ -1056,6 +1046,18 @@ mod tests {
         let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
         assert_eq!(state.indices.as_ptr(), cached_indices_ptr);
         assert_eq!(state.binding_index(2), Some(1));
+        (bindings, count) = state.into_parts_with_cache(&mut cache);
+
+        bindings.swap(0, 1);
+        let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
+        assert_eq!(state.binding_index(0), Some(1));
+        assert_eq!(state.binding_index(2), Some(0));
+        (bindings, count) = state.into_parts_with_cache(&mut cache);
+
+        bindings[0].symbol_index = 1;
+        let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
+        assert_eq!(state.binding_index(1), Some(0));
+        assert_eq!(state.binding_index(2), None);
         (bindings, count) = state.into_parts_with_cache(&mut cache);
 
         // Adding a binding invalidates the cache and rebuilds the index table.
