@@ -230,7 +230,6 @@ impl PpcLoadedApp {
     ) -> PpcHleRunProbe {
         self.assert_cfm_execution_owner(process_cfm.as_deref());
         let guest_calls = self.toolbox_startup.execution.calls().shared_handle();
-        let trap_default_gateways = self.trap_default_gateways.clone();
         // Wakeup selects and prepares a saved context before any native step.
         guest_calls.resume_ready_task();
         if !guest_calls.current_task_is_running()
@@ -249,6 +248,10 @@ impl PpcLoadedApp {
                 fetch_histogram: None,
             };
         }
+        let mut input = self.current_input_snapshot();
+        self.mirror_input_low_memory(input);
+        let _ = self.current_tick();
+        let trap_default_gateways = &self.trap_default_gateways;
         let standalone_memory_manager = process_memory_manager
             .is_none()
             .then(|| self.process_memory_manager.0.clone());
@@ -266,10 +269,11 @@ impl PpcLoadedApp {
             );
             &mut standalone_memory_manager_borrow
         };
-        let mut import_run_state = PpcImportRunState::from_parts(
+        let mut import_run_state = PpcImportRunState::from_parts_with_cache(
             std::mem::take(&mut self.imports),
             self.import_count,
             ppc_import_layout(),
+            &mut self.import_indices_cache,
         );
         let mut scratch_binding = PpcImportBinding {
             library_index: 0,
@@ -283,27 +287,10 @@ impl PpcLoadedApp {
             trap_pc: 0,
             dispatcher_target: PpcImportDispatcherTarget::Unsupported,
         };
-        let q3_start_rendering_import_index = import_run_state
-            .bindings()
-            .iter()
-            .find(|binding| {
-                binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewStartRendering
-            })
-            .map(|binding| binding.symbol_index);
-        let q3_end_rendering_import_index = import_run_state
-            .bindings()
-            .iter()
-            .find(|binding| {
-                binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewEndRendering
-            })
-            .map(|binding| binding.symbol_index);
-        let mut input = self.current_input_snapshot();
-        self.mirror_input_low_memory(input);
         let process_input = self.process_input.shared_handle();
-        let event_queue = std::mem::take(&mut self.event_queue);
+        let event_queue = &self.event_queue;
         let process_memory_manager = process_memory_manager.native_mut();
-        let _ = self.current_tick();
-        let tick_state = self.tick_state.shared_handle();
+        let tick_state = &self.tick_state;
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
         let stack_base = self.stack_base;
@@ -316,88 +303,82 @@ impl PpcLoadedApp {
             .unwrap_or(0) as i16;
         let resource_policy = process_file_system.policy.shared_handle();
         let native_exception_handler = Cell::new(self.native_exception_handler);
-        let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
-        let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
-        let mut stdc_bsearch_stack = std::mem::take(&mut self.stdc_bsearch_stack);
-        let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
-        let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
-        let mut picture_callback_stack = std::mem::take(&mut self.picture_callback_stack);
-        let mut drag_tracking_stack = std::mem::take(&mut self.drag_tracking_stack);
-        let mut pending_file_completions = std::mem::take(&mut self.pending_file_completions);
-        let mut apple_events = std::mem::take(&mut self.apple_events);
-        let mut standalone_cfm = if process_cfm.is_none() {
-            self.cfm.take()
-        } else {
-            None
-        };
+        let native_exception_stack = &mut self.native_exception_stack;
+        let mut stdc_qsort_stack = &mut self.stdc_qsort_stack;
+        let mut stdc_bsearch_stack = &mut self.stdc_bsearch_stack;
+        let mut dialog_callback_stack = &mut self.dialog_callback_stack;
+        let mut collection_callback_stack = &mut self.collection_callback_stack;
+        let mut picture_callback_stack = &mut self.picture_callback_stack;
+        let mut drag_tracking_stack = &mut self.drag_tracking_stack;
+        let pending_file_completions = &mut self.pending_file_completions;
+        let mut apple_events = &mut self.apple_events;
         let cfm = if let Some(cfm) = process_cfm.as_deref_mut() {
             cfm
         } else {
-            standalone_cfm.as_mut().expect("standalone CFM seed exists")
+            self.cfm.as_mut().expect("standalone CFM seed exists")
         };
         let (mut cfm_connections, mut cfm_library_fragments, mut next_cfm_connection_id) = (
             &mut cfm.connections,
             &mut cfm.library_fragments,
             &mut cfm.next_connection_id,
         );
-        let controls = std::mem::take(&mut self.controls);
-        let mut aliases = std::mem::take(&mut self.aliases);
-        let mut gworlds = std::mem::take(&mut self.gworlds);
-        let mut agl = std::mem::take(&mut self.agl);
-        let gworld_pixel_states = self.gworld_pixel_states.shared_handle();
-        let window_list = self.window_list.shared_handle();
-        let mut q3_objects = std::mem::take(&mut self.q3_objects);
-        let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
+        let controls = &self.controls;
+        let mut aliases = &mut self.aliases;
+        let mut gworlds = &mut self.gworlds;
+        let mut agl = &mut self.agl;
+        let gworld_pixel_states = &self.gworld_pixel_states;
+        let window_list = &self.window_list;
+        let mut q3_objects = &mut self.q3_objects;
+        let mut q3_object_refs = &mut self.q3_object_refs;
         let mut next_q3_object = self.next_q3_object;
         let mut q3_error_state = self.q3_error_state;
         let mut q3_lifecycle = self.q3_lifecycle;
-        let mut q3_memory_storages = std::mem::take(&mut self.q3_memory_storages);
-        let mut q3_files = std::mem::take(&mut self.q3_files);
-        let mut q3_group_memberships = std::mem::take(&mut self.q3_group_memberships);
-        let mut q3_file_groups = std::mem::take(&mut self.q3_file_groups);
-        let mut q3_views = std::mem::take(&mut self.q3_views);
-        let mut q3_submissions = std::mem::take(&mut self.q3_submissions);
-        let mut q3_view_transforms = std::mem::take(&mut self.q3_view_transforms);
-        let mut q3_submission_transforms = std::mem::take(&mut self.q3_submission_transforms);
-        let mut q3_view_materials = std::mem::take(&mut self.q3_view_materials);
-        let mut q3_submission_materials = std::mem::take(&mut self.q3_submission_materials);
-        let mut q3_submission_lights = std::mem::take(&mut self.q3_submission_lights);
-        let mut q3_view_state_stack = std::mem::take(&mut self.q3_view_state_stack);
-        let mut q3_completed_frames = std::mem::take(&mut self.q3_completed_frames);
-        let mut q3_retained_frames = std::mem::take(&mut self.q3_retained_frames);
+        let mut q3_memory_storages = &mut self.q3_memory_storages;
+        let mut q3_files = &mut self.q3_files;
+        let mut q3_group_memberships = &mut self.q3_group_memberships;
+        let mut q3_file_groups = &mut self.q3_file_groups;
+        let mut q3_views = &mut self.q3_views;
+        let mut q3_submissions = &mut self.q3_submissions;
+        let mut q3_view_transforms = &mut self.q3_view_transforms;
+        let mut q3_submission_transforms = &mut self.q3_submission_transforms;
+        let mut q3_view_materials = &mut self.q3_view_materials;
+        let mut q3_submission_materials = &mut self.q3_submission_materials;
+        let mut q3_submission_lights = &mut self.q3_submission_lights;
+        let mut q3_view_state_stack = &mut self.q3_view_state_stack;
+        let mut q3_completed_frames = &mut self.q3_completed_frames;
+        let mut q3_retained_frames = &mut self.q3_retained_frames;
         let mut q3_state_only_completed_frame_batches =
-            std::mem::take(&mut self.q3_state_only_completed_frame_batches);
-        let mut q3_fog_styles = std::mem::take(&mut self.q3_fog_styles);
-        let mut q3_immediate_trimeshes = std::mem::take(&mut self.q3_immediate_trimeshes);
-        let mut q3_attributes = std::mem::take(&mut self.q3_attributes);
-        let mut q3_shader_uv_transforms = std::mem::take(&mut self.q3_shader_uv_transforms);
-        let mut q3_shader_boundaries = std::mem::take(&mut self.q3_shader_boundaries);
-        let mut q3_mipmap_textures = std::mem::take(&mut self.q3_mipmap_textures);
-        let mut q3_texture_shaders = std::mem::take(&mut self.q3_texture_shaders);
-        let mut q3_renderer_preferences = std::mem::take(&mut self.q3_renderer_preferences);
-        let mut q3_draw_contexts = std::mem::take(&mut self.q3_draw_contexts);
-        let mut q3_trimeshes = std::mem::take(&mut self.q3_trimeshes);
-        let mut q3_styles = std::mem::take(&mut self.q3_styles);
-        let mut q3_cameras = std::mem::take(&mut self.q3_cameras);
-        let mut q3_lights = std::mem::take(&mut self.q3_lights);
-        let mut q3_present_pacing = std::mem::take(&mut self.q3_present_pacing);
+            &mut self.q3_state_only_completed_frame_batches;
+        let mut q3_fog_styles = &mut self.q3_fog_styles;
+        let mut q3_immediate_trimeshes = &mut self.q3_immediate_trimeshes;
+        let mut q3_attributes = &mut self.q3_attributes;
+        let mut q3_shader_uv_transforms = &mut self.q3_shader_uv_transforms;
+        let mut q3_shader_boundaries = &mut self.q3_shader_boundaries;
+        let mut q3_mipmap_textures = &mut self.q3_mipmap_textures;
+        let mut q3_texture_shaders = &mut self.q3_texture_shaders;
+        let mut q3_renderer_preferences = &mut self.q3_renderer_preferences;
+        let mut q3_draw_contexts = &mut self.q3_draw_contexts;
+        let mut q3_trimeshes = &mut self.q3_trimeshes;
+        let mut q3_styles = &mut self.q3_styles;
+        let mut q3_cameras = &mut self.q3_cameras;
+        let mut q3_lights = &mut self.q3_lights;
+        let mut q3_present_pacing = &mut self.q3_present_pacing;
         let q3_present_vsync = q3_present_pacing.enabled;
         let mut input_sprocket = self.input_sprocket;
-        let mut input_sprocket_virtual_elements =
-            std::mem::take(&mut self.input_sprocket_virtual_elements);
-        let mut toolbox_startup = std::mem::take(&mut self.toolbox_startup);
-        let mut quicktime = std::mem::take(&mut self.quicktime);
-        let mut sound = std::mem::take(&mut self.sound);
+        let mut input_sprocket_virtual_elements = &mut self.input_sprocket_virtual_elements;
+        let mut toolbox_startup = &mut self.toolbox_startup;
+        let mut quicktime = &mut self.quicktime;
+        let mut sound = &mut self.sound;
         let mut glm_mode = self.glm_mode;
         let mut glm_callbacks = self.glm_callbacks;
-        let mut glm_callback_stack = std::mem::take(&mut self.glm_callback_stack);
-        let mut glm_allocations = std::mem::take(&mut self.glm_allocations);
-        let mut rave = std::mem::take(&mut self.rave);
-        let mut glm_page_free_all_queue = std::mem::take(&mut self.glm_page_free_all_queue);
+        let mut glm_callback_stack = &mut self.glm_callback_stack;
+        let glm_allocations = &mut self.glm_allocations;
+        let mut rave = &mut self.rave;
+        let glm_page_free_all_queue = &mut self.glm_page_free_all_queue;
         let mut glm_error = self.glm_error;
-        let timer_tasks = std::mem::take(&mut self.timer_tasks);
-        let vbl_tasks = std::mem::take(&mut self.vbl_tasks);
-        let callback_scheduling = self.callback_scheduling.shared_handle();
+        let timer_tasks = &self.timer_tasks;
+        let vbl_tasks = &self.vbl_tasks;
+        let callback_scheduling = &self.callback_scheduling;
         // Keep File and Resource Manager records in their process-owned
         // managers for the whole native execution slice. The classic
         // adapter can enter through Mixed Mode while an import is running,
@@ -405,36 +386,38 @@ impl PpcLoadedApp {
         // would leave the process temporarily with an empty manager view.
         // (Inside Macintosh: Files, 1992, pp. 1-7–1-9; Inside Macintosh
         // Volume I, 1985, pp. I-109–I-110.)
-        let current_gworld = self.current_gworld.shared_handle();
-        let current_gdevice = self.current_gdevice.shared_handle();
-        let quickdraw_op_colors = self.quickdraw_op_colors.shared_handle();
-        let quickdraw_hilite_colors = self.quickdraw_hilite_colors.shared_handle();
+        let current_gworld = &self.current_gworld;
+        let current_gdevice = &self.current_gdevice;
+        let quickdraw_op_colors = &self.quickdraw_op_colors;
+        let quickdraw_hilite_colors = &self.quickdraw_hilite_colors;
         let screen_clut = self.screen_clut.shared_handle();
         let color_manager_clut = self.color_manager_clut.shared_handle();
-        let display_gamma = self.display_gamma.shared_handle();
+        let display_gamma = &self.display_gamma;
         let mut quickdraw_fore_color = self.quickdraw_fore_color;
-        let mut quickdraw_fore_indices = std::mem::take(&mut self.quickdraw_fore_indices);
+        let mut quickdraw_fore_indices = &mut self.quickdraw_fore_indices;
         let mut quickdraw_back_color = self.quickdraw_back_color;
         let mut quickdraw_pen_h = self.quickdraw_pen_h;
         let mut quickdraw_pen_v = self.quickdraw_pen_v;
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
-        let cursor_state = std::mem::take(&mut self.cursor_state);
-        let vfs_volumes = self.vfs_volumes.shared_handle();
-        let vfs_directories = self.vfs_directories.shared_handle();
-        let next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
-        let default_dir_id = self.default_dir_id.shared_handle();
-        let working_directories = self.working_directories.shared_handle();
-        let next_working_directory_ref_num = self.next_working_directory_ref_num.shared_handle();
-        let application_working_directory_ref_num =
-            self.application_working_directory_ref_num.shared_handle();
-        let param_text = self.param_text.shared_handle();
-        let mut scrap = std::mem::take(&mut self.scrap);
-        let list_manager = std::mem::take(&mut self.list_manager);
+        let cursor_state = &self.cursor_state;
+        let vfs_volumes = process_file_system.vfs_volumes.shared_handle();
+        let vfs_directories = process_file_system.vfs_directories.shared_handle();
+        let next_vfs_dir_id = process_file_system.next_vfs_dir_id.shared_handle();
+        let default_dir_id = process_file_system.default_dir_id.shared_handle();
+        let working_directories = process_file_system.working_directories.shared_handle();
+        let next_working_directory_ref_num =
+            process_file_system.next_working_directory_ref_num.shared_handle();
+        let application_working_directory_ref_num = process_file_system
+            .application_working_directory_ref_num
+            .shared_handle();
+        let param_text = &self.param_text;
+        let mut scrap = &mut self.scrap;
+        let list_manager = &self.list_manager;
         let collections = self.collections.shared_handle();
         let drag_manager = self.drag_manager.shared_handle();
-        let mut draw_sprocket = std::mem::take(&mut self.draw_sprocket);
+        let mut draw_sprocket = &mut self.draw_sprocket;
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
         let mut unsupported_import_index = None;
@@ -775,16 +758,19 @@ impl PpcLoadedApp {
                     tick_count_idle_poll.reset();
                 }
                 if !trace_imports && !trace_ppc && !trace_qd3d {
-                    if q3_start_rendering_import_index == Some(index) {
+                    if matches!(
+                        dispatcher_target,
+                        Some(PpcImportDispatcherTarget::Q3ViewStartRendering)
+                    ) {
                         let action =
                             PpcImportAction::Return(u32::from(ppc_q3_view_start_rendering(
                                 cpu,
-                                &mut q3_views,
-                                &q3_objects,
-                                &mut q3_submissions,
-                                &mut q3_submission_transforms,
-                                &mut q3_submission_materials,
-                                &mut q3_submission_lights,
+                                q3_views,
+                                q3_objects,
+                                q3_submissions,
+                                q3_submission_transforms,
+                                q3_submission_materials,
+                                q3_submission_lights,
                                 &mut q3_error_state,
                             )));
                         handled_import_count = handled_import_count.saturating_add(1);
@@ -793,7 +779,10 @@ impl PpcLoadedApp {
                             PPC_Q3_HOT_IMPORT_EXTRA_CYCLES,
                         );
                     }
-                    if q3_end_rendering_import_index == Some(index) {
+                    if matches!(
+                        dispatcher_target,
+                        Some(PpcImportDispatcherTarget::Q3ViewEndRendering)
+                    ) {
                         let is_q3_window_port = |port: u32| {
                             port == PPC_MAIN_GWORLD
                                 || port == draw_sprocket.front_buffer_gworld
@@ -814,7 +803,7 @@ impl PpcLoadedApp {
                             &q3_draw_contexts,
                             &q3_trimeshes,
                             &gworlds,
-                            *current_gworld,
+                            **current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
                             q3_present_vsync.then_some(PpcQ3PresentPacing {
@@ -1137,7 +1126,10 @@ impl PpcLoadedApp {
                 }
                 let binding = &scratch_binding;
                 if !trace_ppc && !trace_qd3d {
-                    if q3_start_rendering_import_index == Some(index) {
+                    if matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::Q3ViewStartRendering
+                    ) {
                         if trace_imports {
                             push_ppc_hle_import_trace_entry(
                                 &mut import_trace,
@@ -1171,7 +1163,10 @@ impl PpcLoadedApp {
                             ppc_import_extra_cycles_for_binding(binding),
                         );
                     }
-                    if q3_end_rendering_import_index == Some(index) {
+                    if matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::Q3ViewEndRendering
+                    ) {
                         if trace_imports {
                             push_ppc_hle_import_trace_entry(
                                 &mut import_trace,
@@ -1208,7 +1203,7 @@ impl PpcLoadedApp {
                             &q3_draw_contexts,
                             &q3_trimeshes,
                             &gworlds,
-                            *current_gworld,
+                            **current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
                             q3_present_vsync.then_some(PpcQ3PresentPacing {
@@ -1305,7 +1300,7 @@ impl PpcLoadedApp {
                 if process_quickdraw_port_state_attached {
                     ppc_restore_process_port_draw_state(
                         memory,
-                        *current_gworld,
+                        **current_gworld,
                         &mut quickdraw_fore_color,
                         &mut quickdraw_back_color,
                         &mut quickdraw_pen_h,
@@ -2617,7 +2612,13 @@ impl PpcLoadedApp {
                         }
                         self.cpu.install_execution_context(parked.interrupted);
                         if let Some(refnum) = parked.interrupted_refnum {
-                            self.set_current_resource_refnum(refnum);
+                            current_resource_refnum.with_mut(|current_file| {
+                                ppc_set_current_resource_refnum(
+                                    &mut self.memory,
+                                    current_file,
+                                    refnum,
+                                );
+                            });
                         }
                         // VBL and sound records are out of `self` until the
                         // slice ends; finish their work once they are back.
@@ -2720,82 +2721,22 @@ impl PpcLoadedApp {
         // memory. Low-memory `Ticks` remains the source of truth, including
         // when a nested Mixed Mode callback changed it during this slice.
         self.native_exception_handler = native_exception_handler.get();
-        self.native_exception_stack = native_exception_stack;
-        self.stdc_qsort_stack = stdc_qsort_stack;
-        self.stdc_bsearch_stack = stdc_bsearch_stack;
-        self.dialog_callback_stack = dialog_callback_stack;
-        self.collection_callback_stack = collection_callback_stack;
-        self.picture_callback_stack = picture_callback_stack;
-        self.drag_tracking_stack = drag_tracking_stack;
-        self.pending_file_completions = pending_file_completions;
-        self.apple_events = apple_events;
-        self.cfm = standalone_cfm;
-        (self.imports, self.import_count) = import_run_state.into_parts();
-        self.controls = controls;
-        self.aliases = aliases;
-        self.gworlds = gworlds;
-        self.agl = agl;
-        self.q3_objects = q3_objects;
-        self.q3_object_refs = q3_object_refs;
+        (self.imports, self.import_count) =
+            import_run_state.into_parts_with_cache(&mut self.import_indices_cache);
         self.next_q3_object = next_q3_object;
         self.q3_error_state = q3_error_state;
         self.q3_lifecycle = q3_lifecycle;
-        self.q3_memory_storages = q3_memory_storages;
-        self.q3_files = q3_files;
-        self.q3_group_memberships = q3_group_memberships;
-        self.q3_file_groups = q3_file_groups;
-        self.q3_views = q3_views;
-        self.q3_submissions = q3_submissions;
-        self.q3_view_transforms = q3_view_transforms;
-        self.q3_submission_transforms = q3_submission_transforms;
-        self.q3_view_materials = q3_view_materials;
-        self.q3_submission_materials = q3_submission_materials;
-        self.q3_submission_lights = q3_submission_lights;
-        self.q3_view_state_stack = q3_view_state_stack;
-        self.q3_completed_frames = q3_completed_frames;
-        self.q3_retained_frames = q3_retained_frames;
-        self.q3_state_only_completed_frame_batches = q3_state_only_completed_frame_batches;
-        self.q3_fog_styles = q3_fog_styles;
-        self.q3_immediate_trimeshes = q3_immediate_trimeshes;
-        self.q3_attributes = q3_attributes;
-        self.q3_shader_uv_transforms = q3_shader_uv_transforms;
-        self.q3_shader_boundaries = q3_shader_boundaries;
-        self.q3_mipmap_textures = q3_mipmap_textures;
-        self.q3_texture_shaders = q3_texture_shaders;
-        self.q3_renderer_preferences = q3_renderer_preferences;
-        self.q3_draw_contexts = q3_draw_contexts;
-        self.q3_present_pacing = q3_present_pacing;
-        self.q3_trimeshes = q3_trimeshes;
-        self.q3_styles = q3_styles;
-        self.q3_cameras = q3_cameras;
-        self.q3_lights = q3_lights;
         self.input_sprocket = input_sprocket;
-        self.input_sprocket_virtual_elements = input_sprocket_virtual_elements;
-        self.toolbox_startup = toolbox_startup;
-        self.quicktime = quicktime;
-        self.sound = sound;
         self.glm_mode = glm_mode;
         self.glm_callbacks = glm_callbacks;
-        self.glm_callback_stack = glm_callback_stack;
-        self.glm_allocations = glm_allocations;
-        self.rave = rave;
-        self.glm_page_free_all_queue = glm_page_free_all_queue;
         self.glm_error = glm_error;
-        self.timer_tasks = timer_tasks;
-        self.vbl_tasks = vbl_tasks;
         self.quickdraw_fore_color = quickdraw_fore_color;
-        self.quickdraw_fore_indices = quickdraw_fore_indices;
         self.quickdraw_back_color = quickdraw_back_color;
         self.quickdraw_pen_h = quickdraw_pen_h;
         self.quickdraw_pen_v = quickdraw_pen_v;
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
-        self.cursor_state = cursor_state;
         process_file_system.with_mut(ProcessFileSystemState::publish_native_vfs_catalogue);
-        self.scrap = scrap;
-        self.list_manager = list_manager;
-        self.event_queue = event_queue;
-        self.draw_sprocket = draw_sprocket;
         if let Some(work) = interrupt_return_work {
             self.finish_interrupt_return_work(work);
         }

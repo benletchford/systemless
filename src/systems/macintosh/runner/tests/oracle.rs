@@ -137,6 +137,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
             trap_pc: PPC_IMPORT_TRAP_BASE,
             dispatcher_target: PpcImportDispatcherTarget::GetKeys,
         }],
+        import_indices_cache: Default::default(),
         section_bases: Vec::new(),
         input: PpcInputSnapshot::default(),
         process_input: Default::default(),

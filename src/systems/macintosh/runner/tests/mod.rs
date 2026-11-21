@@ -292,6 +292,7 @@ pub(super) fn halted_ppc_app_with_sound(sound: PpcSoundState) -> LoadedApp {
         import_trap_base: PPC_IMPORT_TRAP_BASE,
         import_count: 0,
         imports: Vec::new(),
+        import_indices_cache: Default::default(),
         section_bases: Vec::new(),
         input: PpcInputSnapshot::default(),
         process_input: Default::default(),

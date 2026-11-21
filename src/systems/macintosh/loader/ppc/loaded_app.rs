@@ -129,6 +129,7 @@ pub struct PpcLoadedApp {
     pub import_trap_base: u32,
     pub import_count: u32,
     pub imports: Vec<PpcImportBinding>,
+    pub(crate) import_indices_cache: PpcImportIndexCache,
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
     pub(crate) process_input: SharedProcessInputState,

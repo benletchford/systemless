@@ -1241,6 +1241,7 @@ fn load_pef_application_with_optional_disk_fragment(
         import_trap_base: PPC_IMPORT_TRAP_BASE,
         import_count,
         imports,
+        import_indices_cache: PpcImportIndexCache::default(),
         section_bases,
         input: PpcInputSnapshot::default(),
         process_input: SharedProcessInputState::default(),
