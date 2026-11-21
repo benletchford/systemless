@@ -55,6 +55,10 @@ struct Chunk {
     complex: ComplexInk,
     /// Cells already handed out as `Arc`s and unchanged since.
     shared: RefCell<Vec<Option<Arc<DetailCell>>>>,
+    /// The text run that last drew each slot's cell (0: none).
+    runs: [u32; CHUNK_BYTES],
+    /// The `next_generation` value of the chunk's last change.
+    generation: u64,
     count: usize,
 }
 
@@ -71,6 +75,8 @@ impl Chunk {
             free_inks: Vec::new(),
             complex: ComplexInk::new(),
             shared: RefCell::new(Vec::new()),
+            runs: [0; CHUNK_BYTES],
+            generation: next_generation(),
             count: 0,
         }
     }
@@ -96,6 +102,21 @@ impl Chunk {
         true
     }
 
+    /// Whether `slot`'s cell shows only its own byte: no sample or ink of
+    /// another colour, so presenting it looks like the plain pixel.
+    fn is_blank(&self, slot: usize) -> bool {
+        let value = self.values[slot];
+        let start = slot * TILE_SAMPLES;
+        self.indices[start..start + usize::from(self.lens[slot])]
+            .iter()
+            .all(|&index| index == value)
+            && (!self.may_have_ink(slot)
+                || self.slot_ink(slot).iter().all(|(_, ink)| {
+                    ink.foreground == value
+                        && matches!(ink.background, super::IndexedColor::Solid(background) if background == value)
+                }))
+    }
+
     fn may_have_ink(&self, slot: usize) -> bool {
         self.inked[slot / 64] & (1 << (slot % 64)) != 0
     }
@@ -112,6 +133,7 @@ impl Chunk {
 
     /// The slot's ink for changes, marking the slot as inked.
     fn slot_ink_mut(&mut self, slot: usize) -> InkViewMut<'_> {
+        self.generation = next_generation();
         if !self.may_have_ink(slot) {
             let at = match self.free_inks.pop() {
                 Some(at) => at,
@@ -136,6 +158,7 @@ impl Chunk {
     }
 
     fn forget_shared(&mut self, slot: usize) {
+        self.generation = next_generation();
         if let Some(cached) = self.shared.get_mut().get_mut(slot) {
             *cached = None;
         }
@@ -179,6 +202,7 @@ impl Chunk {
     /// Store `cell` in `slot`, which must not hold one. `shared` is the
     /// `Arc` to hand out for it, if the caller has one.
     fn store(&mut self, slot: usize, cell: &DetailCell, shared: Option<&Arc<DetailCell>>) {
+        self.generation = next_generation();
         assert!(cell.indices.len() <= TILE_SAMPLES, "cell samples exceed a tile");
         self.present[slot / 64] |= 1 << (slot % 64);
         self.count += 1;
@@ -240,6 +264,9 @@ impl Chunk {
                     bits &= bits - 1;
                 }
             }
+        }
+        if cleared > 0 {
+            self.generation = next_generation();
         }
         self.count -= cleared;
         cleared
@@ -414,6 +441,27 @@ impl OffscreenCellMut<'_> {
 pub(super) struct OffscreenDetail {
     chunks: BTreeMap<u32, Box<Chunk>>,
     count: usize,
+    /// The text run now drawing (0: none). Cells it creates or changes are
+    /// tagged with it, so that they can later be dropped together.
+    run: u32,
+    /// The last run number handed out (`begin_run`). It lives with the
+    /// cells, so a presentation that takes them over keeps counting.
+    last_run: u32,
+    /// The first and last address the current run has reached so far, kept
+    /// here while it draws and moved into `run_bounds` when it changes, so
+    /// that drawing a cell costs no map lookup.
+    reach: Option<(u32, u32)>,
+    /// The first and last address of each tagged run's cells. Entries of
+    /// runs whose cells are all gone linger until the map reaches
+    /// `run_bounds_rebuild_at.max(MAX_RUNS)`, when it is rebuilt from the
+    /// cells' tags.
+    run_bounds: HashMap<u32, (u32, u32)>,
+    /// Next `run_bounds.len()` threshold that triggers a rebuild. Doubles the
+    /// surviving live count when live runs stay above `MAX_RUNS` so rebuilds
+    /// remain amortized O(1) per run.
+    run_bounds_rebuild_at: usize,
+    #[cfg(test)]
+    run_bounds_rebuilds: usize,
     /// One bit per 64 KiB page of the address space: set once a chunk is
     /// made in the page and never cleared, so a clear bit proves the page
     /// holds no cell. Most copies read and write pages that never held
@@ -425,7 +473,21 @@ fn split(address: u32) -> (u32, usize) {
     (address >> CHUNK_SHIFT, (address as usize) & (CHUNK_BYTES - 1))
 }
 
+/// A process-wide counter for chunk changes: a chunk whose `generation` is
+/// at most a value read earlier has not changed since.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+/// The latest generation handed out.
+pub(super) fn current_generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 const PAGE_SHIFT: u32 = 16;
+const MAX_RUNS: usize = 1 << 16;
 const PAGE_WORDS: usize = 1 << (32 - PAGE_SHIFT - 6);
 
 impl OffscreenDetail {
@@ -452,6 +514,132 @@ impl OffscreenDetail {
     #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.count
+    }
+
+    /// Tag the cells created or changed from now on with text run `run`
+    /// (0: none), returning the previous run.
+    pub(super) fn set_run(&mut self, run: u32) -> u32 {
+        self.settle_run();
+        std::mem::replace(&mut self.run, run)
+    }
+
+    /// Start a new run, returning the one to restore when it ends.
+    pub(super) fn begin_run(&mut self) -> u32 {
+        self.last_run = self.last_run.checked_add(1).unwrap_or(1);
+        self.set_run(self.last_run)
+    }
+
+    /// Tag the cell at `address`, if any, with the current run: a run that
+    /// redraws a cell exactly as it was still owns it.
+    pub(super) fn retag(&mut self, address: u32) {
+        let run = self.run;
+        if run == 0 {
+            return;
+        }
+        let (key, slot) = split(address);
+        let Some(chunk) = self.chunks.get_mut(&key).filter(|chunk| chunk.has(slot)) else {
+            return;
+        };
+        chunk.runs[slot] = run;
+        self.note_run(address, address);
+    }
+
+    /// Record that the current run reaches `[from, last]`.
+    #[inline]
+    fn note_run(&mut self, from: u32, last: u32) {
+        if self.run != 0 {
+            self.reach = Some(self.reach.map_or((from, last), |(lo, hi)| (lo.min(from), hi.max(last))));
+        }
+    }
+
+    /// Move the current run's reach into `run_bounds`.
+    fn settle_run(&mut self) {
+        let Some((from, last)) = self.reach.take() else {
+            return;
+        };
+        let threshold = self.run_bounds_rebuild_at.max(MAX_RUNS);
+        if self.run_bounds.len() >= threshold && !self.run_bounds.contains_key(&self.run) {
+            self.rebuild_run_bounds();
+            self.run_bounds_rebuild_at = self.run_bounds.len().saturating_mul(2).max(MAX_RUNS);
+        }
+        let bounds = self.run_bounds.entry(self.run).or_insert((from, last));
+        *bounds = (bounds.0.min(from), bounds.1.max(last));
+    }
+
+    /// Recompute `run_bounds` from the tags of the cells that remain, which
+    /// drops the entries of runs that have no cells left.
+    fn rebuild_run_bounds(&mut self) {
+        #[cfg(test)]
+        {
+            self.run_bounds_rebuilds += 1;
+        }
+        self.run_bounds.clear();
+        for (&key, chunk) in &self.chunks {
+            for slot in 0..CHUNK_BYTES {
+                let run = chunk.runs[slot];
+                if run != 0 && chunk.has(slot) {
+                    let address = (key << CHUNK_SHIFT) | slot as u32;
+                    let bounds = self.run_bounds.entry(run).or_insert((address, address));
+                    *bounds = (bounds.0.min(address), bounds.1.max(address));
+                }
+            }
+        }
+    }
+
+    /// Whether a cell in `[from, from + len)` may have changed since
+    /// `generation` (a `current_generation` value).
+    pub(super) fn changed_since(&self, from: u32, len: usize, generation: u64) -> bool {
+        let Some(last) = len
+            .checked_sub(1)
+            .and_then(|n| from.checked_add(n as u32))
+        else {
+            return len != 0;
+        };
+        self.chunks
+            .range(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT)
+            .any(|(_, chunk)| chunk.generation > generation)
+    }
+
+    /// Remove the current run's cells that show only their own byte. Drawing
+    /// keeps such cells while the run lasts (a later glyph's stores may land
+    /// on them); afterwards they describe nothing, and every copy and sync
+    /// would still carry them.
+    pub(super) fn drop_blank_run_cells(&mut self) -> usize {
+        let (run, Some((from, last))) = (self.run, self.reach) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for (_, chunk) in self.chunks.range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
+            for slot in 0..CHUNK_BYTES {
+                if chunk.runs[slot] == run && chunk.has(slot) && chunk.is_blank(slot) {
+                    chunk.clear(slot);
+                    removed += 1;
+                }
+            }
+        }
+        self.count -= removed;
+        removed
+    }
+
+    /// Remove every remaining cell of each run in `runs`, returning how many.
+    fn remove_runs(&mut self, runs: &[u32]) -> usize {
+        self.settle_run();
+        let mut removed = 0;
+        for &run in runs {
+            let Some((from, last)) = self.run_bounds.remove(&run) else {
+                continue;
+            };
+            for (_, chunk) in self.chunks.range_mut(from >> CHUNK_SHIFT..=last >> CHUNK_SHIFT) {
+                for slot in 0..CHUNK_BYTES {
+                    if chunk.runs[slot] == run && chunk.has(slot) {
+                        chunk.clear(slot);
+                        removed += 1;
+                    }
+                }
+            }
+        }
+        self.count -= removed;
+        removed
     }
 
     pub(super) fn contains(&self, address: u32) -> bool {
@@ -482,6 +670,7 @@ impl OffscreenDetail {
     pub(super) fn insert(&mut self, address: u32, cell: &Arc<DetailCell>) {
         let (chunk, slot) = split(address);
         self.mark_page(chunk);
+        let run = self.run;
         let chunk = self.chunks.entry(chunk).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.has(slot) {
             chunk.clear(slot);
@@ -489,6 +678,8 @@ impl OffscreenDetail {
             self.count += 1;
         }
         chunk.store(slot, cell, Some(cell));
+        chunk.runs[slot] = run;
+        self.note_run(address, address);
     }
 
     /// Remove the cell at `address`, reporting whether there was one.
@@ -503,6 +694,43 @@ impl OffscreenDetail {
         chunk.clear(slot);
         self.count -= 1;
         true
+    }
+
+    /// Remove the cells a store of `bytes` at `from` changes, reporting whether
+    /// any were removed. A cell records the pixel byte it describes; storing
+    /// that same byte leaves the pixel, and so its detail, as it was. Guest
+    /// blitters that read, mask and write back every destination byte store
+    /// unchanged values over text they are not drawing on.
+    pub(super) fn remove_changed(&mut self, from: u32, bytes: &[u8]) -> bool {
+        let Some(last) = from.checked_add(bytes.len().saturating_sub(1) as u32) else {
+            return self.remove_range(from, u64::from(from) + bytes.len() as u64);
+        };
+        if bytes.is_empty() || !self.may_hold_cells(from, last) {
+            return false;
+        }
+        let mut removed = false;
+        // A changed pixel ends its whole run: the run's other cells may still
+        // hold bytes the new picture happens to share.
+        let mut runs = Vec::new();
+        for (offset, &byte) in bytes.iter().enumerate() {
+            let (key, slot) = split(from + offset as u32);
+            let Some(chunk) = self.chunks.get_mut(&key) else {
+                continue;
+            };
+            if chunk.has(slot) && chunk.values[slot] != byte {
+                let run = chunk.runs[slot];
+                chunk.clear(slot);
+                self.count -= 1;
+                removed = true;
+                if run != 0 && !runs.contains(&run) {
+                    runs.push(run);
+                }
+            }
+        }
+        if !runs.is_empty() {
+            self.remove_runs(&runs);
+        }
+        removed
     }
 
     /// Remove every cell in `[from, to)`, reporting whether any existed.
@@ -625,6 +853,10 @@ impl OffscreenDetail {
                 && chunk.indices[start..start + indices.len()] == *indices
                 && chunk.slot_ink(slot).eq_list(ink)
             {
+                if self.run != 0 {
+                    chunk.runs[slot] = self.run;
+                    self.note_run(address, address);
+                }
                 return false;
             }
             chunk.clear(slot);
@@ -645,6 +877,8 @@ impl OffscreenDetail {
             }
         }
         chunk.forget_shared(slot);
+        chunk.runs[slot] = self.run;
+        self.note_run(address, address);
         true
     }
 
@@ -661,6 +895,10 @@ impl OffscreenDetail {
                 && chunk.indices[start..start + indices.len()] == *indices
                 && chunk.slot_ink(slot).block().same_as(ink)
             {
+                if self.run != 0 {
+                    chunk.runs[slot] = self.run;
+                    self.note_run(address, address);
+                }
                 return false;
             }
             chunk.clear(slot);
@@ -677,6 +915,8 @@ impl OffscreenDetail {
             chunk.slot_ink_mut(slot).assign(ink);
         }
         chunk.forget_shared(slot);
+        chunk.runs[slot] = self.run;
+        self.note_run(address, address);
         true
     }
 
@@ -690,10 +930,21 @@ impl OffscreenDetail {
         addresses
     }
 
+    /// The cell at `address`; one changed while a run draws joins the run.
     pub(super) fn cell_mut(&mut self, address: u32) -> Option<OffscreenCellMut<'_>> {
+        let run = self.run;
+        if run != 0 && self.contains(address) {
+            self.note_run(address, address);
+        }
         let (chunk, slot) = split(address);
         let chunk = self.chunks.get_mut(&chunk)?;
-        chunk.has(slot).then(|| OffscreenCellMut { chunk, slot })
+        if !chunk.has(slot) {
+            return None;
+        }
+        if run != 0 {
+            chunk.runs[slot] = run;
+        }
+        Some(OffscreenCellMut { chunk, slot })
     }
 
     /// The cell at `address`, first creating one of `len` samples of
@@ -706,9 +957,14 @@ impl OffscreenDetail {
     ) -> OffscreenCellMut<'_> {
         let (key, slot) = split(address);
         self.mark_page(key);
+        let run = self.run;
+        self.note_run(address, address);
         let chunk = self.chunks.entry(key).or_insert_with(|| Box::new(Chunk::new()));
         if chunk.insert_blank(slot, background, len) {
             self.count += 1;
+            chunk.runs[slot] = run;
+        } else if run != 0 {
+            chunk.runs[slot] = run;
         }
         OffscreenCellMut { chunk, slot }
     }
@@ -730,20 +986,22 @@ impl OffscreenDetail {
             u64::from(address) + backgrounds.len() as u64 <= 1 << 32,
             "offscreen span wraps"
         );
+        let run = self.run;
+        let mut reached: Option<(usize, usize)> = None;
         let mut offset = 0;
         while offset < backgrounds.len() {
             let (key, first) = split(address + offset as u32);
-            let run = (CHUNK_BYTES - first).min(backgrounds.len() - offset);
-            // The chunk is found (or made) at the run's first selected cell.
+            let span = (CHUNK_BYTES - first).min(backgrounds.len() - offset);
+            // The chunk is found (or made) at the span's first selected cell.
             let mut pending =
-                (0..run).find_map(|i| select(offset + i).map(|selected| (i, selected)));
+                (0..span).find_map(|i| select(offset + i).map(|selected| (i, selected)));
             if let Some((skipped, _)) = pending {
                 self.mark_page(key);
                 let chunk = self
                     .chunks
                     .entry(key)
                     .or_insert_with(|| Box::new(Chunk::new()));
-                for i in skipped..run {
+                for i in skipped..span {
                     let selected = match pending.take() {
                         Some((_, selected)) => selected,
                         None => match select(offset + i) {
@@ -754,11 +1012,19 @@ impl OffscreenDetail {
                     let slot = first + i;
                     if chunk.insert_blank(slot, backgrounds[offset + i], len) {
                         self.count += 1;
+                        chunk.runs[slot] = run;
+                    } else if run != 0 {
+                        chunk.runs[slot] = run;
                     }
-                    visit(offset + i, selected, &mut OffscreenCellMut { chunk, slot });
+                    let at = offset + i;
+                    reached = Some(reached.map_or((at, at), |(lo, hi)| (lo.min(at), hi.max(at))));
+                    visit(at, selected, &mut OffscreenCellMut { chunk, slot });
                 }
             }
-            offset += run;
+            offset += span;
+        }
+        if let Some((lo, hi)) = reached {
+            self.note_run(address + lo as u32, address + hi as u32);
         }
     }
 }
@@ -809,6 +1075,85 @@ mod tests {
         assert!(store.remove_range(u32::MAX, u64::from(u32::MAX) + 2));
         assert!(!store.contains(u32::MAX));
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn a_changed_pixel_drops_its_whole_text_run() {
+        let mut store = OffscreenDetail::default();
+        // Run 1 spans two chunks; run 2 and an untagged cell sit between and
+        // beside its cells.
+        store.set_run(1);
+        for address in [0x10f0, 0x10f1, 0x1205] {
+            store.insert(address, &cell(5, &[5, 9, 9, 5], &[]));
+        }
+        store.set_run(2);
+        store.insert(0x10f2, &cell(5, &[5, 7, 7, 5], &[]));
+        store.set_run(0);
+        store.insert(0x10f3, &cell(5, &[5, 3, 3, 5], &[]));
+
+        // Storing every cell's own byte back keeps everything.
+        assert!(!store.remove_changed(0x10f0, &[5, 5, 5, 5]));
+        assert_eq!(store.len(), 5);
+
+        // One changed pixel of run 1 drops all three of its cells, though
+        // the other two keep their bytes.
+        assert!(store.remove_changed(0x10f0, &[6]));
+        assert!(!store.contains(0x10f1));
+        assert!(!store.contains(0x1205));
+        assert!(store.contains(0x10f2));
+        assert!(store.contains(0x10f3));
+
+        // An untagged cell goes alone, as before.
+        assert!(store.remove_changed(0x10f3, &[6]));
+        assert!(store.contains(0x10f2));
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn a_cell_redrawn_by_a_later_run_leaves_the_earlier_one() {
+        let mut store = OffscreenDetail::default();
+        store.set_run(1);
+        store.insert(0x2000, &cell(5, &[5, 9, 9, 5], &[]));
+        store.insert(0x2001, &cell(5, &[5, 9, 9, 5], &[]));
+        store.set_run(2);
+        store.insert(0x2001, &cell(5, &[5, 7, 7, 5], &[]));
+        store.set_run(0);
+        // Run 1 ends; the cell run 2 drew over it stays.
+        assert!(store.remove_changed(0x2000, &[6]));
+        assert!(store.contains(0x2001));
+    }
+
+    #[test]
+    fn a_run_keeps_its_bounds_when_the_run_table_fills_up() {
+        let mut store = OffscreenDetail::default();
+        store.begin_run();
+        store.insert(0x3000, &cell(5, &[5, 9, 9, 5], &[]));
+        store.insert(0x3400, &cell(5, &[5, 9, 9, 5], &[]));
+        // Enough later runs, each taking over one other cell, to fill the
+        // table with runs that no longer own anything.
+        for _ in 0..MAX_RUNS + 1 {
+            store.begin_run();
+            store.insert(0x5000, &cell(5, &[5, 7, 7, 5], &[]));
+        }
+        store.set_run(0);
+        assert!(store.remove_changed(0x3000, &[6]));
+        assert!(!store.contains(0x3400), "the first run lost its bounds");
+        assert!(store.contains(0x5000));
+    }
+
+    #[test]
+    fn a_run_that_redraws_a_cell_unchanged_owns_it() {
+        let mut store = OffscreenDetail::default();
+        let mut ink = [];
+        store.begin_run();
+        store.store_parts(0x2000, 5, &[5, 9, 9, 5], &mut ink);
+        store.begin_run();
+        assert!(!store.store_parts(0x2000, 5, &[5, 9, 9, 5], &mut ink));
+        store.store_parts(0x2001, 5, &[5, 7, 7, 5], &mut ink);
+        store.set_run(0);
+        // Ending the second run takes the redrawn cell with it.
+        assert!(store.remove_changed(0x2001, &[6]));
+        assert!(!store.contains(0x2000));
     }
 
     /// Deterministic xorshift: the model test needs varied but repeatable ops.
@@ -1065,5 +1410,28 @@ mod tests {
         assert!(!Arc::ptr_eq(&changed, &stored));
         assert_eq!(changed.value, 8);
         assert_eq!(changed.ink, stored.ink);
+    }
+
+    #[test]
+    fn run_bounds_rebuilds_are_amortized_above_max_runs() {
+        let mut store = OffscreenDetail::default();
+        let total = MAX_RUNS + 1_024;
+        for i in 0..total {
+            store.begin_run();
+            let address = 0x10_0000 + i as u32;
+            store.cell_mut_or_insert(address, (i & 0xff) as u8, 4);
+        }
+        store.settle_run();
+        // Only the initial threshold crossing at MAX_RUNS triggers a rebuild;
+        // doubling the threshold avoids rebuilding on each subsequent live run.
+        assert_eq!(store.run_bounds_rebuilds, 1);
+        assert_eq!(store.run_bounds.len(), total);
+        assert_eq!(store.count, total);
+
+        // Removing the first and last live runs still finds their cells.
+        assert_eq!(store.remove_runs(&[1, total as u32]), 2);
+        assert!(store.get(0x10_0000).is_none());
+        assert!(store.get(0x10_0000 + (total as u32 - 1)).is_none());
+        assert!(store.get(0x10_0001).is_some());
     }
 }

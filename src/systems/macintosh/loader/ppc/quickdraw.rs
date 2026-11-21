@@ -2376,6 +2376,24 @@ pub(crate) fn ppc_begin_outline_text_glyph(
     let Some((top, left, bottom, right)) = bounds else {
         return;
     };
+    // The one-bit glyph the guest then stores can reach past the outline
+    // (bitmap and outline faces differ in places, such as the arm of an "r").
+    // Cells over its box too make such pixels show the background, like the
+    // uncovered pixels inside the outline; cells nothing stores into stay
+    // blank and go when the run ends.
+    let bitmap_left = i32::from(h) + i32::from(glyph.origin_x);
+    let bitmap_top = i32::from(v) + i32::from(glyph.origin_y);
+    let bitmap_right = bitmap_left
+        + i32::from(glyph.width)
+        + i32::from(style.bold())
+        + italic.map_or(0, |_| (i32::from(glyph.height) + 1) / 2);
+    let bitmap_bottom = bitmap_top + i32::from(glyph.height);
+    let (top, left, bottom, right) = (
+        top.min(bitmap_top),
+        left.min(bitmap_left),
+        bottom.max(bitmap_bottom),
+        right.max(bitmap_right),
+    );
     let fb = surface.front_buffer;
     let lanes = fb.depth / 8;
     let band_top = (top.max(0) + i32::from(surface.top))
@@ -2965,6 +2983,8 @@ pub(crate) fn ppc_draw_text_chars(
     clip_rect: Option<(i16, i16, i16, i16)>,
     chars: impl IntoIterator<Item = char>,
 ) {
+    // One text run: its offscreen detail is kept or dropped together.
+    let _run = PpcDetailRun::begin(memory);
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return;
     };
@@ -2991,6 +3011,7 @@ pub(crate) fn ppc_draw_text_chars(
     let mut base_advance = 0i32;
     let packed_extra = ppc_port_char_extra_packed(memory, current_gworld);
     let mut nonspaces = 0i32;
+    let chars: Vec<char> = chars.into_iter().collect();
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
         if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
@@ -3159,6 +3180,8 @@ pub(crate) fn ppc_draw_text_chars_styled(
     clip_rect: Option<(i16, i16, i16, i16)>,
     chars: impl IntoIterator<Item = char>,
 ) {
+    // One text run: its offscreen detail is kept or dropped together.
+    let _run = PpcDetailRun::begin(memory);
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return;
     };
@@ -4856,7 +4879,7 @@ fn ppc_copy_indexed8_rows_to_rgb555(
     };
     let source_columns = columns.start + shift_x..columns.end + shift_x;
     let source_rows = rows.start + shift_y..rows.end + shift_y;
-    if !inside(src_bits, source_columns.clone(), source_rows, 1)
+    if !inside(src_bits, source_columns.clone(), source_rows.clone(), 1)
         || !inside(dst_bits, columns.clone(), rows.clone(), 2)
     {
         return None;
@@ -4866,6 +4889,14 @@ fn ppc_copy_indexed8_rows_to_rgb555(
             .checked_add((y - i32::from(bits.top)) as u32 * bits.row_bytes)?
             .checked_add((x - i32::from(bits.left)) as u32 * lanes)
     };
+    // Text detail in the source rides along: the rows are written plain
+    // (replacing the destination's detail, as any plain pixel does), then
+    // each source pixel that holds a detail cell gets it back, mapped to the
+    // high and low bytes of its 16-bit pixel.
+    let first = row_address(src_bits, source_columns.start, source_rows.start, 1)?;
+    let last = row_address(src_bits, source_columns.end, source_rows.end - 1, 1)?;
+    let presentation = memory.presentation();
+    let carries_detail = presentation.may_hold_offscreen_detail(first, u64::from(last));
     let width = columns.len();
     let mut source = vec![0u8; width * rows.len()];
     for (bytes, y) in source.chunks_mut(width).zip(rows.clone()) {
@@ -4876,6 +4907,13 @@ fn ppc_copy_indexed8_rows_to_rgb555(
         let [red, green, blue] = clut[index];
         ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue })
     });
+    let detail_bytes: Option<([u8; 256], [u8; 256])> = carries_detail.then(|| {
+        (
+            std::array::from_fn(|index| (rgb555[index] >> 8) as u8),
+            std::array::from_fn(|index| rgb555[index] as u8),
+        )
+    });
+    let mut details = crate::memory::SavedPixels::<()>::default();
     let mut written = 0;
     let mut run = Vec::with_capacity(width * 2);
     for (bytes, y) in source.chunks(width).zip(rows) {
@@ -4914,6 +4952,22 @@ fn ppc_copy_indexed8_rows_to_rgb555(
                 }
             }
             written += (x - start) as usize;
+        }
+        if let Some((high, low)) = detail_bytes.as_ref() {
+            let source_row = row_address(src_bits, source_columns.start, y + shift_y, 1)?;
+            for offset in presentation.offscreen_detail_offsets(source_row, width) {
+                let x = columns.start + offset as i32;
+                let index = bytes[offset];
+                if !mask_rows.contains(y as i16, x as i16) || skip_index == Some(u32::from(index)) {
+                    continue;
+                }
+                let Some(address) = row_address(dst_bits, x, y, 2) else {
+                    continue;
+                };
+                presentation.capture_detail(&mut details, 0, source_row + offset as u32, 1);
+                presentation.restore_copy_detail(&details, 0, address, 1, Some(high));
+                presentation.restore_copy_detail(&details, 0, address + 1, 1, Some(low));
+            }
         }
     }
     Some(Some(written))
@@ -5420,6 +5474,9 @@ pub(crate) fn ppc_copy_bits(
     back_index: Option<u8>,
     op_color: PpcRgbColor,
 ) -> bool {
+    // Detail this copy writes into an offscreen buffer is one run there, so a
+    // guest store that later changes any of it drops all of it.
+    let _run = PpcDetailRun::begin(memory);
     let src_bits_ptr = cpu.gpr[3];
     let dst_bits_ptr = cpu.gpr[4];
     let src_rect_ptr = cpu.gpr[5];
@@ -5807,6 +5864,23 @@ pub(crate) fn ppc_copy_bits(
             _ => return None,
         };
         let mut details = crate::memory::SavedPixels::<()>::default();
+        // An indexed source copied to a 16-bit destination changes every
+        // pixel's representation, so presented text detail cannot be copied
+        // byte for byte. Each source index instead maps to the high and low
+        // bytes of its 16-bit pixel, one table per destination byte.
+        let indexed_to_direct16 = (matches!(mode, 0 | 36)
+            && src_bits.depth == 8
+            && dst_bits.depth == 16)
+            .then_some(src_clut.as_ref())
+            .flatten()
+            .map(|clut| {
+                let (mut high, mut low) = ([0u8; 256], [0u8; 256]);
+                for (index, &[red, green, blue]) in clut.iter().enumerate().take(256) {
+                    let pixel = ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue });
+                    [high[index], low[index]] = pixel.to_be_bytes();
+                }
+                (high, low)
+            });
         let gpu_selected = memory.quickdraw_gpu_renderer().prefers_blit(
             ((copy_right - copy_left) as usize).saturating_mul((copy_bottom - copy_top) as usize),
             matches!(mode, 32..=35 | 37..=39)
@@ -6119,6 +6193,13 @@ pub(crate) fn ppc_copy_bits(
                             address,
                             lanes as usize,
                         );
+                    } else if indexed_to_direct16.is_some() {
+                        let address = src_bits.base_addr
+                            + (src_y - i32::from(src_bits.top)) as u32 * src_bits.row_bytes
+                            + (src_x - i32::from(src_bits.left)) as u32;
+                        memory
+                            .presentation()
+                            .capture_detail(&mut details, writes.len(), address, 1);
                     }
                     writes.push((dst_x, dst_y, pixel));
                 }
@@ -6133,6 +6214,12 @@ pub(crate) fn ppc_copy_bits(
             reason = "no-pixels";
             return None;
         }
+        // A run of plain pixels along a single destination row, whose bytes
+        // replace whatever detail the destination held there. Splitting at row
+        // boundaries keeps each `discard_detail` call within one row so its
+        // per-row text-count fast path stays exact.
+        let mut plain_run: (i32, u32, Vec<u8>) = (0, 0, Vec::new());
+        let copies_detail = details.detail_offsets().next().is_some();
         for (index, (x, y, pixel)) in writes.into_iter().enumerate() {
             ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
             if matches!(dst_bits.depth, 8 | 16) {
@@ -6140,14 +6227,32 @@ pub(crate) fn ppc_copy_bits(
                 let address = dst_bits.base_addr
                     + (y - i32::from(dst_bits.top)) as u32 * dst_bits.row_bytes
                     + (x - i32::from(dst_bits.left)) as u32 * lanes;
-                memory.presentation().restore_detail(
-                    &details,
-                    index * lanes as usize,
-                    address,
-                    lanes as usize,
-                );
+                if let Some((high, low)) = indexed_to_direct16.as_ref() {
+                    if copies_detail && details.has_detail_at(index) {
+                        let presentation = memory.presentation();
+                        presentation.discard_detail(plain_run.1, &plain_run.2);
+                        plain_run.2.clear();
+                        presentation.restore_copy_detail(&details, index, address, 1, Some(high));
+                        presentation.restore_copy_detail(&details, index, address + 1, 1, Some(low));
+                    } else {
+                        if plain_run.1 + plain_run.2.len() as u32 != address || plain_run.0 != y {
+                            memory.presentation().discard_detail(plain_run.1, &plain_run.2);
+                            plain_run = (y, address, std::mem::take(&mut plain_run.2));
+                            plain_run.2.clear();
+                        }
+                        plain_run.2.extend_from_slice(&(pixel as u16).to_be_bytes());
+                    }
+                } else {
+                    memory.presentation().restore_detail(
+                        &details,
+                        index * lanes as usize,
+                        address,
+                        lanes as usize,
+                    );
+                }
             }
         }
+        memory.presentation().discard_detail(plain_run.1, &plain_run.2);
         Some(())
     })();
     let copied = copied.is_some();
@@ -6795,5 +6900,25 @@ pub(crate) fn ppc_read_packed_bitmap_index(
         }
         8 => memory.read_u8(row.checked_add(x)?),
         _ => None,
+    }
+}
+
+/// Draws inside one text run until dropped; see `begin_detail_run`.
+struct PpcDetailRun {
+    slot: crate::memory::presentation::PresentationSlot,
+    previous: u32,
+}
+
+impl PpcDetailRun {
+    fn begin(memory: &mut PpcSectionMem) -> Self {
+        let slot = memory.presentation();
+        let previous = slot.begin_detail_run();
+        Self { slot, previous }
+    }
+}
+
+impl Drop for PpcDetailRun {
+    fn drop(&mut self) {
+        self.slot.end_detail_run(self.previous);
     }
 }

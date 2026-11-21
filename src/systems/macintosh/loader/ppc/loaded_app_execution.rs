@@ -426,6 +426,11 @@ impl PpcLoadedApp {
         let result = {
             type Mem = PpcSectionMem;
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
+                // The import is a Toolbox call Systemless performs, not guest
+                // code; guest stores resume when it returns.
+                let presentation = memory.presentation();
+                presentation.set_guest_stores(false);
+                let _guest_stores_resume = PpcGuestStoresResume(presentation);
                 if index == PPC_THREAD_RETURN_IMPORT_INDEX {
                     // ThreadEntryProc returns its result in R3. Retire only
                     // after validating the successor and result destination.
@@ -2414,6 +2419,8 @@ impl PpcLoadedApp {
                         cycles: total_cycles,
                     };
                 }
+                let presentation = self.memory.presentation();
+                presentation.set_guest_stores(true);
                 let mut step_result = if let Some(range) = ppc_watch_range() {
                     let mut write_observer = PpcWatchObserver { range };
                     self.cpu.run_with_imports_and_observers_and_cycle_handler(
@@ -2447,6 +2454,7 @@ impl PpcLoadedApp {
                         &mut handle_import,
                     )
                 };
+                presentation.set_guest_stores(false);
                 total_cycles = total_cycles.saturating_add(ppc_run_result_cycles(step_result));
 
                 if let PpcRunResult::Exception {
@@ -2901,5 +2909,15 @@ pub(crate) fn ppc_run_result_with_cycles(result: PpcRunResult, cycles: u64) -> P
             cycles,
         },
         PpcRunResult::FetchFault { pc, .. } => PpcRunResult::FetchFault { pc, cycles },
+    }
+}
+
+/// Marks stores as guest code's again when a Toolbox call returns, on every
+/// path out of the import handler.
+struct PpcGuestStoresResume(crate::memory::presentation::PresentationSlot);
+
+impl Drop for PpcGuestStoresResume {
+    fn drop(&mut self) {
+        self.0.set_guest_stores(true);
     }
 }

@@ -247,6 +247,13 @@ impl PresentationSlot {
     pub fn as_ref(&self) -> Option<std::cell::Ref<'_, Presentation>> {
         std::cell::Ref::filter_map(self.0.borrow(), |p| p.as_ref()).ok()
     }
+    /// Mark whether stores now come from guest code, returning the previous
+    /// setting.
+    pub(crate) fn set_guest_stores(&self, guest: bool) -> bool {
+        self.as_mut()
+            .map(|mut p| std::mem::replace(&mut p.guest_stores, guest))
+            .unwrap_or(false)
+    }
     pub fn as_mut(&self) -> Option<std::cell::RefMut<'_, Presentation>> {
         std::cell::RefMut::filter_map(self.0.borrow_mut(), |p| p.as_mut()).ok()
     }
@@ -265,6 +272,49 @@ impl PresentationSlot {
     /// this slot presents. See `Presentation::page_may_be_observed`.
     pub(crate) fn page_may_be_observed(&self, page_start: u32) -> bool {
         self.as_ref().is_some_and(|p| p.page_may_be_observed(page_start))
+    }
+    /// Drop whatever detail `bytes`, now stored at `address`, replaced.
+    /// A copy that brings plain pixels replaces the destination's detail
+    /// even where a byte is the same as before.
+    pub(crate) fn discard_detail(&self, address: u32, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(mut p) = self.as_mut() {
+            let end = u64::from(address) + bytes.len() as u64;
+            if let Some((x, y)) = p.position(address) {
+                // Only cells that hold text have detail to lose.
+                if p.text_row_counts[y as usize] == 0 {
+                    return;
+                }
+                let start = (y * p.width + x) as usize;
+                for (i, &value) in bytes.iter().enumerate() {
+                    if p.text_cells.get(start + i).copied().unwrap_or(false) {
+                        p.write(address + i as u32, value);
+                    }
+                }
+            } else if p.may_have_offscreen_detail(address, end)
+                && p.offscreen.remove_range(address, end)
+            {
+                p.changed(false);
+            }
+        }
+    }
+    /// Whether `[address, end)` may hold retained offscreen text detail.
+    pub(crate) fn may_hold_offscreen_detail(&self, address: u32, end: u64) -> bool {
+        self.as_ref()
+            .is_some_and(|p| p.may_have_offscreen_detail(address, end))
+    }
+    /// The offsets in `[address, address + len)` that hold offscreen
+    /// detail cells, in order.
+    pub(crate) fn offscreen_detail_offsets(&self, address: u32, len: usize) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        if let Some(p) = self.as_ref() {
+            if p.may_have_offscreen_detail(address, u64::from(address) + len as u64) {
+                p.offscreen.visit_cells(address, len, |offset, _| offsets.push(offset));
+            }
+        }
+        offsets
     }
     pub fn observes(&self, address: u32, len: usize) -> bool {
         self.as_ref()
@@ -336,7 +386,12 @@ impl PresentationSlot {
                 if !p.may_have_offscreen_detail(address, end) {
                     return;
                 }
-                if p.offscreen.remove_range(address, end) {
+                let removed = if p.guest_stores {
+                    p.offscreen.remove_changed(address, bytes)
+                } else {
+                    p.offscreen.remove_range(address, end)
+                };
+                if removed {
                     p.changed(false);
                     p.forget_emptied_offscreen_pages(address, end);
                 }
@@ -609,6 +664,11 @@ impl<T> From<Vec<T>> for SavedPixels<T> {
     }
 }
 impl<T> SavedPixels<T> {
+    /// The logical offsets that carry retained subpixel detail.
+    pub(crate) fn detail_offsets(&self) -> impl Iterator<Item = usize> + '_ {
+        self.detail.keys().copied()
+    }
+
     /// Whether the logical byte at `offset` carries retained subpixel detail.
     pub(crate) fn has_detail_at(&self, offset: usize) -> bool {
         self.detail.contains_key(&offset)
@@ -929,6 +989,11 @@ pub(crate) struct Presentation {
     offscreen_run_ink: OffscreenRunInk,
     in_text_run: bool,
     pub erasing_text: bool,
+    /// Stores now come from guest code rather than from a Toolbox call
+    /// Systemless performs. Guest blitters read, mask and write back every
+    /// byte they compose, so an offscreen store of a byte's own value keeps
+    /// its detail; a native fill is drawing, and replaces it.
+    guest_stores: bool,
     glyph: Option<(OutlineGlyph, i16, i16)>,
     pub glyph_count: usize,
     /// The address of a pending store whose presentation update the
@@ -937,6 +1002,21 @@ pub(crate) struct Presentation {
     superseded_write: Option<u32>,
     /// Scratch for row copies (`MacMemoryBus::copy_detail_rows`).
     copied: CopiedDetail,
+    /// Per screen row, the last `sync_presented_bytes` that carried offscreen
+    /// detail onto it: its destination and source, the detail generation it
+    /// saw and a screen mark taken after it. While neither side has changed,
+    /// an identical row brings nothing new.
+    synced_rows: Vec<Option<SyncedRow>>,
+}
+
+/// See `Presentation::synced_rows`.
+#[derive(Clone, Copy)]
+struct SyncedRow {
+    destination: u32,
+    source: u32,
+    len: usize,
+    generation: u64,
+    mark: ScreenMark,
 }
 
 impl Presentation {
@@ -959,6 +1039,55 @@ impl Presentation {
         if let Some(epochs) = self.tile_epochs.get_mut(tiles) {
             epochs.fill(self.screen_epoch);
         }
+    }
+
+    /// Whether the last detail sync of `len` bytes from `source` onto the
+    /// screen row at `destination` still holds: the source's detail has not
+    /// changed since, nor have the row's screen cells.
+    fn row_sync_is_current(&self, destination: u32, source: u32, len: usize) -> bool {
+        let Some((x, y)) = self.position(destination) else {
+            return false;
+        };
+        let Some(row) = self.synced_rows.get(y as usize).copied().flatten() else {
+            return false;
+        };
+        row.destination == destination
+            && row.source == source
+            && row.len == len
+            && !self.offscreen.changed_since(source, len, row.generation)
+            && i16::try_from(len).is_ok_and(|width| {
+                self.screen_rect_unchanged_since(row.mark, (y as i16, x as i16, width, 1))
+            })
+    }
+
+    /// Record a detail sync of `len` bytes from `source` onto `destination`,
+    /// which saw the offscreen detail as of `generation`.
+    fn note_row_synced(&mut self, destination: u32, source: u32, len: usize, generation: u64) {
+        let Some((_, y)) = self.position(destination) else {
+            return;
+        };
+        let mark = self.screen_mark();
+        let y = y as usize;
+        if self.synced_rows.len() <= y {
+            self.synced_rows.resize(y + 1, None);
+        }
+        self.synced_rows[y] = Some(SyncedRow {
+            destination,
+            source,
+            len,
+            generation,
+            mark,
+        });
+    }
+
+    /// Whether a detail sync onto the screen row at `destination` was
+    /// recorded, so that `row_sync_is_current` may hold.
+    fn row_sync_recorded(&self, destination: u32) -> bool {
+        self.position(destination).is_some_and(|(_, y)| {
+            self.synced_rows
+                .get(y as usize)
+                .is_some_and(|row| row.is_some_and(|row| row.destination == destination))
+        })
     }
 
     fn screen_mark(&self) -> ScreenMark {
@@ -1926,6 +2055,9 @@ impl Presentation {
             self.finish_cpu_recolor();
         }
         if self.matches_detail(address, Some(cell)) {
+            if self.position(address).is_none() {
+                self.offscreen.retag(address);
+            }
             return;
         }
         let position = self.position(address);
@@ -3178,6 +3310,28 @@ impl MacMemoryBus {
             return;
         }
         let source_end = u64::from(source) + bytes.len() as u64;
+        // A row last synced with detail, unchanged on both sides since and
+        // holding the same bytes, brings nothing new. Only such rows pay for
+        // the comparison.
+        let mut same_bytes = None;
+        if self
+            .presentation
+            .as_ref()
+            .is_some_and(|p| p.row_sync_recorded(destination))
+        {
+            let same = self
+                .untraced_ram_slice(destination, bytes.len())
+                .is_some_and(|previous| previous == bytes);
+            if same
+                && self
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|p| p.row_sync_is_current(destination, source, bytes.len()))
+            {
+                return;
+            }
+            same_bytes = Some(same);
+        }
         let destination_address = self.translate_guest_address(destination);
         let plain_row = self.presentation.as_ref().is_some_and(|p| {
             p.can_sync_plain_screen_row(destination_address, bytes.len())
@@ -3189,10 +3343,11 @@ impl MacMemoryBus {
         }
         // Most mirror rows are unchanged. Compare contiguous RAM once while
         // retaining the routed/traced fallback and changed-byte write behavior.
-        if !self
-            .untraced_ram_slice(destination, bytes.len())
-            .is_some_and(|previous| previous == bytes)
-        {
+        let same_bytes = same_bytes.unwrap_or_else(|| {
+            self.untraced_ram_slice(destination, bytes.len())
+                .is_some_and(|previous| previous == bytes)
+        });
+        if !same_bytes {
             let previous = self.read_bytes(destination, bytes.len());
             for (i, (&old, &new)) in previous.iter().zip(bytes).enumerate() {
                 if old != new {
@@ -3207,6 +3362,7 @@ impl MacMemoryBus {
             {
                 return;
             }
+            let generation = offscreen::current_generation();
             let changes = {
                 // Most bytes carry no source detail: test each run between
                 // the source's detail cells in one pass.
@@ -3240,6 +3396,7 @@ impl MacMemoryBus {
                     p.write(address, value);
                 }
             }
+            p.note_row_synced(destination, source, bytes.len(), generation);
         }
     }
 
@@ -3305,6 +3462,13 @@ impl MacMemoryBus {
         self.presentation
             .capture_detail(&mut pixels, 0, address, len);
         pixels
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_detail(&self, address: u32) -> bool {
+        self.presentation
+            .as_ref()
+            .is_some_and(|p| p.detail(address).is_some())
     }
 
     #[cfg(test)]
@@ -3984,10 +4148,12 @@ impl MacMemoryBus {
             offscreen_run_ink: OffscreenRunInk::default(),
             in_text_run: false,
             erasing_text: false,
+            guest_stores: false,
             glyph: None,
             glyph_count: 0,
             superseded_write: None,
             copied: CopiedDetail::default(),
+            synced_rows: Vec::new(),
         };
         for y in 0..u32::from(height) {
             for x in 0..u32::from(width) {
@@ -4059,6 +4225,7 @@ impl PresentationSlot {
             p.offscreen_run_ink.clear();
             p.in_text_run = opaque;
         }
+        self.begin_detail_run();
     }
 
     pub(crate) fn end_presentation_text_run(&mut self) {
@@ -4066,6 +4233,25 @@ impl PresentationSlot {
             p.run_ink.clear();
             p.offscreen_run_ink.clear();
             p.in_text_run = false;
+        }
+        self.end_detail_run(0);
+    }
+
+    /// Start a new text run: offscreen detail cells drawn until
+    /// `end_detail_run` share its identity, and a guest store that changes
+    /// any one of their pixels drops them all. Returns the run to restore.
+    pub(crate) fn begin_detail_run(&self) -> u32 {
+        self.as_mut()
+            .map(|mut p| p.offscreen.begin_run())
+            .unwrap_or(0)
+    }
+
+    /// End the current text run, restoring `previous`. The run's cells
+    /// that show only their own byte go: they look like the plain pixel.
+    pub(crate) fn end_detail_run(&self, previous: u32) {
+        if let Some(mut p) = self.as_mut() {
+            p.offscreen.drop_blank_run_cells();
+            p.offscreen.set_run(previous);
         }
     }
 
@@ -6427,6 +6613,38 @@ mod tests {
     }
 
     #[test]
+    fn an_identical_row_is_synced_again_after_either_side_changes() {
+        // A row synced with source detail is skipped while nothing changed;
+        // new source detail, or a screen cell changed in between, must reach
+        // the screen even though the row's bytes are the same.
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x8004);
+        let bytes = [0u8; 8];
+        bus.sync_presented_bytes(0x1000, 0x8000, &bytes);
+        let detail = |bus: &MacMemoryBus, address| bus.presentation.as_ref().unwrap().detail(address);
+        let source = detail(&bus, 0x8004).unwrap();
+        assert_eq!(detail(&bus, 0x1004), Some(source.clone()));
+        let epoch = bus.presentation_epoch();
+        bus.sync_presented_bytes(0x1000, 0x8000, &bytes);
+        assert_eq!(bus.presentation_epoch(), epoch, "an unchanged row is skipped");
+
+        paint_detail(&mut bus, 0x8002);
+        bus.sync_presented_bytes(0x1000, 0x8000, &bytes);
+        assert!(detail(&bus, 0x1002).is_some());
+        assert_eq!(detail(&bus, 0x1002), detail(&bus, 0x8002));
+
+        let mut other = (*source).clone();
+        other.indices[0] ^= 1;
+        bus.presentation
+            .as_mut()
+            .unwrap()
+            .put_detail(0x1004, &Arc::new(other));
+        assert_ne!(detail(&bus, 0x1004), Some(source.clone()));
+        bus.sync_presented_bytes(0x1000, 0x8000, &bytes);
+        assert_eq!(detail(&bus, 0x1004), Some(source));
+    }
+
+    #[test]
     fn plain_mismatch_scan_matches_the_per_byte_test() {
         // Rows of 12 bytes with 8 visible, so ranges cross row padding.
         let mut bus = MacMemoryBus::new(1024 * 1024);
@@ -7214,7 +7432,22 @@ mod tests {
                     .as_ref(),
                 expected.detail.get(&0)
             );
-            memory.write_bytes(destination, &[0]).unwrap();
+            // Guest code storing the byte already there leaves the pixel, and
+            // its detail, as it was. A Toolbox call Systemless performs is
+            // drawing when it stores, so the same store drops the detail.
+            let mut held = [0u8];
+            memory.read_bytes_into(destination, &mut held).unwrap();
+            let held = held[0];
+            memory.presentation().set_guest_stores(true);
+            memory.write_bytes(destination, &[held]).unwrap();
+            assert!(bus
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail(destination)
+                .is_some());
+            memory.presentation().set_guest_stores(false);
+            memory.write_bytes(destination, &[held]).unwrap();
             assert!(bus
                 .presentation
                 .as_ref()
