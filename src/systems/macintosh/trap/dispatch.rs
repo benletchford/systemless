@@ -4201,7 +4201,7 @@ impl TrapDispatcher {
             explicit_palette_ctabs: HashSet::default(),
             icon_transform_override: 0,
             printing_error: 0,
-            next_ct_seed: 1,
+            next_ct_seed: Self::FIRST_DYNAMIC_CT_SEED,
             fill_black_override: None,
             recording_picture: None,
             recording_picture_bitmap: None,

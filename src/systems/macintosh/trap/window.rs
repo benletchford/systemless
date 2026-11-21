@@ -425,11 +425,7 @@ impl super::TrapDispatcher {
         for offset in 0..byte_size {
             bus.write_byte(ctab_ptr + offset, bus.read_byte(resource_ptr + offset));
         }
-        let seed = self.next_ct_seed;
-        self.next_ct_seed = self.next_ct_seed.wrapping_add(1);
-        if self.next_ct_seed == 0 {
-            self.next_ct_seed = 1;
-        }
+        let seed = self.next_color_table_seed();
         bus.write_long(ctab_ptr, seed);
         let ctab_handle = bus.alloc(4);
         bus.write_long(ctab_handle, ctab_ptr);

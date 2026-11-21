@@ -27928,7 +27928,12 @@ fn copy_bits_converts_between_direct_color_depths() {
         let (mut d, mut cpu, mut bus) = setup();
         let result = d.dispatch_quickdraw(true, 0x228, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(bus.read_long(TEST_SP), 1);
+        assert!(bus.read_long(TEST_SP) > 1023);
+
+        // Wrapping the counter must also skip the predefined table seeds.
+        d.next_ct_seed = u32::MAX;
+        assert_eq!(d.next_color_table_seed(), u32::MAX);
+        assert!(d.next_color_table_seed() > 1023);
     }
 
     #[test]
