@@ -5790,6 +5790,21 @@ impl super::TrapDispatcher {
                     } else {
                         Vec::new()
                     };
+                    // Hiding a window repaints what it uncovered in the
+                    // windows behind: with PaintWhite set, each one's newly
+                    // exposed content is erased and added to its update
+                    // region (Inside Macintosh Volume I, I-285 and I-296 to
+                    // I-297). On a genuine Quadra 650 ROM with Mac OS 7.5.3,
+                    // the state after Fluffy's Adventure 1.2 closes its
+                    // Keyboard Settings dialog with Cancel is a clean status
+                    // bar, although the game's own update skips its erase on
+                    // that path (observed after the update; no pixel was
+                    // sampled before event dispatch). Record what each window
+                    // behind could see before the hide.
+                    let visibility_before_hide: Vec<(u32, u32)> = windows_behind
+                        .iter()
+                        .map(|&window| (window, self.snapshot_window_visibility(bus, window)))
+                        .collect();
                     let visible_byte = bus.read_byte(the_window + Self::WINDOW_VISIBLE_OFFSET);
                     if (visible_byte ^ show_byte) & 1 != 0 {
                         bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, show_byte);
@@ -5837,6 +5852,18 @@ impl super::TrapDispatcher {
                     } else {
                         self.clear_queued_update_events(the_window);
                         self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
+                    }
+                    let erase_content =
+                        bus.read_word(crate::memory::globals::addr::PAINT_WHITE) != 0;
+                    for (window, old_visible) in visibility_before_hide {
+                        self.paint_newly_exposed_window(
+                            bus,
+                            cpu,
+                            window,
+                            old_visible,
+                            true,
+                            erase_content,
+                        );
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
