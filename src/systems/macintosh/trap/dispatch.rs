@@ -1625,7 +1625,7 @@ pub struct TrapDispatcher {
     /// Virtual filesystem: filename -> resource fork contents
     pub vfs_rsrc: SharedProcessValue<ProcessForkMap>,
     /// Finder metadata and catalog IDs for VFS file entries.
-    pub(crate) vfs_metadata: SharedProcessValue<HashMap<String, VfsMetadata>>,
+    pub(crate) vfs_metadata: SharedProcessValue<crate::process_context::ProcessVfsMetadataMap>,
     /// Canonical process directory catalogue shared with the native adapter.
     /// Files (1992), pp. 2-27--2-29 and 2-190--2-192.
     pub(crate) vfs_directories: SharedProcessValue<Vec<VfsDirectory>>,

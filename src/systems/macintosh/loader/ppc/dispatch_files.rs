@@ -13,7 +13,7 @@ pub(super) struct PpcFileDispatchContext<'a> {
     pub(super) files: &'a mut Vec<PpcFileRecord>,
     pub(super) writable_refnums: &'a mut HashSet<u16>,
     pub(super) vfs_files: &'a mut ProcessVfsFileRecords,
-    pub(super) vfs_metadata: &'a crate::process_context::SharedProcessValue<HashMap<String, crate::process_context::ProcessVfsMetadata>>,
+    pub(super) vfs_metadata: &'a crate::process_context::SharedProcessValue<crate::process_context::ProcessVfsMetadataMap>,
     pub(super) vfs_directories: &'a mut Vec<PpcVfsDirectory>,
     pub(super) next_vfs_dir_id: &'a mut u32,
     pub(super) deleted_vfs_file_paths: &'a mut Vec<String>,

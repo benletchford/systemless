@@ -1308,7 +1308,7 @@ pub struct ProcessFileSystemState {
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
     pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     pub(crate) default_dir_id: SharedProcessValue<u32>,
-    pub(crate) classic_vfs_metadata: SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
+    pub(crate) classic_vfs_metadata: SharedProcessValue<ProcessVfsMetadataMap>,
     pub(crate) classic_locked_files: SharedProcessValue<HashSet<String>>,
     pub(crate) classic_next_vfs_file_id: SharedProcessValue<u32>,
     pub(crate) classic_next_vfs_timestamp: SharedProcessValue<u32>,
@@ -1329,7 +1329,7 @@ pub(crate) struct PublishedVfsCatalogue {
     resource_files_version: u64,
     directories_fingerprint: u64,
     classic_metadata_ptr: usize,
-    classic_metadata_len: usize,
+    classic_metadata_revision: u64,
     dirty_paths: Vec<String>,
 }
 
@@ -1578,14 +1578,14 @@ impl ProcessFileSystemState {
         let resource_files_version = self.vfs_resource_files.version();
         let directories_fingerprint = process_vfs_directories_fingerprint(&self.vfs_directories);
         let classic_metadata_ptr = Rc::as_ptr(&self.classic_vfs_metadata.0) as usize;
-        let classic_metadata_len = self.classic_vfs_metadata.len();
+        let classic_metadata_revision = self.classic_vfs_metadata.revision;
         if self.deleted_vfs_file_paths.is_empty() {
-            if let Some(published) = self.published_catalogue.as_ref() {
+            if let Some(published) = self.published_catalogue.as_mut() {
                 if published.files_version == files_version
                     && published.resource_files_version == resource_files_version
                     && published.directories_fingerprint == directories_fingerprint
                     && published.classic_metadata_ptr == classic_metadata_ptr
-                    && published.classic_metadata_len == classic_metadata_len
+                    && published.classic_metadata_revision == classic_metadata_revision
                 {
                     if !published.dirty_paths.is_empty() {
                         self.classic_next_vfs_timestamp.with_mut(|next_timestamp| {
@@ -1599,6 +1599,7 @@ impl ProcessFileSystemState {
                             });
                         });
                     }
+                    published.classic_metadata_revision = self.classic_vfs_metadata.revision;
                     return;
                 }
             }
@@ -1710,7 +1711,7 @@ impl ProcessFileSystemState {
                 resource_files_version: self.vfs_resource_files.version(),
                 directories_fingerprint,
                 classic_metadata_ptr: Rc::as_ptr(&self.classic_vfs_metadata.0) as usize,
-                classic_metadata_len: self.classic_vfs_metadata.len(),
+                classic_metadata_revision: self.classic_vfs_metadata.revision,
                 dirty_paths,
             }
         });
@@ -3966,7 +3967,28 @@ impl SharedProcessValue<HashSet<String>> {
     }
 }
 
-impl SharedProcessValue<HashMap<String, ProcessVfsMetadata>> {
+/// All attached File Manager adapters share this revision along with the map.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ProcessVfsMetadataMap {
+    entries: HashMap<String, ProcessVfsMetadata>,
+    revision: u64,
+}
+
+impl std::ops::Deref for ProcessVfsMetadataMap {
+    type Target = HashMap<String, ProcessVfsMetadata>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl std::ops::DerefMut for ProcessVfsMetadataMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.revision = self.revision.wrapping_add(1);
+        &mut self.entries
+    }
+}
+
+impl SharedProcessValue<ProcessVfsMetadataMap> {
     pub(crate) fn reserve(&self, additional: usize) {
         self.with_mut(|metadata| metadata.reserve(additional));
     }
@@ -4006,7 +4028,7 @@ impl SharedProcessValue<HashMap<String, ProcessVfsMetadata>> {
     }
 
     pub(crate) fn take(&self) -> HashMap<String, ProcessVfsMetadata> {
-        self.with_mut(std::mem::take)
+        self.with_mut(|metadata| std::mem::take(&mut **metadata))
     }
 }
 
@@ -11203,7 +11225,7 @@ impl ProcessContext {
     pub(crate) fn attach_classic_vfs_catalogue(
         &self,
         directories: &mut SharedProcessValue<Vec<ProcessVfsDirectory>>,
-        metadata: &mut SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
+        metadata: &mut SharedProcessValue<ProcessVfsMetadataMap>,
         locked_files: &mut SharedProcessValue<HashSet<String>>,
         next_dir_id: &mut SharedProcessValue<u32>,
         next_file_id: &mut SharedProcessValue<u32>,
@@ -11213,7 +11235,7 @@ impl ProcessContext {
         directories.attach_to(&self.file_system.vfs_directories, |directories| {
             process_vfs_directories_are_pristine(directories)
         });
-        metadata.attach_to(&self.file_system.classic_vfs_metadata, HashMap::is_empty);
+        metadata.attach_to(&self.file_system.classic_vfs_metadata, |map| map.is_empty());
         locked_files.attach_to(&self.file_system.classic_locked_files, HashSet::is_empty);
         next_dir_id.attach_to(&self.file_system.next_vfs_dir_id, |value| {
             matches!(*value, 0 | 16 | 18 | 19)
@@ -13962,7 +13984,7 @@ mod tests {
             dirty: false,
         }]);
         let mut first_metadata =
-            SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
+            SharedProcessValue::<ProcessVfsMetadataMap>::default();
         let mut first_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut first_next_dir_id = SharedProcessValue::from_value(16);
         let mut first_next_file_id = SharedProcessValue::from_value(32);
@@ -13980,7 +14002,7 @@ mod tests {
         );
 
         let mut second_metadata =
-            SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
+            SharedProcessValue::<ProcessVfsMetadataMap>::default();
         let mut second_directories = SharedProcessValue::<Vec<ProcessVfsDirectory>>::default();
         let mut second_locked_files = SharedProcessValue::<HashSet<String>>::default();
         let mut second_next_dir_id = SharedProcessValue::from_value(16);
@@ -14505,6 +14527,15 @@ mod tests {
         state.publish_native_vfs_catalogue();
         let save_mod_2 = state.classic_vfs_metadata["Disc/SaveFile"].modified_date;
         assert!(save_mod_2 > save_mod_1);
+
+        let classic = state.classic_vfs_metadata.shared_handle();
+        classic.with_mut(|map| {
+            let replacement = map["Disc/SaveFile"];
+            map.remove("Disc/ReadOnly");
+            map.insert("Disc/Another".into(), replacement);
+        });
+        state.publish_native_vfs_catalogue();
+        assert!(state.classic_vfs_metadata.contains_key("Disc/ReadOnly"));
 
         // Mutating an existing record through DerefMut invalidates the cache.
         state.vfs_files[0].file_type = u32::from_be_bytes(*b"DATA");

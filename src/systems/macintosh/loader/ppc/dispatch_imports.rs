@@ -83,7 +83,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) files: &'a mut Vec<PpcFileRecord>,
     pub(crate) writable_refnums: &'a mut HashSet<u16>,
     pub(crate) vfs_files: &'a mut ProcessVfsFileRecords,
-    pub(crate) vfs_metadata: &'a crate::process_context::SharedProcessValue<HashMap<String, crate::process_context::ProcessVfsMetadata>>,
+    pub(crate) vfs_metadata: &'a crate::process_context::SharedProcessValue<crate::process_context::ProcessVfsMetadataMap>,
     pub(crate) stdio_streams: &'a mut HashMap<u32, PpcStdioStreamRecord>,
     pub(crate) deleted_vfs_file_paths: &'a mut Vec<String>,
     pub(crate) resource_files: &'a mut Vec<PpcResourceFileRecord>,
