@@ -4821,6 +4821,20 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 4);
                     return Some(Ok(()));
                 }
+                // ShowHide leaves a window already in the requested state
+                // untouched: no region recalculation, frame redraw or update
+                // (boot3 WindowMgr.a ShowWindow/ShowHide; IM:I I-285). An
+                // application may call ShowWindow on its visible main window
+                // while a dialog sits in front of it; rebuilding that
+                // window's visRgn from its content would let its drawing
+                // paint over the dialog.
+                if the_window != 0
+                    && !resolved_user_item_proc
+                    && self.window_visible(bus, the_window)
+                {
+                    cpu.write_reg(Register::A7, sp + 4);
+                    return Some(Ok(()));
+                }
                 let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
