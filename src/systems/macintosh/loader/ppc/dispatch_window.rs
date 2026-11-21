@@ -23,7 +23,6 @@ pub(crate) const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = crate::window_manager::WI
 pub(crate) const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = crate::window_manager::WINDOW_REF_CON_OFFSET;
 /// Size of a CWindowRecord: the most NewCWindow may touch in caller storage.
 pub(crate) const PPC_CWINDOW_RECORD_SIZE: u32 = crate::window_manager::WINDOW_RECORD_SIZE;
-pub(crate) const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 pub(crate) const PPC_CWINDOW_CONTROL_LIST_OFFSET: u32 = 140;
 pub(crate) const PPC_LM_WINDOW_LIST_ADDR: u32 = crate::window_manager::LM_WINDOW_LIST_ADDR;
 pub(crate) const PPC_LM_AUX_WIN_HEAD_ADDR: u32 = crate::window_manager::LM_AUX_WIN_HEAD_ADDR;
@@ -636,7 +635,8 @@ pub(super) fn dispatch_window_import(
                 can_write,
             ) {
                 let is_tracked = window_list.contains_window(params.window_ptr());
-                let color_table = ppc_window_color_table_handle(memory, params.window_ptr());
+                let color_table =
+                    ppc_window_color_table_handle(memory, window_list, params.window_ptr());
                 let (ctab, success) =
                     crate::window_manager::evaluate_get_aux_win(color_table, is_tracked);
                 if params.out_aux_ctable_ptr() != 0 {
@@ -1052,10 +1052,7 @@ pub(super) fn dispatch_window_import(
                 let color_table = params.color_table_ptr();
                 let storage = if window == 0 { PPC_MAIN_GWORLD } else { window };
                 if !ppc_window_is_dialog(memory, storage) {
-                    let _ = memory.write_u32_be(
-                        storage.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
-                        color_table,
-                    );
+                    window_list.set_window_color_table(storage, color_table);
                 }
                 if window != 0 {
                     if let Some(content_color) = ppc_window_content_color(memory, color_table) {
@@ -1096,6 +1093,7 @@ pub(super) fn dispatch_window_import(
                 Some(&mut allocator),
                 memory,
                 gworlds,
+                window_list,
                 params.window_ptr(),
                 params.clobbered_rgn_ptr(),
                 toolbox_startup.host_menu_bar_hidden,
@@ -3213,6 +3211,40 @@ pub(super) fn ppc_get_new_cwindow(
         return 0;
     }
 
+    // A 'wctb' with the window's resource ID becomes its color table, as
+    // SetWinColor would install it: the content color is the port's
+    // background and PaintOne's erase color. Inside Macintosh Volume V
+    // (1986), p. V-207; the 68K GetNewCWindow does the same.
+    if let Some(index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"wctb"),
+        window_id,
+        false,
+    ) {
+        let bytes = vfs_resources[index].data.to_vec();
+        let color_table = ppc_allocator_view_allocate_handle_with_bytes(
+            Some(&mut allocator),
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            &bytes,
+        );
+        if color_table != 0 {
+            window_list.set_window_color_table(window, color_table);
+            if let Some(content_color) = ppc_window_content_color(memory, color_table) {
+                let _ = ppc_write_port_rgb_color(
+                    memory,
+                    window,
+                    PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                    content_color,
+                );
+            }
+        }
+    }
+
     // GetNewCWindow calls GetNewPalette with the window resource ID and
     // associates the resulting palette with the new window. If that palette
     // is absent, the application palette ('pltt' 0) is the default.
@@ -3441,6 +3473,7 @@ pub(super) fn ppc_paint_one(
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     window: u32,
     clobbered_rgn: u32,
     host_menu_bar_hidden: bool,
@@ -3539,7 +3572,7 @@ pub(super) fn ppc_paint_one(
     // exposed content with the window's background before adding it to the
     // update region. A color window uses its content entry in the WCTab.
     // These Window Manager coordinates are global screen-buffer pixels.
-    let background = ppc_window_color_table_handle(memory, window)
+    let background = ppc_window_color_table_handle(memory, window_list, window)
         .and_then(|handle| ppc_window_content_color(memory, handle))
         .unwrap_or(PPC_RGB_WHITE);
     let visible = memory
@@ -4045,7 +4078,7 @@ fn ppc_window_paint_one_color(
             ))
             .filter(|handle| handles.iter().any(|record| record.handle == *handle))
     } else {
-        ppc_window_color_table_handle(memory, window)
+        ppc_window_color_table_handle(memory, window_list, window)
     };
     color_table
         .and_then(|handle| ppc_window_content_color(memory, handle))
@@ -4101,15 +4134,17 @@ fn ppc_erase_exposed_window_content(
     let _ = ppc_paint_window_background_bounds(memory, gworlds, window, local, color);
 }
 
-fn ppc_window_color_table_handle(memory: &mut PpcSectionMem, window: u32) -> Option<u32> {
-    // DialogRecord overlays the CWindowRecord extension at +164 with its
-    // editField/editOpen state. Those bytes are never an AuxWin color table.
+/// The WCTab SetWinColor installed for `window`. Dialogs keep theirs in the
+/// window list's dctb registry instead.
+fn ppc_window_color_table_handle(
+    memory: &mut PpcSectionMem,
+    window_list: &SharedProcessWindowList,
+    window: u32,
+) -> Option<u32> {
     if window == 0 || ppc_window_is_dialog(memory, window) {
         return None;
     }
-    memory
-        .read_u32_be(window.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET))
-        .filter(|handle| *handle != 0)
+    window_list.window_color_table(window)
 }
 
 pub(super) fn ppc_window_content_color(
@@ -6385,7 +6420,8 @@ pub(super) fn ppc_dispatch_legacy_window(
                 can_write,
             ) {
                 let is_tracked = window_list.contains_window(params.window_ptr());
-                let color_table = ppc_window_color_table_handle(memory, params.window_ptr());
+                let color_table =
+                    ppc_window_color_table_handle(memory, window_list, params.window_ptr());
                 let (ctab, success) =
                     crate::window_manager::evaluate_get_aux_win(color_table, is_tracked);
                 if params.out_aux_ctable_ptr() != 0 {

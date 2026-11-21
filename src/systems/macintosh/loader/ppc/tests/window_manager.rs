@@ -1616,6 +1616,100 @@ fn ppc_window_removal_exposure_erases_exposed_content_of_system_windows() {
     assert_eq!(content_pixel_after_removal_exposure(2048), Some(17));
 }
 
+/// Creates a visible noGrowDocProc window at (20,20)-(80,80) in 200 bytes
+/// of caller-owned storage whose bytes past the 156-byte CWindowRecord hold
+/// a handle to a black WCTab, marks content pixel (40,40) with index 17 and
+/// returns the loaded app, window and WCTab handle.
+fn caller_storage_window_with_black_wctab_tail() -> (PpcLoadedApp, u32, u32) {
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    let storage = PPC_DATA_BASE + 0x2000;
+    loaded.memory.add_region(storage, vec![0; 200]);
+    let table = [
+        0, 0, 0, 1, // seed
+        0, 0, // flags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0, 0, 0, 0, 0, 0, // black
+    ];
+    let table_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &table,
+    );
+    loaded.memory.write_u32_be(storage + 164, table_handle).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch, 20, 20, 80, 80).unwrap();
+    ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Board");
+    loaded.cpu.gpr[3] = storage;
+    loaded.cpu.gpr[4] = scratch;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 4;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+    let window = loaded.cpu.gpr[3];
+    assert_eq!(window, storage);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (40, 40),
+        17,
+    ));
+    (loaded, window, table_handle)
+}
+
+fn content_pixel_after_caller_storage_exposure(loaded: &mut PpcLoadedApp) -> Option<u16> {
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let mut event_queue = VecDeque::new();
+    ppc_restore_window_removal_exposure(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        &loaded.window_list,
+        Some(&[]),
+        Some((30, 30, 60, 60)),
+        true,
+        &mut event_queue,
+        0,
+        PpcInputSnapshot::default(),
+    );
+    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (40, 40))
+}
+
+#[test]
+fn ppc_window_removal_exposure_ignores_caller_storage_past_the_window_record() {
+    // A CWindowRecord is 156 bytes (Inside Macintosh Volume V, p. V-200);
+    // its WCTab lives in the AuxWinRec list, not in the record. Super
+    // Othello passes its own window storage to GetNewCWindow and keeps
+    // other data after it, which read as a black WCTab: the area its
+    // disposed "Enter code" dialog exposed was erased black, not white.
+    let (mut loaded, _, _) = caller_storage_window_with_black_wctab_tail();
+    let white = Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)));
+    assert_eq!(content_pixel_after_caller_storage_exposure(&mut loaded), white);
+}
+
+#[test]
+fn ppc_set_win_color_keeps_caller_window_storage_and_erases_with_its_wctab() {
+    let (mut loaded, window, table_handle) = caller_storage_window_with_black_wctab_tail();
+    loaded.memory.write_u32_be(window + 164, 0xA5A5_A5A5).unwrap();
+    loaded.cpu.gpr[3] = window;
+    loaded.cpu.gpr[4] = table_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetWinColor);
+    assert_eq!(loaded.memory.read_u32_be(window + 164), Some(0xA5A5_A5A5));
+    let black = Some(u16::from(ppc_rgb_color_to_8bpp_index(PpcRgbColor {
+        red: 0,
+        green: 0,
+        blue: 0,
+    })));
+    assert_eq!(content_pixel_after_caller_storage_exposure(&mut loaded), black);
+}
+
 #[test]
 fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
     for depth in [1, 2, 4, 8, 16] {
@@ -2518,9 +2612,7 @@ fn hle_import_runner_set_win_color_applies_content_color_and_queues_update() {
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(
-        loaded
-            .memory
-            .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
+        loaded.window_list.window_color_table(PPC_MAIN_GWORLD),
         Some(table_handle)
     );
     assert_eq!(
@@ -2818,6 +2910,78 @@ fn new_cwindow_leaves_bytes_after_caller_cwindow_record_untouched() {
         trailing,
         vec![0xaa; (PPC_CGRAF_PORT_SIZE - PPC_CWINDOW_RECORD_SIZE) as usize],
         "NewCWindow wrote past the caller's CWindowRecord",
+    );
+}
+
+#[test]
+fn get_new_cwindow_installs_the_matching_wctb_as_the_window_color_table() {
+    // Chaos Overlords' WIND 128 has a wctb 128 whose content color is
+    // black; its 800x600 window must erase black, not the default white.
+    let pef = synthetic_pef_with_import(b"GetNewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let storage_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(storage_ptr, vec![0; PPC_CWINDOW_RECORD_SIZE as usize]);
+    let wind = test_wind_resource((40, 40, 240, 340), 2, true, false, 0, b"Chaos");
+    let wctb = [
+        0, 0, 0, 0, // seed
+        0, 0, // flags
+        0, 0, // one entry
+        0, 0, // wContentColor
+        0, 0, 0, 0, 0, 0, // black
+    ];
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    for (res_type, data) in [(*b"WIND", wind), (*b"wctb", wctb.to_vec())] {
+        loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: current_resource_refnum,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(res_type),
+            res_id: 128,
+            name: Vec::new(),
+            data: data.into(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    }
+    loaded.cpu.gpr[3] = 128;
+    loaded.cpu.gpr[4] = storage_ptr;
+    loaded.cpu.gpr[5] = u32::MAX;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], storage_ptr);
+    let table = loaded.window_list.window_color_table(storage_ptr).unwrap();
+    assert_eq!(
+        ppc_window_content_color(&mut loaded.memory, table),
+        Some(PPC_RGB_BLACK)
+    );
+    let back: Vec<u16> = (0..3)
+        .map(|i| {
+            loaded
+                .memory
+                .read_u16_be(storage_ptr + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET + i * 2)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(back, vec![0, 0, 0]);
+    let content_rgn = loaded
+        .memory
+        .read_u32_be(storage_ptr + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .unwrap();
+    let (top, left, _, _) = ppc_read_rgn_bbox(&mut loaded.memory, content_rgn).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(
+            &mut loaded.memory,
+            front,
+            (i32::from(left) + 10, i32::from(top) + 10),
+        ),
+        black,
     );
 }
 
@@ -3992,7 +4156,7 @@ fn paint_one_uses_color_window_content_instead_of_white() {
         test_handles!(loaded),
         &table,
     );
-    loaded.memory.write_u32_be(window + PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET, table_handle).unwrap();
+    loaded.window_list.set_window_color_table(window, table_handle);
     let clobbered_rgn = ppc_new_rgn(
         &mut loaded.memory,
         test_heap_cursor!(loaded),
