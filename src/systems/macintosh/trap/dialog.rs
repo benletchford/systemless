@@ -7067,8 +7067,16 @@ impl super::TrapDispatcher {
                             rgb,
                         );
                     }
+                    let port_foreground = self.dialog_port_text_foreground(dialog_ptr);
                     self.draw_static_text(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, style,
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        &item.text,
+                        style,
+                        port_foreground,
                     );
                 }
                 // Edit text (16)
@@ -7649,8 +7657,16 @@ impl super::TrapDispatcher {
                             (abs_top, abs_left, abs_bottom, abs_right),
                         );
                     }
+                    let port_foreground = self.dialog_port_text_foreground(dialog_ptr);
                     self.draw_static_text(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, style,
+                        bus,
+                        abs_top,
+                        abs_left,
+                        abs_bottom,
+                        abs_right,
+                        &item.text,
+                        style,
+                        port_foreground,
                     )
                 }
                 16 => {
@@ -9448,6 +9464,59 @@ impl super::TrapDispatcher {
         encode_mac_roman_lossy(&self.apply_param_text(text))
     }
 
+    /// Re-image statText items with the dialog port's current foreground
+    /// colour. Used when the port colour changed after the dialog's first
+    /// HLE paint; ictb-styled items already carry their own colour.
+    fn reimage_dialog_static_text_in_port_color(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        items: &[DialogItem],
+        dialog_ptr: u32,
+    ) {
+        let Some(port_foreground) = self.dialog_port_text_foreground(dialog_ptr) else {
+            return;
+        };
+        for (i, item) in items.iter().enumerate() {
+            if dialog_item_base_type(item.item_type) != DIALOG_ITEM_STATIC_TEXT
+                || !Self::dialog_item_intersects_bounds(bounds, item)
+            {
+                continue;
+            }
+            let style = self.dialog_item_text_style(bus, dialog_ptr, i);
+            if style.is_some_and(|value| value.foreground.is_some()) {
+                continue;
+            }
+            let (it, il, ib, ir) = item.rect;
+            self.draw_static_text(
+                bus,
+                bounds.0 + it,
+                bounds.1 + il,
+                bounds.0 + ib,
+                bounds.1 + ir,
+                &item.text,
+                style,
+                Some(port_foreground),
+            );
+        }
+    }
+
+    /// The dialog port's foreground RGB when it is not the default black.
+    /// Static text is imaged with the dialog port's colours, so an
+    /// application that calls RGBForeColor on the dialog port before
+    /// ModalDialog sees its text in that colour (IM:I I-388, I-405).
+    pub(crate) fn dialog_port_text_foreground(&self, dialog_ptr: u32) -> Option<[u16; 3]> {
+        if dialog_ptr == 0 {
+            return None;
+        }
+        let fg = if *self.current_port == dialog_ptr {
+            self.fg_color
+        } else {
+            self.port_draw_states.get(&dialog_ptr)?.fg_color
+        };
+        (fg != (0, 0, 0)).then_some([fg.0, fg.1, fg.2])
+    }
+
     fn draw_static_text(
         &self,
         bus: &mut MacMemoryBus,
@@ -9457,6 +9526,7 @@ impl super::TrapDispatcher {
         right: i16,
         text: &str,
         style: Option<DialogItemTextStyle>,
+        port_foreground: Option<[u16; 3]>,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -9467,7 +9537,12 @@ impl super::TrapDispatcher {
         let raw_font_size = style.map(|value| value.size).unwrap_or(port_size);
         let font_size = Self::font_lookup_size(raw_font_size);
         let face = style.map(|value| value.face).unwrap_or(port_face);
-        let foreground = style.and_then(|value| value.foreground);
+        // An ictb text colour wins; otherwise TextBox draws with the dialog
+        // port's own foreground colour (IM:I I-388; DialogMgr.a DoStatic
+        // only jams RGBForeColor when the item's ictb style sets it).
+        let foreground = style
+            .and_then(|value| value.foreground)
+            .or(port_foreground);
         let _mode = style.map(|value| value.mode).unwrap_or(self.tx_mode);
         let metrics = get_font_metrics(font_id, font_size);
         let line_height = metrics.ascent + metrics.descent + metrics.leading;
@@ -13978,6 +14053,17 @@ impl super::TrapDispatcher {
                                 restored_visible_snapshot,
                                 true,
                                 true,
+                            );
+                        } else if !game_managed && !is_reentry {
+                            // GetNewDialog painted this dialog before the
+                            // application could set up its port. The ROM
+                            // draws items from the update event that the
+                            // first ModalDialog pass handles, so text picks up
+                            // an RGBForeColor issued on the dialog port in
+                            // between (Asterax's white-on-black About box).
+                            // DialogMgr.a DItem/DoStatic; IM:I I-415.
+                            self.reimage_dialog_static_text_in_port_color(
+                                bus, bounds, &items, dialog_ptr,
                             );
                         }
 

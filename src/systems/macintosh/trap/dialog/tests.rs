@@ -7,6 +7,7 @@
         DialogButtonTrackingState, DialogItem, DialogPopupDraw, DialogTrackingState,
         PendingDialogPopupMenu, PersistentDialogSnapshot, RetainedModalDialogClickState,
     };
+    use crate::trap::dispatch::PortDrawState;
     use crate::trap::menu::{Menu, MenuItem};
     use crate::trap::TrapDispatcher;
     use crate::ui_theme::UiThemeId;
@@ -8451,7 +8452,7 @@
         let screen_base = bus.alloc(100 * 100);
         disp.screen_mode = (screen_base, 100, 100, 100, 8);
         let (top, left, bottom, right) = (10i16, 10i16, 20i16, 80i16);
-        disp.draw_static_text(&mut bus, top, left, bottom, right, "ppp", None);
+        disp.draw_static_text(&mut bus, top, left, bottom, right, "ppp", None, None);
 
         let row_has_ink = |bus: &MacMemoryBus, row: i16| {
             (0..100u32).any(|x| bus.read_byte(screen_base + row as u32 * 100 + x) != 0)
@@ -8460,6 +8461,69 @@
         for row in bottom..40 {
             assert!(!row_has_ink(&bus, row), "ink below the box at row {row}");
         }
+    }
+
+    #[test]
+    fn static_text_is_reimaged_in_the_dialog_port_foreground_color() {
+        // TextBox images statText with the dialog port's colours (IM:I
+        // I-388, I-405). Asterax's About box (dctb content black, no ictb)
+        // sets RGBForeColor(white) on the dialog port between GetNewDialog
+        // and ModalDialog; the ROM draws the items from the update event
+        // that ModalDialog handles, so the credits come out white.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc(100 * 100);
+        disp.screen_mode = (screen_base, 100, 100, 100, 8);
+        for offset in 0..100 * 100 {
+            bus.write_byte(screen_base + offset, 0xFF);
+        }
+        let dialog_ptr = 0x0020_0000;
+        let items = vec![
+            DialogItem {
+                item_type: 0x88,
+                rect: (10, 10, 30, 90),
+                text: "Credits".to_string(),
+                ..Default::default()
+            },
+            DialogItem {
+                item_type: 4,
+                rect: (60, 10, 80, 50),
+                text: "OK".to_string(),
+                ..Default::default()
+            },
+        ];
+        let bounds = (0, 0, 100, 100);
+        let white = TrapDispatcher::nearest_palette_index(&disp.device_clut, [0xFFFF; 3]);
+        let count_white = |bus: &MacMemoryBus, rows: std::ops::Range<u32>| {
+            rows.flat_map(|y| (0..100u32).map(move |x| (x, y)))
+                .filter(|&(x, y)| bus.read_byte(screen_base + y * 100 + x) == white)
+                .count()
+        };
+
+        // Default black foreground: nothing to re-image.
+        disp.reimage_dialog_static_text_in_port_color(&mut bus, bounds, &items, dialog_ptr);
+        assert_eq!(count_white(&bus, 0..100), 0);
+
+        disp.port_draw_states.insert(
+            dialog_ptr,
+            PortDrawState {
+                fg_color: (0xFFFF, 0xFFFF, 0xFFFF),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            disp.dialog_port_text_foreground(dialog_ptr),
+            Some([0xFFFF; 3])
+        );
+        disp.reimage_dialog_static_text_in_port_color(&mut bus, bounds, &items, dialog_ptr);
+        assert!(
+            count_white(&bus, 10..30) > 0,
+            "statText must be imaged in the port's white foreground"
+        );
+        assert_eq!(
+            count_white(&bus, 30..100),
+            0,
+            "only statText items are re-imaged"
+        );
     }
 
     #[test]
