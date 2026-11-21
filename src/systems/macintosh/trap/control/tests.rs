@@ -2583,6 +2583,56 @@ fn findcontrol_visible_active_hit_returns_inbutton_and_control_handle() {
 }
 
 #[test]
+fn findcontrol_returns_last_nonzero_standard_or_custom_part() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = 0x300000;
+    let window = bus.alloc(200);
+    let out = bus.alloc(4);
+    let bounds = (10, 20, 110, 36);
+    let (button, button_ptr) = alloc_control_handle(&mut bus, bounds, 255, 0);
+    let (last, last_ptr) = alloc_control_handle(&mut bus, bounds, 255, 254);
+    bus.write_long(window + 140, button);
+    bus.write_long(button_ptr, last);
+    bus.write_long(last_ptr, 0);
+    bus.write_word(last_ptr + 22, 100);
+
+    for (proc_id, part) in [(1, 11), (2, 11), (16, 20)] {
+        disp.control_manager.set_proc_id(last_ptr, proc_id);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, out);
+        bus.write_long(sp + 4, window);
+        bus.write_long(sp + 8, (15 << 16) | 25);
+        disp.dispatch_control(true, 0x16C, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!((bus.read_long(out), bus.read_word(sp + 12)), (last, part));
+    }
+
+    let code = bus.alloc(4);
+    let def = bus.alloc(4);
+    bus.write_word(code, 0x4e56);
+    bus.write_long(def, code);
+    bus.write_long(last_ptr + 24, def);
+    disp.control_manager.set_proc_id(last_ptr, 160 << 4);
+    for (reply, expected) in [(0, (button, 10)), (73, (last, 73))] {
+        cpu.write_reg(Register::PC, 0x1234);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, out);
+        bus.write_long(sp + 4, window);
+        bus.write_long(sp + 8, (15 << 16) | 25);
+        disp.dispatch_control(true, 0x16C, &mut cpu, &mut bus).unwrap().unwrap();
+        let tramp = disp.control_def_trampoline;
+        assert_eq!(cpu.read_reg(Register::PC), tramp);
+        assert_eq!(bus.read_word(tramp + 22), 1);
+        assert_eq!(bus.read_long(tramp + 26), (15 << 16) | 25);
+        bus.write_word(bus.read_long(tramp + 40), reply);
+        cpu.write_reg(Register::PC, tramp + 72);
+        assert!(disp.complete_control_callback_return(0xAA73, &mut cpu, &mut bus));
+        assert_eq!(cpu.read_reg(Register::PC), 0x1234);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!((bus.read_long(out), bus.read_word(sp + 12)), expected);
+    }
+}
+
+#[test]
 fn findcontrol_inactive_invisible_or_miss_returns_zero_and_nil() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = 0x300000u32;

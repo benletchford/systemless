@@ -27,6 +27,16 @@ pub(crate) struct ControlCallbackFrame {
     return_trap_pc: u32,
     return_slot: u32,
     saved_trampolines: Vec<(u32, Vec<u8>)>,
+    find_control: Option<(FindControlSearch, u32)>,
+}
+
+#[derive(Debug)]
+struct FindControlSearch {
+    next: u32,
+    point: u32,
+    out_handle: u32,
+    found: (u32, u16),
+    seen: std::collections::HashSet<u32>,
 }
 
 impl super::TrapDispatcher {
@@ -518,6 +528,7 @@ impl super::TrapDispatcher {
             return_trap_pc: trampolines.last().unwrap() + 72,
             return_slot,
             saved_trampolines,
+            find_control: None,
         });
         bus.write_long(return_slot, return_pc);
         cpu.write_reg(Register::A7, return_slot);
@@ -580,6 +591,7 @@ impl super::TrapDispatcher {
             return_trap_pc: trampoline + 32,
             return_slot,
             saved_trampolines,
+            find_control: None,
         });
         bus.write_long(return_slot, callback_return_pc);
         cpu.write_reg(Register::A7, return_slot);
@@ -743,6 +755,63 @@ impl super::TrapDispatcher {
             1 | 2 => 11, // inCheckBox for checkbox and radio-button variants
             _ => 10,     // inButton for push buttons and the current fallback path
         }
+    }
+
+    fn standard_control_hit(&self, bus: &MacMemoryBus, ptr: u32, point: u32) -> u16 {
+        let v = (point >> 16) as i16;
+        let h = point as i16;
+        let bounds = (
+            bus.read_word(ptr + 8) as i16,
+            bus.read_word(ptr + 10) as i16,
+            bus.read_word(ptr + 12) as i16,
+            bus.read_word(ptr + 14) as i16,
+        );
+        if !Self::point_in_rect(v, h, bounds) {
+            return 0;
+        }
+        if self.control_manager.proc_id(ptr) == 16 {
+            return self.standard_scrollbar_testcontrol_part_code(bus, ptr, v, h);
+        }
+        self.standard_testcontrol_part_code(ptr)
+    }
+
+    fn continue_find_control<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        mut search: FindControlSearch,
+    ) {
+        let result = cpu.read_reg(Register::A7);
+        while search.next != 0 && search.seen.insert(search.next) {
+            let handle = search.next;
+            let ptr = Self::control_record_ptr(bus, handle);
+            if ptr == 0 {
+                break;
+            }
+            search.next = bus.read_long(ptr);
+            if !Self::control_vis_is_visible(bus.read_byte(ptr + 16))
+                || bus.read_byte(ptr + 17) == 255
+            {
+                continue;
+            }
+            if self.control_uses_application_def_proc(bus, ptr)
+                && self.arm_control_def_messages(
+                    cpu, bus, handle,
+                    &[(Self::CDEF_TEST_CNTL_MSG, search.point, Some(result))],
+                )
+            {
+                self.control_callback_stack.last_mut().unwrap().find_control = Some((search, handle));
+                return;
+            }
+            let part = self.standard_control_hit(bus, ptr, search.point);
+            if part != 0 {
+                search.found = (handle, part);
+            }
+        }
+        if search.out_handle != 0 {
+            bus.write_long(search.out_handle, search.found.0);
+        }
+        bus.write_word(result, search.found.1);
     }
 
     pub(crate) fn write_control_value(
@@ -2954,6 +3023,13 @@ impl super::TrapDispatcher {
         }
         cpu.write_reg(Register::PC, bus.read_long(frame.return_slot));
         cpu.write_reg(Register::A7, frame.return_slot + 4);
+        if let Some((mut search, handle)) = frame.find_control {
+            let part = bus.read_word(frame.return_slot + 4);
+            if part != 0 {
+                search.found = (handle, part);
+            }
+            self.continue_find_control(cpu, bus, search);
+        }
         true
     }
 
@@ -3719,18 +3795,7 @@ impl super::TrapDispatcher {
                     let vis = bus.read_byte(ctrl_ptr + 16);
                     let hilite = bus.read_byte(ctrl_ptr + 17);
                     if Self::control_vis_is_visible(vis) && hilite < 254 {
-                        let r_top = bus.read_word(ctrl_ptr + 8) as i16;
-                        let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-                        let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
-                        let r_right = bus.read_word(ctrl_ptr + 14) as i16;
-                        if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right {
-                            part = match self.control_manager.proc_id(ctrl_ptr) {
-                                16 => self.standard_scrollbar_testcontrol_part_code(
-                                    bus, ctrl_ptr, pt_v, pt_h,
-                                ),
-                                _ => self.standard_testcontrol_part_code(ctrl_ptr),
-                            };
-                        }
+                        part = self.standard_control_hit(bus, ctrl_ptr, bus.read_long(sp));
                     }
                 }
 
@@ -4473,57 +4538,19 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let which_ctrl_ptr = bus.read_long(sp);
                 let window_ptr = bus.read_long(sp + 4);
-                let pt_v = bus.read_word(sp + 8) as i16;
-                let pt_h = bus.read_word(sp + 10) as i16;
-
-                let mut found_handle: u32 = 0;
-                let mut found_part: u16 = 0;
-
-                // Walk the control list starting at window+140 (wControlList)
-                // Macintosh TB Essentials 1992, 4-67
-                if window_ptr != 0 {
-                    let mut ctrl_handle = bus.read_long(window_ptr + 140);
-                    while ctrl_handle != 0 {
-                        let ctrl_ptr = bus.read_long(ctrl_handle);
-                        if ctrl_ptr == 0 {
-                            break;
-                        }
-
-                        // Check visibility (offset 16; zero is invisible)
-                        let vis = bus.read_byte(ctrl_ptr + 16);
-                        // Check hilite (offset 17, 255 = inactive/disabled)
-                        let hilite = bus.read_byte(ctrl_ptr + 17);
-
-                        if Self::control_vis_is_visible(vis) && hilite < 254 {
-                            // Check contrlRect (offset 8): top, left, bottom, right
-                            let r_top = bus.read_word(ctrl_ptr + 8) as i16;
-                            let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-                            let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
-                            let r_right = bus.read_word(ctrl_ptr + 14) as i16;
-
-                            if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
-                            {
-                                found_handle = ctrl_handle;
-                                // Return part code 10 (kControlButtonPart) for
-                                // simple button controls. The proper approach
-                                // would call the CDEF's testCntl, but for HLE
-                                // we return a generic hit indicator.
-                                found_part = 10;
-                                break;
-                            }
-                        }
-
-                        // Follow the linked list: nextControl at offset 0
-                        ctrl_handle = bus.read_long(ctrl_ptr);
-                    }
-                }
-
-                if which_ctrl_ptr != 0 {
-                    bus.write_long(which_ctrl_ptr, found_handle);
-                }
-                bus.write_word(sp + 12, found_part);
+                let search = FindControlSearch {
+                    next: if window_ptr == 0 {
+                        0
+                    } else {
+                        bus.read_long(window_ptr + 140)
+                    },
+                    point: bus.read_long(sp + 8),
+                    out_handle: which_ctrl_ptr,
+                    found: (0, 0),
+                    seen: Default::default(),
+                };
                 cpu.write_reg(Register::A7, sp + 12);
-
+                self.continue_find_control(cpu, bus, search);
                 Ok(())
             }
 
