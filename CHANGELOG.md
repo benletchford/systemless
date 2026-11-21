@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.127.1](https://github.com/benletchford/systemless/compare/v0.127.0...v0.127.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **controls:** return tested control parts and invoke standard tracking actions ([43e44e1](https://github.com/benletchford/systemless/commit/43e44e142b02ff2085c496b039881902217732e2))
+* **dialog:** call 68k dialog callbacks that start by saving one register ([#6608](https://github.com/benletchford/systemless/issues/6608)) ([6efb8df](https://github.com/benletchford/systemless/commit/6efb8dfbb21d1ee8d3a9d57d5fce8d420c5a94e9))
+* **dialog:** skip flash and redraw of 68k dialog buttons outside the window ([#6626](https://github.com/benletchford/systemless/issues/6626)) ([7dd0c0c](https://github.com/benletchford/systemless/commit/7dd0c0c394afc7af478664355b327f483d3679e0))
+* **events:** deliver elapsed key repeats before key release ([a2dd40f](https://github.com/benletchford/systemless/commit/a2dd40f48d227b0e2ee1b8101381bc178da58a1e))
+* **fonts:** draw bold Times and New York with their bold face ([1dceda7](https://github.com/benletchford/systemless/commit/1dceda702c60591a1f34f647d6c039ab9885af82))
+* **fonts:** report Mac OS 9 line metrics for built-in families ([6dacfcb](https://github.com/benletchford/systemless/commit/6dacfcb736c3431ac3bed97747ee8d7fd1f0dad3))
+* **memory:** keep the 32-bit framebuffer reachable from 24-bit mode ([#6631](https://github.com/benletchford/systemless/issues/6631)) ([889c305](https://github.com/benletchford/systemless/commit/889c305661aa88d5f31451f9527fe000bb2cbf1b))
+* **ppc:** apply a dialog's dctb content color as its window color table ([#6618](https://github.com/benletchford/systemless/issues/6618)) ([a7ae8be](https://github.com/benletchford/systemless/commit/a7ae8beb67a212febf7878db88d0f3da4ca02a56))
+* **ppc:** apply Boolean transfer modes in CopyBits ([#6624](https://github.com/benletchford/systemless/issues/6624)) ([c5b0937](https://github.com/benletchford/systemless/commit/c5b0937b9f44158be618e5782ce27392d964dc0c))
+* **ppc:** draw the close box on rDocProc document windows ([#6649](https://github.com/benletchford/systemless/issues/6649)) ([5d25dff](https://github.com/benletchford/systemless/commit/5d25dffa118210d11fc58481bf19f5f92cd42eaa))
+* **ppc:** keep style-scrap line heights when inserting styled text ([#6612](https://github.com/benletchford/systemless/issues/6612)) ([0673a78](https://github.com/benletchford/systemless/commit/0673a78d0f765af9c34b930cad54fd7613486d81))
+* **ppc:** keep window color tables out of caller-owned window storage ([#6637](https://github.com/benletchford/systemless/issues/6637)) ([3ce7c38](https://github.com/benletchford/systemless/commit/3ce7c38bf19873491f05a8ef3b54782e3ab6107e))
+* **ppc:** keep window update regions in global coordinates ([#6605](https://github.com/benletchford/systemless/issues/6605)) ([3bc9de1](https://github.com/benletchford/systemless/commit/3bc9de1f895c8bf868c83bc098654a88c678731f))
+* **ppc:** match colours against the device table MakeITable rebuilt under a fade ([#6643](https://github.com/benletchford/systemless/issues/6643)) ([dbada88](https://github.com/benletchford/systemless/commit/dbada88b6eabf3302a990070d094c9bfc0edf848))
+* **ppc:** preserve text detail through stores and 8-bit to 16-bit CopyBits ([901c779](https://github.com/benletchford/systemless/commit/901c779ed389c5450d21f2a3294a1a794dcb1c36))
+* **ppc:** return from MPYield without ending the slice so TickCount waits fast-forward ([#6610](https://github.com/benletchford/systemless/issues/6610)) ([97a1d64](https://github.com/benletchford/systemless/commit/97a1d642bf5aeb1da65a1014d43fedc9d88ebd3e))
+* **ppc:** skip missing QuickTime movies and keep controllers alive across movie changes ([#6645](https://github.com/benletchford/systemless/issues/6645)) ([d2b4a96](https://github.com/benletchford/systemless/commit/d2b4a968feaf7a156bf8fd6fa435a81d607850f0))
+* **quickdraw:** keep the device colour table seed when animating 68k palettes ([#6620](https://github.com/benletchford/systemless/issues/6620)) ([2226269](https://github.com/benletchford/systemless/commit/22262697cccca52e385c32962ec28e4aec4d8fcc))
+* **quickdraw:** match 68k screen colours against a device colour table restored under a fade ([#6614](https://github.com/benletchford/systemless/issues/6614)) ([0b24043](https://github.com/benletchford/systemless/commit/0b2404391388cdecbcd2dc46f0d8e317918317b2))
+* **quickdraw:** reserve predefined color table seeds on 68k ([#6655](https://github.com/benletchford/systemless/issues/6655)) ([44e8c84](https://github.com/benletchford/systemless/commit/44e8c849118c5e8f752bc2d3af2ba94c37561b01))
+* **quicktime:** implement 68k DragAlignedWindow ([#6641](https://github.com/benletchford/systemless/issues/6641)) ([208d901](https://github.com/benletchford/systemless/commit/208d90164e4d00c8b2b7a6a1c59464989576ed4e))
+* **sound:** leave the Sound Manager trap OSErr in D0 on 68k ([#6647](https://github.com/benletchford/systemless/issues/6647)) ([4c8a953](https://github.com/benletchford/systemless/commit/4c8a9538758370a62427893c0d4b473d627ba71c))
+* **window-manager:** erase content exposed behind a hidden window ([4c5fff4](https://github.com/benletchford/systemless/commit/4c5fff447befead90f93590844e5642c7c772f3f))
+* **window-manager:** erase content exposed behind a moved window ([c23efc4](https://github.com/benletchford/systemless/commit/c23efc42c75beec8515970d137a15bbebe3f5985))
+* **window:** leave an already-visible window untouched in 68k ShowWindow ([#6639](https://github.com/benletchford/systemless/issues/6639)) ([ad922dd](https://github.com/benletchford/systemless/commit/ad922dd72a2bc9dacaf252114c5f578cd104831c))
+
+
+### Performance Improvements
+
+* **desktop:** skip snapshotting unchanged save files during sync ([1138dae](https://github.com/benletchford/systemless/commit/1138daea7f8bd321af4af7f0b240d28860308003))
+* **desktop:** skip window zoom state query on steady-state presents ([81401dc](https://github.com/benletchford/systemless/commit/81401dc9853f91f0ec7fc1e7b5e946d88dd4feef))
+* **display:** reconvert only changed rows in the ARGB frame cache ([2fc2a68](https://github.com/benletchford/systemless/commit/2fc2a6878254aab4b4c273f9e581c64e5e7610d1))
+* **ppc:** batch CGrafPort draw-state and RGB color reads ([ba99602](https://github.com/benletchford/systemless/commit/ba9960222d5f69ad9ecd17afe4a951544b9e31ea))
+* **ppc:** batch decoded QuickTime movie frame writes by row ([c385f9f](https://github.com/benletchford/systemless/commit/c385f9fe4864a522fb18e8affcc9e9d1b352dc7b))
+* **ppc:** borrow framebuffer rows for proven flat destinations ([9ba58f9](https://github.com/benletchford/systemless/commit/9ba58f91b4ce7a8863d11c4608fac35588ed6e79))
+* **ppc:** borrow slice state and reuse import index storage ([243ad62](https://github.com/benletchford/systemless/commit/243ad62e7a8ae2f0c3fd62e8de5c961410725bc1))
+* **ppc:** expose plain guest pages for direct JIT reads and writes ([07ad51f](https://github.com/benletchford/systemless/commit/07ad51f7b2fa31f6990351ed4bcc1946c9454520))
+* **ppc:** fast-path hot Toolbox imports with guest-state reconciliation ([36eee4f](https://github.com/benletchford/systemless/commit/36eee4fa55b41e7b3e1d8d8ea6ec128294ca0364))
+* **ppc:** reuse scratch import binding in hot dispatch ([3e98aae](https://github.com/benletchford/systemless/commit/3e98aaeda26cc75ad13eed97bb31e38e2e0ea7b0))
+* **ppc:** streamline hot import dispatch and avoid per-call clones ([22e9505](https://github.com/benletchford/systemless/commit/22e9505e0fccf76cb50f5278f0d3bb802b7ac74b))
+* **ppc:** take BlockMove and BlockZero on the import fast path ([c6ff97b](https://github.com/benletchford/systemless/commit/c6ff97b131a1de91a25f0ae9c0731816bc0ff79d))
+* **vfs:** skip unchanged catalogue scans and track shared metadata edits ([11cb7cc](https://github.com/benletchford/systemless/commit/11cb7ccb644c7e58342ec5138f07382096bfaed8))
+
 ## [0.127.0](https://github.com/benletchford/systemless/compare/v0.126.2...v0.127.0) (2026-11-20)
 
 
