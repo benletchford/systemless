@@ -986,6 +986,64 @@ impl PackedScreenFrame {
     }
 }
 
+/// The last packed frame converted to ARGB, so the next conversion redoes only
+/// the rows whose bytes changed. A static screen then costs one comparison per
+/// row instead of one palette lookup per pixel. A new screen mode, palette or
+/// buffer length converts the whole frame.
+#[derive(Default)]
+pub struct ArgbFrameCache {
+    screen_mode: Option<(u32, u32, u16, u16, u16)>,
+    palette: Vec<u32>,
+    pixels: Vec<u8>,
+    argb: Vec<u32>,
+    row: Vec<u32>,
+}
+
+impl ArgbFrameCache {
+    /// Write `frame` as ARGB into `output`, exactly as
+    /// [`PackedScreenFrame::render_argb`] does.
+    pub fn render(&mut self, frame: &PackedScreenFrame, output: &mut Vec<u32>) {
+        let (_, stride, width, height, depth) = frame.screen_mode;
+        let rows = usize::from(height);
+        let stride = stride as usize;
+        let reusable = self.screen_mode == Some(frame.screen_mode)
+            && self.palette == frame.palette
+            && self.pixels.len() == frame.pixels.len()
+            && packed_screen_framebuffer_len(stride as u32, width, height, depth)
+                .is_some_and(|length| length as usize <= frame.pixels.len())
+            && stride
+                .checked_mul(rows)
+                .is_some_and(|length| length <= frame.pixels.len())
+            && self.argb.len() == usize::from(width) * rows;
+        if !reusable {
+            frame.render_argb(&mut self.argb);
+            self.screen_mode = Some(frame.screen_mode);
+            self.palette.clear();
+            self.palette.extend_from_slice(&frame.palette);
+            self.pixels.clear();
+            self.pixels.extend_from_slice(&frame.pixels);
+        } else {
+            let width = usize::from(width);
+            for y in 0..rows {
+                let bytes = y * stride..(y + 1) * stride;
+                if self.pixels[bytes.clone()] == frame.pixels[bytes.clone()] {
+                    continue;
+                }
+                render_packed_screen_argb(
+                    &frame.pixels[bytes.clone()],
+                    (stride as u32, width as u16, 1, depth),
+                    &frame.palette,
+                    &mut self.row,
+                );
+                self.argb[y * width..(y + 1) * width].copy_from_slice(&self.row);
+                self.pixels[bytes.clone()].copy_from_slice(&frame.pixels[bytes]);
+            }
+        }
+        output.clear();
+        output.extend_from_slice(&self.argb);
+    }
+}
+
 /// Render the current screen to an ARGB pixel buffer suitable for desktop backends.
 ///
 /// Reuses the provided allocation so interactive frontends do not allocate a new
@@ -1784,6 +1842,60 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn argb_frame_cache_matches_a_full_conversion_as_frames_change() {
+        use super::{ArgbFrameCache, PackedScreenFrame};
+        // A small xorshift keeps the frames reproducible.
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let mut cache = ArgbFrameCache::default();
+        let mut cached = Vec::new();
+        let mut full = Vec::new();
+        for depth in [1u16, 2, 4, 8, 16, 32, 8] {
+            let (width, height) = (37u16, 11u16);
+            let stride = (u32::from(width) * u32::from(depth)).div_ceil(8) + 3;
+            let mut frame = PackedScreenFrame {
+                screen_mode: (0, stride, width, height, depth),
+                pixels: (0..stride * u32::from(height))
+                    .map(|_| next() as u8)
+                    .collect(),
+                palette: std::array::from_fn(|_| 0xff00_0000 | (next() & 0x00ff_ffff)),
+            };
+            for step in 0..12 {
+                match step % 4 {
+                    // Unchanged frame.
+                    0 => {}
+                    // A few changed rows.
+                    1 | 2 => {
+                        for _ in 0..3 {
+                            let at = next() as usize % frame.pixels.len();
+                            frame.pixels[at] = frame.pixels[at].wrapping_add(1);
+                        }
+                    }
+                    // A new palette.
+                    _ => frame.palette[next() as usize % 256] ^= 0x0001_0101,
+                }
+                cache.render(&frame, &mut cached);
+                frame.render_argb(&mut full);
+                assert!(cached == full, "depth {depth} step {step}");
+            }
+        }
+        // A frame whose buffer is too short renders black, like the full path.
+        let short = PackedScreenFrame {
+            screen_mode: (0, 40, 40, 10, 8),
+            pixels: vec![1; 40],
+            palette: [0xff11_2233; 256],
+        };
+        cache.render(&short, &mut cached);
+        short.render_argb(&mut full);
+        assert!(cached == full);
+    }
+
     #[test]
     fn output_scale_covers_aspect_fitted_drawable() {
         for (drawable, expected) in [
