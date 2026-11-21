@@ -1183,6 +1183,27 @@ impl super::TrapDispatcher {
         crate::quickdraw::fonts::styled_face(self.tx_font, self.tx_size, self.tx_face as u8).1
     }
 
+    /// The line metrics `GetFontInfo`, `FontMetrics` and `StdTxMeas` report
+    /// for the current port: a built-in family's classic metrics, or the
+    /// drawn face's own, scaled to the requested size.
+    pub(super) fn reported_font_info(&self) -> crate::quickdraw::fonts::FontMetrics {
+        if let Some(metrics) = crate::quickdraw::fonts::classic_font_info(
+            self.tx_font,
+            self.tx_size,
+            self.tx_face as u8,
+        ) {
+            return metrics;
+        }
+        let (face, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
+        let metrics = face.metrics;
+        crate::quickdraw::fonts::FontMetrics {
+            ascent: metrics.ascent * scale,
+            descent: metrics.descent * scale,
+            wid_max: metrics.wid_max * scale,
+            leading: metrics.leading * scale,
+        }
+    }
+
     pub(super) fn advance_extra(&self) -> i16 {
         crate::quickdraw::text::QuickDrawTextStyle::from_bits(self.text_synthesized_face())
             .advance_extra() as i16

@@ -2141,12 +2141,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let info_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let (face, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-                let metrics = face.metrics;
-                bus.write_word(info_ptr, (metrics.ascent * scale) as u16);
-                bus.write_word(info_ptr + 2, (metrics.descent * scale) as u16);
-                bus.write_word(info_ptr + 4, (metrics.wid_max * scale) as u16);
-                bus.write_word(info_ptr + 6, (metrics.leading * scale) as u16);
+                let metrics = self.reported_font_info();
+                bus.write_word(info_ptr, metrics.ascent as u16);
+                bus.write_word(info_ptr + 2, metrics.descent as u16);
+                bus.write_word(info_ptr + 4, metrics.wid_max as u16);
+                bus.write_word(info_ptr + 6, metrics.leading as u16);
                 Ok(())
             }
 
@@ -11549,7 +11548,7 @@ impl super::TrapDispatcher {
                 let numer_ptr = bus.read_long(sp + 8);
                 let text_buf = bus.read_long(sp + 12);
                 let byte_count = bus.read_word(sp + 16) as i16;
-                let (face, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
+                let (_, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
                 let mut total_width = 0i32;
 
                 for i in 0..byte_count {
@@ -11585,11 +11584,11 @@ impl super::TrapDispatcher {
                     as i16;
 
                 if info_ptr != 0 {
-                    let metrics = face.metrics;
-                    bus.write_word(info_ptr, (metrics.ascent * scale) as u16);
-                    bus.write_word(info_ptr + 2, (metrics.descent * scale) as u16);
-                    bus.write_word(info_ptr + 4, (metrics.wid_max * scale) as u16);
-                    bus.write_word(info_ptr + 6, (metrics.leading * scale) as u16);
+                    let metrics = self.reported_font_info();
+                    bus.write_word(info_ptr, metrics.ascent as u16);
+                    bus.write_word(info_ptr + 2, metrics.descent as u16);
+                    bus.write_word(info_ptr + 4, metrics.wid_max as u16);
+                    bus.write_word(info_ptr + 6, metrics.leading as u16);
                 }
 
                 // info(4)+denom(4)+numer(4)+textBuf(4)+byteCount(2) = 18 + result(2)
@@ -15089,15 +15088,14 @@ impl super::TrapDispatcher {
                 let rec_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 if rec_ptr != 0 {
-                    let (face, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-                    let metrics = face.metrics;
+                    let metrics = self.reported_font_info();
                     // Convert i16 pixel values to Fixed16.16 by shifting
                     // the integer into the high word.
                     let to_fixed = |v: i16| -> u32 { (v as i32 as u32) << 16 };
-                    bus.write_long(rec_ptr, to_fixed(metrics.ascent * scale));
-                    bus.write_long(rec_ptr + 4, to_fixed(metrics.descent * scale));
-                    bus.write_long(rec_ptr + 8, to_fixed(metrics.leading * scale));
-                    bus.write_long(rec_ptr + 12, to_fixed(metrics.wid_max * scale));
+                    bus.write_long(rec_ptr, to_fixed(metrics.ascent));
+                    bus.write_long(rec_ptr + 4, to_fixed(metrics.descent));
+                    bus.write_long(rec_ptr + 8, to_fixed(metrics.leading));
+                    bus.write_long(rec_ptr + 12, to_fixed(metrics.wid_max));
                     // wTabHandle: not modeled — leave NIL.
                     bus.write_long(rec_ptr + 16, 0);
                 }

@@ -237,7 +237,14 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         }
         PpcImportDispatcherTarget::GetFontInfo => {
             let text_font = ppc_current_text_font(memory, current_gworld);
-            ppc_get_font_info(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
+            let text_face = ppc_current_text_style(memory, current_gworld);
+            ppc_get_font_info(
+                memory,
+                cpu.gpr[3],
+                text_font,
+                *quickdraw_text_size,
+                text_face,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FontMetrics => {
@@ -245,8 +252,8 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 return Some(PpcImportAction::ReturnPreserve);
             }
             let text_font = ppc_current_text_font(memory, current_gworld);
-            ppc_font_metrics(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
             let style = ppc_current_text_style(memory, current_gworld);
+            ppc_font_metrics(memory, cpu.gpr[3], text_font, *quickdraw_text_size, style);
             let table = ppc_width_table_bytes(text_font, *quickdraw_text_size, style);
             let mut handle = memory.read_u32_be(PPC_WIDTH_TAB_HANDLE_ADDR).unwrap_or(0);
             // Reuse the table only while it is still a live handle that holds it; a
@@ -389,7 +396,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
                 text_face,
                 current_gworld,
             );
-            ppc_get_font_info(memory, info, text_font, *quickdraw_text_size);
+            ppc_get_font_info(memory, info, text_font, *quickdraw_text_size, text_face);
             Some(PpcImportAction::Return(width))
         }
         // Inside Macintosh: Text (IsOutline, OutlineMetrics): the Font
@@ -610,30 +617,46 @@ fn ppc_text_width(
     .max(0) as u32
 }
 
-fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, text_size: i16) {
+fn ppc_get_font_info(
+    memory: &mut PpcSectionMem,
+    info_ptr: u32,
+    text_font: i16,
+    text_size: i16,
+    text_face: u8,
+) {
     if info_ptr == 0 || !ppc_memory_can_write_bytes(memory, info_ptr, 8) {
         return;
     }
     // Inside Macintosh Volume I (1985), p. I-173: FontInfo contains the
     // current port font's ascent, descent, maximum advance, and leading.
+    let metrics = ppc_reported_font_info(text_font, text_size, text_face);
+    let _ = memory.write_u16_be(info_ptr, metrics.ascent as u16);
+    let _ = memory.write_u16_be(info_ptr + 2, metrics.descent as u16);
+    let _ = memory.write_u16_be(info_ptr + 4, metrics.wid_max as u16);
+    let _ = memory.write_u16_be(info_ptr + 6, metrics.leading as u16);
+}
+
+/// The line metrics `GetFontInfo`, `FontMetrics` and `StdTxMeas` report: a
+/// built-in family's classic metrics, or the drawn face's own, scaled to the
+/// requested size.
+fn ppc_reported_font_info(
+    text_font: i16,
+    text_size: i16,
+    text_face: u8,
+) -> crate::quickdraw::fonts::FontMetrics {
+    if let Some(metrics) =
+        crate::quickdraw::fonts::classic_font_info(text_font, text_size, text_face)
+    {
+        return metrics;
+    }
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
-    let metrics = face.metrics;
-    let _ = memory.write_u16_be(
-        info_ptr,
-        ppc_scale_font_value(i32::from(metrics.ascent), numerator, denominator) as u16,
-    );
-    let _ = memory.write_u16_be(
-        info_ptr + 2,
-        ppc_scale_font_value(i32::from(metrics.descent), numerator, denominator) as u16,
-    );
-    let _ = memory.write_u16_be(
-        info_ptr + 4,
-        ppc_scale_font_value(i32::from(metrics.wid_max), numerator, denominator) as u16,
-    );
-    let _ = memory.write_u16_be(
-        info_ptr + 6,
-        ppc_scale_font_value(i32::from(metrics.leading), numerator, denominator) as u16,
-    );
+    let scale = |value: i16| ppc_scale_font_value(i32::from(value), numerator, denominator);
+    crate::quickdraw::fonts::FontMetrics {
+        ascent: scale(face.metrics.ascent),
+        descent: scale(face.metrics.descent),
+        wid_max: scale(face.metrics.wid_max),
+        leading: scale(face.metrics.leading),
+    }
 }
 
 const PPC_WIDTH_TAB_HANDLE_ADDR: u32 = 0x0B2A;
@@ -659,48 +682,25 @@ fn ppc_width_table_bytes(text_font: i16, text_size: i16, style: u8) -> Vec<u8> {
     table
 }
 
-fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16, text_size: i16) {
+fn ppc_font_metrics(
+    memory: &mut PpcSectionMem,
+    metrics_ptr: u32,
+    text_font: i16,
+    text_size: i16,
+    text_face: u8,
+) {
     if metrics_ptr == 0 || !ppc_memory_can_write_bytes(memory, metrics_ptr, 20) {
         return;
     }
     // Inside Macintosh: Text (1993), pp. 4-54--4-55: FMetricRec stores
     // ascent, descent, leading, and maximum width as Fixed values, followed
     // by a handle to the global width table, which the caller fills in.
-    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
-    let metrics = face.metrics;
+    let metrics = ppc_reported_font_info(text_font, text_size, text_face);
     let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
-    let _ = memory.write_u32_be(
-        metrics_ptr,
-        to_fixed(ppc_scale_font_value(
-            i32::from(metrics.ascent),
-            numerator,
-            denominator,
-        )),
-    );
-    let _ = memory.write_u32_be(
-        metrics_ptr + 4,
-        to_fixed(ppc_scale_font_value(
-            i32::from(metrics.descent),
-            numerator,
-            denominator,
-        )),
-    );
-    let _ = memory.write_u32_be(
-        metrics_ptr + 8,
-        to_fixed(ppc_scale_font_value(
-            i32::from(metrics.leading),
-            numerator,
-            denominator,
-        )),
-    );
-    let _ = memory.write_u32_be(
-        metrics_ptr + 12,
-        to_fixed(ppc_scale_font_value(
-            i32::from(metrics.wid_max),
-            numerator,
-            denominator,
-        )),
-    );
+    let _ = memory.write_u32_be(metrics_ptr, to_fixed(metrics.ascent));
+    let _ = memory.write_u32_be(metrics_ptr + 4, to_fixed(metrics.descent));
+    let _ = memory.write_u32_be(metrics_ptr + 8, to_fixed(metrics.leading));
+    let _ = memory.write_u32_be(metrics_ptr + 12, to_fixed(metrics.wid_max));
 }
 
 #[cfg(test)]
@@ -714,5 +714,30 @@ mod tests {
         assert_eq!(&table[1060..1068], &[1, 0, 1, 0, 1, 0, 1, 0]);
         assert_eq!(&table[1068..1070], &12i16.to_be_bytes());
         assert_eq!(&table[1070..1072], &1072u16.to_be_bytes());
+    }
+
+    #[test]
+    fn times_reports_mac_os_9_line_metrics_at_twelve_plain_and_twenty_bold() {
+        // GetFontInfo on Mac OS 9.0: Times 12 plain 9 / 3 / 12 / 0 and Times 20
+        // bold 15 / 5 / 20 / 0 (ascent / descent / widMax / leading).
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(0x1000, vec![0xaa; 32]);
+        let word = |memory: &mut PpcSectionMem, at| memory.read_u16_be(at).unwrap();
+        for (size, face, expected) in [(12, 0, [9, 3, 12, 0]), (20, 1, [15, 5, 20, 0])] {
+            ppc_get_font_info(&mut memory, 0x1000, 20, size, face);
+            let info: Vec<u16> = (0..4).map(|i| word(&mut memory, 0x1000 + 2 * i)).collect();
+            assert_eq!(info, expected, "GetFontInfo Times {size}");
+            ppc_font_metrics(&mut memory, 0x1000, 20, size, face);
+            let fixed: Vec<u32> = (0..4)
+                .map(|i| memory.read_u32_be(0x1000 + 4 * i).unwrap() >> 16)
+                .collect();
+            // FMetricRec order: ascent, descent, leading, widMax.
+            let [ascent, descent, wid_max, leading] = expected.map(u32::from);
+            assert_eq!(
+                fixed,
+                [ascent, descent, leading, wid_max],
+                "FontMetrics Times {size}"
+            );
+        }
     }
 }
