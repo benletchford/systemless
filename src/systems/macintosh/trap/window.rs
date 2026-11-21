@@ -2300,6 +2300,20 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+        // Moving a visible window runs PaintBehind on the area it leaves:
+        // every other window whose visible part grows has the newly exposed
+        // content erased (when PaintWhite is set) and added to its update
+        // region. Record what each could see before the move.
+        // Inside Macintosh Volume I, I-289 and I-296--I-297.
+        let mut others_visibility_before_move: Vec<(u32, u32)> = Vec::new();
+        if old_structure.is_some() {
+            for window in self.window_list.to_vec() {
+                if window != the_window && self.window_visible(bus, window) {
+                    let visible = self.snapshot_window_visibility(bus, window);
+                    others_visibility_before_move.push((window, visible));
+                }
+            }
+        }
         let local_content_rect = self
             .window_content_rect(bus, the_window)
             .unwrap_or_else(|| self.window_port_rect(bus, the_window));
@@ -2423,11 +2437,11 @@ impl super::TrapDispatcher {
 
         if moved_dialog_background.is_none() {
             if let Some(old_structure) = old_structure {
-                // PaintBehind clips the desktop to windows' structure regions
-                // and clears PaintWhite, preserving exposed application pixels
-                // until their update events are handled. Painting the entire
-                // old structure would overwrite a background window with the
-                // desktop pattern. Inside Macintosh Volume I (1985), I-296--I-297.
+                // PaintBehind paints the desktop only where no window's
+                // structure covers the vacated area; painting the entire old
+                // structure would overwrite a background window with the
+                // desktop pattern. The windows behind are repainted below.
+                // Inside Macintosh Volume I (1985), I-296--I-297.
                 let mut desktop = vec![old_structure];
                 for window in self.window_list.windows() {
                     if !self.window_visible(bus, window) {
@@ -2455,6 +2469,25 @@ impl super::TrapDispatcher {
                     tracking.saved_pixels = background;
                 }
             }
+        }
+        // Content the move uncovers in the windows behind is erased when
+        // PaintWhite is set (its boot value) and added to their update
+        // regions. Macintosh Toolbox Essentials (1992), p. 4-118, describes
+        // PaintBehind clearing PaintWhite around PaintOne; on a genuine
+        // Quadra 650 ROM with Mac OS 7.5.3, though, dragging a Message dialog
+        // off Fluffy's Adventure 1.2's status bar leaves the health bar's
+        // interior white with only its outline repainted, which the game's
+        // own update does not paint on that path.
+        let erase_exposed_content = bus.read_word(crate::memory::globals::addr::PAINT_WHITE) != 0;
+        for (window, visible_before) in others_visibility_before_move {
+            self.paint_newly_exposed_window(
+                bus,
+                cpu,
+                window,
+                visible_before,
+                true,
+                erase_exposed_content,
+            );
         }
         if let Some((top, left, width, height, pixels)) = moved_pixels {
             self.restore_screen_rect_pixels(
