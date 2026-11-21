@@ -1796,3 +1796,87 @@ fn input_polls_observe_changes_without_snapshotting_unrelated_handles() {
         }
     }
 }
+
+#[test]
+fn hot_toolbox_fast_paths_skip_handle_snapshot() {
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    for import in [
+        &b"SystemTask"[..],
+        b"GetMainDevice",
+        b"SetEventMask",
+        b"InitCursor",
+        b"GetMouse",
+        b"SetPort",
+        b"SetGWorld",
+        b"SetEmptyRgn",
+        b"TEIdle",
+        b"IsDialogEvent",
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).expect("load");
+        let scratch = loaded.stack_pointer.saturating_sub(64);
+        loaded.cpu.gpr[3] = match import {
+            b"SetEventMask" => 0x00FF,
+            b"GetMouse" => scratch,
+            b"SetPort" | b"SetGWorld" => PPC_MAIN_GWORLD,
+            _ => 0,
+        };
+        loaded.cpu.gpr[4] = 0;
+        let before = snapshots();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1, "import {:?}", std::str::from_utf8(import));
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(snapshots(), before, "import {:?} should skip handle snapshot", std::str::from_utf8(import));
+        match import {
+            b"GetMainDevice" => assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GDEVICE),
+            b"SetEventMask" => {
+                assert_eq!(
+                    loaded.memory.read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK),
+                    Some(0x00FF)
+                );
+            }
+            b"IsDialogEvent" => assert_eq!(loaded.cpu.gpr[3], 0),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn mouse_and_region_outputs_reconcile_window_links_before_guest_execution_resumes() {
+    let front = PPC_DATA_BASE + 0x2000;
+    let back = PPC_DATA_BASE + 0x2400;
+    let link = front + PPC_CWINDOW_NEXT_WINDOW_OFFSET;
+    for name in [b"GetMouse".as_slice(), b"SetEmptyRgn".as_slice()] {
+        let mut app = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+        app.memory.add_region(0, vec![0; 0x2000]);
+        app.memory.add_region(front, vec![0; 0x200]);
+        app.memory.add_region(back, vec![0; 0x200]);
+        app.memory.write_u32_be(0x09d6, front).unwrap();
+        app.memory.write_u32_be(link, back).unwrap();
+        app.window_list.with_mut(|windows| windows.extend([front, back]));
+
+        let pc = PPC_CODE_BASE + 0x400;
+        let call = 0x4800_0001 | (app.imports[0].trap_pc.wrapping_sub(pc + 4) & 0x03ff_fffc);
+        let words = [
+            0x7e88_02a6, // mflr r20
+            call,
+            0x8155_0000, // lwz r10,0(r21), immediately after the import
+            0x7e88_03a6, // mtlr r20
+            0x4e80_0020, // blr
+        ];
+        app.memory.add_region(pc, words.into_iter().flat_map(u32::to_be_bytes).collect());
+        app.cpu.pc = pc;
+        app.cpu.lr = PPC_HALT_PC;
+        app.cpu.gpr[3] = 0;
+        app.cpu.gpr[4] = 0;
+        if name == b"SetEmptyRgn" {
+            let handle = PPC_DATA_BASE + 0x2800;
+            app.memory.add_region(handle, link.to_be_bytes().to_vec());
+            app.cpu.gpr[3] = handle;
+        } else {
+            app.cpu.gpr[3] = link;
+        }
+        app.cpu.gpr[21] = link;
+        assert_eq!(app.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(app.cpu.gpr[10], back, "{name:?} output");
+    }
+}

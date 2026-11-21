@@ -4,6 +4,45 @@ use super::*;
 use crate::event_queue::EventQueue;
 use std::collections::HashMap;
 
+pub(super) fn dispatch_te_idle_fast(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    tick_count: u32,
+) -> PpcImportAction {
+    // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
+    // caret in an active record. Keep its public timing/state fields
+    // coherent even though the framebuffer redraw stays deterministic.
+    if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
+        let active = memory
+            .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
+            .unwrap_or(0)
+            != 0;
+        let start = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0);
+        let end = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0);
+        let previous = memory
+            .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
+            .unwrap_or(0);
+        let caret_time = memory
+            .read_u32_be(crate::memory::globals::addr::CARET_TIME)
+            .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
+        if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
+            let caret = memory
+                .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
+                .unwrap_or(0);
+            let _ = memory.write_u16_be(
+                te_ptr + PPC_TE_CARET_STATE_OFFSET,
+                if caret == 0 { 1 } else { 0 },
+            );
+            let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+        }
+    }
+    PpcImportAction::ReturnPreserve
+}
+
 pub(super) struct PpcTextEditDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -593,40 +632,7 @@ pub(super) fn dispatch_textedit_import(
                 Some(PpcImportAction::ReturnPreserve)
             }
         }
-        PpcImportDispatcherTarget::TEIdle => {
-            // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
-            // caret in an active record. Keep its public timing/state fields
-            // coherent even though the framebuffer redraw stays deterministic.
-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
-                let active = memory
-                    .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                    .unwrap_or(0)
-                    != 0;
-                let start = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0);
-                let end = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0);
-                let previous = memory
-                    .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
-                    .unwrap_or(0);
-                let caret_time = memory
-                    .read_u32_be(crate::memory::globals::addr::CARET_TIME)
-                    .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
-                if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
-                    let caret = memory
-                        .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
-                        .unwrap_or(0);
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_CARET_STATE_OFFSET,
-                        if caret == 0 { 1 } else { 0 },
-                    );
-                    let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
+        PpcImportDispatcherTarget::TEIdle => Some(dispatch_te_idle_fast(cpu, memory, tick_count)),
         PpcImportDispatcherTarget::TEUpdate => {
             // Text (1993), p. 2-88: redraw the edit record within the caller's
             // update rectangle. The existing QuickDraw target clips writes to
