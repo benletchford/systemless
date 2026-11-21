@@ -5261,7 +5261,7 @@ fn make_itable_resizes_target_and_excludes_reserved_colors() {
         &mut last_mem_error,
         &mut handles,
         PPC_MAIN_GDEVICE,
-        &[[0; 3]; 256],
+        &mut [[0; 3]; 256],
         &mut startup,
     );
 
@@ -5310,7 +5310,7 @@ fn make_itable_reports_invalid_resolution_without_touching_target() {
         &mut last_mem_error,
         &mut handles,
         0,
-        &[[0; 3]; 256],
+        &mut [[0; 3]; 256],
         &mut startup,
     );
 
@@ -8473,4 +8473,55 @@ fn set_std_cprocs_fills_standard_bottlenecks_so_draw_picture_reads_the_handle() 
         ppc_quickdraw_read_pixel(&mut loaded.memory, front, (7, 5)),
         Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
     );
+}
+
+#[test]
+fn make_itable_after_restoring_faded_screen_ctab_matches_logical_colors() {
+    // Antibody fades the screen to black with SetEntries, copies its real
+    // palette back into the main device's ColorTable, calls
+    // MakeITable(NIL, NIL, 0) and draws its red "Unregistered Copy" banner
+    // before fading back in. ITabMatch uses the rebuilt inverse table, not
+    // the faded hardware CLUT (ColorMgr.a), so red must stay red.
+    let pef = synthetic_pef_with_import(b"SetEntries");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let faded = scratch;
+    let rgb = scratch + 256 * 8;
+    loaded.memory.add_region(scratch, vec![0; 256 * 8 + 8]);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 255;
+    loaded.cpu.gpr[5] = faded;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SetEntries);
+    assert!(loaded.screen_clut.iter().all(|entry| *entry == [0; 3]));
+
+    let standard = TrapDispatcher::standard_mac_8bpp_clut();
+    let ctab = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+    for (index, [red, green, blue]) in standard.iter().copied().enumerate() {
+        let entry = ctab + 8 + index as u32 * 8;
+        loaded.memory.write_u16_be(entry + 2, red).unwrap();
+        loaded.memory.write_u16_be(entry + 4, green).unwrap();
+        loaded.memory.write_u16_be(entry + 6, blue).unwrap();
+    }
+    loaded.memory.write_u32_be(ctab, 0x0000_4321).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::MakeITable);
+
+    let red = PpcRgbColor {
+        red: 0xffff,
+        green: 0,
+        blue: 0,
+    };
+    ppc_write_rgb_color(&mut loaded.memory, rgb, red).unwrap();
+    loaded.cpu.gpr[3] = rgb;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
+
+    let red_index = ppc_rgb_color_to_index_in_clut(red, &standard, 256);
+    assert_eq!(
+        loaded.quickdraw_fore_indices.get(&PPC_MAIN_GWORLD).copied(),
+        Some(red_index)
+    );
+    // The hardware stays faded until the application fades it back in.
+    assert!(loaded.screen_clut.iter().all(|entry| *entry == [0; 3]));
 }
