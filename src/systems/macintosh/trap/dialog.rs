@@ -7104,7 +7104,7 @@ impl super::TrapDispatcher {
                 }
                 // Icon (32)
                 DIALOG_ITEM_ICON => {
-                    if !skip_pictures && item.resource_id != 0 {
+                    if !skip_pictures {
                         self.draw_dialog_icon_resource(
                             bus,
                             (abs_top, abs_left, abs_bottom, abs_right),

@@ -9055,6 +9055,44 @@
     }
 
     #[test]
+    fn drawdialog_draws_icon_item_with_resource_id_zero() {
+        // MTE 1992 p. 6-155: an icon item names an `ICON` resource by ID and
+        // 0 is valid; the System file's ICON 0 is the stop icon (IM:I I-424).
+        // Mahjong 1.0.5's alert DITL 138 uses ICON 0 and was drawn without
+        // its icon.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let port = bus.alloc(170);
+        bus.write_word(port + 20, 60);
+        bus.write_word(port + 22, 100);
+        let (base, stride, _, _, _) = disp.screen_mode;
+        bus.write_bytes(base, &vec![0x77; (stride * 80) as usize]);
+        disp.dialog_items.insert(
+            port,
+            vec![DialogItem {
+                item_type: 32,
+                rect: (8, 8, 40, 40),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        bus.write_long(TEST_SP, port);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        // Stop icon row 0 is $007FFE00: column 16 is set, column 0 is not.
+        assert_eq!(
+            bus.read_byte(base + 8 * stride + 8 + 16),
+            255,
+            "DrawDialog must draw the System stop icon for ICON 0"
+        );
+        assert_ne!(bus.read_byte(base + 8 * stride + 8), 255);
+    }
+
+    #[test]
     fn drawdialog_draws_picture_item_with_resource_id_zero() {
         // MTE 1992 p. 6-155: a picture item names a `PICT` resource by ID,
         // and 0 is a valid resource ID. Hellcats over the Pacific's splash
