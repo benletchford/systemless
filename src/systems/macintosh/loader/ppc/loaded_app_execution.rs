@@ -938,6 +938,36 @@ impl PpcLoadedApp {
                             .all(|address| !block_copy_overlaps_boundary_state(address, 4, &window_list)),
                         _ => false,
                     };
+                // Hot Toolbox operations that do not allocate handles, touch
+                // files or resources, or need the full dispatch context.
+                let hot_toolbox_fast_path = toolbox_startup.pending_launch.is_none()
+                    && matches!(
+                        dispatcher_target,
+                        PpcImportDispatcherTarget::SetPort
+                            | PpcImportDispatcherTarget::SetPortWindowPort
+                            | PpcImportDispatcherTarget::SetPortDialogPort
+                            | PpcImportDispatcherTarget::SetGWorld
+                            | PpcImportDispatcherTarget::GetMouse
+                            | PpcImportDispatcherTarget::InitCursor
+                            | PpcImportDispatcherTarget::SetEmptyRgn
+                            | PpcImportDispatcherTarget::SetEventMask
+                            | PpcImportDispatcherTarget::SystemTask
+                            | PpcImportDispatcherTarget::TEIdle
+                            | PpcImportDispatcherTarget::GetMainDevice
+                            | PpcImportDispatcherTarget::GetDeviceList
+                            | PpcImportDispatcherTarget::DialogCompatibility(
+                                PpcDialogCompatibilityOperation::IsDialogEvent
+                            )
+                    );
+                let clip_rect_fast_rgn = (toolbox_startup.pending_launch.is_none()
+                    && matches!(dispatcher_target, PpcImportDispatcherTarget::ClipRect))
+                .then(|| {
+                    let port = *current_gworld;
+                    port.checked_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+                        .and_then(|addr| memory.read_u32_be(addr))
+                        .filter(|&clip_rgn| ppc_rgn_ptr(memory, clip_rgn).is_some())
+                })
+                .flatten();
                 if !trace_ppc
                     && !resuming_control_definition
                     && (!matches!(dispatcher_target, PpcImportDispatcherTarget::TickCount)
@@ -958,6 +988,8 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::DisableMenuItem
                     ) || null_dialog_poll
                         || pure_toolbox_query
+                        || hot_toolbox_fast_path
+                        || clip_rect_fast_rgn.is_some()
                         // The general path traces some copies and reconciles
                         // boundary-managed low-memory globals and window links.
                         || match dispatcher_target {
@@ -1184,6 +1216,193 @@ impl PpcLoadedApp {
                         PpcImportDispatcherTarget::QDDone => PpcImportAction::Return(1),
                         PpcImportDispatcherTarget::QDError => PpcImportAction::Return(
                             ppc_i16_result(*toolbox_startup.last_quickdraw_error),
+                        PpcImportDispatcherTarget::SetPort
+                        | PpcImportDispatcherTarget::SetPortWindowPort
+                        | PpcImportDispatcherTarget::SetPortDialogPort => {
+                            let port = match dispatcher_target {
+                                PpcImportDispatcherTarget::SetPortDialogPort => {
+                                    crate::dialog_manager::evaluate_set_port_dialog_port(cpu.gpr[3])
+                                }
+                                PpcImportDispatcherTarget::SetPortWindowPort => {
+                                    crate::window_manager::evaluate_set_port_window_port(cpu.gpr[3])
+                                }
+                                _ => cpu.gpr[3],
+                            };
+                            current_gworld.with_mut(|current_gworld| {
+                                current_gdevice.with_mut(|current_gdevice| {
+                                    *current_gworld = port;
+                                    *current_gdevice = ppc_gworld_device(&gworlds, *current_gworld)
+                                        .unwrap_or(*current_gdevice);
+                                    ppc_register_gdevice(&mut toolbox_startup, *current_gdevice);
+                                    ppc_restore_port_colors(
+                                        memory,
+                                        *current_gworld,
+                                        &mut quickdraw_fore_color,
+                                        &mut quickdraw_back_color,
+                                    );
+                                    if toolbox_startup.init_graf_global_ptr != 0 {
+                                        let _ = memory.write_u32_be(
+                                            toolbox_startup.init_graf_global_ptr,
+                                            *current_gworld,
+                                        );
+                                    }
+                                    if ppc_gworld_trace_enabled() {
+                                        eprintln!(
+                                            "[PPC-GWORLD-TRACE] SetPort port=${:08X} gdevice=${:08X}",
+                                            *current_gworld, *current_gdevice
+                                        );
+                                    }
+                                });
+                            });
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::SetGWorld => {
+                            current_gworld.with_mut(|current_gworld| {
+                                current_gdevice.with_mut(|current_gdevice| {
+                                    *current_gworld = cpu.gpr[3];
+                                    *current_gdevice = if cpu.gpr[4] != 0 {
+                                        cpu.gpr[4]
+                                    } else {
+                                        ppc_gworld_device(&gworlds, *current_gworld)
+                                            .unwrap_or(PPC_MAIN_GDEVICE)
+                                    };
+                                    if let Some((h, v)) = ppc_gworld_pen(memory, *current_gworld) {
+                                        quickdraw_pen_h = h;
+                                        quickdraw_pen_v = v;
+                                    }
+                                    ppc_restore_port_colors(
+                                        memory,
+                                        *current_gworld,
+                                        &mut quickdraw_fore_color,
+                                        &mut quickdraw_back_color,
+                                    );
+                                    if toolbox_startup.init_graf_global_ptr != 0 {
+                                        let _ = memory.write_u32_be(
+                                            toolbox_startup.init_graf_global_ptr,
+                                            *current_gworld,
+                                        );
+                                    }
+                                    if ppc_gworld_trace_enabled() {
+                                        eprintln!(
+                                            "[PPC-GWORLD-TRACE] SetGWorld port=${:08X} requested_gdevice=${:08X} gdevice=${:08X}",
+                                            *current_gworld, cpu.gpr[4], *current_gdevice
+                                        );
+                                    }
+                                });
+                            });
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::ClipRect => {
+                            let clip_rgn = clip_rect_fast_rgn.expect("checked clip region");
+                            let err = if let Some((top, left, bottom, right)) =
+                                ppc_read_rect(memory, cpu.gpr[3])
+                            {
+                                if ppc_write_rgn_bbox(memory, clip_rgn, top, left, bottom, right)
+                                    .is_some()
+                                {
+                                    PPC_NO_ERR
+                                } else {
+                                    PPC_PARAM_ERR
+                                }
+                            } else {
+                                PPC_PARAM_ERR
+                            };
+                            process_memory_manager.set_native_mem_error(err);
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::GetMouse => {
+                            let point_ptr = cpu.gpr[3];
+                            let mouse_point =
+                                memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2);
+                            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+                                let (global_v, global_h) = match mouse_point {
+                                    Some(point) => ((point >> 16) as u16, point as u16),
+                                    None => (input.mouse_v as u16, input.mouse_h as u16),
+                                };
+                                let _ = memory.write_u16_be(point_ptr, global_v);
+                                let _ = memory.write_u16_be(point_ptr + 2, global_h);
+                                let _ = ppc_transform_port_point(
+                                    memory,
+                                    *current_gworld,
+                                    point_ptr,
+                                    false,
+                                );
+                            }
+                            if crate::trap::dispatch::trace_input_enabled() {
+                                let local_v = memory
+                                    .read_u16_be(point_ptr)
+                                    .unwrap_or(input.mouse_v as u16)
+                                    as i16;
+                                let local_h = memory
+                                    .read_u16_be(point_ptr.saturating_add(2))
+                                    .unwrap_or(input.mouse_h as u16)
+                                    as i16;
+                                eprintln!(
+                                    "[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({}, {})",
+                                    local_v, local_h
+                                );
+                            }
+                            if let Some(point) = mouse_point {
+                                let (v, h) = ((point >> 16) as i16, point as i16);
+                                if (v, h) != (input.mouse_v, input.mouse_h) {
+                                    ppc_rebase_mouse_warp(
+                                        &mut input_sprocket,
+                                        input,
+                                        (v, h),
+                                        &input_sprocket_virtual_elements,
+                                    );
+                                }
+                                input.mouse_v = v;
+                                input.mouse_h = h;
+                                process_input.set_mouse_position((v, h));
+                                if let Some(records) = process_input.cursor_device_records() {
+                                    let _ = memory.write_bytes(
+                                        records.data + 8,
+                                        &crate::cursor_manager::cursor_device_position_bytes((
+                                            v, h,
+                                        )),
+                                    );
+                                }
+                            }
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::InitCursor => {
+                            let _action = crate::cursor_manager::evaluate_init_cursor();
+                            cursor_state.init();
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::SetEmptyRgn => {
+                            let _ = ppc_set_empty_rgn(memory, cpu.gpr[3]);
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::SetEventMask => {
+                            let _ = memory.write_u16_be(
+                                crate::memory::globals::addr::SYS_EVT_MASK,
+                                cpu.gpr[3] as u16,
+                            );
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::SystemTask => {
+                            let _action = crate::desk_manager::evaluate_system_task();
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::TEIdle => {
+                            dispatch_textedit::dispatch_te_idle_fast(cpu, memory, import_tick_count)
+                        }
+                        PpcImportDispatcherTarget::GetMainDevice
+                        | PpcImportDispatcherTarget::GetDeviceList => {
+                            PpcImportAction::Return(PPC_MAIN_GDEVICE)
+                        }
+                        PpcImportDispatcherTarget::DialogCompatibility(
+                            PpcDialogCompatibilityOperation::IsDialogEvent,
+                        ) => dispatch_dialog::dispatch_is_dialog_event_fast(
+                            cpu,
+                            memory,
+                            &window_list,
+                            draw_sprocket
+                                .active_context
+                                .and(draw_sprocket.blanking_window),
+                            &gworlds,
                         ),
                         _ => unreachable!(),
                     };

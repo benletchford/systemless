@@ -1796,3 +1796,46 @@ fn input_polls_observe_changes_without_snapshotting_unrelated_handles() {
         }
     }
 }
+
+#[test]
+fn hot_toolbox_fast_paths_skip_handle_snapshot() {
+    let snapshots = super::super::dispatch_imports::handle_snapshot_count;
+    for import in [
+        &b"SystemTask"[..],
+        b"GetMainDevice",
+        b"SetEventMask",
+        b"InitCursor",
+        b"GetMouse",
+        b"SetPort",
+        b"SetGWorld",
+        b"SetEmptyRgn",
+        b"TEIdle",
+        b"IsDialogEvent",
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(import)).expect("load");
+        let scratch = loaded.stack_pointer.saturating_sub(64);
+        loaded.cpu.gpr[3] = match import {
+            b"SetEventMask" => 0x00FF,
+            b"GetMouse" => scratch,
+            b"SetPort" | b"SetGWorld" => PPC_MAIN_GWORLD,
+            _ => 0,
+        };
+        loaded.cpu.gpr[4] = 0;
+        let before = snapshots();
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1, "import {:?}", std::str::from_utf8(import));
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(snapshots(), before, "import {:?} should skip handle snapshot", std::str::from_utf8(import));
+        match import {
+            b"GetMainDevice" => assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GDEVICE),
+            b"SetEventMask" => {
+                assert_eq!(
+                    loaded.memory.read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK),
+                    Some(0x00FF)
+                );
+            }
+            b"IsDialogEvent" => assert_eq!(loaded.cpu.gpr[3], 0),
+            _ => {}
+        }
+    }
+}

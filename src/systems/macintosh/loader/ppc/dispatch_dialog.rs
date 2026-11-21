@@ -1762,6 +1762,37 @@ pub enum PpcDialogCompatibilityOperation {
     UpdateDialog,
 }
 
+pub(super) fn dispatch_is_dialog_event_fast(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    window_list: &SharedProcessWindowList,
+    blanking_window: Option<u32>,
+    gworlds: &[PpcGWorldRecord],
+) -> PpcImportAction {
+    let Some(params) = evaluate_is_dialog_event_parameters(cpu.gpr[3]) else {
+        return PpcImportAction::Return(0);
+    };
+    let result = ppc_read_dialog_event(memory, params.event_ptr()).is_some_and(|event| {
+        let dialog = ppc_dialog_for_event(
+            memory,
+            window_list,
+            blanking_window,
+            event.what,
+            event.message,
+        );
+        let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
+        crate::dialog_manager::is_dialog_event(
+            event.what,
+            event.message,
+            event.where_v,
+            event.where_h,
+            dialog,
+            bounds,
+        )
+    });
+    PpcImportAction::Return(u32::from(result))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_dialog_compatibility(
     operation: PpcDialogCompatibilityOperation,
@@ -1790,29 +1821,7 @@ fn ppc_dispatch_dialog_compatibility(
     let dialog = cpu.gpr[3];
     match operation {
         PpcDialogCompatibilityOperation::IsDialogEvent => {
-            let Some(params) = evaluate_is_dialog_event_parameters(cpu.gpr[3])
-            else {
-                return PpcImportAction::Return(0);
-            };
-            let result = ppc_read_dialog_event(memory, params.event_ptr()).is_some_and(|event| {
-                let dialog = ppc_dialog_for_event(
-                    memory,
-                    window_list,
-                    blanking_window,
-                    event.what,
-                    event.message,
-                );
-                let bounds = dialog.and_then(|d| ppc_dialog_global_bounds(memory, gworlds, d));
-                crate::dialog_manager::is_dialog_event(
-                    event.what,
-                    event.message,
-                    event.where_v,
-                    event.where_h,
-                    dialog,
-                    bounds,
-                )
-            });
-            PpcImportAction::Return(u32::from(result))
+            dispatch_is_dialog_event_fast(cpu, memory, window_list, blanking_window, gworlds)
         }
         PpcDialogCompatibilityOperation::DialogSelect => {
             if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
