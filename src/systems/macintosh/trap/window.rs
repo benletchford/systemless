@@ -2262,9 +2262,10 @@ impl super::TrapDispatcher {
 
     /// Track whether a window's rectangle lies wholly off the screen. Such a
     /// window has no visible frame to draw and occludes nothing; the mark
-    /// must follow MoveWindow, because applications commonly create a window
-    /// far off-screen (for example at h=16384) and move it into place before
-    /// showing it (Inside Macintosh Volume I, I-289).
+    /// must follow MoveWindow, SizeWindow and ZoomWindow, because
+    /// applications commonly create a window far off-screen (for example at
+    /// h=16384) or with an empty rectangle, and move or size it into place
+    /// before showing it (Inside Macintosh Volume I, I-289).
     fn refresh_window_offscreen_placement(&mut self, window_ptr: u32, rect: (i16, i16, i16, i16)) {
         let (_, _, screen_w, screen_h, _) = self.screen_mode;
         let (top, left, bottom, right) = rect;
@@ -5290,6 +5291,13 @@ impl super::TrapDispatcher {
                         bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                         Some(global_structure),
                     );
+                    // A window created with an empty rectangle on the screen
+                    // edge (MaciGame: NewCWindow at (40,0,40,0), then
+                    // ShowWindow and SizeWindow to 640x400) was marked as
+                    // parked off-screen. Its new size puts it on the screen,
+                    // so it must draw its frame and occlude what is behind.
+                    // Inside Macintosh Volume I (1985), I-289 and I-290.
+                    self.refresh_window_offscreen_placement(the_window, global_content);
 
                     // Update visRgn in local coords. A hidden window's visRgn
                     // stays empty: the Window Manager only gives visible
@@ -6567,6 +6575,7 @@ impl super::TrapDispatcher {
                                 bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
                                 Some(global_structure),
                             );
+                            self.refresh_window_offscreen_placement(the_window, global_content);
 
                             // visRgn and clipRgn in local coords
                             let local_rect = Some((0i16, 0i16, new_h, new_w));

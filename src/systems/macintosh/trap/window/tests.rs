@@ -8057,6 +8057,49 @@ fn window_parked_off_screen_then_moved_on_screen_draws_its_frame_on_show_hide() 
 }
 
 #[test]
+fn size_window_brings_an_empty_edge_window_on_screen_and_draws_its_frame() {
+    // MaciGame creates its zoomNoGrow window with the empty rectangle
+    // (40,0,40,0), shows it and then sizes it to 640x400 with SizeWindow.
+    // The empty rectangle at the left screen edge was marked as parked
+    // off-screen and only MoveWindow cleared the mark, so the window never
+    // drew its frame and the Standard File dialog erased it as desktop.
+    // SizeWindow redraws the frame of the resized window (Inside Macintosh
+    // Volume I (1985), I-289 and I-290).
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen_base = bus.alloc(800 * 600);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+    disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, screen_base, 40, 0, 40, 0, "MaciGame", 12, false, false,
+        false, 0,
+    );
+    show_hide_for_test(&mut disp, &mut cpu, &mut bus, window, true);
+    for offset in 0..800 * 600 {
+        bus.write_byte(screen_base + offset, 0x42);
+    }
+
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0); // fUpdate = FALSE
+    bus.write_word(sp + 2, 400);
+    bus.write_word(sp + 4, 640);
+    bus.write_long(sp + 6, window);
+    assert!(dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().is_ok());
+
+    assert!(
+        !disp.windows_placed_offscreen.contains(&window),
+        "SizeWindow onto the screen must clear the off-screen mark"
+    );
+    // The title bar spans the rows just above the content's top edge (40).
+    let painted = (22..39u32)
+        .flat_map(|v| (100..540u32).map(move |h| screen_base + v * 800 + h))
+        .filter(|&addr| bus.read_byte(addr) != 0x42)
+        .count();
+    assert!(painted > 0, "SizeWindow must draw the resized window's title bar");
+}
+
+#[test]
 fn windows_created_wholly_off_screen_get_no_synthesised_chrome() {
     // An application that parks a window off-screen intends to drive its
     // content itself; real hardware draws that window's frame where it was
