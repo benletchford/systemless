@@ -11164,87 +11164,42 @@ impl FixtureRunner {
             .last_fade_percent
             .is_none_or(|percent| percent == 100)
             && ppc_app.draw_sprocket.last_fade_zero_color.is_none();
-        if !matches!(front_buffer.depth, 1 | 2 | 4) && no_gamma_fade {
-            let bytes_per_pixel = front_buffer.depth / 8;
-            let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
-                return false;
-            };
-            if let Some(source_bytes) = ppc_app.front_buffer_readable_bytes(front_buffer) {
-                if front_buffer.height == 0 {
-                    return true;
-                }
-                let first_dest_addr = destination_y
-                    .checked_mul(host_row_bytes)
-                    .and_then(|offset| host_base.checked_add(offset))
-                    .and_then(|row| row.checked_add(destination_x_bytes));
-                let dest_span_len = (front_buffer.height - 1)
-                    .checked_mul(host_row_bytes)
-                    .and_then(|rows| rows.checked_add(visible_row_bytes))
-                    .and_then(|len| usize::try_from(len).ok());
-                let checked_translated_base = if classic_overlays.is_empty() {
-                    first_dest_addr
-                        .zip(dest_span_len)
-                        .and_then(|(addr, len)| bus.can_write_plain_presented_span(addr, len))
-                } else {
-                    None
-                };
-                for y in 0..front_buffer.height {
-                    let Some(destination_row) = destination_y.checked_add(y) else {
-                        return false;
-                    };
-                    let Some(destination_row_addr) = destination_row
-                        .checked_mul(host_row_bytes)
-                        .and_then(|offset| host_base.checked_add(offset))
-                    else {
-                        return false;
-                    };
-                    let row_offset = (y as usize) * source_row_len;
-                    let row_slice = &source_bytes[row_offset..row_offset + visible_row_len];
-                    let source_row_addr = front_buffer.base_addr + y * front_buffer.row_bytes;
-                    if let Some(translated_base) = checked_translated_base {
-                        let destination = destination_row_addr + destination_x_bytes;
-                        let translated = translated_base + y * host_row_bytes;
-                        bus.sync_presented_bytes_checked(
-                            destination,
-                            translated,
-                            source_row_addr,
-                            row_slice,
-                        );
-                        continue;
-                    }
-                    let covered = Self::ppc_overlay_spans_for_row(
-                        classic_overlays,
-                        destination_row,
-                        destination_x,
-                        front_buffer.width,
-                    );
-                    let mut copy_span = |start: u32, end: u32| {
-                        if start >= end {
-                            return;
+        let mut copied_rows = 0;
+        if classic_overlays.is_empty() && matches!(front_buffer.depth, 8 | 16 | 32) && no_gamma_fade {
+            let first_destination = destination_y.checked_mul(host_row_bytes)
+                .and_then(|offset| host_base.checked_add(offset))
+                .and_then(|row| row.checked_add(destination_x * (front_buffer.depth / 8)));
+            let span_len = front_buffer.height.checked_sub(1)
+                .and_then(|rows| rows.checked_mul(host_row_bytes))
+                .and_then(|offset| offset.checked_add(visible_row_bytes));
+            let flat_destination = first_destination.zip(span_len).and_then(|(addr, len)| {
+                bus.can_write_plain_presented_span(addr, len as usize).map(|flat| (addr, flat))
+            });
+            if let Some((guest, flat)) = flat_destination {
+                if let Some(source_bytes) = ppc_app.front_buffer_readable_bytes(front_buffer) {
+                    for y in 0..front_buffer.height {
+                        let offset = y as usize * source_row_len;
+                        let dst_offset = y * host_row_bytes;
+                        if !bus.try_sync_plain_presented_bytes(
+                            guest + dst_offset,
+                            flat + dst_offset,
+                            front_buffer.base_addr + y * front_buffer.row_bytes,
+                            &source_bytes[offset..offset + visible_row_len],
+                        ) {
+                            break;
                         }
-                        let start_byte = (start * bytes_per_pixel) as usize;
-                        let end_byte = (end * bytes_per_pixel) as usize;
-                        let source = source_row_addr + start * bytes_per_pixel;
-                        let destination =
-                            destination_row_addr + destination_x_bytes + start * bytes_per_pixel;
-                        bus.sync_presented_bytes(
-                            destination,
-                            source,
-                            &row_slice[start_byte..end_byte],
-                        );
-                    };
-                    let mut next = 0;
-                    for (start, end) in covered {
-                        copy_span(next, start);
-                        next = next.max(end);
+                        copied_rows += 1;
                     }
-                    copy_span(next, front_buffer.width);
+                    if copied_rows == front_buffer.height {
+                        return true;
+                    }
                 }
-                return true;
             }
         }
+        // Routed destinations can alias sparse guest storage. Release the source
+        // borrow before copying the remaining rows through the ordinary owned-row path.
         let mut row = vec![0u8; source_row_len];
-        for y in 0..front_buffer.height {
+        for y in copied_rows..front_buffer.height {
             if ppc_app
                 .read_front_buffer_row(front_buffer, y, &mut row)
                 .is_none()

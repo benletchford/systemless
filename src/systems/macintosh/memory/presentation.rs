@@ -3168,19 +3168,18 @@ impl MacMemoryBus {
         self.write_plain_presented_bytes(address, &row)
     }
 
-    /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
     /// Like [`Self::sync_presented_bytes`], when the caller has already proven
     /// `[destination, destination + bytes.len())` via
     /// [`Self::can_write_plain_presented_span`] at `translated_destination`.
-    pub(crate) fn sync_presented_bytes_checked(
+    pub(crate) fn try_sync_plain_presented_bytes(
         &mut self,
         destination: u32,
         translated_destination: u32,
         source: u32,
         bytes: &[u8],
-    ) {
+    ) -> bool {
         if destination == source {
-            return;
+            return true;
         }
         let source_end = u64::from(source) + bytes.len() as u64;
         let plain_row = self.presentation.as_ref().is_some_and(|p| {
@@ -3190,11 +3189,12 @@ impl MacMemoryBus {
         });
         if plain_row {
             self.write_plain_presented_bytes_checked(translated_destination, bytes);
-            return;
+            return true;
         }
-        self.sync_presented_bytes(destination, source, bytes);
+        false
     }
 
+    /// Synchronize a native framebuffer mirror without erasing unchanged coverage.
     pub(crate) fn sync_presented_bytes(&mut self, destination: u32, source: u32, bytes: &[u8]) {
         if destination == source {
             return;
@@ -6442,6 +6442,9 @@ mod tests {
 
         paint_detail(&mut bus, 0x8000);
         let source_detail = bus.presentation.as_ref().unwrap().detail(0x8000).unwrap();
+        let flat = bus.can_write_plain_presented_span(0x1000, 8).unwrap();
+        assert!(!bus.try_sync_plain_presented_bytes(0x1000, flat, 0x8000, &same_bytes));
+        assert!(bus.presentation.as_ref().unwrap().detail(0x1000).is_none());
         bus.sync_presented_bytes(0x1000, 0x8000, &same_bytes);
         assert_eq!(
             bus.presentation.as_ref().unwrap().detail(0x1000),
