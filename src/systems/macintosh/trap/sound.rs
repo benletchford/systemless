@@ -1485,11 +1485,22 @@ impl super::TrapDispatcher {
             }
 
             let active = chan.has_active_playback() || chan.double_buffer.is_some();
-            bus.write_word(
-                chan.guest_ptr + GUEST_SND_CHANNEL_FLAGS_OFFSET,
-                if active { 1 } else { 0 },
+            let expected_flags: u16 = if active { 1 } else { 0 };
+            // `cmdInProgress` (offset 20, 8 bytes) and `flags` (offset 28, 2 bytes)
+            // are contiguous; read both in one pass and skip writes when unchanged.
+            let mut state_bytes = [0u8; 10];
+            bus.read_bytes_into(
+                chan.guest_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
+                &mut state_bytes,
             );
-            if !active {
+            let current_flags = u16::from_be_bytes([state_bytes[8], state_bytes[9]]);
+            if current_flags != expected_flags {
+                bus.write_word(
+                    chan.guest_ptr + GUEST_SND_CHANNEL_FLAGS_OFFSET,
+                    expected_flags,
+                );
+            }
+            if !active && state_bytes[..8] != [0u8; 8] {
                 self.write_guest_snd_command(
                     bus,
                     chan.guest_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
@@ -1506,19 +1517,41 @@ impl super::TrapDispatcher {
     /// Some games update it directly instead of calling SndDoCommand for every
     /// command. Keep the guest-visible queue/head/tail authoritative here.
     pub(crate) fn service_guest_sound_queues(&mut self, bus: &mut MacMemoryBus) {
-        let channel_ptrs: Vec<u32> = self
-            .sound_manager
-            .channels
-            .iter()
-            .map(|chan| chan.guest_ptr)
-            .filter(|ptr| *ptr != 0)
-            .collect();
+        if self.sound_manager.channels.is_empty() {
+            return;
+        }
+        let mut stack_ptrs = [0u32; 8];
+        let mut stack_len = 0usize;
+        let mut heap_ptrs = Vec::new();
+        let mut use_heap = false;
+        for chan in &self.sound_manager.channels {
+            if chan.guest_ptr == 0 {
+                continue;
+            }
+            if !use_heap && stack_len < stack_ptrs.len() {
+                stack_ptrs[stack_len] = chan.guest_ptr;
+                stack_len += 1;
+            } else {
+                if !use_heap {
+                    heap_ptrs.extend_from_slice(&stack_ptrs[..stack_len]);
+                    use_heap = true;
+                }
+                heap_ptrs.push(chan.guest_ptr);
+            }
+        }
+        let channel_ptrs: &[u32] = if use_heap {
+            &heap_ptrs
+        } else {
+            &stack_ptrs[..stack_len]
+        };
 
-        for chan_ptr in channel_ptrs {
+        let mut any_channel_needs_sync = false;
+        for &chan_ptr in channel_ptrs {
             let mut serviced = 0usize;
             loop {
                 serviced += 1;
                 if serviced > 16 {
+                    any_channel_needs_sync = true;
                     break;
                 }
 
@@ -1528,20 +1561,34 @@ impl super::TrapDispatcher {
                     .map(|chan| chan.has_active_playback() || chan.double_buffer.is_some())
                     .unwrap_or(false);
                 if active {
+                    any_channel_needs_sync = true;
                     break;
                 }
 
-                let q_length = bus
-                    .read_word(chan_ptr + GUEST_SND_CHANNEL_Q_LENGTH_OFFSET)
-                    .max(1) as usize;
-                let q_head = bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET) as usize;
-                let q_tail = bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET) as usize;
+                // `cmdInProgress` (20..28), `flags` (28..30), `qLength` (30..32),
+                // `qHead` (32..34), and `qTail` (34..36) are contiguous.
+                let mut header = [0u8; 16];
+                bus.read_bytes_into(
+                    chan_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
+                    &mut header,
+                );
+                let q_length = u16::from_be_bytes([header[10], header[11]]).max(1) as usize;
+                let q_head = u16::from_be_bytes([header[12], header[13]]) as usize;
+                let q_tail = u16::from_be_bytes([header[14], header[15]]) as usize;
                 if q_head == q_tail {
-                    let cmd = self
-                        .read_snd_command(bus, chan_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET);
-                    if cmd.cmd == 0 {
+                    let cmd_code = u16::from_be_bytes([header[0], header[1]]);
+                    if cmd_code == 0 {
+                        let current_flags = u16::from_be_bytes([header[8], header[9]]);
+                        if current_flags != 0 || header[..8] != [0u8; 8] {
+                            any_channel_needs_sync = true;
+                        }
                         break;
                     }
+                    let cmd = SndCommand {
+                        cmd: cmd_code,
+                        param1: i16::from_be_bytes([header[2], header[3]]),
+                        param2: u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
+                    };
                     if trace_sound_enabled() {
                         eprintln!(
                             "[SOUND] guest cmdInProgress chan=${:08X} cmd={} param1={} param2=${:08X}",
@@ -1549,6 +1596,7 @@ impl super::TrapDispatcher {
                         );
                     }
                     self.execute_sound_command(bus, chan_ptr, cmd);
+                    any_channel_needs_sync = true;
                     let still_active = self
                         .sound_manager
                         .find_channel(chan_ptr)
@@ -1564,6 +1612,7 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
+                any_channel_needs_sync = true;
                 let slot = q_head % q_length;
                 let cmd_addr = chan_ptr + GUEST_SND_CHANNEL_QUEUE_OFFSET + (slot as u32) * 8;
                 let cmd = self.read_snd_command(bus, cmd_addr);
@@ -1586,7 +1635,9 @@ impl super::TrapDispatcher {
             }
         }
 
-        self.sync_guest_sound_channel_state(bus);
+        if any_channel_needs_sync {
+            self.sync_guest_sound_channel_state(bus);
+        }
     }
 
     /// Execute a sound command on a channel, handling bufferCmd to load samples.

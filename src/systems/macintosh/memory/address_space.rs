@@ -1350,6 +1350,35 @@ impl SharedGuestAddressSpace {
     }
 
     #[inline]
+    pub(crate) fn read_routed_bytes_into(
+        &self,
+        address: u32,
+        dst: &mut [u8],
+        flat_limit: Option<u32>,
+    ) -> Option<()> {
+        if dst.is_empty() {
+            return Some(());
+        }
+        let end = range_end(address, dst.len())?;
+        self.with_state_mut(|state| {
+            if !state.overlaps_shared(u64::from(address), end) {
+                return state.regions.read_bytes_into(address, dst);
+            }
+            if read_shared_bytes(state, address, dst).is_some() {
+                return Some(());
+            }
+            for (offset, byte) in dst.iter_mut().enumerate() {
+                *byte = read_routed_u8_state(
+                    state,
+                    address.wrapping_add(offset as u32),
+                    flat_limit,
+                )?;
+            }
+            Some(())
+        })
+    }
+
+    #[inline]
     pub(crate) fn write_routed_u8(
         &self,
         address: u32,
