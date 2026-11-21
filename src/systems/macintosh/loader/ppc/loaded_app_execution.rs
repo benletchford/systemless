@@ -975,7 +975,7 @@ impl PpcLoadedApp {
                 let clip_rect_fast_rgn = (toolbox_startup.pending_launch.is_none()
                     && matches!(dispatcher_target, PpcImportDispatcherTarget::ClipRect))
                 .then(|| {
-                    let port = *current_gworld;
+                    let port = current_gworld.get();
                     port.checked_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
                         .and_then(|addr| memory.read_u32_be(addr))
                         .filter(|&clip_rgn| {
