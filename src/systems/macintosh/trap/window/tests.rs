@@ -3265,6 +3265,43 @@ fn showwindow_already_visible_does_not_requeue_full_update() {
     );
 }
 
+// ShowHide exits when the window is already in the requested state, so
+// ShowWindow on a visible window leaves its visRgn alone (boot3
+// WindowMgr.a ShowWindow/ShowHide; IM:I I-285). Expert Backgammon calls
+// ShowWindow on its visible board window while the "Cube action" window
+// sits in front; rebuilding the board's visRgn from its content let the
+// board redraw wipe the dialog.
+#[test]
+fn showwindow_already_visible_keeps_vis_region_clipped_by_windows_above() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let window = 0x300000u32;
+    let (vis_data, _) = setup_window_with_regions(&mut bus, window, 0, 0, 400, 600);
+    bus.write_byte(window + 110, 0xFF);
+    // The window above covers the top of this one: visRgn starts at v=150.
+    bus.write_word(vis_data + 2, 150);
+    disp.window_list.replace(vec![window]);
+    disp.front_window = window;
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, window);
+    let result = dispatch(&mut disp, 0x115, &mut cpu, &mut bus);
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+
+    let vis_data = bus.read_long(bus.read_long(window + 24));
+    assert_eq!(
+        (
+            bus.read_word(vis_data + 2) as i16,
+            bus.read_word(vis_data + 4) as i16,
+            bus.read_word(vis_data + 6) as i16,
+            bus.read_word(vis_data + 8) as i16,
+        ),
+        (150, 0, 400, 600),
+        "ShowWindow on a visible window must not rebuild its visRgn"
+    );
+}
+
 #[test]
 fn showwindow_hidden_window_sets_global_update_region() {
     let (mut disp, mut cpu, mut bus) = setup();
