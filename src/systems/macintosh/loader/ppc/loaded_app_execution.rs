@@ -922,18 +922,22 @@ impl PpcLoadedApp {
                 ) && dialog_callback_stack.is_empty()
                     && memory.read_u16_be(cpu.gpr[3]) == Some(0);
                 let pure_toolbox_query = toolbox_startup.pending_launch.is_none()
-                    && matches!(
-                        dispatcher_target,
+                    && match dispatcher_target {
                         PpcImportDispatcherTarget::FrontWindow
-                            | PpcImportDispatcherTarget::GetPort
-                            | PpcImportDispatcherTarget::GetGWorld
                             | PpcImportDispatcherTarget::GetWRefCon
                             | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
                             | PpcImportDispatcherTarget::GetGWorldDevice
                             | PpcImportDispatcherTarget::GetGWorldPixMap
                             | PpcImportDispatcherTarget::QDDone
-                            | PpcImportDispatcherTarget::QDError
-                    );
+                            | PpcImportDispatcherTarget::QDError => true,
+                        PpcImportDispatcherTarget::GetPort => {
+                            !block_copy_overlaps_boundary_state(cpu.gpr[3], 4, &window_list)
+                        }
+                        PpcImportDispatcherTarget::GetGWorld => [cpu.gpr[3], cpu.gpr[4]].into_iter()
+                            .filter(|address| *address != 0)
+                            .all(|address| !block_copy_overlaps_boundary_state(address, 4, &window_list)),
+                        _ => false,
+                    };
                 if !trace_ppc
                     && !resuming_control_definition
                     && (!matches!(dispatcher_target, PpcImportDispatcherTarget::TickCount)
@@ -1131,7 +1135,7 @@ impl PpcLoadedApp {
                         PpcImportDispatcherTarget::GetPort => {
                             let port_ptr = cpu.gpr[3];
                             if port_ptr != 0 && ppc_memory_can_write_bytes(memory, port_ptr, 4) {
-                                let _ = memory.write_u32_be(port_ptr, *current_gworld);
+                                let _ = memory.write_u32_be(port_ptr, current_gworld.get());
                             }
                             PpcImportAction::ReturnPreserve
                         }
@@ -1142,10 +1146,10 @@ impl PpcLoadedApp {
                                 && ppc_optional_output_can_write(memory, device_ptr, 4)
                             {
                                 if port_ptr != 0 {
-                                    let _ = memory.write_u32_be(port_ptr, *current_gworld);
+                                    let _ = memory.write_u32_be(port_ptr, current_gworld.get());
                                 }
                                 if device_ptr != 0 {
-                                    let _ = memory.write_u32_be(device_ptr, *current_gdevice);
+                                    let _ = memory.write_u32_be(device_ptr, current_gdevice.get());
                                 }
                             }
                             PpcImportAction::ReturnPreserve

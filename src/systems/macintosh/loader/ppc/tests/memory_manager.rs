@@ -5536,3 +5536,42 @@ fn set_string_resizes_and_copies_before_relocating_its_source() {
         assert_eq!(loaded.cpu.gpr[3], if bytes.len() > 1 { 3 } else { 1 });
     }
 }
+
+#[test]
+fn port_query_outputs_reconcile_window_links_before_guest_execution_resumes() {
+    let front = PPC_DATA_BASE + 0x2000;
+    let back = PPC_DATA_BASE + 0x2400;
+    let link = front + PPC_CWINDOW_NEXT_WINDOW_OFFSET;
+    for (name, output_register) in [
+        (b"GetPort".as_slice(), 3),
+        (b"GetGWorld".as_slice(), 3),
+        (b"GetGWorld".as_slice(), 4),
+    ] {
+        let mut app = load_pef_application(&synthetic_pef_with_import(name)).unwrap();
+        app.memory.add_region(0, vec![0; 0x2000]);
+        app.memory.add_region(front, vec![0; 0x200]);
+        app.memory.add_region(back, vec![0; 0x200]);
+        app.memory.write_u32_be(0x09d6, front).unwrap();
+        app.memory.write_u32_be(link, back).unwrap();
+        app.window_list.with_mut(|windows| windows.extend([front, back]));
+
+        let pc = PPC_CODE_BASE + 0x400;
+        let call = 0x4800_0001 | (app.imports[0].trap_pc.wrapping_sub(pc + 4) & 0x03ff_fffc);
+        let words = [
+            0x7e88_02a6, // mflr r20
+            call,
+            0x8155_0000, // lwz r10,0(r21), immediately after the import
+            0x7e88_03a6, // mtlr r20
+            0x4e80_0020, // blr
+        ];
+        app.memory.add_region(pc, words.into_iter().flat_map(u32::to_be_bytes).collect());
+        app.cpu.pc = pc;
+        app.cpu.lr = PPC_HALT_PC;
+        app.cpu.gpr[3] = 0;
+        app.cpu.gpr[4] = 0;
+        app.cpu.gpr[output_register] = link;
+        app.cpu.gpr[21] = link;
+        assert_eq!(app.run_with_hle_imports(64).handled_import_count, 1);
+        assert_eq!(app.cpu.gpr[10], back, "{name:?} output in r{output_register}");
+    }
+}
