@@ -921,6 +921,23 @@ impl PpcLoadedApp {
                     )
                 ) && dialog_callback_stack.is_empty()
                     && memory.read_u16_be(cpu.gpr[3]) == Some(0);
+                let pure_toolbox_query = toolbox_startup.pending_launch.is_none()
+                    && match dispatcher_target {
+                        PpcImportDispatcherTarget::FrontWindow
+                            | PpcImportDispatcherTarget::GetWRefCon
+                            | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
+                            | PpcImportDispatcherTarget::GetGWorldDevice
+                            | PpcImportDispatcherTarget::GetGWorldPixMap
+                            | PpcImportDispatcherTarget::QDDone
+                            | PpcImportDispatcherTarget::QDError => true,
+                        PpcImportDispatcherTarget::GetPort => {
+                            !block_copy_overlaps_boundary_state(cpu.gpr[3], 4, &window_list)
+                        }
+                        PpcImportDispatcherTarget::GetGWorld => [cpu.gpr[3], cpu.gpr[4]].into_iter()
+                            .filter(|address| *address != 0)
+                            .all(|address| !block_copy_overlaps_boundary_state(address, 4, &window_list)),
+                        _ => false,
+                    };
                 if !trace_ppc
                     && !resuming_control_definition
                     && (!matches!(dispatcher_target, PpcImportDispatcherTarget::TickCount)
@@ -940,6 +957,7 @@ impl PpcLoadedApp {
                             | PpcImportDispatcherTarget::EnableMenuItem
                             | PpcImportDispatcherTarget::DisableMenuItem
                     ) || null_dialog_poll
+                        || pure_toolbox_query
                         // The general path traces some copies and reconciles
                         // boundary-managed low-memory globals and window links.
                         || match dispatcher_target {
@@ -1103,6 +1121,70 @@ impl PpcLoadedApp {
                             ppc_block_zero(cpu, memory);
                             PpcImportAction::ReturnPreserve
                         }
+                        PpcImportDispatcherTarget::FrontWindow => {
+                            let front_visible =
+                                ppc_front_visible_process_window(memory, &window_list);
+                            let window = crate::window_manager::evaluate_front_window(
+                                draw_sprocket
+                                    .active_context
+                                    .and(draw_sprocket.blanking_window),
+                                front_visible,
+                            );
+                            PpcImportAction::Return(window)
+                        }
+                        PpcImportDispatcherTarget::GetPort => {
+                            let port_ptr = cpu.gpr[3];
+                            if port_ptr != 0 && ppc_memory_can_write_bytes(memory, port_ptr, 4) {
+                                let _ = memory.write_u32_be(port_ptr, current_gworld.get());
+                            }
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::GetGWorld => {
+                            let port_ptr = cpu.gpr[3];
+                            let device_ptr = cpu.gpr[4];
+                            if ppc_optional_output_can_write(memory, port_ptr, 4)
+                                && ppc_optional_output_can_write(memory, device_ptr, 4)
+                            {
+                                if port_ptr != 0 {
+                                    let _ = memory.write_u32_be(port_ptr, current_gworld.get());
+                                }
+                                if device_ptr != 0 {
+                                    let _ = memory.write_u32_be(device_ptr, current_gdevice.get());
+                                }
+                            }
+                            PpcImportAction::ReturnPreserve
+                        }
+                        PpcImportDispatcherTarget::GetWRefCon => {
+                            let window = cpu.gpr[3];
+                            let ref_con = if window != 0 {
+                                memory.read_u32_be(
+                                    window.wrapping_add(PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET),
+                                )
+                            } else {
+                                None
+                            };
+                            let result =
+                                crate::window_manager::evaluate_get_w_ref_con(window, ref_con);
+                            PpcImportAction::Return(result)
+                        }
+                        PpcImportDispatcherTarget::GetPortBitMapForCopyBits => {
+                            let bits = (cpu.gpr[3] != 0)
+                                .then(|| cpu.gpr[3].checked_add(2))
+                                .flatten()
+                                .filter(|bits| ppc_memory_read_bytes(memory, *bits, 14).is_some())
+                                .unwrap_or(0);
+                            PpcImportAction::Return(bits)
+                        }
+                        PpcImportDispatcherTarget::GetGWorldDevice => PpcImportAction::Return(
+                            ppc_gworld_device(&gworlds, cpu.gpr[3]).unwrap_or(0),
+                        ),
+                        PpcImportDispatcherTarget::GetGWorldPixMap => {
+                            PpcImportAction::Return(ppc_gworld_pixmap(memory, &gworlds, cpu.gpr[3]))
+                        }
+                        PpcImportDispatcherTarget::QDDone => PpcImportAction::Return(1),
+                        PpcImportDispatcherTarget::QDError => PpcImportAction::Return(
+                            ppc_i16_result(*toolbox_startup.last_quickdraw_error),
+                        ),
                         _ => unreachable!(),
                     };
                     handled_import_count = handled_import_count.saturating_add(1);
@@ -1309,7 +1391,23 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_size,
                     );
                 }
-                let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
+                let is_glm_rave_or_getkeys = matches!(
+                    binding.dispatcher_target,
+                    PpcImportDispatcherTarget::GlmPageFreeAll
+                        | PpcImportDispatcherTarget::GlmRealloc
+                        | PpcImportDispatcherTarget::GlmMalloc
+                        | PpcImportDispatcherTarget::GlmCalloc
+                        | PpcImportDispatcherTarget::GlmFree
+                        | PpcImportDispatcherTarget::GlmSetMode
+                        | PpcImportDispatcherTarget::GlmGetInteger
+                        | PpcImportDispatcherTarget::GlmGetError
+                        | PpcImportDispatcherTarget::GlmSetFunc
+                        | PpcImportDispatcherTarget::Rave(_)
+                        | PpcImportDispatcherTarget::GetKeys
+                );
+                let action = if !is_glm_rave_or_getkeys {
+                    None
+                } else if binding.dispatcher_target == PpcImportDispatcherTarget::GlmPageFreeAll {
                     let pending = (cpu.lr == cpu.pc)
                         .then(|| glm_callback_stack.last().copied())
                         .flatten()
@@ -1867,6 +1965,31 @@ impl PpcLoadedApp {
                         input,
                         Some(&mut idle_poll_counts),
                     ))
+                } else {
+                    None
+                };
+                let action = if let Some(action) = action {
+                    Some(action)
+                } else if let Some(action) = dispatch_simple_hot_import_fast(
+                    &binding.dispatcher_target,
+                    cpu,
+                    memory,
+                    ppc_virtual_microseconds(
+                        process_tick,
+                        clock_cycles_per_tick,
+                        clock_cycle_phase,
+                        elapsed,
+                    ),
+                ) {
+                    Some(action)
+                } else if !binding
+                    .symbol_name
+                    .as_bytes()
+                    .get(..2)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"q3"))
+                    && !is_quickdraw_3d_library(&binding.library_name)
+                {
+                    None
                 } else if let Some(action) = dispatch_qd3d::dispatch_q3_math_import_fast(
                     dispatch_qd3d::PpcQ3MathDispatchContext {
                         target: &binding.dispatcher_target,
@@ -1962,18 +2085,6 @@ impl PpcLoadedApp {
                     },
                 ) {
                     Some(action)
-                } else if let Some(action) = dispatch_simple_hot_import_fast(
-                    &binding.dispatcher_target,
-                    cpu,
-                    memory,
-                    ppc_virtual_microseconds(
-                        process_tick,
-                        clock_cycles_per_tick,
-                        clock_cycle_phase,
-                        elapsed,
-                    ),
-                ) {
-                    Some(action)
                 } else if let Some(action) = dispatch_qd3d::dispatch_q3_submit_import_fast(
                     dispatch_qd3d::PpcQ3SubmitDispatchContext {
                         target: &binding.dispatcher_target,
@@ -2004,6 +2115,11 @@ impl PpcLoadedApp {
                 ) {
                     Some(action)
                 } else {
+                    None
+                };
+                let action = if let Some(action) = action {
+                    Some(action)
+                } else {
                     // Borrow process-owned File and Resource Manager records
                     // only for this import. A Mixed Mode continuation may
                     // expose another adapter between imports, so no mutable
@@ -2011,8 +2127,8 @@ impl PpcLoadedApp {
                     // may outlive this dispatch call or be retained in its
                     // returned action.
                     let action = process_file_system.with_mut(|file_system| {
-                        let launched_app_path = file_system.launched_app_path.clone();
                         let ProcessFileSystemState {
+                            launched_app_path,
                             files,
                             writable_refnums,
                             stdio_streams,
