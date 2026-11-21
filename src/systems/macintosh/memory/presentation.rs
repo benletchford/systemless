@@ -7547,6 +7547,28 @@ mod tests {
     }
 
     #[test]
+    fn pages_showing_offscreen_detail_are_withdrawn_from_direct_writes() {
+        use ppc::PpcMemory;
+        let mut bus = bus();
+        bus.enable_outline_presentation(
+            (0x1000, 8, 8, 8, 8),
+            std::array::from_fn(|i| [i as u8; 3]),
+            2,
+        );
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        let page = 0x0100_0000;
+        memory.add_region(page, vec![255; 0x1000]);
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(memory.direct_write_page(page >> 12).is_some());
+        let epoch = memory.direct_write_epoch();
+        paint_detail(&mut bus, page);
+        assert_ne!(memory.direct_write_epoch(), epoch);
+        assert!(memory.direct_write_page(page >> 12).is_none());
+        // Reads have no observer; the page stays readable directly.
+        assert!(memory.direct_read_page(page >> 12).is_some());
+    }
+
+    #[test]
     fn ordinary_pixels_expand_at_presentation_and_seed_new_glyphs() {
         let mut bus = bus();
         bus.write_long(0x1000, 0x20202020);
