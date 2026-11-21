@@ -2464,7 +2464,12 @@ pub(super) fn ppc_te_draw(
             // Text (1993), pp. 2-51--2-52: highlight each selected line segment.
             let selected_start = selection_start.min(selection_end).max(start);
             let selected_end = selection_start.max(selection_end).min(visible_end);
-            if selected_start < selected_end {
+            // TextEdit.a (ChkBounds): a block that ends at the end of its
+            // line is unbounded on the right in left-to-right text, so the
+            // highlight runs to the view edge, even over trailing spaces.
+            let reaches_line_end = selection_start.max(selection_end) >= end
+                && matches!(alignment, 0 | -2);
+            if selected_start < selected_end || (reaches_line_end && selected_start < end) {
                 let measure = |end| {
                     if styled {
                         ppc_te_measure_text_width_styled(&style_runs, &text, start, end)
@@ -2477,7 +2482,11 @@ pub(super) fn ppc_te_draw(
                 } else {
                     line_left.saturating_add(measure(selected_start))
                 };
-                let selection_right = line_left.saturating_add(measure(selected_end));
+                let selection_right = if reaches_line_end {
+                    view.3
+                } else {
+                    line_left.saturating_add(measure(selected_end))
+                };
                 let line_top = baseline.saturating_sub(ascent);
                 let selection = (
                     line_top.max(view.0),

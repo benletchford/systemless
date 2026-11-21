@@ -2295,6 +2295,183 @@ fn modal_dialog_tab_moves_focus_to_the_next_edit_text_item() {
 }
 
 #[test]
+fn modal_dialog_redraws_the_open_edit_field_once_through_its_text_record() {
+    // Hextris sets its registration dialog's port to Geneva 9 after
+    // GetNewDialog, so the port style differs from the dialog TERec's own
+    // font. DialogMgr.a draws the open editText item only by EraseRect and
+    // TEUpdate; drawing the item text again over it overprinted each
+    // keystroke, and a click that collapsed the selection left the old
+    // highlight on screen.
+    let pef = synthetic_pef_with_import(b"GetNewDialog");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let mut dlog = vec![0; 22];
+    for (offset, value) in [(0, 40i16), (2, 60), (4, 100), (6, 260)] {
+        dlog[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    dlog[10] = 1;
+    dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+    let mut ditl = vec![0; 22];
+    for (offset, value) in [(6, 12i16), (8, 20), (10, 32), (12, 180)] {
+        ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    ditl[14] = PPC_DIALOG_ITEM_EDIT_TEXT;
+    ditl[15] = 5;
+    ditl[16..21].copy_from_slice(b"Pilot");
+    for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+        let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data: data.into(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+    }
+    loaded.cpu.gpr[3] = 128;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let dialog = loaded.cpu.gpr[3];
+    // TextFont(geneva); TextSize(9) on the dialog port.
+    let _ = loaded
+        .memory
+        .write_u16_be(dialog + PPC_CGRAF_PORT_TX_FONT_OFFSET, 3);
+    let _ = loaded
+        .memory
+        .write_u16_be(dialog + PPC_CGRAF_PORT_TX_SIZE_OFFSET, 9);
+    let te_handle = loaded
+        .memory
+        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+        .unwrap();
+    let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET), Some(5));
+    let field = (52, 80, 72, 240); // global item rect
+    let redraw = |loaded: &mut PpcLoadedApp| {
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_fill_front_rect(&mut loaded.memory, front, field, PPC_RGB_WHITE));
+        assert!(ppc_draw_dialog(
+            &loaded.window_list,
+            &loaded.param_text,
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            &loaded.controls.records(),
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            &loaded.process_file_system.vfs_resources,
+            *loaded.process_file_system.current_resource_file,
+            dialog,
+        ));
+    };
+    let field_pixels = |loaded: &mut PpcLoadedApp| {
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let mut pixels = Vec::new();
+        for y in field.0..field.2 {
+            for x in field.1..field.3 {
+                pixels.push(
+                    ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        surface.front_buffer,
+                        (i32::from(x), i32::from(y)),
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        pixels
+    };
+    redraw(&mut loaded);
+    let white = {
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap()
+    };
+    let highlight_probe = |loaded: &mut PpcLoadedApp| {
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (81, 55)).unwrap()
+    };
+    let edge_probe = |loaded: &mut PpcLoadedApp| {
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (236, 62)).unwrap()
+    };
+    // TextEdit.a ChkBounds: a selection reaching the end of its line is
+    // highlighted out to the right edge, past the last glyph.
+    assert_ne!(edge_probe(&mut loaded), white, "selection runs to the field edge");
+
+    let item_hit_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(item_hit_ptr, vec![0; 2]);
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ModalDialog;
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = dialog);
+    let modal = |loaded: &mut PpcLoadedApp, event: PpcQueuedEvent| {
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = item_hit_ptr;
+        loaded.set_event_queue([event]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(0));
+    };
+    // A click past the end of the text leaves an insertion point there.
+    modal(
+        &mut loaded,
+        PpcQueuedEvent { what: 1, message: 0, when: 0, where_v: 62, where_h: 230, modifiers: 0 },
+    );
+    assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET), Some(5));
+    assert_eq!(loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET), Some(5));
+    assert_eq!(highlight_probe(&mut loaded), white, "collapsed selection is unhighlighted");
+
+    modal(
+        &mut loaded,
+        PpcQueuedEvent {
+            what: 3,
+            message: (0x07 << 8) | u32::from(b'x'),
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+    );
+    assert_eq!(
+        ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle).as_deref(),
+        Some(&b"Pilotx"[..])
+    );
+    let typed = field_pixels(&mut loaded);
+    assert!(typed.iter().any(|pixel| *pixel != white));
+    // The keystroke's redraw is the field drawn once, not two text layers.
+    redraw(&mut loaded);
+    assert_eq!(typed, field_pixels(&mut loaded));
+    assert_eq!(edge_probe(&mut loaded), white);
+
+    // A selection of only trailing white space still reaches the line end.
+    modal(
+        &mut loaded,
+        PpcQueuedEvent {
+            what: 3,
+            message: (0x31 << 8) | u32::from(b' '),
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        },
+    );
+    let _ = loaded.memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, 6);
+    let _ = loaded.memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, 7);
+    redraw(&mut loaded);
+    assert_ne!(edge_probe(&mut loaded), white, "trailing space selection is highlighted");
+}
+
+#[test]
 fn get_new_dialog_opens_its_first_edit_text_item_with_a_borrowed_text_handle() {
     let pef = synthetic_pef_with_import(b"GetNewDialog");
     let mut loaded = load_pef_application(&pef).unwrap();
