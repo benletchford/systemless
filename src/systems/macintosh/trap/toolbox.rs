@@ -15349,6 +15349,49 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 14);
                         cpu.write_reg(Register::D0, 0);
                     }
+                    // DragAlignedWindow ($AAA3, selector $004E)
+                    // Drags a window like DragWindow, then moves it so its
+                    // selected local rectangle lies on the optimal screen grid.
+                    // pascal void DragAlignedWindow(WindowPtr wp, Point startPt,
+                    //     Rect *boundsRect, Rect *alignmentRect,
+                    //     AlignmentProcRecordPtr alignmentProc);
+                    // Inside Macintosh: QuickTime (1993), pp. 3-143--3-144.
+                    // Stack: alignmentProc(4), alignmentRect(4), boundsRect(4),
+                    // startPt(4), wp(4). The upper twelve bytes are exactly
+                    // DragWindow's Pascal frame, so the retained DragWindow
+                    // tracking loop runs on them; the trap refires with the
+                    // selector still in D0 until the button is released.
+                    0x004E if arg_bytes == 20 => {
+                        let alignment_proc = bus.read_long(sp);
+                        let alignment_rect = bus.read_long(sp + 4);
+                        let window = bus.read_long(sp + 16);
+                        let before =
+                            (window != 0).then(|| self.window_global_port_rect(bus, window));
+                        cpu.write_reg(Register::A7, sp + 8);
+                        let result = self.dispatch_window(true, 0x125, cpu, bus);
+                        if self.is_window_tracking() {
+                            cpu.write_reg(Register::A7, sp);
+                            return result;
+                        }
+                        cpu.write_reg(Register::A7, sp + 20);
+                        if let Some(before) = before {
+                            if self.window_global_port_rect(bus, window) != before {
+                                if alignment_proc != 0 {
+                                    eprintln!(
+                                        "[IMAGE-COMPRESSION] DragAlignedWindow custom alignment procedures are not implemented; using the default grid"
+                                    );
+                                }
+                                self.align_window_to_eight_bit_grid(
+                                    bus,
+                                    cpu,
+                                    window,
+                                    false,
+                                    alignment_rect,
+                                );
+                            }
+                        }
+                        return result;
+                    }
                     _ => {
                         eprintln!(
                             "[IMAGE-COMPRESSION] Unimplemented selector ${selector:04X} frame={arg_bytes}"

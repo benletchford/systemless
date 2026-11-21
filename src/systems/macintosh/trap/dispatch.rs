@@ -4374,7 +4374,9 @@ impl TrapDispatcher {
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
         let is_control_refire = trap_no_autopop == 0xA968;
-        let is_window_refire = trap_no_autopop == 0xA925;
+        // DragAlignedWindow (ImageCompressionDispatch $AAA3) reuses the
+        // retained DragWindow tracking state.
+        let is_window_refire = matches!(trap_no_autopop, 0xA925 | 0xAAA3);
         let is_go_away_refire = trap_no_autopop == 0xA91E;
         let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;

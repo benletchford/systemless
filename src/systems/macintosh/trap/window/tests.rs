@@ -7739,6 +7739,72 @@ fn dragwindow_moves_window_to_release_delta_inside_boundsrect() {
     );
 }
 
+// QuickTime's DragAlignedWindow (ImageCompressionDispatch $AAA3,
+// selector $004E) drags like DragWindow and then aligns the window to the
+// screen grid. Warcraft calls it when the player drags its main window.
+// Inside Macintosh: QuickTime (1993), pp. 3-143--3-144.
+#[test]
+fn drag_aligned_window_tracks_like_dragwindow_and_aligns_release_position() {
+    let (mut disp, mut cpu, mut bus) = setup();
+
+    let window_addr: u32 = 0x300000;
+    setup_window_with_regions(&mut bus, window_addr, 0, 0, 100, 200);
+    bus.write_word(window_addr + 6, 0); // GrafPort
+    bus.write_word(window_addr + 8, (-40i16) as u16);
+    bus.write_word(window_addr + 10, (-20i16) as u16);
+    bus.write_word(window_addr + 12, 560);
+    bus.write_word(window_addr + 14, 780);
+    bus.write_byte(window_addr + 110, 0xFF);
+    disp.window_list.replace(vec![window_addr]);
+    disp.front_window = window_addr;
+    disp.window_bounds = (40, 20, 140, 220);
+
+    let bounds_rect_ptr = 0x320000;
+    bus.write_word(bounds_rect_ptr, 0);
+    bus.write_word(bounds_rect_ptr + 2, 0);
+    bus.write_word(bounds_rect_ptr + 4, 400);
+    bus.write_word(bounds_rect_ptr + 6, 600);
+
+    disp.push_mouse_down(50, 30);
+
+    let sp = TEST_SP - 20;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::D0, 0x0014_004E);
+    bus.write_long(sp, 0); // standard alignment procedure
+    bus.write_long(sp + 4, 0); // align the whole port
+    bus.write_long(sp + 8, bounds_rect_ptr);
+    bus.write_long(sp + 12, 0x0032_001E); // startPt v=50, h=30
+    bus.write_long(sp + 16, window_addr);
+
+    let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+    assert!(result.expect("DragAlignedWindow is handled").is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp, "frame kept while tracking");
+    assert!(disp.window_tracking.is_some());
+    assert!(disp.is_tracking_refire(0xAAA3));
+    assert_eq!(
+        cpu.read_reg(Register::D0),
+        0x0014_004E,
+        "selector survives the refire"
+    );
+
+    disp.push_mouse_up(70, 81);
+    let result = disp.dispatch_toolbox(true, 0x2A3, &mut cpu, &mut bus);
+    assert!(result.expect("DragAlignedWindow is handled").is_ok());
+    assert_eq!(
+        cpu.read_reg(Register::A7),
+        TEST_SP,
+        "all 20 argument bytes popped"
+    );
+    assert!(disp.window_tracking.is_none());
+    assert!(!disp.is_tracking_refire(0xAAA3));
+    assert_eq!(bus.read_word(window_addr + 8) as i16, -60);
+    assert_eq!(
+        bus.read_word(window_addr + 10) as i16,
+        -72,
+        "release left 71 snaps to the four-pixel grid"
+    );
+}
+
 #[test]
 fn dragwindow_latches_command_and_moves_without_activating_window() {
     // Command-dragging moves an inactive window without bringing it to
