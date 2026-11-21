@@ -5896,6 +5896,87 @@ fn set_origin_keeps_visible_screen_pixels_inside_the_port_region() {
 }
 
 #[test]
+fn frame_rect_is_clipped_to_clip_and_visible_regions() {
+    // Angband frames each terminal window in white; a back window's frame
+    // must not draw through the window in front of it.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FrameRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let clip = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    ppc_write_rect(&mut loaded.memory, clip, 0, 20, 40, 40).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 0..40 {
+        for x in 0..40 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+        }
+    }
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    let vis_before = ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn).unwrap();
+
+    loaded.cpu.gpr[3] = clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FrameRect);
+    let ink = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (25, 10)).unwrap();
+    assert_ne!(ink, 17, "top edge inside clipRgn");
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 20)),
+        Some(ink),
+        "right edge inside clipRgn"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20)),
+        Some(17),
+        "left edge outside clipRgn"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 10)),
+        Some(17),
+        "top edge outside clipRgn"
+    );
+
+    // Same frame with an unrestricted clipRgn but a visRgn that excludes
+    // the bottom half, as for a window partly covered by another.
+    for y in 0..40 {
+        for x in 0..40 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+        }
+    }
+    ppc_write_rect(&mut loaded.memory, clip, -32768, -32768, 32767, 32767).unwrap();
+    loaded.cpu.gpr[3] = clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, 0, 0, 20, 640).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FrameRect);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 10)),
+        Some(ink),
+        "top edge inside visRgn"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 19)),
+        Some(ink),
+        "left edge inside visRgn"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 25)),
+        Some(17),
+        "left edge outside visRgn"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 29)),
+        Some(17),
+        "bottom edge outside visRgn"
+    );
+    let (top, left, bottom, right) = vis_before;
+    ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, top, left, bottom, right).unwrap();
+}
+
+#[test]
 fn erase_round_rect_uses_background_pattern_and_original_curves_under_clipping() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EraseRoundRect")).unwrap();
     let rect = PPC_DATA_BASE + 0x1000;

@@ -3896,70 +3896,37 @@ pub(crate) fn ppc_frame_rect(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
 ) -> bool {
-    let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
+    let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
-    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
-        return false;
-    };
-    let front_buffer = surface.front_buffer;
-    if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
-        return false;
-    }
-
-    let (top, left, bottom, right) = surface.local_rect(rect);
-    let left = left.max(0).min(front_buffer.width as i32);
-    let top = top.max(0).min(front_buffer.height as i32);
-    let right = right.max(0).min(front_buffer.width as i32);
-    let bottom = bottom.max(0).min(front_buffer.height as i32);
     if left >= right || top >= bottom {
         return false;
     }
-    let pen_height = i32::from(
-        memory
-            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
-            .unwrap_or(1),
-    )
-    .min(bottom - top);
-    let pen_width = i32::from(
-        memory
-            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
-            .unwrap_or(1),
-    )
-    .min(right - left);
+    let pen_height = (memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+        .unwrap_or(1) as i16)
+        .clamp(0, bottom.saturating_sub(top));
+    let pen_width = (memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+        .unwrap_or(1) as i16)
+        .clamp(0, right.saturating_sub(left));
     if pen_width == 0 || pen_height == 0 {
         return true;
     }
 
-    let Some(color_pixel) =
-        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
-    else {
-        return false;
-    };
+    // Each edge is painted through the port's visRgn and clipRgn: drawing
+    // into a back window must not run over the windows in front of it.
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-10--2-11.
+    let edges = [
+        (top, left, top.saturating_add(pen_height), right),
+        (bottom.saturating_sub(pen_height), left, bottom, right),
+        (top, left, bottom, left.saturating_add(pen_width)),
+        (top, right.saturating_sub(pen_width), bottom, right),
+    ];
     let mut wrote = false;
-    for dy in 0..pen_height {
-        for x in left..right {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, top + dy), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (x, bottom - 1 - dy),
-                color_pixel,
-            );
-        }
-    }
-    for dx in 0..pen_width {
-        for y in top..bottom {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (left + dx, y), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (right - 1 - dx, y),
-                color_pixel,
-            );
-        }
+    for edge in edges {
+        wrote |=
+            ppc_paint_rect_bounds(memory, gworlds, current_gworld, edge, color, explicit_index);
     }
     wrote
 }
