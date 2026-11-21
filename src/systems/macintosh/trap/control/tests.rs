@@ -1759,6 +1759,31 @@ fn track_control_visible_active_button_hit_returns_inbutton() {
 }
 
 #[test]
+fn trackcontrol_calls_radio_action_with_the_radio_handle_and_part() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = 0x300000;
+    let action = bus.alloc(2);
+    let (handle, ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
+    disp.control_manager.set_proc_id(ptr, 2);
+    disp.input_state.set_mouse_button_for_test(true);
+    disp.input_state.set_mouse_position_for_test((15, 25));
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, action);
+    bus.write_long(sp + 4, (15 << 16) | 25);
+    bus.write_long(sp + 8, handle);
+    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+
+    let trampoline = disp.control_def_trampoline;
+    assert_ne!(trampoline, 0);
+    assert_eq!(cpu.read_reg(Register::PC), trampoline);
+    assert_eq!(bus.read_long(trampoline + 6), handle);
+    assert_eq!(bus.read_word(trampoline + 12), 11);
+    assert_eq!(bus.read_long(trampoline + 16), action);
+}
+
+#[test]
 fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
     let (mut disp, mut cpu, mut bus) = setup();
     let sp = 0x300000u32;

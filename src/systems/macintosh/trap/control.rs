@@ -3906,11 +3906,27 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
 
-                    let current_part = self.scrollbar_tracking_part(bus);
-                    if !self.control_tracking_button_down(bus) {
-                        self.finish_scrollbar_control_tracking(cpu, bus, current_part);
-                        return Some(Ok(()));
-                    }
+                    let tracking = self.control_tracking.as_ref().unwrap();
+                    let simple_part = tracking.simple_part;
+                    let highlighted = tracking.simple_highlighted;
+                    let current_part = if simple_part != 0 {
+                        let inside = self.simple_control_tracking_inside(bus);
+                        if !self.control_tracking_button_down(bus) {
+                            self.finish_simple_control_tracking(cpu, bus, inside);
+                            return Some(Ok(()));
+                        }
+                        if inside != highlighted {
+                            self.redraw_simple_control_tracking_state(cpu, bus, inside);
+                        }
+                        if inside { simple_part } else { 0 }
+                    } else {
+                        let part = self.scrollbar_tracking_part(bus);
+                        if !self.control_tracking_button_down(bus) {
+                            self.finish_scrollbar_control_tracking(cpu, bus, part);
+                            return Some(Ok(()));
+                        }
+                        part
+                    };
 
                     let tick = self.current_tick();
                     let callback_due = if let Some(tracking) = self.control_tracking.as_mut() {
@@ -4346,8 +4362,7 @@ impl super::TrapDispatcher {
                                 // mouse is already up; scripted callers that
                                 // model a real mouse-down take the refire path.
                                 if self.input_state.mouse_button_pressed()
-                                    && action_proc == 0
-                                    && (matches!(proc_id, 0 | 1 | 2) || Self::is_popup_menu_proc_id(proc_id))
+                                    && (matches!(proc_id, 0 | 1 | 2) || (action_proc == 0 && Self::is_popup_menu_proc_id(proc_id)))
                                 {
                                     let part = self.standard_testcontrol_part_code(ctrl_ptr);
                                     let window_ptr = bus.read_long(ctrl_ptr + 4);
@@ -4374,9 +4389,9 @@ impl super::TrapDispatcher {
                                         simple_highlighted: false,
                                         saved_hilite: hilite,
                                         stack_ptr: sp,
-                                        scrollbar_action_proc: 0,
-                                        scrollbar_part: 0,
-                                        scrollbar_last_action_tick: 0,
+                                        scrollbar_action_proc: action_proc,
+                                        scrollbar_part: part,
+                                        scrollbar_last_action_tick: self.current_tick(),
                                         scrollbar_idle_refires: 0,
                                         scrollbar_callback_pending: false,
                                     });
@@ -4391,6 +4406,17 @@ impl super::TrapDispatcher {
                                         None,
                                         "simple_tracking_started",
                                     );
+                                    if action_proc != 0 {
+                                        let return_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+                                        let armed = self.arm_control_action_proc(
+                                            cpu, bus, ctrl_handle, part, action_proc, sp, return_pc,
+                                        );
+                                        let tracking = self.control_tracking.as_mut().unwrap();
+                                        tracking.scrollbar_callback_pending = armed;
+                                        if !armed {
+                                            tracking.scrollbar_action_proc = 0;
+                                        }
+                                    }
                                     return Some(Ok(()));
                                 }
 
