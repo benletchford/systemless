@@ -2782,3 +2782,72 @@ fn snd_channel_status_reports_paused_file_playback() {
     assert_eq!(bus.read_word(sp + 10), 0);
     assert_eq!(bus.read_byte(status_ptr + 14), 1);
 }
+
+#[test]
+fn sound_manager_pascal_traps_leave_oserr_in_d0() {
+    // MacAttack's CODE 9 sound helper ends straight after `_SndDoCommand`
+    // without loading D0, so its caller sees whatever D0.W the trap left.
+    // On hardware that is the OSErr the Sound Manager just stored (noErr);
+    // a stale D0 (the sound index, 12) made the game report "sound error
+    // Err#12" on the first level.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let create_sp = TEST_SP;
+    let chan_ptr_ptr = 0x220300;
+    bus.write_long(chan_ptr_ptr, 0);
+    bus.write_long(create_sp, 0);
+    bus.write_long(create_sp + 4, 0);
+    bus.write_word(create_sp + 8, 5);
+    bus.write_long(create_sp + 10, chan_ptr_ptr);
+    cpu.write_reg(Register::D0, 0x003E_000C);
+    assert!(disp
+        .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(create_sp + 14), 0);
+    assert_eq!(cpu.read_reg(Register::D0), 0, "SndNewChannel noErr in D0");
+    let chan_ptr = bus.read_long(chan_ptr_ptr);
+
+    let cmd_ptr = 0x230000;
+    bus.write_word(cmd_ptr, cmd::NULL);
+    bus.write_word(cmd_ptr + 2, 0);
+    bus.write_long(cmd_ptr + 4, 0);
+
+    let sp = TEST_SP + 0x40;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0x0100); // noWait = TRUE (Pascal Boolean high byte)
+    bus.write_long(sp + 2, cmd_ptr);
+    bus.write_long(sp + 6, chan_ptr);
+    bus.write_word(sp + 10, 0xFFFF);
+    cpu.write_reg(Register::D0, 0x003E_000C);
+    assert!(disp
+        .dispatch_sound(true, 0x003, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(sp + 10), 0);
+    assert_eq!(cpu.read_reg(Register::D0), 0, "SndDoCommand noErr in D0");
+
+    // An error result is mirrored too (sign-extended), e.g. badChannel.
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp + 6, 0); // NIL channel
+    bus.write_word(sp + 10, 0);
+    cpu.write_reg(Register::D0, 0x003E_000C);
+    assert!(disp
+        .dispatch_sound(true, 0x003, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(sp + 10) as i16, -205);
+    assert_eq!(cpu.read_reg(Register::D0), (-205i32) as u32);
+
+    // SndDoImmediate follows the same convention.
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, cmd_ptr);
+    bus.write_long(sp + 4, chan_ptr);
+    bus.write_word(sp + 8, 0xFFFF);
+    cpu.write_reg(Register::D0, 0x003E_000C);
+    assert!(disp
+        .dispatch_sound(true, 0x004, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert_eq!(bus.read_word(sp + 8), 0);
+    assert_eq!(cpu.read_reg(Register::D0), 0, "SndDoImmediate noErr in D0");
+}

@@ -472,6 +472,31 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        let result = self.dispatch_sound_trap(is_tool, trap_num, cpu, bus)?;
+        // The Sound Manager's Pascal entry points ($A801 SndDisposeChannel
+        // .. $A807 SndNewChannel) store their OSErr in the caller's result
+        // slot, and the ROM/Sound Manager 3.x implementation still has that
+        // value in D0.W when the trap returns. Compiled callers rely on it:
+        // MacAttack's sound helper returns straight after `_SndDoCommand`
+        // without setting D0 and its caller treats a non-zero D0.W as a
+        // sound error ("Err#12" from the stale sound index). Mirror the
+        // result slot into D0 so such callers see noErr as on hardware.
+        // $A800 SoundDispatch already manages D0 itself.
+        if is_tool && (0x001..=0x007).contains(&trap_num) && result.is_ok() {
+            let sp = cpu.read_reg(Register::A7);
+            let err = bus.read_word(sp) as i16;
+            cpu.write_reg(Register::D0, err as i32 as u32);
+        }
+        Some(result)
+    }
+
+    fn dispatch_sound_trap<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
         Some(match (is_tool, trap_num) {
             // SndPlay ($A805)
             // FUNCTION SndPlay(chan: SndChannelPtr; sndHdl: SndListHandle; async: BOOLEAN): OSErr;
