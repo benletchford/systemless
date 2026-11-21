@@ -1065,6 +1065,70 @@ fn ppc_direct_chrome_redraw_does_not_paint_back_window_through_front_content() {
 }
 
 #[test]
+fn hle_import_runner_new_cwindow_draws_rdocproc_close_box() {
+    // SCS Mines creates its board with NewCWindow(procID 16 rDocProc,
+    // goAwayFlag true); the close box must draw just like the 68K frame.
+    for depth in [8, 16] {
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[4] = depth;
+        loaded.cpu.gpr[5] = 1;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+        let front = ppc_live_front_buffer_for_gworld(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+        )
+        .unwrap();
+
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 32]);
+        ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+        ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"SCS Mines");
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewCWindow;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = scratch;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 16;
+        loaded.cpu.gpr[8] = u32::MAX;
+        loaded.cpu.gpr[9] = 1;
+        loaded.cpu.gpr[10] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        let window = loaded.cpu.gpr[3];
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK)
+                .unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE)
+                .unwrap();
+        // Close box outline (top/left edges and inset shadow edges); its interior
+        // (12,-10) is cleared of title stripes.
+        for point in [(8, -15), (18, -15), (8, -5), (17, -6)] {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point(point)),
+                Some(black),
+                "{depth}bpp rDocProc close box outline missing at {point:?}",
+            );
+        }
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((12, -11))),
+            Some(white),
+            "{depth}bpp rDocProc close box interior kept title stripes",
+        );
+    }
+}
+
+#[test]
 fn hle_import_runner_new_cwindow_draws_document_frame_at_supported_depths() {
     for depth in [1, 2, 4, 8, 16] {
         let pef = synthetic_pef_with_import(b"NewCWindow");

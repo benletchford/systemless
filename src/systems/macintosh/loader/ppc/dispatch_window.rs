@@ -1497,6 +1497,12 @@ pub(super) fn ppc_window_proc_has_title_bar(proc_id: i16) -> bool {
     matches!(proc_id, 0 | 4 | 5 | 8 | 12 | 16)
 }
 
+/// Standard document WDEF variants whose title bar carries a close box when
+/// the window's goAwayFlag is set (matches the 68K Window Manager).
+pub(super) fn ppc_window_proc_is_document(proc_id: i16) -> bool {
+    matches!(proc_id, 0 | 4 | 8 | 12 | 16)
+}
+
 pub(super) fn ppc_window_structure_bounds(
     proc_id: i16,
     content: (i16, i16, i16, i16),
@@ -2196,7 +2202,9 @@ pub(super) fn ppc_draw_standard_window_frame(
         title_metrics.descent,
         !title.is_empty(),
         active,
-        matches!(proc_id, 0 | 4 | 8 | 12),
+        // rDocProc (16) windows carry a go-away box like the other
+        // document variants (Inside Macintosh Volume I, Figure 9, p. I-273).
+        ppc_window_proc_is_document(proc_id),
         go_away,
         matches!(proc_id, 8 | 12),
     );
