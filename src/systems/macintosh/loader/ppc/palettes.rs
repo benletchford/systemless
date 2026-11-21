@@ -1334,7 +1334,7 @@ pub(crate) fn ppc_make_itable(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     current_gdevice: u32,
-    screen_clut: &[[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
     toolbox_startup: &mut PpcToolboxStartupState,
 ) {
     // Inside Macintosh Volume V (1986), p. V-142: MakeITable accepts only
@@ -1363,7 +1363,7 @@ pub(crate) fn ppc_make_itable(
     let Some((seed, colors)) = ppc_read_itable_ctable(
         memory,
         ctable_handle,
-        screen_clut,
+        color_manager_clut,
         &ppc_device_clut_reserved(toolbox_startup, current_gdevice),
     ) else {
         toolbox_startup.last_quickdraw_error.set(PPC_PARAM_ERR);
@@ -1434,6 +1434,24 @@ pub(crate) fn ppc_make_itable(
         PPC_PARAM_ERR
     };
     toolbox_startup.last_quickdraw_error.set(quickdraw_error);
+    // Rebuilding the main screen device's own inverse table from its own
+    // ColorTable makes that table what the Color Manager matches against
+    // (ColorMgr.a: MakeITable seeds the table, ITabMatch uses it); the
+    // hardware CLUT plays no part. Antibody fades the screen with
+    // SetEntries, copies its real palette back into the device ColorTable,
+    // calls MakeITable(NIL, NIL, 0) and draws its red banner before fading
+    // back in: matching against the faded entries drew it white.
+    let device_ctable_handle = ppc_gdevice_ctable_handle(memory, current_gdevice);
+    if wrote_record
+        && current_gdevice == PPC_MAIN_GDEVICE
+        && explicit_itable_handle == 0
+        && ctable_handle != 0
+        && Some(ctable_handle) == device_ctable_handle
+    {
+        if let Some(updated) = ppc_read_ctable_clut(memory, ctable_handle, color_manager_clut) {
+            *color_manager_clut = updated;
+        }
+    }
 }
 
 pub(crate) fn ppc_set_entries(
