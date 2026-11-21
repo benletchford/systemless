@@ -1,5 +1,6 @@
 //! Architecture-neutral ownership for Event Manager queue and redraw state.
 
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
 
@@ -21,6 +22,62 @@ pub struct QueuedEvent {
     pub where_h: i16,
     /// Modifier flags.
     pub modifiers: u16,
+}
+
+/// The event to deliver once priority has chosen `chosen`: an autoKey is
+/// generated only while its key is down, so it can never follow that key's
+/// keyUp (Macintosh Toolbox Essentials, p. 2-38). One posted at the tick it
+/// fell due, before the release, is still delivered, but ahead of the keyUp
+/// its lower priority would put it behind; otherwise the application sees the
+/// key pressed again after the release. `deliverable` is the caller's mask
+/// test.
+pub(crate) fn autokey_before_its_keyup(
+    events: impl IntoIterator<Item = impl Borrow<QueuedEvent>>,
+    chosen: usize,
+    deliverable: impl Fn(u16) -> bool,
+) -> usize {
+    const KEY_UP: u16 = 4;
+    const AUTO_KEY: u16 = 5;
+    let mut earlier_auto_keys = Vec::new();
+    for (index, event) in events.into_iter().enumerate() {
+        let event = event.borrow();
+        if index == chosen {
+            if event.what != KEY_UP {
+                return chosen;
+            }
+            return earlier_auto_keys
+                .into_iter()
+                .find(|&(_, message): &(usize, u32)| message & 0xFF00 == event.message & 0xFF00)
+                .map_or(chosen, |(index, _)| index);
+        }
+        if event.what == AUTO_KEY && deliverable(AUTO_KEY) {
+            earlier_auto_keys.push((index, event.message));
+        }
+    }
+    chosen
+}
+
+/// Removes the event at `index` and, if it is a `keyUp`, retires any earlier
+/// queued `autoKey` events for the same virtual key code. Called only when an
+/// event is consumed (never when peeking), so a `keyUp`-only poll followed by
+/// a broader poll cannot deliver a stale repeat after the release. Repeats for
+/// other keys and events queued after the `keyUp` survive.
+pub(crate) fn remove_event_and_retire_earlier_autokeys(
+    queue: &mut VecDeque<QueuedEvent>,
+    index: usize,
+) -> Option<QueuedEvent> {
+    const KEY_UP: u16 = 4;
+    const AUTO_KEY: u16 = 5;
+    let event = queue.remove(index)?;
+    if event.what == KEY_UP {
+        let key_code = event.message & 0xFF00;
+        for earlier in (0..index).rev() {
+            if queue[earlier].what == AUTO_KEY && (queue[earlier].message & 0xFF00) == key_code {
+                queue.remove(earlier);
+            }
+        }
+    }
+    Some(event)
 }
 
 /// Architecture-neutral semantic copy of the EventRecord most recently

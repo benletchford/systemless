@@ -76,6 +76,39 @@ fn native_menu_mouse_down_follows_older_low_level_events() {
 }
 
 #[test]
+fn native_menu_mouse_down_follows_an_older_autokey_and_its_keyup() {
+    // The autoKey delivered ahead of its keyUp takes the keyUp's priority, so
+    // a retained menu click still waits behind both, as it waits behind the
+    // keyUp alone.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.set_tick_count_for_test(&mut bus, 100);
+    for what in [5, 4] {
+        disp.event_queue.push_back(QueuedEvent {
+            what,
+            message: 0x7C1D,
+            when: 0,
+            where_v: 20,
+            where_h: 30,
+            modifiers: 0,
+        });
+    }
+    disp.pending_native_menu_event = Some(QueuedEvent {
+        what: 1,
+        message: 0,
+        when: 0,
+        where_v: 10,
+        where_h: 42,
+        modifiers: 0,
+    });
+
+    assert_eq!(disp.peek_toolbox_event(&bus, u16::MAX).unwrap().what, 5);
+    let delivered: Vec<u16> = (0..3)
+        .map(|_| disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX).0)
+        .collect();
+    assert_eq!(delivered, [5, 4, 1]);
+}
+
+#[test]
 fn flush_events_keeps_queued_open_application_event() {
     // Solitaire Till Dawn's startup ModalDialog polls with everyEvent, so
     // the launch 'oapp' event is queued before the app calls
@@ -252,6 +285,94 @@ fn autokey_is_posted_when_ticks_advance_before_the_next_poll() {
     );
     assert_eq!(what, 5);
     assert_eq!(message, 0x0000_0061);
+}
+
+#[test]
+fn elapsed_autokey_is_delivered_before_the_keyup_that_follows_it() {
+    // A game that moves while it sees keyDown/autoKey and stops on keyUp must
+    // not receive the repeat after the release.
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.set_sent_open_app_event_for_test(true);
+    let system_event_mask =
+        bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK) | (1 << 4);
+    bus.write_word(crate::memory::globals::addr::SYS_EVT_MASK, system_event_mask);
+
+    disp.push_key_down(0x7C, 0x1D);
+    let (what, _, _, _, _, _, _) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert_eq!(what, 3);
+    let due = disp
+        .current_tick()
+        .wrapping_add(TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS);
+    disp.set_tick_count_for_test(&mut bus, due);
+    disp.post_auto_key_if_due(
+        system_event_mask,
+        bus.read_word(crate::memory::globals::addr::KEY_REP_THRESH),
+    );
+    disp.push_key_up_with_system_event_mask(system_event_mask, 0x7C, 0x1D);
+
+    let mut delivered = Vec::new();
+    for _ in 0..3 {
+        let (what, message, _, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+        if has_event && what != 0 {
+            delivered.push((what, message));
+        }
+    }
+    assert_eq!(delivered, [(5, 0x0000_7C1D), (4, 0x0000_7C1D)]);
+}
+
+#[test]
+fn keyup_only_dequeue_retires_earlier_autokeys_for_that_key_only() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.set_sent_open_app_event_for_test(true);
+    for (what, message) in [
+        (5, 0x0000_7C1D),
+        (5, 0x0000_7B1C),
+        (4, 0x0000_7C1D),
+        (5, 0x0000_7C1D),
+    ] {
+        disp.event_queue.push_back(QueuedEvent {
+            what,
+            message,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    }
+
+    // Peeking with a keyUp-only mask leaves the queue intact.
+    let peeked = disp.peek_toolbox_event(&bus, 0x0010).unwrap();
+    assert_eq!((peeked.what, peeked.message), (4, 0x0000_7C1D));
+    assert_eq!(disp.event_queue.len(), 4);
+
+    // Consuming keyUp retires the earlier repeat for 0x7C while keeping another
+    // key's repeat and any repeat queued after the release.
+    let first = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+    assert_eq!((first.0, first.1, first.6), (4, 0x0000_7C1D, true));
+    let second = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert_eq!((second.0, second.1, second.6), (5, 0x0000_7B1C, true));
+    let third = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert_eq!((third.0, third.1, third.6), (5, 0x0000_7C1D, true));
+    let fourth = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert!(!fourth.6);
+
+    // Two-event changing-mask sequence [autoKey, keyUp] with keyUp-only then
+    // everyEvent never delivers the stale repeat after the release.
+    for (what, message) in [(5, 0x0000_7C1D), (4, 0x0000_7C1D)] {
+        disp.event_queue.push_back(QueuedEvent {
+            what,
+            message,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+    }
+    let release = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
+    assert_eq!((release.0, release.1, release.6), (4, 0x0000_7C1D, true));
+    let follow_up = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0xFFFF);
+    assert!(!follow_up.6);
 }
 
 #[test]
