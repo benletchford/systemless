@@ -190,6 +190,14 @@ fn checked_slot_address(
     .ok_or(PpcImportBindingError::BindingAddressOverflow)
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PpcImportIndexCache {
+    cached_len: usize,
+    cached_count: u32,
+    cached_ptr: usize,
+    indices: Vec<Option<usize>>,
+}
+
 #[derive(Debug)]
 pub(crate) struct PpcImportRunState {
     bindings: Vec<PpcImportBinding>,
@@ -213,7 +221,43 @@ impl PpcImportRunState {
         }
     }
 
+    pub(crate) fn from_parts_with_cache(
+        bindings: Vec<PpcImportBinding>,
+        count: u32,
+        layout: PpcImportLayout,
+        cache: &mut PpcImportIndexCache,
+    ) -> Self {
+        let ptr = bindings.as_ptr() as usize;
+        let expected_len = usize::try_from(count).unwrap_or(0);
+        let indices = if cache.cached_len == bindings.len()
+            && cache.cached_count == count
+            && cache.cached_ptr == ptr
+            && cache.indices.len() == expected_len
+        {
+            std::mem::take(&mut cache.indices)
+        } else {
+            binding_indices(&bindings, count)
+        };
+        Self {
+            bindings,
+            count,
+            indices,
+            layout,
+        }
+    }
+
     pub(super) fn into_parts(self) -> (Vec<PpcImportBinding>, u32) {
+        (self.bindings, self.count)
+    }
+
+    pub(super) fn into_parts_with_cache(
+        self,
+        cache: &mut PpcImportIndexCache,
+    ) -> (Vec<PpcImportBinding>, u32) {
+        cache.cached_len = self.bindings.len();
+        cache.cached_count = self.count;
+        cache.cached_ptr = self.bindings.as_ptr() as usize;
+        cache.indices = self.indices;
         (self.bindings, self.count)
     }
 
@@ -990,5 +1034,35 @@ mod tests {
         assert_eq!(count, 2);
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[1].symbol_name, "NewThread");
+    }
+
+    #[test]
+    fn import_index_cache_reuses_buffer_and_rebuilds_on_change() {
+        let mut bindings = vec![
+            binding(0, "TickCount", PpcImportDispatcherTarget::TickCount),
+            binding(2, "GetKeys", PpcImportDispatcherTarget::GetKeys),
+        ];
+        let mut count = 3;
+        let mut cache = PpcImportIndexCache::default();
+
+        let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
+        assert_eq!(state.binding_index(0), Some(0));
+        assert_eq!(state.binding_index(1), None);
+        assert_eq!(state.binding_index(2), Some(1));
+        let cached_indices_ptr = state.indices.as_ptr();
+        (bindings, count) = state.into_parts_with_cache(&mut cache);
+
+        // Unchanged bindings reuse the cached index buffer without reallocating.
+        let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
+        assert_eq!(state.indices.as_ptr(), cached_indices_ptr);
+        assert_eq!(state.binding_index(2), Some(1));
+        (bindings, count) = state.into_parts_with_cache(&mut cache);
+
+        // Adding a binding invalidates the cache and rebuilds the index table.
+        bindings.push(binding(3, "Button", PpcImportDispatcherTarget::Button));
+        count = 4;
+        let state = PpcImportRunState::from_parts_with_cache(bindings, count, LAYOUT, &mut cache);
+        assert_eq!(state.binding_index(3), Some(2));
+        let _ = state.into_parts_with_cache(&mut cache);
     }
 }

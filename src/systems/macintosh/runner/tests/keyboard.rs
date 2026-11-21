@@ -198,6 +198,7 @@ fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
             trap_pc: PPC_IMPORT_TRAP_BASE,
             dispatcher_target: PpcImportDispatcherTarget::GetKeys,
         }],
+        import_indices_cache: Default::default(),
         section_bases: Vec::new(),
         input: PpcInputSnapshot::default(),
         process_input: Default::default(),
