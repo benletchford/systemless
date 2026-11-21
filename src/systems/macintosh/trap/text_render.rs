@@ -155,14 +155,14 @@ impl super::TrapDispatcher {
         s_ptr: u32,
         len: u8,
     ) {
-        let is_bold = (self.tx_face & 1) != 0;
+        let is_bold = (self.text_synthesized_face() & 1) != 0;
         let is_italic_requested = (self.tx_face & 2) != 0;
         let is_outline = (self.tx_face & 8) != 0;
         let is_shadow = (self.tx_face & 16) != 0;
 
         // Check if we should use pre-captured italic glyphs
-        let use_precaptured_italic =
-            is_italic_requested && get_glyph_italic(self.tx_font, self.tx_size, 'A').is_some();
+        let use_precaptured_italic = is_italic_requested
+            && get_glyph_italic(self.text_glyph_font(), self.tx_size, 'A').is_some();
         let is_italic = is_italic_requested && !use_precaptured_italic;
 
         let metrics = get_font_metrics(self.tx_font, self.tx_size);
@@ -188,10 +188,10 @@ impl super::TrapDispatcher {
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32) as char;
             let glyph_result = if use_precaptured_italic {
-                get_glyph_italic(self.tx_font, self.tx_size, ch)
-                    .or_else(|| get_glyph(self.tx_font, self.tx_size, ch))
+                get_glyph_italic(self.text_glyph_font(), self.tx_size, ch)
+                    .or_else(|| get_glyph(self.text_glyph_font(), self.tx_size, ch))
             } else {
-                get_glyph(self.tx_font, self.tx_size, ch)
+                get_glyph(self.text_glyph_font(), self.tx_size, ch)
             };
 
             if let Some((glyph, _)) = glyph_result {
@@ -231,10 +231,10 @@ impl super::TrapDispatcher {
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32) as char;
             let glyph_result = if use_precaptured_italic {
-                get_glyph_italic(self.tx_font, self.tx_size, ch)
-                    .or_else(|| get_glyph(self.tx_font, self.tx_size, ch))
+                get_glyph_italic(self.text_glyph_font(), self.tx_size, ch)
+                    .or_else(|| get_glyph(self.text_glyph_font(), self.tx_size, ch))
             } else {
-                get_glyph(self.tx_font, self.tx_size, ch)
+                get_glyph(self.text_glyph_font(), self.tx_size, ch)
             };
 
             if let Some((glyph, data)) = glyph_result {
@@ -366,13 +366,13 @@ impl super::TrapDispatcher {
 
         // For underlined text, we need to pre-compute descender break positions
         // across ALL characters so the underline is continuous but breaks correctly
-        let is_bold = (self.tx_face & 1) != 0;
+        let is_bold = (self.text_synthesized_face() & 1) != 0;
         let is_italic_requested = (self.tx_face & 2) != 0;
         let is_outline = (self.tx_face & 8) != 0;
 
         // Check if we should use pre-captured italic glyphs (same logic as draw_char)
-        let use_precaptured_italic =
-            is_italic_requested && get_glyph_italic(self.tx_font, self.tx_size, 'A').is_some();
+        let use_precaptured_italic = is_italic_requested
+            && get_glyph_italic(self.text_glyph_font(), self.tx_size, 'A').is_some();
         let is_italic = is_italic_requested && !use_precaptured_italic;
         let metrics = get_font_metrics(self.tx_font, self.tx_size);
         let start_x = self.pn_loc.1;
@@ -390,10 +390,10 @@ impl super::TrapDispatcher {
             let ch = bus.read_byte(s_ptr + 1 + i as u32) as char;
             // Use pre-captured italic glyphs when available
             let glyph_result = if use_precaptured_italic {
-                get_glyph_italic(self.tx_font, self.tx_size, ch)
-                    .or_else(|| get_glyph(self.tx_font, self.tx_size, ch))
+                get_glyph_italic(self.text_glyph_font(), self.tx_size, ch)
+                    .or_else(|| get_glyph(self.text_glyph_font(), self.tx_size, ch))
             } else {
-                get_glyph(self.tx_font, self.tx_size, ch)
+                get_glyph(self.text_glyph_font(), self.tx_size, ch)
             };
             if let Some((glyph, _)) = glyph_result {
                 let char_start = current_x;
@@ -447,10 +447,10 @@ impl super::TrapDispatcher {
         for &(ch, char_start, _char_end) in &char_infos {
             // Use pre-captured italic glyphs when available (matching draw_char)
             let glyph_result = if use_precaptured_italic {
-                get_glyph_italic(self.tx_font, self.tx_size, ch)
-                    .or_else(|| get_glyph(self.tx_font, self.tx_size, ch))
+                get_glyph_italic(self.text_glyph_font(), self.tx_size, ch)
+                    .or_else(|| get_glyph(self.text_glyph_font(), self.tx_size, ch))
             } else {
-                get_glyph(self.tx_font, self.tx_size, ch)
+                get_glyph(self.text_glyph_font(), self.tx_size, ch)
             };
             if let Some((glyph, data)) = glyph_result {
                 let top = v - metrics.ascent;
@@ -659,7 +659,7 @@ impl super::TrapDispatcher {
 
     pub(super) fn draw_char<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus, ch: char) {
         // Check text face for styling
-        let is_bold = (self.tx_face & 1) != 0;
+        let is_bold = (self.text_synthesized_face() & 1) != 0;
         let is_italic_requested = (self.tx_face & 2) != 0;
 
         // Compute font scale factor (e.g., Chicago 24 = Chicago 12 at 2x)
@@ -668,13 +668,13 @@ impl super::TrapDispatcher {
 
         // Try to get pre-captured italic glyph if italic is requested
         let (glyph_result, use_precaptured_italic) = if is_italic_requested {
-            if let Some(result) = get_glyph_italic(self.tx_font, self.tx_size, ch) {
+            if let Some(result) = get_glyph_italic(self.text_glyph_font(), self.tx_size, ch) {
                 (Some(result), true)
             } else {
-                (get_glyph(self.tx_font, self.tx_size, ch), false)
+                (get_glyph(self.text_glyph_font(), self.tx_size, ch), false)
             }
         } else {
-            (get_glyph(self.tx_font, self.tx_size, ch), false)
+            (get_glyph(self.text_glyph_font(), self.tx_size, ch), false)
         };
 
         if let Some((glyph, data)) = glyph_result {
@@ -1171,9 +1171,21 @@ impl super::TrapDispatcher {
         self.sync_current_port_draw_state(bus);
     }
 
+    /// The family to take the current port's glyphs from: its own bold face
+    /// for bold text where one stands in (see `fonts::styled_face`).
+    pub(super) fn text_glyph_font(&self) -> i16 {
+        crate::quickdraw::fonts::styled_face(self.tx_font, self.tx_size, self.tx_face as u8).0
+    }
+
+    /// The current port's face bits QuickDraw synthesizes on top of
+    /// `text_glyph_font`'s glyphs: bold is dropped where a bold face stands in.
+    pub(super) fn text_synthesized_face(&self) -> u8 {
+        crate::quickdraw::fonts::styled_face(self.tx_font, self.tx_size, self.tx_face as u8).1
+    }
+
     pub(super) fn advance_extra(&self) -> i16 {
-        crate::quickdraw::text::QuickDrawTextStyle::from_bits(self.tx_face as u8).advance_extra()
-            as i16
+        crate::quickdraw::text::QuickDrawTextStyle::from_bits(self.text_synthesized_face())
+            .advance_extra() as i16
     }
 
     /// Read the current port's spExtra (Fixed-point) and return the

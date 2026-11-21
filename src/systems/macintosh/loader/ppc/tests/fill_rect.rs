@@ -3509,3 +3509,106 @@ fn full_width_8_to_16_copy_clears_second_row_detail_across_plain_first_row() {
         "plain 8-to-16 copy spanning a plain first row must discard detail on the second row"
     );
 }
+
+#[test]
+fn bold_times_measures_and_draws_with_mac_os_9_widths() {
+    // `CharWidth` and string widths measured on Mac OS 9.0 for Times bold:
+    // the bold face's own widths from 12 points up (O and K stay 9 at 12
+    // points, and are 16 at 20), and plain + 1 at 10 points, where bold is
+    // synthesized.
+    use crate::quickdraw::fonts::{FONT_NEWYORK, FONT_TIMES};
+    let width = |font, size, style, text: &[u8]| ppc_text_width_bytes(font, size, style, text);
+    for (size, text, bold) in [
+        (12, b"O".as_slice(), 9),
+        (12, b"K", 9),
+        (20, b"O", 16),
+        (20, b"K", 16),
+        (20, b"New Player", 98),
+        (20, b"OK", 32),
+    ] {
+        let label = std::str::from_utf8(text).unwrap();
+        assert_eq!(
+            width(FONT_TIMES, size, 1, text),
+            bold,
+            "bold {size} {label}"
+        );
+        assert_eq!(
+            width(FONT_NEWYORK, size, 1, text),
+            bold,
+            "New York bold {size} {label}"
+        );
+    }
+    for text in [b"O".as_slice(), b"K", b"New Player"] {
+        let label = std::str::from_utf8(text).unwrap();
+        assert_eq!(
+            width(FONT_TIMES, 10, 1, text),
+            width(FONT_TIMES, 10, 0, text) + text.len() as i16,
+            "bold 10 {label} is synthesized"
+        );
+    }
+
+    // Drawing advances the pen by the same width.
+    const WIDE: (i16, i16, i16, i16) = (0, 0, 40, 160);
+    let indexed = vec![0x12u8; 160 * 40];
+    let fixture = IndexedPortFixture {
+        bounds: WIDE,
+        row_bytes: 160,
+        pixels: &[],
+        fg_index: 103,
+        bg_index: 42,
+        vis: (WIDE, &[]),
+        clip: (WIDE, &[]),
+    };
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    loaded.memory.add_region(0x1_0000, indexed);
+    loaded.memory.write_u32_be(PIXMAP, 0x1_0000).unwrap();
+    loaded.gworlds.last_mut().unwrap().base_addr = 0x1_0000;
+    let advance = ppc_draw_text_bytes_styled(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (4, 28),
+        FONT_TIMES,
+        20,
+        1,
+        PPC_RGB_BLACK,
+        Some(0),
+        1,
+        b"New Player",
+    );
+    assert_eq!(advance, 98);
+
+    // And it draws the bold face's glyphs once: exactly what the bold face
+    // draws as plain text, with no second strike one pixel to the right.
+    let drawn = |loaded: &mut PpcLoadedApp, font, style| {
+        loaded.memory.write_bytes(0x1_0000, &vec![0x12u8; 160 * 40]).unwrap();
+        ppc_draw_text_bytes_styled(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PORT,
+            (4, 28),
+            font,
+            20,
+            1,
+            PPC_RGB_BLACK,
+            Some(0),
+            style,
+            b"Delete Player",
+        );
+        let mut pixels = vec![0u8; 160 * 40];
+        loaded.memory.read_bytes_into(0x1_0000, &mut pixels).unwrap();
+        pixels
+    };
+    let bold = drawn(&mut loaded, FONT_TIMES, 1);
+    let face = drawn(
+        &mut loaded,
+        crate::quickdraw::fonts::families::FONT_BUNDLED_ROMAN_BOLD,
+        0,
+    );
+    assert!(bold.iter().any(|&p| p != 0x12));
+    assert!(
+        bold == face,
+        "bold Times draws other pixels than its bold face"
+    );
+}

@@ -20,6 +20,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+use self::families::FONT_BUNDLED_ROMAN_BOLD;
 pub use self::families::{
     FONT_APPLICATION, FONT_ATHENS, FONT_CAIRO, FONT_CHICAGO, FONT_COURIER, FONT_GENEVA,
     FONT_HELVETICA, FONT_LONDON, FONT_LOSANGELES, FONT_MOBILE, FONT_MONACO, FONT_NEWYORK,
@@ -136,6 +137,44 @@ struct OverrideCache {
 /// up.
 static OVERRIDES: LazyLock<Mutex<OverrideCache>> =
     LazyLock::new(|| Mutex::new(OverrideCache::default()));
+
+/// The family to take glyphs and widths from for `style` text in `font_id`
+/// at `size`, and the style bits QuickDraw must still synthesize on top.
+///
+/// Mac OS 9 draws bold New York and Times from 12 points up with the bold
+/// face's own glyphs and widths, and synthesizes bold (one pixel wider, drawn
+/// twice) below that: `CharWidth` measured on Mac OS 9.0 for the 94 printable
+/// ASCII characters gives plain + 1 for every one at 9 and 10 points and a
+/// different face's widths at 12, 13, 14, 15, 16, 18, 20 and 24. Sizes not
+/// measured (11, below 9) stay synthesized. The bundled bold face replaces
+/// only the bundled regular one: a guest font or an override for the family
+/// at that size is drawn as before, with bold synthesized.
+pub fn styled_face(font_id: i16, size: i16, style: u8) -> (i16, u8) {
+    const BOLD: u8 = 0x01;
+    const ITALIC: u8 = 0x02;
+    let size = if size == 0 { 12 } else { size };
+    let bundled_regular = || {
+        get_override_font_face(font_id, size).is_none()
+            && !RESOURCE_FACES
+                .lock()
+                .expect("resource font cache poisoned")
+                .contains_key(&(font_id, size))
+            && !RESOURCE_OUTLINE_FONTS
+                .lock()
+                .expect("resource outline font cache poisoned")
+                .contains_key(&font_id)
+    };
+    if style & BOLD != 0
+        && style & ITALIC == 0
+        && matches!(font_id, FONT_NEWYORK | FONT_TIMES)
+        && (12..=96).contains(&size)
+        && bundled_regular()
+    {
+        (FONT_BUNDLED_ROMAN_BOLD, style & !BOLD)
+    } else {
+        (font_id, style)
+    }
+}
 
 pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     let size = if size == 0 { 12 } else { size };
@@ -295,6 +334,55 @@ pub fn get_italic_glyph(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bold_times_takes_its_bold_face_from_twelve_points_unless_a_guest_strike_stands_in() {
+        use super::families::FONT_BUNDLED_ROMAN_BOLD as BOLD_FACE;
+        assert_eq!(styled_face(FONT_TIMES, 12, 1), (BOLD_FACE, 0));
+        assert_eq!(
+            styled_face(FONT_TIMES, 0, 1),
+            (BOLD_FACE, 0),
+            "size 0 is 12"
+        );
+        assert_eq!(
+            styled_face(FONT_NEWYORK, 20, 0x05),
+            (BOLD_FACE, 0x04),
+            "underline stays"
+        );
+        // Measured on Mac OS 9.0: bold is synthesized at 9 and 10 points;
+        // 11 and smaller sizes are not measured and stay synthesized.
+        for size in [8, 9, 10, 11] {
+            assert_eq!(styled_face(FONT_TIMES, size, 1), (FONT_TIMES, 1), "{size}");
+        }
+        assert_eq!(
+            styled_face(FONT_TIMES, 20, 0x03),
+            (FONT_TIMES, 0x03),
+            "bold italic"
+        );
+        assert_eq!(styled_face(FONT_TIMES, 20, 0), (FONT_TIMES, 0));
+        assert_eq!(styled_face(FONT_HELVETICA, 20, 1), (FONT_HELVETICA, 1));
+        // A guest strike for the family at that size is drawn as before.
+        assert_eq!(styled_face(FONT_TIMES, 37, 1), (BOLD_FACE, 0));
+        let mut strike = vec![0u8; 44];
+        for (at, value) in [
+            (2, 65u16),
+            (4, 65),
+            (6, 4),
+            (12, 8),
+            (14, 4),
+            (16, 12),
+            (18, 4),
+            (24, 1),
+            (36, 4),
+            (38, 8),
+            (40, 4),
+            (42, 4),
+        ] {
+            strike[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        assert!(register_resource_font_strike_for_family(FONT_TIMES, 37, &strike));
+        assert_eq!(styled_face(FONT_TIMES, 37, 1), (FONT_TIMES, 1));
+    }
+
     use super::*;
     use std::fs;
 

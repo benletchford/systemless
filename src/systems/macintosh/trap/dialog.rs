@@ -2859,21 +2859,24 @@ impl super::TrapDispatcher {
     fn te_styled_char_width(style: TeResolvedStyle, byte: u8) -> i16 {
         let size = Self::font_lookup_size(style.size);
         let (_, scale) = get_font_face_scaled(style.font, size);
-        let advance = crate::quickdraw::text::get_glyph(style.font, size, byte as char)
+        let (glyph_font, face) =
+            crate::quickdraw::fonts::styled_face(style.font, size, style.face as u8);
+        let advance = crate::quickdraw::text::get_glyph(glyph_font, size, byte as char)
             .map_or(6, |(glyph, _)| i16::from(glyph.advance));
         advance * scale
-            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(style.face as u8)
-                .advance_extra() as i16
+            + crate::quickdraw::text::QuickDrawTextStyle::from_bits(face).advance_extra() as i16
     }
 
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
         let size = Self::font_lookup_size(size);
         let (_face, scale) = get_font_face_scaled(font, size);
         let ch = byte as char;
-        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size, ch) {
-            self.glyph_advance(glyph) * scale
+        let (glyph_font, face) = crate::quickdraw::fonts::styled_face(font, size, self.tx_face as u8);
+        let extra = crate::quickdraw::text::QuickDrawTextStyle::from_bits(face).advance_extra() as i16;
+        if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(glyph_font, size, ch) {
+            (i16::from(glyph.advance) + extra) * scale
         } else {
-            self.missing_glyph_advance() * scale
+            (6 + extra) * scale
         }
     }
 
@@ -16214,6 +16217,7 @@ impl super::TrapDispatcher {
 
                         // Capture font params to avoid borrowing self in closures
                         let font_id = self.tx_font;
+                        let glyph_font = self.text_glyph_font();
                         let font_size = self.tx_size;
                         let advance_extra = self.advance_extra();
                         let missing_advance = self.missing_glyph_advance();
@@ -16228,7 +16232,7 @@ impl super::TrapDispatcher {
                             for &b in &text_bytes[start..end] {
                                 let ch = b as char;
                                 if let Some((g, _)) =
-                                    crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                                    crate::quickdraw::text::get_glyph(glyph_font, font_size, ch)
                                 {
                                     w += g.advance as i16 + advance_extra;
                                 } else {
@@ -16242,7 +16246,7 @@ impl super::TrapDispatcher {
                             &text_bytes,
                             box_width,
                             |_, byte| {
-                                crate::quickdraw::text::get_glyph(font_id, font_size, byte as char)
+                                crate::quickdraw::text::get_glyph(glyph_font, font_size, byte as char)
                                     .map_or(missing_advance, |(glyph, _)| {
                                         glyph.advance as i16 + advance_extra
                                     })

@@ -9,6 +9,7 @@ pub(super) fn bytes(font_id: i16) -> Option<&'static [u8]> {
         }
         FONT_MONACO | FONT_COURIER => include_bytes!("urw/NimbusMonoPS-Regular.ttf"),
         FONT_NEWYORK | FONT_TIMES => include_bytes!("urw/NimbusRoman-Regular.ttf"),
+        FONT_BUNDLED_ROMAN_BOLD => include_bytes!("urw/NimbusRoman-Bold.ttf"),
         FONT_PALATINO => include_bytes!("urw/P052-Roman.ttf"),
         FONT_VENICE => include_bytes!("urw/Z003-MediumItalic.ttf"),
         FONT_LONDON => include_bytes!("urw/C059-Bold.ttf"),

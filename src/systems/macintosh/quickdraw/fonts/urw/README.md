@@ -13,6 +13,7 @@ Copyright 2013, 2014, 2015 by (URW)++ Design & Development.
 | Application / Geneva / Helvetica | Nimbus Sans Regular |
 | Monaco / Courier | Nimbus Mono PS Regular |
 | New York / Times | Nimbus Roman Regular |
+| New York / Times, bold, 12 to 96 points | Nimbus Roman Bold |
 | Palatino | P052 Roman |
 | Venice | Z003 Medium Italic |
 | London | C059 Bold |
@@ -36,6 +37,7 @@ separately.
 ```
 bba24a50c39670938827b22c16f0fd84cdf4f91465ca881c3b71157a1c6dbf6d  C059-Bold.ttf
 bf749d47bf69f4bf6963833afb66a3a5b6e62185bfffaf068b7a1b3f0276ba82  NimbusMonoPS-Regular.ttf
+03a62d23942e51f48e42da30f0c50e008c67f0e5d6dacf739b5117c15a2e0bfd  NimbusRoman-Bold.ttf
 47dbff21ede6f3b8428ffe9f8c7c4ac5f1e3c1bc33cd987cfe42e99e0298c495  NimbusRoman-Regular.ttf
 148726be75d2060a38dfd2e2637569f56c82af9f671e97131023b47add06f2cb  NimbusSans-Bold.ttf
 df5d1ce7b86c2e74974008623612bae136123a35ba7885de8a0721b68258edbc  NimbusSans-Regular.ttf

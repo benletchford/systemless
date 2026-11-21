@@ -3808,7 +3808,7 @@ impl super::TrapDispatcher {
 
     fn scriptutil_text_byte_width(&self, byte: u8, font_scale: i16) -> i32 {
         let ch = byte as char;
-        if let Some((glyph, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
+        if let Some((glyph, _)) = get_glyph(self.text_glyph_font(), self.tx_size, ch) {
             i32::from(self.glyph_advance(glyph) * font_scale)
         } else {
             i32::from(self.missing_glyph_advance() * font_scale)

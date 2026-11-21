@@ -21,3 +21,9 @@ pub const FONT_HELVETICA: i16 = 21;
 pub const FONT_COURIER: i16 = 22;
 pub const FONT_SYMBOL: i16 = 23;
 pub const FONT_MOBILE: i16 = 24;
+
+/// Not a Font Manager family: the bundled bold face that stands in for the
+/// bold member of the New York and Times families (see
+/// [`super::styled_face`]). Family numbers are never negative, so no guest
+/// font can claim it.
+pub const FONT_BUNDLED_ROMAN_BOLD: i16 = -0x4E42;

@@ -5069,12 +5069,14 @@ fn ppc_draw_styled_dialog_text(
         denominator,
     )
     .max(1);
-    let text_style = QuickDrawTextStyle::from_bits(style.face);
+    let (glyph_font, face_bits) =
+        crate::quickdraw::fonts::styled_face(style.font, style.size, style.face);
+    let text_style = QuickDrawTextStyle::from_bits(face_bits);
     let lines = crate::quickdraw::text::wrap_classic_text(
         bytes,
         rect.3.saturating_sub(rect.1).max(1),
         |_, byte| {
-            let advance = get_glyph(style.font, face.size, byte as char)
+            let advance = get_glyph(glyph_font, face.size, byte as char)
                 .map(|(glyph, _)| text_style.glyph_advance(i32::from(glyph.advance)))
                 .unwrap_or(6);
             ppc_scale_font_value(advance, numerator, denominator)

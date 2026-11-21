@@ -4671,6 +4671,7 @@ fn draw_picture_text(
     let screen_w = screen_w as i32;
     let screen_h = screen_h as i32;
     let mut cur_h: i32 = pen_h as i32;
+    let (font_id, text_face) = crate::quickdraw::fonts::styled_face(font_id, font_size, text_face);
     let styled_advance = |advance: i32| advance + i32::from(text_face & 0x01 != 0);
     let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
     let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };

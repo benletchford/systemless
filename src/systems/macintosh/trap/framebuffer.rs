@@ -2979,6 +2979,9 @@ impl super::TrapDispatcher {
         pixel_index_override: Option<u8>,
         black: bool,
     ) -> i16 {
+        let (font_id, style_bits) =
+            crate::quickdraw::fonts::styled_face(font_id, font_size, style.bits());
+        let style = QuickDrawTextStyle::from_bits(style_bits);
         let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
                 (Some(hit), None)
