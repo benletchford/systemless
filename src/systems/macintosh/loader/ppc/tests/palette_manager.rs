@@ -601,7 +601,10 @@ use super::*;
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.toolbox_startup.application_palette, palette_handle);
         assert_eq!(loaded.toolbox_startup.application_palette_updates, 0xc000);
-        assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 0)],
+            [0x1234, 0x5678, 0x9abc]
+        );
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -702,7 +705,10 @@ use super::*;
         loaded.cpu.gpr[4] = palette_a_handle;
         loaded.cpu.gpr[5] = 1;
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.screen_clut[1], color_a);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_a_handle, 0)],
+            color_a
+        );
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
             Some(window_a)
@@ -713,14 +719,17 @@ use super::*;
         loaded.cpu.gpr[5] = 1;
         run_target(&mut loaded, PpcImportDispatcherTarget::NSetPalette);
         assert_eq!(
-            loaded.screen_clut[1], color_a,
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_a_handle, 0)], color_a,
             "nonfront NSetPalette is deferred"
         );
 
         let current_port = *loaded.current_gworld;
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
-        assert_eq!(loaded.screen_clut[1], color_b);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_b_handle, 0)],
+            color_b
+        );
         assert_eq!(*loaded.current_gworld, current_port);
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds, &loaded.window_list),
@@ -729,18 +738,27 @@ use super::*;
 
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::HideWindow);
-        assert_eq!(loaded.screen_clut[1], color_a);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_a_handle, 0)],
+            color_a
+        );
         assert_eq!(*loaded.current_gworld, current_port);
 
         loaded.cpu.gpr[3] = window_b;
         loaded.cpu.gpr[4] = palette_b2_handle;
         loaded.cpu.gpr[5] = 1;
         run_target(&mut loaded, PpcImportDispatcherTarget::NSetPalette);
-        assert_eq!(loaded.screen_clut[1], color_a);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_a_handle, 0)],
+            color_a
+        );
 
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
-        assert_eq!(loaded.screen_clut[1], color_b2);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_b2_handle, 0)],
+            color_b2
+        );
     }
 
     #[test]
@@ -911,6 +929,7 @@ use super::*;
             add_window(&mut loaded, window, true);
         }
         add_window(&mut loaded, no_palette, false);
+        let palette_handles = [0, 1, 2].map(|index| PPC_DATA_BASE + 0x5000 + index * 0x1000);
         for (index, (window, color)) in windows.into_iter().zip(colors).enumerate() {
             associate_palette(
                 &mut loaded,
@@ -939,7 +958,10 @@ use super::*;
             &mut loaded,
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind),
         );
-        assert_eq!(loaded.screen_clut[1], colors[1]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[1], 0)],
+            colors[1]
+        );
         assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
 
         loaded.cpu.gpr[3] = windows[2];
@@ -947,7 +969,10 @@ use super::*;
             &mut loaded,
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront),
         );
-        assert_eq!(loaded.screen_clut[1], colors[2]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[2], 0)],
+            colors[2]
+        );
 
         loaded.cpu.gpr[3] = windows[2];
         loaded.cpu.gpr[4] = windows[0];
@@ -955,11 +980,17 @@ use super::*;
             &mut loaded,
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind),
         );
-        assert_eq!(loaded.screen_clut[1], colors[1]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[1], 0)],
+            colors[1]
+        );
 
         loaded.cpu.gpr[3] = windows[1];
         run_target(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
-        assert_eq!(loaded.screen_clut[1], colors[0]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[0], 0)],
+            colors[0]
+        );
 
         loaded.cpu.gpr[3] = no_palette;
         run_target(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
@@ -975,11 +1006,17 @@ use super::*;
 
         loaded.cpu.gpr[3] = no_palette;
         run_target(&mut loaded, PpcImportDispatcherTarget::HideWindow);
-        assert_eq!(loaded.screen_clut[1], colors[0]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[0], 0)],
+            colors[0]
+        );
 
         loaded.cpu.gpr[3] = windows[0];
         run_target(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
-        assert_eq!(loaded.screen_clut[1], colors[2]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handles[2], 0)],
+            colors[2]
+        );
 
         loaded.cpu.gpr[3] = windows[2];
         run_target(&mut loaded, PpcImportDispatcherTarget::CloseWindow);
@@ -1101,7 +1138,10 @@ use super::*;
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 0)],
+            [0x1234, 0x5678, 0x9abc]
+        );
         assert_eq!(
             loaded.display_gamma.table(),
             crate::display::default_display_gamma()
@@ -1526,16 +1566,24 @@ use super::*;
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
-        assert_eq!(loaded.screen_clut[2], [0xdef0, 0x1357, 0x2468]);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 0)],
+            [0x1234, 0x5678, 0x9abc]
+        );
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 1)],
+            [0xdef0, 0x1357, 0x2468]
+        );
         assert_eq!(
             loaded.display_gamma.table(),
             crate::display::default_display_gamma()
         );
         let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
-        assert_eq!(loaded.memory.read_u16_be(device_ctable + 18), Some(0x1234));
-        assert_eq!(loaded.memory.read_u16_be(device_ctable + 20), Some(0x5678));
-        assert_eq!(loaded.memory.read_u16_be(device_ctable + 22), Some(0x9abc));
+        let cell_rgb =
+            device_ctable + 10 + 8 * ppc_test_palette_cell(&loaded, palette_handle, 0) as u32;
+        assert_eq!(loaded.memory.read_u16_be(cell_rgb), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(cell_rgb + 2), Some(0x5678));
+        assert_eq!(loaded.memory.read_u16_be(cell_rgb + 4), Some(0x9abc));
         assert!(loaded
             .event_queue
             .iter()
@@ -1556,7 +1604,10 @@ use super::*;
         loaded.memory.write_u16_be(palette_ptr + 16, 0x4321).unwrap();
         loaded.cpu.gpr[3] = window_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::ActivatePalette);
-        assert_eq!(loaded.screen_clut[1][0], 0x4321);
+        assert_eq!(
+            loaded.screen_clut[ppc_test_palette_cell(&loaded, palette_handle, 0)][0],
+            0x4321
+        );
         assert!(loaded.event_queue.iter().any(|event| event.what == 6 && event.message == back_window));
         assert!(!loaded.event_queue.iter().any(|event| event.what == 6 && event.message == window_ptr));
     }
@@ -1677,7 +1728,12 @@ use super::*;
             allocation.entry_to_index[1],
             Some(pict::closest_clut_index(0x4444, 0, 0, &original))
         );
-        assert_eq!(allocation.entry_to_index[2], Some(1));
+        // PaletteMgr.a Correlate: a missed tolerant entry in a palette with
+        // fewer than 33 tolerant colors takes its own closest index in place.
+        let yanked = pict::closest_clut_index(0x1234, 0x5678, 0x9abc, &original);
+        assert_eq!(allocation.entry_to_index[2], Some(yanked));
+        assert_eq!(loaded.screen_clut[usize::from(yanked)], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(loaded.screen_clut[1], original[1]);
         assert_eq!(allocation.entry_to_index[3], Some(3));
         assert_eq!(allocation.entry_to_index[4], None);
         assert_eq!(loaded.screen_clut[0], original[0]);
@@ -1686,6 +1742,138 @@ use super::*;
             "pure explicit does not write"
         );
         assert_eq!(loaded.screen_clut[100], original[100]);
+    }
+
+    fn write_tolerant_test_palette(
+        loaded: &mut PpcLoadedApp,
+        handle: u32,
+        palette: u32,
+        colors: &[[u16; 3]],
+    ) {
+        loaded.memory.add_region(handle, vec![0; 4]);
+        loaded
+            .memory
+            .add_region(palette, vec![0; 16 + colors.len() * 16]);
+        loaded.memory.write_u32_be(handle, palette).unwrap();
+        loaded
+            .memory
+            .write_u16_be(palette, colors.len() as u16)
+            .unwrap();
+        for (entry, rgb) in colors.iter().enumerate() {
+            let info = palette + 16 + entry as u32 * 16;
+            loaded.memory.write_u16_be(info, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(info + 2, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(info + 4, rgb[2]).unwrap();
+            loaded.memory.write_u16_be(info + 6, 0x0002).unwrap();
+            loaded.memory.write_u16_be(info + 8, 0).unwrap();
+        }
+    }
+
+    #[test]
+    fn large_tolerant_palette_takes_spread_indices_after_its_first_miss() {
+        // Odyssey activates a 255-entry pmTolerant palette (tolerance 0).
+        // PaletteMgr.a Correlate/AnalyzeDev: entries are matched until the
+        // first miss, which takes its closest index in place; with 33 or
+        // more tolerators every later entry takes the next index from a list
+        // walking the table downward with nibble-swapped indices ($EF, $DF,
+        // ...). Filling the lowest free cells instead turned index 250 (the
+        // menu bar's dimmed-title gray) bright green in Odyssey.
+        let pef = synthetic_pef_with_import(b"ActivatePalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_DATA_BASE + 0x5400;
+        let palette = PPC_DATA_BASE + 0x5500;
+        let original = *loaded.screen_clut;
+        let present = original[200];
+        let mut colors = vec![present];
+        colors.extend(
+            (1..40u16).map(|n| [0x8000 + 0x0123 * n, 0x4000 + 0x0211 * n, 0x6000 + 0x0099 * n]),
+        );
+        // A color already in the table is still given a new index once the
+        // palette has missed.
+        colors.push(present);
+        write_tolerant_test_palette(&mut loaded, handle, palette, &colors);
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
+        ));
+        let allocation = loaded
+            .toolbox_startup
+            .palette_allocations
+            .iter()
+            .find(|allocation| allocation.palette == handle)
+            .unwrap();
+        assert_eq!(allocation.entry_to_index[0], Some(200), "matched in place");
+        assert_eq!(loaded.screen_clut[200], present);
+        let first_miss =
+            pict::closest_clut_index(colors[1][0], colors[1][1], colors[1][2], &original);
+        assert_eq!(allocation.entry_to_index[1], Some(first_miss), "first miss yanks");
+        let mut expected = (0..=255u8)
+            .rev()
+            .map(|index| index.rotate_right(4))
+            .filter(|index| ![0, 255, 200, first_miss].contains(index));
+        for entry in 2..colors.len() {
+            let index = expected.next().unwrap();
+            assert_eq!(allocation.entry_to_index[entry], Some(index), "entry {entry}");
+            assert_eq!(loaded.screen_clut[usize::from(index)], colors[entry]);
+        }
+        assert_eq!(allocation.entry_to_index[2], Some(0xef));
+        assert_eq!(allocation.entry_to_index[3], Some(0xdf));
+        assert_eq!(loaded.screen_clut[1], original[1]);
+        assert_eq!(loaded.screen_clut[250], original[250]);
+    }
+
+    #[test]
+    fn tolerant_index_list_offers_unyanked_cells_first() {
+        let pef = synthetic_pef_with_import(b"ActivatePalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = PPC_DATA_BASE + 0x5800;
+        let palette = PPC_DATA_BASE + 0x5900;
+        let other = PPC_DATA_BASE + 0x5a00;
+        let original = *loaded.screen_clut;
+        // Another palette's tolerant color already sits in $EF, so the list
+        // offers it only after every unyanked cell.
+        loaded
+            .toolbox_startup
+            .palette_allocations
+            .push(PpcPaletteAllocation {
+                palette: other,
+                gdevice: PPC_MAIN_GDEVICE,
+                entry_to_index: vec![Some(0xef)],
+                entry_mappings: vec![PpcPaletteEntryMapping::TolerantInstalled(0xef)],
+                reserved_indices: vec![],
+            });
+        let colors: Vec<[u16; 3]> = (1..=40u16)
+            .map(|n| [0x8000 + 0x0123 * n, 0x4000 + 0x0211 * n, 0x6000 + 0x0099 * n])
+            .collect();
+        write_tolerant_test_palette(&mut loaded, handle, palette, &colors);
+        assert!(with_test_screen_clut!(
+            loaded,
+            |screen_clut| ppc_apply_palette(
+                &mut loaded.memory,
+                handle,
+                PPC_MAIN_GDEVICE,
+                screen_clut,
+                &mut loaded.toolbox_startup,
+            )
+        ));
+        let allocation = loaded
+            .toolbox_startup
+            .palette_allocations
+            .iter()
+            .find(|allocation| allocation.palette == handle)
+            .unwrap();
+        let first_miss =
+            pict::closest_clut_index(colors[0][0], colors[0][1], colors[0][2], &original);
+        assert_eq!(allocation.entry_to_index[0], Some(first_miss));
+        assert_ne!(first_miss, 0xef);
+        assert_eq!(allocation.entry_to_index[1], Some(0xdf));
+        assert!(!allocation.entry_to_index.contains(&Some(0xef)));
     }
 
     #[test]
