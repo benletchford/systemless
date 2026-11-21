@@ -121,11 +121,13 @@ jobs:
       - name: Run debugger library tests
         run: cargo test --lib --features test-support,debug
 
+      # Both desktop suites exercise native GPU devices, including tests outside
+      # the wgpu_ filter. Keep device initialization and teardown serial here too.
       - name: Run desktop tests
-        run: cargo test --locked --bin systemless
+        run: cargo test --locked --bin systemless -- --test-threads=1
 
       - name: Run debugger desktop tests
-        run: cargo test --locked --bin systemless --features debug-server
+        run: cargo test --locked --bin systemless --features debug-server -- --test-threads=1
 
       - name: Test structured headless play
         run: cargo test --locked --profile ci-test --test headless_play
