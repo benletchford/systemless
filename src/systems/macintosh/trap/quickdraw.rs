@@ -9744,12 +9744,7 @@ impl super::TrapDispatcher {
             // greater than the predefined constant `minSeed` (= 1023)
             // and is intended for use in the ctSeed field of a custom
             // color table so the table is recognised as distinct
-            // during color table translation. Absolute seed values
-            // differ from BII — BII's ROM Color Manager has its own
-            // internal counter initialised above minSeed at boot while
-            // Systemless HLE counts monotonically from 1 via
-            // `next_color_table_seed`. Both engines share the
-            // calling convention and the "non-zero return" envelope.
+            // during color table translation.
             (true, 0x228) => {
                 let sp = cpu.read_reg(Register::A7);
                 bus.write_long(sp, self.next_color_table_seed());
@@ -18506,12 +18501,13 @@ impl super::TrapDispatcher {
         (ctab_ptr != 0).then(|| bus.read_long(ctab_ptr))
     }
 
-    fn next_color_table_seed(&mut self) -> u32 {
+    // Standard ColorTables use fixed seeds (including the pixel depth).
+    // Keep generated seeds above that range, as on the PowerPC path.
+    pub(super) const FIRST_DYNAMIC_CT_SEED: u32 = 1024;
+
+    pub(super) fn next_color_table_seed(&mut self) -> u32 {
         let seed = self.next_ct_seed;
-        self.next_ct_seed = self.next_ct_seed.wrapping_add(1);
-        if self.next_ct_seed == 0 {
-            self.next_ct_seed = 1;
-        }
+        self.next_ct_seed = seed.wrapping_add(1).max(Self::FIRST_DYNAMIC_CT_SEED);
         if trace_ctab_seed_enabled() {
             eprintln!(
                 "[CTAB-SEED] tick={} next_ct_seed -> {}",
