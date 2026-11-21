@@ -246,6 +246,7 @@ pub(super) fn dispatch_quicktime_import(
                 memory,
                 vfs_directories,
                 vfs_files,
+                vfs_resource_files,
                 quicktime,
                 vfs_volumes,
             );

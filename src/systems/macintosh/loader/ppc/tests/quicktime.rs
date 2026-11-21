@@ -2451,8 +2451,25 @@ fn hle_import_runner_handles_quicktime_importer_and_movie_outputs() {
     let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"OpenMovieFile");
     let mut loaded = load_pef_application(&pef).unwrap();
     let ref_num_out_ptr = PPC_DATA_BASE + 0x1000;
+    let spec_ptr = PPC_DATA_BASE + 0x1100;
     loaded.memory.add_region(ref_num_out_ptr, vec![0; 2]);
-    loaded.cpu.gpr[3] = PPC_DATA_BASE;
+    loaded.memory.add_region(spec_ptr, vec![0; 80]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "Intro.mov".into(),
+        data: b"movie".to_vec().into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"MooV"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        spec_ptr,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Intro.mov",
+    );
+    loaded.cpu.gpr[3] = spec_ptr;
     loaded.cpu.gpr[4] = ref_num_out_ptr;
     loaded.cpu.gpr[5] = 1;
 
@@ -7706,4 +7723,60 @@ fn quicktime_polling_keeps_controller_errors_and_full_path_for_other_actions() {
     // A non-idle action remains on the full path, including invalid actions.
     assert_eq!(call_movie_toolbox(&mut loaded, "MCDoAction", &[controller, 0, 0]), ppc_i16_result(PPC_INVALID_COMPONENT_ID));
     assert_eq!(snapshots(), before + 1);
+}
+
+#[test]
+fn open_movie_file_reports_fnf_for_a_movie_the_volume_does_not_ship() {
+    // Star Trek: Judgment Rites plays its intro movies in sequence and skips
+    // one when OpenMovieFile fails. Its demo omits "Boomer1": reporting
+    // noErr for the missing file led to NewMovieFromFile's resNotFound and
+    // an "error occurred while playing the movie" alert instead of the menu.
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"OpenMovieFile",
+    ))
+    .unwrap();
+    const SCRATCH: u32 = PPC_HEAP_BASE + 0x1000;
+    loaded.memory.add_region(SCRATCH, vec![0; 128]);
+    loaded.push_test_vfs_file(PpcVfsFileRecord {
+        path: "TrekIntS".into(),
+        data: b"movie".to_vec().into(),
+        creator: 0,
+        file_type: u32::from_be_bytes(*b"MooV"),
+        finder_flags: 0,
+        dirty: false,
+    });
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        SCRATCH,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"Boomer1",
+    );
+    loaded.memory.write_u16_be(SCRATCH + 80, 0x5a5a).unwrap();
+    loaded.cpu.gpr[3] = SCRATCH;
+    loaded.cpu.gpr[4] = SCRATCH + 80;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtOpenMovieFile);
+
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FNF_ERR));
+    assert_eq!(loaded.memory.read_u16_be(SCRATCH + 80), Some(0x5a5a));
+    assert_eq!(loaded.quicktime.movie_file_open_count, 0);
+    assert_eq!(loaded.quicktime.movie_error, PPC_FNF_ERR);
+
+    write_ppc_fsspec(
+        &mut loaded.memory,
+        SCRATCH,
+        PPC_BOOT_VOLUME_REF_NUM,
+        PPC_ROOT_DIR_ID,
+        b"TrekIntS",
+    );
+    loaded.cpu.gpr[3] = SCRATCH;
+    loaded.cpu.gpr[4] = SCRATCH + 80;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtOpenMovieFile);
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.quicktime.movie_file_open_count, 1);
+    assert_eq!(loaded.quicktime.movie_file_path, "TrekIntS");
 }
