@@ -2240,6 +2240,11 @@ struct ProcessWindowListState {
     // it in the AuxWin list: it follows the window, not its windowKind,
     // which applications may change after creation.
     dialog_color_tables: HashMap<u32, u32>,
+    // The WCTab SetWinColor installed for a color window. A WindowRecord
+    // or CWindowRecord is 156 bytes (Inside Macintosh Volume V, p. V-200)
+    // and its color table lives in the AuxWinRec list, so nothing in the
+    // record itself, which may be caller-owned storage, holds it.
+    window_color_tables: HashMap<u32, u32>,
 }
 pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
 /// Detached-by-default attachment handle for Time Manager tasks.
@@ -4895,6 +4900,7 @@ impl SharedProcessWindowList {
             classes: HashMap::new(),
             caller_dialog_private_storage: HashMap::new(),
             dialog_color_tables: HashMap::new(),
+            window_color_tables: HashMap::new(),
         }))
     }
 
@@ -4920,6 +4926,9 @@ impl SharedProcessWindowList {
             state.classes.retain(|window, _| state.windows.contains(window));
             state
                 .dialog_color_tables
+                .retain(|window, _| state.windows.contains(window));
+            state
+                .window_color_tables
                 .retain(|window, _| state.windows.contains(window));
             result
         })
@@ -4948,6 +4957,21 @@ impl SharedProcessWindowList {
                 state.dialog_color_tables.insert(dialog, color_table);
             }
         });
+    }
+
+    pub(crate) fn set_window_color_table(&self, window: u32, color_table: u32) {
+        self.0.with_mut(|state| {
+            if color_table == 0 {
+                state.window_color_tables.remove(&window);
+            } else {
+                state.window_color_tables.insert(window, color_table);
+            }
+        });
+    }
+
+    pub(crate) fn window_color_table(&self, window: u32) -> Option<u32> {
+        self.0
+            .with_ref(|state| state.window_color_tables.get(&window).copied())
     }
 
     pub(crate) fn dialog_color_table(&self, dialog: u32) -> Option<u32> {
