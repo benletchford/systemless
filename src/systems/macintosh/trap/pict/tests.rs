@@ -3314,3 +3314,66 @@ fn v1_fg_color_selects_quickdraw_colors_from_cmy_plane_bits() {
         assert_eq!(pixels, vec![expected; 4], "FgColor {fg_color}");
     }
 }
+
+/// Paints the whole 16x16 frame green, then paints (4,4)-(12,12) in black
+/// and white with `pen_mode` and `pattern` (pattern rows as big-endian words).
+fn render_pen_mode_picture(pen_mode: i16, pattern: [i16; 4]) -> Vec<u8> {
+    let mut commands = Vec::new();
+    push_origin_test_op(&mut commands, true, 0x1A, &[0, 0x6600, 0]);
+    push_origin_test_op(&mut commands, true, 0x31, &[0, 0, 16, 16]);
+    push_origin_test_op(&mut commands, true, 0x1A, &[0, 0, 0]);
+    push_origin_test_op(&mut commands, true, 0x08, &[pen_mode]);
+    push_origin_test_op(&mut commands, true, 0x09, &pattern);
+    push_origin_test_op(&mut commands, true, 0x31, &[4, 4, 12, 12]);
+    let picture = finish_origin_test_picture((0, 0, 16, 16), true, commands);
+    render_text_picture(&picture, 16, 16)
+}
+
+#[test]
+fn pict_paint_rect_honours_arithmetic_pen_mode() {
+    // Awesome Blackjack's table PICT paints a white-pattern rectangle in
+    // adMin (39) before a transparent card-shoe PixMap; adMin keeps the
+    // darker green table, so nothing white may appear. Inside Macintosh:
+    // Imaging With QuickDraw (1994), pp. 4-38--4-40 and A-6.
+    let pixels = render_pen_mode_picture(39, [0; 4]);
+    let green = pixels[0];
+    assert_ne!(green, 0, "table must not be white");
+    assert!(
+        pixels.iter().all(|&pixel| pixel == green),
+        "adMin painted over the table"
+    );
+}
+
+#[test]
+fn pict_paint_rect_honours_boolean_pen_modes() {
+    // Checkerboard pen pattern: set bits draw the foreground (black).
+    let checker = [0xAA55u16 as i16; 4];
+    let at = |pixels: &[u8], x: usize, y: usize| pixels[y * 16 + x];
+    let copy = render_pen_mode_picture(8, checker);
+    let or = render_pen_mode_picture(9, checker);
+    let xor = render_pen_mode_picture(10, checker);
+    let green = copy[0];
+    for y in 4..12 {
+        for x in 4..12 {
+            let set = (x + y) % 2 == 0;
+            // patCopy: clear bits draw the background (white).
+            assert_eq!(
+                at(&copy, x, y),
+                if set { 255 } else { 0 },
+                "patCopy ({x},{y})"
+            );
+            // patOr leaves the destination under clear bits.
+            assert_eq!(
+                at(&or, x, y),
+                if set { 255 } else { green },
+                "patOr ({x},{y})"
+            );
+            // patXor inverts the destination under set bits.
+            assert_eq!(
+                at(&xor, x, y),
+                if set { !green } else { green },
+                "patXor ({x},{y})"
+            );
+        }
+    }
+}
