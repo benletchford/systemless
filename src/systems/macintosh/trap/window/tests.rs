@@ -3302,6 +3302,62 @@ fn showwindow_already_visible_keeps_vis_region_clipped_by_windows_above() {
     );
 }
 
+// ShowWindow of a hidden window that becomes frontmost selects it: ROM
+// ShowWindow calls SelectWindow, which unhighlights the window that was
+// active and posts its deactivate event before the new window's activate
+// (boot3 WindowMgr.a ShowWindow/SelectWindow; IM:I I-285). Expert
+// Backgammon's "Cube action" window left the board window drawn active.
+#[test]
+fn showwindow_new_front_window_deactivates_the_previous_front() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let board = bus.alloc(256);
+    let cube = bus.alloc(256);
+    disp.menu_bar_hidden = false;
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+    let screen = disp.screen_mode.0;
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, board, screen, 60, 40, 400, 600, "Board", 0, true, false, false, 0,
+    );
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, cube, screen, 100, 100, 200, 300, "Cube", 4, false, false, false, 0,
+    );
+    disp.window_list.replace(vec![cube, board]);
+    disp.front_window = board;
+    bus.write_byte(board + 111, 0xFF);
+    bus.write_byte(cube + 111, 0x00);
+    disp.event_queue.with_mut(|queue| queue.clear());
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, cube);
+    assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+
+    assert_eq!(disp.front_window, cube);
+    assert_eq!(
+        bus.read_byte(cube + 111),
+        0xFF,
+        "the shown window is active"
+    );
+    assert_eq!(
+        bus.read_byte(board + 111),
+        0x00,
+        "the old front is unhighlighted"
+    );
+    let activations: Vec<_> = disp
+        .event_queue
+        .iter()
+        .filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1))
+        .collect();
+    assert_eq!(activations, vec![(board, 0), (cube, 1)]);
+    assert_eq!(
+        bus.read_long(super::super::TrapDispatcher::LOWMEM_CUR_DEACTIVATE),
+        board
+    );
+}
+
 #[test]
 fn showwindow_hidden_window_sets_global_update_region() {
     let (mut disp, mut cpu, mut bus) = setup();
