@@ -5431,6 +5431,48 @@ pub(crate) fn ppc_copy_bits_boolean_pixel(
     ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut)
 }
 
+/// visRgn ∩ clipRgn of the current port when `dst_bits` is that port's
+/// pixel image: the same baseAddr and bounds.topLeft (QuickDraw BitMaps.a,
+/// CopyBits). Other destinations are only clipped to their bounds and mask.
+fn ppc_copy_bits_current_port_clip(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    dst_bits: PpcPixMapBits,
+) -> Option<Vec<u8>> {
+    if current_gworld == 0 {
+        return None;
+    }
+    let port_bits =
+        ppc_resolve_pixmap_bits_with_provenance(memory, gworlds, current_gworld.wrapping_add(2))?
+            .bits;
+    if port_bits.base_addr != dst_bits.base_addr
+        || port_bits.top != dst_bits.top
+        || port_bits.left != dst_bits.left
+    {
+        return None;
+    }
+    let mut clip: Option<Vec<u8>> = None;
+    for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
+        let Some(storage) = memory
+            .read_u32_be(current_gworld.wrapping_add(offset))
+            .and_then(|region| ppc_region_storage(memory, region))
+        else {
+            continue;
+        };
+        clip = Some(match clip {
+            Some(previous) => ppc_region_storage_boolean(
+                &previous,
+                &storage,
+                PpcRegionBooleanOp::Intersection,
+            )
+            .ok()?,
+            None => storage,
+        });
+    }
+    clip
+}
+
 pub(crate) fn ppc_copy_bits(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -5692,16 +5734,16 @@ pub(crate) fn ppc_copy_bits(
             return None;
         }
 
-        let copy_left = i32::from(dst_left).max(i32::from(dst_bits.left));
-        let copy_top = i32::from(dst_top).max(i32::from(dst_bits.top));
-        let copy_right = i32::from(dst_right).min(i32::from(dst_bits.right));
-        let copy_bottom = i32::from(dst_bottom).min(i32::from(dst_bits.bottom));
+        let mut copy_left = i32::from(dst_left).max(i32::from(dst_bits.left));
+        let mut copy_top = i32::from(dst_top).max(i32::from(dst_bits.top));
+        let mut copy_right = i32::from(dst_right).min(i32::from(dst_bits.right));
+        let mut copy_bottom = i32::from(dst_bottom).min(i32::from(dst_bits.bottom));
         if copy_left >= copy_right || copy_top >= copy_bottom {
             reason = "clipped-empty";
             return None;
         }
 
-        let mask_storage = if mask_rgn == 0 {
+        let mut mask_storage = if mask_rgn == 0 {
             None
         } else {
             let Some(storage) = ppc_region_storage(memory, mask_rgn) else {
@@ -5710,6 +5752,42 @@ pub(crate) fn ppc_copy_bits(
             };
             Some(storage)
         };
+
+        // A copy into the current port is also clipped to its visRgn and
+        // clipRgn. Imaging With QuickDraw (1994), p. 3-116; Apple's CopyBits
+        // (QuickDraw BitMaps.a) treats dstBits as the port when its baseAddr
+        // and bounds.topLeft match the port's, and draws through StdBits,
+        // which passes visRgn and clipRgn to the blit.
+        if let Some(port_clip) =
+            ppc_copy_bits_current_port_clip(memory, gworlds, current_gworld, dst_bits)
+        {
+            let clip = match mask_storage.take() {
+                Some(mask) => ppc_region_storage_boolean(
+                    &mask,
+                    &port_clip,
+                    PpcRegionBooleanOp::Intersection,
+                )
+                .ok()?,
+                None => port_clip,
+            };
+            let Some((top, left, bottom, right)) = ppc_region_storage_bbox(&clip) else {
+                reason = "port-clip-empty";
+                return Some(());
+            };
+            copy_top = copy_top.max(i32::from(top));
+            copy_left = copy_left.max(i32::from(left));
+            copy_bottom = copy_bottom.min(i32::from(bottom));
+            copy_right = copy_right.min(i32::from(right));
+            if copy_left >= copy_right || copy_top >= copy_bottom {
+                reason = "port-clip-empty";
+                return Some(());
+            }
+            // A rectangular clip is fully expressed by the narrowed copy
+            // bounds, which keeps whole-row copies on their fast path.
+            if clip.len() > 10 || mask_rgn != 0 {
+                mask_storage = Some(clip);
+            }
+        }
 
         // The mask snapshot cannot change during this transfer. Decode its
         // scanline intervals once, rather than allocating them per pixel.
