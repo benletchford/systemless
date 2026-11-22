@@ -2276,6 +2276,72 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Finish DragWindow through an application-installed MoveWindow patch.
+    ///
+    /// ROM DragWindow ends by pushing the window, the new global position
+    /// and `front` and calling `_MoveWindow` through the trap table
+    /// (WindowMgr.a, DragWindow). Applications that draw straight to the
+    /// screen (Deliverance) patch MoveWindow to follow their window, so the
+    /// HLE move must not bypass that patch. The 12-byte DragWindow frame at
+    /// `frame_sp` becomes a 10-byte MoveWindow frame followed by the caller's
+    /// return address; a `_MoveWindow; RTS` stub then runs the patch and
+    /// returns to the caller with the DragWindow frame popped.
+    ///
+    /// Returns false, leaving the CPU untouched, when MoveWindow is not
+    /// patched.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn enter_patched_move_window_from_drag<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        frame_sp: u32,
+        window_ptr: u32,
+        h_global: i16,
+        v_global: i16,
+        front: bool,
+    ) -> bool {
+        const MOVE_WINDOW: u16 = 0xA91B;
+        let patched = self
+            .trap_table_address(bus, MOVE_WINDOW)
+            .zip(self.default_trap_gateway(bus, MOVE_WINDOW))
+            .is_some_and(|(head, default)| head != default);
+        if !patched {
+            return false;
+        }
+        if self.drag_window_move_stub == 0 {
+            let stub = bus.alloc(4);
+            if stub == 0 {
+                return false;
+            }
+            bus.write_word(stub, MOVE_WINDOW);
+            bus.write_word(stub + 2, 0x4E75); // RTS
+            self.drag_window_move_stub = stub;
+        }
+        let return_pc = self
+            .current_trap_caller
+            .unwrap_or_else(|| cpu.read_reg(Register::PC));
+        let move_sp = frame_sp.wrapping_sub(2);
+        // PROCEDURE MoveWindow(theWindow: WindowPtr; hGlobal, vGlobal: INTEGER;
+        //                      front: BOOLEAN), Inside Macintosh Volume I, I-289.
+        bus.write_word(move_sp, if front { 0x0100 } else { 0 });
+        bus.write_word(move_sp + 2, v_global as u16);
+        bus.write_word(move_sp + 4, h_global as u16);
+        bus.write_long(move_sp + 6, window_ptr);
+        bus.write_long(move_sp + 10, return_pc);
+        cpu.write_reg(Register::A7, move_sp);
+        cpu.write_reg(Register::PC, self.drag_window_move_stub);
+        if self.current_trap_caller.is_some() {
+            self.preserve_auto_pop_pc_once = true;
+        }
+        if trace_dragwindow_enabled() {
+            eprintln!(
+                "[DRAGWINDOW] patched MoveWindow window=${:08X} to=({}, {}) front={}",
+                window_ptr, v_global, h_global, front
+            );
+        }
+        true
+    }
+
     pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5492,6 +5558,17 @@ impl super::TrapDispatcher {
                             .original_port_origin
                             .1
                             .wrapping_add(mouse.1.wrapping_sub(tracking.start_mouse.1));
+                        if self.enter_patched_move_window_from_drag(
+                            bus,
+                            cpu,
+                            tracking.stack_ptr,
+                            tracking.window_ptr,
+                            new_h,
+                            new_v,
+                            !tracking.command_down,
+                        ) {
+                            return Some(Ok(()));
+                        }
                         self.move_window_to_global(
                             bus,
                             cpu,
@@ -5580,6 +5657,17 @@ impl super::TrapDispatcher {
                         let new_h = original_port_origin
                             .1
                             .wrapping_add(mouse.1.wrapping_sub(start_mouse.1));
+                        if self.enter_patched_move_window_from_drag(
+                            bus,
+                            cpu,
+                            sp,
+                            window_ptr,
+                            new_h,
+                            new_v,
+                            !tracking.command_down,
+                        ) {
+                            return Some(Ok(()));
+                        }
                         self.move_window_to_global(
                             bus,
                             cpu,
