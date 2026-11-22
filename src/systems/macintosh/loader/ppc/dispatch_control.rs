@@ -1833,15 +1833,11 @@ pub(super) fn ppc_new_control_record_values(
     } else {
         0
     };
-    // Popup CDEF records repurpose contrlMin for the menu ID and contrlMax
-    // for the title width, so their value is a menu item number rather than
-    // an ordinary min/max control value. Macintosh Toolbox Essentials (1992),
-    // pp. 5-25--5-27.
-    let initial_value = if (1008..=1023).contains(&proc_id) {
-        value
-    } else {
-        value.clamp(min.min(max), min.max(max))
-    };
+    // NewControl stores the initial value, minimum and maximum exactly as
+    // given; only SetControlValue and friends pin to the range (boot3
+    // ControlMgr.a NewControl "init value"). Control definitions may keep
+    // private data there: Blizzard's icon-button CDEF reads its icon ID from
+    // contrlValue of a CNTL whose minimum and maximum are both zero.
     let wrote = memory
         .write_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET), old_head)
         .is_some()
@@ -1869,7 +1865,7 @@ pub(super) fn ppc_new_control_record_values(
         && memory
             .write_u16_be(
                 control.wrapping_add(PPC_CONTROL_VALUE_OFFSET),
-                initial_value as u16,
+                value as u16,
             )
             .is_some()
         && memory

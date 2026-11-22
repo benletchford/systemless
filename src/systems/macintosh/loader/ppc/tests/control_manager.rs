@@ -1682,6 +1682,45 @@ fn every_control_creation_path_registers_a_hittable_record() {
 }
 
 #[test]
+fn get_new_control_keeps_an_initial_value_outside_its_range() {
+    // boot3 ControlMgr.a NewControl copies value, minimum and maximum
+    // verbatim. WarCraft II's icon-button CDEF reads the icon ID 0x406A from
+    // the contrlValue of CNTL 214, whose minimum and maximum are both zero;
+    // pinning it to 0 left the button without a shape region, and the CDEF
+    // then erased a stale rectangle of the Startup Options dialog to white.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetNewControl")).unwrap();
+    let mut cntl = vec![0; 23];
+    for (index, value) in [0i16, 280, 16, 296].into_iter().enumerate() {
+        cntl[index * 2..index * 2 + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    cntl[8..10].copy_from_slice(&0x406ai16.to_be_bytes());
+    cntl[10] = 1;
+    let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+    loaded.process_file_system.push_vfs_resource(PpcVfsResourceRecord {
+        ref_num: current_resource_refnum,
+        path: String::new(),
+        res_type: u32::from_be_bytes(*b"CNTL"),
+        res_id: 214,
+        name: Vec::new(),
+        data: cntl.into(),
+        raw_data: None,
+        raw_attrs: None,
+        attrs: 0,
+        handle: 0,
+    });
+    loaded.cpu.gpr[3] = 214;
+    loaded.cpu.gpr[4] = PPC_MAIN_GWORLD;
+    let probe = loaded.run_with_hle_imports(128);
+    assert_eq!(probe.unsupported_import_index, None);
+    let handle = loaded.cpu.gpr[3];
+    assert_ne!(handle, 0);
+    let control = loaded.memory.read_u32_be(handle).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_VALUE_OFFSET), Some(0x406a));
+    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MIN_OFFSET), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(control + PPC_CONTROL_MAX_OFFSET), Some(0));
+}
+
+#[test]
 fn set_control_font_style_stores_the_style_the_title_painter_uses() {
     let mut loaded =
         load_pef_application(&synthetic_pef_with_import(b"SetControlFontStyle")).unwrap();
