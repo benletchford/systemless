@@ -318,8 +318,15 @@ fn apple_hfs_partition_range(bytes: &[u8]) -> Option<(usize, usize)> {
 
         let partition_start_blocks = read_u32_at(bytes, entry + 8)? as usize;
         let partition_block_count = read_u32_at(bytes, entry + 12)? as usize;
-        let data_start_blocks = read_u32_at(bytes, entry + 80)? as usize;
-        let data_block_count = read_u32_at(bytes, entry + 84)? as usize;
+        let mut data_start_blocks = read_u32_at(bytes, entry + 80)? as usize;
+        let mut data_block_count = read_u32_at(bytes, entry + 84)? as usize;
+        // Some mastering tools leave the data area (pmLgDataStart, pmDataCnt)
+        // zero, as on hybrid ISO 9660/HFS CDs; the volume then fills the whole
+        // partition, as hfsutils' libhfs reads it.
+        if data_block_count == 0 {
+            data_start_blocks = 0;
+            data_block_count = partition_block_count;
+        }
         if data_block_count == 0
             || data_start_blocks > partition_block_count
             || data_block_count > partition_block_count.saturating_sub(data_start_blocks)
@@ -892,6 +899,64 @@ mod tests {
             ))
         );
         assert!(looks_like_dc42_or_hfs(&bytes));
+    }
+
+    #[test]
+    fn zero_data_count_uses_whole_apple_hfs_partition() {
+        // Hybrid ISO 9660/HFS CDs are mastered with pmLgDataStart and
+        // pmDataCnt left zero, beside an "ISO" entry for the ISO 9660 side.
+        const PARTITION_START: usize = 32;
+        const PARTITION_BLOCKS: usize = 16;
+        let mut bytes = apm_fixture(PARTITION_START + PARTITION_BLOCKS + 2, 3);
+        write_apm_partition(&mut bytes, 2, 4, 8, 0, 0, b"ISO");
+        write_apm_partition(
+            &mut bytes,
+            3,
+            PARTITION_START,
+            PARTITION_BLOCKS,
+            0,
+            0,
+            APPLE_HFS_PARTITION_TYPE,
+        );
+        let filesystem_start = PARTITION_START * APM_BLOCK_SIZE;
+        bytes[filesystem_start + 1024..filesystem_start + 1026]
+            .copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+
+        assert_eq!(
+            apple_hfs_partition_range(&bytes),
+            Some((
+                filesystem_start,
+                (PARTITION_START + PARTITION_BLOCKS) * APM_BLOCK_SIZE
+            ))
+        );
+        assert!(looks_like_dc42_or_hfs(&bytes));
+    }
+
+    #[test]
+    fn zero_data_count_ignores_data_start() {
+        const PARTITION_START: usize = 32;
+        const PARTITION_BLOCKS: usize = 16;
+        let mut bytes = apm_fixture(PARTITION_START + PARTITION_BLOCKS + 2, 2);
+        write_apm_partition(
+            &mut bytes,
+            2,
+            PARTITION_START,
+            PARTITION_BLOCKS,
+            4,
+            0,
+            APPLE_HFS_PARTITION_TYPE,
+        );
+        let filesystem_start = PARTITION_START * APM_BLOCK_SIZE;
+        bytes[filesystem_start + 1024..filesystem_start + 1026]
+            .copy_from_slice(&HFS_SIGNATURE.to_be_bytes());
+
+        assert_eq!(
+            apple_hfs_partition_range(&bytes),
+            Some((
+                filesystem_start,
+                (PARTITION_START + PARTITION_BLOCKS) * APM_BLOCK_SIZE
+            ))
+        );
     }
 
     #[test]
