@@ -659,7 +659,12 @@ const STANDARD_FILE_NAME_ITEM: i16 = 9;
 const STANDARD_FILE_DIALOG_WIDTH: i16 = 360;
 const STANDARD_FILE_DIALOG_HEIGHT: i16 = 260;
 const STANDARD_FILE_PUT_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
-const STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 268, 31, 336);
+/// Horizontal chrome of the folder pop-up around its label: the label starts
+/// 15 pixels inside the box, the arrow takes the last 19 (see
+/// `draw_popup_control_with_state`), and 8 more keep the arrow clear of the
+/// name's last glyph.
+const STANDARD_FILE_VOLUME_POPUP_CHROME: i16 = 42;
+const STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 258, 31, 354);
 const STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (38, 18, 156, 236);
 const STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 235, 156, 251);
 const STANDARD_FILE_PUT_EJECT_RECT: (i16, i16, i16, i16) = (38, 258, 59, 338);
@@ -672,7 +677,7 @@ const STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
 const STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
 const STANDARD_FILE_GET_OPEN_ITEM: i16 = 1;
 const STANDARD_FILE_GET_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
-const STANDARD_FILE_GET_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 268, 31, 336);
+const STANDARD_FILE_GET_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 258, 31, 352);
 const STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (35, 18, 163, 236);
 const STANDARD_FILE_GET_SCROLL_RECT: (i16, i16, i16, i16) = (35, 235, 163, 251);
 const STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
@@ -2175,13 +2180,17 @@ impl super::TrapDispatcher {
             DialogItem {
                 item_type: 8,
                 rect: STANDARD_FILE_GET_VOLUME_LABEL_RECT,
-                text: location_label.to_string(),
+                text: Self::standard_file_volume_part(location_label).to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
                 item_type: 0,
-                rect: STANDARD_FILE_GET_VOLUME_RECT,
-                text: location_label.to_string(),
+                rect: Self::standard_file_volume_popup_rect(
+                    STANDARD_FILE_GET_VOLUME_RECT,
+                    STANDARD_FILE_GET_LIST_RECT,
+                    Self::standard_file_folder_part(location_label),
+                ),
+                text: Self::standard_file_folder_part(location_label).to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2237,14 +2246,18 @@ impl super::TrapDispatcher {
             true,
             selected_is_openable,
         );
-        let (vtop, vleft, vbottom, vright) = STANDARD_FILE_GET_VOLUME_RECT;
+        let (vtop, vleft, vbottom, vright) = Self::standard_file_volume_popup_rect(
+            STANDARD_FILE_GET_VOLUME_RECT,
+            STANDARD_FILE_GET_LIST_RECT,
+            Self::standard_file_folder_part(&location_label),
+        );
         self.draw_popup_control(
             bus,
             top + vtop,
             left + vleft,
             top + vbottom,
             left + vright,
-            &location_label,
+            Self::standard_file_folder_part(&location_label),
         );
         let (stop, sleft, sbottom, sright) = STANDARD_FILE_GET_SEPARATOR_RECT;
         self.draw_rect_border(
@@ -2442,6 +2455,36 @@ impl super::TrapDispatcher {
             max.min(i16::MAX as usize) as i16,
             if max == 0 { 255 } else { 0 },
         );
+    }
+
+    /// The volume name of a `volume: folder` location label.
+    fn standard_file_volume_part(label: &str) -> &str {
+        label.split_once(": ").map_or(label, |(volume, _)| volume)
+    }
+
+    /// The current folder's own name, which the pop-up shows (the volume
+    /// name at its root); HFS names cannot contain the `:` separator.
+    fn standard_file_folder_part(label: &str) -> &str {
+        label.split_once(": ").map_or(label, |(_, folder)| folder)
+    }
+
+    /// The folder pop-up above the file list. Its width follows the current
+    /// folder name (never narrower than `base` nor wider than the list) and
+    /// it stays centred over the list, as the Mac OS 8.1 Standard File
+    /// dialogs draw it; a fixed narrow box truncated ordinary names such as
+    /// "Macintosh" to "Maci...".
+    fn standard_file_volume_popup_rect(
+        base: (i16, i16, i16, i16),
+        list: (i16, i16, i16, i16),
+        label: &str,
+    ) -> (i16, i16, i16, i16) {
+        let (top, base_left, bottom, base_right) = base;
+        let list_width = list.3 - list.1;
+        let width = Self::fb_measure_string(label, 0, 12)
+            .saturating_add(STANDARD_FILE_VOLUME_POPUP_CHROME)
+            .clamp(base_right - base_left, list_width);
+        let left = list.1 + (list_width - width) / 2;
+        (top, left, bottom, left + width)
     }
 
     fn standard_file_get_display_name(name: &str) -> String {
@@ -2840,13 +2883,17 @@ impl super::TrapDispatcher {
             DialogItem {
                 item_type: 8,
                 rect: STANDARD_FILE_PUT_VOLUME_LABEL_RECT,
-                text: location_label.to_string(),
+                text: Self::standard_file_volume_part(location_label).to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
                 item_type: 0,
-                rect: STANDARD_FILE_PUT_VOLUME_RECT,
-                text: location_label.to_string(),
+                rect: Self::standard_file_volume_popup_rect(
+                    STANDARD_FILE_PUT_VOLUME_RECT,
+                    STANDARD_FILE_PUT_LIST_RECT,
+                    Self::standard_file_folder_part(location_label),
+                ),
+                text: Self::standard_file_folder_part(location_label).to_string(),
                 ..DialogItem::default()
             },
             DialogItem {
@@ -2916,14 +2963,18 @@ impl super::TrapDispatcher {
             true,
             writable,
         );
-        let (vtop, vleft, vbottom, vright) = STANDARD_FILE_PUT_VOLUME_RECT;
+        let (vtop, vleft, vbottom, vright) = Self::standard_file_volume_popup_rect(
+            STANDARD_FILE_PUT_VOLUME_RECT,
+            STANDARD_FILE_PUT_LIST_RECT,
+            Self::standard_file_folder_part(&location_label),
+        );
         self.draw_popup_control(
             bus,
             top + vtop,
             left + vleft,
             top + vbottom,
             left + vright,
-            &location_label,
+            Self::standard_file_folder_part(&location_label),
         );
         self.draw_standard_file_put_list(bus, tracking);
         // A button held down with the pointer inside stays highlighted
