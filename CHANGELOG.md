@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.127.2](https://github.com/benletchford/systemless/compare/v0.127.1...v0.127.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **dialog-manager:** draw icon items whose ICON resource ID is 0 ([#6653](https://github.com/benletchford/systemless/issues/6653)) ([a525c61](https://github.com/benletchford/systemless/commit/a525c6139126f83fc2fc2cad9dc1cae90a52ee0e))
+* **dialog-manager:** draw static text in the dialog port foreground colour on 68k ([#6662](https://github.com/benletchford/systemless/issues/6662)) ([b4cbca5](https://github.com/benletchford/systemless/commit/b4cbca5e312729195be8c1bcdd8a31e949e86384))
+* **ppc:** allocate tolerant palette colors in the Palette Manager order ([#6673](https://github.com/benletchford/systemless/issues/6673)) ([50cfa98](https://github.com/benletchford/systemless/commit/50cfa98d28cb98ff8222ef5cfbeedb91cead3d21))
+* **ppc:** bind the MLTE calls Jedi Knight II weak-links so menu clicks no longer branch to address zero ([#6675](https://github.com/benletchford/systemless/issues/6675)) ([192ceb8](https://github.com/benletchford/systemless/commit/192ceb8b7157fb000b8df52c62f5e590b6aecf8b))
+* **ppc:** clip FrameRect to the port's visible and clip regions ([#6658](https://github.com/benletchford/systemless/issues/6658)) ([ff7ae12](https://github.com/benletchford/systemless/commit/ff7ae1264292ebd6cd4f73de7bd22b6576e94975))
+* **ppc:** draw the open dialog edit field once through its text record ([#6666](https://github.com/benletchford/systemless/issues/6666)) ([56d5b37](https://github.com/benletchford/systemless/commit/56d5b373140e6c1e2fe747ab5226a3e64bcb8b13))
+* **ppc:** repaint content a front window covered when a window is selected ([#6659](https://github.com/benletchford/systemless/issues/6659)) ([655259b](https://github.com/benletchford/systemless/commit/655259be1ce289ff870395186c37efd1b5e16a81))
+* **runner:** launch 68K applications with PaintWhite set ([c1f8def](https://github.com/benletchford/systemless/commit/c1f8def03aa70c23b529889988732914a02bbc99))
+* **window-manager:** clear the off-screen mark when SizeWindow brings a window on screen on 68k ([#6668](https://github.com/benletchford/systemless/issues/6668)) ([ab7d81d](https://github.com/benletchford/systemless/commit/ab7d81d6f5852ec86dbf38e73e6cfc7a5d9e5c99))
+
+
+### Performance Improvements
+
+* **ppc:** batch QuickDraw geometry transfers ([c11d81d](https://github.com/benletchford/systemless/commit/c11d81d30d97b4c73e4f1d40f04dc265842a1a08))
+* **sound:** batch guest channel header reads and skip unchanged writes ([e6773b8](https://github.com/benletchford/systemless/commit/e6773b8906945191c1b80f70fbf3ef81ef61218f))
+
 ## [0.127.1](https://github.com/benletchford/systemless/compare/v0.127.0...v0.127.1) (2026-11-21)
 
 
