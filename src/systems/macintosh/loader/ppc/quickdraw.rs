@@ -5279,11 +5279,7 @@ pub(crate) fn ppc_record_copy_bits(
     gworlds: &[PpcGWorldRecord],
     commands: &mut Vec<u8>,
 ) -> bool {
-    let src_bits_ptr = cpu.gpr[3];
-    let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
-        return false;
-    };
-    if src_bits.depth != 8 || cpu.gpr[8] != 0 || cpu.gpr[7] as u16 & 0x3f != 0 {
+    if cpu.gpr[8] != 0 || cpu.gpr[7] as u16 & 0x3f != 0 {
         return false;
     }
     let Some(src_rect) = ppc_read_rect(memory, cpu.gpr[5]) else {
@@ -5292,6 +5288,35 @@ pub(crate) fn ppc_record_copy_bits(
     let Some(dst_rect) = ppc_read_rect(memory, cpu.gpr[6]) else {
         return false;
     };
+    ppc_record_bits_rect(
+        memory,
+        gworlds,
+        cpu.gpr[3],
+        src_rect,
+        dst_rect,
+        cpu.gpr[7] as u16,
+        commands,
+    )
+}
+
+/// Appends a BitsRect opcode that copies `src_rect` of an 8-bit indexed
+/// PixMap or BitMap to `dst_rect`, as StdBits records a transfer into an
+/// open picture. Inside Macintosh: Imaging With QuickDraw (1994), p. A-26.
+pub(crate) fn ppc_record_bits_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    src_bits_ptr: u32,
+    src_rect: (i16, i16, i16, i16),
+    dst_rect: (i16, i16, i16, i16),
+    mode: u16,
+    commands: &mut Vec<u8>,
+) -> bool {
+    let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
+        return false;
+    };
+    if src_bits.depth != 8 {
+        return false;
+    }
     let width = src_rect.3.saturating_sub(src_rect.1);
     let height = src_rect.2.saturating_sub(src_rect.0);
     if width <= 0 || height <= 0 || width > 0x3fff {
@@ -5349,7 +5374,7 @@ pub(crate) fn ppc_record_copy_bits(
             pict::recording_push_word(&mut recording, value as u16);
         }
     }
-    pict::recording_push_word(&mut recording, cpu.gpr[7] as u16);
+    pict::recording_push_word(&mut recording, mode);
     for y in src_rect.0..src_rect.2 {
         for x in src_rect.1..src_rect.3 {
             let Some(pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, i32::from(x), i32::from(y))

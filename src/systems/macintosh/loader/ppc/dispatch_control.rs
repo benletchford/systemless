@@ -1146,16 +1146,27 @@ pub(super) fn ppc_dispatch_legacy_control(
             )
         }
         PpcLegacyControlOperation::DrawOneControl => {
-            let _ = ppc_draw_control_inner(
+            if !ppc_draw_control_into_open_picture(
                 memory,
                 handles,
                 controls,
                 gworlds,
                 vfs_resources,
                 current_resource_refnum,
+                toolbox_startup,
                 cpu.gpr[3],
-                true,
-            );
+            ) {
+                let _ = ppc_draw_control_inner(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    cpu.gpr[3],
+                    true,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcLegacyControlOperation::IsControlVisible => {
@@ -2947,6 +2958,124 @@ pub(super) fn ppc_draw_control(
         handle,
         true,
     )
+}
+
+/// Draws a control into the picture open on its owner port, if any.
+///
+/// The Control Manager draws through QuickDraw in the owner's port, so while
+/// OpenPicture is active there the control is recorded into the picture
+/// instead of appearing onscreen. Inside Macintosh: Imaging With QuickDraw
+/// (1994), pp. 7-5--7-6. The HLE controls bypass the recorded QuickDraw
+/// imports, so render the control, record its pixels as one BitsRect limited
+/// to the port's visible and clipping regions, and restore the pixels it
+/// covered. Returns false, drawing nothing, when no picture records the
+/// control; controls drawn by a guest CDEF record through QuickDraw itself.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_draw_control_into_open_picture(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    toolbox_startup: &mut PpcToolboxStartupState,
+    handle: u32,
+) -> bool {
+    let Some(control) = ppc_control_ptr(memory, handle) else {
+        return false;
+    };
+    let owner = memory
+        .read_u32_be(control + PPC_CONTROL_OWNER_OFFSET)
+        .unwrap_or(0);
+    let Some((_, picture_port, _, _)) = toolbox_startup.open_picture.as_ref() else {
+        return false;
+    };
+    if owner == 0
+        || *picture_port != owner
+        || memory
+            .read_u8(control + PPC_CONTROL_VISIBLE_OFFSET)
+            .unwrap_or(0)
+            == 0
+        || (!matches!(owner, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+            && !ppc_window_is_visible(memory, owner))
+        || controls
+            .iter()
+            .find(|record| record.handle == handle)
+            .is_some_and(|record| {
+                ppc_control_definition_resource(
+                    memory,
+                    vfs_resources,
+                    current_resource_refnum,
+                    record,
+                )
+                .is_some()
+            })
+    {
+        return false;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, owner) else {
+        return false;
+    };
+    let Some(mut rect) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) else {
+        return false;
+    };
+    for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
+        let bounds = memory
+            .read_u32_be(owner.wrapping_add(offset))
+            .and_then(|region| memory.read_u32_be(region))
+            .and_then(|region| ppc_read_rect(memory, region.wrapping_add(2)));
+        if let Some((top, left, bottom, right)) = bounds {
+            rect = (
+                rect.0.max(top),
+                rect.1.max(left),
+                rect.2.min(bottom),
+                rect.3.min(right),
+            );
+        }
+    }
+    let (top, left, bottom, right) = rect;
+    let points = (top..bottom)
+        .flat_map(|v| (left..right).map(move |h| (i32::from(h), i32::from(v))))
+        .collect::<Vec<_>>();
+    let covered = points
+        .iter()
+        .map(|point| {
+            ppc_quickdraw_read_pixel(memory, surface.front_buffer, surface.local_point(*point))
+        })
+        .collect::<Vec<_>>();
+    let _ = ppc_draw_control(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        vfs_resources,
+        current_resource_refnum,
+        handle,
+    );
+    if top < bottom && left < right {
+        if let Some((_, _, _, commands)) = toolbox_startup.open_picture.as_mut() {
+            let _ = ppc_record_bits_rect(
+                memory,
+                gworlds,
+                owner.wrapping_add(2),
+                rect,
+                rect,
+                0,
+                commands,
+            );
+        }
+    }
+    for (point, pixel) in points.into_iter().zip(covered) {
+        if let Some(pixel) = pixel {
+            let _ = ppc_quickdraw_write_raw_pixel(
+                memory,
+                surface.front_buffer,
+                surface.local_point(point),
+                pixel,
+            );
+        }
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]

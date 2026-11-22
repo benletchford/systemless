@@ -723,6 +723,121 @@ fn draw_controls_redraws_visible_controls_in_a_document_window() {
 }
 
 #[test]
+fn draw1control_records_a_scroll_bar_into_the_open_picture() {
+    // Imaging With QuickDraw (1994), pp. 7-5--7-6: drawing in a port with an
+    // open picture is recorded, not shown. Civilization II captures each
+    // scroll bar this way and replays it into its offscreen window buffer.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
+    let port = *loaded.current_gworld;
+    assert_eq!(port, PPC_MAIN_GWORLD);
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds = (10, 20, 26, 120);
+    let handle = with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            port,
+            bounds,
+            b"",
+            true,
+            3,
+            0,
+            10,
+            16,
+            0,
+        )
+    );
+    assert_ne!(handle, 0);
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    let read_area = |loaded: &mut PpcLoadedApp| {
+        (bounds.0..bounds.2)
+            .flat_map(|v| (bounds.1..bounds.3).map(move |h| (i32::from(h), i32::from(v))))
+            .map(|point| {
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    surface.front_buffer,
+                    surface.local_point(point),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let paint_white = |loaded: &mut PpcLoadedApp| {
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            port,
+            (0, 0, 40, 140),
+            PPC_RGB_WHITE,
+            None,
+        ));
+    };
+
+    // The scroll bar as the Control Manager draws it without a picture.
+    paint_white(&mut loaded);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+    );
+    let expected = read_area(&mut loaded);
+    assert!(expected.iter().any(|pixel| *pixel != Some(white)));
+
+    paint_white(&mut loaded);
+    let scratch = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 40, 140).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
+    );
+    let picture = loaded.cpu.gpr[3];
+    assert_ne!(picture, 0);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+    );
+    assert!(
+        read_area(&mut loaded).iter().all(|pixel| *pixel == Some(white)),
+        "recording must not paint into the live port"
+    );
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
+    );
+
+    loaded.cpu.gpr[3] = picture;
+    loaded.cpu.gpr[4] = scratch;
+    assert!(with_test_color_manager_clut!(
+        loaded,
+        |color_manager_clut| ppc_draw_picture(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            &loaded.process_file_system.vfs_resources,
+            &loaded.gworlds,
+            port,
+            &loaded.screen_clut,
+            color_manager_clut,
+        )
+    ));
+    assert_eq!(read_area(&mut loaded), expected);
+}
+
+#[test]
 fn draw_controls_draws_newest_first_with_oldest_control_frontmost() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
     let mut last_mem_error = loaded.last_mem_error();
