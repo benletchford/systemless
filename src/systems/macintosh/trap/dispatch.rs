@@ -6777,6 +6777,7 @@ impl TrapDispatcher {
     pub(crate) fn set_current_resource_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) {
         let selected = self.with_resource_manager_mut(|resource_manager| {
             let mut selected = 0;
+            resource_manager.system_map_selected = false;
             if let Some(resources) = resource_manager.resources.as_mut() {
                 resources.current_file = if resources.files.contains_key(&refnum) {
                     refnum

@@ -661,13 +661,25 @@ impl super::TrapDispatcher {
         self.std_pix_gateway
     }
 
+    /// Files whose FOND resources the Font Manager can see. With the System
+    /// file current (`UseResFile(0)`), the chain is the System file alone,
+    /// so an application-only family has no name or number there.
+    /// Inside Macintosh Volume I (1985), pp. I-116 and I-223.
+    fn font_family_search_order(&self) -> Vec<u16> {
+        let mut order = self.resource_search_order();
+        if self.system_map_selected {
+            order.retain(|&refnum| refnum != 0);
+        }
+        order
+    }
+
     pub(super) fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
         let needle = name.trim();
         if needle.is_empty() {
             return None;
         }
         let resources = self.resources.as_ref()?;
-        for refnum in self.resource_search_order() {
+        for refnum in self.font_family_search_order() {
             let Some(file) = resources.files.get(&refnum) else {
                 continue;
             };
@@ -682,7 +694,7 @@ impl super::TrapDispatcher {
 
     fn loaded_font_name_for_id(&self, font_id: i16) -> Option<&str> {
         let resources = self.resources.as_ref()?;
-        for refnum in self.resource_search_order() {
+        for refnum in self.font_family_search_order() {
             let Some(file) = resources.files.get(&refnum) else {
                 continue;
             };

@@ -1008,6 +1008,11 @@ pub struct ProcessResourceManagerState {
     /// `ProcessLoadedResources::current_file` remains the classic file-chain
     /// cursor, while this is the architecture-neutral `CurResFile` value.
     pub(crate) current_resource_file: SharedProcessValue<i16>,
+    /// True after `UseResFile(0)` selected the System file. The HLE chain
+    /// has no System resource map, so internal key 0 is shared with the
+    /// application map; this keeps the two selections apart.
+    /// Inside Macintosh Volume I (1985), p. I-116.
+    pub(crate) system_map_selected: bool,
     /// Resource loading and purge policy shared by every CPU gateway.
     pub(crate) policy: SharedProcessResourcePolicy,
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,

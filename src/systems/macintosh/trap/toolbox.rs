@@ -7694,6 +7694,14 @@ impl super::TrapDispatcher {
                     .is_some_and(|r| r.files.contains_key(&target_refnum));
                 if file_exists {
                     self.set_current_resource_refnum(bus, target_refnum);
+                    // IM:I I-116: refNum 0 is the System file. Its HLE map
+                    // shares key 0 with the application, so remember which
+                    // one the guest asked for.
+                    if refnum == 0 && cur_apref_num != 0 {
+                        self.with_resource_manager_mut(|resource_manager| {
+                            resource_manager.system_map_selected = true;
+                        });
+                    }
                     bus.write_word(0x0A60, 0); // noErr
                 } else {
                     // IM:I I-116: invalid refnum leaves the current file

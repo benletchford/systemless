@@ -6168,6 +6168,67 @@
     }
 
     #[test]
+    fn application_fond_is_hidden_while_the_system_file_is_current() {
+        // IM:I (1985), pp. I-116 and I-223: UseResFile(0) makes the System
+        // file current, so the search chain is the System file alone and an
+        // application-only family has neither name nor number. Ultima III
+        // 1.3 reports a conflicting "UltimaThree" font when GetFontName
+        // still finds its own FOND 1530 there.
+        type Cpu = super::super::test_helpers::MockCpu;
+        let (mut d, mut cpu, mut bus) = setup();
+        let mut file = ResourceFileMap::default();
+        file.named
+            .insert((*b"FOND", "UltimaThree".to_string()), (1530, 0x1234));
+        d.set_loaded_resources_for_test(LoadedResources {
+            files: HashMap::from([(0, file)]),
+            names: HashMap::from([(0, "Application".to_string())]),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let app_ref = 0x0C40u16;
+        bus.write_word(crate::memory::globals::addr::CUR_APREF_NUM, app_ref);
+        let name_ptr = 0x300000u32;
+        let num_ptr = 0x300100u32;
+        let query_ptr = 0x300200u32;
+        bus.write_pstring(query_ptr, b"UltimaThree");
+
+        let use_res_file =
+            |d: &mut TrapDispatcher, cpu: &mut Cpu, bus: &mut MacMemoryBus, refnum: u16| {
+                cpu.write_reg(Register::A7, TEST_SP);
+                bus.write_word(TEST_SP, refnum);
+                assert!(d.dispatch_toolbox(true, 0x198, cpu, bus).unwrap().is_ok());
+                assert_eq!(bus.read_word(0x0A60), 0);
+            };
+        let get_font_name = |d: &mut TrapDispatcher, cpu: &mut Cpu, bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_byte(name_ptr, 0xFF);
+            bus.write_long(TEST_SP, name_ptr);
+            bus.write_word(TEST_SP + 4, 1530);
+            assert!(d.dispatch_quickdraw(true, 0x0FF, cpu, bus).unwrap().is_ok());
+            bus.read_byte(name_ptr)
+        };
+        let get_fnum = |d: &mut TrapDispatcher, cpu: &mut Cpu, bus: &mut MacMemoryBus| {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(num_ptr, 0xFFFF);
+            bus.write_long(TEST_SP, num_ptr);
+            bus.write_long(TEST_SP + 4, query_ptr);
+            assert!(d.dispatch_quickdraw(true, 0x100, cpu, bus).unwrap().is_ok());
+            bus.read_word(num_ptr) as i16
+        };
+
+        use_res_file(&mut d, &mut cpu, &mut bus, 0);
+        assert_eq!(get_font_name(&mut d, &mut cpu, &mut bus), 0);
+        assert_eq!(get_fnum(&mut d, &mut cpu, &mut bus), 0);
+
+        use_res_file(&mut d, &mut cpu, &mut bus, app_ref);
+        assert_eq!(
+            get_font_name(&mut d, &mut cpu, &mut bus),
+            b"UltimaThree".len() as u8
+        );
+        assert_eq!(get_fnum(&mut d, &mut cpu, &mut bus), 1530);
+    }
+
+    #[test]
     fn getfnum_name_match_is_case_insensitive() {
         let (mut d, mut cpu, mut bus) = setup();
         let num_ptr = 0x300000u32;
