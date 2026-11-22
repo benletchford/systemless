@@ -5252,3 +5252,67 @@ fn copy_bits_boolean_modes_follow_color_quickdraw_table() {
     ));
     assert_eq!(loaded.memory.read_u8(destination), Some(0b0110_0000));
 }
+
+#[test]
+fn copy_bits_into_the_current_port_clips_to_vis_and_clip_regions() {
+    // Imaging With QuickDraw (1994), p. 3-116: a copy whose destination is
+    // the current port's pixel image is also clipped to its clipRgn and
+    // visRgn. Bad Mojo copies a 256-row overlay whose lower rows lie below
+    // its ClipRect'd scene; unclipped, they painted a white band under the
+    // scene and over the roach. Other destinations stay unclipped.
+    const RED: u16 = 0x7c00;
+    const BLUE: u16 = 0x001f;
+    let run = |current_port_is_destination: bool| {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let base = PPC_HEAP_BASE + 0x18000;
+        loaded.memory.add_region(base, vec![0; 0x400]);
+        let (source, destination, records) = (base, base + 0x40, base + 0x100);
+        let (port, pixmap_handle, vis, clip) = (base + 0x200, base + 0x280, base + 0x300, base + 0x340);
+        loaded.memory.write_bytes(source, &[0x7c, 0x00].repeat(6)).unwrap();
+        loaded.memory.write_bytes(destination, &[0x00, 0x1f].repeat(6)).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, records, source, 12, 0, 0, 1, 6, 16).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, records + 0x40, destination, 12, 0, 0, 1, 6, 16)
+            .unwrap();
+        ppc_write_rect(&mut loaded.memory, records + 0x80, 0, 0, 1, 6).unwrap();
+        // CGrafPort: portPixMap handle, portVersion $C000, visRgn, clipRgn.
+        loaded.memory.write_u32_be(pixmap_handle, records + 0x40).unwrap();
+        loaded.memory.write_u32_be(port + 2, pixmap_handle).unwrap();
+        loaded.memory.write_u16_be(port + 6, 0xc000).unwrap();
+        for (handle, rect) in [(vis, (0, 0, 1, 5)), (clip, (0, 2, 1, 6))] {
+            let region = handle + 8;
+            loaded.memory.write_u32_be(handle, region).unwrap();
+            loaded.memory.write_u16_be(region, 10).unwrap();
+            ppc_write_rect(&mut loaded.memory, region + 2, rect.0, rect.1, rect.2, rect.3)
+                .unwrap();
+        }
+        loaded.memory.write_u32_be(port + PPC_CGRAF_PORT_VIS_RGN_OFFSET, vis).unwrap();
+        loaded.memory.write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, clip).unwrap();
+        loaded.cpu.gpr[3] = records;
+        loaded.cpu.gpr[4] = if current_port_is_destination { port + 2 } else { records + 0x40 };
+        loaded.cpu.gpr[5] = records + 0x80;
+        loaded.cpu.gpr[6] = records + 0x80;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        let current_port = if current_port_is_destination { port } else { 0 };
+        assert!(ppc_copy_bits(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &[],
+            current_port,
+            0,
+            &loaded.toolbox_startup,
+            &[[0; 3]; 256],
+            PPC_RGB_BLACK,
+            None,
+            PPC_RGB_WHITE,
+            None,
+            PPC_RGB_BLACK,
+        ));
+        (0..6)
+            .map(|x| loaded.memory.read_u16_be(destination + 2 * x).unwrap())
+            .collect::<Vec<_>>()
+    };
+    // visRgn columns 0..5 ∩ clipRgn columns 2..6 = columns 2..5.
+    assert_eq!(run(true), [BLUE, BLUE, RED, RED, RED, BLUE]);
+    assert_eq!(run(false), [RED; 6]);
+}
