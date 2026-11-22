@@ -4233,13 +4233,38 @@ impl MemoryBus for MacMemoryBus {
     /// copying twice per row.
     #[inline]
     fn read_bytes_into(&self, address: u32, dst: &mut [u8]) {
-        if self.route(address, dst.len()) != GuestMemoryRoute::Flat {
+        let len = dst.len();
+        if len == 0 {
+            return;
+        }
+        let route = self.route(address, len);
+        if route != GuestMemoryRoute::Flat {
+            if matches!(
+                route,
+                GuestMemoryRoute::Shared
+                    | GuestMemoryRoute::SharedReadOnly
+                    | GuestMemoryRoute::Sparse
+            ) {
+                if let (Some(foreign_address), Some(memory)) = (
+                    self.range_translates_contiguously(address, len),
+                    self.foreign_address_space.as_ref(),
+                ) {
+                    if memory
+                        .read_routed_bytes_into(foreign_address, dst, Some(self.ram_size))
+                        .is_some()
+                    {
+                        if self.access_watch.is_some() {
+                            note_watched_read(address, len as u32);
+                        }
+                        return;
+                    }
+                }
+            }
             for (offset, byte) in dst.iter_mut().enumerate() {
                 *byte = self.read_byte(address.wrapping_add(offset as u32));
             }
             return;
         }
-        let len = dst.len();
         let translated = self.range_translates_contiguously(address, len);
         let translated_address = translated.unwrap_or(address);
         let end = (translated_address as u64).saturating_add(len as u64);
@@ -5888,6 +5913,23 @@ mod tests {
         let mut empty: [u8; 0] = [];
         bus.read_bytes_into(0x1234, &mut empty);
         // No assertion needed — just verifying no panic.
+    }
+
+    #[test]
+    fn read_bytes_into_foreign_sparse_matches_read_byte() {
+        let mut foreign = GuestAddressSpace::new();
+        let data: Vec<u8> = (0..64u8).map(|i| i.wrapping_mul(7).wrapping_add(3)).collect();
+        foreign.add_region(0x2000_0000, data.clone());
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        bus.foreign_address_space = Some(foreign.shared_view());
+        bus.addressing_32_bit = true;
+
+        let mut bulk = [0u8; 32];
+        bus.read_bytes_into(0x2000_0010, &mut bulk);
+        assert_eq!(&bulk[..], &data[16..48]);
+        for (i, &byte) in bulk.iter().enumerate() {
+            assert_eq!(byte, bus.read_byte(0x2000_0010 + i as u32));
+        }
     }
 
     /// Pin the contract for `fill_zeros`: writes `len` zero bytes
