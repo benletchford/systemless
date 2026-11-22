@@ -269,9 +269,14 @@ impl GuiDriver {
             output.dialog_bounds = runner
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus());
-            output.front_window_bounds = runner
-                .dispatcher()
-                .document_windows_in_front_of_main_structure_bounds(runner.bus());
+            output.front_window_bounds = if self.fit_game_window {
+                runner
+                    .dispatcher()
+                    .game_document_window_structure_bounds(runner.bus())
+                    .and_then(|(_, in_front)| in_front)
+            } else {
+                None
+            };
             output.hidden_menu_height = if self.native_integrations {
                 runner
                     .bus()
@@ -394,16 +399,13 @@ impl GuiDriver {
         {
             use systemless::systems::macintosh::memory::MemoryBus;
             let dispatcher = runner.dispatcher();
+            let game_windows = (capture_crop && self.fit_game_window)
+                .then(|| dispatcher.game_document_window_structure_bounds(runner.bus()))
+                .flatten();
             output.crop = super::frame_snapshot::CropObservations {
                 dialog_bounds: dispatcher.visible_dialog_structure_bounds(runner.bus()),
-                main_window_bounds: capture_crop
-                    .then(|| dispatcher.main_document_window_structure_bounds(runner.bus()))
-                    .flatten(),
-                front_window_bounds: capture_crop
-                    .then(|| {
-                        dispatcher.document_windows_in_front_of_main_structure_bounds(runner.bus())
-                    })
-                    .flatten(),
+                main_window_bounds: game_windows.map(|(main, _)| main),
+                front_window_bounds: game_windows.and_then(|(_, in_front)| in_front),
                 framed_rect: capture_crop
                     .then(|| dispatcher.framed_manual_cport_presentation_rect(runner.bus()))
                     .flatten(),

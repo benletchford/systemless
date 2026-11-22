@@ -2375,17 +2375,13 @@ impl super::TrapDispatcher {
             return;
         };
         let (top, left, _, _) = self.window_global_port_rect(bus, window);
+        let (Some(h_global), Some(v_global)) = (left.checked_add(dh), top.checked_add(dv)) else {
+            return;
+        };
         eprintln!(
             "[WINDOW] fit-game-window: centring window ${window:08X} {structure:?} over main window {main:?}"
         );
-        self.move_window_to_global(
-            bus,
-            cpu,
-            window,
-            left.saturating_add(dh),
-            top.saturating_add(dv),
-            false,
-        );
+        self.move_window_to_global(bus, cpu, window, h_global, v_global, false);
     }
 
     pub(crate) fn move_window_to_global<C: CpuOps>(
@@ -6868,22 +6864,39 @@ mod tests;
 
 /// Offset (vertical, horizontal) that centres `structure` over `main`, both
 /// (top, left, bottom, right), or `None` when `structure` already lies inside
-/// `main` or is too large to fit inside it.
+/// `main`, is too large to fit inside it, or the move does not fit in QuickDraw
+/// coordinates. Arithmetic is in `i32`, because a rectangle's width or height
+/// can exceed `i16::MAX`.
 pub(crate) fn centring_offset(
     structure: (i16, i16, i16, i16),
     main: (i16, i16, i16, i16),
 ) -> Option<(i16, i16)> {
-    let (top, left, bottom, right) = structure;
-    let (main_top, main_left, main_bottom, main_right) = main;
+    let widen = |(top, left, bottom, right): (i16, i16, i16, i16)| {
+        (
+            i32::from(top),
+            i32::from(left),
+            i32::from(bottom),
+            i32::from(right),
+        )
+    };
+    let (top, left, bottom, right) = widen(structure);
+    let (main_top, main_left, main_bottom, main_right) = widen(main);
+    if bottom <= top || right <= left || main_bottom <= main_top || main_right <= main_left {
+        return None;
+    }
     let inside =
         top >= main_top && left >= main_left && bottom <= main_bottom && right <= main_right;
     let fits = bottom - top <= main_bottom - main_top && right - left <= main_right - main_left;
     if inside || !fits {
         return None;
     }
-    let centre = |low: i16, high: i16| (i32::from(low) + i32::from(high)) / 2;
-    Some((
-        (centre(main_top, main_bottom) - centre(top, bottom)) as i16,
-        (centre(main_left, main_right) - centre(left, right)) as i16,
-    ))
+    let dv = (main_top + main_bottom) / 2 - (top + bottom) / 2;
+    let dh = (main_left + main_right) / 2 - (left + right) / 2;
+    // The moved rectangle must itself be a valid QuickDraw rectangle.
+    let in_range = |value: i32| i16::try_from(value).is_ok();
+    if !(in_range(top + dv) && in_range(bottom + dv) && in_range(left + dh) && in_range(right + dh))
+    {
+        return None;
+    }
+    Some((i16::try_from(dv).ok()?, i16::try_from(dh).ok()?))
 }

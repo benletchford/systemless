@@ -11060,7 +11060,8 @@ fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
          smaller message window are in front"
     );
     assert_eq!(
-        disp.document_windows_in_front_of_main_structure_bounds(&bus),
+        disp.game_document_window_structure_bounds(&bus)
+            .and_then(|(_, in_front)| in_front),
         Some(message_bounds)
     );
 
@@ -11069,7 +11070,8 @@ fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
         0,
     );
     assert_eq!(
-        disp.document_windows_in_front_of_main_structure_bounds(&bus),
+        disp.game_document_window_structure_bounds(&bus)
+            .and_then(|(_, in_front)| in_front),
         None,
         "closing the message window restores the document alone"
     );
@@ -11099,6 +11101,21 @@ fn centring_offset_moves_only_windows_that_stick_out_and_fit() {
         centring_offset((0, 0, 500, 300), main),
         None,
         "too tall to fit"
+    );
+    // A window wider than the main window, with a right edge at i16::MAX:
+    // i16 subtraction used to wrap and report a large bogus move.
+    assert_eq!(
+        centring_offset((40, -100, 220, 32767), (40, 40, 420, 600)),
+        None,
+        "an oversized window is left in place"
+    );
+    assert_eq!(
+        centring_offset(
+            (-32768, -32768, -32700, -32700),
+            (32000, 32000, 32767, 32767)
+        ),
+        None,
+        "a move beyond QuickDraw coordinates is refused"
     );
 }
 
