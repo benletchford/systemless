@@ -641,6 +641,8 @@ pub fn draw_picture(
     // (IM:I I-171). Used by draw_picture_text to XOR glyph pixels when the
     // PICT sets mode srcXor (2).
     let mut tx_mode: i16 = 1;
+    // PnMode (0x08) and OpColor (0x1F) for pen-drawn shapes.
+    let mut pen = PictPen::new(screen_mode.4, device_clut);
 
     let mut is_v2 = false;
     // Matte from an UncompressedQuickTime opcode ($8201), applied to the
@@ -729,6 +731,7 @@ pub fn draw_picture(
             }
             0x08 => {
                 // PnMode (2 bytes)
+                pen.mode = bus.read_word(pos);
                 pos += 2;
             }
             0x09 => {
@@ -854,6 +857,11 @@ pub fn draw_picture(
             }
             0x1F => {
                 // OpColor (6 bytes). Only arithmetic transfer modes consult it.
+                pen.op_color = [
+                    bus.read_word(pos),
+                    bus.read_word(pos + 2),
+                    bus.read_word(pos + 4),
+                ];
                 pos += 6;
             }
             0x20 => {
@@ -1171,6 +1179,7 @@ pub fn draw_picture(
                     fill_pat,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x38..=0x3C => {
@@ -1198,6 +1207,7 @@ pub fn draw_picture(
                         fill_pat,
                         fg_idx,
                         bg_idx,
+                        &pen,
                     );
                 }
             }
@@ -1230,6 +1240,7 @@ pub fn draw_picture(
                     fill_pat,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x48..=0x4C => {
@@ -1257,6 +1268,7 @@ pub fn draw_picture(
                         fill_pat,
                         fg_idx,
                         bg_idx,
+                        &pen,
                     );
                 }
             }
@@ -1288,6 +1300,7 @@ pub fn draw_picture(
                     fill_pat,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x58..=0x5C => {
@@ -1314,6 +1327,7 @@ pub fn draw_picture(
                         fill_pat,
                         fg_idx,
                         bg_idx,
+                        &pen,
                     );
                 }
             }
@@ -1351,6 +1365,7 @@ pub fn draw_picture(
                     fill_pat,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x68..=0x6C => {
@@ -1381,6 +1396,7 @@ pub fn draw_picture(
                         fill_pat,
                         fg_idx,
                         bg_idx,
+                        &pen,
                     );
                 }
             }
@@ -1414,6 +1430,7 @@ pub fn draw_picture(
                     dst_clip,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x78..=0x7C => {}
@@ -1452,6 +1469,7 @@ pub fn draw_picture(
                     fill_pat,
                     fg_idx,
                     bg_idx,
+                    &pen,
                 );
             }
             0x88..=0x8C => {}
@@ -3197,6 +3215,252 @@ fn write_pixel(
     }
 }
 
+/// Pen transfer state recorded by PnMode (0x08) and OpColor (0x1F).
+///
+/// DrawPicture replays shape opcodes through the port's pen, so frame and
+/// paint shapes combine the pen pattern with the destination using the
+/// recorded transfer mode. Inside Macintosh: Imaging With QuickDraw (1994),
+/// pp. 3-11 (pattern modes), 4-38--4-40 (arithmetic modes) and A-6, A-7.
+#[derive(Clone, Debug)]
+struct PictPen {
+    mode: u16,
+    op_color: [u16; 3],
+    /// Table that resolves the tracked FgColor/BkColor indices to RGB.
+    source_clut: [[u16; 3]; 256],
+    /// Table of the destination's indexed pixels.
+    destination_clut: [[u16; 3]; 256],
+}
+
+impl PictPen {
+    /// initPort: pnMode = patCopy; OpColor black.
+    fn new(pixel_size: u16, device_clut: &[[u16; 3]; 256]) -> Self {
+        let destination_clut = indexed_destination_clut(device_clut, pixel_size);
+        // 16/32-bit destinations draw indices from the standard table (see
+        // `write_pixel`); indexed destinations use the device table.
+        let source_clut = if matches!(pixel_size, 16 | 32) {
+            *STANDARD_MAC_8BPP_CLUT
+                .get_or_init(crate::trap::dispatch::TrapDispatcher::standard_mac_8bpp_clut)
+        } else {
+            destination_clut
+        };
+        Self {
+            mode: 8,
+            op_color: [0, 0, 0],
+            source_clut,
+            destination_clut,
+        }
+    }
+
+    /// The ditherCopy flag (64) only affects colour quality.
+    fn base_mode(&self) -> u16 {
+        self.mode & !64
+    }
+
+    /// patCopy (and its srcCopy alias) overwrite the destination with the
+    /// pattern colours, which every shape plotter already does.
+    fn is_copy(&self) -> bool {
+        matches!(self.base_mode(), 0 | 8)
+    }
+}
+
+/// RGB of a pixel already in the destination, in the destination's own
+/// representation. Indexed pixels resolve through `clut`.
+fn pen_destination_rgb(pixel: u32, pixel_size: u16, clut: &[[u16; 3]; 256]) -> [u16; 3] {
+    match pixel_size {
+        16 => {
+            [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31].map(|v| ((v * 65535 + 15) / 31) as u16)
+        }
+        32 => [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255].map(|v| (v * 257) as u16),
+        _ => clut[(pixel & 0xFF) as usize],
+    }
+}
+
+/// Combine one pen pattern pixel with the destination pixel under `pen`.
+/// `set` is the pattern bit; set bits draw the foreground colour and clear
+/// bits the background colour, as for any QuickDraw pattern. Returns the
+/// new destination pixel value, or `None` to leave the destination as is.
+///
+/// `old` and the result use the destination representation: a bit for
+/// 1-bit, an index for 2/4/8-bit, and xRGB values for 16/32-bit. Indices
+/// `fg_idx` / `bg_idx` resolve through `source_clut`.
+#[allow(clippy::too_many_arguments)]
+fn pen_transfer_pixel(
+    old: u32,
+    pixel_size: u16,
+    set: bool,
+    fg_idx: u8,
+    bg_idx: u8,
+    pen: &PictPen,
+) -> Option<u32> {
+    let (source_clut, destination_clut) = (&pen.source_clut, &pen.destination_clut);
+    let mode = pen.base_mode();
+    let source_idx = if set { fg_idx } else { bg_idx };
+    let encode = |rgb: [u16; 3]| -> u32 {
+        match pixel_size {
+            1 => u32::from(rgb.iter().map(|&c| u32::from(c)).sum::<u32>() < 0x18000),
+            16 => {
+                u32::from(rgb[0] >> 11) << 10
+                    | u32::from(rgb[1] >> 11) << 5
+                    | u32::from(rgb[2] >> 11)
+            }
+            32 => {
+                u32::from(rgb[0] >> 8) << 16 | u32::from(rgb[1] >> 8) << 8 | u32::from(rgb[2] >> 8)
+            }
+            _ => u32::from(closest_clut_index(rgb[0], rgb[1], rgb[2], destination_clut)),
+        }
+    };
+    let from_index = |index: u8| -> u32 {
+        match pixel_size {
+            1 => u32::from(index != 0),
+            16 | 32 => encode(source_clut[usize::from(index)]),
+            _ => u32::from(index),
+        }
+    };
+    let invert = |pixel: u32| -> u32 {
+        match pixel_size {
+            1 => pixel ^ 1,
+            2 | 4 => pixel ^ ((1 << pixel_size) - 1),
+            16 => !pixel & 0x7FFF,
+            32 => !pixel & 0x00FF_FFFF,
+            _ => !pixel & 0xFF,
+        }
+    };
+    match mode {
+        0..=15 => {
+            let boolean = mode & 7;
+            let source_is_black = set ^ (boolean & 4 != 0);
+            match boolean & 3 {
+                0 => Some(from_index(if source_is_black { fg_idx } else { bg_idx })),
+                1 => source_is_black.then(|| from_index(fg_idx)),
+                2 => source_is_black.then(|| invert(old)),
+                _ => source_is_black.then(|| from_index(bg_idx)),
+            }
+        }
+        // transparent: background-coloured pattern pixels are not drawn.
+        36 => (source_idx != bg_idx).then(|| from_index(source_idx)),
+        32..=39 if pixel_size == 1 => {
+            // One-bit destinations reduce arithmetic modes to boolean ones.
+            // Inside Macintosh: Imaging With QuickDraw (1994), p. 4-40.
+            let source = from_index(source_idx);
+            Some(match mode {
+                32 => source,
+                33 | 37 => old & !source,
+                34 | 38 => old ^ source,
+                _ => old | source,
+            })
+        }
+        32..=39 => {
+            let source = source_clut[usize::from(source_idx)];
+            let destination = pen_destination_rgb(old, pixel_size, destination_clut);
+            let rgb: [u16; 3] = std::array::from_fn(|i| {
+                let (s, d, op) = (source[i], destination[i], pen.op_color[i]);
+                if mode == 32 {
+                    ((u64::from(s) * u64::from(op) + u64::from(d) * (65536 - u64::from(op))) >> 16)
+                        as u16
+                } else {
+                    crate::loader::ppc::quickdraw::ppc_arithmetic_transfer_channel(mode, s, d, op)
+                }
+            });
+            Some(encode(rgb))
+        }
+        // Highlighting and unknown modes keep the historical patCopy result.
+        _ => Some(from_index(source_idx)),
+    }
+}
+
+/// Plot one pen pattern pixel through `pen`, after the same destination and
+/// picture clipping as `plot_dst_pixel`.
+#[allow(clippy::too_many_arguments)]
+fn plot_dst_pen_pixel(
+    bus: &mut MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+    x: i32,
+    y: i32,
+    set: bool,
+    fg_idx: u8,
+    bg_idx: u8,
+    pen: &PictPen,
+    frame_top: i16,
+    frame_left: i16,
+    dst_top: i16,
+    dst_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    clip_region: Option<&PictureRegion>,
+    dst_clip: Option<&DstClip>,
+) {
+    let (base, row_bytes, width, height, pixel_size) = screen_mode;
+    if pen.is_copy() {
+        plot_dst_pixel(
+            bus,
+            base,
+            row_bytes,
+            width as i32,
+            height as i32,
+            pixel_size,
+            x,
+            y,
+            if set { fg_idx } else { bg_idx },
+            frame_top,
+            frame_left,
+            dst_top,
+            dst_left,
+            scale_x,
+            scale_y,
+            clip_region,
+            dst_clip,
+        );
+        return;
+    }
+    if x < 0
+        || y < 0
+        || x >= width as i32
+        || y >= height as i32
+        || !dst_clip_contains(dst_clip, x, y)
+    {
+        return;
+    }
+    if let Some(rgn) = clip_region {
+        let inv_sx = if scale_x > 0.0 { 1.0 / scale_x } else { 1.0 };
+        let inv_sy = if scale_y > 0.0 { 1.0 / scale_y } else { 1.0 };
+        let pic_x = ((x - dst_left as i32) as f64 * inv_sx + frame_left as f64).floor() as i32;
+        let pic_y = ((y - dst_top as i32) as f64 * inv_sy + frame_top as f64).floor() as i32;
+        if !rgn.contains(pic_y, pic_x) {
+            return;
+        }
+    }
+    let row = base + (y as u32) * row_bytes;
+    let (x, bits) = (x as u32, u32::from(pixel_size));
+    let (addr, shift) = match pixel_size {
+        1 | 2 | 4 => {
+            let per_byte = 8 / bits;
+            (row + x / per_byte, 8 - bits - (x % per_byte) * bits)
+        }
+        16 => (row + x * 2, 0),
+        32 => (row + x * 4, 0),
+        _ => (row + x, 0),
+    };
+    let old = match pixel_size {
+        1 | 2 | 4 => u32::from(bus.read_byte(addr) >> shift) & ((1 << bits) - 1),
+        16 => u32::from(bus.read_word(addr)) & 0x7FFF,
+        32 => bus.read_long(addr) & 0x00FF_FFFF,
+        _ => u32::from(bus.read_byte(addr)),
+    };
+    let Some(new) = pen_transfer_pixel(old, pixel_size, set, fg_idx, bg_idx, pen) else {
+        return;
+    };
+    match pixel_size {
+        1 | 2 | 4 => {
+            let mask = (((1u32 << bits) - 1) << shift) as u8;
+            let byte = bus.read_byte(addr);
+            bus.write_byte(addr, (byte & !mask) | (((new << shift) as u8) & mask));
+        }
+        16 => bus.write_word(addr, new as u16),
+        32 => bus.write_long(addr, new),
+        _ => bus.write_byte(addr, new as u8),
+    }
+}
+
 fn dst_clip_contains(clip: Option<&DstClip>, x: i32, y: i32) -> bool {
     clip.is_none_or(|clip| clip.contains(x, y))
 }
@@ -3589,6 +3853,7 @@ fn draw_shape_rect(
     fill_pat: [u8; 8],
     fg_idx: u8,
     bg_idx: u8,
+    pen: &PictPen,
 ) {
     let kind = kind & 0x0F;
     if src_bottom <= src_top || src_right <= src_left {
@@ -3599,6 +3864,41 @@ fn draw_shape_rect(
         scale_x, scale_y,
     );
     if x2 <= x1 || y2 <= y1 {
+        return;
+    }
+    if kind <= 1 && !pen.is_copy() {
+        // Frame and paint draw with the pen: its pattern combined with the
+        // destination through PnMode. Frames cover the PnSize-thick edges.
+        let (pen_h, pen_w) = pen_size;
+        let eh = ((pen_h as f64 * scale_y).round() as i32).max(1);
+        let ew = ((pen_w as f64 * scale_x).round() as i32).max(1);
+        for y in y1..y2 {
+            let row = pn_pat[y.rem_euclid(8) as usize];
+            for x in x1..x2 {
+                if kind == 0 && y >= y1 + eh && y < y2 - eh && x >= x1 + ew && x < x2 - ew {
+                    continue;
+                }
+                let set = row & (1 << (7 - x.rem_euclid(8))) != 0;
+                plot_dst_pen_pixel(
+                    bus,
+                    screen_mode,
+                    x,
+                    y,
+                    set,
+                    fg_idx,
+                    bg_idx,
+                    pen,
+                    frame_top,
+                    frame_left,
+                    dst_top,
+                    dst_left,
+                    scale_x,
+                    scale_y,
+                    clip_region,
+                    dst_clip,
+                );
+            }
+        }
         return;
     }
     // fg/bg colors come from tracked FgColor/BkColor state (default
@@ -3886,6 +4186,7 @@ fn draw_shape_round_rect(
     fill_pat: [u8; 8],
     fg_idx: u8,
     bg_idx: u8,
+    pen: &PictPen,
 ) {
     if src_bottom <= src_top || src_right <= src_left {
         return;
@@ -3951,6 +4252,28 @@ fn draw_shape_round_rect(
                 }
                 continue;
             }
+            if kind <= 1 && !pen.is_copy() {
+                let set = pn_pat[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
+                plot_dst_pen_pixel(
+                    bus,
+                    screen_mode,
+                    x,
+                    y,
+                    set,
+                    fg_idx,
+                    bg_idx,
+                    pen,
+                    frame_top,
+                    frame_left,
+                    dst_top,
+                    dst_left,
+                    scale_x,
+                    scale_y,
+                    clip_region,
+                    dst_clip,
+                );
+                continue;
+            }
             let pattern = match kind {
                 1 => pn_pat,
                 2 => bk_pat,
@@ -4009,6 +4332,7 @@ fn draw_shape_oval(
     fill_pat: [u8; 8],
     fg_idx: u8,
     bg_idx: u8,
+    pen: &PictPen,
 ) {
     draw_shape_oval_or_arc(
         bus,
@@ -4033,6 +4357,7 @@ fn draw_shape_oval(
         fill_pat,
         fg_idx,
         bg_idx,
+        pen,
     );
 }
 
@@ -4065,6 +4390,7 @@ fn draw_shape_oval_or_arc(
     fill_pat: [u8; 8],
     fg_idx: u8,
     bg_idx: u8,
+    pen: &PictPen,
 ) {
     let kind = kind & 0x0F;
     if src_bottom <= src_top || src_right <= src_left {
@@ -4167,6 +4493,27 @@ fn draw_shape_oval_or_arc(
             // Imaging With QuickDraw 1994, Appendix A, A-7.
             let pat_row_idx = (y.rem_euclid(8)) as usize;
             let pat_bit = 1u8 << (7 - x.rem_euclid(8) as u32);
+            if kind <= 1 && !pen.is_copy() {
+                plot_dst_pen_pixel(
+                    bus,
+                    screen_mode,
+                    x,
+                    y,
+                    pn_pat[pat_row_idx] & pat_bit != 0,
+                    fg_idx,
+                    bg_idx,
+                    pen,
+                    frame_top,
+                    frame_left,
+                    dst_top,
+                    dst_left,
+                    scale_x,
+                    scale_y,
+                    clip_region,
+                    dst_clip,
+                );
+                continue;
+            }
             let color = match kind {
                 0 => fg_idx,
                 1 => {
@@ -4275,6 +4622,7 @@ fn render_pict_polygon(
     dst_clip: Option<&DstClip>,
     fg_idx: u8,
     bg_idx: u8,
+    pen: &PictPen,
 ) {
     let poly_size = bus.read_word(poly_ptr) as u32;
     if poly_size < 10 {
@@ -4411,6 +4759,27 @@ fn render_pict_polygon(
                 let pat_row_idx = (dy.rem_euclid(8)) as usize;
                 let pat_bit = 1u8 << (7 - dx.rem_euclid(8) as u32);
                 match kind {
+                    1 if !pen.is_copy() => {
+                        // The picture clip was tested above in picture space.
+                        plot_dst_pen_pixel(
+                            bus,
+                            screen_mode,
+                            dx,
+                            dy,
+                            pn_pat[pat_row_idx] & pat_bit != 0,
+                            fg_idx,
+                            bg_idx,
+                            pen,
+                            frame_top,
+                            frame_left,
+                            dst_top,
+                            dst_left,
+                            scale_x,
+                            scale_y,
+                            None,
+                            dst_clip,
+                        );
+                    }
                     1 => {
                         // paintPoly — pn_pat.
                         let bit_set = pn_pat[pat_row_idx] & pat_bit != 0;
