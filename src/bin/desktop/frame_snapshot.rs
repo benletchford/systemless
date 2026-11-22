@@ -25,6 +25,12 @@ pub(super) struct GuiFrame {
 #[derive(Default)]
 pub(super) struct CropObservations {
     pub dialog_bounds: Option<(i16, i16, i16, i16)>,
+    /// Structure bounds of the game's main document window, for
+    /// `--fit-game-window`.
+    pub main_window_bounds: Option<(i16, i16, i16, i16)>,
+    /// Smaller document windows in front of the main window, which some
+    /// games use as dialogs.
+    pub front_window_bounds: Option<(i16, i16, i16, i16)>,
     pub framed_rect: Option<ScreenCopyBitsRect>,
     pub manual_rect: Option<ScreenCopyBitsRect>,
     pub declared_rect: Option<ScreenCopyBitsRect>,

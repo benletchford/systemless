@@ -3178,6 +3178,66 @@ impl TrapDispatcher {
         })
     }
 
+    /// Global structure bounds (top, left, bottom, right) of the visible
+    /// document windows, front to back, skipping dialogs, floating windows,
+    /// desk accessory windows, and hidden windows.
+    fn visible_document_window_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Vec<(i16, i16, i16, i16)> {
+        const DIALOG_KIND: i16 = 2;
+        const FLOATING_WINDOW_CLASS: u32 = 5;
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        self.window_list
+            .windows()
+            .into_iter()
+            .filter(|&window| {
+                let kind =
+                    bus.read_word(window + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET) as i16;
+                window != ghost_window
+                    && self.window_visible(bus, window)
+                    && kind >= 0
+                    && kind != DIALOG_KIND
+                    && !self.dialog_items.contains_key(&window)
+                    && !self.dialog_visible_snapshots.contains_key(&window)
+                    && self.window_list.window_class(window) != Some(FLOATING_WINDOW_CLASS)
+            })
+            .filter_map(|window| self.window_structure_rect(bus, window))
+            .collect()
+    }
+
+    /// Structure bounds of a windowed game's main window: the largest visible
+    /// document window (the frontmost among equals). Games such as Fluffy's
+    /// Adventure draw their messages in smaller document windows rather than
+    /// Dialog Manager dialogs, so the main window stays the anchor while one
+    /// of those is in front of it.
+    pub fn main_document_window_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(i16, i16, i16, i16)> {
+        let area = |&(top, left, bottom, right): &(i16, i16, i16, i16)| {
+            i32::from(bottom.saturating_sub(top)).max(0)
+                * i32::from(right.saturating_sub(left)).max(0)
+        };
+        self.visible_document_window_structure_bounds(bus)
+            .into_iter()
+            .rev()
+            .max_by_key(area)
+    }
+
+    /// Union of the structure bounds of the visible document windows in front
+    /// of the main window (see `main_document_window_structure_bounds`).
+    pub fn document_windows_in_front_of_main_structure_bounds(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Option<(i16, i16, i16, i16)> {
+        let main = self.main_document_window_structure_bounds(bus)?;
+        self.visible_document_window_structure_bounds(bus)
+            .into_iter()
+            .take_while(|&bounds| bounds != main)
+            .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    }
+
     /// Number of windows currently tracked by the Window Manager list.
     pub fn window_count(&self) -> usize {
         self.window_list.len()

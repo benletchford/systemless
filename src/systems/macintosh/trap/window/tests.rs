@@ -10990,3 +10990,93 @@ fn dbox_chrome_frames_structure_region_after_app_grows_content_region() {
     );
     assert_ne!(bus.read_byte(pixel(150, 92)), sentinel);
 }
+
+fn make_structure_window(
+    bus: &mut crate::memory::MacMemoryBus,
+    window_kind: i16,
+    visible: bool,
+    bounds: (i16, i16, i16, i16),
+) -> u32 {
+    let window = bus.alloc(160);
+    bus.write_byte(
+        window + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        if visible { 0xFF } else { 0 },
+    );
+    bus.write_word(
+        window + crate::dialog_manager::DIALOG_WINDOW_KIND_OFFSET,
+        window_kind as u16,
+    );
+    let region = bus.alloc(10);
+    bus.write_word(region, 10);
+    bus.write_word(region + 2, bounds.0 as u16);
+    bus.write_word(region + 4, bounds.1 as u16);
+    bus.write_word(region + 6, bounds.2 as u16);
+    bus.write_word(region + 8, bounds.3 as u16);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, region);
+    bus.write_long(
+        window + super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET,
+        handle,
+    );
+    window
+}
+
+#[test]
+fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
+    let (mut disp, _cpu, mut bus) = setup();
+    let document_bounds = (40, 144, 382, 656);
+    let document = make_structure_window(&mut bus, 8, true, document_bounds);
+    let hidden_document = make_structure_window(&mut bus, 8, false, (0, 0, 100, 100));
+    let alert = make_structure_window(&mut bus, 2, true, (300, 500, 420, 760));
+    // WarCraft II changes a dialog's windowKind to userKind after
+    // GetNewDialog; the Dialog Manager still owns its items.
+    let user_kind_dialog = make_structure_window(&mut bus, 8, true, (60, 60, 160, 260));
+    disp.dialog_items.insert(user_kind_dialog, Vec::new());
+    let floating = make_structure_window(&mut bus, 8, true, (20, 0, 80, 60));
+    // Fluffy's Adventure shows its messages in a smaller document window.
+    let message_bounds = (147, 231, 346, 569);
+    let message = make_structure_window(&mut bus, 8, true, message_bounds);
+    disp.window_list.replace(vec![
+        message,
+        floating,
+        alert,
+        user_kind_dialog,
+        hidden_document,
+        document,
+    ]);
+    disp.window_list.set_window_class(
+        floating,
+        crate::window_manager::window_class_for_legacy_proc(1985),
+    );
+    disp.window_list.set_window_class(
+        document,
+        crate::window_manager::window_class_for_legacy_proc(4),
+    );
+
+    assert_eq!(
+        disp.main_document_window_structure_bounds(&bus),
+        Some(document_bounds),
+        "the largest document window stays the anchor while dialogs and a \
+         smaller message window are in front"
+    );
+    assert_eq!(
+        disp.document_windows_in_front_of_main_structure_bounds(&bus),
+        Some(message_bounds)
+    );
+
+    bus.write_byte(
+        message + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    assert_eq!(
+        disp.document_windows_in_front_of_main_structure_bounds(&bus),
+        None,
+        "closing the message window restores the document alone"
+    );
+
+    bus.write_byte(
+        document + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    assert_eq!(disp.main_document_window_structure_bounds(&bus), None);
+}

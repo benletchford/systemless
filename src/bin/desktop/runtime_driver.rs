@@ -265,6 +265,9 @@ impl GuiDriver {
             output.dialog_bounds = runner
                 .dispatcher()
                 .visible_dialog_structure_bounds(runner.bus());
+            output.front_window_bounds = runner
+                .dispatcher()
+                .document_windows_in_front_of_main_structure_bounds(runner.bus());
             output.hidden_menu_height = if self.native_integrations {
                 runner
                     .bus()
@@ -389,6 +392,14 @@ impl GuiDriver {
             let dispatcher = runner.dispatcher();
             output.crop = super::frame_snapshot::CropObservations {
                 dialog_bounds: dispatcher.visible_dialog_structure_bounds(runner.bus()),
+                main_window_bounds: capture_crop
+                    .then(|| dispatcher.main_document_window_structure_bounds(runner.bus()))
+                    .flatten(),
+                front_window_bounds: capture_crop
+                    .then(|| {
+                        dispatcher.document_windows_in_front_of_main_structure_bounds(runner.bus())
+                    })
+                    .flatten(),
                 framed_rect: capture_crop
                     .then(|| dispatcher.framed_manual_cport_presentation_rect(runner.bus()))
                     .flatten(),
