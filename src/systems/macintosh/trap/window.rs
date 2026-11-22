@@ -2342,12 +2342,13 @@ impl super::TrapDispatcher {
         true
     }
 
-    /// Desktop `--fit-game-window`: move a hidden window that is about to be
-    /// shown, and would stick out of the game's main window, to the centre of
-    /// that window. Games often centre their messages on the screen while
-    /// their main window sits elsewhere, so the message would otherwise
-    /// widen the host view. A window larger than the main window is left
-    /// where it is; the view still widens to keep it reachable.
+    /// Desktop `--fit-game-window`: move a hidden window that ShowWindow or
+    /// ShowHide is about to reveal, and that would stick out of the game's
+    /// main window, to the centre of that window. Games often centre their
+    /// messages on the screen while their main window sits elsewhere, so the
+    /// message would otherwise widen the host view. A window larger than the
+    /// main window is left where it is; the view still widens to keep it
+    /// reachable.
     fn centre_over_main_window_before_show<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -2363,6 +2364,13 @@ impl super::TrapDispatcher {
         let Some(structure) = self.window_structure_rect(bus, window) else {
             return;
         };
+        // Class libraries such as THINK's show and hide a new window wholly
+        // off screen to set it up before moving it into view; leave that.
+        let (_, _, screen_width, screen_height, _) = self.screen_mode;
+        let (top, left, bottom, right) = structure;
+        if bottom <= 0 || right <= 0 || top >= screen_height as i16 || left >= screen_width as i16 {
+            return;
+        }
         let Some((dv, dh)) = centring_offset(structure, main) else {
             return;
         };
@@ -5968,6 +5976,9 @@ impl super::TrapDispatcher {
                 let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
+                    if show_flag && !was_visible {
+                        self.centre_over_main_window_before_show(bus, cpu, the_window);
+                    }
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
                     }

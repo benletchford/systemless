@@ -11103,10 +11103,20 @@ fn centring_offset_moves_only_windows_that_stick_out_and_fit() {
 }
 
 fn show_message_window_over_main(fit_game_window: bool) -> (i16, i16, i16, i16) {
+    reveal_window_over_main(fit_game_window, false, (166, 232, 344, 567))
+}
+
+/// Reveal a hidden window with ShowWindow, or ShowHide as Fluffy's Adventure
+/// (THINK Class Library) does, in front of a main window at (23,3)-(424,540).
+fn reveal_window_over_main(
+    fit_game_window: bool,
+    use_show_hide: bool,
+    port: (i16, i16, i16, i16),
+) -> (i16, i16, i16, i16) {
     let (mut disp, mut cpu, mut bus) = setup();
     disp.fit_game_window = fit_game_window;
     let message = 0x200040u32;
-    setup_full_window_with_regions(&mut bus, message, 166, 232, 344, 567);
+    setup_full_window_with_regions(&mut bus, message, port.0, port.1, port.2, port.3);
     bus.write_byte(
         message + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
         0,
@@ -11115,14 +11125,39 @@ fn show_message_window_over_main(fit_game_window: bool) -> (i16, i16, i16, i16) 
     disp.window_list.replace(vec![message, main]);
     disp.front_window = message;
 
-    let sp = TEST_SP - 4;
-    cpu.write_reg(Register::A7, sp);
-    bus.write_long(sp, message);
-    assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
-        .unwrap()
-        .is_ok());
+    if use_show_hide {
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, message);
+        assert!(dispatch(&mut disp, 0x108, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+    } else {
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, message);
+        assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+    }
     assert!(disp.window_visible(&bus, message));
     disp.window_structure_rect(&bus, message).unwrap()
+}
+
+#[test]
+fn show_hide_centres_a_sticking_out_window_but_not_one_parked_off_screen() {
+    let (top, left, bottom, right) = reveal_window_over_main(true, true, (166, 232, 344, 567));
+    assert!(
+        top >= 23 && left >= 3 && bottom <= 424 && right <= 540,
+        "ShowHide must centre the window ({top},{left},{bottom},{right}) inside the main window"
+    );
+    // THINK first shows and hides a new window far off screen.
+    let parked = reveal_window_over_main(true, true, (1620, 1800, 1798, 2135));
+    assert!(
+        parked.0 > 600,
+        "an off-screen window stays off screen: {parked:?}"
+    );
 }
 
 #[test]
