@@ -834,25 +834,58 @@ impl super::TrapDispatcher {
                 // Both copy modes replace the complete character cell, including
                 // spaces. notSrcCopy reverses the source mask, so its zero/white
                 // source pixels map to foreground rather than background.
+                //
+                // QuickDraw transfers a whole string's image at once, so a
+                // slanted (or otherwise overhanging) character keeps the
+                // pixels that reach into the next character's cell. Drawn
+                // one character at a time, the background under an
+                // overhang is replaced with this character, and the next
+                // character on the same line starts after it rather than
+                // erasing it again.
                 let fbbdy = scaled_ascent + scaled_descent;
+                // The presentation shears italic on its finer grid, where
+                // the top edge reaches up to a guest pixel further.
+                let italic_top_slant = if is_italic {
+                    get_italic_slant(self.tx_font, self.tx_size, &metrics, v, glyph_visual_top) * fs
+                        + 1
+                } else {
+                    0
+                };
+                let cell_right = h + glyph.advance as i16 * fs;
+                let ink_right = right + style_smear + italic_top_slant + style_pad;
+                let port = *self.current_port;
+                let erase_left = match self.copy_text_erase {
+                    Some((last_port, last_v, last_h, erased_right))
+                        if last_port == port && last_v == v && last_h < h =>
+                    {
+                        h.max(erased_right)
+                    }
+                    _ => h,
+                };
+                let erase_right = cell_right.max(ink_right);
+                self.copy_text_erase = Some((port, v, h, erase_right.max(erase_left)));
                 let copy_rect = Rect {
                     top: v - (fbbdy - scaled_descent),
-                    left: h,
+                    left: erase_left,
                     bottom: v + scaled_descent,
-                    right: h + glyph.advance as i16 * fs,
+                    right: erase_right,
                 };
-                if let Some(mut p) = bus.presentation.as_mut() {
-                    p.erasing_text = true;
+                if copy_rect.left < copy_rect.right {
+                    if let Some(mut p) = bus.presentation.as_mut() {
+                        p.erasing_text = true;
+                    }
+                    let background_op = if self.tx_mode == 4 {
+                        ShapeOp::Fill([0xFF; 8])
+                    } else {
+                        ShapeOp::Erase
+                    };
+                    self.draw_rect(cpu, bus, &copy_rect, background_op);
+                    if let Some(mut p) = bus.presentation.as_mut() {
+                        p.erasing_text = false;
+                    }
                 }
-                let background_op = if self.tx_mode == 4 {
-                    ShapeOp::Fill([0xFF; 8])
-                } else {
-                    ShapeOp::Erase
-                };
-                self.draw_rect(cpu, bus, &copy_rect, background_op);
-                if let Some(mut p) = bus.presentation.as_mut() {
-                    p.erasing_text = false;
-                }
+            } else {
+                self.copy_text_erase = None;
             }
 
             // Extract underline info for continuous underline (if set by draw_string)

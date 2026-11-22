@@ -8491,6 +8491,62 @@
         }
     }
 
+    /// Draw `text` in Geneva 12 with `face` and `mode` on a white 8-bit port
+    /// presented at 4x; return the guest pixels and the presented RGB.
+    fn draw_text_on_presented_port(face: u8, mode: i16, text: &str) -> (Vec<u8>, Vec<u8>) {
+        const W: u16 = 96;
+        const H: u16 = 24;
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let base = bus.alloc(u32::from(W) * u32::from(H));
+        d.screen_mode = (base, u32::from(W), W, H, 8);
+        bus.write_long(0x0824, base);
+        bus.fill_bytes(base, u32::from(W) * u32::from(H), 0);
+        let palette = std::array::from_fn(|i| [255 - i as u8; 3]);
+        bus.enable_outline_presentation(d.screen_mode, palette, 4);
+        let port = *d.current_port;
+        let pixmap = bus.alloc(50);
+        let pixmap_handle = bus.alloc(4);
+        write_pixmap_8(&mut bus, pixmap, base, W, H, 0);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, H as i16, W as i16);
+        let rgn = bus.alloc(10);
+        let rgn_handle = bus.alloc(4);
+        make_rgn(&mut bus, rgn, rgn_handle, 0, 0, H as i16, W as i16);
+        bus.write_long(port + 24, rgn_handle);
+        bus.write_long(port + 28, rgn_handle);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.fg_color = (0, 0, 0);
+        d.tx_font = 3;
+        d.tx_size = 12;
+        d.tx_face = face as _;
+        d.tx_mode = mode;
+        d.pn_loc = (16, 4);
+        for ch in text.chars() {
+            d.draw_char(&mut cpu, &mut bus, ch);
+        }
+        let guest = bus.read_bytes(base, usize::from(W) * usize::from(H));
+        (guest, bus.outline_presentation_rgb().unwrap().2)
+    }
+
+    #[test]
+    fn src_copy_italic_keeps_each_characters_overhang() {
+        // QuickDraw transfers a string's whole image, so in srcCopy a slanted
+        // character keeps the part that leans into the next character's cell.
+        // On a blank background srcCopy and srcOr must therefore match.
+        let text = "Welcome to Ye Olde Fix-it";
+        let (or_guest, or_presented) = draw_text_on_presented_port(2, 1, text);
+        let (copy_guest, copy_presented) = draw_text_on_presented_port(2, 0, text);
+        assert!(or_guest.iter().any(|&pixel| pixel != 0), "the text draws");
+        assert_eq!(copy_guest, or_guest, "guest pixels");
+        assert!(copy_presented == or_presented, "presented pixels");
+        // Plain text, which has no overhang, matches as well.
+        let (plain_or, _) = draw_text_on_presented_port(0, 1, text);
+        let (plain_copy, _) = draw_text_on_presented_port(0, 0, text);
+        assert_eq!(plain_copy, plain_or);
+    }
+
     #[test]
     fn outline_detail_survives_copybits_scrollrect_and_invertrect() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
