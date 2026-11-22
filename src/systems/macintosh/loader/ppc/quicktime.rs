@@ -95,7 +95,7 @@ pub enum PpcQuickTimeCompatibilityOperation {
     SetMovieActive,
     SetMovieVolume,
     SetTimeBaseFlags,
-    /// Application-created time bases; see [`time_base`].
+    /// Application-created time bases; see the `time_base` module.
     TimeBase(time_base::Operation),
     DrawPictureFile,
     UpdateMovie,
