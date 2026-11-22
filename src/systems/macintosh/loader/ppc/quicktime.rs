@@ -4,6 +4,7 @@ pub(crate) mod callbacks;
 pub(crate) mod controller;
 pub(crate) mod decompression;
 pub(crate) mod described_video;
+pub(crate) mod time_base;
 mod toolbox;
 
 pub(crate) use toolbox::{
@@ -94,6 +95,9 @@ pub enum PpcQuickTimeCompatibilityOperation {
     SetMovieActive,
     SetMovieVolume,
     SetTimeBaseFlags,
+    /// Application-created time bases; see [`time_base`].
+    TimeBase(time_base::Operation),
+    DrawPictureFile,
     UpdateMovie,
     GetMovieTrackCount,
     GetMovieIndTrack,
@@ -362,6 +366,7 @@ pub struct PpcQuickTimeState {
     pub movie_disposed: bool,
     pub movie_volume: i16,
     pub movie_time_base_flags: u32,
+    pub(crate) time_bases: time_base::TimeBases,
     /// Time scale the movie was created with; stored times use this scale.
     pub movie_creation_time_scale: u32,
     pub movie_matrix: Option<[u32; 9]>,
@@ -451,6 +456,7 @@ impl Default for PpcQuickTimeState {
             movie_disposed: false,
             movie_volume: 0x0100,
             movie_time_base_flags: 0,
+            time_bases: time_base::TimeBases::default(),
             movie_creation_time_scale: 600,
             movie_matrix: None,
             movie_display_clip: None,
@@ -511,7 +517,8 @@ pub(super) fn dispatch_quicktime_compatibility(
         PpcQuickTimeCompatibilityOperation::NewCallBack => {
             let time_base = cpu.gpr[3];
             let kind = cpu.gpr[4] as u16;
-            if time_base != PPC_QT_TIME_BASE || quicktime.movie_disposed
+            let movie_base = time_base == PPC_QT_TIME_BASE && !quicktime.movie_disposed;
+            if !(movie_base || quicktime.time_bases.contains(time_base))
                 || !(1..=5).contains(&(kind & 0x3fff)) {
                 ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
                 return PpcImportAction::Return(0);
@@ -1328,6 +1335,10 @@ pub(super) fn dispatch_quicktime_compatibility(
                 let _ = ppc_qt_record_error(quicktime, -2010); // invalidMovie
             }
             PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::TimeBase(_)
+        | PpcQuickTimeCompatibilityOperation::DrawPictureFile => {
+            unreachable!("time base and picture file operations dispatch before compatibility state")
         }
         PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags => {
             if cpu.gpr[3] == PPC_QT_TIME_BASE {
@@ -2399,6 +2410,19 @@ fn ppc_qt_movie_sample_description(data: &[u8], track_index: usize, index: u32) 
         offset = track_end;
     }
     None
+}
+
+/// Data-fork bytes of the open file `ref_num`, as DrawPictureFile reads them.
+pub(crate) fn ppc_qt_open_file_data(
+    files: &[PpcFileRecord],
+    vfs_files: &[PpcVfsFileRecord],
+    ref_num: i16,
+) -> Option<Vec<u8>> {
+    let open_file = files.iter().find(|file| file.ref_num == ref_num)?;
+    let file = vfs_files
+        .iter()
+        .find(|file| file.path.eq_ignore_ascii_case(&open_file.path))?;
+    Some(file.data.as_ref().to_vec())
 }
 
 fn ppc_qt_movie_data_from_open_fork(

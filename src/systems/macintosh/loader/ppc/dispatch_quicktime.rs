@@ -530,6 +530,25 @@ fn finish_quicktime_callbacks(
     deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame)
 }
 
+/// Completes an import that returns `result`, first entering any QTCallBack
+/// procedures that became due (for application-created time bases).
+pub(super) fn deliver_ready_callbacks(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    result: u32,
+) -> PpcImportAction {
+    let frame = quicktime::callbacks::DeliveryFrame {
+        import_pc: cpu.pc,
+        final_pc: cpu.lr,
+        restore_rtoc: cpu.gpr[2],
+        result,
+        dispose_movie: false,
+    };
+    deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame)
+}
+
 fn deliver_quicktime_callbacks(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
