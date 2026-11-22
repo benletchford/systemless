@@ -2036,6 +2036,10 @@ pub struct TrapDispatcher {
     /// stream. The two-instruction guest stub preserves native trap chaining.
     pub(crate) system_task_wne_stub: u32,
     pub(crate) system_task_wne_returns: Vec<u32>,
+    /// Guest stub `_MoveWindow; RTS` that DragWindow enters when the
+    /// application has patched MoveWindow, so the patch sees the move as
+    /// the ROM's `_MoveWindow` call would deliver it.
+    pub(crate) drag_window_move_stub: u32,
     /// Extra instruction-budget units reported by HLE traps that completed
     /// sizeable manager work inside Rust rather than through guest 68k code.
     pub(crate) pending_hle_tick_cost: i32,
@@ -4127,6 +4131,7 @@ impl TrapDispatcher {
             pending_wait_next_event_return: None,
             system_task_wne_stub: 0,
             system_task_wne_returns: Vec::new(),
+            drag_window_move_stub: 0,
             pending_hle_tick_cost: 0,
             yield_for_ui: false,
             pending_delay_ticks: 0,

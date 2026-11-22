@@ -7795,6 +7795,85 @@ fn dragwindow_moves_window_to_release_delta_inside_boundsrect() {
     );
 }
 
+// ROM DragWindow ends with `_MoveWindow` through the trap table
+// (WindowMgr.a). Deliverance draws straight to the screen and patches
+// MoveWindow to follow its window, so the release must enter that patch
+// with a MoveWindow frame instead of moving the window in Rust.
+#[test]
+fn dragwindow_release_calls_application_move_window_patch() {
+    use crate::trap::dispatch::TrapTableProfile;
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040)
+        .unwrap();
+    let patch = bus.alloc(2);
+    bus.write_word(patch, 0x4E75); // RTS
+    disp.install_trap_address(&mut bus, 0xA91B, patch).unwrap();
+
+    let window_addr: u32 = 0x300000;
+    setup_window_with_regions(&mut bus, window_addr, 0, 0, 100, 200);
+    bus.write_word(window_addr + 6, 0); // GrafPort
+    bus.write_word(window_addr + 8, (-40i16) as u16);
+    bus.write_word(window_addr + 10, (-20i16) as u16);
+    bus.write_word(window_addr + 12, 560);
+    bus.write_word(window_addr + 14, 780);
+    bus.write_byte(window_addr + 110, 0xFF);
+    disp.window_list.replace(vec![window_addr]);
+    disp.front_window = window_addr;
+    disp.window_bounds = (40, 20, 140, 220);
+
+    let bounds_rect_ptr = 0x320000;
+    bus.write_word(bounds_rect_ptr, 0);
+    bus.write_word(bounds_rect_ptr + 2, 0);
+    bus.write_word(bounds_rect_ptr + 4, 400);
+    bus.write_word(bounds_rect_ptr + 6, 600);
+
+    disp.push_mouse_down(50, 30);
+    let continuation = 0x0010_0002;
+    let sp = TEST_SP - 12;
+    cpu.write_reg(Register::A7, sp);
+    cpu.write_reg(Register::PC, continuation);
+    bus.write_long(sp, bounds_rect_ptr);
+    bus.write_long(sp + 4, 0x0032_001E); // startPt v=50, h=30
+    bus.write_long(sp + 8, window_addr);
+    dispatch(&mut disp, 0x125, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.window_tracking.is_some());
+
+    disp.set_mouse_position(70, 80);
+    disp.push_mouse_up(70, 80);
+    dispatch(&mut disp, 0x125, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert!(disp.window_tracking.is_none());
+    let stub = disp.drag_window_move_stub;
+    assert_ne!(stub, 0);
+    assert_eq!(bus.read_word(stub), 0xA91B);
+    assert_eq!(bus.read_word(stub + 2), 0x4E75);
+    assert_eq!(cpu.read_reg(Register::PC), stub);
+    let move_sp = cpu.read_reg(Register::A7);
+    assert_eq!(move_sp, sp - 2);
+    assert_eq!(bus.read_word(move_sp), 0x0100, "front = TRUE");
+    assert_eq!(bus.read_word(move_sp + 2) as i16, 60, "vGlobal");
+    assert_eq!(bus.read_word(move_sp + 4) as i16, 70, "hGlobal");
+    assert_eq!(bus.read_long(move_sp + 6), window_addr);
+    assert_eq!(bus.read_long(move_sp + 10), continuation);
+    assert_eq!(
+        bus.read_word(window_addr + 8) as i16,
+        -40,
+        "the patch, not the HLE drag, performs the move"
+    );
+
+    // The stub's `_MoveWindow` enters the application patch.
+    cpu.write_reg(Register::PC, stub + 2);
+    disp.dispatch(0xA91B, &mut cpu, &mut bus).unwrap();
+    assert_eq!(cpu.read_reg(Register::PC), patch);
+    assert_eq!(bus.read_long(cpu.read_reg(Register::A7)), stub + 2);
+    // The patch pops its 10-byte frame; the stub's RTS returns to the
+    // DragWindow caller with the original 12-byte frame consumed.
+    assert_eq!(move_sp + 10 + 4, TEST_SP);
+}
+
 // QuickTime's DragAlignedWindow (ImageCompressionDispatch $AAA3,
 // selector $004E) drags like DragWindow and then aligns the window to the
 // screen grid. Warcraft calls it when the player drags its main window.
