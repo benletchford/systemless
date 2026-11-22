@@ -7647,6 +7647,163 @@ fn draw_picture_reads_guest_get_pic_proc_until_end_without_overreading() {
     );
 }
 
+/// Version 1 picture with one indexed 8-bit PackBitsRect (rowBytes < 8, so
+/// unpacked) and an optional extra operation before EndOfPicture. The frame
+/// is (0,0,2,4); pixels are `[1,2,3,0, 3,2,1,0]`.
+fn indexed_bits_picture(extra: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0, 0, 0, 0, 0, 0, 0, 2, 0, 4, 0x11, 1, 0x98];
+    let mut pm = [0u8; 46];
+    pm[0..2].copy_from_slice(&0x8004u16.to_be_bytes());
+    pm[6..8].copy_from_slice(&2u16.to_be_bytes());
+    pm[8..10].copy_from_slice(&4u16.to_be_bytes());
+    pm[28..30].copy_from_slice(&8u16.to_be_bytes());
+    pm[30..32].copy_from_slice(&1u16.to_be_bytes());
+    pm[32..34].copy_from_slice(&8u16.to_be_bytes());
+    bytes.extend_from_slice(&pm);
+    bytes.extend_from_slice(&[
+        0, 0, 0, 77, 0x80, 0, 0, 3, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 1, 0x11, 0x11,
+        0x22, 0x22, 0x33, 0x33, 0, 2, 0x44, 0x44, 0x55, 0x55, 0x66, 0x66, 0, 3, 0x77, 0x77, 0x88,
+        0x88, 0x99, 0x99,
+    ]);
+    let source_rect = [0, 0, 0, 0, 0, 2, 0, 4];
+    bytes.extend_from_slice(&source_rect);
+    bytes.extend_from_slice(&source_rect);
+    bytes.extend_from_slice(&[0, 0]); // srcCopy
+    bytes.extend_from_slice(&[1, 2, 3, 0, 3, 2, 1, 0]);
+    bytes.extend_from_slice(extra);
+    bytes.push(0xff);
+    bytes
+}
+
+/// Install a PowerPC bitsProc that records its arguments and what they point
+/// to at its rtoc, counts its calls at rtoc+52 and draws nothing.
+fn install_recording_bits_proc(loaded: &mut PpcLoadedApp, procs: u32) -> u32 {
+    let descriptor = procs + 0x1000;
+    let rtoc = procs + 0x2000;
+    super::mixed_mode::install_test_powerpc_callback(
+        loaded,
+        descriptor,
+        descriptor + 64,
+        procs + 0x3000,
+        rtoc,
+        0xefc0, // bitsProc: four longs and a short, Pascal
+        &[
+            0x9062_0000, // stw r3,0(r2): srcBits
+            0x9082_0004, // stw r4,4(r2): srcRect
+            0x90a2_0008, // stw r5,8(r2): dstRect
+            0x90c2_000c, // stw r6,12(r2): mode
+            0x90e2_0010, // stw r7,16(r2): maskRgn
+            0x8103_0000, // lwz r8,0(r3): baseAddr
+            0x8128_0000, // lwz r9,0(r8)
+            0x9122_0014, // stw r9,20(r2)
+            0x8128_0004, // lwz r9,4(r8)
+            0x9122_0018, // stw r9,24(r2)
+            0x8143_002a, // lwz r10,42(r3): pmTable
+            0x814a_0000, // lwz r10,0(r10)
+            0x816a_0000, // lwz r11,0(r10): ctSeed
+            0x9162_001c, // stw r11,28(r2)
+            0x816a_0010, // lwz r11,16(r10): entry 1 value and red
+            0x9162_0020, // stw r11,32(r2)
+            0x8184_0000, // lwz r12,0(r4)
+            0x9182_0024, // stw r12,36(r2)
+            0x8184_0004, // lwz r12,4(r4)
+            0x9182_0028, // stw r12,40(r2)
+            0x8185_0000, // lwz r12,0(r5)
+            0x9182_002c, // stw r12,44(r2)
+            0x8185_0004, // lwz r12,4(r5)
+            0x9182_0030, // stw r12,48(r2)
+            0x8182_0034, // lwz r12,52(r2)
+            0x398c_0001, // addi r12,r12,1
+            0x9182_0034, // stw r12,52(r2)
+            0x4e80_0020, // blr
+        ],
+    );
+    loaded.memory.write_u32_be(procs + 32, descriptor).unwrap();
+    rtoc
+}
+
+fn run_draw_picture_with_bits_proc(picture: &[u8]) -> (PpcLoadedApp, u32, PpcFrontBuffer) {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawPicture")).unwrap();
+    let procs = 0x1800_0000;
+    loaded.memory.add_region(procs, vec![0; 0x1000]);
+    let rtoc = install_recording_bits_proc(&mut loaded, procs);
+    let handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        picture,
+    );
+    assert_ne!(handle, 0);
+    let port = *loaded.current_gworld;
+    loaded.memory.write_u32_be(port + 104, procs).unwrap();
+    ppc_write_rect(&mut loaded.memory, procs + 0x100, 10, 20, 14, 28).unwrap();
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, surface.front_buffer, (20, 10), 0x42);
+    loaded.cpu.gpr[3] = handle;
+    loaded.cpu.gpr[4] = procs + 0x100;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawPicture;
+    let probe = loaded.run_with_hle_imports(1_000_000);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(loaded.picture_callback_stack.is_empty());
+    assert_eq!(loaded.cpu.gpr[3], handle);
+    assert_eq!(loaded.cpu.gpr[4], procs + 0x100);
+    (loaded, rtoc, surface.front_buffer)
+}
+
+#[test]
+fn draw_picture_passes_indexed_picture_bits_to_a_powerpc_bits_proc() {
+    // Civilization II PPC installs a bitsProc for every picture and copies
+    // the indexed pixels into its own palette's offscreen worlds. DrawPicture
+    // must hand it the PixMap rather than colour-matching the pixels itself.
+    let (mut loaded, rtoc, front) = run_draw_picture_with_bits_proc(&indexed_bits_picture(&[]));
+    let word = |loaded: &mut PpcLoadedApp, offset: u32| loaded.memory.read_u32_be(rtoc + offset);
+    assert_eq!(word(&mut loaded, 52), Some(1), "one bitsProc call");
+    assert_eq!(word(&mut loaded, 12), Some(0), "srcCopy");
+    assert_eq!(word(&mut loaded, 16), Some(0), "no maskRgn");
+    // Source indices and the picture's own ColorTable, unmatched.
+    assert_eq!(word(&mut loaded, 20), Some(0x0102_0300));
+    assert_eq!(word(&mut loaded, 24), Some(0x0302_0100));
+    assert_eq!(word(&mut loaded, 28), Some(77), "ctSeed");
+    assert_eq!(word(&mut loaded, 32), Some(0x0001_1111), "entry 1");
+    // srcRect is the bitmap's own; dstRect is mapped from the (0,0,2,4)
+    // frame into DrawPicture's (10,20,14,28).
+    assert_eq!(word(&mut loaded, 36), Some(0));
+    assert_eq!(word(&mut loaded, 40), Some(0x0002_0004));
+    assert_eq!(word(&mut loaded, 44), Some(0x000a_0014));
+    assert_eq!(word(&mut loaded, 48), Some(0x000e_001c));
+    // The callback owns the drawing: nothing is rendered behind its back.
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 10)),
+        Some(0x42)
+    );
+    // The PixMap, its pixels and rects are released once the callback returns.
+    let pixmap = word(&mut loaded, 0).unwrap();
+    assert!(loaded
+        .process_memory_manager
+        .0
+        .borrow_mut()
+        .native_ptr_records()
+        .iter()
+        .all(|record| record.ptr != pixmap));
+}
+
+#[test]
+fn draw_picture_keeps_native_rendering_for_streams_the_bits_proc_path_cannot_replay() {
+    // A drawing operation beside the bitmap would need the full picture
+    // interpreter; the stream must not be partially executed.
+    let paint_rect = [0x31, 0, 0, 0, 0, 0, 1, 0, 1];
+    let (mut loaded, rtoc, front) =
+        run_draw_picture_with_bits_proc(&indexed_bits_picture(&paint_rect));
+    assert_eq!(loaded.memory.read_u32_be(rtoc + 52), Some(0));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 10)),
+        Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+    );
+}
+
 
 #[test]
 fn paintrect_not_pat_copy_paints_a_solid_pattern_in_the_background_color() {
