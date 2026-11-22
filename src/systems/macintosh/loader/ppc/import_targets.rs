@@ -1677,6 +1677,8 @@ pub(crate) fn dispatcher_target_for_import(
             | "QDFlushPortBuffer"
             | "qdflushportbuffer",
         ) => "CarbonLib",
+        // MLTE (MacTextEditor.h TXN* routines) is a CarbonLib export.
+        ("CarbonLib", symbol) if symbol.starts_with("TXN") => "CarbonLib",
         // The Carbon Printing Manager is a CarbonLib-only API.
         ("CarbonLib", symbol) if PPC_CARBON_PRINTING_SYMBOLS.contains(&symbol) => "CarbonLib",
         // CarbonLib re-exports the Open Transport client entry points.
@@ -2927,6 +2929,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PPCCloseSync") => PpcImportDispatcherTarget::PPCCloseSync,
         // Icon masks are not converted to regions.
         ("InterfaceLib", "IconIDToRgn") => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
+        // Multilingual Text Engine ships in CarbonLib, but TXNNewObject is not
+        // modelled, so no valid TXNObject can reach these entry points. Leaving
+        // the weak imports unbound made Jedi Knight II's event handler (which
+        // compares FindWindow's NIL result with its never-created MLTE console
+        // window) call TXNAdjustCursor and TXNClick through address zero. The
+        // void calls do nothing; the OSStatus calls reject it with paramErr.
+        (
+            "CarbonLib",
+            "TXNClick" | "TXNDraw" | "TXNFocus" | "TXNAdjustCursor" | "TXNGetSelection"
+            | "TXNGetViewRect",
+        ) => PpcImportDispatcherTarget::NoOpPreserve,
+        (
+            "CarbonLib",
+            "TXNSetData" | "TXNSetSelection" | "TXNSetTypeAttributes",
+        ) => PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
         ("InterfaceLib", "AEInstallSpecialHandler") => {
             PpcImportDispatcherTarget::AEInstallSpecialHandler
         }

@@ -342,3 +342,68 @@ fn list_manager_appends_to_cells_and_draws_one_cell() {
     loaded.cpu.gpr[4] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LDraw);
 }
+
+#[test]
+fn mlte_weak_imports_bind_instead_of_branching_to_address_zero() {
+    // Jedi Knight II's event handler compares FindWindow's NIL window with
+    // its never-created MLTE console window and calls TXNAdjustCursor and
+    // TXNClick. Left unbound, the weak imports branched to address zero when
+    // the menu was clicked.
+    for symbol in [
+        "TXNClick",
+        "TXNDraw",
+        "TXNFocus",
+        "TXNAdjustCursor",
+        "TXNGetSelection",
+        "TXNGetViewRect",
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            PpcImportDispatcherTarget::NoOpPreserve,
+            "{symbol}"
+        );
+    }
+    for symbol in ["TXNSetData", "TXNSetSelection", "TXNSetTypeAttributes"] {
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
+            "{symbol}"
+        );
+    }
+    // TXNNewObject is still unmodelled, so it stays unresolved and callers
+    // that weak-link it keep seeing MLTE objects as unavailable.
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "TXNNewObject"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![PefResolvedImport {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: "CarbonLib".into(),
+            symbol_name: "TXNClick".into(),
+            class: 2,
+            weak: true,
+        }],
+        1,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+    assert_ne!(bindings[0].address, 0);
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TXNClick")).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = PPC_DATA_BASE;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NoOpPreserve);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::ReturnError(PPC_PARAM_ERR),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+}
