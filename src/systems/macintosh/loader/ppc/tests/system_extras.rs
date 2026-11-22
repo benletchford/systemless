@@ -547,7 +547,13 @@ fn low_memory_driver_paging_and_printing_calls_report_the_runtime_state() {
         &mut loaded,
         PpcImportDispatcherTarget::LowMemoryAccessor(PpcLowMemoryAccessor::SetCursorNew),
     );
-    assert_eq!(loaded.memory.read_u8(addr::CRSR_NEW), Some(0xff));
+    // Cursor maintenance consumes CrsrNew and publishes MTemp as Mouse.
+    // Apple Technical Note DV520, "How the Macintosh mouse/cursor mechanism works".
+    assert_eq!(loaded.memory.read_u8(addr::CRSR_NEW), Some(0));
+    assert_eq!(
+        loaded.memory.read_u32_be(addr::MOUSE_LOC2),
+        loaded.memory.read_u32_be(addr::M_TEMP)
+    );
 
     run_test_import(&mut loaded, toolbox(PpcToolboxCompatOperation::WMgrPort));
     assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GWORLD);

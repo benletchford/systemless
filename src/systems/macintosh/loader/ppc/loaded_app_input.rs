@@ -4,6 +4,26 @@
 use super::*;
 use crate::memory::globals::addr;
 
+/// Apply a pending absolute cursor warp the way the cursor VBL task does.
+///
+/// Classic code moves the cursor by storing a point in RawMouse and MTemp and
+/// then copying CrsrCouple into CrsrNew; the next cursor maintenance pass
+/// publishes MTemp as RawMouse and Mouse and clears CrsrNew. Apple Technical
+/// Note DV520, "How the Macintosh mouse/cursor mechanism works"; Inside
+/// Macintosh Volume V (1986), V-365. Returns whether a warp was applied.
+pub(crate) fn ppc_apply_pending_cursor_warp(memory: &mut PpcSectionMem) -> bool {
+    if memory.read_u8(addr::CRSR_NEW).unwrap_or(0) == 0 {
+        return false;
+    }
+    let Some(point) = memory.read_u32_be(addr::M_TEMP) else {
+        return false;
+    };
+    let _ = memory.write_u32_be(addr::MOUSE_LOC, point);
+    let _ = memory.write_u32_be(addr::MOUSE_LOC2, point);
+    let _ = memory.write_u8(addr::CRSR_NEW, 0);
+    true
+}
+
 impl PpcLoadedApp {
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
         self.mirror_input_low_memory(input);
