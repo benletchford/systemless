@@ -513,20 +513,23 @@ pub(crate) fn ppc_write_rect(
     bottom: i16,
     right: i16,
 ) -> Option<()> {
-    memory.write_u16_be(rect_ptr, top as u16)?;
-    memory.write_u16_be(rect_ptr + 2, left as u16)?;
-    memory.write_u16_be(rect_ptr + 4, bottom as u16)?;
-    memory.write_u16_be(rect_ptr + 6, right as u16)?;
-    Some(())
+    let mut bytes = [0u8; 8];
+    bytes[0..2].copy_from_slice(&(top as u16).to_be_bytes());
+    bytes[2..4].copy_from_slice(&(left as u16).to_be_bytes());
+    bytes[4..6].copy_from_slice(&(bottom as u16).to_be_bytes());
+    bytes[6..8].copy_from_slice(&(right as u16).to_be_bytes());
+    memory.write_bytes(rect_ptr, &bytes)
 }
 
 pub(crate) fn ppc_read_rect(
     memory: &mut PpcSectionMem,
     rect_ptr: u32,
 ) -> Option<(i16, i16, i16, i16)> {
-    let top = memory.read_u16_be(rect_ptr)? as i16;
-    let left = memory.read_u16_be(rect_ptr + 2)? as i16;
-    let bottom = memory.read_u16_be(rect_ptr + 4)? as i16;
-    let right = memory.read_u16_be(rect_ptr + 6)? as i16;
+    let mut bytes = [0u8; 8];
+    memory.read_bytes_into(rect_ptr, &mut bytes)?;
+    let top = i16::from_be_bytes([bytes[0], bytes[1]]);
+    let left = i16::from_be_bytes([bytes[2], bytes[3]]);
+    let bottom = i16::from_be_bytes([bytes[4], bytes[5]]);
+    let right = i16::from_be_bytes([bytes[6], bytes[7]]);
     Some((top, left, bottom, right))
 }

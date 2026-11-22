@@ -15,9 +15,12 @@ pub(super) fn ppc_transform_port_point(
     }
     let pixmap_handle = memory.read_u32_be(port.checked_add(2)?)?;
     let pixmap = memory.read_u32_be(pixmap_handle)?;
-    let (pixel_top, pixel_left, _, _) = ppc_read_rect(memory, pixmap.checked_add(6)?)?;
-    let v = memory.read_u16_be(point_ptr)? as i16;
-    let h = memory.read_u16_be(point_ptr.checked_add(2)?)? as i16;
+    let origin = memory.read_u32_be(pixmap.checked_add(6)?)?;
+    let pixel_top = (origin >> 16) as i16;
+    let pixel_left = origin as i16;
+    let point = memory.read_u32_be(point_ptr)?;
+    let v = (point >> 16) as i16;
+    let h = point as i16;
     let (v, h) = if local_to_global {
         (v.wrapping_sub(pixel_top), h.wrapping_sub(pixel_left))
     } else {
@@ -27,8 +30,8 @@ pub(super) fn ppc_transform_port_point(
     // Inside Macintosh: Imaging With QuickDraw (1994), Basic QuickDraw
     // pp. 2-9–2-10 and 2-51–2-52: the boundary rectangle's upper-left
     // coordinates are subtracted from a local point to convert it to global.
-    memory.write_u16_be(point_ptr, v as u16)?;
-    memory.write_u16_be(point_ptr + 2, h as u16)?;
+    let packed = (u32::from(v as u16) << 16) | u32::from(h as u16);
+    memory.write_u32_be(point_ptr, packed)?;
     Some(())
 }
 
@@ -616,8 +619,13 @@ pub(super) fn ppc_write_rgn_bbox(
     right: i16,
 ) -> Option<()> {
     let ptr = ppc_rgn_ptr(memory, rgn_handle)?;
-    memory.write_u16_be(ptr, 10)?;
-    ppc_write_rect(memory, ptr + 2, top, left, bottom, right)
+    let mut bytes = [0u8; 10];
+    bytes[0..2].copy_from_slice(&10u16.to_be_bytes());
+    bytes[2..4].copy_from_slice(&(top as u16).to_be_bytes());
+    bytes[4..6].copy_from_slice(&(left as u16).to_be_bytes());
+    bytes[6..8].copy_from_slice(&(bottom as u16).to_be_bytes());
+    bytes[8..10].copy_from_slice(&(right as u16).to_be_bytes());
+    memory.write_bytes(ptr, &bytes)
 }
 
 pub(super) fn ppc_read_rgn_bbox(memory: &mut PpcSectionMem, rgn_handle: u32) -> Option<(i16, i16, i16, i16)> {
