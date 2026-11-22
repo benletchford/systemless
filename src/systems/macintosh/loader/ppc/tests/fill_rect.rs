@@ -1788,14 +1788,49 @@ fn fill_rect_and_solid_fill(
 }
 
 #[test]
-fn fill_rect_keeps_the_solid_fill_at_depths_the_core_declines() {
-    let pixels = initial_pixels();
-    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_RECT);
-    for depth in [1, 2, 4] {
-        let (filled, solid) = fill_rect_and_solid_fill(&fixture, depth, (-6, -4, 5, 30), GRAY);
-        assert_eq!(filled, solid, "{depth} bpp");
-        assert_ne!(filled, pixels, "{depth} bpp must still draw");
+fn fill_rect_draws_its_pattern_at_packed_depths() {
+    // Imaging With QuickDraw (1994), p. 3-67: FillRect draws the pattern's
+    // clear bits in the background colour at every depth. The packed depths
+    // the core declines used to take a solid foreground fill instead, so
+    // Bad Mojo's FillRect(qd.white) of a 1-bit occlusion mask blackened it
+    // and the roach was never drawn. The 8-bit fill is the oracle for which
+    // pixels take the fore and back indices; the rest stay untouched.
+    let width = (BOUNDS.3 - BOUNDS.1) as usize;
+    let zero = vec![0u8; usize::from(ROW_BYTES) * HEIGHT];
+    let ones = vec![0xFFu8; usize::from(ROW_BYTES) * HEIGHT];
+    let mut drew_back = 0;
+    for (vis, clip) in CLIPS {
+        for rect in RECTS {
+            for pattern in [[0x00; 8], [0xFF; 8], GRAY, DIAGONAL, MIXED] {
+                let oracle = fill_rect_ppc(&fixture(&zero, vis, clip), 8, rect, pattern);
+                for depth in [1u32, 2, 4] {
+                    let mask = (1u8 << depth) - 1;
+                    let filled = fill_rect_ppc(&fixture(&ones, vis, clip), depth, rect, pattern);
+                    for y in 0..HEIGHT {
+                        for x in 0..width {
+                            let row = y * usize::from(ROW_BYTES);
+                            let bit = x * depth as usize;
+                            let shift = 8 - depth as usize - bit % 8;
+                            let actual = (filled[row + bit / 8] >> shift) & mask;
+                            let expected = match oracle[row + x] {
+                                103 => 103 & mask,
+                                42 => {
+                                    drew_back += 1;
+                                    42 & mask
+                                }
+                                _ => mask,
+                            };
+                            assert_eq!(
+                                actual, expected,
+                                "{depth} bpp ({x},{y}) rect {rect:?} pattern {pattern:02x?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
+    assert!(drew_back > 0);
 }
 
 #[test]

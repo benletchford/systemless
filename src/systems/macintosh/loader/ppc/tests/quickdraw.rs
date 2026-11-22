@@ -1654,7 +1654,9 @@ fn hle_import_runner_does_not_cross_short_two_bit_pixmap_rows() {
         .with_mut(|current_gworld| *current_gworld = port);
     loaded.quickdraw_fore_indices.insert(port, 2);
     ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 8).unwrap();
+    loaded.memory.write_bytes(rect + 8, &[0xff; 8]).unwrap();
     loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = rect + 8;
 
     assert!(ppc_read_pixmap_bits(&mut loaded.memory, pixmap).is_none());
     run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
@@ -1728,8 +1730,9 @@ fn hle_import_runner_draws_representative_quickdraw_primitives_into_2bpp_gworld(
     // FillRect begins at odd x=5 and spans the remaining fields of its
     // byte without changing the adjacent x=4 field.
     ppc_write_rect(&mut loaded.memory, rect_ptr, 1, 5, 2, 8).unwrap();
+    loaded.memory.write_bytes(rect_ptr + 8, &[0xff; 8]).unwrap();
     loaded.cpu.gpr[3] = rect_ptr;
-    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[4] = rect_ptr + 8;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
     assert_eq!(loaded.memory.read_u8(pixels + ROW_BYTES), Some(0x55));
     assert_eq!(loaded.memory.read_u8(pixels + ROW_BYTES + 1), Some(0x6a));

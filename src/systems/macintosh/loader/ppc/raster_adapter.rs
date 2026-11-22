@@ -36,7 +36,19 @@ pub(crate) fn ppc_fill_rect(
     match ppc_fill_rect_with_core(memory, gworlds, current_gworld, rect, pattern, fore, back) {
         Some(DrawOutcome::Drawn { .. }) => true,
         Some(DrawOutcome::Declined) => {
-            ppc_paint_rect_bounds(memory, gworlds, current_gworld, rect, fore.0, fore.1)
+            // The core writes whole-byte pixels only. Packed pixels still take
+            // the pattern: the background colour where its bits are clear
+            // (Imaging With QuickDraw (1994), p. 3-67), so FillRect with the
+            // white pattern clears a 1-bit image instead of blackening it.
+            let packed = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)
+                .is_some_and(|surface| matches!(surface.front_buffer.depth, 1 | 2 | 4));
+            let (top, left, bottom, right) = rect;
+            if packed && top < bottom && left < right {
+                let rows = vec![vec![left, right]; (i32::from(bottom) - i32::from(top)) as usize];
+                ppc_fill_mono_rows(memory, gworlds, current_gworld, top, rows, pattern, fore, back)
+            } else {
+                ppc_paint_rect_bounds(memory, gworlds, current_gworld, rect, fore.0, fore.1)
+            }
         }
         None => false,
     }
