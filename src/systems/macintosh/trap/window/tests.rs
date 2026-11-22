@@ -11080,3 +11080,65 @@ fn main_document_window_bounds_skip_dialogs_floating_and_hidden_windows() {
     );
     assert_eq!(disp.main_document_window_structure_bounds(&bus), None);
 }
+
+#[test]
+fn centring_offset_moves_only_windows_that_stick_out_and_fit() {
+    use super::super::window::centring_offset;
+    let main = (23, 3, 424, 540);
+    // Fluffy's Adventure centres its Message window on the 800x600 screen.
+    assert_eq!(
+        centring_offset((147, 231, 346, 569), main),
+        Some((-23, -129))
+    );
+    assert_eq!(
+        centring_offset((100, 100, 200, 300), main),
+        None,
+        "already inside"
+    );
+    assert_eq!(
+        centring_offset((0, 0, 500, 300), main),
+        None,
+        "too tall to fit"
+    );
+}
+
+fn show_message_window_over_main(fit_game_window: bool) -> (i16, i16, i16, i16) {
+    let (mut disp, mut cpu, mut bus) = setup();
+    disp.fit_game_window = fit_game_window;
+    let message = 0x200040u32;
+    setup_full_window_with_regions(&mut bus, message, 166, 232, 344, 567);
+    bus.write_byte(
+        message + super::super::TrapDispatcher::WINDOW_VISIBLE_OFFSET,
+        0,
+    );
+    let main = make_structure_window(&mut bus, 8, true, (23, 3, 424, 540));
+    disp.window_list.replace(vec![message, main]);
+    disp.front_window = message;
+
+    let sp = TEST_SP - 4;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, message);
+    assert!(dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+        .unwrap()
+        .is_ok());
+    assert!(disp.window_visible(&bus, message));
+    disp.window_structure_rect(&bus, message).unwrap()
+}
+
+#[test]
+fn show_window_centres_a_sticking_out_window_over_the_main_window_when_fitting() {
+    let (top, left, bottom, right) = show_message_window_over_main(true);
+    let (main_top, main_left, main_bottom, main_right) = (23, 3, 424, 540);
+    assert!(
+        top >= main_top && left >= main_left && bottom <= main_bottom && right <= main_right,
+        "the shown window ({top},{left},{bottom},{right}) must lie inside the main window"
+    );
+    assert!(((top + bottom) / 2 - (main_top + main_bottom) / 2).abs() <= 1);
+    assert!(((left + right) / 2 - (main_left + main_right) / 2).abs() <= 1);
+
+    let (_, _, _, unfitted_right) = show_message_window_over_main(false);
+    assert!(
+        unfitted_right > main_right,
+        "without --fit-game-window ShowWindow leaves the window where the game put it"
+    );
+}

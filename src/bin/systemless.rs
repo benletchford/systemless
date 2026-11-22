@@ -1743,6 +1743,9 @@ impl App {
     #[cfg(target_os = "macos")]
     fn enable_fit_game_window(&mut self) {
         self.fit_game_window = true;
+        if let Some(driver) = self.driver.as_mut() {
+            driver.fit_game_window = true;
+        }
         self.content_rect = None;
         self.content_rect_screen_mode = None;
         self.window_sized_content_rect = None;
@@ -3783,6 +3786,7 @@ fn run_gui(
         game_path: game_path.clone(),
         mounts,
         settled_frame_presentation,
+        fit_game_window,
         arrows_as_numpad,
         native_integrations,
         addressing_24_bit,

@@ -2326,6 +2326,10 @@ pub struct TrapDispatcher {
     pub(crate) external_host_overlay_rects: Vec<(i16, i16, i16, i16)>,
     /// Parsed dialog items keyed by dialog pointer, for GetDItem/ModalDialog
     pub dialog_items: FastHashMap<u32, Vec<DialogItem>>,
+    /// Desktop `--fit-game-window`: ShowWindow centres a window that would
+    /// stick out of the game's main window over that window, so it draws
+    /// over the game instead of widening the host view.
+    pub fit_game_window: bool,
     pub(crate) dialog_default_outlines: FastHashSet<u32>,
     /// Original rects for items hidden via HideDialogItem,
     /// keyed by (dialog_ptr, 1-based item_no). Restored by ShowDialogItem.
@@ -4292,6 +4296,7 @@ impl TrapDispatcher {
             standard_file_get_tracking: None,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),
+            fit_game_window: false,
             dialog_default_outlines: HashSet::default(),
             hidden_dialog_item_rects: HashMap::default(),
             dialog_item_handles: HashMap::default(),

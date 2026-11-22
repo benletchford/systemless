@@ -2342,6 +2342,44 @@ impl super::TrapDispatcher {
         true
     }
 
+    /// Desktop `--fit-game-window`: move a hidden window that is about to be
+    /// shown, and would stick out of the game's main window, to the centre of
+    /// that window. Games often centre their messages on the screen while
+    /// their main window sits elsewhere, so the message would otherwise
+    /// widen the host view. A window larger than the main window is left
+    /// where it is; the view still widens to keep it reachable.
+    fn centre_over_main_window_before_show<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        window: u32,
+    ) {
+        if !self.fit_game_window || window == 0 || self.window_visible(bus, window) {
+            return;
+        }
+        let Some(main) = self.main_document_window_structure_bounds(bus) else {
+            return;
+        };
+        let Some(structure) = self.window_structure_rect(bus, window) else {
+            return;
+        };
+        let Some((dv, dh)) = centring_offset(structure, main) else {
+            return;
+        };
+        let (top, left, _, _) = self.window_global_port_rect(bus, window);
+        eprintln!(
+            "[WINDOW] fit-game-window: centring window ${window:08X} {structure:?} over main window {main:?}"
+        );
+        self.move_window_to_global(
+            bus,
+            cpu,
+            window,
+            left.saturating_add(dh),
+            top.saturating_add(dv),
+            false,
+        );
+    }
+
     pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4915,6 +4953,9 @@ impl super::TrapDispatcher {
                     // The Window Manager derives its content region from the
                     // current port rectangle when revealing it (IM:I I-284, I-289).
                     self.resync_window_geometry_from_port_rect(bus, the_window);
+                    if !was_visible {
+                        self.centre_over_main_window_before_show(bus, cpu, the_window);
+                    }
                     bus.write_byte(
                         the_window + Self::WINDOW_VISIBLE_OFFSET,
                         Self::WINDOW_VISIBLE_TRUE,
@@ -6813,3 +6854,25 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests;
+
+/// Offset (vertical, horizontal) that centres `structure` over `main`, both
+/// (top, left, bottom, right), or `None` when `structure` already lies inside
+/// `main` or is too large to fit inside it.
+pub(crate) fn centring_offset(
+    structure: (i16, i16, i16, i16),
+    main: (i16, i16, i16, i16),
+) -> Option<(i16, i16)> {
+    let (top, left, bottom, right) = structure;
+    let (main_top, main_left, main_bottom, main_right) = main;
+    let inside =
+        top >= main_top && left >= main_left && bottom <= main_bottom && right <= main_right;
+    let fits = bottom - top <= main_bottom - main_top && right - left <= main_right - main_left;
+    if inside || !fits {
+        return None;
+    }
+    let centre = |low: i16, high: i16| (i32::from(low) + i32::from(high)) / 2;
+    Some((
+        (centre(main_top, main_bottom) - centre(top, bottom)) as i16,
+        (centre(main_left, main_right) - centre(left, right)) as i16,
+    ))
+}
