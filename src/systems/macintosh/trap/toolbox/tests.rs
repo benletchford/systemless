@@ -12826,9 +12826,12 @@ fn standard_get_file_gui_empty_directory_uses_complete_classic_model() {
     assert!(items
         .iter()
         .any(|item| item.text == "Open" && item.item_type == 0x84));
-    assert!(items
-        .iter()
-        .any(|item| item.rect == STANDARD_FILE_GET_VOLUME_RECT));
+    assert!(items.iter().any(|item| item.rect
+        == TrapDispatcher::standard_file_volume_popup_rect(
+            STANDARD_FILE_GET_VOLUME_RECT,
+            STANDARD_FILE_GET_LIST_RECT,
+            super::super::dispatch::BOOT_VOLUME_NAME,
+        )));
     assert!(items
         .iter()
         .any(|item| item.rect == STANDARD_FILE_GET_LIST_RECT));
@@ -13369,6 +13372,87 @@ fn standard_put_click_places_the_insertion_point_and_drag_selects() {
         "the drag's mouse-up is taken"
     );
     assert!(disp.is_standard_file_put_tracking());
+}
+
+// The folder pop-up fits the folder name and stays centred over the file
+// list, as on Mac OS 8.1; a fixed 74-pixel box cut "Macintosh" to "Maci...".
+#[test]
+fn standard_file_folder_popup_fits_its_name_over_the_list() {
+    let popup = |label: &str| {
+        TrapDispatcher::standard_file_volume_popup_rect(
+            STANDARD_FILE_GET_VOLUME_RECT,
+            STANDARD_FILE_GET_LIST_RECT,
+            label,
+        )
+    };
+    let list = STANDARD_FILE_GET_LIST_RECT;
+    let centre = (list.1 + list.3) / 2;
+    for label in ["Macintosh", "MacintoshHD", "Standard File Fixtures"] {
+        let (top, left, bottom, right) = popup(label);
+        assert_eq!((top, bottom), (12, 31));
+        // The label fits between the 15-pixel inset and the 19-pixel arrow,
+        // so it is drawn whole.
+        assert!(right - 19 - (left + 15) >= TrapDispatcher::fb_measure_string(label, 0, 12));
+        assert!(
+            ((left + right) / 2 - centre).abs() <= 1,
+            "{label}: centred over the list"
+        );
+    }
+    // The pop-up names the current folder alone; the volume is labelled
+    // separately beside it.
+    assert_eq!(
+        TrapDispatcher::standard_file_folder_part("MacintoshHD: Games"),
+        "Games"
+    );
+    assert_eq!(
+        TrapDispatcher::standard_file_volume_part("MacintoshHD: Games"),
+        "MacintoshHD"
+    );
+    assert_eq!(
+        TrapDispatcher::standard_file_folder_part("MacintoshHD"),
+        "MacintoshHD"
+    );
+    assert_eq!(
+        TrapDispatcher::standard_file_volume_part("MacintoshHD"),
+        "MacintoshHD"
+    );
+    // A short name keeps the standard minimum box; a long one is limited to
+    // the list's width.
+    assert_eq!(popup("A"), STANDARD_FILE_GET_VOLUME_RECT);
+    let (_, left, _, right) = popup(&"W".repeat(40));
+    assert_eq!((left, right), (list.1, list.3));
+
+    // The drawn Save dialog frames the wider box.
+    let (mut disp, mut cpu, mut bus) = setup();
+    let base = bus.alloc(64 * 342);
+    disp.set_screen_mode_for_test(base, 64, 512, 342, 1);
+    disp.yield_for_ui = true;
+    bus.write_word(TEST_SP, 0x0005); // StandardPutFile selector
+    bus.write_long(TEST_SP + 2, 0x3201c0);
+    disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let tracking = disp.standard_file_put_tracking.take().unwrap();
+    disp.draw_standard_file_put_dialog(&mut bus, &tracking);
+    let (_, _, label, _) = disp.standard_file_put_directory_location(tracking.current_dir_id);
+    let (ptop, pleft, _, pright) = TrapDispatcher::standard_file_volume_popup_rect(
+        super::STANDARD_FILE_PUT_VOLUME_RECT,
+        STANDARD_FILE_PUT_LIST_RECT,
+        TrapDispatcher::standard_file_folder_part(&label),
+    );
+    assert!(
+        pright > super::STANDARD_FILE_PUT_VOLUME_RECT.3,
+        "{label:?} widens the box"
+    );
+    let ink = |x: i16, y: i16| {
+        bus.read_byte(base + y as u32 * 64 + x as u32 / 8) & (0x80 >> (x % 8)) != 0
+    };
+    let (top, left, _, _) = tracking.bounds;
+    let border = top + ptop;
+    assert!(
+        (left + pleft..left + pright).all(|x| ink(x, border)),
+        "the pop-up's top edge spans its whole width"
+    );
 }
 
 // The insertion point of a name wider than the field isn't drawn past the
