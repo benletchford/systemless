@@ -684,6 +684,10 @@ fn load_pef_application_with_optional_disk_fragment(
     let _ = memory.write_u16_be(crate::memory::globals::addr::SCR_H_RES, 72);
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
+    // The cursor follows the mouse: CrsrCouple is nonzero, so the classic
+    // warp idiom `CrsrNew = CrsrCouple` requests a cursor update. Apple
+    // Technical Note DV520, "How the Macintosh mouse/cursor mechanism works".
+    let _ = memory.write_u8(crate::memory::globals::addr::CRSR_COUPLE, 1);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
     // low-memory accessors preserve this flag around window creation.
     let _ = memory.write_u16_be(crate::memory::globals::addr::PAINT_WHITE, 1);

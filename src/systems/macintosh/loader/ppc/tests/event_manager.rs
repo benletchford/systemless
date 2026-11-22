@@ -1272,6 +1272,56 @@ fn get_mouse_returns_current_port_local_coordinates() {
 }
 
 #[test]
+fn get_mouse_publishes_crsr_new_raw_mouse_warp_across_slices() {
+    use crate::memory::globals::addr;
+
+    // Virtual Pool recentres its mouse-look cursor with the classic idiom:
+    // RawMouse = MTemp = centre, then CrsrNew = CrsrCouple. Apple Technical
+    // Note DV520, "How the Macintosh mouse/cursor mechanism works".
+    let mut code = Vec::new();
+    for word in [
+        d_form_u(15, 7, 0, 300),
+        d_form_u(24, 7, 7, 400),
+        d_form_u(36, 7, 0, addr::MOUSE_LOC as u16),
+        d_form_u(36, 7, 0, addr::M_TEMP as u16),
+        d_form_u(34, 8, 0, addr::CRSR_COUPLE as u16),
+        d_form_u(38, 8, 0, addr::CRSR_NEW as u16),
+    ] {
+        code.extend_from_slice(&word.to_be_bytes());
+    }
+    code.extend_from_slice(&synthetic_code());
+    let pef = synthetic_pef_with_loader_code_and_data(
+        synthetic_loader(b"InterfaceLib", b"GetMouse"),
+        &code,
+        &[0; 8],
+    );
+    let mut loaded = load_pef_application(&pef).unwrap();
+    assert_ne!(loaded.memory.read_u8(addr::CRSR_COUPLE), Some(0));
+    let point = PPC_DATA_BASE + 0x1120;
+    loaded.memory.add_region(point, vec![0; 4]);
+    ppc_write_rect(&mut loaded.memory, PPC_MAIN_PIXMAP + 6, 0, 0, 600, 800).unwrap();
+    loaded.set_input_snapshot(PpcInputSnapshot {
+        mouse_v: 290,
+        mouse_h: 397,
+        ..PpcInputSnapshot::default()
+    });
+    loaded.cpu.gpr[3] = point;
+
+    let first = loaded.run_with_hle_imports(64);
+
+    assert_eq!(first.handled_import_count, 1);
+    assert_eq!(loaded.memory.read_u16_be(point), Some(300));
+    assert_eq!(loaded.memory.read_u16_be(point + 2), Some(400));
+    assert_eq!(loaded.memory.read_u8(addr::CRSR_NEW), Some(0));
+    assert_eq!(loaded.process_input.mouse_state_snapshot().0, (300, 400));
+
+    // The next slice mirrors the warped position, not the stale host point,
+    // so a resting mouse reads no further motion from RawMouse.
+    let _ = loaded.run_with_hle_imports(0);
+    assert_eq!(loaded.memory.read_u32_be(addr::MOUSE_LOC), Some((300 << 16) | 400));
+}
+
+#[test]
 fn get_mouse_honors_guest_low_memory_warp_across_slices() {
     let mut code = Vec::new();
     for word in [

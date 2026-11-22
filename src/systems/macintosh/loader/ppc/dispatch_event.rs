@@ -1564,6 +1564,7 @@ pub(super) fn dispatch_event_import(
         }
         PpcImportDispatcherTarget::GetMouse => {
             let point_ptr = cpu.gpr[3];
+            ppc_apply_pending_cursor_warp(memory);
             if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
                 // The classic Mouse global is authoritative: guest code may
                 // recenter it without generating a physical mouse event.

@@ -297,6 +297,7 @@ pub(crate) use pef_loader::{
 };
 mod loaded_app_gateways;
 mod loaded_app_input;
+use loaded_app_input::ppc_apply_pending_cursor_warp;
 mod loaded_app_memory;
 mod loaded_app_menu;
 mod loaded_app_mixed_mode;

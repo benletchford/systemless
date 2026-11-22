@@ -1328,6 +1328,7 @@ impl PpcLoadedApp {
                         }
                         PpcImportDispatcherTarget::GetMouse => {
                             let point_ptr = cpu.gpr[3];
+                            ppc_apply_pending_cursor_warp(memory);
                             let mouse_point =
                                 memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2);
                             if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
@@ -3054,6 +3055,9 @@ impl PpcLoadedApp {
 
         // A guest can update Mouse immediately before a slice ends, without
         // calling GetMouse. Publish that warp before the next input mirror.
+        // A RawMouse/MTemp warp flagged through CrsrNew reaches Mouse here,
+        // as the cursor VBL task would publish it.
+        ppc_apply_pending_cursor_warp(&mut self.memory);
         if let Some(point) = self.memory.read_u32_be(crate::memory::globals::addr::MOUSE_LOC2) {
             let position = ((point >> 16) as i16, point as i16);
             if position != (input.mouse_v, input.mouse_h) {
