@@ -3193,9 +3193,18 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// ShowWindow of a hidden window that becomes frontmost selects it: ROM
+    /// ShowWindow calls SelectWindow, which unhighlights the previously
+    /// active window and posts its deactivate event before activating the
+    /// new one (boot3 WindowMgr.a ShowWindow/SelectWindow; IM:I I-285).
     fn activate_shown_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32) {
         if the_window == 0 {
             return;
+        }
+        let old_front = self.front_window;
+        if old_front != 0 && old_front != the_window {
+            bus.write_byte(old_front + Self::WINDOW_HILITED_OFFSET, 0x00);
+            self.queue_window_activation_event(bus, old_front, false);
         }
         self.front_window = the_window;
         self.sync_cached_front_window_render_state(bus);
