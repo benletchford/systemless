@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.127.3](https://github.com/benletchford/systemless/compare/v0.127.2...v0.127.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **pict:** apply PnMode and OpColor to 68k picture frame and paint shapes ([#6689](https://github.com/benletchford/systemless/issues/6689)) ([304e583](https://github.com/benletchford/systemless/commit/304e583e90c788b32b19bd689d1bf8428f4376c9))
+* **ppc:** clip CopyBits into the current port to its visRgn and clipRgn ([#6682](https://github.com/benletchford/systemless/issues/6682)) ([a8e36cb](https://github.com/benletchford/systemless/commit/a8e36cb367677e96a51d99c841d1a1e84ebfeec8))
+* **ppc:** draw FillRect patterns into 1-, 2- and 4-bit pixel images ([#6683](https://github.com/benletchford/systemless/issues/6683)) ([df48d56](https://github.com/benletchford/systemless/commit/df48d5682bedeb36a956880f4834131534e163c7))
+* **ppc:** keep the initial control value outside its range like NewControl ([#6687](https://github.com/benletchford/systemless/issues/6687)) ([928cb21](https://github.com/benletchford/systemless/commit/928cb21970f86ba70829a2b7c454a7daa4e6df80))
+* **ppc:** publish CrsrNew cursor warps from RawMouse and MTemp ([#6693](https://github.com/benletchford/systemless/issues/6693)) ([8562055](https://github.com/benletchford/systemless/commit/8562055250da651702a8044c83b50c04edc6a00c))
+* **standard-file:** show the whole folder name in the 68k folder pop-up ([#6677](https://github.com/benletchford/systemless/issues/6677)) ([13d6a16](https://github.com/benletchford/systemless/commit/13d6a1655918e4ede9e39fc9003c52859ad6cb81))
+* **window-manager:** deactivate the previous front window when ShowWindow brings one to the front on 68k ([#6679](https://github.com/benletchford/systemless/issues/6679)) ([f075f60](https://github.com/benletchford/systemless/commit/f075f60ec4bbf6c4225dd1cf1135c385dec47813))
+* **window:** route 68k DragWindow moves through an application MoveWindow patch ([#6691](https://github.com/benletchford/systemless/issues/6691)) ([af4102e](https://github.com/benletchford/systemless/commit/af4102ecc1ced887210cb08895b77c037f8d74bf))
+
 ## [0.127.2](https://github.com/benletchford/systemless/compare/v0.127.1...v0.127.2) (2026-11-22)
 
 
