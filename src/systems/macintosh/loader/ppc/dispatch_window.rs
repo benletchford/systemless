@@ -2117,7 +2117,7 @@ pub(super) fn ppc_new_cwindow_with_storage(
         port,
         crate::window_manager::window_class_for_legacy_proc(proc_id),
     );
-    if visible && matches!(proc_id, 1 | 3) {
+    if visible && matches!(proc_id, 1..=3) {
         if proc_id == 3 {
             // Alternate dialogs own an opaque content surface, even when the
             // surrounding desktop is the black kiosk stage. Initialize it once;
@@ -2351,7 +2351,10 @@ pub(super) fn ppc_draw_existing_window_frame(
         ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
-    } else if proc_id == 3 {
+    } else if matches!(proc_id, 2 | 3) {
+        // plainDBox draws a one-pixel frame just outside the content; the
+        // alternate dialog adds its drop shadow. Inside Macintosh Volume I
+        // (1985), p. I-273.
         if let Some(content) = ppc_window_global_content_bounds(memory, gworlds, window) {
             ppc_draw_retained_dialog_frame_chrome(
                 memory,
