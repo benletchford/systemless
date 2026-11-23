@@ -935,6 +935,8 @@ pub(crate) struct Presentation {
     /// Bumped by every change to an on-screen cell: its guest value, text
     /// flag, samples, ink or cached detail.
     screen_epoch: u64,
+    /// Bumped when an 8-bit palette update changes any retained text sample or ink RGB.
+    detail_palette_epoch: u64,
     /// Per screen row, per `SCREEN_TILE`-pixel column tile: the `screen_epoch`
     /// of the tile's last change. A rectangle whose tiles all predate a mark
     /// holds exactly what it held at that mark.
@@ -3875,24 +3877,55 @@ impl MacMemoryBus {
             let mut guard = slot.as_mut().unwrap();
             let p = &mut *guard;
             if p.depth == 8 && p.palette != palette {
+                let changed_indices: [bool; 256] =
+                    std::array::from_fn(|i| p.palette[i] != palette[i]);
                 p.changed(true);
                 // Indexed pixels retain their CLUT indexes when the device's
                 // colors change (Imaging With QuickDraw, 1994, 4-5–4-6).
                 p.palette = palette;
-                // Plain image pixels are indexed until output; palette fades
-                // only need to recolor the retained native text samples here.
-                for (cell, &detail) in p.text_cells.iter().enumerate() {
-                    if !detail {
-                        continue;
+                if p.text_cell_count != 0 {
+                    // Plain image pixels are indexed until output; palette fades
+                    // only need to recolor the retained native text samples here.
+                    let width = p.width as usize;
+                    let sample_count = (p.scale * p.scale) as usize;
+                    let mut detail_recolored = false;
+                    for (y, &row_count) in p.text_row_counts.iter().enumerate() {
+                        if row_count == 0 {
+                            continue;
+                        }
+                        let row_start = y * width;
+                        for (x, &detail) in p.text_cells[row_start..row_start + width]
+                            .iter()
+                            .enumerate()
+                        {
+                            if !detail {
+                                continue;
+                            }
+                            let samples = p.samples.get_mut(row_start + x);
+                            for (sample, (rgb, &index)) in
+                                samples.rgb.iter_mut().zip(&samples.indices).enumerate()
+                            {
+                                if changed_indices[index as usize] {
+                                    let next = palette[index as usize];
+                                    if sample < sample_count && *rgb != next {
+                                        detail_recolored = true;
+                                    }
+                                    *rgb = next;
+                                }
+                            }
+                        }
                     }
-                    let samples = p.samples.get_mut(cell);
-                    for (rgb, &index) in samples.rgb.iter_mut().zip(&samples.indices) {
-                        *rgb = palette[index as usize];
+                    p.samples.for_each_ink_mut(|tile, sample, ink| {
+                        let next = ink.rgb(&palette);
+                        if tile.rgb[sample] != next {
+                            tile.rgb[sample] = next;
+                            detail_recolored = true;
+                        }
+                    });
+                    if detail_recolored {
+                        p.detail_palette_epoch = p.detail_palette_epoch.wrapping_add(1);
                     }
                 }
-                p.samples.for_each_ink_mut(|tile, sample, ink| {
-                    tile.rgb[sample] = ink.rgb(&palette);
-                });
             }
         } else {
             // Drop the slot borrow before replacing its surface.
@@ -3908,6 +3941,83 @@ impl MacMemoryBus {
     /// Whether an outline presentation surface is available to a frontend.
     pub fn has_outline_presentation(&self) -> bool {
         self.presentation.is_some()
+    }
+
+    /// Copy `screen_mode` bytes from `ram_slice(base, length)` into `pixels`,
+    /// reusing unchanged rows when the active presentation surface covers `screen_mode`.
+    pub(crate) fn capture_packed_screen(
+        &self,
+        screen_mode: (u32, u32, u16, u16, u16),
+        length: u32,
+        pixels: &mut Vec<u8>,
+        previous_mark: &mut Option<ScreenMark>,
+    ) {
+        let source = self.ram_slice(screen_mode.0, length);
+        let (base, row_bytes, width, height, depth) = screen_mode;
+        let matching = self.presentation.as_ref().filter(|p| {
+            (p.base, p.row_bytes, p.logical_width(), p.height, p.depth)
+                == (base, row_bytes, u32::from(width), u32::from(height), depth)
+        });
+        if let Some(p) = matching {
+            let current = p.screen_mark();
+            if pixels.len() == length as usize {
+                if *previous_mark == Some(current) {
+                    #[cfg(debug_assertions)]
+                    Self::debug_assert_packed_rows_match(
+                        pixels,
+                        source,
+                        row_bytes as usize,
+                        p.width as usize,
+                        usize::from(height),
+                    );
+                    return;
+                }
+                if let Some(prev) =
+                    (*previous_mark).filter(|prev| prev.identity == current.identity)
+                {
+                    let stride = row_bytes as usize;
+                    for y in 0..usize::from(height) {
+                        if !p.screen_row_unchanged_since(prev, y) {
+                            let start = y * stride;
+                            let end = (start + stride).min(source.len());
+                            pixels[start..end].copy_from_slice(&source[start..end]);
+                        }
+                    }
+                    *previous_mark = Some(current);
+                    #[cfg(debug_assertions)]
+                    Self::debug_assert_packed_rows_match(
+                        pixels,
+                        source,
+                        stride,
+                        p.width as usize,
+                        usize::from(height),
+                    );
+                    return;
+                }
+            }
+            pixels.clear();
+            pixels.extend_from_slice(source);
+            *previous_mark = Some(current);
+            return;
+        }
+        pixels.clear();
+        pixels.extend_from_slice(source);
+        *previous_mark = None;
+    }
+
+    #[cfg(debug_assertions)]
+    fn debug_assert_packed_rows_match(
+        pixels: &[u8],
+        source: &[u8],
+        stride: usize,
+        visible_row_bytes: usize,
+        height: usize,
+    ) {
+        for y in 0..height {
+            let start = y * stride;
+            let end = (start + visible_row_bytes).min(source.len());
+            debug_assert_eq!(&pixels[start..end], &source[start..end], "row {y}");
+        }
     }
 
     /// Frames without visible retained text can use the ordinary framebuffer
@@ -4127,6 +4237,7 @@ impl MacMemoryBus {
             revision: 0,
             identity: next_presentation_identity(),
             screen_epoch: 0,
+            detail_palette_epoch: 0,
             tile_epochs: vec![0; screen_tiles_per_row(width.into()) * usize::from(height)],
             visible_image: VisibleImageStamp {
                 identity: std::rc::Rc::new(()),

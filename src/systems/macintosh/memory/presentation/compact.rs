@@ -163,16 +163,18 @@ pub struct CompactPresentationCache {
     frame: CompactPresentation,
     source: Option<super::VisibleImageStamp>,
     rows: Option<ExportedRows>,
+    previous_detail: Vec<u32>,
 }
 
 /// What the next export needs to rebuild only rows changed since `frame` was
-/// exported: the screen history point and palette it was built from, and
-/// which of its rows own detail tiles. Rows holding detail are always rebuilt
-/// because detail offsets are assigned in row order.
+/// exported: the screen history point, detail-palette epoch, and 8-bit palette
+/// it was built from, plus the `(start, len)` span in `frame.detail` owned by
+/// each row so unchanged detail rows can copy or retain their samples directly.
 struct ExportedRows {
     mark: ScreenMark,
+    detail_palette_epoch: u64,
     palette: [[u8; 3]; 256],
-    detail_rows: Vec<bool>,
+    detail_spans: Vec<(u32, u32)>,
 }
 
 impl CompactPresentationCache {
@@ -218,33 +220,101 @@ impl CompactPresentationCache {
             return Some(false);
         }
         self.source = None;
-        // Rows unchanged since the previous export keep their cells, provided
-        // that export came from this surface with the same geometry and colors.
+        let width = p.logical_width() as usize;
+        let height = p.height as usize;
         let previous = self.rows.take().filter(|rows| {
-            rows.palette == p.palette
+            rows.mark.identity == p.identity
                 && (self.frame.width, self.frame.height, self.frame.scale)
                     == (p.logical_width(), p.height, p.scale)
+                && self.frame.cells.len() == width * height
+                && rows.detail_spans.len() == height
         });
-        let (since, mut detail_rows) = match previous {
-            Some(rows) => (Some(rows.mark), rows.detail_rows),
-            None => (None, Vec::new()),
-        };
+
+        // Fast path for pure 8-bit palette animations where no screen cells or
+        // retained detail RGBs changed: keep `frame.detail` untouched and update
+        // only plain cells whose palette index changed.
+        if let Some(mut rows) = previous {
+            let changed_palette = (p.depth == 8 && rows.palette != p.palette)
+                .then(|| std::array::from_fn(|i| rows.palette[i] != p.palette[i]));
+            let detail_recolored =
+                p.depth == 8 && rows.detail_palette_epoch != p.detail_palette_epoch;
+            if rows.mark == p.screen_mark() && !detail_recolored {
+                let mut any_cell_changed = false;
+                if let Some(changed_mask) = &changed_palette {
+                    let packed: [u32; 256] = p.palette.map(|rgb| {
+                        (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
+                    });
+                    for y in 0..height {
+                        let row = y * p.width as usize;
+                        let values = &p.guest_values[row..row + width];
+                        let cells = &mut self.frame.cells[y * width..(y + 1) * width];
+                        for (dest, &val) in cells.iter_mut().zip(values) {
+                            let idx = val as u8 as usize;
+                            if changed_mask[idx] && (*dest & 0x80000000 == 0) {
+                                let next = packed[idx];
+                                if *dest != next {
+                                    *dest = next;
+                                    any_cell_changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                rows.palette = p.palette;
+                self.source = Some(p.visible_image.clone());
+                self.rows = Some(rows);
+                return Some(any_cell_changed);
+            }
+            std::mem::swap(&mut self.previous_detail, &mut self.frame.detail);
+            let mut detail_spans = rows.detail_spans;
+            if !p.export_compact_rows(
+                std::iter::repeat(None),
+                &mut self.frame,
+                Some(IncrementalCompactRows {
+                    since: rows.mark,
+                    changed_palette,
+                    detail_recolored,
+                    previous_detail: &self.previous_detail,
+                }),
+                &mut detail_spans,
+            ) {
+                return None;
+            }
+            self.source = Some(p.visible_image.clone());
+            self.rows = Some(ExportedRows {
+                mark: p.screen_mark(),
+                detail_palette_epoch: p.detail_palette_epoch,
+                palette: p.palette,
+                detail_spans,
+            });
+            return Some(true);
+        }
+
+        let mut detail_spans = Vec::new();
         if !p.export_compact_rows(
             std::iter::repeat(None),
             &mut self.frame,
-            since,
-            &mut detail_rows,
+            None,
+            &mut detail_spans,
         ) {
             return None;
         }
         self.source = Some(p.visible_image.clone());
         self.rows = Some(ExportedRows {
             mark: p.screen_mark(),
+            detail_palette_epoch: p.detail_palette_epoch,
             palette: p.palette,
-            detail_rows,
+            detail_spans,
         });
         Some(true)
     }
+}
+
+struct IncrementalCompactRows<'a> {
+    since: ScreenMark,
+    changed_palette: Option<[bool; 256]>,
+    detail_recolored: bool,
+    previous_detail: &'a [u32],
 }
 
 impl Presentation {
@@ -319,7 +389,7 @@ impl MacMemoryBus {
 
 impl Presentation {
     /// Whether no on-screen cell of row `y` changed after `mark`.
-    fn screen_row_unchanged_since(&self, mark: ScreenMark, y: usize) -> bool {
+    pub(super) fn screen_row_unchanged_since(&self, mark: ScreenMark, y: usize) -> bool {
         let per_row = screen_tiles_per_row(self.width);
         mark.identity == self.identity
             && self.tile_epochs[y * per_row..(y + 1) * per_row]
@@ -338,16 +408,16 @@ impl Presentation {
     // Monomorphized for either overlay differences or a constant absence of
     // overlays, so the latter needs no input images, alpha scan or comparisons.
     //
-    // With `since`, `output` must hold this surface's export at that mark with
-    // the current palette, and `detail_rows` its per-row detail flags: rows
-    // without detail and without later changes keep their cells. Overlays must
-    // then be absent. `detail_rows` is updated for the new export.
+    // With `incremental`, `output` holds this surface's previous export and
+    // `detail_spans` its per-row `(start, len)` slices in `previous_detail`:
+    // unchanged rows keep or rebase their cells and copy any retained detail
+    // span without scanning per-cell coverage. Overlays must then be absent.
     fn export_compact_rows(
         &self,
         mut overlays: impl Iterator<Item = Option<u32>>,
         output: &mut CompactPresentation,
-        since: Option<ScreenMark>,
-        detail_rows: &mut Vec<bool>,
+        incremental: Option<IncrementalCompactRows<'_>>,
+        detail_spans: &mut Vec<(u32, u32)>,
     ) -> bool {
         let p = self;
         let width = p.logical_width() as usize;
@@ -359,12 +429,11 @@ impl Presentation {
         {
             return false;
         }
-        let since = since.filter(|_| {
-            output.cells.len() == count && detail_rows.len() == height
-        });
-        if since.is_none() {
-            detail_rows.clear();
-            detail_rows.resize(height, true);
+        let incremental =
+            incremental.filter(|_| output.cells.len() == count && detail_spans.len() == height);
+        if incremental.is_none() {
+            detail_spans.clear();
+            detail_spans.resize(height, (0, 0));
         }
         output.width = width as u32;
         output.height = p.height;
@@ -376,7 +445,7 @@ impl Presentation {
         output.detail.clear();
         let scale = p.scale as usize;
         let lanes = p.bytes_per_pixel() as usize;
-        // SC2K's indexed framebuffer uses the CLUT; direct-color lanes each
+        // Indexed framebuffers use the CLUT; direct-color lanes each
         // contribute one channel slice. Resolve the tables once per export.
         let pack = |rgb: &[u8; 3]| {
             (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
@@ -388,10 +457,56 @@ impl Presentation {
         } else {
             &p.packed_direct_palettes
         };
-        for (y, has_detail) in detail_rows.iter_mut().enumerate() {
-            if since.is_some_and(|mark| !*has_detail && p.screen_row_unchanged_since(mark, y)) {
-                overlays.by_ref().take(width).for_each(drop);
-                continue;
+        for (y, detail_span) in detail_spans.iter_mut().enumerate() {
+            if let Some(inc) = incremental.as_ref() {
+                let (old_start, span_len) = *detail_span;
+                if p.screen_row_unchanged_since(inc.since, y)
+                    && (!inc.detail_recolored || span_len == 0)
+                {
+                    let new_start = output.detail.len() as u32;
+                    if span_len > 0 {
+                        output.detail.extend_from_slice(
+                            &inc.previous_detail
+                                [old_start as usize..(old_start + span_len) as usize],
+                        );
+                    }
+                    *detail_span = (new_start, span_len);
+                    let cells = &mut output.cells[y * width..(y + 1) * width];
+                    if let Some(changed_mask) = &inc.changed_palette {
+                        let row = y * p.width as usize;
+                        let values = &p.guest_values[row..row + width];
+                        if span_len == 0 {
+                            for (dest, &val) in cells.iter_mut().zip(values) {
+                                let idx = val as u8 as usize;
+                                if changed_mask[idx] {
+                                    *dest = tables[0][idx];
+                                }
+                            }
+                        } else {
+                            for (dest, &val) in cells.iter_mut().zip(values) {
+                                if *dest & 0x80000000 != 0 {
+                                    if new_start != old_start {
+                                        *dest = 0x80000000
+                                            | ((*dest & 0x7fffffff) - old_start + new_start);
+                                    }
+                                } else {
+                                    let idx = val as u8 as usize;
+                                    if changed_mask[idx] {
+                                        *dest = tables[0][idx];
+                                    }
+                                }
+                            }
+                        }
+                    } else if span_len > 0 && new_start != old_start {
+                        for dest in cells {
+                            if *dest & 0x80000000 != 0 {
+                                *dest = 0x80000000 | ((*dest & 0x7fffffff) - old_start + new_start);
+                            }
+                        }
+                    }
+                    overlays.by_ref().take(width).for_each(drop);
+                    continue;
+                }
             }
             let first_detail = output.detail.len();
             let cells = &mut output.cells[y * width..(y + 1) * width];
@@ -523,7 +638,10 @@ impl Presentation {
                     }
                 }
             }
-            *has_detail = output.detail.len() != first_detail;
+            *detail_span = (
+                first_detail as u32,
+                (output.detail.len() - first_detail) as u32,
+            );
         }
         true
     }
@@ -752,7 +870,13 @@ mod tests {
                 bus.fill_bytes(0x1000, row_bytes * height, 7);
                 check_cached(&bus, &mut cache, (width, height));
                 assert!(cache.frame().detail.is_empty());
-                assert!(cache.rows.as_ref().unwrap().detail_rows.iter().all(|&d| !d));
+                assert!(cache
+                    .rows
+                    .as_ref()
+                    .unwrap()
+                    .detail_spans
+                    .iter()
+                    .all(|&(_, len)| len == 0));
             }
         }
     }
@@ -1138,5 +1262,74 @@ mod tests {
             samples_us[samples_us.len() / 2],
             samples_us[(samples_us.len() * 95) / 100],
         );
+    }
+
+    #[test]
+    fn compact_cache_reuses_detail_and_unchanged_rows_across_palette_and_text_shifts() {
+        let mut bus = super::super::tests::bus();
+        let mut palette: [[u8; 3]; 256] =
+            std::array::from_fn(|i| [i as u8, (i * 3) as u8, (255 - i) as u8]);
+        let screen = (0x1000, 16, 16, 8, 8);
+        bus.prepare_outline_presentation(screen, palette);
+        for y in 0..8u32 {
+            for x in 0..16u32 {
+                bus.write_byte(0x1000 + y * 16 + x, ((y * 3 + x) % 32) as u8);
+            }
+        }
+        // Paint retained detail on rows 2 and 5 (uses indices 0 and 1 in paint_detail).
+        super::super::tests::paint_detail(&mut bus, 0x1000 + 2 * 16 + 3);
+        super::super::tests::paint_detail(&mut bus, 0x1000 + 5 * 16 + 7);
+
+        let mut cache = CompactPresentationCache::default();
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(true));
+        let mut fresh = CompactPresentation::default();
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+
+        // 1. Changing an unused palette entry leaves both cells and detail identical
+        //    and reports `Some(false)` so the caller can keep its GPU upload.
+        palette[200] = [99, 88, 77];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(false));
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+
+        // 2. Changing a visible plain background entry updates plain cells without
+        //    recoloring or shifting retained detail samples.
+        palette[12] = [210, 40, 90];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(true));
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+
+        // 3. Changing a palette entry used by retained text samples recolors detail.
+        palette[0] = [15, 25, 35];
+        palette[255] = [240, 230, 220];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(true));
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+
+        // 4. Adding text on row 0 shifts detail offsets on unchanged rows 2 and 5.
+        super::super::tests::paint_detail(&mut bus, 0x1000 + 1);
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(true));
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
+
+        // 5. Erasing text on row 0 shifts lower-row detail offsets back down,
+        //    combined with a simultaneous plain palette update.
+        bus.write_byte(0x1000 + 1, 9);
+        bus.write_byte(0x1000 + 2, 9);
+        palette[9] = [123, 234, 45];
+        bus.prepare_outline_presentation(screen, palette);
+        assert_eq!(cache.prepare_changed(&bus, (16, 8)), Some(true));
+        assert!(bus.compact_presentation_without_overlays((16, 8), &mut fresh));
+        assert_eq!(cache.frame().cells, fresh.cells);
+        assert_eq!(cache.frame().detail, fresh.detail);
     }
 }
