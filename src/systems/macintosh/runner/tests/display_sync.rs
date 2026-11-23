@@ -557,3 +557,77 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
     assert!(ppc_app.q3_completed_frames.is_empty());
     assert_eq!(runner.q3_completed_frame_index, 1);
 }
+
+#[test]
+fn ppc_front_buffer_sync_preserves_top_row_detail_and_copies_plain_rows_below() {
+    let mut ppc_app = crate::loader::ppc::load_pef_application(
+        &crate::loader::ppc::tests::synthetic_pef_with_import(b"DrawText"),
+    )
+    .unwrap();
+    let front = ppc_app.presented_front_buffer().unwrap();
+
+    let mut bus = MacMemoryBus::new(16 * 1024 * 1024);
+    let host_base = 0x20_0000;
+    let palette: [[u8; 3]; 256] = std::array::from_fn(|i| [i as u8, i as u8, i as u8]);
+    bus.prepare_outline_presentation(
+        (
+            host_base,
+            front.row_bytes,
+            front.width as u16,
+            front.height as u16,
+            front.depth as u16,
+        ),
+        palette,
+    );
+    ppc_app
+        .memory
+        .shared_view()
+        .set_presentation(bus.presentation.clone());
+
+    // Draw retained outline text near the top of the front buffer, then write
+    // distinct plain pixels on a bottom row below the text.
+    let text_ptr = PPC_DATA_BASE + 0x400;
+    ppc_app.memory.add_region(text_ptr, b"A".to_vec());
+    ppc_app.quickdraw_pen_h = 4;
+    ppc_app.quickdraw_pen_v = 14;
+    ppc_app.cpu.gpr[3] = text_ptr;
+    ppc_app.cpu.gpr[4] = 0;
+    ppc_app.cpu.gpr[5] = 1;
+    ppc_app.run_with_hle_imports(64);
+
+    let bottom_y = front.height - 2;
+    let bpp = front.depth / 8;
+    for x in 0..16u32 {
+        let byte_val = (x * 7 + 3) as u8;
+        for lane in 0..bpp {
+            ppc_app
+                .memory
+                .write_u8(
+                    front.base_addr + bottom_y * front.row_bytes + x * bpp + lane,
+                    byte_val,
+                )
+                .unwrap();
+        }
+    }
+
+    assert!(FixtureRunner::copy_ppc_front_buffer_rows_to_host(
+        &mut bus,
+        &mut ppc_app,
+        front,
+        host_base,
+        front.row_bytes,
+        0,
+        0,
+        &[],
+    ));
+    assert!(bus.has_visible_outline_detail());
+    for x in 0..16u32 {
+        let byte_val = (x * 7 + 3) as u8;
+        for lane in 0..bpp {
+            assert_eq!(
+                bus.read_byte(host_base + bottom_y * front.row_bytes + x * bpp + lane),
+                byte_val
+            );
+        }
+    }
+}

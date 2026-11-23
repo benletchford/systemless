@@ -11170,19 +11170,25 @@ impl FixtureRunner {
             .last_fade_percent
             .is_none_or(|percent| percent == 100)
             && ppc_app.draw_sprocket.last_fade_zero_color.is_none();
-        let mut copied_rows = 0;
-        if classic_overlays.is_empty() && matches!(front_buffer.depth, 8 | 16 | 32) && no_gamma_fade {
-            let first_destination = destination_y.checked_mul(host_row_bytes)
+        let mut fallback_rows: Option<Vec<u32>> = None;
+        if classic_overlays.is_empty() && matches!(front_buffer.depth, 8 | 16 | 32) && no_gamma_fade
+        {
+            let first_destination = destination_y
+                .checked_mul(host_row_bytes)
                 .and_then(|offset| host_base.checked_add(offset))
                 .and_then(|row| row.checked_add(destination_x * (front_buffer.depth / 8)));
-            let span_len = front_buffer.height.checked_sub(1)
+            let span_len = front_buffer
+                .height
+                .checked_sub(1)
                 .and_then(|rows| rows.checked_mul(host_row_bytes))
                 .and_then(|offset| offset.checked_add(visible_row_bytes));
             let flat_destination = first_destination.zip(span_len).and_then(|(addr, len)| {
-                bus.can_write_plain_presented_span(addr, len as usize).map(|flat| (addr, flat))
+                bus.can_write_plain_presented_span(addr, len as usize)
+                    .map(|flat| (addr, flat))
             });
             if let Some((guest, flat)) = flat_destination {
                 if let Some(source_bytes) = ppc_app.front_buffer_readable_bytes(front_buffer) {
+                    let mut deferred = Vec::new();
                     for y in 0..front_buffer.height {
                         let offset = y as usize * source_row_len;
                         let dst_offset = y * host_row_bytes;
@@ -11192,20 +11198,22 @@ impl FixtureRunner {
                             front_buffer.base_addr + y * front_buffer.row_bytes,
                             &source_bytes[offset..offset + visible_row_len],
                         ) {
-                            break;
+                            deferred.push(y);
                         }
-                        copied_rows += 1;
                     }
-                    if copied_rows == front_buffer.height {
+                    if deferred.is_empty() {
                         return true;
                     }
+                    fallback_rows = Some(deferred);
                 }
             }
         }
         // Routed destinations can alias sparse guest storage. Release the source
-        // borrow before copying the remaining rows through the ordinary owned-row path.
+        // borrow before copying any remaining rows through the ordinary owned-row path.
         let mut row = vec![0u8; source_row_len];
-        for y in copied_rows..front_buffer.height {
+        let all_rows = fallback_rows.is_none().then_some(0..front_buffer.height);
+        let deferred_rows = fallback_rows.as_deref().unwrap_or(&[]).iter().copied();
+        for y in all_rows.into_iter().flatten().chain(deferred_rows) {
             if ppc_app
                 .read_front_buffer_row(front_buffer, y, &mut row)
                 .is_none()
