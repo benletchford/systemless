@@ -13314,3 +13314,63 @@ fn pbh_open_df_on_a_mounted_volume_ignores_a_boot_folder_of_the_same_name() {
     assert_eq!(loaded.files.len(), 1);
     assert_eq!(loaded.files[0].path, "Disc/Game");
 }
+
+#[test]
+fn legacy_create_and_delete_resolve_working_directory_from_sf_reply() {
+    // SFPutFile returns a working-directory refnum in SFReply.vRefNum and
+    // callers pass it straight to Create/FSDelete (Inside Macintosh: Files,
+    // 2-27). Odyssey PPC reported "could not create the player file: -35".
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Create")).unwrap();
+    let folder_id = PPC_FIRST_DYNAMIC_DIR_ID;
+    loaded.vfs_directories.push(PpcVfsDirectory {
+        dir_id: folder_id,
+        parent_dir_id: PPC_ROOT_DIR_ID,
+        path: "Odyssey Folder".to_string(),
+        creator: PPC_DIRECTORY_CREATOR,
+        file_type: PPC_DIRECTORY_FILE_TYPE,
+        finder_flags: 0,
+        dirty: false,
+    });
+    loaded.working_directories.with_mut(|directories| {
+        directories.insert(
+            32,
+            ProcessWorkingDirectory {
+                ref_num: 32,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: folder_id,
+                proc_id: 0,
+            },
+        );
+    });
+    let name = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(name, b"\x06Wally!".to_vec());
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = 32;
+    loaded.cpu.gpr[5] = u32::from_be_bytes(*b"ODYS");
+    loaded.cpu.gpr[6] = u32::from_be_bytes(*b"PLYR");
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Create);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    let file = loaded
+        .vfs_files
+        .iter()
+        .find(|file| file.path == "Odyssey Folder/Wally!")
+        .unwrap();
+    assert_eq!(file.file_type, u32::from_be_bytes(*b"PLYR"));
+
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = 33;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::Create);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = 32;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DeleteByName(PpcDeleteByNameOperation::LegacyHighLevel),
+    );
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+    assert!(!loaded
+        .vfs_files
+        .iter()
+        .any(|file| file.path == "Odyssey Folder/Wally!"));
+}
