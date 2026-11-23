@@ -1535,6 +1535,14 @@ pub(super) fn ppc_window_structure_bounds(
     };
     if has_title_bar {
         crate::window_manager::standard_window_structure_bounds(content)
+    } else if !ppc_window_proc_has_system_content_region(proc_id) {
+        // An application WDEF computes its own regions (wCalcRgns, Macintosh
+        // Toolbox Essentials (1992), pp. 4-122--4-123), and Systemless does
+        // not run it or draw its frame. A guessed frame outside the content
+        // would only clip the windows behind it from their own updates, so
+        // the structure is the content. Civilization II draws its frames
+        // inside the content of abutting windows.
+        content
     } else if proc_id == 3 {
         // altDBoxProc: a one-pixel frame around the content plus a two-pixel
         // drop shadow below and to the right, with no gap band.

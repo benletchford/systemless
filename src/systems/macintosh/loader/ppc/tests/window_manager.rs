@@ -4533,6 +4533,53 @@ fn new_visible_window_erases_its_content_like_paint_one() {
 }
 
 #[test]
+fn application_wdef_structure_is_its_content() {
+    // Systemless neither runs an application WDEF's wCalcRgns nor draws its
+    // frame, so no structure lies outside the content.
+    let content = (20, 624, 153, 800);
+    assert_eq!(ppc_window_structure_bounds(128 * 16, content), content);
+    assert_eq!(ppc_window_structure_bounds(2, content), (19, 623, 154, 801));
+}
+
+/// Creates a visible window with application WDEF 128 through NewCWindow.
+fn new_custom_wdef_window(loaded: &mut PpcLoadedApp, rect: (i16, i16, i16, i16)) -> u32 {
+    let bounds_ptr = PPC_DATA_BASE + 0x1000;
+    ppc_write_rect(&mut loaded.memory, bounds_ptr, rect.0, rect.1, rect.2, rect.3).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = bounds_ptr;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 1;
+    loaded.cpu.gpr[7] = 128 * 16;
+    loaded.cpu.gpr[8] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    loaded.cpu.gpr[10] = 0;
+    run_test_import(loaded, PpcImportDispatcherTarget::NewCWindow);
+    let window = loaded.cpu.gpr[3];
+    assert_ne!(window, 0);
+    window
+}
+
+#[test]
+fn abutting_application_wdef_window_leaves_the_window_behind_visible() {
+    // Civilization II tiles custom-WDEF windows edge to edge. A frame
+    // guessed outside the front window's content clipped the window behind
+    // from its own update, leaving a closed dialog's pixels on screen.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(PPC_DATA_BASE + 0x1000, vec![0; 8]);
+    let behind = new_custom_wdef_window(&mut loaded, (60, 40, 160, 200));
+    new_custom_wdef_window(&mut loaded, (60, 200, 160, 300));
+    let vis_rgn = loaded
+        .memory
+        .read_u32_be(behind + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+        .unwrap();
+    assert_eq!(
+        ppc_read_rgn_bbox(&mut loaded.memory, vis_rgn),
+        Some((0, 0, 100, 160))
+    );
+}
+
+#[test]
 fn legacy_window_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("BringToFront", PpcLegacyWindowOperation::BringToFront),
