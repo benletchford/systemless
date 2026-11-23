@@ -3625,6 +3625,27 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn standard_file_folder_popup_fits_the_folder_name() {
+        // A short name keeps the dialog's popup item; a long one widens the
+        // popup about the list's centre, up to the list's width.
+        let base = PPC_STANDARD_FILE_PUT_VOLUME_RECT;
+        let list = PPC_STANDARD_FILE_PUT_LIST_RECT;
+        let short = ppc_standard_file_folder_popup_rect(base, list, &[(2, b"HD".to_vec())]);
+        assert_eq!(short, base);
+        let long = ppc_standard_file_folder_popup_rect(
+            base,
+            list,
+            &[(42, b"Civilization II PPC Demo".to_vec())],
+        );
+        assert!(long.3 - long.1 > base.3 - base.1);
+        assert!(long.1 >= list.1 && long.3 <= list.3);
+        let (left_gap, right_gap) = (long.1 - list.1, list.3 - long.3);
+        assert!(matches!(right_gap - left_gap, 0 | 1), "centred over the list");
+        let huge = ppc_standard_file_folder_popup_rect(base, list, &[(42, vec![b'W'; 63])]);
+        assert_eq!((huge.1, huge.3), (list.1, list.3));
+    }
+
+    #[test]
     fn standard_put_file_saves_into_the_folder_opened_from_its_list() {
         // The put dialog browses folders like the get dialog; the reply names
         // the folder shown when Save is clicked. Inside Macintosh: Files

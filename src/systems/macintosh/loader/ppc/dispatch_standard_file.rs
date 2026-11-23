@@ -519,11 +519,50 @@ fn ppc_standard_file_folder_chain(
 }
 
 /// Index into `folder_chain` of the popup row under a dialog-local point.
+/// Horizontal chrome of the folder popup around its label: the label starts
+/// 15 pixels inside the box, the arrow takes the last 19, and 8 more keep the
+/// arrow clear of the label (as the 68K Standard File package draws it).
+const PPC_STANDARD_FILE_FOLDER_POPUP_CHROME: i16 = 42;
+const PPC_STANDARD_FILE_FOLDER_POPUP_LABEL_INSET: i16 = 15;
+
+fn ppc_standard_file_folder_label(folder_chain: &[(u32, Vec<u8>)]) -> &[u8] {
+    folder_chain
+        .first()
+        .map_or(&[][..], |(_, name)| name.as_slice())
+}
+
+/// The folder popup, sized to the folder's name and centred over the list:
+/// never narrower than the dialog's popup item, never wider than the list.
+pub(super) fn ppc_standard_file_folder_popup_rect(
+    base: (i16, i16, i16, i16),
+    list: (i16, i16, i16, i16),
+    folder_chain: &[(u32, Vec<u8>)],
+) -> (i16, i16, i16, i16) {
+    let list_width = list.3 - list.1;
+    let width = ppc_text_bytes_advance_for_font(
+        ppc_standard_file_folder_label(folder_chain),
+        PPC_QD_TEXT_FONT_DEFAULT,
+        PPC_QD_TEXT_SIZE_SYSTEM,
+    )
+    .saturating_add(PPC_STANDARD_FILE_FOLDER_POPUP_CHROME)
+    .clamp(base.3 - base.1, list_width);
+    let left = list.1 + (list_width - width) / 2;
+    (base.0, left, base.2, left + width)
+}
+
+/// The popup's menu drops from the popup's bottom-left corner.
+fn ppc_standard_file_folder_menu_rect(popup: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    let menu = PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT;
+    let width = (menu.3 - menu.1).max(popup.3 - popup.1);
+    (popup.2, popup.1, popup.2 + (menu.2 - menu.0), popup.1 + width)
+}
+
 fn ppc_standard_file_folder_menu_row(
     folder_chain: &[(u32, Vec<u8>)],
+    popup: (i16, i16, i16, i16),
     local: (i16, i16),
 ) -> Option<usize> {
-    let menu = PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT;
+    let menu = ppc_standard_file_folder_menu_rect(popup);
     if !ppc_standard_file_point_in_rect(local, menu) {
         return None;
     }
@@ -538,13 +577,14 @@ fn ppc_standard_file_draw_folder_menu(
     gworlds: &[PpcGWorldRecord],
     front: PpcFrontBuffer,
     bounds: (i16, i16, i16, i16),
+    popup: (i16, i16, i16, i16),
     folder_chain: &[(u32, Vec<u8>)],
 ) {
+    let menu_rect = ppc_standard_file_folder_menu_rect(popup);
     // Rows past the dialog's bottom edge are not shown; the menu does not scroll.
-    let rows = (PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.2 - PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.0)
-        / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
+    let rows = (menu_rect.2 - menu_rect.0) / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
     let rows = folder_chain.len().min(rows as usize) as i16;
-    let mut menu = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT);
+    let mut menu = ppc_standard_file_global_rect(bounds, menu_rect);
     menu.2 = menu
         .0
         .saturating_add(rows * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT);
@@ -1140,11 +1180,11 @@ fn ppc_standard_file_draw_folder_popup(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     bounds: (i16, i16, i16, i16),
-    volume_rect: (i16, i16, i16, i16),
+    popup: (i16, i16, i16, i16),
     label_rect: (i16, i16, i16, i16),
     folder_chain: &[(u32, Vec<u8>)],
 ) {
-    let volume_rect = ppc_standard_file_global_rect(bounds, volume_rect);
+    let volume_rect = ppc_standard_file_global_rect(bounds, popup);
     ppc_draw_retained_control_rect(
         memory,
         gworlds,
@@ -1154,15 +1194,20 @@ fn ppc_standard_file_draw_folder_popup(
         true,
         false,
     );
-    let folder = folder_chain
-        .first()
-        .map_or(&[][..], |(_, name)| name.as_slice());
-    let label = if folder.len() > 7 {
-        [&folder[..4], b"..."].concat()
-    } else {
-        folder.to_vec()
-    };
-    ppc_draw_dialog_text(memory, gworlds, volume_rect, &label, PPC_RGB_BLACK);
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (
+            volume_rect.0,
+            volume_rect
+                .1
+                .saturating_add(PPC_STANDARD_FILE_FOLDER_POPUP_LABEL_INSET),
+            volume_rect.2,
+            volume_rect.3,
+        ),
+        ppc_standard_file_folder_label(folder_chain),
+        PPC_RGB_BLACK,
+    );
     ppc_draw_dialog_text(
         memory,
         gworlds,
@@ -1193,7 +1238,7 @@ fn ppc_standard_file_draw_get_dialog(
         memory,
         gworlds,
         bounds,
-        PPC_STANDARD_FILE_GET_VOLUME_RECT,
+        ppc_standard_file_get_popup_rect(tracking),
         PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT,
         &tracking.folder_chain,
     );
@@ -1252,8 +1297,35 @@ fn ppc_standard_file_draw_get_dialog(
         true,
     );
     if tracking.folder_popup_open {
-        ppc_standard_file_draw_folder_menu(memory, gworlds, front, bounds, &tracking.folder_chain);
+        ppc_standard_file_draw_folder_menu(
+            memory,
+            gworlds,
+            front,
+            bounds,
+            ppc_standard_file_get_popup_rect(tracking),
+            &tracking.folder_chain,
+        );
     }
+}
+
+fn ppc_standard_file_get_popup_rect(
+    tracking: &PpcStandardFileGetTrackingState,
+) -> (i16, i16, i16, i16) {
+    ppc_standard_file_folder_popup_rect(
+        PPC_STANDARD_FILE_GET_VOLUME_RECT,
+        PPC_STANDARD_FILE_GET_LIST_RECT,
+        &tracking.folder_chain,
+    )
+}
+
+fn ppc_standard_file_put_popup_rect(
+    tracking: &PpcStandardFilePutTrackingState,
+) -> (i16, i16, i16, i16) {
+    ppc_standard_file_folder_popup_rect(
+        PPC_STANDARD_FILE_PUT_VOLUME_RECT,
+        PPC_STANDARD_FILE_PUT_LIST_RECT,
+        &tracking.folder_chain,
+    )
 }
 
 fn ppc_standard_file_draw_put_dialog(
@@ -1271,7 +1343,7 @@ fn ppc_standard_file_draw_put_dialog(
         memory,
         gworlds,
         bounds,
-        PPC_STANDARD_FILE_PUT_VOLUME_RECT,
+        ppc_standard_file_put_popup_rect(tracking),
         PPC_STANDARD_FILE_PUT_VOLUME_LABEL_RECT,
         &tracking.folder_chain,
     );
@@ -1372,7 +1444,14 @@ fn ppc_standard_file_draw_put_dialog(
         true,
     );
     if tracking.folder_popup_open {
-        ppc_standard_file_draw_folder_menu(memory, gworlds, front, bounds, &tracking.folder_chain);
+        ppc_standard_file_draw_folder_menu(
+            memory,
+            gworlds,
+            front,
+            bounds,
+            ppc_standard_file_put_popup_rect(tracking),
+            &tracking.folder_chain,
+        );
     }
 }
 
@@ -1731,7 +1810,13 @@ fn ppc_standard_file_get_service(
                 event.where_h.saturating_sub(tracking.bounds.1),
             );
             let row = matches!(event.what, 1 | 2)
-                .then(|| ppc_standard_file_folder_menu_row(&tracking.folder_chain, local))
+                .then(|| {
+                    ppc_standard_file_folder_menu_row(
+                        &tracking.folder_chain,
+                        ppc_standard_file_get_popup_rect(&tracking),
+                        local,
+                    )
+                })
                 .flatten();
             if let Some(row) = row {
                 tracking.folder_popup_open = false;
@@ -1748,7 +1833,7 @@ fn ppc_standard_file_get_service(
                     tracking.selected = 0;
                 }
             } else if !(event.what == 2
-                && ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_VOLUME_RECT))
+                && ppc_standard_file_point_in_rect(local, ppc_standard_file_get_popup_rect(&tracking)))
             {
                 // Releasing on the popup button leaves the menu open for a second click.
                 tracking.folder_popup_open = false;
@@ -1770,7 +1855,7 @@ fn ppc_standard_file_get_service(
                     false,
                 );
             }
-            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_VOLUME_RECT) {
+            if ppc_standard_file_point_in_rect(local, ppc_standard_file_get_popup_rect(&tracking)) {
                 tracking.folder_popup_open = true;
             } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_DESKTOP_RECT) {
                 tracking.current_dir_id = PPC_ROOT_DIR_ID;
@@ -2251,13 +2336,19 @@ fn ppc_standard_file_put_service(
     );
     if tracking.folder_popup_open {
         let row = matches!(event.what, 1 | 2)
-            .then(|| ppc_standard_file_folder_menu_row(&tracking.folder_chain, local))
+            .then(|| {
+                ppc_standard_file_folder_menu_row(
+                    &tracking.folder_chain,
+                    ppc_standard_file_put_popup_rect(&tracking),
+                    local,
+                )
+            })
             .flatten();
         if let Some(row) = row {
             tracking.folder_popup_open = false;
             show_folder = Some(tracking.folder_chain[row].0);
         } else if !(event.what == 2
-            && ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_VOLUME_RECT))
+            && ppc_standard_file_point_in_rect(local, ppc_standard_file_put_popup_rect(&tracking)))
         {
             // Releasing on the popup button leaves the menu open for a second click.
             tracking.folder_popup_open = false;
@@ -2268,7 +2359,7 @@ fn ppc_standard_file_put_service(
         }
         if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_SAVE_RECT) {
             accept = true;
-        } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_VOLUME_RECT) {
+        } else if ppc_standard_file_point_in_rect(local, ppc_standard_file_put_popup_rect(&tracking)) {
             tracking.folder_popup_open = true;
         } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_DESKTOP_RECT) {
             show_folder = Some(PPC_ROOT_DIR_ID);
