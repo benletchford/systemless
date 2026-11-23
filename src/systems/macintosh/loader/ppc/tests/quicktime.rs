@@ -7780,3 +7780,118 @@ fn open_movie_file_reports_fnf_for_a_movie_the_volume_does_not_ship() {
     assert_eq!(loaded.quicktime.movie_file_open_count, 1);
     assert_eq!(loaded.quicktime.movie_file_path, "TrekIntS");
 }
+
+#[test]
+fn quicktime_application_time_bases_run_on_the_guest_clock_and_deliver_stop_callbacks() {
+    // The Journeyman Project: Pegasus Prime drives its scenes from
+    // NewTimeBase clocks and halted at startup when these were unbound.
+    let mut loaded = movie_toolbox_fixture();
+    let data = PPC_DATA_BASE + 0x4000;
+    let code = PPC_CODE_BASE + 0x8000;
+    loaded.memory.add_region(
+        code,
+        [0x90640000u32, 0x4e800020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.write_u32_be(data + 200, code).unwrap();
+    loaded
+        .memory
+        .write_u32_be(data + 204, loaded.cpu.gpr[2])
+        .unwrap();
+    loaded.memory.write_u32_be(data + 220, 0).unwrap();
+    loaded.set_tick_count(0);
+    loaded.callback_scheduling.set_current_subtick(0);
+    let second = 60 * crate::time_manager::SUBTICKS_PER_TICK;
+
+    let base = call_movie_toolbox(&mut loaded, "NewTimeBase", &[]);
+    assert_ne!(base, 0);
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetTimeBaseRate", &[base]), 0);
+    // Stop time: one second in a 600 scale.
+    loaded.memory.write_u64_be(data, 600).unwrap();
+    loaded.memory.write_u32_be(data + 8, 600).unwrap();
+    loaded.memory.write_u32_be(data + 12, base).unwrap();
+    call_movie_toolbox(&mut loaded, "SetTimeBaseStopTime", &[base, data]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseStopTime", &[base, 60, 0]),
+        60
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseFlags", &[base, 0]);
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetTimeBaseFlags", &[base]), 0);
+
+    let callback = call_movie_toolbox(&mut loaded, "NewCallBack", &[base, 4]);
+    assert_ne!(callback, 0, "callbacks attach to application time bases");
+    assert_eq!(
+        call_movie_toolbox(
+            &mut loaded,
+            "CallMeWhen",
+            &[callback, data + 200, data + 220, 2, 0, 0]
+        ),
+        0
+    );
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0x1_0000]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseEffectiveRate", &[base]),
+        0x1_0000
+    );
+
+    // Executing the imports themselves advances the guest clock slightly.
+    loaded.callback_scheduling.set_current_subtick(second / 2);
+    let half = call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, data + 32]);
+    assert!((200..=300).contains(&half), "{half}");
+    assert_eq!(loaded.memory.read_u64_be(data + 32), Some(u64::from(half)));
+    assert_eq!(loaded.memory.read_u32_be(data + 40), Some(600));
+    assert_eq!(loaded.memory.read_u32_be(data + 44), Some(base));
+    assert_eq!(loaded.memory.read_u32_be(data + 220), Some(0));
+
+    loaded.callback_scheduling.set_current_subtick(2 * second);
+    assert_eq!(
+        call_controller_with_filter(&mut loaded, "GetTimeBaseTime", &[base, 600, 0]),
+        600,
+        "the clock holds at its stop time"
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(data + 220),
+        Some(callback),
+        "reaching the stop time delivers the at-extremes callback"
+    );
+
+    call_movie_toolbox(&mut loaded, "SetTimeBaseRate", &[base, 0]);
+    call_movie_toolbox(&mut loaded, "SetTimeBaseValue", &[base, 10, 60]);
+    assert_eq!(
+        call_movie_toolbox(&mut loaded, "GetTimeBaseTime", &[base, 600, 0]),
+        100
+    );
+    call_movie_toolbox(&mut loaded, "DisposeCallBack", &[callback]);
+    call_movie_toolbox(&mut loaded, "DisposeTimeBase", &[base]);
+    assert_eq!(call_movie_toolbox(&mut loaded, "GetTimeBaseRate", &[base]), 0);
+}
+
+#[test]
+fn quicktime_pegasus_prime_time_base_and_picture_file_imports_are_bound() {
+    for symbol in [
+        "NewTimeBase",
+        "DisposeTimeBase",
+        "GetTimeBaseTime",
+        "SetTimeBaseValue",
+        "GetTimeBaseRate",
+        "SetTimeBaseRate",
+        "GetTimeBaseEffectiveRate",
+        "GetTimeBaseStartTime",
+        "SetTimeBaseStartTime",
+        "GetTimeBaseStopTime",
+        "SetTimeBaseStopTime",
+        "GetTimeBaseFlags",
+        "SetTimeBaseMasterTimeBase",
+        "DrawPictureFile",
+    ] {
+        assert!(
+            matches!(
+                dispatcher_target_for_import("QuickTimeLib", symbol),
+                PpcImportDispatcherTarget::QuickTimeCompatibility(_)
+            ),
+            "{symbol}"
+        );
+    }
+}

@@ -7664,6 +7664,54 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "SetMovieVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetMovieVolume,
         ),
+        ("QuickTimeLib", "NewTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::NewTimeBase),
+        ),
+        ("QuickTimeLib", "DisposeTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::DisposeTimeBase),
+        ),
+        ("QuickTimeLib", "GetTimeBaseTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseTime),
+        ),
+        ("QuickTimeLib", "SetTimeBaseTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseTime),
+        ),
+        ("QuickTimeLib", "SetTimeBaseValue") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseValue),
+        ),
+        ("QuickTimeLib", "GetTimeBaseRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseRate),
+        ),
+        ("QuickTimeLib", "SetTimeBaseRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseRate),
+        ),
+        ("QuickTimeLib", "GetTimeBaseEffectiveRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseEffectiveRate),
+        ),
+        ("QuickTimeLib", "GetTimeBaseStartTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseStartTime),
+        ),
+        ("QuickTimeLib", "SetTimeBaseStartTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseStartTime),
+        ),
+        ("QuickTimeLib", "GetTimeBaseStopTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseStopTime),
+        ),
+        ("QuickTimeLib", "SetTimeBaseStopTime") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseStopTime),
+        ),
+        ("QuickTimeLib", "GetTimeBaseFlags") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseFlags),
+        ),
+        ("QuickTimeLib", "SetTimeBaseMasterTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::SetTimeBaseMasterTimeBase),
+        ),
+        ("QuickTimeLib", "GetTimeBaseMasterTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::TimeBase(super::quicktime::time_base::Operation::GetTimeBaseMasterTimeBase),
+        ),
+        ("QuickTimeLib", "DrawPictureFile") => PpcImportDispatcherTarget::QuickTimeCompatibility(
+            PpcQuickTimeCompatibilityOperation::DrawPictureFile,
+        ),
         ("QuickTimeLib", "SetTimeBaseFlags") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags,
         ),

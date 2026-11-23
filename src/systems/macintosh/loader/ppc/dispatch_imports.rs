@@ -3362,6 +3362,65 @@ pub(crate) fn dispatch_supported_import(
                 PpcQuickTimeCompatibilityOperation::MCDoAction => cpu.gpr[4] as i16 == 8,
                 _ => true,
             };
+            let time_base_now = || {
+                callback_scheduling
+                    .current_subtick()
+                    .max(u64::from(*tick_count) * crate::time_manager::SUBTICKS_PER_TICK)
+            };
+            if let PpcQuickTimeCompatibilityOperation::TimeBase(operation) = operation {
+                let action = quicktime::time_base::dispatch(
+                    operation,
+                    cpu,
+                    memory,
+                    process_memory_manager,
+                    heap_cursor,
+                    last_mem_error,
+                    &mut quicktime.time_bases,
+                    &mut quicktime.callbacks,
+                    time_base_now(),
+                );
+                let result = match action {
+                    PpcImportAction::Return(value) => value,
+                    _ => cpu.gpr[3],
+                };
+                return Some(dispatch_quicktime::deliver_ready_callbacks(
+                    cpu, memory, quicktime, sound, result,
+                ));
+            }
+            if operation == PpcQuickTimeCompatibilityOperation::DrawPictureFile {
+                // Inside Macintosh: QuickTime, DrawPictureFile(refNum, frame,
+                // progressProc) draws a PICT file (512-byte header then a
+                // picture) into the current port, scaled to frame.
+                let picture = quicktime::ppc_qt_open_file_data(
+                    files.as_slice(),
+                    vfs_files.as_slice(),
+                    cpu.gpr[3] as i16,
+                );
+                let drawn = picture.is_some_and(|bytes| {
+                    let bytes = quicktime::ppc_qt_pict_record_offset_and_bounds(&bytes)
+                        .map_or(&bytes[..], |(offset, _)| &bytes[offset..]);
+                    ppc_draw_picture_bytes(
+                        cpu,
+                        memory,
+                        vfs_resources,
+                        gworlds,
+                        *current_gworld,
+                        screen_clut,
+                        color_manager_clut,
+                        bytes,
+                    )
+                });
+                return Some(PpcImportAction::Return(ppc_i16_result(if drawn {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                })));
+            }
+            if operation == PpcQuickTimeCompatibilityOperation::SetTimeBaseFlags
+                && quicktime.time_bases.set_flags(cpu.gpr[3], cpu.gpr[4], time_base_now())
+            {
+                return Some(PpcImportAction::ReturnPreserve);
+            }
             let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
             let action = dispatch_quicktime_compatibility(
                 operation,
