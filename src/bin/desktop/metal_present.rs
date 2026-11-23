@@ -1212,13 +1212,14 @@ impl MetalPresenter {
         let Some(uniforms) = compact_frame_uniforms(frame, crop, drawable_size) else {
             return Ok(false);
         };
-        let unchanged = self
-            .last_compact
-            .as_ref()
-            .is_some_and(|(last, last_uniforms)| {
-                Arc::ptr_eq(last, frame) && *last_uniforms == uniforms
-            });
-        if unchanged && !force_present && self.drawable_size == drawable_size {
+        if compact_submission_unchanged(
+            self.last_compact.as_ref(),
+            self.drawable_size,
+            frame,
+            &uniforms,
+            drawable_size,
+            force_present,
+        ) {
             return Ok(true);
         }
         self.resize_drawable(drawable_size.0, drawable_size.1);
@@ -1341,6 +1342,21 @@ impl MetalPresenter {
             self.drawable_size = (width, height);
         }
     }
+}
+
+fn compact_submission_unchanged(
+    last_compact: Option<&(Arc<CompactPresentation>, CompactFrameUniforms)>,
+    last_drawable_size: (u32, u32),
+    frame: &Arc<CompactPresentation>,
+    uniforms: &CompactFrameUniforms,
+    drawable_size: (u32, u32),
+    force_present: bool,
+) -> bool {
+    !force_present
+        && last_drawable_size == drawable_size
+        && last_compact.is_some_and(|(last, last_uniforms)| {
+            Arc::ptr_eq(last, frame) && last_uniforms == uniforms
+        })
 }
 
 fn argb_bytes(pixels: &[u32]) -> &[u8] {
@@ -2932,5 +2948,191 @@ pub(crate) mod tests {
         assert_eq!((uniforms.cursor_left, uniforms.cursor_top), (26, 17));
         assert_eq!(gpu.data_rows[0], 0x8001);
         assert_eq!(gpu.mask_rows[0], 0xC003);
+    }
+
+    #[test]
+    fn compact_submission_reuse_invalidates_on_snapshot_overlay_crop_resize_and_force() {
+        use std::sync::Arc;
+        use systemless::systems::macintosh::memory::CompactPresentation;
+
+        let first = Arc::new(CompactPresentation {
+            width: 8,
+            height: 6,
+            scale: 2,
+            cells: (0..48)
+                .map(|i| {
+                    if i == 0 {
+                        0x8000_0000
+                    } else {
+                        (i * 0x010203) & 0x00ff_ffff
+                    }
+                })
+                .collect(),
+            detail: vec![0x112233, 0x445566, 0x778899, 0xaabbcc],
+        });
+        let drawable = (16, 12);
+        let uniforms = super::compact_frame_uniforms(&first, (0, 0, 8, 6), drawable).unwrap();
+        let last = Some((Arc::clone(&first), uniforms));
+
+        assert!(super::compact_submission_unchanged(
+            last.as_ref(),
+            drawable,
+            &first,
+            &uniforms,
+            drawable,
+            false,
+        ));
+        assert!(!super::compact_submission_unchanged(
+            None, drawable, &first, &uniforms, drawable, false,
+        ));
+        assert!(!super::compact_submission_unchanged(
+            last.as_ref(),
+            drawable,
+            &first,
+            &uniforms,
+            drawable,
+            true,
+        ));
+        assert!(!super::compact_submission_unchanged(
+            last.as_ref(),
+            (32, 24),
+            &first,
+            &uniforms,
+            drawable,
+            false,
+        ));
+        let cropped = super::compact_frame_uniforms(&first, (1, 0, 7, 6), drawable).unwrap();
+        assert!(!super::compact_submission_unchanged(
+            last.as_ref(),
+            drawable,
+            &first,
+            &cropped,
+            drawable,
+            false,
+        ));
+
+        // Cloning through Arc::make_mut to patch a software cursor or debug
+        // overlay produces a distinct Arc and must trigger a fresh upload.
+        let guest = vec![0xff00_0000; 48];
+        let mut overlaid_guest = guest.clone();
+        overlaid_guest[0] = 0xfffe_dcba;
+        let mut overlaid = Arc::clone(&first);
+        assert!(Arc::make_mut(&mut overlaid).apply_overlay(&guest, &overlaid_guest));
+        assert!(!super::compact_submission_unchanged(
+            last.as_ref(),
+            drawable,
+            &overlaid,
+            &uniforms,
+            drawable,
+            false,
+        ));
+
+        // Even an identical cell copy in a fresh allocation invalidates ptr_eq.
+        let distinct_copy = Arc::new((*first).clone());
+        assert!(!super::compact_submission_unchanged(
+            last.as_ref(),
+            drawable,
+            &distinct_copy,
+            &uniforms,
+            drawable,
+            false,
+        ));
+
+        // Queued compact frames coalesce in the presenter mailbox and yield
+        // cleanly when a raster fallback replaces them.
+        let presenter = super::AsyncGuestPresenter {
+            mailbox: Arc::new(super::GuestFrameMailbox::default()),
+            thread: None,
+        };
+        presenter
+            .enqueue_compact(Arc::clone(&first), uniforms)
+            .unwrap();
+        presenter
+            .enqueue_compact(Arc::clone(&overlaid), cropped)
+            .unwrap();
+        {
+            let state = presenter.mailbox.state.lock().unwrap();
+            assert_eq!(state.coalesced, 1);
+            let pending = state.pending.as_ref().unwrap();
+            assert!(matches!(
+                &pending.pixels,
+                FramePixels::Compact(queued) if Arc::ptr_eq(queued, &overlaid)
+            ));
+            assert!(pending.metadata == FrameMetadata::Compact(cropped));
+        }
+        let spare = presenter
+            .enqueue_raster_owned(vec![0xff12_3456; 48], RasterLayout::whole((8, 6)), drawable)
+            .unwrap();
+        assert!(spare.is_empty());
+        let state = presenter.mailbox.state.lock().unwrap();
+        assert_eq!(state.coalesced, 2);
+        assert!(matches!(
+            state.pending.as_ref().unwrap().pixels,
+            FramePixels::Argb(_)
+        ));
+    }
+
+    #[test]
+    fn compact_shader_matches_cpu_coverage_with_software_overlays() {
+        use std::sync::Arc;
+        use systemless::systems::macintosh::{
+            display::{render_cursor_argb, render_debug_overlay_argb, CursorImage},
+            memory::CompactPresentation,
+        };
+
+        let (width, height) = (128u32, 48u32);
+        let cursor = CursorImage::mono([0xaa; 32], [0xff; 32], 2, 3);
+        for scale in [2u32, 4] {
+            let mut base = CompactPresentation {
+                width,
+                height,
+                scale,
+                cells: Vec::with_capacity((width * height) as usize),
+                detail: Vec::new(),
+            };
+            for i in 0..width * height {
+                if i % 5 == 0 {
+                    base.cells.push(0x8000_0000 | base.detail.len() as u32);
+                    for s in 0..scale * scale {
+                        base.detail
+                            .push(((i * 0x050709) ^ (s * 0x1f2e3d)) & 0x00ff_ffff);
+                    }
+                } else {
+                    base.cells.push((i * 0x030507) & 0x00ff_ffff);
+                }
+            }
+            let base = Arc::new(base);
+            let guest: Vec<u32> = (0..width * height)
+                .map(|i| 0xff00_0000 | ((i * 0x030507) & 0x00ff_ffff))
+                .collect();
+            let mut overlay = guest.clone();
+            render_cursor_argb(&mut overlay, width, height, &cursor, (12, 20));
+            render_debug_overlay_argb(&mut overlay, width, height, &["FPS 60".into()]);
+            assert_ne!(overlay, guest);
+
+            let mut patched = Arc::clone(&base);
+            assert!(Arc::make_mut(&mut patched).apply_overlay(&guest, &overlay));
+
+            for drawable in [(width * scale, height * scale), (192, 120), (111, 73)] {
+                let (ox, oy, dw, dh) = super::integer_aspect_fit((width, height), drawable);
+                let mut expected = Vec::new();
+                assert!(patched.render_argb_resized((dw, dh), &mut expected));
+                let actual = render_compact(&patched, (0, 0, width, height), drawable, None);
+                for y in 0..drawable.1 {
+                    for x in 0..drawable.0 {
+                        let want = if x >= ox && x < ox + dw && y >= oy && y < oy + dh {
+                            expected[((y - oy) * dw + x - ox) as usize]
+                        } else {
+                            0xff00_0000
+                        };
+                        assert_eq!(
+                            actual[(y * drawable.0 + x) as usize],
+                            want,
+                            "scale={scale} drawable={drawable:?} at ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

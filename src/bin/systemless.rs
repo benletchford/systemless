@@ -2211,8 +2211,9 @@ impl App {
             && retained.is_some()
             && cursor.is_none()
             && !self.debug_overlay_visible;
-        // Metal resolves retained text coverage on the GPU, like D3D11 above.
-        // Host cursors and debug text still patch a CPU image first.
+        // Metal resolves retained text coverage on the GPU, like wgpu and D3D11.
+        // Software cursors and the debug overlay patch only their changed cells
+        // in a cloned compact image so the rest of the frame keeps GPU coverage.
         #[cfg(target_os = "macos")]
         let compact_ready = (self.wgpu.is_some()
             || self
@@ -2291,38 +2292,44 @@ impl App {
         }
 
         #[cfg(target_os = "macos")]
-        if compact_ready && self.wgpu.is_none() {
-            let (Some(surface), Some(image)) = (self.surface.as_mut(), retained.as_ref()) else {
-                unreachable!("compact presentation requires a surface and retained image");
-            };
-            let _timing = FramePhaseTimer::new("compact presentation submission");
-            let presented = surface
-                .present_compact(
-                    image,
-                    (
-                        presentation_rect.left,
-                        presentation_rect.top,
-                        presentation_rect.width,
-                        presentation_rect.height,
-                    ),
-                    (buf_w, buf_h),
-                    force_gpu_present,
-                )
-                .expect("Failed to present compact Metal frame");
-            if presented {
-                if let Some(transaction) = core_animation_transaction.take() {
-                    drop(transaction);
-                    surface.set_transactional_presentation(false);
+        if self.wgpu.is_none() {
+            if let (Some(surface), Some(image)) = (
+                self.surface
+                    .as_mut()
+                    .filter(|surface| surface.supports_compact()),
+                retained.as_ref(),
+            ) {
+                let _timing = FramePhaseTimer::new("compact presentation submission");
+                let presented = surface
+                    .present_compact(
+                        image,
+                        (
+                            presentation_rect.left,
+                            presentation_rect.top,
+                            presentation_rect.width,
+                            presentation_rect.height,
+                        ),
+                        (buf_w, buf_h),
+                        force_gpu_present,
+                    )
+                    .expect("Failed to present compact Metal frame");
+                if presented {
+                    if let Some(transaction) = core_animation_transaction.take() {
+                        drop(transaction);
+                        surface.set_transactional_presentation(false);
+                    }
+                    self.frame_argb = frame_argb;
+                    self.last_presented_guest_tick = Some(presented_tick);
+                    self.force_next_render = false;
+                    self.force_gpu_present = false;
+                    self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
+                    return;
                 }
-                self.frame_argb = frame_argb;
-                self.last_presented_guest_tick = Some(presented_tick);
-                self.force_next_render = false;
-                self.force_gpu_present = false;
-                self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
-                return;
+                // Beyond the shader's exact integer range: resolve on the CPU.
+                if compact_ready {
+                    self.argb_cache.render(&frame.screen, &mut frame_argb);
+                }
             }
-            // Beyond the shader's exact integer range: resolve on the CPU.
-            self.argb_cache.render(&frame.screen, &mut frame_argb);
         }
 
         #[cfg(target_os = "windows")]
