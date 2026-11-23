@@ -18313,6 +18313,38 @@
     }
 
     #[test]
+    fn tenew_on_a_reused_heap_block_starts_inactive_without_a_caret() {
+        // The heap reuses freed blocks without clearing them. A TERec built
+        // on one must not inherit a non-zero `active` word: Fluffy's Adventure
+        // 1.2 never calls TEActivate on its message fields, and a genuine
+        // Quadra 650 ROM shows no caret in them.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let stale = bus.alloc(TrapDispatcher::TE_REC_MIN_SIZE);
+        for offset in (0..TrapDispatcher::TE_REC_MIN_SIZE).step_by(4) {
+            bus.write_long(stale + offset, 0xFFFF_FFFF);
+        }
+        bus.free(stale);
+
+        let rect_ptr: u32 = 0x190020;
+        bus.write_word(rect_ptr, 10);
+        bus.write_word(rect_ptr + 2, 20);
+        bus.write_word(rect_ptr + 4, 110);
+        bus.write_word(rect_ptr + 6, 220);
+        bus.write_long(TEST_SP, rect_ptr);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        let result = disp.dispatch_dialog(true, 0x1D2, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let te_ptr = bus.read_long(bus.read_long(TEST_SP + 8));
+        assert_eq!(te_ptr, stale, "the TERec reuses the freed block");
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_ACTIVE_OFFSET),
+            0,
+            "a new TERec is inactive until TEActivate"
+        );
+    }
+
+    #[test]
     fn tenew_function_protocol_consumes_two_pointer_args_and_writes_4_byte_result() {
         // Pascal FUNCTION calling convention: 2 pointer args (8 bytes)
         // are popped, the 4-byte TEHandle result is written into the

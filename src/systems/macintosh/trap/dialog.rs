@@ -994,6 +994,12 @@ impl super::TrapDispatcher {
         if te_ptr == 0 {
             return 0;
         }
+        // The heap reuses freed blocks without clearing them. Clear the record
+        // so fields TENew does not set, such as `active`, start at zero
+        // rather than holding a previous block's bytes.
+        for offset in (0..Self::TE_REC_MIN_SIZE).step_by(4) {
+            bus.write_long(te_ptr + offset, 0);
+        }
         let handle = bus.alloc(4);
         if handle == 0 {
             return 0;
