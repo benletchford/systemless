@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.127.4](https://github.com/benletchford/systemless/compare/v0.127.3...v0.127.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **disk-image:** read an Apple_HFS partition whose data count is zero as the whole partition ([a05e34a](https://github.com/benletchford/systemless/commit/a05e34a2e70121fd2c9360e4ae2eef3d79553cac))
+* **resource:** hide application font families while the System file is current ([#6695](https://github.com/benletchford/systemless/issues/6695)) ([5642e90](https://github.com/benletchford/systemless/commit/5642e90c9a847a79bfd0b91919b3e661e202bb69))
+* **textedit:** clear a reused TERec block in TENew ([d0c1a67](https://github.com/benletchford/systemless/commit/d0c1a6712eecd358d179a123f029ea5390e11f46))
+
 ## [0.127.3](https://github.com/benletchford/systemless/compare/v0.127.2...v0.127.3) (2026-11-22)
 
 
