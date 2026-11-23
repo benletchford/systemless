@@ -344,7 +344,49 @@ impl PpcToolboxStartupState {
                     .iter()
                     .map(|tracking| tracking.bounds),
             )
+            .chain(self.open_menu_pane_rects())
             .collect()
+    }
+
+    /// Screen rectangles of the menu panes MenuSelect or PopUpMenuSelect
+    /// currently has open on a native framebuffer, including any open
+    /// submenus. A pulled-down menu is drawn above every window and the
+    /// desktop until tracking ends (Macintosh Toolbox Essentials (1992),
+    /// pp. 3-6--3-7 and 3-122), so host composition must not repaint the
+    /// desktop or window frames over these pixels while tracking is active.
+    fn open_menu_pane_rects(&self) -> Vec<(i16, i16, i16, i16)> {
+        let menu = self.execution.menu();
+        let Some(state) = menu.as_ref() else {
+            return Vec::new();
+        };
+        let pane = |surface: bool, top: i16, left: i16, height: i16, width: i16| {
+            (surface && height > 0 && width > 0).then(|| {
+                (
+                    top,
+                    left,
+                    top.saturating_add(height),
+                    left.saturating_add(width),
+                )
+            })
+        };
+        std::iter::once(pane(
+            state.front_buffer.is_some(),
+            state.popup_top,
+            state.popup_left,
+            state.saved_height,
+            state.saved_width,
+        ))
+        .chain(state.submenus.iter().map(|submenu| {
+            pane(
+                submenu.front_buffer.is_some(),
+                submenu.popup_top,
+                submenu.popup_left,
+                submenu.saved_height,
+                submenu.saved_width,
+            )
+        }))
+        .flatten()
+        .collect()
     }
 
     pub(crate) fn active_menu_definition(&self) -> Option<&MenuDefinitionTracking> {

@@ -10484,3 +10484,55 @@ fn lm_get_mbar_hook_observes_setter_without_changing_menu_hook() {
         assert_eq!(loaded.memory.read_u32_be(0x0a30), Some(0x8765_4321));
     }
 }
+
+#[test]
+fn ppc_open_menu_panes_are_retained_host_overlays_during_tracking() {
+    // Par Pyramid (8-bit screen): host composition restored the desktop
+    // outside every window after each PPC framebuffer sync, painting over the
+    // pulled-down menu. Open native panes must be reported as retained
+    // overlays so the desktop restore and window recomposition skip them.
+    let surface = MenuTrackingSurface {
+        base_addr: 0x0200_0000,
+        row_bytes: 816,
+        width: 800,
+        height: 600,
+        depth: 8,
+    };
+    let mut startup = PpcToolboxStartupState::default();
+    assert!(startup.retained_host_overlay_rects().is_empty());
+
+    let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
+    tracking.front_buffer = Some(surface);
+    tracking.submenus.push(crate::menu_manager::TrackedMenuPane {
+        parent_item: 1,
+        menu_handle: 0x0012_4000,
+        popup_left: 106,
+        popup_top: 24,
+        content_top: 24,
+        scroll_direction: None,
+        popup_width: 60,
+        popup_height: 30,
+        highlighted_item: 0,
+        definition: None,
+        saved_width: 61,
+        saved_height: 31,
+        front_buffer: Some(surface),
+        saved_pixels: Default::default(),
+        item_appearances: Vec::new(),
+    });
+    startup.execution.set_menu_state(Some(tracking));
+    // (top, left, bottom, right) of each saved pane, shadow included.
+    assert_eq!(
+        startup.retained_host_overlay_rects(),
+        vec![(20, 10, 61, 111), (24, 106, 55, 167)]
+    );
+
+    // The classic adapter draws its own panes straight to the host screen.
+    let mut classic = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
+    classic.front_buffer = None;
+    startup.execution.set_menu_state(Some(classic));
+    assert!(startup.retained_host_overlay_rects().is_empty());
+
+    startup.execution.set_menu_state(None);
+    assert!(startup.retained_host_overlay_rects().is_empty());
+}
