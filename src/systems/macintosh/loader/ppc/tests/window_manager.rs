@@ -11749,6 +11749,43 @@ fn alt_dbox_window_frames_content_with_one_pixel_border_and_two_pixel_shadow() {
 }
 
 #[test]
+fn plain_dbox_window_frames_content_with_one_pixel_border() {
+    // Please Shoot Me's registration-code dialog (DLOG 135) is a plainDBox.
+    // The PPC WDEF drew no frame for procID 2, so the grey dialog merged
+    // into the nag dialog behind it; 68K draws the one-pixel border.
+    let pef = synthetic_pef_with_import(b"NewCWindow");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let front =
+        ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let framebuffer_len = usize::try_from(front.row_bytes * front.height).unwrap();
+    loaded
+        .memory
+        .write_bytes(front.base_addr, &vec![0x5a; framebuffer_len])
+        .unwrap();
+    let desktop = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (90, 90)).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    let window = create_test_cwindow(&mut loaded, scratch, (100, 100, 200, 300), 2, true, u32::MAX);
+
+    let structure = ppc_window_global_structure_bounds(&mut loaded.memory, &loaded.gworlds, window);
+    assert_eq!(structure, Some((99, 99, 201, 301)));
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+    let black =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+    let pixel = |loaded: &mut PpcLoadedApp, h: i32, v: i32| {
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (h, v)).unwrap()
+    };
+    for (h, v) in [(99, 150), (200, 99), (300, 150), (200, 200), (99, 99), (300, 200)] {
+        assert_eq!(pixel(&mut loaded, h, v), black, "frame at ({h},{v})");
+    }
+    // No shadow or wider band beyond the one-pixel frame.
+    for (h, v) in [(98, 150), (200, 98), (301, 150), (200, 201), (302, 150), (200, 202)] {
+        assert_eq!(pixel(&mut loaded, h, v), desktop, "outside at ({h},{v})");
+    }
+}
+
+#[test]
 fn new_visible_cwindow_leaves_bytes_after_an_open_cport_port_alone() {
     // OpenCPort ports are 108-byte CGrafPorts with no WindowRecord fields.
     // Prince of Destruction allocates its offscreen ports back to back, so
