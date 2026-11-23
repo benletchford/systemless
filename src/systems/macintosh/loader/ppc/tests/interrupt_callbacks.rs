@@ -1671,3 +1671,281 @@ fn empty_os_event_polls_end_at_the_next_tick_after_the_threshold() {
         "a delivered event must restart detection"
     );
 }
+
+#[test]
+fn recurring_unvalidated_update_polls_end_at_the_next_tick_after_the_threshold() {
+    let lr = 0x0103_4560;
+    let w1 = 0x0306_b880;
+    let w2 = 0x030b_6c30;
+    let bbox = (0, 0, 600, 800);
+    let queued_update = |window: u32| PpcQueuedEvent {
+        what: 6,
+        message: window,
+        when: 0,
+        where_v: 0,
+        where_h: 0,
+        modifiers: 0,
+    };
+    let w1_queue = VecDeque::from([queued_update(w1)]);
+    let both_queue = VecDeque::from([queued_update(w2), queued_update(w1)]);
+
+    let wait_next_event_extra = ppc_import_extra_cycles_for_target(
+        &PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+    );
+    for delivered in [
+        PpcImportAction::Return(1),
+        PpcImportAction::ReturnWithExtraCycles(1, wait_next_event_extra),
+    ] {
+        let mut poll = PpcRecurringUpdatePollState::default();
+        for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+            assert_eq!(
+                ppc_recurring_update_poll_action(
+                    delivered.clone(),
+                    lr,
+                    10,
+                    Some((w1, bbox)),
+                    &w1_queue,
+                    1_000,
+                    &mut poll,
+                ),
+                delivered
+            );
+        }
+        assert_eq!(
+            ppc_recurring_update_poll_action(
+                delivered.clone(),
+                lr,
+                10,
+                Some((w1, bbox)),
+                &w1_queue,
+                1_000,
+                &mut poll,
+            ),
+            PpcImportAction::ReturnWithExtraCycles(1, 999)
+        );
+        assert_eq!(
+            ppc_recurring_update_poll_action(
+                delivered.clone(),
+                lr,
+                11,
+                Some((w1, bbox)),
+                &w1_queue,
+                1_000,
+                &mut poll,
+            ),
+            delivered,
+            "the first recurring update poll of the next tick runs normally"
+        );
+    }
+
+    // Partial validation changing updateRgn bounds restarts the same-tick count.
+    let delivered = PpcImportAction::Return(1);
+    let mut poll = PpcRecurringUpdatePollState::default();
+    for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            11,
+            Some((w1, bbox)),
+            &w1_queue,
+            1_000,
+            &mut poll,
+        );
+    }
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            11,
+            Some((w1, (20, 0, 600, 800))),
+            &w1_queue,
+            1_000,
+            &mut poll,
+        ),
+        delivered
+    );
+
+    // A second window dirtied mid-tick after w1 is already past the threshold
+    // prevents premature fast-forwarding so w2 receives its same-tick deliveries.
+    let mut mid_tick_poll = PpcRecurringUpdatePollState::default();
+    for _ in 0..=PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            12,
+            Some((w1, bbox)),
+            &w1_queue,
+            1_000,
+            &mut mid_tick_poll,
+        );
+    }
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            12,
+            Some((w1, bbox)),
+            &both_queue,
+            1_000,
+            &mut mid_tick_poll,
+        ),
+        delivered,
+        "must not fast-forward while a newly dirtied window is still queued unseen"
+    );
+
+    // Alternating between two unvalidated windows gives each window full deliveries
+    // before ending the tick slice.
+    let mut two_win_poll = PpcRecurringUpdatePollState::default();
+    for _ in 0..PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        for win in [w1, w2] {
+            assert_eq!(
+                ppc_recurring_update_poll_action(
+                    delivered.clone(),
+                    lr,
+                    13,
+                    Some((win, bbox)),
+                    &both_queue,
+                    1_000,
+                    &mut two_win_poll,
+                ),
+                delivered
+            );
+        }
+    }
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            13,
+            Some((w1, bbox)),
+            &both_queue,
+            1_000,
+            &mut two_win_poll,
+        ),
+        delivered,
+        "w2 has not yet exceeded the threshold"
+    );
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            13,
+            Some((w2, bbox)),
+            &both_queue,
+            1_000,
+            &mut two_win_poll,
+        ),
+        PpcImportAction::ReturnWithExtraCycles(1, 999)
+    );
+
+    // Any non-recurring event clears the tracker.
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            13,
+            None,
+            &w1_queue,
+            1_000,
+            &mut two_win_poll,
+        ),
+        delivered
+    );
+    assert_eq!(
+        ppc_recurring_update_poll_action(
+            delivered.clone(),
+            lr,
+            13,
+            Some((w1, bbox)),
+            &w1_queue,
+            1_000,
+            &mut two_win_poll,
+        ),
+        delivered
+    );
+}
+
+#[test]
+fn hle_import_runner_fast_forwards_recurring_update_polls_for_get_and_wait_next_event() {
+    for (import_name, target) in [
+        (
+            &b"GetNextEvent"[..],
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent),
+        ),
+        (
+            &b"WaitNextEvent"[..],
+            PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::WaitNextEvent),
+        ),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(import_name)).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (0, 0, 600, 800),
+            0,
+            true,
+            u32::MAX,
+        );
+        loaded.imports[0].dispatcher_target = target;
+        let update_rgn = loaded
+            .memory
+            .read_u32_be(window + PPC_CWINDOW_UPDATE_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, update_rgn, 0, 0, 600, 800);
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 6,
+            message: window,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let event_ptr = scratch + 0x80;
+        let event_hi = (event_ptr >> 16) as u16;
+        let event_lo = (event_ptr & 0xffff) as u16;
+        let loop_pc = PPC_DATA_BASE + 0x1600;
+        let trap_hi = (PPC_IMPORT_TRAP_BASE >> 16) as u16;
+        let trap_lo = (PPC_IMPORT_TRAP_BASE & 0xffff) as u16;
+        let mut loop_code = Vec::new();
+        for word in [
+            d_form_u(15, 12, 0, trap_hi),  // lis r12, trap@ha
+            d_form_u(24, 12, 12, trap_lo), // ori r12, r12, trap@l
+            xfx_form(31, 12, 9, 467),      // mtctr r12
+            d_form_u(14, 3, 0, 0xffff),    // li r3, -1 (everyEvent)
+            d_form_u(15, 4, 0, event_hi),  // lis r4, event@ha
+            d_form_u(24, 4, 4, event_lo),  // ori r4, r4, event@l
+            d_form_u(14, 5, 0, 201),       // li r5, 201
+            d_form_u(14, 6, 0, 0),         // li r6, 0
+            xl_form(19, 20, 0, 528, true), // bctrl
+            0x4bff_ffe8,                   // b -24
+        ] {
+            loop_code.extend_from_slice(&word.to_be_bytes());
+        }
+        loaded.memory.add_region(loop_pc, loop_code);
+        loaded.cpu.pc = loop_pc;
+        loaded.set_tick_count(42);
+        loaded.set_clock_cycle_timing(100_000, 0);
+
+        let probe = loaded.run_with_hle_imports(100_000);
+
+        assert_eq!(ppc_run_result_cycles(probe.result), 100_000);
+        assert!(
+            probe.handled_import_count
+                <= PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD.saturating_add(1),
+            "{} executed {} imports instead of ending at the tick boundary",
+            String::from_utf8_lossy(import_name),
+            probe.handled_import_count
+        );
+        assert_eq!(loaded.memory.read_u16_be(event_ptr), Some(6));
+        assert_eq!(loaded.memory.read_u32_be(event_ptr + 2), Some(window));
+        assert!(
+            loaded
+                .event_queue()
+                .iter()
+                .any(|queued| queued.what == 6 && queued.message == window),
+            "recurring updateEvt must stay queued across ticks until updateRgn is emptied"
+        );
+    }
+}

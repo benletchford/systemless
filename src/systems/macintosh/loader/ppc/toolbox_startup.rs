@@ -75,6 +75,8 @@ pub struct PpcToolboxStartupState {
     pub(crate) event_queue_probe: EventQueueProbeSnapshot,
     /// Empty event polls seen in the current tick, kept across execution slices.
     pub(super) event_idle_poll: PpcEventIdlePollState,
+    /// Unvalidated `updateEvt` polls seen in the current tick, kept across slices.
+    pub(super) recurring_update_poll: PpcRecurringUpdatePollState,
     pub(super) event_loop_timers: Vec<PpcEventLoopTimerRecord>,
     pub(super) next_event_loop_timer_ref: u32,
     pub(super) carbon_event_handlers: Vec<PpcCarbonEventHandlerRecord>,
@@ -203,6 +205,7 @@ impl Default for PpcToolboxStartupState {
             last_event_record: None,
             event_queue_probe: EventQueueProbeSnapshot::default(),
             event_idle_poll: PpcEventIdlePollState::default(),
+            recurring_update_poll: PpcRecurringUpdatePollState::default(),
             event_loop_timers: Vec::new(),
             next_event_loop_timer_ref: 0x100,
             carbon_event_handlers: Vec::new(),
