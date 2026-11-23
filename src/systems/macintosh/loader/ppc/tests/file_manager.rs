@@ -3625,6 +3625,54 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn classic_put_dialog_draws_the_68k_package_geometry() {
+        // The PowerPC put dialog draws as the 68K Standard File package does:
+        // plainDBox's frame one pixel outside the dialog, the name field's
+        // frame three pixels outside its item, and the default button's
+        // three-pixel ring four pixels outside the button.
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.set_ui_theme(UiThemeId::ClassicSystem7);
+        start_put_dialog_with_saves_folder(&mut loaded);
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .clone()
+            .unwrap();
+        ppc_standard_file_draw_put_dialog(&mut loaded.memory, &loaded.gworlds, &tracking);
+        let front = tracking.front_buffer;
+        let (top, left, bottom, _) = tracking.bounds;
+        let black = ppc_front_rgb_pixel(&mut loaded.memory, front, PPC_RGB_BLACK);
+        let white = ppc_front_rgb_pixel(&mut loaded.memory, front, PPC_RGB_WHITE);
+        let mut pixel = |local: (i16, i16)| {
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(left + local.1), i32::from(top + local.0)),
+            )
+        };
+        // Dialog frame: just outside the content, which is white to its edge.
+        assert_eq!(pixel((-1, 100)), black);
+        assert_eq!(pixel((0, 100)), white);
+        assert_eq!(pixel((bottom - top, 100)), black);
+        // Name field: framed at the item rect outset by three.
+        let name = PPC_STANDARD_FILE_PUT_NAME_RECT;
+        assert_eq!(pixel((name.0 - 3, 100)), black);
+        assert_eq!(pixel((name.0 - 2, 100)), white);
+        assert_eq!(pixel((name.2 + 2, 100)), black);
+        // Default ring around Save: outset by four, three pixels thick.
+        let save = PPC_STANDARD_FILE_PUT_SAVE_RECT;
+        let middle = (save.1 + save.3) / 2;
+        for v in save.0 - 4..save.0 - 1 {
+            assert_eq!(pixel((v, middle)), black, "ring row {v}");
+        }
+        assert_eq!(pixel((save.0 - 1, middle)), white);
+        // Save's own outline is the classic button's rounded rectangle.
+        assert_eq!(pixel((save.0, middle)), black);
+        assert_eq!(pixel((save.0, save.1)), white, "rounded corner");
+    }
+
+    #[test]
     fn standard_file_folder_popup_fits_the_folder_name() {
         // A short name keeps the dialog's popup item; a long one widens the
         // popup about the list's centre, up to the list's width.

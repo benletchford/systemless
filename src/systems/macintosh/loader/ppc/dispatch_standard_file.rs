@@ -324,7 +324,7 @@ fn ppc_navigation_write_put_reply(
 pub(super) const PPC_STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
 pub(super) const PPC_STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
 pub(super) const PPC_STANDARD_FILE_GET_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
-pub(super) const PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 268, 31, 352);
+pub(super) const PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT: (i16, i16, i16, i16) = (12, 258, 31, 352);
 pub(super) const PPC_STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (35, 18, 163, 236);
 pub(super) const PPC_STANDARD_FILE_GET_SCROLL_RECT: (i16, i16, i16, i16) = (35, 235, 163, 251);
 pub(super) const PPC_STANDARD_FILE_GET_EJECT_RECT: (i16, i16, i16, i16) = (38, 258, 59, 338);
@@ -1595,7 +1595,7 @@ fn ppc_standard_file_put_popup_rect(
     )
 }
 
-fn ppc_standard_file_draw_put_dialog(
+pub(super) fn ppc_standard_file_draw_put_dialog(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     tracking: &PpcStandardFilePutTrackingState,
