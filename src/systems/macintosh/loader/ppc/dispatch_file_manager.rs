@@ -413,6 +413,7 @@ pub(super) fn ppc_dispatch_file_manager(
                 resource_files,
                 vfs_resources,
                 default_dir_id,
+                working_directories,
                 vfs_volumes,
             );
             ppc_p2cstr(cpu, memory);

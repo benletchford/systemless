@@ -3769,17 +3769,8 @@ pub(super) fn ppc_h_open(
     // fileName, permission, and a returned file reference number. A working
     // directory reference can stand in for the volume reference; when dirID
     // is zero it also supplies the directory to search.
-    let vref = cpu.gpr[3] as u16 as i16;
-    let dir_id = cpu.gpr[4];
-    let (volume_ref_num, effective_dir_id) = working_directories
-        .get(&vref)
-        .map(|record| {
-            (
-                record.volume_ref_num,
-                if dir_id == 0 { record.dir_id } else { dir_id },
-            )
-        })
-        .unwrap_or((vref, dir_id));
+    let (volume_ref_num, effective_dir_id) =
+        ppc_working_directory_location(working_directories, cpu.gpr[3] as u16 as i16, cpu.gpr[4]);
     ppc_open_data_fork_by_name(
         memory,
         vfs_directories,
@@ -5363,6 +5354,26 @@ pub(super) fn ppc_fsp_create(
     PPC_NO_ERR
 }
 
+/// Resolves a working-directory reference number to the volume and
+/// directory it names. Inside Macintosh: Files (1992), 2-27: wherever a
+/// volume reference number is accepted, a working directory reference number
+/// may be used instead; its directory applies when the caller's dirID is 0.
+pub(super) fn ppc_working_directory_location(
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vref: i16,
+    dir_id: u32,
+) -> (i16, u32) {
+    working_directories
+        .get(&vref)
+        .map(|record| {
+            (
+                record.volume_ref_num,
+                if dir_id == 0 { record.dir_id } else { dir_id },
+            )
+        })
+        .unwrap_or((vref, dir_id))
+}
+
 pub(super) fn ppc_h_create(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -5377,17 +5388,8 @@ pub(super) fn ppc_h_create(
     // A registered working-directory reference may identify the volume.
     // Its directory applies only when the caller leaves dirID at zero,
     // matching HOpen's existing hierarchical reference resolution.
-    let vref = cpu.gpr[3] as u16 as i16;
-    let dir_id = cpu.gpr[4];
-    let (volume_ref_num, effective_dir_id) = working_directories
-        .get(&vref)
-        .map(|record| {
-            (
-                record.volume_ref_num,
-                if dir_id == 0 { record.dir_id } else { dir_id },
-            )
-        })
-        .unwrap_or((vref, dir_id));
+    let (volume_ref_num, effective_dir_id) =
+        ppc_working_directory_location(working_directories, cpu.gpr[3] as u16 as i16, cpu.gpr[4]);
     ppc_create_data_fork_by_name(
         memory,
         vfs_directories,
@@ -5772,16 +5774,21 @@ pub(super) fn ppc_create(
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
     vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
-    // The non-hierarchical Create call resolves against the current directory.
+    // The non-hierarchical Create call resolves against the current
+    // directory, or against the working directory its vRefNum names (the
+    // form SFPutFile returns in SFReply.vRefNum).
+    let (vref, dir_id) =
+        ppc_working_directory_location(working_directories, cpu.gpr[4] as u16 as i16, 0);
     ppc_create_data_fork_by_name(
         memory,
         vfs_directories,
         vfs_files,
         default_dir_id,
-        cpu.gpr[4] as u16 as i16,
-        0,
+        vref,
+        dir_id,
         cpu.gpr[3],
         cpu.gpr[5],
         cpu.gpr[6],
@@ -5873,6 +5880,7 @@ pub(super) fn ppc_delete_by_name(
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
     vfs_volumes: &[PpcVfsVolumeRecord],
 ) -> i16 {
     let (vref, dir_id, name_ptr, pb) = if matches!(
@@ -5908,6 +5916,7 @@ pub(super) fn ppc_delete_by_name(
     } else {
         (cpu.gpr[4] as u16 as i16, 0, cpu.gpr[3], None)
     };
+    let (vref, dir_id) = ppc_working_directory_location(working_directories, vref, dir_id);
 
     // Inside Macintosh: Files (1992), 2-102 and 2-189: PBDelete/PBHDelete
     // identify both forks by name; HDelete's high-level ABI is on 2-173.
