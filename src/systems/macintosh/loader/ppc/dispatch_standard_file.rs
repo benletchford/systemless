@@ -73,7 +73,15 @@ pub(super) struct PpcStandardFileFilteringState {
 pub(super) struct PpcStandardFilePutTrackingState {
     pub(super) call: PpcStandardFileCall,
     pub(super) vref: i16,
+    /// The folder the list shows, which receives the saved file.
     pub(super) dir_id: u32,
+    /// Every folder and file in `dir_id`. The put list shows existing files
+    /// so the user can see what a name would replace.
+    pub(super) entries: Vec<PpcStandardFileEntry>,
+    pub(super) selected: Option<usize>,
+    /// Current folder first, then each enclosing folder up to the volume.
+    pub(super) folder_chain: Vec<(u32, Vec<u8>)>,
+    pub(super) folder_popup_open: bool,
     pub(super) prompt: Vec<u8>,
     pub(super) name: Vec<u8>,
     pub(super) sel_start: usize,
@@ -327,11 +335,23 @@ pub(super) const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 2
 pub(super) const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
 pub(super) const PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT: (i16, i16, i16, i16) = (31, 90, 175, 250);
 pub(super) const PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT: i16 = 16;
+// The System 7 put dialog (DLOG -3999), laid out as the 68K Standard File
+// package draws it. Inside Macintosh: Files (1992), pp. 3-8--3-9.
 pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
-pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 148;
-pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
-pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
-pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 260;
+pub(super) const PPC_STANDARD_FILE_PUT_VOLUME_RECT: (i16, i16, i16, i16) = (12, 90, 31, 164);
+pub(super) const PPC_STANDARD_FILE_PUT_VOLUME_LABEL_RECT: (i16, i16, i16, i16) =
+    (12, 258, 31, 354);
+pub(super) const PPC_STANDARD_FILE_PUT_LIST_RECT: (i16, i16, i16, i16) = (38, 18, 156, 236);
+pub(super) const PPC_STANDARD_FILE_PUT_SCROLL_RECT: (i16, i16, i16, i16) = (38, 235, 156, 251);
+pub(super) const PPC_STANDARD_FILE_PUT_EJECT_RECT: (i16, i16, i16, i16) = (38, 258, 59, 338);
+pub(super) const PPC_STANDARD_FILE_PUT_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
+pub(super) const PPC_STANDARD_FILE_PUT_PROMPT_RECT: (i16, i16, i16, i16) = (166, 24, 184, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (188, 24, 208, 330);
+pub(super) const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (220, 166, 242, 246);
+pub(super) const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (220, 258, 242, 338);
+/// Both Standard File lists show eight rows.
+const PPC_STANDARD_FILE_VISIBLE_ROWS: usize = 8;
 
 fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
     match mode {
@@ -500,7 +520,7 @@ fn ppc_standard_file_folder_chain(
 
 /// Index into `folder_chain` of the popup row under a dialog-local point.
 fn ppc_standard_file_folder_menu_row(
-    tracking: &PpcStandardFileGetTrackingState,
+    folder_chain: &[(u32, Vec<u8>)],
     local: (i16, i16),
 ) -> Option<usize> {
     let menu = PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT;
@@ -508,25 +528,28 @@ fn ppc_standard_file_folder_menu_row(
         return None;
     }
     let row = ((local.0 - menu.0) / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT) as usize;
-    (row < tracking.folder_chain.len()).then_some(row)
+    (row < folder_chain.len()).then_some(row)
 }
 
+/// The folder popup's menu, dropped below the popup button. The get and put
+/// dialogs place that button at the same spot.
 fn ppc_standard_file_draw_folder_menu(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFileGetTrackingState,
+    front: PpcFrontBuffer,
+    bounds: (i16, i16, i16, i16),
+    folder_chain: &[(u32, Vec<u8>)],
 ) {
     // Rows past the dialog's bottom edge are not shown; the menu does not scroll.
     let rows = (PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.2 - PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.0)
         / PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
-    let rows = tracking.folder_chain.len().min(rows as usize) as i16;
-    let mut menu =
-        ppc_standard_file_global_rect(tracking.bounds, PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT);
+    let rows = folder_chain.len().min(rows as usize) as i16;
+    let mut menu = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT);
     menu.2 = menu
         .0
         .saturating_add(rows * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT);
-    let _ = ppc_fill_front_rect(memory, tracking.front_buffer, menu, PPC_RGB_WHITE);
-    let _ = ppc_frame_front_rect(memory, tracking.front_buffer, menu, PPC_RGB_BLACK, 1);
+    let _ = ppc_fill_front_rect(memory, front, menu, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, menu, PPC_RGB_BLACK, 1);
     for row in 0..rows {
         let top = menu.0 + row * PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT;
         ppc_draw_dialog_text(
@@ -538,7 +561,7 @@ fn ppc_standard_file_draw_folder_menu(
                 top + PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT,
                 menu.3.saturating_sub(3),
             ),
-            &tracking.folder_chain[row as usize].1,
+            &folder_chain[row as usize].1,
             PPC_RGB_BLACK,
         );
     }
@@ -960,30 +983,29 @@ pub(super) fn ppc_standard_file_draw_button(
     );
 }
 
+/// The first list row shown: the list scrolls just far enough to show the
+/// selection on its last row.
+fn ppc_standard_file_first_visible(selected: Option<usize>) -> usize {
+    selected
+        .unwrap_or(0)
+        .saturating_sub(PPC_STANDARD_FILE_VISIBLE_ROWS - 1)
+}
+
 fn ppc_standard_file_draw_scrollbar(
     memory: &mut PpcSectionMem,
-    front: PpcFrontBuffer,
     gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFileGetTrackingState,
+    bounds: (i16, i16, i16, i16),
+    scroll_rect: (i16, i16, i16, i16),
+    entry_count: usize,
+    selected: Option<usize>,
 ) {
-    let bounds = tracking.bounds;
-    let rect = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.3),
-    );
-    let visible_rows = 8usize;
-    let max = tracking.entries.len().saturating_sub(visible_rows);
-    let first_visible = tracking
-        .selected
-        .saturating_sub(visible_rows.saturating_sub(1));
-    let _ = front;
+    let max = entry_count.saturating_sub(PPC_STANDARD_FILE_VISIBLE_ROWS);
+    let first_visible = ppc_standard_file_first_visible(selected);
     ppc_draw_retained_scrollbar_rect(
         memory,
         gworlds,
         PPC_MAIN_GWORLD,
-        rect,
+        ppc_standard_file_global_rect(bounds, scroll_rect),
         first_visible.min(i16::MAX as usize) as i16,
         0,
         max.min(i16::MAX as usize) as i16,
@@ -1044,27 +1066,29 @@ fn ppc_standard_file_draw_entry_icon(
     }
 }
 
-fn ppc_standard_file_draw_get_dialog(
+/// The Standard File list: a folder or document glyph and the name of each
+/// visible entry, with the selection inverted.
+fn ppc_standard_file_draw_list(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
-    tracking: &PpcStandardFileGetTrackingState,
+    front: PpcFrontBuffer,
+    bounds: (i16, i16, i16, i16),
+    list_rect: (i16, i16, i16, i16),
+    entries: &[PpcStandardFileEntry],
+    selected: Option<usize>,
 ) {
-    let front = tracking.front_buffer;
-    let bounds = tracking.bounds;
-    ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
     let list = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.3),
+        bounds.0.saturating_add(list_rect.0),
+        bounds.1.saturating_add(list_rect.1),
+        bounds.0.saturating_add(list_rect.2),
+        bounds.1.saturating_add(list_rect.3),
     );
     let _ = ppc_fill_front_rect(memory, front, list, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, list, PPC_RGB_BLACK, 1);
-    let visible_rows = 8usize;
-    let first_visible = tracking.selected.saturating_sub(visible_rows - 1);
-    for row in 0..visible_rows {
+    let first_visible = ppc_standard_file_first_visible(selected);
+    for row in 0..PPC_STANDARD_FILE_VISIBLE_ROWS {
         let index = first_visible + row;
-        let Some(entry) = tracking.entries.get(index) else {
+        let Some(entry) = entries.get(index) else {
             break;
         };
         let row_top = list.0.saturating_add(2).saturating_add(
@@ -1075,7 +1099,7 @@ fn ppc_standard_file_draw_get_dialog(
         let row_bottom = row_top
             .saturating_add(PPC_STANDARD_FILE_GET_ROW_HEIGHT)
             .min(list.2.saturating_sub(1));
-        let selected = index == tracking.selected;
+        let selected = selected == Some(index);
         let row_rect = (
             row_top,
             list.1.saturating_add(2),
@@ -1109,7 +1133,18 @@ fn ppc_standard_file_draw_get_dialog(
             },
         );
     }
-    let volume_rect = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_RECT);
+}
+
+/// The popup naming the folder shown, and the volume's name beside it.
+fn ppc_standard_file_draw_folder_popup(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    bounds: (i16, i16, i16, i16),
+    volume_rect: (i16, i16, i16, i16),
+    label_rect: (i16, i16, i16, i16),
+    folder_chain: &[(u32, Vec<u8>)],
+) {
+    let volume_rect = ppc_standard_file_global_rect(bounds, volume_rect);
     ppc_draw_retained_control_rect(
         memory,
         gworlds,
@@ -1119,8 +1154,7 @@ fn ppc_standard_file_draw_get_dialog(
         true,
         false,
     );
-    let folder = tracking
-        .folder_chain
+    let folder = folder_chain
         .first()
         .map_or(&[][..], |(_, name)| name.as_slice());
     let label = if folder.len() > 7 {
@@ -1132,11 +1166,45 @@ fn ppc_standard_file_draw_get_dialog(
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT),
+        ppc_standard_file_global_rect(bounds, label_rect),
         crate::trap::dispatch::BOOT_VOLUME_NAME.as_bytes(),
         PPC_RGB_BLACK,
     );
-    ppc_standard_file_draw_scrollbar(memory, front, gworlds, tracking);
+}
+
+fn ppc_standard_file_draw_get_dialog(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFileGetTrackingState,
+) {
+    let front = tracking.front_buffer;
+    let bounds = tracking.bounds;
+    ppc_draw_retained_dialog_frame(memory, gworlds, bounds, bounds, 2);
+    ppc_standard_file_draw_list(
+        memory,
+        gworlds,
+        front,
+        bounds,
+        PPC_STANDARD_FILE_GET_LIST_RECT,
+        &tracking.entries,
+        Some(tracking.selected),
+    );
+    ppc_standard_file_draw_folder_popup(
+        memory,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_VOLUME_RECT,
+        PPC_STANDARD_FILE_GET_VOLUME_LABEL_RECT,
+        &tracking.folder_chain,
+    );
+    ppc_standard_file_draw_scrollbar(
+        memory,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_SCROLL_RECT,
+        tracking.entries.len(),
+        Some(tracking.selected),
+    );
     ppc_standard_file_draw_button(
         memory,
         front,
@@ -1184,7 +1252,7 @@ fn ppc_standard_file_draw_get_dialog(
         true,
     );
     if tracking.folder_popup_open {
-        ppc_standard_file_draw_folder_menu(memory, gworlds, tracking);
+        ppc_standard_file_draw_folder_menu(memory, gworlds, front, bounds, &tracking.folder_chain);
     }
 }
 
@@ -1199,36 +1267,59 @@ fn ppc_standard_file_draw_put_dialog(
         let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
         let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
     }
-    ppc_draw_dialog_text(
+    ppc_standard_file_draw_folder_popup(
         memory,
         gworlds,
-        (
-            bounds.0.saturating_add(14),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(330),
-        ),
-        b"Save File",
-        PPC_RGB_BLACK,
+        bounds,
+        PPC_STANDARD_FILE_PUT_VOLUME_RECT,
+        PPC_STANDARD_FILE_PUT_VOLUME_LABEL_RECT,
+        &tracking.folder_chain,
+    );
+    ppc_standard_file_draw_list(
+        memory,
+        gworlds,
+        front,
+        bounds,
+        PPC_STANDARD_FILE_PUT_LIST_RECT,
+        &tracking.entries,
+        tracking.selected,
+    );
+    ppc_standard_file_draw_scrollbar(
+        memory,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_SCROLL_RECT,
+        tracking.entries.len(),
+        tracking.selected,
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_EJECT_RECT,
+        b"Eject",
+        false,
+        false,
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_DESKTOP_RECT,
+        b"Desktop",
+        true,
+        false,
     );
     ppc_draw_dialog_text(
         memory,
         gworlds,
-        (
-            bounds.0.saturating_add(32),
-            bounds.1.saturating_add(18),
-            bounds.0.saturating_add(50),
-            bounds.1.saturating_add(330),
-        ),
+        ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_PROMPT_RECT),
         &tracking.prompt,
         PPC_RGB_BLACK,
     );
-    let name = (
-        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.0),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.1),
-        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.2),
-        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.3),
-    );
+    let name = ppc_standard_file_global_rect(bounds, PPC_STANDARD_FILE_PUT_NAME_RECT);
     let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
     let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
     let selected = tracking.sel_start < tracking.sel_end;
@@ -1277,9 +1368,12 @@ fn ppc_standard_file_draw_put_dialog(
         bounds,
         PPC_STANDARD_FILE_PUT_SAVE_RECT,
         b"Save",
-        true,
+        !tracking.name.is_empty(),
         true,
     );
+    if tracking.folder_popup_open {
+        ppc_standard_file_draw_folder_menu(memory, gworlds, front, bounds, &tracking.folder_chain);
+    }
 }
 
 fn ppc_standard_file_write_cancel_reply(
@@ -1637,7 +1731,7 @@ fn ppc_standard_file_get_service(
                 event.where_h.saturating_sub(tracking.bounds.1),
             );
             let row = matches!(event.what, 1 | 2)
-                .then(|| ppc_standard_file_folder_menu_row(&tracking, local))
+                .then(|| ppc_standard_file_folder_menu_row(&tracking.folder_chain, local))
                 .flatten();
             if let Some(row) = row {
                 tracking.folder_popup_open = false;
@@ -1983,6 +2077,9 @@ fn ppc_standard_file_put_start(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     startup: &mut PpcToolboxStartupState,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
     default_dir_id: u32,
     gworlds: &[PpcGWorldRecord],
     mode: PpcStandardFileMode,
@@ -2034,10 +2131,23 @@ fn ppc_standard_file_put_start(
         PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
         requested_origin,
     );
+    let dir_id = ppc_directory_path_for_id(vfs_directories, default_dir_id)
+        .map(|_| default_dir_id)
+        .unwrap_or(PPC_ROOT_DIR_ID);
     let tracking = PpcStandardFilePutTrackingState {
         call: ppc_standard_file_call(mode, cpu, c_strings),
         vref: PPC_BOOT_VOLUME_REF_NUM,
-        dir_id: default_dir_id,
+        dir_id,
+        entries: ppc_standard_file_get_entries(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            dir_id,
+            None,
+        ),
+        selected: None,
+        folder_chain: ppc_standard_file_folder_chain(vfs_directories, dir_id),
+        folder_popup_open: false,
         prompt: ppc_standard_file_prompt(memory, prompt_ptr, c_strings),
         name: name.clone(),
         sel_start: 0,
@@ -2046,6 +2156,211 @@ fn ppc_standard_file_put_start(
         front_buffer,
         saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
     };
+    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+    startup.standard_file_put_tracking = Some(tracking);
+    PpcImportAction::Yield(u64::MAX)
+}
+
+/// Shows `dir_id` in the put dialog's list, with nothing selected.
+fn ppc_standard_file_put_show_folder(
+    tracking: &mut PpcStandardFilePutTrackingState,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    dir_id: u32,
+) {
+    tracking.dir_id = dir_id;
+    tracking.entries =
+        ppc_standard_file_get_entries(vfs_directories, vfs_files, vfs_resource_files, dir_id, None);
+    tracking.selected = None;
+    tracking.folder_chain = ppc_standard_file_folder_chain(vfs_directories, dir_id);
+}
+
+/// The selected entry's folder, if a folder is selected.
+fn ppc_standard_file_put_selected_folder(tracking: &PpcStandardFilePutTrackingState) -> Option<u32> {
+    tracking
+        .selected
+        .and_then(|index| tracking.entries.get(index))
+        .filter(|entry| entry.is_directory)
+        .map(|entry| entry.dir_id)
+}
+
+/// One pass of the modal put dialog: handles at most one event, then either
+/// returns the reply or yields with the dialog still up. The list, folder
+/// popup and Desktop button choose the folder that receives the file, as in
+/// the 68K Standard File package (Inside Macintosh: Files (1992),
+/// pp. 3-8--3-12).
+#[allow(clippy::too_many_arguments)]
+fn ppc_standard_file_put_service(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    navigation: &mut PpcNavigationReplyContext<'_>,
+    mut tracking: PpcStandardFilePutTrackingState,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &ProcessVfsFileRecords,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    event_queue: &mut EventQueue,
+    gworlds: &[PpcGWorldRecord],
+) -> PpcImportAction {
+    let mut finish = |memory: &mut PpcSectionMem,
+                      startup: &mut PpcToolboxStartupState,
+                      tracking: PpcStandardFilePutTrackingState,
+                      accepted: bool| {
+        ppc_standard_file_finish_put(
+            memory,
+            startup,
+            process_memory_manager,
+            heap_cursor,
+            last_mem_error,
+            navigation,
+            tracking,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_volumes,
+            working_directories,
+            next_working_directory_ref_num,
+            accepted,
+        )
+    };
+    if tracking.call.return_address != cpu.lr {
+        return finish(memory, startup, tracking, false);
+    }
+    let event = event_queue
+        .iter()
+        .position(|event| matches!(event.what, 1 | 2 | 3 | 5))
+        .and_then(|index| event_queue.remove(index));
+    let Some(event) = event else {
+        // Keep the dialog on top of anything the application drew meanwhile.
+        ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+        startup.standard_file_put_tracking = Some(tracking);
+        return PpcImportAction::Yield(u64::MAX);
+    };
+    let mut accept = false;
+    let mut show_folder = None;
+    let local = (
+        event.where_v.saturating_sub(tracking.bounds.0),
+        event.where_h.saturating_sub(tracking.bounds.1),
+    );
+    if tracking.folder_popup_open {
+        let row = matches!(event.what, 1 | 2)
+            .then(|| ppc_standard_file_folder_menu_row(&tracking.folder_chain, local))
+            .flatten();
+        if let Some(row) = row {
+            tracking.folder_popup_open = false;
+            show_folder = Some(tracking.folder_chain[row].0);
+        } else if !(event.what == 2
+            && ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_VOLUME_RECT))
+        {
+            // Releasing on the popup button leaves the menu open for a second click.
+            tracking.folder_popup_open = false;
+        }
+    } else if event.what == 1 {
+        if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT) {
+            return finish(memory, startup, tracking, false);
+        }
+        if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_SAVE_RECT) {
+            accept = true;
+        } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_VOLUME_RECT) {
+            tracking.folder_popup_open = true;
+        } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_DESKTOP_RECT) {
+            show_folder = Some(PPC_ROOT_DIR_ID);
+        } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_LIST_RECT)
+            && !tracking.entries.is_empty()
+        {
+            let row = ((local.0 - PPC_STANDARD_FILE_PUT_LIST_RECT.0 - 2)
+                / PPC_STANDARD_FILE_GET_ROW_HEIGHT)
+                .max(0) as usize;
+            let index = ppc_standard_file_first_visible(tracking.selected).saturating_add(row);
+            if index < tracking.entries.len() {
+                // A click on the folder already selected opens it, as a
+                // double click does.
+                if tracking.selected == Some(index) && tracking.entries[index].is_directory {
+                    show_folder = Some(tracking.entries[index].dir_id);
+                } else {
+                    tracking.selected = Some(index);
+                }
+            }
+        } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_SCROLL_RECT)
+            && !tracking.entries.is_empty()
+        {
+            let relative_v = local.0 - PPC_STANDARD_FILE_PUT_SCROLL_RECT.0;
+            let height = PPC_STANDARD_FILE_PUT_SCROLL_RECT.2 - PPC_STANDARD_FILE_PUT_SCROLL_RECT.0;
+            let selected = tracking.selected.unwrap_or(0);
+            let last = tracking.entries.len() - 1;
+            tracking.selected = Some(if relative_v < 16 {
+                selected.saturating_sub(1)
+            } else if relative_v >= height - 16 {
+                (selected + 1).min(last)
+            } else if relative_v < height / 2 {
+                selected.saturating_sub(PPC_STANDARD_FILE_VISIBLE_ROWS)
+            } else {
+                (selected + PPC_STANDARD_FILE_VISIBLE_ROWS).min(last)
+            });
+        }
+    } else if event.what != 2 {
+        let character = event.message as u8;
+        let key_code = (event.message >> 8) as u8;
+        let command = event.modifiers & 0x0100 != 0;
+        if crate::dialog_manager::is_dialog_default_key(character, key_code) {
+            accept = true;
+        } else if crate::dialog_manager::is_dialog_cancel_key(character, key_code, event.modifiers) {
+            return finish(memory, startup, tracking, false);
+        } else if command && (key_code == 0x7e || character == 0x1e) {
+            // Command-Up Arrow shows the enclosing folder.
+            show_folder = vfs_directories
+                .iter()
+                .find(|directory| directory.dir_id == tracking.dir_id)
+                .map(|directory| directory.parent_dir_id)
+                .filter(|parent| *parent >= PPC_ROOT_DIR_ID);
+        } else if command && (key_code == 0x7d || character == 0x1f) {
+            // Command-Down Arrow opens the selected folder.
+            show_folder = ppc_standard_file_put_selected_folder(&tracking);
+        } else if command && character.eq_ignore_ascii_case(&b'd') {
+            show_folder = Some(PPC_ROOT_DIR_ID);
+        } else if command && character.eq_ignore_ascii_case(&b'a') {
+            tracking.sel_start = 0;
+            tracking.sel_end = tracking.name.len();
+        } else if (key_code == 0x7e || character == 0x1e) && !tracking.entries.is_empty() {
+            tracking.selected = Some(tracking.selected.unwrap_or(0).saturating_sub(1));
+        } else if (key_code == 0x7d || character == 0x1f) && !tracking.entries.is_empty() {
+            tracking.selected = Some(
+                tracking
+                    .selected
+                    .map_or(0, |selected| selected + 1)
+                    .min(tracking.entries.len() - 1),
+            );
+        } else if character == 0x08 || key_code == 0x33 {
+            ppc_standard_file_backspace_name(&mut tracking);
+        } else if !command
+            && (0x20..=0x7e).contains(&character)
+            && !matches!(character, b'/' | b':')
+            && tracking.sel_start <= tracking.sel_end
+            && tracking.sel_end <= tracking.name.len()
+        {
+            ppc_standard_file_insert_name_character(&mut tracking, character);
+        }
+    }
+    // Save stays disabled while the name is empty.
+    if accept && !tracking.name.is_empty() {
+        return finish(memory, startup, tracking, true);
+    }
+    if let Some(dir_id) = show_folder {
+        ppc_standard_file_put_show_folder(
+            &mut tracking,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            dir_id,
+        );
+    }
     ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
     startup.standard_file_put_tracking = Some(tracking);
     PpcImportAction::Yield(u64::MAX)
@@ -2099,127 +2414,34 @@ fn ppc_dispatch_standard_file(
         PpcStandardFileMode::PutModern
         | PpcStandardFileMode::PutLegacy
         | PpcStandardFileMode::PutNavigation => {
-            if let Some(mut tracking) = startup.standard_file_put_tracking.take() {
-                if tracking.call.return_address != cpu.lr {
-                    return ppc_standard_file_finish_put(
-                        memory,
-                        startup,
-                        process_memory_manager,
-                        heap_cursor,
-                        last_mem_error,
-                        navigation,
-                        tracking,
-                        vfs_directories,
-                        vfs_files,
-                        vfs_resource_files,
-                        vfs_volumes,
-                        working_directories,
-                        next_working_directory_ref_num,
-                        false,
-                    );
-                }
-                let event = event_queue
-                    .iter()
-                    .position(|event| matches!(event.what, 1 | 3 | 5))
-                    .and_then(|index| event_queue.remove(index));
-                let mut accept = false;
-                if let Some(event) = event {
-                    if event.what == 1 {
-                        let local = (
-                            event.where_v.saturating_sub(tracking.bounds.0),
-                            event.where_h.saturating_sub(tracking.bounds.1),
-                        );
-                        if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT)
-                        {
-                            return ppc_standard_file_finish_put(
-                                memory,
-                                startup,
-                                process_memory_manager,
-                                heap_cursor,
-                                last_mem_error,
-                                navigation,
-                                tracking,
-                                vfs_directories,
-                                vfs_files,
-                                vfs_resource_files,
-                                vfs_volumes,
-                                working_directories,
-                                next_working_directory_ref_num,
-                                false,
-                            );
-                        }
-                        accept =
-                            ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_SAVE_RECT);
-                    } else {
-                        let character = event.message as u8;
-                        let key_code = (event.message >> 8) as u8;
-                        if crate::dialog_manager::is_dialog_default_key(character, key_code) {
-                            accept = true;
-                        } else if crate::dialog_manager::is_dialog_cancel_key(
-                            character,
-                            key_code,
-                            event.modifiers,
-                        ) {
-                            return ppc_standard_file_finish_put(
-                                memory,
-                                startup,
-                                process_memory_manager,
-                                heap_cursor,
-                                last_mem_error,
-                                navigation,
-                                tracking,
-                                vfs_directories,
-                                vfs_files,
-                                vfs_resource_files,
-                                vfs_volumes,
-                                working_directories,
-                                next_working_directory_ref_num,
-                                false,
-                            );
-                        } else if character.eq_ignore_ascii_case(&b'a')
-                            && event.modifiers & 0x0100 != 0
-                        {
-                            tracking.sel_start = 0;
-                            tracking.sel_end = tracking.name.len();
-                        } else if character == 0x08 || key_code == 0x33 {
-                            ppc_standard_file_backspace_name(&mut tracking);
-                        } else if event.modifiers & 0x0100 == 0
-                            && (0x20..=0x7e).contains(&character)
-                            && !matches!(character, b'/' | b':')
-                            && tracking.sel_start <= tracking.sel_end
-                            && tracking.sel_end <= tracking.name.len()
-                        {
-                            ppc_standard_file_insert_name_character(&mut tracking, character);
-                        }
-                    }
-                }
-                if accept {
-                    return ppc_standard_file_finish_put(
-                        memory,
-                        startup,
-                        process_memory_manager,
-                        heap_cursor,
-                        last_mem_error,
-                        navigation,
-                        tracking,
-                        vfs_directories,
-                        vfs_files,
-                        vfs_resource_files,
-                        vfs_volumes,
-                        working_directories,
-                        next_working_directory_ref_num,
-                        true,
-                    );
-                }
-                ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
-                startup.standard_file_put_tracking = Some(tracking);
-                PpcImportAction::Yield(u64::MAX)
+            if let Some(tracking) = startup.standard_file_put_tracking.take() {
+                ppc_standard_file_put_service(
+                    cpu,
+                    memory,
+                    startup,
+                    process_memory_manager,
+                    heap_cursor,
+                    last_mem_error,
+                    navigation,
+                    tracking,
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    vfs_volumes,
+                    working_directories,
+                    next_working_directory_ref_num,
+                    event_queue,
+                    gworlds,
+                )
             } else {
                 let prompt_ptr = operation.prompt_pointer(cpu);
                 ppc_standard_file_put_start(
                     cpu,
                     memory,
                     startup,
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
                     default_dir_id,
                     gworlds,
                     mode,

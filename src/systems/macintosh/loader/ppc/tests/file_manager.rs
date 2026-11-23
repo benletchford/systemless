@@ -3519,6 +3519,186 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         );
     }
 
+    /// Starts StandardPutFile("Untitled") over a root folder named "Saves"
+    /// (dirID 42) and returns the reply pointer.
+    fn start_put_dialog_with_saves_folder(loaded: &mut PpcLoadedApp) -> u32 {
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Saves".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        reply
+    }
+
+    fn put_dialog_event(loaded: &mut PpcLoadedApp, event: PpcQueuedEvent) -> PpcRunResult {
+        loaded.set_event_queue([event]);
+        loaded.run_with_hle_imports(64).result
+    }
+
+    fn put_dialog_click(loaded: &mut PpcLoadedApp, local: (i16, i16)) -> PpcRunResult {
+        let bounds = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .expect("the put dialog stays up across import yields")
+            .bounds;
+        put_dialog_event(
+            loaded,
+            PpcQueuedEvent {
+                what: 1,
+                message: 0,
+                when: 0,
+                where_v: bounds.0 + local.0,
+                where_h: bounds.1 + local.1,
+                modifiers: 0,
+            },
+        )
+    }
+
+    fn put_dialog_command_key(loaded: &mut PpcLoadedApp, key_code: u8, character: u8) {
+        let result = put_dialog_event(
+            loaded,
+            PpcQueuedEvent {
+                what: 3,
+                message: (u32::from(key_code) << 8) | u32::from(character),
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0x0100,
+            },
+        );
+        assert!(matches!(result, PpcRunResult::CycleLimit { .. }));
+    }
+
+    fn put_dialog_dir_id(loaded: &PpcLoadedApp) -> u32 {
+        loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .dir_id
+    }
+
+    /// Clicks the list row showing "Saves" until the folder opens.
+    fn put_dialog_open_saves_folder(loaded: &mut PpcLoadedApp) {
+        let index = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|entry| entry.name == b"Saves" && entry.is_directory)
+            .expect("the put list shows the folders in the folder it browses");
+        assert!(index < 8, "row {index} is scrolled out of view");
+        let row = (
+            PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 2 + index as i16 * PPC_STANDARD_FILE_GET_ROW_HEIGHT + 4,
+            PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 30,
+        );
+        // The first click selects the folder; a click on the selection opens it.
+        put_dialog_click(loaded, row);
+        assert_eq!(
+            loaded
+                .toolbox_startup
+                .standard_file_put_tracking
+                .as_ref()
+                .unwrap()
+                .selected,
+            Some(index)
+        );
+        put_dialog_click(loaded, row);
+        assert_eq!(put_dialog_dir_id(loaded), 42);
+    }
+
+    #[test]
+    fn standard_put_file_saves_into_the_folder_opened_from_its_list() {
+        // The put dialog browses folders like the get dialog; the reply names
+        // the folder shown when Save is clicked. Inside Macintosh: Files
+        // (1992), pp. 3-8--3-12.
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = start_put_dialog_with_saves_folder(&mut loaded);
+        // Command-D shows the desktop (the volume's root folder).
+        put_dialog_command_key(&mut loaded, 0x02, b'd');
+        assert_eq!(put_dialog_dir_id(&loaded), PPC_ROOT_DIR_ID);
+        put_dialog_open_saves_folder(&mut loaded);
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.folder_chain.first().map(|(dir_id, _)| *dir_id), Some(42));
+        assert_eq!(tracking.selected, None);
+
+        let save = (
+            (PPC_STANDARD_FILE_PUT_SAVE_RECT.0 + PPC_STANDARD_FILE_PUT_SAVE_RECT.2) / 2,
+            (PPC_STANDARD_FILE_PUT_SAVE_RECT.1 + PPC_STANDARD_FILE_PUT_SAVE_RECT.3) / 2,
+        );
+        assert!(matches!(
+            put_dialog_click(&mut loaded, save),
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(reply + 8), Some(42));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"Untitled".to_vec())
+        );
+    }
+
+    #[test]
+    fn standard_put_file_folder_popup_and_command_up_show_enclosing_folders() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        start_put_dialog_with_saves_folder(&mut loaded);
+        let desktop = (
+            (PPC_STANDARD_FILE_PUT_DESKTOP_RECT.0 + PPC_STANDARD_FILE_PUT_DESKTOP_RECT.2) / 2,
+            (PPC_STANDARD_FILE_PUT_DESKTOP_RECT.1 + PPC_STANDARD_FILE_PUT_DESKTOP_RECT.3) / 2,
+        );
+        put_dialog_click(&mut loaded, desktop);
+        assert_eq!(put_dialog_dir_id(&loaded), PPC_ROOT_DIR_ID);
+        put_dialog_open_saves_folder(&mut loaded);
+
+        // The popup lists the folder, then the volume; choosing the volume
+        // shows its root.
+        let popup = (
+            (PPC_STANDARD_FILE_PUT_VOLUME_RECT.0 + PPC_STANDARD_FILE_PUT_VOLUME_RECT.2) / 2,
+            (PPC_STANDARD_FILE_PUT_VOLUME_RECT.1 + PPC_STANDARD_FILE_PUT_VOLUME_RECT.3) / 2,
+        );
+        put_dialog_click(&mut loaded, popup);
+        assert!(loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .folder_popup_open);
+        put_dialog_click(
+            &mut loaded,
+            (
+                PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.0
+                    + PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT
+                    + PPC_STANDARD_FILE_GET_FOLDER_MENU_ROW_HEIGHT / 2,
+                PPC_STANDARD_FILE_GET_FOLDER_MENU_RECT.1 + 20,
+            ),
+        );
+        assert_eq!(put_dialog_dir_id(&loaded), PPC_ROOT_DIR_ID);
+
+        put_dialog_open_saves_folder(&mut loaded);
+        // Command-Up Arrow shows the enclosing folder.
+        put_dialog_command_key(&mut loaded, 0x7e, 0x1e);
+        assert_eq!(put_dialog_dir_id(&loaded), PPC_ROOT_DIR_ID);
+    }
+
     #[test]
     fn hle_import_runner_standard_put_file_gui_edits_name_and_accepts() {
         let pef = synthetic_pef_with_import(b"StandardPutFile");
@@ -3614,6 +3794,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             },
             vref: PPC_BOOT_VOLUME_REF_NUM,
             dir_id: PPC_ROOT_DIR_ID,
+            entries: Vec::new(),
+            selected: None,
+            folder_chain: Vec::new(),
+            folder_popup_open: false,
             prompt: Vec::new(),
             name: vec![b'x'; 63],
             sel_start: 63,
