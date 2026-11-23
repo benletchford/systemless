@@ -27,23 +27,29 @@ pub(crate) fn standard_button_tracking_start_point(
     button_down: bool,
     proc_id: i16,
 ) -> (i16, i16) {
-    if !matches!(proc_id & 0x0fff, 0 | 1 | 2) {
+    if !button_down || !matches!(proc_id & 0x0fff, 0 | 1 | 2) {
         return start;
     }
-    live_control_tracking_start_point(rect, start, live_global, owner_origin, button_down)
+    live_control_tracking_start_point(rect, start, live_global, owner_origin)
 }
 
 /// Guard the legacy global-point fallback before the caller performs its
 /// control-specific hit test. This does not determine a custom control's part.
+///
+/// The mouse need not still be held. Monkey Shines plays its click sound
+/// synchronously between FindControl and TrackControl, then passes the
+/// event's global `where` as startPt, so a short click has already been
+/// released when TrackControl starts. The mouse then rests where it went up,
+/// and a start point exactly equal to it is still the event's global location
+/// rather than an arbitrary miss.
 pub(crate) fn live_control_tracking_start_point(
     rect: (i16, i16, i16, i16),
     start: (i16, i16),
     live_global: (i16, i16),
     owner_origin: (i16, i16),
-    button_down: bool,
 ) -> (i16, i16) {
     let inside = |(v, h): (i16, i16)| v >= rect.0 && v < rect.2 && h >= rect.1 && h < rect.3;
-    if inside(start) || !button_down || start != live_global {
+    if inside(start) || start != live_global {
         return start;
     }
     let local = (

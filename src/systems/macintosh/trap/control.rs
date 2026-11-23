@@ -4107,7 +4107,6 @@ impl super::TrapDispatcher {
                         (pt_v, pt_h),
                         mouse,
                         (top, left),
-                        held,
                     );
                     let tracking = CustomControlTrackingState {
                         handle: ctrl_handle,

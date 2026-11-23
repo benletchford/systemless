@@ -5233,3 +5233,92 @@ fn main_device_poll_rejects_patched_dispatch_and_unsafe_result_slots() {
     clean.m68k.cpu.write_reg(Register::A7, 0x07FF_FFFF);
     assert!(clean.idle_query_has_unsafe_dispatch(0xAA2A));
 }
+
+/// Monkey Shines plays a synchronous click sound between FindControl and
+/// TrackControl and passes the mouse-down event's global `where` as startPt.
+/// A short click is released before TrackControl starts; the custom CDEF must
+/// still be asked about the local point under the resting mouse, so New Game
+/// opens on screens where the game window is not at the global origin.
+#[test]
+fn track_control_custom_cdef_released_global_start_point_hits_local_part() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0001_0000u32;
+    let sp = 0x0010_0000u32;
+    let port = runner.bus.alloc(200);
+    let handle = runner.bus.alloc(4);
+    let pointer = runner.bus.alloc(36);
+    let cdef_handle = runner.bus.alloc(4);
+    let cdef = runner.bus.alloc(96);
+    let tested_point = runner.bus.alloc(4);
+    let calls = runner.bus.alloc(2);
+    runner.bus.write_word(base, 0xA968);
+    runner.bus.write_word(base + 2, 0x60FE);
+    // testCntl: part 42 when the local point lies in (10,10)-(50,80), else 0.
+    let code: [u16; 32] = [
+        0x4E56, 0x0000, // LINK A6,#0
+        0x7000, // MOVEQ #0,D0
+        0x0C6E, 0x0001, 0x000C, // CMPI.W #1,12(A6)
+        0x6632, // BNE.S done
+        0x23EE, 0x0008, 0, 0, // MOVE.L 8(A6),tested_point (patched below)
+        0x322E, 0x0008, // MOVE.W 8(A6),D1 (v)
+        0x0C41, 0x000A, // CMPI.W #10,D1
+        0x6D20, // BLT.S done
+        0x0C41, 0x0032, // CMPI.W #50,D1
+        0x6C1A, // BGE.S done
+        0x322E, 0x000A, // MOVE.W 10(A6),D1 (h)
+        0x0C41, 0x000A, // CMPI.W #10,D1
+        0x6D10, // BLT.S done
+        0x0C41, 0x0050, // CMPI.W #80,D1
+        0x6C0A, // BGE.S done
+        0x702A, // MOVEQ #42,D0
+        0x4E71, 0x4E71, 0x4E71, 0x4E71, // NOPs up to done
+    ];
+    for (i, word) in code.iter().enumerate() {
+        runner.bus.write_word(cdef + 2 * i as u32, *word);
+    }
+    runner.bus.write_long(cdef + 18, tested_point);
+    let done = cdef + 64;
+    // done: MOVE.L D0,20(A6); ADDQ.W #1,calls; UNLK A6; RTD #12
+    for (i, word) in [0x2D40u16, 20, 0x5279, 0, 0, 0x4E5E, 0x4E74, 12].iter().enumerate() {
+        runner.bus.write_word(done + 2 * i as u32, *word);
+    }
+    runner.bus.write_long(done + 6, calls);
+    runner.bus.write_long(cdef_handle, cdef);
+    runner.bus.write_long(handle, pointer);
+    runner.bus.write_long(pointer + 4, port);
+    runner.bus.write_word(port + 8, (-100i16) as u16);
+    runner.bus.write_word(port + 10, (-120i16) as u16);
+    for (offset, value) in [(8, 10), (10, 10), (12, 50), (14, 80)] {
+        runner.bus.write_word(pointer + offset, value);
+    }
+    runner.bus.write_byte(pointer + 16, 255);
+    runner.bus.write_long(pointer + 24, cdef_handle);
+    runner
+        .dispatcher
+        .control_manager
+        .register(handle, pointer, 160 << 4, 0);
+    runner
+        .dispatcher
+        .input_state
+        .set_mouse_button_for_test(false);
+    runner
+        .dispatcher
+        .input_state
+        .set_mouse_position_for_test((120, 140));
+    runner
+        .bus
+        .write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+    runner.bus.write_long(sp, 0);
+    runner.bus.write_word(sp + 4, 120); // the event's global where
+    runner.bus.write_word(sp + 6, 140);
+    runner.bus.write_long(sp + 8, handle);
+    runner.m68k.cpu.write_reg(Register::PC, base);
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    let (_, running) = runner.run_steps(1024, None);
+    assert!(running);
+    assert!(!runner.dispatcher.is_control_tracking());
+    assert_eq!(runner.bus.read_long(tested_point), (20 << 16) | 20);
+    assert_eq!(runner.bus.read_word(sp + 12), 42, "released click must select the part");
+    assert_eq!(runner.bus.read_byte(pointer + 17), 0);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 12);
+}
