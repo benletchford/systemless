@@ -7,10 +7,11 @@ use super::graphics::*;
 use super::regions::*;
 use super::*;
 use crate::quickdraw::raster::paint::{
-    paint_rect, supports, ClipRows, Depth, DrawOutcome, Ink, PatternKind, Surface, TransferMode,
-    EMPTY_RECT,
+    paint_rect, paint_solid_1bpp_rect, supports, ClipRows, Depth, DrawOutcome, Ink, PatternKind,
+    Surface, TransferMode, EMPTY_RECT,
 };
 use crate::quickdraw::raster::region_rows::intersect_rows;
+use crate::quickdraw::raster::transfer::BitRowOp;
 use crate::trap::types::Rect;
 
 /// FillRect(r, pat): fills the rectangle with `pattern` in patCopy mode,
@@ -21,9 +22,10 @@ use crate::trap::types::Rect;
 /// coordinate system (p. 2-32). `fore` and `back` are an RGB colour and the
 /// port's explicit index, if it has one.
 ///
-/// The shared core draws 8- and 16-bit pixel images. Other depths, and
-/// clip regions whose storage cannot be parsed, keep the earlier PowerPC
-/// fill: solid foreground, whatever the pattern.
+/// The shared core draws 8- and 16-bit pixel images, and solid patterns on
+/// 1-bit images while the pen is visible. Other depths and patterns, and clip
+/// regions whose storage cannot be parsed, keep the earlier PowerPC fill:
+/// solid foreground, whatever the pattern.
 pub(crate) fn ppc_fill_rect(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -54,6 +56,83 @@ pub(crate) fn ppc_fill_rect(
     }
 }
 
+fn ppc_raster_surface(surface: PpcQuickDrawSurface, depth: Depth) -> Surface {
+    Surface {
+        base: surface.front_buffer.base_addr,
+        row_bytes: surface.front_buffer.row_bytes,
+        depth,
+        bounds: ppc_surface_port_bounds(surface),
+    }
+}
+
+/// Draws a clipped monochrome-pattern rectangle on `surface` via the native
+/// GPU path or the shared `quickdraw::raster` core (`8`/`16`-bpp copy/RMW and
+/// `1`-bpp solid fills). Returns `None` when the depth/pattern combination or
+/// clip storage is declined so the caller can run its own fallback.
+pub(super) fn ppc_draw_mono_rect(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    port: u32,
+    area: Rect,
+    respect_clip: bool,
+    ink: &Ink,
+) -> Option<bool> {
+    let depth = Depth::from_bits(surface.front_buffer.depth)?;
+    let clip = ppc_port_clip_rows_with_clip(memory, port, area.top, area.bottom, respect_clip)?;
+    if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, ink) {
+        return Some(wrote);
+    }
+    let raster_surface = ppc_raster_surface(surface, depth);
+    if supports(depth, ink.mode, PatternKind::Mono) {
+        let mut scratch = Vec::new();
+        return match paint_rect(memory, &raster_surface, &clip, ink, area, &mut scratch) {
+            DrawOutcome::Drawn { wrote, .. } => Some(wrote),
+            DrawOutcome::Declined => None,
+        };
+    }
+    if depth == Depth::D1
+        && ink.mode.is_copy()
+        && (ink.pattern == [0xFF; 8] || ink.pattern == [0x00; 8])
+    {
+        let solid_is_fg = (ink.pattern[0] == 0xFF) ^ ink.mode.inverts_source();
+        let bit = if solid_is_fg { ink.fg } else { ink.bg } & 1 != 0;
+        let op = if bit { BitRowOp::Set } else { BitRowOp::Clear };
+        let mut scratch = Vec::new();
+        return match paint_solid_1bpp_rect(memory, &raster_surface, &clip, area, op, &mut scratch)
+        {
+            DrawOutcome::Drawn { wrote, .. } => Some(wrote),
+            DrawOutcome::Declined => None,
+        };
+    }
+    None
+}
+
+/// Complements a `1`-bpp rectangle on `surface` without clip regions, matching
+/// PowerPC `InvertRect`.
+pub(super) fn ppc_invert_1bpp_rect(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    area: Rect,
+) -> Option<bool> {
+    if surface.front_buffer.depth != 1 {
+        return None;
+    }
+    let raster_surface = ppc_raster_surface(surface, Depth::D1);
+    let clip = ClipRows::rectangular(ClipRows::UNBOUNDED);
+    let mut scratch = Vec::new();
+    match paint_solid_1bpp_rect(
+        memory,
+        &raster_surface,
+        &clip,
+        area,
+        BitRowOp::Toggle,
+        &mut scratch,
+    ) {
+        DrawOutcome::Drawn { wrote, .. } => Some(wrote),
+        DrawOutcome::Declined => None,
+    }
+}
+
 /// `None` when nothing can be drawn at all (no surface, or a colour that
 /// cannot be resolved); the earlier path draws nothing in those cases too.
 fn ppc_fill_rect_with_core(
@@ -67,17 +146,17 @@ fn ppc_fill_rect_with_core(
 ) -> Option<DrawOutcome> {
     let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld)?;
     let front_buffer = surface.front_buffer;
+    // The earlier 1-bit fill draws nothing while pnVis is negative; keep
+    // that by leaving hidden-pen fills to it.
+    let solid_1bpp = front_buffer.depth == 1
+        && (pattern == [0xFF; 8] || pattern == [0x00; 8])
+        && !ppc_port_pen_hidden(memory, current_gworld);
     let Some(depth) = Depth::from_bits(front_buffer.depth)
-        .filter(|depth| supports(*depth, TransferMode::PatCopy, PatternKind::Mono))
+        .filter(|depth| supports(*depth, TransferMode::PatCopy, PatternKind::Mono) || solid_1bpp)
     else {
         return Some(DrawOutcome::Declined);
     };
-    let raster_surface = Surface {
-        base: front_buffer.base_addr,
-        row_bytes: front_buffer.row_bytes,
-        depth,
-        bounds: ppc_surface_port_bounds(surface),
-    };
+    let raster_surface = ppc_raster_surface(surface, depth);
     let Some(area) = raster_surface.clip(Rect {
         top,
         left,
@@ -86,6 +165,7 @@ fn ppc_fill_rect_with_core(
     }) else {
         return Some(DrawOutcome::Drawn {
             touched: EMPTY_RECT,
+            wrote: false,
         });
     };
     // Resolve only the colours the pattern uses: a solid pattern resolves
@@ -98,9 +178,6 @@ fn ppc_fill_rect_with_core(
         uses_fore.then_some(fore),
         uses_back.then_some(back),
     )?;
-    let Some(clip) = ppc_port_clip_rows(memory, current_gworld, area.top, area.bottom) else {
-        return Some(DrawOutcome::Declined);
-    };
     let ink = Ink {
         fg: u32::from(fg),
         bg: u32::from(bg),
@@ -108,20 +185,13 @@ fn ppc_fill_rect_with_core(
         mode: TransferMode::PatCopy,
         pat_origin: (0, 0),
     };
-    if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink) {
-        return Some(DrawOutcome::Drawn {
-            touched: if wrote { area } else { EMPTY_RECT },
-        });
-    }
-    let mut scratch = Vec::new();
-    Some(paint_rect(
-        memory,
-        &raster_surface,
-        &clip,
-        &ink,
-        area,
-        &mut scratch,
-    ))
+    let Some(wrote) = ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink) else {
+        return Some(DrawOutcome::Declined);
+    };
+    Some(DrawOutcome::Drawn {
+        touched: if wrote { area } else { EMPTY_RECT },
+        wrote,
+    })
 }
 
 /// `None` leaves the original software path in charge, including GPU errors.
@@ -187,7 +257,7 @@ pub(super) fn ppc_gpu_pattern_rect(
 
 /// The pixel image's extent in port coordinates. Its far edges are capped
 /// at `i16::MAX`; no rectangle reaches past that.
-fn ppc_surface_port_bounds(surface: PpcQuickDrawSurface) -> Rect {
+pub(super) fn ppc_surface_port_bounds(surface: PpcQuickDrawSurface) -> Rect {
     let far =
         |near: i16, len: u32| (i64::from(near) + i64::from(len)).min(i64::from(i16::MAX)) as i16;
     Rect {
@@ -210,15 +280,28 @@ pub(super) fn ppc_port_clip_rows(
     top: i16,
     bottom: i16,
 ) -> Option<ClipRows> {
+    ppc_port_clip_rows_with_clip(memory, port, top, bottom, true)
+}
+
+fn ppc_port_clip_rows_with_clip(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    top: i16,
+    bottom: i16,
+    respect_clip: bool,
+) -> Option<ClipRows> {
     let storages = [
-        PPC_CGRAF_PORT_VIS_RGN_OFFSET,
-        PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
-    ]
-    .map(|offset| {
         memory
-            .read_u32_be(port.wrapping_add(offset))
-            .and_then(|rgn| ppc_region_storage(memory, rgn))
-    });
+            .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+            .and_then(|rgn| ppc_region_storage(memory, rgn)),
+        respect_clip
+            .then(|| {
+                memory
+                    .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+                    .and_then(|rgn| ppc_region_storage(memory, rgn))
+            })
+            .flatten(),
+    ];
     let regions = storages.iter().flatten();
     if regions.clone().all(|storage| storage.len() == 10) {
         let mut bbox = ClipRows::UNBOUNDED;

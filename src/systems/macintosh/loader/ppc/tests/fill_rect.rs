@@ -3773,3 +3773,126 @@ fn open_rgn_still_records_shapes_while_the_pen_is_hidden() {
     let storage = ppc_region_storage(&mut loaded.memory, destination).unwrap();
     assert_eq!(storage, region_storage_bytes((-1, 2, 6, 11), &[]));
 }
+
+#[test]
+fn ppc_shared_raster_rect_routes_preserve_bg_clip_erase_paint_invert_and_hidden_pen() {
+    let seed = initial_pixels();
+    let fixture = fixture(&seed, WHOLE_PORT, CLIP_WITH_HOLE);
+    let ((ct, cl, cb, cr), _) = CLIP_WITH_HOLE;
+    let in_clip = |x: i16, y: i16| {
+        let in_hole = (1..4).contains(&y) && (3..8).contains(&x);
+        y >= ct && y < cb && x >= cl && x < cr && !in_hole
+    };
+
+    // 1. Window Manager background fill ignores clipRgn (uses visRgn only).
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    assert!(ppc_paint_window_background_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (0, 0, 5, 10),
+        PPC_RGB_BLACK,
+    ));
+    let after = read_pixels(&mut loaded, seed.len());
+    // Hole pixel (5, 2) is outside clipRgn but inside visRgn, so it must be painted.
+    let hole_off = (2 - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (5 - BOUNDS.1) as usize;
+    assert_ne!(after[hole_off], seed[hole_off]);
+
+    // 2. Monochrome EraseRect at 8-bpp matches port-aligned FillRect and returns false when empty.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EraseRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    assert!(ppc_erase_rect(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-3, -5, 9, 19),
+        0,
+        MIXED,
+        (PPC_RGB_BLACK, Some(fixture.fg_index)),
+        (PPC_RGB_WHITE, Some(fixture.bg_index)),
+    ));
+    let erased = read_pixels(&mut loaded, seed.len());
+    assert_eq!(erased, fill_rect_ppc(&fixture, 8, (-3, -5, 9, 19), MIXED));
+    assert!(!ppc_erase_rect(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (50, 50, 60, 60),
+        0,
+        MIXED,
+        (PPC_RGB_BLACK, Some(fixture.fg_index)),
+        (PPC_RGB_WHITE, Some(fixture.bg_index)),
+    ));
+
+    // 3. Patterned PaintRect at 8-bpp aligns its pattern to surface origin (left, top).
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    assert!(ppc_paint_rect(
+        &loaded.cpu,
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        PPC_RGB_BLACK,
+        Some(fixture.fg_index),
+        PPC_RGB_WHITE,
+        &MIXED,
+    ));
+    let painted = read_pixels(&mut loaded, seed.len());
+    for y in BOUNDS.0..BOUNDS.2 {
+        for x in BOUNDS.1..BOUNDS.3 {
+            let off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (x - BOUNDS.1) as usize;
+            if in_clip(x, y) {
+                let ly = (y - BOUNDS.0) as usize;
+                let lx = (x - BOUNDS.1) as usize;
+                let set = MIXED[ly & 7] & (0x80 >> (lx & 7)) != 0;
+                assert_eq!(painted[off], if set { fixture.fg_index } else { 0 });
+            } else {
+                assert_eq!(painted[off], seed[off]);
+            }
+        }
+    }
+
+    // 4. 1-bpp InvertRect complements unaligned bit spans without clip regions.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertRect")).unwrap();
+    install_port(&mut loaded, &fixture, 1);
+    let before_1 = read_pixels(&mut loaded, seed.len());
+    assert!(ppc_invert_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        (-1, -2, 6, 14),
+    ));
+    let after_1 = read_pixels(&mut loaded, seed.len());
+    for y in BOUNDS.0..BOUNDS.2 {
+        for x in BOUNDS.1..BOUNDS.3 {
+            let lx = (x - BOUNDS.1) as usize;
+            let off = (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + lx / 8;
+            let mask = 0x80u8 >> (lx % 8);
+            let inside = (-1..6).contains(&y) && (-2..14).contains(&x);
+            let expected = if inside {
+                before_1[off] ^ mask
+            } else {
+                before_1[off]
+            };
+            assert_eq!(after_1[off] & mask, expected & mask, "({x}, {y})");
+        }
+    }
+
+    // 5. A solid 1-bpp FillRect still draws nothing while the pen is hidden.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, &fixture, 1);
+    let before_hidden = read_pixels(&mut loaded, seed.len());
+    loaded
+        .memory
+        .write_u16_be(PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET, (-1i16) as u16)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
+    loaded.memory.write_bytes(PATTERN, &[0xFF; 8]).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    assert_eq!(read_pixels(&mut loaded, seed.len()), before_hidden);
+}

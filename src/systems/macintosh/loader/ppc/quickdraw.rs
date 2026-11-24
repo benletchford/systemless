@@ -1520,6 +1520,28 @@ pub(crate) fn ppc_erase_rect(
     let Some(back_pixel) = ppc_quickdraw_surface_fore_pixel(memory, surface, back.0, back.1) else {
         return false;
     };
+    if pixpat == 0 {
+        let bounds = ppc_surface_port_bounds(surface);
+        let area = crate::trap::types::Rect {
+            top: top.max(bounds.top),
+            left: left.max(bounds.left),
+            bottom: bottom.min(bounds.bottom),
+            right: right.min(bounds.right),
+        };
+        if area.top >= area.bottom || area.left >= area.right {
+            return false;
+        }
+        let ink = crate::quickdraw::raster::paint::Ink {
+            fg: u32::from(fore_pixel),
+            bg: u32::from(back_pixel),
+            pattern,
+            mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
+            pat_origin: (0, 0),
+        };
+        if let Some(wrote) = ppc_draw_mono_rect(memory, surface, port, area, true, &ink) {
+            return wrote;
+        }
+    }
     let sampler = if pixpat != 0 {
         ppc_decode_pixpat_sampler(memory, surface, pixpat, fore_pixel, back_pixel)
     } else {
@@ -3570,28 +3592,19 @@ pub(crate) fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
-    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
-        let area = (|| {
-            Some(crate::trap::types::Rect {
-                top: i16::try_from(top + i32::from(surface.top)).ok()?,
-                left: i16::try_from(left + i32::from(surface.left)).ok()?,
-                bottom: i16::try_from(bottom + i32::from(surface.top)).ok()?,
-                right: i16::try_from(right + i32::from(surface.left)).ok()?,
-            })
-        })();
-        if let Some(area) = area {
-            if let Some(clip) = ppc_port_clip_rows(memory, current_gworld, area.top, area.bottom) {
-                let ink = crate::quickdraw::raster::paint::Ink {
-                    fg: u32::from(fore_pixel),
-                    bg: u32::from(back_pixel),
-                    pattern: *pattern,
-                    mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
-                    pat_origin: (surface.left, surface.top),
-                };
-                if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink) {
-                    return wrote;
-                }
-            }
+    if left >= right || top >= bottom {
+        return false;
+    }
+    if let Some(area) = ppc_local_to_port_rect(surface, top, left, bottom, right) {
+        let ink = crate::quickdraw::raster::paint::Ink {
+            fg: u32::from(fore_pixel),
+            bg: u32::from(back_pixel),
+            pattern: *pattern,
+            mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
+            pat_origin: (surface.left, surface.top),
+        };
+        if let Some(wrote) = ppc_draw_mono_rect(memory, surface, current_gworld, area, true, &ink) {
+            return wrote;
         }
     }
     let clip_storage = memory
@@ -3653,6 +3666,21 @@ pub(crate) fn ppc_paint_window_background_bounds(
     ppc_paint_rect_bounds_with_clip(memory, gworlds, window, rect, color, None, false)
 }
 
+fn ppc_local_to_port_rect(
+    surface: PpcQuickDrawSurface,
+    top: i32,
+    left: i32,
+    bottom: i32,
+    right: i32,
+) -> Option<crate::trap::types::Rect> {
+    Some(crate::trap::types::Rect {
+        top: i16::try_from(top + i32::from(surface.top)).ok()?,
+        left: i16::try_from(left + i32::from(surface.left)).ok()?,
+        bottom: i16::try_from(bottom + i32::from(surface.top)).ok()?,
+        right: i16::try_from(right + i32::from(surface.left)).ok()?,
+    })
+}
+
 fn ppc_paint_rect_bounds_with_clip(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -3684,6 +3712,22 @@ fn ppc_paint_rect_bounds_with_clip(
     else {
         return false;
     };
+    // Window Manager exposure painting uses visRgn without the application's
+    // clipRgn; ordinary QuickDraw drawing uses their intersection.
+    if let Some(area) = ppc_local_to_port_rect(surface, top, left, bottom, right) {
+        let ink = crate::quickdraw::raster::paint::Ink {
+            fg: u32::from(color_pixel),
+            bg: u32::from(color_pixel),
+            pattern: [0xff; 8],
+            mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
+            pat_origin: (0, 0),
+        };
+        if let Some(wrote) =
+            ppc_draw_mono_rect(memory, surface, current_gworld, area, respect_clip, &ink)
+        {
+            return wrote;
+        }
+    }
     let clip_storage = respect_clip
         .then(|| {
             memory
@@ -3694,116 +3738,8 @@ fn ppc_paint_rect_bounds_with_clip(
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
-    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
-        // Clip in port coordinates, then convert to framebuffer coordinates.
-        // Ordinary and Window Manager painting differ only in clipRgn use.
-        let command = (|| {
-            let port_top = i16::try_from(top + i32::from(surface.top)).ok()?;
-            let port_bottom = i16::try_from(bottom + i32::from(surface.top)).ok()?;
-            let port_left = i16::try_from(left + i32::from(surface.left)).ok()?;
-            let port_right = i16::try_from(right + i32::from(surface.left)).ok()?;
-            let mut rows = vec![vec![port_left, port_right]; (bottom - top) as usize];
-            for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
-                .into_iter()
-                .flatten()
-            {
-                let clips = ppc_region_rows_for_band(storage, port_top, port_bottom)?;
-                for (row, clip) in rows.iter_mut().zip(clips) {
-                    *row = ppc_region_intersect_rows(row, &clip);
-                }
-            }
-            Some(crate::quickdraw::gpu::QuickDrawGpuCommand {
-                mask: None,
-                area: [left, top, right, bottom],
-                rect: [left, top, right, bottom],
-                border: None,
-                pattern: [0xff; 8],
-                transfer: [[0, u32::from(color_pixel)]; 2],
-                polygon_edges: None,
-                clip_rows: Some(
-                    rows.into_iter()
-                        .map(|row| {
-                            row.into_iter()
-                                .map(|x| i32::from(x) - i32::from(surface.left))
-                                .collect()
-                        })
-                        .collect(),
-                ),
-            })
-        })();
-        if let Some(command) = command {
-            if command
-                .clip_rows
-                .as_ref()
-                .is_some_and(|rows| rows.iter().all(Vec::is_empty))
-            {
-                return false;
-            }
-            if crate::quickdraw::gpu::try_native_rectangle(
-                memory,
-                crate::quickdraw::gpu::RasterTarget {
-                    base: front_buffer.base_addr,
-                    row_bytes: front_buffer.row_bytes,
-                    depth: front_buffer.depth as u16,
-                    origin: [0, 0],
-                },
-                command,
-            ) {
-                return true;
-            }
-        }
-    }
-    // Window Manager exposure painting uses visRgn without the application's
-    // clipRgn; ordinary QuickDraw drawing uses their intersection.
-    // Per-pixel writes preserve neighboring packed 1/2/4-bit PixMap fields.
-    if matches!(front_buffer.depth, 8 | 16)
-        && [
-            top + i32::from(surface.top),
-            bottom + i32::from(surface.top),
-            left + i32::from(surface.left),
-            right + i32::from(surface.left),
-        ]
-        .into_iter()
-        .all(|value| i16::try_from(value).is_ok())
-    {
-        let port_top = (top + i32::from(surface.top)) as i16;
-        let port_bottom = (bottom + i32::from(surface.top)) as i16;
-        let port_left = (left + i32::from(surface.left)) as i16;
-        let port_right = (right + i32::from(surface.left)) as i16;
-        let mut rows = vec![
-            vec![port_left, port_right];
-            (port_bottom as i32 - port_top as i32).max(0) as usize
-        ];
-        for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            let Some(clip_rows) = ppc_region_rows_for_band(storage, port_top, port_bottom) else {
-                return false;
-            };
-            for (row, clip) in rows.iter_mut().zip(clip_rows) {
-                *row = ppc_region_intersect_rows(row, &clip);
-            }
-        }
-        let lanes = (front_buffer.depth / 8) as usize;
-        let pixel = color_pixel.to_be_bytes();
-        let row_bytes: Vec<_> = (left..right)
-            .flat_map(|_| pixel[2 - lanes..].iter().copied())
-            .collect();
-        let mut wrote = false;
-        for (dy, row) in rows.iter().enumerate() {
-            let y = i32::from(port_top) + dy as i32 - i32::from(surface.top);
-            for pair in row.chunks_exact(2) {
-                let x = i32::from(pair[0]) - i32::from(surface.left);
-                let len = (i32::from(pair[1]) - i32::from(pair[0])) as usize * lanes;
-                let address = front_buffer.base_addr
-                    + y as u32 * front_buffer.row_bytes
-                    + x as u32 * lanes as u32;
-                wrote |= memory.write_bytes(address, &row_bytes[..len]).is_some();
-            }
-        }
-        return wrote;
-    }
+    // Per-pixel writes preserve neighboring packed 2/4-bit PixMap fields and
+    // handle malformed region storage or coordinates outside i16.
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
@@ -3879,6 +3815,13 @@ pub(crate) fn ppc_invert_rect_bounds(
     // independent of the current foreground color and pen pattern. The same
     // volume, pp. 2-13--2-14, defines a basic BitMap as one bit per pixel, so
     // monochrome offscreen ports must participate in that complement too.
+    if front_buffer.depth == 1 {
+        if let Some(area) = ppc_local_to_port_rect(surface, top, left, bottom, right) {
+            if let Some(wrote) = ppc_invert_1bpp_rect(memory, surface, area) {
+                return wrote;
+            }
+        }
+    }
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {

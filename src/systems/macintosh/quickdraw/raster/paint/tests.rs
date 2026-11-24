@@ -175,7 +175,7 @@ fn rectangular_clip_fills_the_intersection_with_one_write_per_row() {
                 let area = rect(-1, -2, 5, 15);
                 assert!(matches!(
                     outcome,
-                    DrawOutcome::Drawn { touched } if touched.top == area.top
+                    DrawOutcome::Drawn { touched, wrote: true } if touched.top == area.top
                         && touched.left == area.left
                         && touched.bottom == area.bottom
                         && touched.right == area.right
