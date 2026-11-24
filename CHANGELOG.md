@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.127.5](https://github.com/benletchford/systemless/compare/v0.127.4...v0.127.5) (2026-11-24)
+
+
+### Bug Fixes
+
+* **control:** hit-test released custom controls at the event's global start point ([#6712](https://github.com/benletchford/systemless/issues/6712)) ([bb55357](https://github.com/benletchford/systemless/commit/bb553573b0a339e5b2eac039caf890ca22903759))
+* **ppc:** draw the one-pixel plainDBox window frame ([#6716](https://github.com/benletchford/systemless/issues/6716)) ([6002705](https://github.com/benletchford/systemless/commit/6002705587e943fb41ddb617a4697b2bd2130e5d))
+* **ppc:** implement application QuickTime time bases and DrawPictureFile so Pegasus Prime starts ([#6698](https://github.com/benletchford/systemless/issues/6698)) ([85d8432](https://github.com/benletchford/systemless/commit/85d8432890322be36ae46f21d1d7a7caf7a7cffa))
+* **ppc:** keep open menu panes above host desktop composition ([#6710](https://github.com/benletchford/systemless/issues/6710)) ([929b8f3](https://github.com/benletchford/systemless/commit/929b8f362997dfc538821e99330f889f5b242aea))
+* **ppc:** resolve working-directory refnums in Create and FSDelete ([#6714](https://github.com/benletchford/systemless/issues/6714)) ([fe7a7ce](https://github.com/benletchford/systemless/commit/fe7a7ce6d7974bbcd7b4257caa393f87cfebdc92))
+
+
+### Performance Improvements
+
+* **ppc:** keep plain front-buffer rows on direct host sync ([5b67d4a](https://github.com/benletchford/systemless/commit/5b67d4a6346e2e50cf7ba609c7a4c7c099bbfb0f))
+* **present:** keep macOS software overlays on the Metal compact presenter ([7c81580](https://github.com/benletchford/systemless/commit/7c81580be502cab65cab71b17ba77db4c6e63e22))
+
 ## [0.127.4](https://github.com/benletchford/systemless/compare/v0.127.3...v0.127.4) (2026-11-23)
 
 
