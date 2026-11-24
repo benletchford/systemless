@@ -838,6 +838,161 @@ fn draw1control_records_a_scroll_bar_into_the_open_picture() {
 }
 
 #[test]
+fn draw1control_records_only_the_scroll_bar_pixels_its_clip_region_admits() {
+    // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is limited to
+    // the intersection of visRgn and clipRgn, and pp. 7-5--7-6: what the
+    // control draws with a picture open is recorded instead. A hole in
+    // clipRgn is therefore a hole in the recording, which DrawPicture must
+    // leave untouched in any destination.
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
+    let port = *loaded.current_gworld;
+    assert_eq!(port, PPC_MAIN_GWORLD);
+    let mut last_mem_error = loaded.last_mem_error();
+    let bounds = (10, 20, 26, 120);
+    let frame = (0, 0, 40, 140);
+    let hole = (12, 40, 24, 70);
+    let handle = with_test_controls!(
+        loaded,
+        |controls| ppc_new_control_record_values(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            controls,
+            port,
+            bounds,
+            b"",
+            true,
+            3,
+            0,
+            10,
+            16,
+            0,
+        )
+    );
+    assert_ne!(handle, 0);
+    let surface = ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, port).unwrap();
+    let points = (frame.0..frame.2)
+        .flat_map(|v| (frame.1..frame.3).map(move |h| (h, v)))
+        .collect::<Vec<_>>();
+    let read_frame = |loaded: &mut PpcLoadedApp| {
+        points
+            .iter()
+            .map(|(h, v)| {
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    surface.front_buffer,
+                    surface.local_point((i32::from(*h), i32::from(*v))),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let paint = |loaded: &mut PpcLoadedApp, color: PpcRgbColor| {
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            port,
+            frame,
+            color,
+            None,
+        ));
+    };
+    let draw_control = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(
+            loaded,
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+        );
+    };
+    let inside = |(h, v): (i16, i16), (top, left, bottom, right): (i16, i16, i16, i16)| {
+        v >= top && v < bottom && h >= left && h < right
+    };
+
+    // The scroll bar as the Control Manager draws it without a clip hole.
+    paint(&mut loaded, PPC_RGB_WHITE);
+    draw_control(&mut loaded);
+    let unclipped = read_frame(&mut loaded);
+
+    // Record it through a clipRgn covering the frame except for a hole that
+    // lies inside the scroll bar.
+    paint(&mut loaded, PPC_RGB_WHITE);
+    let source = read_frame(&mut loaded);
+    let scratch = PPC_DATA_BASE + 0x1800;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, frame.0, frame.1, frame.2, frame.3).unwrap();
+    let rows = (frame.0..frame.2)
+        .map(|v| {
+            if v >= hole.0 && v < hole.2 {
+                vec![frame.1, hole.1, hole.3, frame.3]
+            } else {
+                vec![frame.1, frame.3]
+            }
+        })
+        .collect::<Vec<_>>();
+    let holed_clip = scratch + 0x10;
+    let holed_clip_storage = scratch + 0x20;
+    loaded.memory.write_u32_be(holed_clip, holed_clip_storage).unwrap();
+    loaded
+        .memory
+        .write_bytes(holed_clip_storage, &ppc_region_storage_from_rows(frame.0, &rows).unwrap())
+        .unwrap();
+    let port_clip = loaded.memory.read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET).unwrap();
+    loaded.memory.write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, holed_clip).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::OpenPicture,
+        ),
+    );
+    let picture = loaded.cpu.gpr[3];
+    assert_ne!(picture, 0);
+    draw_control(&mut loaded);
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::ClosePicture,
+        ),
+    );
+    assert_eq!(read_frame(&mut loaded), source, "recording must leave the source port unchanged");
+
+    // Replay over a different background, with the hole no longer clipped.
+    loaded.memory.write_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, port_clip).unwrap();
+    let red = PpcRgbColor { red: 0xffff, green: 0, blue: 0 };
+    paint(&mut loaded, red);
+    let background = read_frame(&mut loaded);
+    let white =
+        ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+    assert!(background.iter().all(|pixel| *pixel != Some(white)));
+    loaded.cpu.gpr[3] = picture;
+    loaded.cpu.gpr[4] = scratch;
+    assert!(with_test_color_manager_clut!(
+        loaded,
+        |color_manager_clut| ppc_draw_picture(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &test_handle_records!(loaded),
+            &loaded.process_file_system.vfs_resources,
+            &loaded.gworlds,
+            port,
+            &loaded.screen_clut,
+            color_manager_clut,
+        )
+    ));
+    let replayed = read_frame(&mut loaded);
+    for (index, point) in points.iter().enumerate() {
+        let expected = if inside(*point, bounds) && !inside(*point, hole) {
+            unclipped[index]
+        } else {
+            background[index]
+        };
+        assert_eq!(replayed[index], expected, "pixel at (h, v) = {point:?}");
+    }
+}
+
+#[test]
 fn draw_controls_draws_newest_first_with_oldest_control_frontmost() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
     let mut last_mem_error = loaded.last_mem_error();

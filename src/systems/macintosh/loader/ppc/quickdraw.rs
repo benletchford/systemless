@@ -5288,27 +5288,32 @@ pub(crate) fn ppc_record_copy_bits(
     let Some(dst_rect) = ppc_read_rect(memory, cpu.gpr[6]) else {
         return false;
     };
-    ppc_record_bits_rect(
+    ppc_record_indexed_bits(
         memory,
         gworlds,
         cpu.gpr[3],
         src_rect,
         dst_rect,
         cpu.gpr[7] as u16,
+        None,
         commands,
     )
 }
 
-/// Appends a BitsRect opcode that copies `src_rect` of an 8-bit indexed
-/// PixMap or BitMap to `dst_rect`, as StdBits records a transfer into an
-/// open picture. Inside Macintosh: Imaging With QuickDraw (1994), p. A-26.
-pub(crate) fn ppc_record_bits_rect(
+/// Appends an opcode that copies `src_rect` of an 8-bit indexed PixMap or
+/// BitMap to `dst_rect`, as StdBits records a transfer into an open picture:
+/// BitsRect, or BitsRgn when `mask_rgn` (region storage in destination
+/// coordinates) limits the transfer. Inside Macintosh: Imaging With
+/// QuickDraw (1994), pp. A-13 and A-26.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_record_indexed_bits(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     src_bits_ptr: u32,
     src_rect: (i16, i16, i16, i16),
     dst_rect: (i16, i16, i16, i16),
     mode: u16,
+    mask_rgn: Option<&[u8]>,
     commands: &mut Vec<u8>,
 ) -> bool {
     let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
@@ -5342,7 +5347,8 @@ pub(crate) fn ppc_record_bits_rect(
     // Assemble the complete opcode before appending it so a malformed source
     // PixMap cannot leave a partial command in an otherwise valid picture.
     let mut recording = Vec::new();
-    pict::recording_push_word(&mut recording, 0x0090); // BitsRect with indexed PixMap
+    // BitsRect / BitsRgn with an indexed PixMap.
+    pict::recording_push_word(&mut recording, if mask_rgn.is_some() { 0x0091 } else { 0x0090 });
     pict::recording_push_word(&mut recording, 0x8000 | width as u16);
     for value in [src_rect.0, src_rect.1, src_rect.2, src_rect.3] {
         pict::recording_push_word(&mut recording, value as u16);
@@ -5375,6 +5381,15 @@ pub(crate) fn ppc_record_bits_rect(
         }
     }
     pict::recording_push_word(&mut recording, mode);
+    if let Some(mask_rgn) = mask_rgn {
+        // Region storage is whole words and begins with its own rgnSize, so
+        // the pixel data that follows stays word aligned.
+        let rgn_size = mask_rgn.get(..2).map(|size| u16::from_be_bytes([size[0], size[1]]));
+        if mask_rgn.len() < 10 || rgn_size.map(usize::from) != Some(mask_rgn.len()) {
+            return false;
+        }
+        recording.extend_from_slice(mask_rgn);
+    }
     for y in src_rect.0..src_rect.2 {
         for x in src_rect.1..src_rect.3 {
             let Some(pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, i32::from(x), i32::from(y))

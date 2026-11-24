@@ -2966,10 +2966,11 @@ pub(super) fn ppc_draw_control(
 /// OpenPicture is active there the control is recorded into the picture
 /// instead of appearing onscreen. Inside Macintosh: Imaging With QuickDraw
 /// (1994), pp. 7-5--7-6. The HLE controls bypass the recorded QuickDraw
-/// imports, so render the control, record its pixels as one BitsRect limited
-/// to the port's visible and clipping regions, and restore the pixels it
-/// covered. Returns false, drawing nothing, when no picture records the
-/// control; controls drawn by a guest CDEF record through QuickDraw itself.
+/// imports, so render the control, record the pixels it drew as one BitsRgn
+/// masked to the control's rectangle within the port's visible and clipping
+/// regions, and restore the pixels it covered. Returns false, drawing
+/// nothing, when no picture records the control; controls drawn by a guest
+/// CDEF record through QuickDraw itself.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_draw_control_into_open_picture(
     memory: &mut PpcSectionMem,
@@ -3016,32 +3017,54 @@ pub(super) fn ppc_draw_control_into_open_picture(
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, owner) else {
         return false;
     };
-    let Some(mut rect) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) else {
+    let Some(control_rect) = ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) else {
         return false;
     };
-    for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
-        let bounds = memory
-            .read_u32_be(owner.wrapping_add(offset))
-            .and_then(|region| memory.read_u32_be(region))
-            .and_then(|region| ppc_read_rect(memory, region.wrapping_add(2)));
-        if let Some((top, left, bottom, right)) = bounds {
-            rect = (
-                rect.0.max(top),
-                rect.1.max(left),
-                rect.2.min(bottom),
-                rect.3.min(right),
-            );
+    // Bound the work by the port's pixels before allocating anything: neither
+    // contrlRect nor a wide-open clipRgn limits it.
+    let pixels = surface.front_buffer;
+    let surface_top = i32::from(surface.top);
+    let surface_left = i32::from(surface.left);
+    let top = i32::from(control_rect.0).max(surface_top);
+    let left = i32::from(control_rect.1).max(surface_left);
+    let bottom = i32::from(control_rect.2).min(surface_top.saturating_add(pixels.height as i32));
+    let right = i32::from(control_rect.3).min(surface_left.saturating_add(pixels.width as i32));
+    // Both bounds lie within contrlRect's i16 coordinates once nonempty.
+    let rect = (top < bottom && left < right)
+        .then(|| (top as i16, left as i16, bottom as i16, right as i16));
+    // The control draws only where the port's visRgn and clipRgn both admit
+    // it. Record exactly those pixels, so replaying the picture leaves the
+    // destination unchanged wherever the control drew nothing. A port
+    // without a readable region is not limited by it.
+    let mask = rect.and_then(|(top, left, bottom, right)| {
+        let mut mask = vec![0, 10];
+        for word in [top, left, bottom, right] {
+            mask.extend_from_slice(&word.to_be_bytes());
         }
-    }
-    let (top, left, bottom, right) = rect;
-    let points = (top..bottom)
-        .flat_map(|v| (left..right).map(move |h| (i32::from(h), i32::from(v))))
+        for offset in [PPC_CGRAF_PORT_VIS_RGN_OFFSET, PPC_CGRAF_PORT_CLIP_RGN_OFFSET] {
+            let Some(region) = memory
+                .read_u32_be(owner.wrapping_add(offset))
+                .and_then(|region| ppc_region_storage(memory, region))
+            else {
+                continue;
+            };
+            mask = ppc_region_storage_boolean(&mask, &region, PpcRegionBooleanOp::Intersection)
+                .ok()?;
+        }
+        Some(mask).filter(|mask| ppc_region_storage_bbox(mask).is_some())
+    });
+    // The HLE control need not honor the port's regions, so save the whole
+    // rectangle it may have drawn, not just the recorded pixels.
+    let points = rect
+        .into_iter()
+        .flat_map(|(top, left, bottom, right)| {
+            (top..bottom)
+                .flat_map(move |v| (left..right).map(move |h| (i32::from(h), i32::from(v))))
+        })
         .collect::<Vec<_>>();
     let covered = points
         .iter()
-        .map(|point| {
-            ppc_quickdraw_read_pixel(memory, surface.front_buffer, surface.local_point(*point))
-        })
+        .map(|point| ppc_quickdraw_read_pixel(memory, pixels, surface.local_point(*point)))
         .collect::<Vec<_>>();
     let _ = ppc_draw_control(
         memory,
@@ -3052,27 +3075,24 @@ pub(super) fn ppc_draw_control_into_open_picture(
         current_resource_refnum,
         handle,
     );
-    if top < bottom && left < right {
-        if let Some((_, _, _, commands)) = toolbox_startup.open_picture.as_mut() {
-            let _ = ppc_record_bits_rect(
+    if let (Some(mask), Some((_, _, _, commands))) = (mask, toolbox_startup.open_picture.as_mut()) {
+        if let Some(bounds) = ppc_region_storage_bbox(&mask) {
+            let _ = ppc_record_indexed_bits(
                 memory,
                 gworlds,
                 owner.wrapping_add(2),
-                rect,
-                rect,
+                bounds,
+                bounds,
                 0,
+                Some(&mask),
                 commands,
             );
         }
     }
     for (point, pixel) in points.into_iter().zip(covered) {
         if let Some(pixel) = pixel {
-            let _ = ppc_quickdraw_write_raw_pixel(
-                memory,
-                surface.front_buffer,
-                surface.local_point(point),
-                pixel,
-            );
+            let _ =
+                ppc_quickdraw_write_raw_pixel(memory, pixels, surface.local_point(point), pixel);
         }
     }
     true
