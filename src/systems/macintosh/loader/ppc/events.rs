@@ -18,16 +18,14 @@ pub(crate) fn ppc_write_event_record(
     if event_ptr == 0 || !ppc_memory_can_write_bytes(memory, event_ptr, 16) {
         return false;
     }
-    memory.write_u16_be(event_ptr, what).is_some()
-        && memory.write_u32_be(event_ptr + 2, message).is_some()
-        && memory.write_u32_be(event_ptr + 6, when).is_some()
-        && memory
-            .write_u16_be(event_ptr + 10, where_v as u16)
-            .is_some()
-        && memory
-            .write_u16_be(event_ptr + 12, where_h as u16)
-            .is_some()
-        && memory.write_u16_be(event_ptr + 14, modifiers).is_some()
+    let mut record = [0u8; 16];
+    record[0..2].copy_from_slice(&what.to_be_bytes());
+    record[2..6].copy_from_slice(&message.to_be_bytes());
+    record[6..10].copy_from_slice(&when.to_be_bytes());
+    record[10..12].copy_from_slice(&where_v.to_be_bytes());
+    record[12..14].copy_from_slice(&where_h.to_be_bytes());
+    record[14..16].copy_from_slice(&modifiers.to_be_bytes());
+    memory.write_bytes(event_ptr, &record).is_some()
 }
 
 pub(crate) fn ppc_record_event_snapshot(

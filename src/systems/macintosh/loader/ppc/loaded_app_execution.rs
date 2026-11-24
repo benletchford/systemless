@@ -2685,27 +2685,49 @@ impl PpcLoadedApp {
                             action,
                             ppc_import_extra_cycles_for_binding(binding),
                         );
-                        let action = if matches!(
-                            binding.dispatcher_target,
-                            PpcImportDispatcherTarget::GetOSEvent
-                                | PpcImportDispatcherTarget::GetNextEvent(
-                                    PpcEventPollOperation::GetNextEvent
-                                )
-                        ) {
-                            ppc_event_idle_poll_action(
+                        let cycles_until_boundary = || {
+                            ppc_cycles_until_next_tick(
+                                clock_cycles_per_tick,
+                                clock_cycle_phase,
+                                elapsed,
+                            )
+                            .min(max_cycles.saturating_sub(elapsed))
+                        };
+                        let action = match binding.dispatcher_target {
+                            PpcImportDispatcherTarget::GetOSEvent => ppc_event_idle_poll_action(
                                 action,
                                 cpu.lr,
                                 import_tick_count,
-                                ppc_cycles_until_next_tick(
-                                    clock_cycles_per_tick,
-                                    clock_cycle_phase,
-                                    elapsed,
-                                )
-                                .min(max_cycles.saturating_sub(elapsed)),
+                                cycles_until_boundary(),
                                 &mut toolbox_startup.event_idle_poll,
-                            )
-                        } else {
-                            action
+                            ),
+                            PpcImportDispatcherTarget::GetNextEvent(op) => {
+                                let action = if op == PpcEventPollOperation::GetNextEvent {
+                                    ppc_event_idle_poll_action(
+                                        action,
+                                        cpu.lr,
+                                        import_tick_count,
+                                        cycles_until_boundary(),
+                                        &mut toolbox_startup.event_idle_poll,
+                                    )
+                                } else {
+                                    action
+                                };
+                                let recurring_update =
+                                    toolbox_startup.recurring_update_poll.last_reenqueued.take();
+                                event_queue.with_ref(|event_queue| {
+                                    ppc_recurring_update_poll_action(
+                                        action,
+                                        cpu.lr,
+                                        import_tick_count,
+                                        recurring_update,
+                                        event_queue,
+                                        cycles_until_boundary(),
+                                        &mut toolbox_startup.recurring_update_poll,
+                                    )
+                                })
+                            }
+                            _ => action,
                         };
                         if trace_imports {
                             if let (Some(action_name), Some(result)) = (

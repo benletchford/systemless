@@ -318,6 +318,113 @@ pub(super) fn ppc_event_idle_poll_action(
     }
 }
 
+/// Consecutive unvalidated `updateEvt` results returned to one call site within one tick.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PpcRecurringUpdatePollState {
+    pub(super) last_reenqueued: Option<(u32, (i16, i16, i16, i16))>,
+    lr: u32,
+    tick_count: u32,
+    windows: Vec<(u32, (i16, i16, i16, i16), u32)>,
+}
+
+impl PpcRecurringUpdatePollState {
+    /// A serviced or newly invalidated region starts a fresh series of deliveries,
+    /// including when the new dirty rectangle has exactly the previous bounds.
+    pub(super) fn forget_window(&mut self, window: u32) {
+        self.windows.retain(|(seen, _, _)| *seen != window);
+    }
+
+    fn reset(&mut self) {
+        self.last_reenqueued = None;
+        self.lr = 0;
+        self.tick_count = 0;
+        self.windows.clear();
+    }
+}
+
+/// End an unacknowledged `updateEvt` spin within one tick at the next tick boundary.
+///
+/// An `updateEvt` recurs while a visible window's `updateRgn` remains non-empty,
+/// matching the Event Manager's `CheckUpdate` scan. If a guest ignores `updateEvt`
+/// for a window (such as a static backdrop window it never validates with
+/// `BeginUpdate`/`EndUpdate`), `GetNextEvent` and `WaitNextEvent` remain non-empty
+/// and would otherwise spin repeatedly within the same tick. Once every queued
+/// recurring dirty window has been delivered past the threshold with an unchanged
+/// `updateRgn` bbox in the current tick, advance to the next tick boundary while
+/// keeping `updateEvt` queued for subsequent ticks.
+pub(super) fn ppc_recurring_update_poll_action(
+    action: PpcImportAction,
+    lr: u32,
+    tick_count: u32,
+    recurring_update: Option<(u32, (i16, i16, i16, i16))>,
+    event_queue: &VecDeque<PpcQueuedEvent>,
+    cycles_until_boundary_or_limit: u64,
+    poll: &mut PpcRecurringUpdatePollState,
+) -> PpcImportAction {
+    let Some((window, bbox)) = recurring_update else {
+        poll.reset();
+        return action;
+    };
+    let extra_cycles = match action {
+        PpcImportAction::Return(1) => 0,
+        PpcImportAction::ReturnWithExtraCycles(1, extra) => extra,
+        _ => {
+            poll.reset();
+            return action;
+        }
+    };
+    if lr == 0 {
+        poll.reset();
+        return action;
+    }
+    if (poll.lr, poll.tick_count) != (lr, tick_count) {
+        poll.lr = lr;
+        poll.tick_count = tick_count;
+        poll.windows.clear();
+        poll.windows.push((window, bbox, 1));
+        return action;
+    }
+    poll.windows.retain(|(seen, _, _)| {
+        *seen == window
+            || event_queue
+                .iter()
+                .any(|queued| queued.what == 6 && queued.message == *seen)
+    });
+    let current_count = if let Some((_, seen_bbox, count)) =
+        poll.windows.iter_mut().find(|(seen, _, _)| *seen == window)
+    {
+        if *seen_bbox != bbox {
+            *seen_bbox = bbox;
+            *count = 1;
+            return action;
+        }
+        *count = count.saturating_add(1);
+        *count
+    } else {
+        poll.windows.push((window, bbox, 1));
+        return action;
+    };
+    if current_count <= PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD {
+        return action;
+    }
+    let all_queued_updates_past_threshold = event_queue
+        .iter()
+        .filter(|queued| queued.what == 6)
+        .all(|queued| {
+            poll.windows.iter().any(|(seen, _, count)| {
+                *seen == queued.message && *count > PPC_OS_EVENT_IDLE_POLL_FAST_FORWARD_THRESHOLD
+            })
+        });
+    if all_queued_updates_past_threshold {
+        PpcImportAction::ReturnWithExtraCycles(
+            1,
+            extra_cycles.max(cycles_until_boundary_or_limit.saturating_sub(1)),
+        )
+    } else {
+        action
+    }
+}
+
 pub(super) fn dispatch_getkeys_import(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -1382,16 +1489,22 @@ pub(super) fn dispatch_event_import(
             let (what, message, when, where_v, where_h, modifiers, has_event) =
                 ppc_dequeue_event(event_queue, event_mask, input, os_only, tick_count);
             // An update event recurs until BeginUpdate/EndUpdate validates the window.
-            if has_event
+            let recurring_update = if has_event
                 && what == 6
                 && memory
                     .read_u8(message.wrapping_add(PPC_CWINDOW_VISIBLE_OFFSET))
                     .is_some_and(|visible| visible != 0)
-                && memory
+            {
+                memory
                     .read_u32_be(message.wrapping_add(PPC_CWINDOW_UPDATE_RGN_OFFSET))
                     .and_then(|rgn| ppc_read_rgn_bbox(memory, rgn))
-                    .is_some_and(|(top, left, bottom, right)| top < bottom && left < right)
-            {
+                    .filter(|&(top, left, bottom, right)| top < bottom && left < right)
+                    .map(|bbox| (message, bbox))
+            } else {
+                None
+            };
+            toolbox_startup.recurring_update_poll.last_reenqueued = recurring_update;
+            if recurring_update.is_some() {
                 ppc_enqueue_window_update_event(event_queue, message, when, input);
             }
             if has_event && what == 8 {

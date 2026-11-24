@@ -2124,14 +2124,23 @@ impl GuestAddressSpace {
         if u64::from(addr) + u64::from(len) > (1u64 << 32) {
             return false;
         }
-        const PREFLIGHT_CHUNK: u32 = 4096;
+        const PREFLIGHT_CHUNK: usize = 4096;
+        let mut stack_scratch = [0u8; 64];
+        let mut heap_scratch = Vec::new();
         let mut offset = 0;
         while offset < len {
-            let chunk_len = (len - offset).min(PREFLIGHT_CHUNK) as usize;
+            let chunk_len = ((len - offset) as usize).min(PREFLIGHT_CHUNK);
             let address = addr + offset;
-            let mut bytes = vec![0; chunk_len];
-            if self.read_bytes_into(address, &mut bytes).is_none()
-                || self.write_bytes(address, &bytes).is_none()
+            let bytes: &mut [u8] = if chunk_len <= stack_scratch.len() {
+                &mut stack_scratch[..chunk_len]
+            } else {
+                if heap_scratch.len() < chunk_len {
+                    heap_scratch.resize(chunk_len, 0);
+                }
+                &mut heap_scratch[..chunk_len]
+            };
+            if self.read_bytes_into(address, bytes).is_none()
+                || self.write_bytes(address, bytes).is_none()
             {
                 return false;
             }
