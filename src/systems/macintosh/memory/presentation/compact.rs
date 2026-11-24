@@ -381,10 +381,12 @@ impl Presentation {
         let pack = |rgb: &[u8; 3]| {
             (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
         };
-        let tables: [[u32; 256]; 4] = if p.depth == 8 {
-            [p.palette.map(|rgb| pack(&rgb)), [0; 256], [0; 256], [0; 256]]
+        let indexed_tables: [[u32; 256]; 4];
+        let tables: &[[u32; 256]; 4] = if p.depth == 8 {
+            indexed_tables = [p.palette.map(|rgb| pack(&rgb)), [0; 256], [0; 256], [0; 256]];
+            &indexed_tables
         } else {
-            p.direct_palettes.map(|palette| palette.map(|rgb| pack(&rgb)))
+            &p.packed_direct_palettes
         };
         for (y, has_detail) in detail_rows.iter_mut().enumerate() {
             if since.is_some_and(|mark| !*has_detail && p.screen_row_unchanged_since(mark, y)) {
@@ -394,24 +396,107 @@ impl Presentation {
             let first_detail = output.detail.len();
             let cells = &mut output.cells[y * width..(y + 1) * width];
             let row = y * p.width as usize;
+            let row_has_text = p.text_row_counts[y] != 0;
             if lanes == 1 {
                 let values = &p.guest_values[row..row + width];
-                let text = &p.text_cells[row..row + width];
-                for (x, ((destination, (&text, &value)), overlay)) in cells
-                    .iter_mut()
-                    .zip(text.iter().zip(values))
-                    .zip(overlays.by_ref())
-                    .enumerate()
-                {
-                    if let Some(rgb) = overlay {
-                        *destination = rgb;
-                    } else if !text {
-                        *destination = tables[0][value as u8 as usize];
-                    } else {
-                        *destination = 0x80000000 | output.detail.len() as u32;
-                        output.detail.extend(
-                            p.samples.get(row + x).rgb[..scale * scale].iter().map(pack),
-                        );
+                if !row_has_text {
+                    for (destination, (&value, overlay)) in
+                        cells.iter_mut().zip(values.iter().zip(overlays.by_ref()))
+                    {
+                        *destination = overlay.unwrap_or_else(|| tables[0][value as u8 as usize]);
+                    }
+                } else {
+                    let text = &p.text_cells[row..row + width];
+                    for (x, ((destination, (&text, &value)), overlay)) in cells
+                        .iter_mut()
+                        .zip(text.iter().zip(values))
+                        .zip(overlays.by_ref())
+                        .enumerate()
+                    {
+                        if let Some(rgb) = overlay {
+                            *destination = rgb;
+                        } else if !text {
+                            *destination = tables[0][value as u8 as usize];
+                        } else {
+                            *destination = 0x80000000 | output.detail.len() as u32;
+                            output.detail.extend(
+                                p.samples.get(row + x).rgb[..scale * scale].iter().map(pack),
+                            );
+                        }
+                    }
+                }
+            } else if lanes == 2 {
+                // 16-bpp lane 0 contributes R in 0..=255 and G in 0..=198; lane 1
+                // contributes G in 0..=57 and B in 0..=255, so packed 0x00RRGGBB
+                // words sum in a single integer addition without channel carry.
+                let [t0, t1, ..] = tables;
+                let values = &p.guest_values[row..row + width * 2];
+                if !row_has_text {
+                    for (destination, (pair, overlay)) in cells
+                        .iter_mut()
+                        .zip(values.chunks_exact(2).zip(overlays.by_ref()))
+                    {
+                        *destination = overlay.unwrap_or_else(|| {
+                            t0[pair[0] as u8 as usize] + t1[pair[1] as u8 as usize]
+                        });
+                    }
+                } else {
+                    let text = &p.text_cells[row..row + width * 2];
+                    for (x, ((destination, (pair, text_pair)), overlay)) in cells
+                        .iter_mut()
+                        .zip(values.chunks_exact(2).zip(text.chunks_exact(2)))
+                        .zip(overlays.by_ref())
+                        .enumerate()
+                    {
+                        if let Some(rgb) = overlay {
+                            *destination = rgb;
+                        } else if text_pair[0] || text_pair[1] {
+                            *destination = 0x80000000 | output.detail.len() as u32;
+                            for sy in 0..scale {
+                                for sx in 0..scale {
+                                    output.detail.push(p.compact_sample(x, y, sx, sy));
+                                }
+                            }
+                        } else {
+                            *destination = t0[pair[0] as u8 as usize] + t1[pair[1] as u8 as usize];
+                        }
+                    }
+                }
+            } else if lanes == 4 {
+                let values = &p.guest_values[row..row + width * 4];
+                if !row_has_text {
+                    for (destination, (quad, overlay)) in cells
+                        .iter_mut()
+                        .zip(values.chunks_exact(4).zip(overlays.by_ref()))
+                    {
+                        *destination = overlay.unwrap_or_else(|| {
+                            (u32::from(quad[1] as u8) << 16)
+                                | (u32::from(quad[2] as u8) << 8)
+                                | u32::from(quad[3] as u8)
+                        });
+                    }
+                } else {
+                    let text = &p.text_cells[row..row + width * 4];
+                    for (x, ((destination, (quad, text_quad)), overlay)) in cells
+                        .iter_mut()
+                        .zip(values.chunks_exact(4).zip(text.chunks_exact(4)))
+                        .zip(overlays.by_ref())
+                        .enumerate()
+                    {
+                        if let Some(rgb) = overlay {
+                            *destination = rgb;
+                        } else if text_quad.iter().any(|&v| v) {
+                            *destination = 0x80000000 | output.detail.len() as u32;
+                            for sy in 0..scale {
+                                for sx in 0..scale {
+                                    output.detail.push(p.compact_sample(x, y, sx, sy));
+                                }
+                            }
+                        } else {
+                            *destination = (u32::from(quad[1] as u8) << 16)
+                                | (u32::from(quad[2] as u8) << 8)
+                                | u32::from(quad[3] as u8);
+                        }
                     }
                 }
             } else {
@@ -421,7 +506,7 @@ impl Presentation {
                     let cell = row + x * lanes;
                     if let Some(rgb) = overlay {
                         *destination = rgb;
-                    } else if p.text_cells[cell..cell + lanes].iter().any(|&v| v) {
+                    } else if row_has_text && p.text_cells[cell..cell + lanes].iter().any(|&v| v) {
                         *destination = 0x80000000 | output.detail.len() as u32;
                         for sy in 0..scale {
                             for sx in 0..scale {
@@ -431,7 +516,7 @@ impl Presentation {
                     } else {
                         *destination = p.guest_values[cell..cell + lanes]
                             .iter()
-                            .zip(&tables)
+                            .zip(tables)
                             .fold(0, |rgb, (&value, table)| {
                                 saturating_rgb_add(rgb, table[value as u8 as usize])
                             });
@@ -969,5 +1054,89 @@ mod tests {
                 assert!(!bus.compact_presentation(&guest, &overlays, &mut compact));
             }
         }
+    }
+
+    #[test]
+    fn direct_color_compact_fast_paths_match_saturating_lane_sums_exhaustively() {
+        let mut bus16 = MacMemoryBus::new(0x4_0000);
+        bus16.enable_outline_presentation((0x1000, 512, 256, 256, 16), [[0; 3]; 256], 2);
+        for word in 0..=u16::MAX {
+            let addr = 0x1000 + u32::from(word) * 2;
+            bus16.write_bytes(addr, &word.to_be_bytes());
+        }
+        let mut compact16 = CompactPresentation::default();
+        assert!(bus16.compact_presentation_without_overlays((256, 256), &mut compact16));
+        {
+            let p16 = bus16.presentation.0.borrow();
+            let p16 = p16.as_ref().unwrap();
+            let pack = |rgb: [u8; 3]| {
+                (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
+            };
+            for word in 0..=u16::MAX {
+                let [hi, lo] = word.to_be_bytes();
+                let expected = saturating_rgb_add(
+                    pack(p16.direct_palettes[0][hi as usize]),
+                    pack(p16.direct_palettes[1][lo as usize]),
+                );
+                assert_eq!(compact16.cells[word as usize], expected, "16bpp word=0x{word:04x}");
+            }
+        }
+
+        let mut bus32 = super::super::tests::bus();
+        bus32.enable_outline_presentation((0x1000, 32, 8, 2, 32), [[0; 3]; 256], 2);
+        let samples = [
+            0x0000_0000u32,
+            0xff12_3456,
+            0x7fab_cdef,
+            0x00ff_00ff,
+            0xffff_ffff,
+            0x8001_80fe,
+            0x00fe_dcba,
+            0x4299_8877,
+        ];
+        for (index, &pixel) in samples.iter().enumerate() {
+            bus32.write_bytes(0x1000 + index as u32 * 4, &pixel.to_be_bytes());
+        }
+        let mut compact32 = CompactPresentation::default();
+        assert!(bus32.compact_presentation_without_overlays((8, 2), &mut compact32));
+        for (index, &pixel) in samples.iter().enumerate() {
+            assert_eq!(compact32.cells[index], pixel & 0x00ff_ffff, "32bpp index={index}");
+        }
+    }
+
+    #[test]
+    #[ignore = "measurement harness; prints direct-color compact export timings"]
+    fn direct_color_compact_export_microbench() {
+        use std::time::Instant;
+        let mut bus16 = MacMemoryBus::new(0x40_0000);
+        bus16.enable_outline_presentation((0x1000, 1600, 800, 600, 16), [[0; 3]; 256], 2);
+        let mut row_bytes = vec![0u8; 1600];
+        for y in 0..600u32 {
+            for x in 0..800usize {
+                let word = ((y as u16).wrapping_mul(37)).wrapping_add(x as u16 * 13);
+                let [hi, lo] = word.to_be_bytes();
+                row_bytes[x * 2] = hi;
+                row_bytes[x * 2 + 1] = lo;
+            }
+            bus16.write_bytes(0x1000 + y * 1600, &row_bytes);
+        }
+        let mut out = CompactPresentation::default();
+        for _ in 0..40 {
+            assert!(bus16.compact_presentation_without_overlays((800, 600), &mut out));
+        }
+        let mut samples_us = Vec::with_capacity(300);
+        for _ in 0..300 {
+            let start = Instant::now();
+            assert!(bus16.compact_presentation_without_overlays((800, 600), &mut out));
+            std::hint::black_box(&out);
+            samples_us.push(start.elapsed().as_secs_f64() * 1e6);
+        }
+        samples_us.sort_by(|a, b| a.total_cmp(b));
+        eprintln!(
+            "[COMPACT-EXPORT-BENCH] case=export-16bpp-800x600 n={} p50_us={:.1} p95_us={:.1}",
+            samples_us.len(),
+            samples_us[samples_us.len() / 2],
+            samples_us[(samples_us.len() * 95) / 100],
+        );
     }
 }

@@ -2201,6 +2201,45 @@ pub(crate) mod tests {
         }
     }
     #[test]
+    #[ignore = "measurement harness; prints non-shrinking Metal compact GPU timings"]
+    fn compact_non_shrinking_gpu_microbench() {
+        use systemless::systems::macintosh::memory::CompactPresentation;
+        for text in [false, true] {
+            let mut frame = CompactPresentation {
+                width: 800,
+                height: 600,
+                scale: 2,
+                ..Default::default()
+            };
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    if text && (y < 64 || y >= 520) && x % 8 < 5 {
+                        frame.cells.push(0x80000000 | frame.detail.len() as u32);
+                        frame.detail.extend(
+                            (0..4).map(|s| if (x + y + s) % 3 == 0 { 0xe0f0ff } else { 0x101820 }),
+                        );
+                    } else {
+                        frame.cells.push(((x * 7 + y * 13) & 0xff) * 0x010203);
+                    }
+                }
+            }
+            let suffix = if text { "text" } else { "ui" };
+            render_compact(
+                &frame,
+                (0, 0, frame.width, frame.height),
+                (1600, 1200),
+                Some(&format!("compact-800x600-s2-to-1600x1200-{suffix}")),
+            );
+            render_compact(
+                &frame,
+                (0, 0, frame.width, frame.height),
+                (1920, 1440),
+                Some(&format!("compact-800x600-s2-to-1920x1440-{suffix}")),
+            );
+        }
+    }
+
+    #[test]
     fn compact_shader_matches_cpu_coverage_for_crops_and_drawables() {
         use systemless::systems::macintosh::memory::CompactPresentation;
         let mut seed = 0x2545_f491u32;
@@ -2210,7 +2249,7 @@ pub(crate) mod tests {
             seed ^= seed << 5;
             seed
         };
-        for scale in [2u32, 3, 4] {
+        for scale in 1..=4 {
             let (width, height) = (13u32, 9u32);
             let mut frame = CompactPresentation {
                 width,

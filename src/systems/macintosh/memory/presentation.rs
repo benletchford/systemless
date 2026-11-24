@@ -969,6 +969,7 @@ pub(crate) struct Presentation {
     height: u32,
     depth: u16,
     direct_palettes: [[[u8; 3]; 256]; 4],
+    packed_direct_palettes: [[u32; 256]; 4],
     pub scale: u32,
     palette: [[u8; 3]; 256],
     samples: DetailSamples,
@@ -4159,6 +4160,21 @@ impl MacMemoryBus {
                         (32, 3) => [0, 0, byte],
                         _ => [0; 3],
                     }
+                })
+            }),
+            packed_direct_palettes: std::array::from_fn(|lane| {
+                std::array::from_fn(|i| {
+                    let byte = i as u8;
+                    let expand = |v: u8| (v << 3) | (v >> 2);
+                    let rgb = match (depth, lane) {
+                        (16, 0) => [expand((byte >> 2) & 31), (byte & 3) * 66, 0],
+                        (16, 1) => [0, ((byte >> 5) & 7) * 8 + (byte >> 7), expand(byte & 31)],
+                        (32, 1) => [byte, 0, 0],
+                        (32, 2) => [0, byte, 0],
+                        (32, 3) => [0, 0, byte],
+                        _ => [0; 3],
+                    };
+                    (u32::from(rgb[0]) << 16) | (u32::from(rgb[1]) << 8) | u32::from(rgb[2])
                 })
             }),
             scale,
