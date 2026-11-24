@@ -2364,9 +2364,10 @@ impl super::TrapDispatcher {
                     );
                 }
                 bus.begin_presentation_text_run(self.tx_mode == 0);
+                let mut erased_right = None;
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
-                    self.draw_char(cpu, bus, ch);
+                    self.draw_run_char(cpu, bus, ch, &mut erased_right);
                 }
                 bus.end_presentation_text_run();
                 self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
@@ -2429,9 +2430,10 @@ impl super::TrapDispatcher {
 
                 // Render text using draw_char
                 bus.begin_presentation_text_run(self.tx_mode == 0);
+                let mut erased_right = None;
                 for i in 0..byte_count {
                     let ch = bus.read_byte(text_buf + i as u32) as char;
-                    self.draw_char(cpu, bus, ch);
+                    self.draw_run_char(cpu, bus, ch, &mut erased_right);
                 }
                 bus.end_presentation_text_run();
                 self.tx_size = saved_tx_size;

@@ -8494,6 +8494,12 @@
     /// Draw `text` in Geneva 12 with `face` and `mode` on a white 8-bit port
     /// presented at 4x; return the guest pixels and the presented RGB.
     fn draw_text_on_presented_port(face: u8, mode: i16, text: &str) -> (Vec<u8>, Vec<u8>) {
+        draw_text_with_repaint(face, mode, text, None)
+    }
+
+    fn draw_text_with_repaint(
+        face: u8, mode: i16, text: &str, draw_prior_char: Option<bool>,
+    ) -> (Vec<u8>, Vec<u8>) {
         const W: u16 = 96;
         const H: u16 = 24;
         let (mut d, mut cpu, mut bus) = setup_with_port();
@@ -8523,11 +8529,30 @@
         d.tx_face = face as _;
         d.tx_mode = mode;
         d.pn_loc = (16, 4);
-        for ch in text.chars() {
-            d.draw_char(&mut cpu, &mut bus, ch);
+        if let Some(prior) = draw_prior_char {
+            if prior {
+                d.draw_char(&mut cpu, &mut bus, 'W');
+            }
+            bus.fill_bytes(base, u32::from(W) * u32::from(H), 127);
+            d.pn_loc = (16, 6);
         }
+        let string = bus.alloc(1 + text.len() as u32);
+        bus.write_byte(string, text.len() as u8);
+        for (i, byte) in text.bytes().enumerate() {
+            bus.write_byte(string + 1 + i as u32, byte);
+        }
+        d.draw_string(&mut cpu, &mut bus, string);
         let guest = bus.read_bytes(base, usize::from(W) * usize::from(H));
         (guest, bus.outline_presentation_rgb().unwrap().2)
+    }
+
+    #[test]
+    fn copy_mode_space_after_repaint_erases_the_same_guest_pixels_as_a_fresh_run() {
+        for mode in [0, 4] {
+            let with_prior = draw_text_with_repaint(2, mode, " ", Some(true));
+            let fresh = draw_text_with_repaint(2, mode, " ", Some(false));
+            assert_eq!(with_prior.0, fresh.0);
+        }
     }
 
     #[test]

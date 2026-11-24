@@ -356,9 +356,10 @@ impl super::TrapDispatcher {
         if !is_underline {
             // No underline, no outline/shadow: simple per-character drawing
             bus.begin_presentation_text_run(self.tx_mode == 0);
+            let mut erased_right = None;
             for i in 0..len {
                 let ch = bus.read_byte(s_ptr + 1 + i as u32);
-                self.draw_char(cpu, bus, ch as char);
+                self.draw_run_char(cpu, bus, ch as char, &mut erased_right);
             }
             bus.end_presentation_text_run();
             return;
@@ -647,9 +648,10 @@ impl super::TrapDispatcher {
 
         // Draw all characters (they will use the global underline info)
         bus.begin_presentation_text_run(self.tx_mode == 0);
+        let mut erased_right = None;
         for i in 0..len {
             let ch = bus.read_byte(s_ptr + 1 + i as u32);
-            self.draw_char(cpu, bus, ch as char);
+            self.draw_run_char(cpu, bus, ch as char, &mut erased_right);
         }
 
         bus.end_presentation_text_run();
@@ -658,6 +660,12 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn draw_char<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus, ch: char) {
+        self.draw_run_char(cpu, bus, ch, &mut None);
+    }
+
+    pub(super) fn draw_run_char<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus, ch: char, erased_right: &mut Option<i16>,
+    ) {
         // Check text face for styling
         let is_bold = (self.text_synthesized_face() & 1) != 0;
         let is_italic_requested = (self.tx_face & 2) != 0;
@@ -853,17 +861,9 @@ impl super::TrapDispatcher {
                 };
                 let cell_right = h + glyph.advance as i16 * fs;
                 let ink_right = right + style_smear + italic_top_slant + style_pad;
-                let port = *self.current_port;
-                let erase_left = match self.copy_text_erase {
-                    Some((last_port, last_v, last_h, erased_right))
-                        if last_port == port && last_v == v && last_h < h =>
-                    {
-                        h.max(erased_right)
-                    }
-                    _ => h,
-                };
+                let erase_left = h.max(erased_right.unwrap_or(h));
                 let erase_right = cell_right.max(ink_right);
-                self.copy_text_erase = Some((port, v, h, erase_right.max(erase_left)));
+                *erased_right = Some(erase_right.max(erase_left));
                 let copy_rect = Rect {
                     top: v - (fbbdy - scaled_descent),
                     left: erase_left,
@@ -885,7 +885,7 @@ impl super::TrapDispatcher {
                     }
                 }
             } else {
-                self.copy_text_erase = None;
+                *erased_right = None;
             }
 
             // Extract underline info for continuous underline (if set by draw_string)

@@ -3422,9 +3422,15 @@ impl super::TrapDispatcher {
             );
             visual_lines.push((*start, *end, top, line_bottom, x));
             self.pn_loc = (top.saturating_add(line_ascent), x);
+            let mut erased_right = None;
             for (offset, &byte) in text_bytes[*start..trimmed_end].iter().enumerate() {
                 if uses_styled_runs {
                     let style = Self::te_style_at_offset(&styled_runs, *start + offset);
+                    if (self.tx_font, self.tx_face, self.tx_size, self.fg_color)
+                        != (style.font, style.face, style.size, style.color)
+                    {
+                        erased_right = None;
+                    }
                     self.tx_font = style.font;
                     self.tx_face = style.face;
                     self.tx_size = style.size;
@@ -3436,7 +3442,7 @@ impl super::TrapDispatcher {
                     // caller's port state.
                     self.resolve_current_port_color_pixels(bus, true, false, false);
                 }
-                self.draw_char(cpu, bus, byte as char);
+                self.draw_run_char(cpu, bus, byte as char, &mut erased_right);
             }
 
             top = line_bottom;
@@ -16359,8 +16365,9 @@ impl super::TrapDispatcher {
                                 Self::TE_LINE_LEFT_INSET,
                             );
                             self.pn_loc = (y, x);
+                            let mut erased_right = None;
                             for &byte in &text_bytes[line.start..line.visible_end] {
-                                self.draw_char(cpu, bus, byte as char);
+                                self.draw_run_char(cpu, bus, byte as char, &mut erased_right);
                             }
                             y += line_height;
                         }

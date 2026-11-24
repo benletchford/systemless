@@ -1908,10 +1908,6 @@ pub struct TrapDispatcher {
     pub(crate) region_tracking: Option<RegionTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
     pub(crate) underline_info: Option<UnderlineInfo>,
-    /// The last srcCopy/notSrcCopy character's (port, baseline, pen h,
-    /// right edge of the background it erased), so the next character on
-    /// the same line does not erase the overhang of the one before it.
-    pub(crate) copy_text_erase: Option<(u32, i16, i16, i16)>,
     /// Process-owned live mouse, keyboard, and key-repeat state.
     pub(crate) input_state: SharedProcessInputState,
     /// Debug counter for GetKeys calls that observed at least one held key.
@@ -4074,7 +4070,6 @@ impl TrapDispatcher {
             grow_window_tracking: None,
             region_tracking: None,
             underline_info: None,
-            copy_text_erase: None,
             input_state: SharedProcessInputState::default(),
             debug_getkeys_nonzero_count: 0,
             debug_last_getkeys_nonzero_key_map: [0; 16],
